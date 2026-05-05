@@ -448,6 +448,8 @@ final class ComputerUsePlannerRuntime {
             ))
             do {
                 return try await plan(request)
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 guard attempt < maxPlannerRetries, isRecoverablePlannerError(error) else {
                     throw error
@@ -462,7 +464,7 @@ final class ComputerUsePlannerRuntime {
                     status: "retrying",
                     step: request.step
                 ))
-                try? await Task.sleep(nanoseconds: 800_000_000)
+                try await Task.sleep(nanoseconds: 800_000_000)
             }
         }
     }

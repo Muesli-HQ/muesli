@@ -621,7 +621,9 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, id)
-        sqlite3_step(statement)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
     }
 
     public func deleteMeeting(id: Int64) throws {

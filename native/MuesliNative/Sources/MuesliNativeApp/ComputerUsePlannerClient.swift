@@ -73,6 +73,8 @@ enum ComputerUsePlannerClient {
             throw ComputerUsePlannerError.notAuthenticated
         } catch let error as ComputerUsePlannerError {
             throw error
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw ComputerUsePlannerError.requestFailed(error.localizedDescription)
         }

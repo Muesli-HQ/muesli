@@ -3048,19 +3048,23 @@ final class MuesliController: NSObject {
                         "planner_enabled": self.config.enableComputerUsePlanner ? "true" : "false",
                     ])
                 }
-                let commandEndedAt = Date()
-                let dictationID: Int64?
-                if text.isEmpty {
-                    dictationID = nil
-                } else {
-                    dictationID = try? self.dictationStore.insertDictation(
-                        text: text,
-                        durationSeconds: duration,
-                        source: "cua",
-                        startedAt: startedAt,
-                        endedAt: commandEndedAt
-                    )
+                guard !text.isEmpty else {
+                    fputs("[cua] empty transcript, skipping planner\n", stderr)
+                    await MainActor.run {
+                        self.computerUseCommandTask = nil
+                        self.setState(.idle)
+                        self.meetingMonitor.resumeAfterCooldown()
+                    }
+                    return
                 }
+                let commandEndedAt = Date()
+                let dictationID = try? self.dictationStore.insertDictation(
+                    text: text,
+                    durationSeconds: duration,
+                    source: "cua",
+                    startedAt: startedAt,
+                    endedAt: commandEndedAt
+                )
                 await self.handleComputerUseCommand(transcript: text, dictationID: dictationID)
             } catch is CancellationError {
                 fputs("[cua] command parsing cancelled\n", stderr)

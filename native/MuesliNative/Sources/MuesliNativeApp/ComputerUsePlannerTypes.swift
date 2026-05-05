@@ -411,7 +411,6 @@ struct ComputerUseToolInvocation: Codable, Equatable {
               !trimmed.contains("\r"),
               !trimmed.contains(";"),
               !trimmed.contains("|"),
-              !trimmed.contains("&"),
               let url = URL(string: trimmed),
               let scheme = url.scheme?.lowercased(),
               ["http", "https"].contains(scheme),

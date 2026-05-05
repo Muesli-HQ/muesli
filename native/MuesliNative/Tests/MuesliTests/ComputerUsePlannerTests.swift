@@ -119,6 +119,15 @@ struct ComputerUsePlannerResponseTests {
         }
     }
 
+    @Test("safe URLs allow query parameters")
+    func safeURLsAllowQueryParameters() throws {
+        let response = try ComputerUsePlannerResponse.decodeJSON(
+            from: #"{"tool":"navigate_url","app_bundle_id":"com.google.Chrome","url":"https://www.google.com/search?q=hello&hl=en"}"#
+        )
+
+        #expect(response.toolCall.url == "https://www.google.com/search?q=hello&hl=en")
+    }
+
     @Test("risky tool calls require confirmation")
     func riskyToolCallsRequireConfirmation() throws {
         let click = try ComputerUsePlannerResponse.decodeJSON(from: #"{"tool":"click","element_id":"e2","label":"Send"}"#)
@@ -624,6 +633,27 @@ struct ComputerUsePlannerRuntimeTests {
         #expect(planCalls == 2)
         #expect(statuses.contains("Retrying planner"))
         #expect(result.traceEvents.contains { $0.title == "Planner retry" })
+    }
+
+    @Test("does not retry planner cancellation")
+    @MainActor
+    func doesNotRetryPlannerCancellation() async {
+        var planCalls = 0
+        let runtime = ComputerUsePlannerRuntime(
+            config: AppConfig(),
+            observe: { _, _, _ in Self.observation(screenshot: Self.screenshot()) },
+            plan: { _ in
+                planCalls += 1
+                throw CancellationError()
+            },
+            execute: { _, _ in .executed("unexpected") }
+        )
+
+        let result = await runtime.run(command: "open chrome")
+
+        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.failed)
+        #expect(planCalls == 1)
+        #expect(!result.traceEvents.contains { $0.title == "Planner retry" })
     }
 
     static func observation(

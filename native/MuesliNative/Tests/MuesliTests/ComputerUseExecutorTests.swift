@@ -36,34 +36,34 @@ struct ComputerUseExecutorTests {
     }
 
     @Test("lists browser tabs with mocked Apple Events adapter")
-    func listsBrowserTabs() {
+    func listsBrowserTabs() async {
         ComputerUseBrowserAutomation.runAppleScriptForTests = { script in
             #expect(script.contains("application id \"com.google.Chrome\""))
             return "1\t1\ttrue\tHacker News\thttps://news.ycombinator.com/\n"
         }
         defer { ComputerUseBrowserAutomation.runAppleScriptForTests = nil }
 
-        let result = ComputerUseBrowserAutomation.listTabs(appBundleID: "com.google.Chrome")
+        let result = await ComputerUseBrowserAutomation.listTabs(appBundleID: "com.google.Chrome")
 
         #expect(result.status == .executed)
         #expect(result.message.contains("Hacker News"))
     }
 
     @Test("activates browser tab with mocked Apple Events adapter")
-    func activatesBrowserTab() {
+    func activatesBrowserTab() async {
         ComputerUseBrowserAutomation.runAppleScriptForTests = { script in
             #expect(script.contains("active tab index of window 2 to 3"))
             return ""
         }
         defer { ComputerUseBrowserAutomation.runAppleScriptForTests = nil }
 
-        let result = ComputerUseBrowserAutomation.activateTab(appBundleID: "com.google.Chrome", windowIndex: 2, tabIndex: 3)
+        let result = await ComputerUseBrowserAutomation.activateTab(appBundleID: "com.google.Chrome", windowIndex: 2, tabIndex: 3)
 
         #expect(result.status == .executed)
     }
 
     @Test("navigates safe URLs and rejects unsafe URLs")
-    func navigatesSafeURLsAndRejectsUnsafeURLs() {
+    func navigatesSafeURLsAndRejectsUnsafeURLs() async {
         var capturedScript = ""
         ComputerUseBrowserAutomation.runAppleScriptForTests = { script in
             capturedScript = script
@@ -71,13 +71,13 @@ struct ComputerUseExecutorTests {
         }
         defer { ComputerUseBrowserAutomation.runAppleScriptForTests = nil }
 
-        let safe = ComputerUseBrowserAutomation.navigate(
+        let safe = await ComputerUseBrowserAutomation.navigate(
             appBundleID: "com.google.Chrome",
             windowIndex: 1,
             tabIndex: 1,
-            url: "https://news.ycombinator.com/"
+            url: "https://www.google.com/search?q=hello&hl=en"
         )
-        let unsafe = ComputerUseBrowserAutomation.navigate(
+        let unsafe = await ComputerUseBrowserAutomation.navigate(
             appBundleID: "com.google.Chrome",
             windowIndex: nil,
             tabIndex: nil,
@@ -85,12 +85,12 @@ struct ComputerUseExecutorTests {
         )
 
         #expect(safe.status == .executed)
-        #expect(capturedScript.contains("https://news.ycombinator.com/"))
+        #expect(capturedScript.contains("https://www.google.com/search?q=hello&hl=en"))
         #expect(unsafe.status == .needsConfirmation)
     }
 
     @Test("page text and DOM query use read-only JavaScript")
-    func pageTextAndDOMQueryUseReadOnlyJavaScript() {
+    func pageTextAndDOMQueryUseReadOnlyJavaScript() async {
         var scripts: [String] = []
         ComputerUseBrowserAutomation.runAppleScriptForTests = { script in
             scripts.append(script)
@@ -98,8 +98,8 @@ struct ComputerUseExecutorTests {
         }
         defer { ComputerUseBrowserAutomation.runAppleScriptForTests = nil }
 
-        let text = ComputerUseBrowserAutomation.pageText(appBundleID: "com.google.Chrome", windowIndex: 1, tabIndex: 1)
-        let dom = ComputerUseBrowserAutomation.queryDOM(
+        let text = await ComputerUseBrowserAutomation.pageText(appBundleID: "com.google.Chrome", windowIndex: 1, tabIndex: 1)
+        let dom = await ComputerUseBrowserAutomation.queryDOM(
             appBundleID: "com.google.Chrome",
             windowIndex: 1,
             tabIndex: 1,

@@ -111,28 +111,28 @@ enum ComputerUseToolExecutor {
         case .scroll:
             return scroll(direction: toolCall.direction ?? .down, pages: toolCall.pages ?? 1)
         case .listBrowserTabs:
-            return ComputerUseBrowserAutomation.listTabs(appBundleID: toolCall.canonicalBundleID)
+            return await ComputerUseBrowserAutomation.listTabs(appBundleID: toolCall.canonicalBundleID)
         case .activateBrowserTab:
-            return ComputerUseBrowserAutomation.activateTab(
+            return await ComputerUseBrowserAutomation.activateTab(
                 appBundleID: toolCall.canonicalBundleID,
                 windowIndex: toolCall.windowIndex ?? 1,
                 tabIndex: toolCall.tabIndex ?? 1
             )
         case .navigateURL:
-            return ComputerUseBrowserAutomation.navigate(
+            return await ComputerUseBrowserAutomation.navigate(
                 appBundleID: toolCall.canonicalBundleID,
                 windowIndex: toolCall.windowIndex,
                 tabIndex: toolCall.tabIndex,
                 url: toolCall.url ?? ""
             )
         case .pageGetText:
-            return ComputerUseBrowserAutomation.pageText(
+            return await ComputerUseBrowserAutomation.pageText(
                 appBundleID: toolCall.canonicalBundleID,
                 windowIndex: toolCall.windowIndex,
                 tabIndex: toolCall.tabIndex
             )
         case .pageQueryDOM:
-            return ComputerUseBrowserAutomation.queryDOM(
+            return await ComputerUseBrowserAutomation.queryDOM(
                 appBundleID: toolCall.canonicalBundleID,
                 windowIndex: toolCall.windowIndex,
                 tabIndex: toolCall.tabIndex,
@@ -407,6 +407,7 @@ enum ComputerUseToolExecutor {
         guard let point = screenPoint(for: toolCall, registry: registry) else {
             return .failed("No current screenshot for cursor move")
         }
+        CGWarpMouseCursorPosition(point)
         ComputerUseCursorOverlay.shared.show(at: point, label: toolCall.label)
         return .executed("Moved cursor to \(Int(point.x.rounded())),\(Int(point.y.rounded()))")
     }

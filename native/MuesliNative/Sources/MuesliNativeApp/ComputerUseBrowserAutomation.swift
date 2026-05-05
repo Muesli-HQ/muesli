@@ -3,7 +3,7 @@ import Foundation
 enum ComputerUseBrowserAutomation {
     static var runAppleScriptForTests: ((String) throws -> String)?
 
-    static func listTabs(appBundleID: String) -> ComputerUseExecutionResult {
+    static func listTabs(appBundleID: String) async -> ComputerUseExecutionResult {
         guard supportsBrowser(appBundleID) else {
             return .unsupported("Browser tools currently support Google Chrome only")
         }
@@ -23,7 +23,7 @@ enum ComputerUseBrowserAutomation {
         return output
         """
         do {
-            let output = try runAppleScript(script)
+            let output = try await runAppleScript(script)
             let tabs = parseTabs(output: output, appBundleID: appBundleID)
             guard !tabs.isEmpty else {
                 return .executed("No browser tabs")
@@ -36,7 +36,7 @@ enum ComputerUseBrowserAutomation {
         }
     }
 
-    static func activateTab(appBundleID: String, windowIndex: Int, tabIndex: Int) -> ComputerUseExecutionResult {
+    static func activateTab(appBundleID: String, windowIndex: Int, tabIndex: Int) async -> ComputerUseExecutionResult {
         guard supportsBrowser(appBundleID) else {
             return .unsupported("Browser tools currently support Google Chrome only")
         }
@@ -48,14 +48,14 @@ enum ComputerUseBrowserAutomation {
         end tell
         """
         do {
-            _ = try runAppleScript(script)
+            _ = try await runAppleScript(script)
             return .executed("Activated browser tab \(windowIndex):\(tabIndex)")
         } catch {
             return .failed(browserScriptError(error))
         }
     }
 
-    static func navigate(appBundleID: String, windowIndex: Int?, tabIndex: Int?, url: String) -> ComputerUseExecutionResult {
+    static func navigate(appBundleID: String, windowIndex: Int?, tabIndex: Int?, url: String) async -> ComputerUseExecutionResult {
         guard supportsBrowser(appBundleID) else {
             return .unsupported("Browser tools currently support Google Chrome only")
         }
@@ -70,15 +70,15 @@ enum ComputerUseBrowserAutomation {
         end tell
         """
         do {
-            _ = try runAppleScript(script)
+            _ = try await runAppleScript(script)
             return .executed("Navigated to \(safeURL.absoluteString)")
         } catch {
             return .failed(browserScriptError(error))
         }
     }
 
-    static func pageText(appBundleID: String, windowIndex: Int?, tabIndex: Int?) -> ComputerUseExecutionResult {
-        runReadOnlyJavaScript(
+    static func pageText(appBundleID: String, windowIndex: Int?, tabIndex: Int?) async -> ComputerUseExecutionResult {
+        await runReadOnlyJavaScript(
             appBundleID: appBundleID,
             windowIndex: windowIndex,
             tabIndex: tabIndex,
@@ -98,11 +98,11 @@ enum ComputerUseBrowserAutomation {
         tabIndex: Int?,
         selector: String,
         attributes: [String]
-    ) -> ComputerUseExecutionResult {
+    ) async -> ComputerUseExecutionResult {
         let selectorJSON = jsonString(selector)
         let selectedAttributes = Array(attributes.prefix(12))
         let attributesJSON = jsonArray(selectedAttributes)
-        return runReadOnlyJavaScript(
+        return await runReadOnlyJavaScript(
             appBundleID: appBundleID,
             windowIndex: windowIndex,
             tabIndex: tabIndex,
@@ -154,7 +154,7 @@ enum ComputerUseBrowserAutomation {
         tabIndex: Int?,
         javascript: String,
         successPrefix: String
-    ) -> ComputerUseExecutionResult {
+    ) async -> ComputerUseExecutionResult {
         guard supportsBrowser(appBundleID) else {
             return .unsupported("Browser tools currently support Google Chrome only")
         }
@@ -165,7 +165,7 @@ enum ComputerUseBrowserAutomation {
         end tell
         """
         do {
-            let output = try runAppleScript(script)
+            let output = try await runAppleScript(script)
             return .executed("\(successPrefix): \(String(output.prefix(12000)))")
         } catch {
             return .failed(browserScriptError(error))
@@ -186,30 +186,38 @@ enum ComputerUseBrowserAutomation {
         appBundleID == "com.google.Chrome"
     }
 
-    private static func runAppleScript(_ script: String) throws -> String {
+    private static func runAppleScript(_ script: String) async throws -> String {
         if let runAppleScriptForTests {
             return try runAppleScriptForTests(script)
         }
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", script]
-        let output = Pipe()
-        let error = Pipe()
-        process.standardOutput = output
-        process.standardError = error
-        try process.run()
-        process.waitUntilExit()
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let process = Process()
+                    process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+                    process.arguments = ["-e", script]
+                    let output = Pipe()
+                    let error = Pipe()
+                    process.standardOutput = output
+                    process.standardError = error
+                    try process.run()
+                    process.waitUntilExit()
 
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        let errorData = error.fileHandleForReading.readDataToEndOfFile()
-        if process.terminationStatus != 0 {
-            let message = String(data: errorData, encoding: .utf8) ?? "Apple Events failed"
-            throw NSError(domain: "ComputerUseBrowserAutomation", code: Int(process.terminationStatus), userInfo: [
-                NSLocalizedDescriptionKey: message.trimmingCharacters(in: .whitespacesAndNewlines),
-            ])
+                    let data = output.fileHandleForReading.readDataToEndOfFile()
+                    let errorData = error.fileHandleForReading.readDataToEndOfFile()
+                    if process.terminationStatus != 0 {
+                        let message = String(data: errorData, encoding: .utf8) ?? "Apple Events failed"
+                        throw NSError(domain: "ComputerUseBrowserAutomation", code: Int(process.terminationStatus), userInfo: [
+                            NSLocalizedDescriptionKey: message.trimmingCharacters(in: .whitespacesAndNewlines),
+                        ])
+                    }
+                    continuation.resume(returning: (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
         }
-        return (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func browserScriptError(_ error: Error) -> String {
@@ -224,6 +232,9 @@ enum ComputerUseBrowserAutomation {
         value
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "\u{0}", with: "")
     }
 
     private static func jsonString(_ value: String) -> String {
