@@ -24,7 +24,7 @@ enum ComputerUsePlannerClient {
     private static let whamURL = URL(string: "https://chatgpt.com/backend-api/wham/responses")!
     private static let defaultModel = "gpt-5.4-mini"
 
-    private static var instructions: String {
+    static var instructions: String {
         """
     You are Muesli's computer-use planner. You do not execute actions. You choose exactly one tool call.
 
@@ -41,7 +41,9 @@ enum ComputerUsePlannerClient {
     - Prefer element-targeted click/set_value over coordinate clicks when a matching element exists.
     - For coordinate click/drag, use screenshot pixel coordinates from the current screenshot, not global screen coordinates.
     - Include screenshot_id from latest_window_state when using screenshot-coordinate tools.
-    - For YouTube, Hacker News, and browser tasks in Chrome, prefer list_browser_tabs, activate_browser_tab, navigate_url, page_get_text, and page_query_dom before AX clicking.
+    - For YouTube, Hacker News, and browser tasks in Chrome, prefer list_browser_tabs, activate_browser_tab, navigate_url, page_get_text, and page_query_dom before AX clicking when those tools are available.
+    - Browser page tools are optional shortcuts, not the only way to use a page. If page_get_text or page_query_dom fails, is blocked by Chrome Apple Events JavaScript permission, or returns insufficient content, continue with get_window_state plus AX/screenshot actions such as click, type_text, press_key/hotkey, and scroll.
+    - Do not use fail only because a browser DOM/page tool failed. Use fail only after trying the available AX/screenshot fallback path or when the requested task is unsafe or truly unsupported.
     - navigate_url may only use http or https URLs. Never output javascript:, file:, data:, shell text, or arbitrary code.
     - max_steps is a high safety ceiling, not a target. Use as few steps as needed.
     - Use finish only when the user's command is complete. Use fail(reason) when blocked, unsafe, unsupported, or incomplete.

@@ -19,6 +19,16 @@ struct ComputerUseToolRegistryTests {
         #expect(docs.contains("Tool: get_window_state"))
         #expect(docs.contains("Tool: page_query_dom"))
     }
+
+    @Test("planner guidance treats browser page tools as optional")
+    func plannerGuidanceTreatsBrowserPageToolsAsOptional() {
+        let instructions = ComputerUsePlannerClient.instructions
+
+        #expect(instructions.contains("Browser page tools are optional shortcuts"))
+        #expect(instructions.contains("Chrome Apple Events JavaScript permission"))
+        #expect(instructions.contains("AX/screenshot fallback"))
+        #expect(instructions.contains("Do not use fail only because a browser DOM/page tool failed"))
+    }
 }
 
 @Suite("Computer Use planner response")
