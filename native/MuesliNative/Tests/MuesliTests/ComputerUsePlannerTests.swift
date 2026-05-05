@@ -453,6 +453,47 @@ struct ComputerUsePlannerRuntimeTests {
         #expect(result.traceEvents.contains { $0.body.contains("screenshot s1") })
     }
 
+    @Test("browser page permission failures continue with screen fallback")
+    @MainActor
+    func browserPagePermissionFailuresContinueWithScreenFallback() async {
+        var observeCount = 0
+        let runtime = ComputerUsePlannerRuntime(
+            config: AppConfig(),
+            observe: { _, _, _ in
+                observeCount += 1
+                return Self.observation(
+                    appName: "Google Chrome",
+                    bundleID: "com.google.Chrome",
+                    windowTitle: "YouTube",
+                    screenshot: Self.screenshot()
+                )
+            },
+            plan: { request in
+                if request.step == 1 {
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(
+                        tool: .pageGetText,
+                        appBundleID: "com.google.Chrome"
+                    ))
+                }
+                #expect(request.priorOutcomes.last?.tool == .pageGetText)
+                #expect(request.priorOutcomes.last?.status == "failed")
+                #expect(request.priorOutcomes.last?.message.contains("Continue with get_window_state plus AX/screenshot tools") == true)
+                return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish, reason: "used screen fallback"))
+            },
+            execute: { toolCall, _ in
+                #expect(toolCall.tool == .pageGetText)
+                return .failed("Chrome Apple Events JavaScript permission is required for browser page tools")
+            }
+        )
+
+        let result = await runtime.run(command: "use YouTube")
+
+        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.done)
+        #expect(result.message == "used screen fallback")
+        #expect(observeCount == 2)
+        #expect(result.traceEvents.contains { $0.title == "Screen fallback" })
+    }
+
     static func observation(
         appName: String = "Test",
         bundleID: String = "com.example.Test",

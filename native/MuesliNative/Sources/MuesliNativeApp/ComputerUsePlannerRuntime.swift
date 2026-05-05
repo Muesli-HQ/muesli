@@ -178,11 +178,12 @@ final class ComputerUsePlannerRuntime {
             case .getWindowState:
                 onStatus("Observing")
                 let result = await execute(toolCall, registry)
+                let outcomeMessage = recoverableFallbackMessage(for: toolCall, result: result) ?? result.message
                 priorResults.append(ComputerUseToolOutcome(
                     step: step,
                     tool: toolCall.tool,
                     status: "\(result.status)",
-                    message: result.message,
+                    message: outcomeMessage,
                     appName: observation.appName,
                     bundleID: observation.bundleID,
                     windowTitle: observation.windowTitle,
@@ -206,11 +207,12 @@ final class ComputerUsePlannerRuntime {
                     step: step
                 ))
                 let result = await execute(toolCall, registry)
+                let outcomeMessage = recoverableFallbackMessage(for: toolCall, result: result) ?? result.message
                 priorResults.append(ComputerUseToolOutcome(
                     step: step,
                     tool: toolCall.tool,
                     status: "\(result.status)",
-                    message: result.message,
+                    message: outcomeMessage,
                     appName: observation.appName,
                     bundleID: observation.bundleID,
                     windowTitle: observation.windowTitle,
@@ -235,6 +237,19 @@ final class ComputerUsePlannerRuntime {
                     traceEvents.append(traceEvent(kind: "confirm", title: "Confirmation required", body: result.message, status: "confirm", step: step))
                     return .init(status: .needsConfirmation, message: result.message, traceEvents: traceEvents)
                 case .unsupported, .failed:
+                    if let fallbackMessage = recoverableFallbackMessage(for: toolCall, result: result) {
+                        traceEvents.append(traceEvent(
+                            kind: "fallback",
+                            title: "Screen fallback",
+                            body: fallbackMessage,
+                            status: "fallback",
+                            step: step
+                        ))
+                        onStatus("Observing")
+                        observation = observe(registry, true, currentTarget)
+                        traceEvents.append(observationEvent(observation, step: step))
+                        continue
+                    }
                     traceEvents.append(traceEvent(kind: "failed", title: "Failed", body: result.message, status: "failed", step: step))
                     return .init(status: .failed, message: result.message, traceEvents: traceEvents)
                 }
@@ -365,6 +380,35 @@ final class ComputerUsePlannerRuntime {
         case .fail:
             return "Failed"
         }
+    }
+
+    private func recoverableFallbackMessage(
+        for toolCall: ComputerUseToolCall,
+        result: ComputerUseExecutionResult
+    ) -> String? {
+        guard result.status == .failed || result.status == .unsupported else { return nil }
+        guard browserToolCanFallBackToScreen(toolCall.tool) else { return nil }
+        let message = result.message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isBrowserAutomationPermissionFailure(message) else { return nil }
+        return "\(message). Continue with get_window_state plus AX/screenshot tools: click, type_text, press_key/hotkey, and scroll. Do not retry browser page tools unless the user grants Chrome Apple Events JavaScript permission."
+    }
+
+    private func browserToolCanFallBackToScreen(_ tool: ComputerUseToolName) -> Bool {
+        switch tool {
+        case .listBrowserTabs, .activateBrowserTab, .navigateURL, .pageGetText, .pageQueryDOM:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func isBrowserAutomationPermissionFailure(_ message: String) -> Bool {
+        let lowered = message.lowercased()
+        return lowered.contains("apple events")
+            || lowered.contains("javascript permission")
+            || lowered.contains("not allowed")
+            || lowered.contains("not authorized")
+            || lowered.contains("automation")
     }
 
     private func executionTraceBody(toolCall: ComputerUseToolCall, observation: ComputerUseObservation) -> String {
