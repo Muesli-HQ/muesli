@@ -39,8 +39,8 @@ final class ComputerUsePlannerRuntime {
 
     init(
         config: AppConfig,
-        maxSteps: Int = 8,
-        timeoutSeconds: TimeInterval = 20,
+        maxSteps: Int = 16,
+        timeoutSeconds: TimeInterval = 45,
         onStatus: @escaping StatusHandler = { _ in },
         observe: @escaping ObserveHandler = { registry, includeScreenshot in
             ComputerUseObservationCapture.capture(registry: registry, includeScreenshot: includeScreenshot)

@@ -115,6 +115,25 @@ struct ComputerUsePlannerRuntimeTests {
         #expect(result.traceEvents.contains { $0.kind == "finish" })
     }
 
+    @Test("default runtime budget supports longer multi-step actions")
+    @MainActor
+    func defaultRuntimeBudgetSupportsLongerActions() async {
+        let runtime = ComputerUsePlannerRuntime(
+            config: AppConfig(),
+            observe: { _, _ in Self.observation() },
+            plan: { request in
+                #expect(request.maxSteps == 16)
+                return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish, reason: "done"))
+            },
+            execute: { _, _ in .executed("unexpected") }
+        )
+
+        let result = await runtime.run(command: "do a longer workflow")
+
+        #expect(result.status == .done)
+        #expect(result.traceEvents.contains { $0.body.contains("Step 1 of 16") })
+    }
+
     @Test("stops at max step count")
     @MainActor
     func stopsAtMaxStepCount() async {
