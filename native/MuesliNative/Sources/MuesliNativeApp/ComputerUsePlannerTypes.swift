@@ -2,9 +2,14 @@ import Foundation
 
 enum ComputerUseToolName: String, Codable, Equatable, CaseIterable {
     case observe
+    case observeScreen = "observe_screen"
     case openApp = "open_app"
     case focusApp = "focus_app"
     case clickElement = "click_element"
+    case clickPoint = "click_point"
+    case moveCursor = "move_cursor"
+    case drag
+    case getCursorPosition = "get_cursor_position"
     case pressKey = "press_key"
     case typeText = "type_text"
     case pasteText = "paste_text"
@@ -16,7 +21,14 @@ struct ComputerUseToolCall: Codable, Equatable {
     let tool: ComputerUseToolName
     let appName: String?
     let elementID: String?
+    let screenshotID: String?
     let label: String?
+    let x: Double?
+    let y: Double?
+    let toX: Double?
+    let toY: Double?
+    let clicks: Int?
+    let button: String?
     let key: String?
     let modifiers: [ComputerUseKeyModifier]?
     let text: String?
@@ -28,7 +40,14 @@ struct ComputerUseToolCall: Codable, Equatable {
         case tool
         case appName = "app_name"
         case elementID = "element_id"
+        case screenshotID = "screenshot_id"
         case label
+        case x
+        case y
+        case toX = "to_x"
+        case toY = "to_y"
+        case clicks
+        case button
         case key
         case modifiers
         case text
@@ -41,7 +60,14 @@ struct ComputerUseToolCall: Codable, Equatable {
         tool: ComputerUseToolName,
         appName: String? = nil,
         elementID: String? = nil,
+        screenshotID: String? = nil,
         label: String? = nil,
+        x: Double? = nil,
+        y: Double? = nil,
+        toX: Double? = nil,
+        toY: Double? = nil,
+        clicks: Int? = nil,
+        button: String? = nil,
         key: String? = nil,
         modifiers: [ComputerUseKeyModifier]? = nil,
         text: String? = nil,
@@ -52,7 +78,14 @@ struct ComputerUseToolCall: Codable, Equatable {
         self.tool = tool
         self.appName = appName
         self.elementID = elementID
+        self.screenshotID = screenshotID
         self.label = label
+        self.x = x
+        self.y = y
+        self.toX = toX
+        self.toY = toY
+        self.clicks = clicks
+        self.button = button
         self.key = key
         self.modifiers = modifiers
         self.text = text
@@ -63,12 +96,16 @@ struct ComputerUseToolCall: Codable, Equatable {
 
     func validationFailure() -> String? {
         switch tool {
-        case .observe, .finish:
+        case .observe, .observeScreen, .getCursorPosition, .finish:
             return nil
         case .openApp, .focusApp:
             return trimmed(appName).isEmpty ? "\(tool.rawValue) requires app_name" : nil
         case .clickElement:
             return trimmed(elementID).isEmpty ? "click_element requires element_id" : nil
+        case .clickPoint, .moveCursor:
+            return x == nil || y == nil ? "\(tool.rawValue) requires x and y" : nil
+        case .drag:
+            return x == nil || y == nil || toX == nil || toY == nil ? "drag requires x, y, to_x, and to_y" : nil
         case .pressKey:
             return trimmed(key).isEmpty ? "press_key requires key" : nil
         case .typeText, .pasteText:
@@ -82,6 +119,8 @@ struct ComputerUseToolCall: Codable, Equatable {
         switch tool {
         case .clickElement:
             return containsRiskyWord(label ?? "")
+        case .clickPoint, .drag:
+            return containsRiskyWord([label, reason].compactMap { $0 }.joined(separator: " "))
         case .pressKey:
             let mods = modifiers ?? []
             return mods.contains(.command) && ["q", "w"].contains(canonical(key ?? ""))
@@ -94,6 +133,8 @@ struct ComputerUseToolCall: Codable, Equatable {
         switch tool {
         case .observe:
             return "observe"
+        case .observeScreen:
+            return "observe screen"
         case .openApp:
             return "open \(trimmed(appName))"
         case .focusApp:
@@ -101,6 +142,15 @@ struct ComputerUseToolCall: Codable, Equatable {
         case .clickElement:
             let visibleLabel = trimmed(label).isEmpty ? trimmed(elementID) : trimmed(label)
             return "click \(visibleLabel)"
+        case .clickPoint:
+            let visibleLabel = trimmed(label).isEmpty ? "point" : trimmed(label)
+            return "click \(visibleLabel) at \(coordinateSummary(x, y))"
+        case .moveCursor:
+            return "move cursor to \(coordinateSummary(x, y))"
+        case .drag:
+            return "drag \(coordinateSummary(x, y)) to \(coordinateSummary(toX, toY))"
+        case .getCursorPosition:
+            return "get cursor position"
         case .pressKey:
             let parts = (modifiers ?? []).map(\.rawValue) + [trimmed(key)]
             return "press \(parts.filter { !$0.isEmpty }.joined(separator: "+"))"
@@ -121,6 +171,11 @@ struct ComputerUseToolCall: Codable, Equatable {
 
     private func truncateForSummary(_ value: String) -> String {
         value.count > 32 ? String(value.prefix(29)) + "..." : value
+    }
+
+    private func coordinateSummary(_ x: Double?, _ y: Double?) -> String {
+        guard let x, let y else { return "unknown" }
+        return "\(Int(x.rounded())),\(Int(y.rounded()))"
     }
 
     private func containsRiskyWord(_ text: String) -> Bool {

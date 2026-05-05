@@ -29,9 +29,13 @@ enum ComputerUsePlannerClient {
 
     Return exactly one JSON object and no markdown. Use one of these tools:
     {"tool":"observe"}
+    {"tool":"observe_screen"}
     {"tool":"open_app","app_name":"<requested app name>"}
     {"tool":"focus_app","app_name":"<requested app name>"}
     {"tool":"click_element","element_id":"e12","label":"Search"}
+    {"tool":"click_point","screenshot_id":"s123","x":120,"y":240,"label":"Search"}
+    {"tool":"move_cursor","screenshot_id":"s123","x":120,"y":240}
+    {"tool":"drag","screenshot_id":"s123","x":120,"y":240,"to_x":360,"to_y":240,"label":"slider"}
     {"tool":"press_key","modifiers":["command"],"key":"l"}
     {"tool":"type_text","text":"hello"}
     {"tool":"paste_text","text":"hello"}
@@ -44,6 +48,10 @@ enum ComputerUsePlannerClient {
     - For open_app/focus_app, app_name must be the app requested by the user command.
     - Do not substitute another app because it is frontmost, visible, or present in examples.
     - Prefer open_app/focus_app for app navigation.
+    - Prefer click_element over click_point when a matching element_id is available.
+    - Use observe_screen when AX candidates are insufficient and visual coordinates are needed.
+    - For click_point/move_cursor/drag, use screenshot pixel coordinates from the current screenshot, not global screen coordinates.
+    - Include screenshot_id from the current observation when using screenshot-coordinate tools.
     - Use observe if the current observation is insufficient.
     - Use finish when the user's command is complete or no further safe action is needed.
     - Risky actions are locally blocked by Muesli; do not try to bypass confirmation.
@@ -57,6 +65,7 @@ enum ComputerUsePlannerClient {
             let text = try await callWHAM(
                 systemPrompt: instructions,
                 userPrompt: requestPrompt(for: request),
+                imageDataURL: request.observation.screenshot?.imageDataURL,
                 model: config.chatGPTModel.isEmpty ? defaultModel : config.chatGPTModel
             )
             do {
@@ -80,8 +89,19 @@ enum ComputerUsePlannerClient {
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 
-    private static func callWHAM(systemPrompt: String, userPrompt: String, model: String) async throws -> String {
+    private static func callWHAM(
+        systemPrompt: String,
+        userPrompt: String,
+        imageDataURL: String?,
+        model: String
+    ) async throws -> String {
         let (token, accountId) = try await ChatGPTAuthManager.shared.validAccessToken()
+        var content: [[String: Any]] = [
+            ["type": "input_text", "text": userPrompt],
+        ]
+        if let imageDataURL {
+            content.append(["type": "input_image", "image_url": imageDataURL])
+        }
         let body: [String: Any] = [
             "model": model,
             "store": false,
@@ -90,9 +110,7 @@ enum ComputerUsePlannerClient {
             "input": [
                 [
                     "role": "user",
-                    "content": [
-                        ["type": "input_text", "text": userPrompt],
-                    ],
+                    "content": content,
                 ] as [String: Any],
             ],
         ]

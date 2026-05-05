@@ -23,6 +23,18 @@ struct ComputerUsePlannerResponseTests {
         #expect(response.toolCall.key == "l")
     }
 
+    @Test("decodes coordinate tool calls")
+    func decodesCoordinateToolCalls() throws {
+        let response = try ComputerUsePlannerResponse.decodeJSON(
+            from: #"{"tool":"click_point","screenshot_id":"s1","x":120,"y":240,"label":"Search"}"#
+        )
+
+        #expect(response.toolCall.tool == .clickPoint)
+        #expect(response.toolCall.screenshotID == "s1")
+        #expect(response.toolCall.x == 120)
+        #expect(response.toolCall.y == 240)
+    }
+
     @Test("malformed JSON fails safely")
     func malformedJSONFailsSafely() {
         #expect(throws: Error.self) {
@@ -90,7 +102,7 @@ struct ComputerUsePlannerRuntimeTests {
     func finishesAfterFinishTool() async {
         let runtime = ComputerUsePlannerRuntime(
             config: AppConfig(),
-            observe: { _ in Self.observation() },
+            observe: { _, _ in Self.observation() },
             plan: { _ in ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish, reason: "done")) },
             execute: { _, _ in .executed("unexpected") }
         )
@@ -109,7 +121,7 @@ struct ComputerUsePlannerRuntimeTests {
         let runtime = ComputerUsePlannerRuntime(
             config: AppConfig(),
             maxSteps: 2,
-            observe: { _ in Self.observation() },
+            observe: { _, _ in Self.observation() },
             plan: { _ in ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .observe)) },
             execute: { _, _ in .executed("unexpected") }
         )
@@ -125,7 +137,7 @@ struct ComputerUsePlannerRuntimeTests {
     func stopsOnConfirmationRequiredAction() async {
         let runtime = ComputerUsePlannerRuntime(
             config: AppConfig(),
-            observe: { _ in Self.observation() },
+            observe: { _, _ in Self.observation() },
             plan: { _ in
                 ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(
                     tool: .clickElement,
@@ -147,7 +159,7 @@ struct ComputerUsePlannerRuntimeTests {
     func fallsBackToParserWhenPlannerUnavailable() async {
         let runtime = ComputerUsePlannerRuntime(
             config: AppConfig(),
-            observe: { _ in Self.observation() },
+            observe: { _, _ in Self.observation() },
             plan: { _ in throw ComputerUsePlannerError.notAuthenticated },
             execute: { _, _ in .failed("unexpected") },
             executeParsed: { _ in .executed("Opened google chrome") }
@@ -167,7 +179,7 @@ struct ComputerUsePlannerRuntimeTests {
         var parsedIntent: ParsedComputerUseIntent?
         let runtime = ComputerUsePlannerRuntime(
             config: AppConfig(),
-            observe: { _ in Self.observation() },
+            observe: { _, _ in Self.observation() },
             plan: { _ in
                 ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .openApp, appName: "Google Chrome"))
             },
@@ -191,7 +203,7 @@ struct ComputerUsePlannerRuntimeTests {
     func rejectsNonSchemaPlannerOutput() async {
         let runtime = ComputerUsePlannerRuntime(
             config: AppConfig(),
-            observe: { _ in Self.observation() },
+            observe: { _, _ in Self.observation() },
             plan: { _ in
                 _ = try ComputerUsePlannerResponse.decodeJSON(from: #"{"tool":"open_app","text":"Google Chrome"}"#)
                 return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish))
@@ -204,12 +216,56 @@ struct ComputerUsePlannerRuntimeTests {
         #expect(result.status == .failed)
     }
 
-    private static func observation() -> ComputerUseObservation {
+    @Test("observes screen before coordinate action")
+    @MainActor
+    func observesScreenBeforeCoordinateAction() async {
+        var planCount = 0
+        var includeScreenshotValues: [Bool] = []
+        var executedTool: ComputerUseToolName?
+        let runtime = ComputerUsePlannerRuntime(
+            config: AppConfig(),
+            observe: { _, includeScreenshot in
+                includeScreenshotValues.append(includeScreenshot)
+                return Self.observation(screenshot: includeScreenshot ? Self.screenshot() : nil)
+            },
+            plan: { request in
+                planCount += 1
+                if request.observation.screenshot == nil {
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .observeScreen))
+                }
+                if planCount == 2 {
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(
+                        tool: .clickPoint,
+                        screenshotID: "s1",
+                        label: "Search",
+                        x: 40,
+                        y: 50
+                    ))
+                }
+                return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish, reason: "done"))
+            },
+            execute: { toolCall, _ in
+                executedTool = toolCall.tool
+                return .executed("Clicked point")
+            }
+        )
+
+        let result = await runtime.run(command: "click the search field")
+
+        #expect(result.status == .done)
+        #expect(includeScreenshotValues == [false, true, true])
+        #expect(executedTool == .clickPoint)
+        #expect(result.traceEvents.contains { $0.body.contains("screenshot s1") })
+    }
+
+    private static func observation(screenshot: ComputerUseScreenshotObservation? = nil) -> ComputerUseObservation {
         ComputerUseObservation(
             appName: "Test",
             bundleID: "com.example.Test",
             windowTitle: "Window",
             windowFrame: nil,
+            screenshot: screenshot,
+            cursorPosition: ComputerUseRect(x: 10, y: 20, width: 1, height: 1),
             elements: [
                 ComputerUseObservationCapture.candidateForTests(
                     elementID: "e1",
@@ -218,6 +274,18 @@ struct ComputerUsePlannerRuntimeTests {
                 ),
             ],
             capturedAt: Date(timeIntervalSince1970: 0)
+        )
+    }
+
+    private static func screenshot() -> ComputerUseScreenshotObservation {
+        ComputerUseScreenshotObservation(
+            screenshotID: "s1",
+            width: 100,
+            height: 80,
+            windowFrame: ComputerUseRect(x: 0, y: 0, width: 100, height: 80),
+            scaleX: 1,
+            scaleY: 1,
+            imageDataURL: "data:image/jpeg;base64,"
         )
     }
 }

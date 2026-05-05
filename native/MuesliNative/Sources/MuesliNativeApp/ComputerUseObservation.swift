@@ -58,11 +58,57 @@ struct ComputerUseElementCandidate: Codable, Equatable {
     }
 }
 
+struct ComputerUseScreenshotObservation: Equatable {
+    let screenshotID: String
+    let width: Int
+    let height: Int
+    let windowFrame: ComputerUseRect
+    let scaleX: Double
+    let scaleY: Double
+    let imageDataURL: String?
+
+    enum CodingKeys: String, CodingKey {
+        case screenshotID = "screenshot_id"
+        case width
+        case height
+        case windowFrame = "window_frame"
+        case scaleX = "scale_x"
+        case scaleY = "scale_y"
+    }
+}
+
+extension ComputerUseScreenshotObservation: Codable {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            screenshotID: try container.decode(String.self, forKey: .screenshotID),
+            width: try container.decode(Int.self, forKey: .width),
+            height: try container.decode(Int.self, forKey: .height),
+            windowFrame: try container.decode(ComputerUseRect.self, forKey: .windowFrame),
+            scaleX: try container.decode(Double.self, forKey: .scaleX),
+            scaleY: try container.decode(Double.self, forKey: .scaleY),
+            imageDataURL: nil
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(screenshotID, forKey: .screenshotID)
+        try container.encode(width, forKey: .width)
+        try container.encode(height, forKey: .height)
+        try container.encode(windowFrame, forKey: .windowFrame)
+        try container.encode(scaleX, forKey: .scaleX)
+        try container.encode(scaleY, forKey: .scaleY)
+    }
+}
+
 struct ComputerUseObservation: Codable, Equatable {
     let appName: String
     let bundleID: String
     let windowTitle: String
     let windowFrame: ComputerUseRect?
+    let screenshot: ComputerUseScreenshotObservation?
+    let cursorPosition: ComputerUseRect?
     let elements: [ComputerUseElementCandidate]
     let capturedAt: Date
 
@@ -71,6 +117,8 @@ struct ComputerUseObservation: Codable, Equatable {
         case bundleID = "bundle_id"
         case windowTitle = "window_title"
         case windowFrame = "window_frame"
+        case screenshot
+        case cursorPosition = "cursor_position"
         case elements
         case capturedAt = "captured_at"
     }
@@ -79,9 +127,11 @@ struct ComputerUseObservation: Codable, Equatable {
 @MainActor
 final class ComputerUseElementRegistry {
     private var elements: [String: AXUIElement] = [:]
+    private var screenshot: ComputerUseScreenshotObservation?
 
     func clear() {
         elements.removeAll()
+        screenshot = nil
     }
 
     func register(_ element: AXUIElement, id: String) {
@@ -90,6 +140,14 @@ final class ComputerUseElementRegistry {
 
     func element(for id: String) -> AXUIElement? {
         elements[id]
+    }
+
+    func registerScreenshot(_ screenshot: ComputerUseScreenshotObservation?) {
+        self.screenshot = screenshot
+    }
+
+    func currentScreenshot() -> ComputerUseScreenshotObservation? {
+        screenshot
     }
 
     var registeredIDsForTests: Set<String> {
@@ -101,6 +159,7 @@ final class ComputerUseElementRegistry {
 enum ComputerUseObservationCapture {
     static func capture(
         registry: ComputerUseElementRegistry,
+        includeScreenshot: Bool = false,
         maxCandidates: Int = 80,
         maxDepth: Int = 8
     ) -> ComputerUseObservation {
@@ -116,6 +175,8 @@ enum ComputerUseObservationCapture {
                 bundleID: bundleID,
                 windowTitle: "",
                 windowFrame: nil,
+                screenshot: nil,
+                cursorPosition: cursorPositionObservation(),
                 elements: [],
                 capturedAt: capturedAt
             )
@@ -126,6 +187,8 @@ enum ComputerUseObservationCapture {
         let root = window ?? axApp
         let windowTitle = window.map { axString($0, kAXTitleAttribute) } ?? ""
         let windowFrame = window.flatMap(rect)
+        let screenshot = includeScreenshot ? captureScreenshot(for: app, fallbackFrame: windowFrame) : nil
+        registry.registerScreenshot(screenshot)
 
         var candidates: [ComputerUseElementCandidate] = []
         var visited = Set<AXUIElement>()
@@ -145,6 +208,8 @@ enum ComputerUseObservationCapture {
             bundleID: bundleID,
             windowTitle: windowTitle,
             windowFrame: windowFrame.map(ComputerUseRect.init),
+            screenshot: screenshot,
+            cursorPosition: cursorPositionObservation(),
             elements: candidates,
             capturedAt: capturedAt
         )
@@ -284,6 +349,66 @@ enum ComputerUseObservationCapture {
               AXValueGetValue(sizeValue as! AXValue, .cgSize, &size)
         else { return nil }
         return CGRect(origin: position, size: size)
+    }
+
+    private static func cursorPositionObservation() -> ComputerUseRect {
+        let point = CGEvent(source: nil)?.location ?? NSEvent.mouseLocation
+        return ComputerUseRect(x: point.x, y: point.y, width: 1, height: 1)
+    }
+
+    private static func captureScreenshot(
+        for app: NSRunningApplication,
+        fallbackFrame: CGRect?
+    ) -> ComputerUseScreenshotObservation? {
+        guard CGPreflightScreenCaptureAccess() else { return nil }
+        let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[CFString: Any]] ?? []
+        guard let appWindow = windowList.first(where: { dict in
+            guard let ownerPID = dict[kCGWindowOwnerPID] as? Int32, ownerPID == app.processIdentifier else { return false }
+            guard let layer = dict[kCGWindowLayer] as? Int, layer == 0 else { return false }
+            return true
+        }),
+              let windowID = appWindow[kCGWindowNumber] as? CGWindowID
+        else { return nil }
+
+        let frame = cgWindowBounds(appWindow) ?? fallbackFrame
+        guard let frame, frame.width > 0, frame.height > 0 else { return nil }
+        guard let image = CGWindowListCreateImage(
+            .null,
+            .optionIncludingWindow,
+            windowID,
+            [.bestResolution, .boundsIgnoreFraming]
+        ) else { return nil }
+
+        let width = image.width
+        let height = image.height
+        let scaleX = Double(width) / max(Double(frame.width), 1)
+        let scaleY = Double(height) / max(Double(frame.height), 1)
+        return ComputerUseScreenshotObservation(
+            screenshotID: "s\(Int(Date().timeIntervalSince1970 * 1000))",
+            width: width,
+            height: height,
+            windowFrame: ComputerUseRect(frame),
+            scaleX: scaleX,
+            scaleY: scaleY,
+            imageDataURL: imageDataURL(image)
+        )
+    }
+
+    private static func cgWindowBounds(_ windowInfo: [CFString: Any]) -> CGRect? {
+        guard let bounds = windowInfo[kCGWindowBounds] as? [String: Any] else { return nil }
+        let x = bounds["X"] as? CGFloat ?? 0
+        let y = bounds["Y"] as? CGFloat ?? 0
+        let width = bounds["Width"] as? CGFloat ?? 0
+        let height = bounds["Height"] as? CGFloat ?? 0
+        return CGRect(x: x, y: y, width: width, height: height)
+    }
+
+    private static func imageDataURL(_ image: CGImage) -> String? {
+        let bitmap = NSBitmapImageRep(cgImage: image)
+        guard let data = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.62]) else {
+            return nil
+        }
+        return "data:image/jpeg;base64,\(data.base64EncodedString())"
     }
 
     private static func truncate(_ value: String, limit: Int) -> String {

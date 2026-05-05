@@ -110,6 +110,8 @@ enum ComputerUseToolExecutor {
         switch toolCall.tool {
         case .observe:
             return .executed("Observed")
+        case .observeScreen:
+            return .executed("Observed screen")
         case .openApp:
             return await openApp(named: toolCall.appName ?? "")
         case .focusApp:
@@ -121,6 +123,15 @@ enum ComputerUseToolExecutor {
                 return .needsConfirmation("Confirm: unknown click target")
             }
             return clickElement(element, fallbackLabel: toolCall.label ?? elementID)
+        case .clickPoint:
+            return clickPoint(toolCall, registry: registry)
+        case .moveCursor:
+            return moveCursor(toolCall, registry: registry)
+        case .drag:
+            return drag(toolCall, registry: registry)
+        case .getCursorPosition:
+            let point = currentCursorPosition()
+            return .executed("Cursor at \(Int(point.x.rounded())),\(Int(point.y.rounded()))")
         case .pressKey:
             return pressKey(ComputerUseKeyCommand(
                 modifiers: toolCall.modifiers ?? [],
@@ -257,6 +268,108 @@ enum ComputerUseToolExecutor {
             return .executed("Clicked \(fallbackLabel)")
         }
         return .failed("Could not click \(fallbackLabel)")
+    }
+
+    private static func clickPoint(
+        _ toolCall: ComputerUseToolCall,
+        registry: ComputerUseElementRegistry?
+    ) -> ComputerUseExecutionResult {
+        guard let point = screenPoint(for: toolCall, registry: registry) else {
+            return .failed("No current screenshot for point click")
+        }
+        guard let source = CGEventSource(stateID: .combinedSessionState) else {
+            return .failed("Could not create mouse event")
+        }
+
+        ComputerUseCursorOverlay.shared.show(at: point, label: toolCall.label)
+        let button = mouseButton(from: toolCall.button)
+        let downType: CGEventType = button == .right ? .rightMouseDown : .leftMouseDown
+        let upType: CGEventType = button == .right ? .rightMouseUp : .leftMouseUp
+        let clickCount = max(1, min(toolCall.clicks ?? 1, 2))
+        for clickIndex in 1...clickCount {
+            guard let mouseDown = CGEvent(
+                mouseEventSource: source,
+                mouseType: downType,
+                mouseCursorPosition: point,
+                mouseButton: button
+            ),
+            let mouseUp = CGEvent(
+                mouseEventSource: source,
+                mouseType: upType,
+                mouseCursorPosition: point,
+                mouseButton: button
+            ) else {
+                return .failed("Could not create mouse event")
+            }
+            mouseDown.setIntegerValueField(.mouseEventClickState, value: Int64(clickIndex))
+            mouseUp.setIntegerValueField(.mouseEventClickState, value: Int64(clickIndex))
+            mouseDown.post(tap: .cghidEventTap)
+            mouseUp.post(tap: .cghidEventTap)
+        }
+        let label = toolCall.label?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return .executed("Clicked \(label?.isEmpty == false ? label! : "point")")
+    }
+
+    private static func moveCursor(
+        _ toolCall: ComputerUseToolCall,
+        registry: ComputerUseElementRegistry?
+    ) -> ComputerUseExecutionResult {
+        guard let point = screenPoint(for: toolCall, registry: registry) else {
+            return .failed("No current screenshot for cursor move")
+        }
+        ComputerUseCursorOverlay.shared.show(at: point, label: toolCall.label)
+        return .executed("Moved cursor to \(Int(point.x.rounded())),\(Int(point.y.rounded()))")
+    }
+
+    private static func drag(
+        _ toolCall: ComputerUseToolCall,
+        registry: ComputerUseElementRegistry?
+    ) -> ComputerUseExecutionResult {
+        guard let start = screenPoint(for: toolCall, registry: registry),
+              let end = screenPoint(
+                x: toolCall.toX,
+                y: toolCall.toY,
+                screenshotID: toolCall.screenshotID,
+                registry: registry
+              )
+        else {
+            return .failed("No current screenshot for drag")
+        }
+        guard let source = CGEventSource(stateID: .combinedSessionState),
+              let mouseDown = CGEvent(
+                mouseEventSource: source,
+                mouseType: .leftMouseDown,
+                mouseCursorPosition: start,
+                mouseButton: .left
+              ),
+              let mouseUp = CGEvent(
+                mouseEventSource: source,
+                mouseType: .leftMouseUp,
+                mouseCursorPosition: end,
+                mouseButton: .left
+              )
+        else {
+            return .failed("Could not create drag event")
+        }
+
+        ComputerUseCursorOverlay.shared.show(at: start, label: toolCall.label)
+        mouseDown.post(tap: .cghidEventTap)
+        for step in 1...12 {
+            let progress = CGFloat(step) / 12
+            let point = CGPoint(
+                x: start.x + ((end.x - start.x) * progress),
+                y: start.y + ((end.y - start.y) * progress)
+            )
+            CGEvent(
+                mouseEventSource: source,
+                mouseType: .leftMouseDragged,
+                mouseCursorPosition: point,
+                mouseButton: .left
+            )?.post(tap: .cghidEventTap)
+        }
+        mouseUp.post(tap: .cghidEventTap)
+        ComputerUseCursorOverlay.shared.show(at: end, label: toolCall.label)
+        return .executed("Dragged pointer")
     }
 
     private static func applicationURL(for appName: String) -> URL? {
@@ -434,6 +547,44 @@ enum ComputerUseToolExecutor {
               AXValueGetValue(sizeValue as! AXValue, .cgSize, &size)
         else { return nil }
         return CGRect(origin: position, size: size)
+    }
+
+    private static func screenPoint(
+        for toolCall: ComputerUseToolCall,
+        registry: ComputerUseElementRegistry?
+    ) -> CGPoint? {
+        screenPoint(
+            x: toolCall.x,
+            y: toolCall.y,
+            screenshotID: toolCall.screenshotID,
+            registry: registry
+        )
+    }
+
+    private static func screenPoint(
+        x: Double?,
+        y: Double?,
+        screenshotID: String?,
+        registry: ComputerUseElementRegistry?
+    ) -> CGPoint? {
+        guard let x, let y, let screenshot = registry?.currentScreenshot() else { return nil }
+        if let screenshotID, screenshotID != screenshot.screenshotID {
+            return nil
+        }
+        let window = screenshot.windowFrame
+        return CGPoint(
+            x: window.x + (x / max(screenshot.scaleX, 0.0001)),
+            y: window.y + (y / max(screenshot.scaleY, 0.0001))
+        )
+    }
+
+    private static func mouseButton(from rawValue: String?) -> CGMouseButton {
+        let value = canonicalLabel(rawValue ?? "")
+        return value == "right" || value == "secondary" ? .right : .left
+    }
+
+    private static func currentCursorPosition() -> CGPoint {
+        CGEvent(source: nil)?.location ?? NSEvent.mouseLocation
     }
 
     private static func cleanedName(_ value: String) -> String {

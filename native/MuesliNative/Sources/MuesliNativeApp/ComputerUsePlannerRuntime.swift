@@ -22,7 +22,7 @@ struct ComputerUsePlannerRuntimeResult: Equatable {
 @MainActor
 final class ComputerUsePlannerRuntime {
     typealias StatusHandler = @MainActor (String) -> Void
-    typealias ObserveHandler = @MainActor (ComputerUseElementRegistry) -> ComputerUseObservation
+    typealias ObserveHandler = @MainActor (ComputerUseElementRegistry, Bool) -> ComputerUseObservation
     typealias PlanHandler = (ComputerUsePlannerRequest) async throws -> ComputerUsePlannerResponse
     typealias ExecuteHandler = @MainActor (ComputerUseToolCall, ComputerUseElementRegistry) async -> ComputerUseExecutionResult
     typealias ParsedExecuteHandler = @MainActor (ParsedComputerUseIntent) async -> ComputerUseExecutionResult
@@ -42,8 +42,8 @@ final class ComputerUsePlannerRuntime {
         maxSteps: Int = 8,
         timeoutSeconds: TimeInterval = 20,
         onStatus: @escaping StatusHandler = { _ in },
-        observe: @escaping ObserveHandler = { registry in
-            ComputerUseObservationCapture.capture(registry: registry)
+        observe: @escaping ObserveHandler = { registry, includeScreenshot in
+            ComputerUseObservationCapture.capture(registry: registry, includeScreenshot: includeScreenshot)
         },
         plan: PlanHandler? = nil,
         execute: @escaping ExecuteHandler = { toolCall, registry in
@@ -84,7 +84,7 @@ final class ComputerUsePlannerRuntime {
         var priorResults: [ComputerUseToolResult] = []
 
         onStatus("Observing")
-        var observation = observe(registry)
+        var observation = observe(registry, false)
         traceEvents.append(observationEvent(observation, step: nil))
 
         for step in 1...maxSteps {
@@ -156,18 +156,20 @@ final class ComputerUsePlannerRuntime {
                 let message = toolCall.reason?.isEmpty == false ? toolCall.reason! : "Done"
                 traceEvents.append(traceEvent(kind: "finish", title: "Final output", body: message, status: "done", step: step))
                 return .init(status: .done, message: message, traceEvents: traceEvents)
-            case .observe:
+            case .observe, .observeScreen:
+                let includeScreenshot = toolCall.tool == .observeScreen || observation.screenshot != nil
                 priorResults.append(ComputerUseToolResult(
                     step: step,
-                    tool: .observe,
+                    tool: toolCall.tool,
                     status: "executed",
-                    message: "Observed"
+                    message: includeScreenshot ? "Observed screen" : "Observed"
                 ))
                 onStatus("Observing")
-                observation = observe(registry)
+                observation = observe(registry, includeScreenshot)
                 traceEvents.append(observationEvent(observation, step: step))
                 continue
             default:
+                let shouldRefreshScreenshot = observation.screenshot != nil
                 onStatus("Executing")
                 traceEvents.append(traceEvent(
                     kind: "tool_call",
@@ -194,7 +196,7 @@ final class ComputerUsePlannerRuntime {
                 switch result.status {
                 case .executed:
                     onStatus("Observing")
-                    observation = observe(registry)
+                    observation = observe(registry, shouldRefreshScreenshot)
                     traceEvents.append(observationEvent(observation, step: step))
                 case .needsConfirmation:
                     traceEvents.append(traceEvent(kind: "confirm", title: "Confirmation required", body: result.message, status: "confirm", step: step))
@@ -263,10 +265,17 @@ final class ComputerUsePlannerRuntime {
     private func observationEvent(_ observation: ComputerUseObservation, step: Int?) -> ComputerUseTraceEvent {
         let app = observation.appName.isEmpty ? "Unknown app" : observation.appName
         let window = observation.windowTitle.isEmpty ? "No focused window" : observation.windowTitle
+        var details = ["\(app) - \(window) - \(observation.elements.count) AX candidates"]
+        if let screenshot = observation.screenshot {
+            details.append("screenshot \(screenshot.screenshotID) \(screenshot.width)x\(screenshot.height)")
+        }
+        if let cursor = observation.cursorPosition {
+            details.append("cursor \(Int(cursor.x.rounded())),\(Int(cursor.y.rounded()))")
+        }
         return traceEvent(
             kind: "observation",
             title: "Observation",
-            body: "\(app) - \(window) - \(observation.elements.count) AX candidates",
+            body: details.joined(separator: " - "),
             status: "observed",
             step: step
         )
