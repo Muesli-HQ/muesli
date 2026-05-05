@@ -550,6 +550,7 @@ struct AppConfig: Codable {
     var dictationHotkey: HotkeyConfig = .default
     var computerUseHotkey: HotkeyConfig = .computerUseDefault
     var enableComputerUseHotkey: Bool = true
+    var enableComputerUsePlanner: Bool = true
     var sttBackend: String = BackendOption.whisper.backend
     var sttModel: String = BackendOption.whisper.model
     var cohereLanguage: String = CohereTranscribeLanguage.defaultLanguage.rawValue
@@ -608,6 +609,7 @@ struct AppConfig: Codable {
         case dictationHotkey = "dictation_hotkey"
         case computerUseHotkey = "computer_use_hotkey"
         case enableComputerUseHotkey = "enable_computer_use_hotkey"
+        case enableComputerUsePlanner = "enable_computer_use_planner"
         case sttBackend = "stt_backend"
         case sttModel = "stt_model"
         case cohereLanguage = "cohere_language"
@@ -670,6 +672,7 @@ struct AppConfig: Codable {
         computerUseHotkey = (try? c.decode(HotkeyConfig.self, forKey: .computerUseHotkey))
             ?? HotkeyConfig.computerUseDefault(avoiding: dictationHotkey)
         enableComputerUseHotkey = (try? c.decode(Bool.self, forKey: .enableComputerUseHotkey)) ?? defaults.enableComputerUseHotkey
+        enableComputerUsePlanner = (try? c.decode(Bool.self, forKey: .enableComputerUsePlanner)) ?? defaults.enableComputerUsePlanner
         sttBackend = (try? c.decode(String.self, forKey: .sttBackend)) ?? defaults.sttBackend
         sttModel = (try? c.decode(String.self, forKey: .sttModel)) ?? defaults.sttModel
         cohereLanguage = CohereTranscribeLanguage.resolvedCode(try? c.decode(String.self, forKey: .cohereLanguage))

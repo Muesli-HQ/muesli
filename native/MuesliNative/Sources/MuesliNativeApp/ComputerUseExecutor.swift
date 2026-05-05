@@ -31,7 +31,7 @@ struct ComputerUseExecutionResult: Equatable {
 }
 
 @MainActor
-enum ComputerUseExecutor {
+enum ComputerUseToolExecutor {
     private static let appAliases: [String: String] = [
         "arc": "company.thebrowser.Browser",
         "calendar": "com.apple.iCal",
@@ -91,6 +91,49 @@ enum ComputerUseExecutor {
             return .executed("Pasted text")
         case .scroll(let direction, let pages):
             return scroll(direction: direction, pages: pages)
+        }
+    }
+
+    static func execute(
+        _ toolCall: ComputerUseToolCall,
+        registry: ComputerUseElementRegistry?
+    ) async -> ComputerUseExecutionResult {
+        if let failure = toolCall.validationFailure() {
+            return .unsupported(failure)
+        }
+        guard !toolCall.requiresConfirmation else {
+            return .needsConfirmation("Confirm: \(toolCall.summary)")
+        }
+
+        switch toolCall.tool {
+        case .observe:
+            return .executed("Observed")
+        case .openApp:
+            return await openApp(named: toolCall.appName ?? "")
+        case .focusApp:
+            return await focusApp(named: toolCall.appName ?? "")
+        case .clickElement:
+            guard let elementID = toolCall.elementID,
+                  let element = registry?.element(for: elementID)
+            else {
+                return .needsConfirmation("Confirm: unknown click target")
+            }
+            return clickElement(element, fallbackLabel: toolCall.label ?? elementID)
+        case .pressKey:
+            return pressKey(ComputerUseKeyCommand(
+                modifiers: toolCall.modifiers ?? [],
+                key: toolCall.key ?? ""
+            ))
+        case .typeText:
+            PasteController.typeText(toolCall.text ?? "")
+            return .executed("Typed text")
+        case .pasteText:
+            PasteController.paste(text: toolCall.text ?? "")
+            return .executed("Pasted text")
+        case .scroll:
+            return scroll(direction: toolCall.direction ?? .down, pages: toolCall.pages ?? 1)
+        case .finish:
+            return .executed(toolCall.reason ?? "Done")
         }
     }
 
@@ -202,6 +245,16 @@ enum ComputerUseExecutor {
             return .executed("Clicked \(rawLabel)")
         }
         return .failed("Could not click \(rawLabel)")
+    }
+
+    private static func clickElement(_ element: AXUIElement, fallbackLabel: String) -> ComputerUseExecutionResult {
+        if AXUIElementPerformAction(element, kAXPressAction as CFString) == .success {
+            return .executed("Clicked \(fallbackLabel)")
+        }
+        if clickCenter(of: element) {
+            return .executed("Clicked \(fallbackLabel)")
+        }
+        return .failed("Could not click \(fallbackLabel)")
     }
 
     private static func applicationURL(for appName: String) -> URL? {
@@ -405,5 +458,20 @@ enum ComputerUseExecutor {
             .split(whereSeparator: { $0.isWhitespace })
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+@MainActor
+enum ComputerUseExecutor {
+    static func execute(_ parsed: ParsedComputerUseIntent) async -> ComputerUseExecutionResult {
+        await ComputerUseToolExecutor.execute(parsed)
+    }
+
+    static func bundleIdentifierAlias(for appName: String) -> String? {
+        ComputerUseToolExecutor.bundleIdentifierAlias(for: appName)
+    }
+
+    static func keyCode(for key: String) -> CGKeyCode? {
+        ComputerUseToolExecutor.keyCode(for: key)
     }
 }

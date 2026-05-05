@@ -1319,6 +1319,7 @@ final class MuesliController: NSObject {
             config.dictationHotkey = hotkey
             config.computerUseHotkey = HotkeyConfig.computerUseDefault(avoiding: hotkey)
             config.enableComputerUseHotkey = true
+            config.enableComputerUsePlanner = true
             config.onboardingUseCase = onboardingUseCase.rawValue
             if let summaryBackend {
                 config.meetingSummaryBackend = summaryBackend.backend
@@ -3038,14 +3039,12 @@ final class MuesliController: NSObject {
                 )
                 try Task.checkCancellation()
                 let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                let parsed = ComputerUseIntentParser.parse(text)
                 await MainActor.run {
                     TelemetryDeck.signal("computer_use.command_parsed", parameters: [
-                        "parsed": parsed == nil ? "false" : "true",
-                        "requires_confirmation": parsed?.requiresConfirmation == true ? "true" : "false",
+                        "planner_enabled": self.config.enableComputerUsePlanner ? "true" : "false",
                     ])
                 }
-                await self.handleComputerUseParsedResult(transcript: text, parsed: parsed)
+                await self.handleComputerUseCommand(transcript: text)
             } catch is CancellationError {
                 fputs("[cua] command parsing cancelled\n", stderr)
                 await MainActor.run {
@@ -3082,6 +3081,43 @@ final class MuesliController: NSObject {
             && computerUseCommandStartedAt == nil
             && !isNemotronStreaming
             && (dictationState == .idle || dictationState == .preparing)
+    }
+
+    @MainActor
+    private func handleComputerUseCommand(transcript: String) async {
+        setState(.transcribing)
+        let runtime = ComputerUsePlannerRuntime(config: config) { [weak self] status in
+            guard let self else { return }
+            self.statusBarController?.setStatus(status)
+            self.indicator.setTranscribingTitle(status, config: self.config)
+        }
+
+        let result = await runtime.run(command: transcript)
+        computerUseCommandTask = nil
+        presentComputerUseRuntimeResult(result)
+        meetingMonitor.resumeAfterCooldown()
+        TelemetryDeck.signal("computer_use.command_finished", parameters: [
+            "status": "\(result.status)",
+        ])
+    }
+
+    private func presentComputerUseRuntimeResult(_ result: ComputerUsePlannerRuntimeResult) {
+        setState(.idle)
+        let message: String
+        let icon: String
+        switch result.status {
+        case .done:
+            message = result.message.hasPrefix("Done") ? result.message : "Done: \(result.message)"
+            icon = ">"
+        case .needsConfirmation:
+            message = result.message.hasPrefix("Confirm") ? result.message : "Confirm: \(result.message)"
+            icon = "!"
+        case .failed:
+            message = result.message
+            icon = "!"
+        }
+        statusBarController?.setStatus(message)
+        indicator.showWarning(message, icon: icon, duration: 3.0)
     }
 
     @MainActor

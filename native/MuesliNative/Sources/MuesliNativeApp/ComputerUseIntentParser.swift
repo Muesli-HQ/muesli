@@ -10,7 +10,7 @@ enum ComputerUseIntent: Equatable {
     case scroll(direction: ComputerUseScrollDirection, pages: Double)
 }
 
-enum ComputerUseScrollDirection: String, Equatable {
+enum ComputerUseScrollDirection: String, Codable, Equatable {
     case up
     case down
     case left
@@ -22,7 +22,7 @@ struct ComputerUseKeyCommand: Equatable {
     let key: String
 }
 
-enum ComputerUseKeyModifier: String, CaseIterable, Equatable {
+enum ComputerUseKeyModifier: String, Codable, CaseIterable, Equatable {
     case command
     case option
     case control

@@ -356,6 +356,7 @@ struct AppConfigTests {
         #expect(config.dictationHotkey == .default)
         #expect(config.computerUseHotkey == .computerUseDefault)
         #expect(config.enableComputerUseHotkey == true)
+        #expect(config.enableComputerUsePlanner == true)
         #expect(config.showFloatingIndicator == true)
         #expect(config.indicatorAnchor == .midTrailing)
         #expect(config.hasCompletedOnboarding == false)
@@ -393,6 +394,7 @@ struct AppConfigTests {
         config.mutedMeetingDetectionAppBundleIDs = ["com.google.Chrome", "com.tinyspeck.slackmacgap"]
         config.computerUseHotkey = HotkeyConfig(keyCode: 62, label: "Right Ctrl")
         config.enableComputerUseHotkey = false
+        config.enableComputerUsePlanner = false
 
         let data = try JSONEncoder().encode(config)
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
@@ -417,6 +419,7 @@ struct AppConfigTests {
         #expect(decoded.indicatorAnchor == config.indicatorAnchor)
         #expect(decoded.computerUseHotkey == HotkeyConfig(keyCode: 62, label: "Right Ctrl"))
         #expect(decoded.enableComputerUseHotkey == false)
+        #expect(decoded.enableComputerUsePlanner == false)
     }
 
     @Test("JSON coding keys use snake_case")
@@ -429,6 +432,7 @@ struct AppConfigTests {
         #expect(json["stt_model"] != nil)
         #expect(json["computer_use_hotkey"] != nil)
         #expect(json["enable_computer_use_hotkey"] != nil)
+        #expect(json["enable_computer_use_planner"] != nil)
         #expect(json["cohere_language"] != nil)
         #expect(json["meeting_transcription_backend"] != nil)
         #expect(json["meeting_transcription_model"] != nil)
@@ -466,6 +470,7 @@ struct AppConfigTests {
         #expect(config.customMeetingTemplates.isEmpty)
         #expect(config.computerUseHotkey == .computerUseDefault)
         #expect(config.enableComputerUseHotkey == true)
+        #expect(config.enableComputerUsePlanner == true)
         #expect(config.meetingHookEnabled == false)
         #expect(config.meetingHookPath.isEmpty)
         #expect(config.meetingHookTimeoutSeconds == 30)

@@ -76,7 +76,7 @@ struct ShortcutsView: View {
                     Text("Computer Use Command")
                         .font(MuesliTheme.headline())
                         .foregroundStyle(MuesliTheme.textPrimary)
-                    Text("Hold to record a command, release to parse it")
+                    Text("Hold to record a command, release to plan and run it")
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
