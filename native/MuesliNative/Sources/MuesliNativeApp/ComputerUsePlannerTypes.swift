@@ -17,6 +17,26 @@ enum ComputerUseToolName: String, Codable, Equatable, CaseIterable {
     case finish
 }
 
+enum ComputerUseScrollDirection: String, Codable, Equatable {
+    case up
+    case down
+    case left
+    case right
+}
+
+struct ComputerUseKeyCommand: Equatable {
+    let modifiers: [ComputerUseKeyModifier]
+    let key: String
+}
+
+enum ComputerUseKeyModifier: String, Codable, CaseIterable, Equatable {
+    case command
+    case option
+    case control
+    case shift
+    case function
+}
+
 struct ComputerUseToolCall: Codable, Equatable {
     let tool: ComputerUseToolName
     let appName: String?

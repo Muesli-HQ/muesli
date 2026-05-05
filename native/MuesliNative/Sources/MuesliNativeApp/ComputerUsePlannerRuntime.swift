@@ -25,7 +25,6 @@ final class ComputerUsePlannerRuntime {
     typealias ObserveHandler = @MainActor (ComputerUseElementRegistry, Bool) -> ComputerUseObservation
     typealias PlanHandler = (ComputerUsePlannerRequest) async throws -> ComputerUsePlannerResponse
     typealias ExecuteHandler = @MainActor (ComputerUseToolCall, ComputerUseElementRegistry) async -> ComputerUseExecutionResult
-    typealias ParsedExecuteHandler = @MainActor (ParsedComputerUseIntent) async -> ComputerUseExecutionResult
 
     private let config: AppConfig
     private let maxSteps: Int?
@@ -35,7 +34,6 @@ final class ComputerUsePlannerRuntime {
     private let observe: ObserveHandler
     private let plan: PlanHandler
     private let execute: ExecuteHandler
-    private let executeParsed: ParsedExecuteHandler
 
     init(
         config: AppConfig,
@@ -48,9 +46,6 @@ final class ComputerUsePlannerRuntime {
         plan: PlanHandler? = nil,
         execute: @escaping ExecuteHandler = { toolCall, registry in
             await ComputerUseToolExecutor.execute(toolCall, registry: registry)
-        },
-        executeParsed: @escaping ParsedExecuteHandler = { parsed in
-            await ComputerUseToolExecutor.execute(parsed)
         }
     ) {
         self.config = config
@@ -62,7 +57,6 @@ final class ComputerUsePlannerRuntime {
             try await ComputerUsePlannerClient.planNextTool(request: request, config: config)
         }
         self.execute = execute
-        self.executeParsed = executeParsed
     }
 
     func run(command: String) async -> ComputerUsePlannerRuntimeResult {
@@ -77,7 +71,9 @@ final class ComputerUsePlannerRuntime {
         ]
 
         guard config.enableComputerUsePlanner else {
-            return await runParserFallback(command: command, fallbackReason: nil, traceEvents: traceEvents)
+            let message = "CUA planner is disabled."
+            traceEvents.append(traceEvent(kind: "failed", title: "Failed", body: message, status: "failed", step: nil))
+            return .init(status: .failed, message: message, traceEvents: traceEvents)
         }
 
         let deadline = Date().addingTimeInterval(timeoutSeconds)
@@ -121,13 +117,13 @@ final class ComputerUsePlannerRuntime {
                 response = try await plan(request)
             } catch {
                 traceEvents.append(traceEvent(
-                    kind: "fallback",
-                    title: "Planner fallback",
+                    kind: "failed",
+                    title: "Planner failed",
                     body: error.localizedDescription,
-                    status: "fallback",
+                    status: "failed",
                     step: step
                 ))
-                return await runParserFallback(command: command, fallbackReason: error, traceEvents: traceEvents)
+                return .init(status: .failed, message: error.localizedDescription, traceEvents: traceEvents)
             }
 
             let toolCall = response.toolCall
@@ -141,16 +137,6 @@ final class ComputerUsePlannerRuntime {
             if let validationFailure = toolCall.validationFailure() {
                 traceEvents.append(traceEvent(kind: "failed", title: "Schema rejected", body: validationFailure, status: "failed", step: step))
                 return .init(status: .failed, message: validationFailure, traceEvents: traceEvents)
-            }
-            if let mismatch = appNavigationMismatch(command: command, toolCall: toolCall) {
-                traceEvents.append(traceEvent(
-                    kind: "fallback",
-                    title: "Planner app mismatch",
-                    body: mismatch,
-                    status: "fallback",
-                    step: step
-                ))
-                return await runParserFallback(command: command, fallbackReason: PlannerMismatchError(message: mismatch), traceEvents: traceEvents)
             }
             if let repeatedActionMessage = repeatedActionMessage(
                 toolCall: toolCall,
@@ -221,56 +207,6 @@ final class ComputerUsePlannerRuntime {
                     return .init(status: .failed, message: result.message, traceEvents: traceEvents)
                 }
             }
-        }
-    }
-
-    private func runParserFallback(
-        command: String,
-        fallbackReason: Error?,
-        traceEvents: [ComputerUseTraceEvent]
-    ) async -> ComputerUsePlannerRuntimeResult {
-        var traceEvents = traceEvents
-        guard let parsed = ComputerUseIntentParser.parse(command) else {
-            if let plannerError = fallbackReason as? ComputerUsePlannerError,
-               plannerError == .notAuthenticated {
-                traceEvents.append(traceEvent(kind: "failed", title: "Failed", body: plannerError.localizedDescription, status: "failed", step: nil))
-                return .init(status: .failed, message: plannerError.localizedDescription, traceEvents: traceEvents)
-            }
-            if let fallbackReason {
-                traceEvents.append(traceEvent(kind: "failed", title: "Failed", body: fallbackReason.localizedDescription, status: "failed", step: nil))
-                return .init(status: .failed, message: fallbackReason.localizedDescription, traceEvents: traceEvents)
-            }
-            traceEvents.append(traceEvent(kind: "failed", title: "Failed", body: "Unsupported CUA command", status: "failed", step: nil))
-            return .init(status: .failed, message: "Unsupported CUA command", traceEvents: traceEvents)
-        }
-
-        traceEvents.append(traceEvent(kind: "fallback", title: "Rule parser", body: parsed.intent.summary, status: "parsed", step: nil))
-        if parsed.requiresConfirmation {
-            let message = "Confirm: \(parsed.intent.summary)"
-            traceEvents.append(traceEvent(kind: "confirm", title: "Confirmation required", body: message, status: "confirm", step: nil))
-            return .init(status: .needsConfirmation, message: message, traceEvents: traceEvents)
-        }
-
-        onStatus("Executing")
-        let result = await executeParsed(parsed)
-        traceEvents.append(traceEvent(kind: "tool_result", title: "Tool result", body: result.message, status: "\(result.status)", step: nil))
-        switch result.status {
-        case .executed:
-            let message = "Done: \(parsed.intent.summary)"
-            traceEvents.append(traceEvent(kind: "finish", title: "Final output", body: message, status: "done", step: nil))
-            return .init(status: .done, message: message, traceEvents: traceEvents)
-        case .needsConfirmation:
-            let message = "Confirm: \(parsed.intent.summary)"
-            traceEvents.append(traceEvent(kind: "confirm", title: "Confirmation required", body: message, status: "confirm", step: nil))
-            return .init(status: .needsConfirmation, message: message, traceEvents: traceEvents)
-        case .unsupported, .failed:
-            if let plannerError = fallbackReason as? ComputerUsePlannerError,
-               plannerError == .notAuthenticated {
-                traceEvents.append(traceEvent(kind: "failed", title: "Failed", body: plannerError.localizedDescription, status: "failed", step: nil))
-                return .init(status: .failed, message: plannerError.localizedDescription, traceEvents: traceEvents)
-            }
-            traceEvents.append(traceEvent(kind: "failed", title: "Failed", body: result.message, status: "failed", step: nil))
-            return .init(status: .failed, message: result.message, traceEvents: traceEvents)
         }
     }
 
@@ -348,56 +284,6 @@ final class ComputerUsePlannerRuntime {
         return text
     }
 
-    private func appNavigationMismatch(command: String, toolCall: ComputerUseToolCall) -> String? {
-        guard let parsed = ComputerUseIntentParser.parse(command) else { return nil }
-
-        let requestedApp: String
-        switch parsed.intent {
-        case .openApp(let name), .focusApp(let name):
-            requestedApp = name
-        default:
-            return nil
-        }
-
-        let plannedApp: String
-        switch toolCall.tool {
-        case .openApp, .focusApp:
-            plannedApp = toolCall.appName ?? ""
-        default:
-            return nil
-        }
-
-        guard !appNamesMatch(requestedApp, plannedApp) else { return nil }
-        return "Planner selected \(plannedApp.isEmpty ? "an empty app name" : plannedApp) for a command that requested \(requestedApp)."
-    }
-
-    private func appNamesMatch(_ lhs: String, _ rhs: String) -> Bool {
-        let left = canonicalAppName(lhs)
-        let right = canonicalAppName(rhs)
-        if left == right { return true }
-        if left.replacingOccurrences(of: " ", with: "") == right.replacingOccurrences(of: " ", with: "") {
-            return true
-        }
-        guard let leftBundle = ComputerUseToolExecutor.bundleIdentifierAlias(for: left),
-              let rightBundle = ComputerUseToolExecutor.bundleIdentifierAlias(for: right) else {
-            return false
-        }
-        return leftBundle == rightBundle
-    }
-
-    private func canonicalAppName(_ value: String) -> String {
-        let scalars = value.lowercased().unicodeScalars.map { scalar -> Character in
-            CharacterSet.alphanumerics.contains(scalar) || CharacterSet.whitespaces.contains(scalar)
-                ? Character(scalar)
-                : " "
-        }
-        return String(scalars)
-            .split(whereSeparator: { $0.isWhitespace })
-            .joined(separator: " ")
-            .replacingOccurrences(of: #" app$"#, with: "", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     private func traceEvent(
         kind: String,
         title: String,
@@ -406,35 +292,5 @@ final class ComputerUsePlannerRuntime {
         step: Int?
     ) -> ComputerUseTraceEvent {
         ComputerUseTraceEvent(kind: kind, title: title, body: body, status: status, step: step)
-    }
-}
-
-private struct PlannerMismatchError: LocalizedError {
-    let message: String
-
-    var errorDescription: String? {
-        message
-    }
-}
-
-private extension ComputerUseIntent {
-    var summary: String {
-        switch self {
-        case .openApp(let name):
-            return "open \(name)"
-        case .focusApp(let name):
-            return "focus \(name)"
-        case .click(let label):
-            return "click \(label)"
-        case .pressKey(let command):
-            let parts = command.modifiers.map(\.rawValue) + [command.key]
-            return "press \(parts.joined(separator: "+"))"
-        case .typeText(let text):
-            return "type \(text.count > 32 ? String(text.prefix(29)) + "..." : text)"
-        case .pasteText(let text):
-            return "paste \(text.count > 32 ? String(text.prefix(29)) + "..." : text)"
-        case .scroll(let direction, _):
-            return "scroll \(direction.rawValue)"
-        }
     }
 }

@@ -214,48 +214,70 @@ struct ComputerUsePlannerRuntimeTests {
         #expect(result.message == "Confirm: click Send")
     }
 
-    @Test("falls back to parser when planner is unavailable")
+    @Test("fails when planner is unavailable")
     @MainActor
-    func fallsBackToParserWhenPlannerUnavailable() async {
+    func failsWhenPlannerUnavailable() async {
         let runtime = ComputerUsePlannerRuntime(
             config: AppConfig(),
             observe: { _, _ in Self.observation() },
             plan: { _ in throw ComputerUsePlannerError.notAuthenticated },
-            execute: { _, _ in .failed("unexpected") },
-            executeParsed: { _ in .executed("Opened google chrome") }
+            execute: { _, _ in .failed("unexpected") }
         )
 
         let result = await runtime.run(command: "open Google Chrome")
 
-        #expect(result.status == .done)
-        #expect(result.message == "Done: open google chrome")
-        #expect(result.traceEvents.contains { $0.kind == "fallback" })
-        #expect(result.traceEvents.contains { $0.kind == "tool_result" })
+        #expect(result.status == .failed)
+        #expect(result.message == ComputerUsePlannerError.notAuthenticated.localizedDescription)
+        #expect(!result.traceEvents.contains { $0.kind == "fallback" })
+        #expect(!result.traceEvents.contains { $0.title == "Rule parser" })
     }
 
-    @Test("falls back to parser when planner chooses wrong app")
+    @Test("does not override planner app choice with parser fallback")
     @MainActor
-    func fallsBackWhenPlannerChoosesWrongApp() async {
-        var parsedIntent: ParsedComputerUseIntent?
+    func doesNotOverridePlannerAppChoiceWithParserFallback() async {
+        var executedTools: [ComputerUseToolCall] = []
         let runtime = ComputerUsePlannerRuntime(
             config: AppConfig(),
             observe: { _, _ in Self.observation() },
-            plan: { _ in
-                ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .openApp, appName: "Google Chrome"))
+            plan: { request in
+                if request.step == 1 {
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .openApp, appName: "Google Chrome"))
+                }
+                return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish, reason: "done"))
             },
-            execute: { _, _ in .failed("unexpected") },
-            executeParsed: { parsed in
-                parsedIntent = parsed
-                return .executed("Opened Tailscale")
+            execute: { toolCall, _ in
+                executedTools.append(toolCall)
+                return .executed("Opened Google Chrome")
             }
         )
 
         let result = await runtime.run(command: "open the tail scale app")
 
         #expect(result.status == .done)
-        #expect(result.message == "Done: open tail scale")
-        #expect(parsedIntent?.intent == .openApp(name: "tail scale"))
-        #expect(result.traceEvents.contains { $0.title == "Planner app mismatch" })
+        #expect(result.message == "done")
+        #expect(executedTools.map(\.tool) == [.openApp])
+        #expect(executedTools.first?.appName == "Google Chrome")
+        #expect(!result.traceEvents.contains { $0.kind == "fallback" })
+        #expect(!result.traceEvents.contains { $0.title == "Planner app mismatch" })
+    }
+
+    @Test("fails when planner mode is disabled")
+    @MainActor
+    func failsWhenPlannerModeDisabled() async {
+        var config = AppConfig()
+        config.enableComputerUsePlanner = false
+        let runtime = ComputerUsePlannerRuntime(
+            config: config,
+            observe: { _, _ in Self.observation() },
+            plan: { _ in ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish)) },
+            execute: { _, _ in .executed("unexpected") }
+        )
+
+        let result = await runtime.run(command: "open Google Chrome")
+
+        #expect(result.status == .failed)
+        #expect(result.message == "CUA planner is disabled.")
+        #expect(!result.traceEvents.contains { $0.kind == "fallback" })
     }
 
     @Test("rejects non-schema planner output")

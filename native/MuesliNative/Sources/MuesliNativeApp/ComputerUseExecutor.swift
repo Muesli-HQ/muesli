@@ -71,31 +71,6 @@ enum ComputerUseToolExecutor {
         "left": 123, "right": 124, "down": 125, "up": 126,
     ]
 
-    static func execute(_ parsed: ParsedComputerUseIntent) async -> ComputerUseExecutionResult {
-        guard !parsed.requiresConfirmation else {
-            return .needsConfirmation("Confirm required")
-        }
-
-        switch parsed.intent {
-        case .openApp(let name):
-            return await openApp(named: name)
-        case .focusApp(let name):
-            return await focusApp(named: name)
-        case .click(let label):
-            return clickElement(labeled: label)
-        case .pressKey(let command):
-            return pressKey(command)
-        case .typeText(let text):
-            PasteController.typeText(text)
-            return .executed("Typed text")
-        case .pasteText(let text):
-            PasteController.paste(text: text)
-            return .executed("Pasted text")
-        case .scroll(let direction, let pages):
-            return scroll(direction: direction, pages: pages)
-        }
-    }
-
     static func execute(
         _ toolCall: ComputerUseToolCall,
         registry: ComputerUseElementRegistry?
@@ -616,10 +591,6 @@ enum ComputerUseToolExecutor {
 
 @MainActor
 enum ComputerUseExecutor {
-    static func execute(_ parsed: ParsedComputerUseIntent) async -> ComputerUseExecutionResult {
-        await ComputerUseToolExecutor.execute(parsed)
-    }
-
     static func bundleIdentifierAlias(for appName: String) -> String? {
         ComputerUseToolExecutor.bundleIdentifierAlias(for: appName)
     }
