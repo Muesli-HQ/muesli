@@ -39,7 +39,7 @@ final class ComputerUsePlannerRuntime {
 
     init(
         config: AppConfig,
-        maxSteps: Int? = nil,
+        maxSteps: Int? = 100,
         timeoutSeconds: TimeInterval = 60,
         onStatus: @escaping StatusHandler = { _ in },
         observe: @escaping ObserveHandler = { registry, includeScreenshot in

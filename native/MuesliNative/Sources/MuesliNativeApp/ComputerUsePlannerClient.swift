@@ -53,7 +53,7 @@ enum ComputerUsePlannerClient {
     - For click_point/move_cursor/drag, use screenshot pixel coordinates from the current screenshot, not global screen coordinates.
     - Include screenshot_id from the current observation when using screenshot-coordinate tools.
     - Use observe if the current observation is insufficient.
-    - max_steps may be absent. That means there is no fixed step count; continue until the command is complete.
+    - max_steps is a high safety ceiling, not a target. Use as few steps as needed.
     - Use finish when the user's command is complete or no further safe action is needed.
     - Risky actions are locally blocked by Muesli; do not try to bypass confirmation.
     """

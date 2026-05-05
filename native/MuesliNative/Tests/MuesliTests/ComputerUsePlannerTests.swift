@@ -115,14 +115,14 @@ struct ComputerUsePlannerRuntimeTests {
         #expect(result.traceEvents.contains { $0.kind == "finish" })
     }
 
-    @Test("default runtime is timeout-bounded without a step cap")
+    @Test("default runtime uses a high safety step cap")
     @MainActor
-    func defaultRuntimeIsTimeoutBoundedWithoutStepCap() async {
+    func defaultRuntimeUsesHighSafetyStepCap() async {
         let runtime = ComputerUsePlannerRuntime(
             config: AppConfig(),
             observe: { _, _ in Self.observation() },
             plan: { request in
-                #expect(request.maxSteps == nil)
+                #expect(request.maxSteps == 100)
                 return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish, reason: "done"))
             },
             execute: { _, _ in .executed("unexpected") }
@@ -131,7 +131,7 @@ struct ComputerUsePlannerRuntimeTests {
         let result = await runtime.run(command: "do a longer workflow")
 
         #expect(result.status == .done)
-        #expect(result.traceEvents.contains { $0.body.contains("Step 1. Prior tool results: 0.") })
+        #expect(result.traceEvents.contains { $0.body.contains("Step 1 of 100") })
     }
 
     @Test("stops at max step count")
