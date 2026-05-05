@@ -5,7 +5,7 @@ import MuesliCore
 struct ShortcutsView: View {
     let appState: AppState
     let controller: MuesliController
-    @State private var isRecording = false
+    @State private var recordingTarget: ShortcutTarget?
     @State private var eventMonitor: Any?
 
     var body: some View {
@@ -15,11 +15,13 @@ struct ShortcutsView: View {
                     .font(MuesliTheme.title1())
                     .foregroundStyle(MuesliTheme.textPrimary)
 
-                Text("Choose your preferred shortcut for dictation.")
+                Text("Choose your preferred shortcuts for dictation and computer use commands.")
                     .font(MuesliTheme.body())
                     .foregroundStyle(MuesliTheme.textSecondary)
 
-                shortcutSection
+                dictationShortcutSection
+
+                computerUseShortcutSection
 
                 doubleTapSection
 
@@ -33,7 +35,12 @@ struct ShortcutsView: View {
         }
     }
 
-    private var shortcutSection: some View {
+    private enum ShortcutTarget {
+        case dictation
+        case computerUse
+    }
+
+    private var dictationShortcutSection: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
@@ -45,13 +52,13 @@ struct ShortcutsView: View {
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
                 Spacer()
-                hotkeyBadge
+                hotkeyBadge(appState.config.dictationHotkey.label)
             }
 
             Divider()
                 .background(MuesliTheme.surfaceBorder)
 
-            changeButton
+            changeButton(for: .dictation)
         }
         .padding(MuesliTheme.spacing16)
         .background(MuesliTheme.backgroundRaised)
@@ -62,8 +69,57 @@ struct ShortcutsView: View {
         )
     }
 
-    private var hotkeyBadge: some View {
-        Text(appState.config.dictationHotkey.label)
+    private var computerUseShortcutSection: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                    Text("Computer Use Command")
+                        .font(MuesliTheme.headline())
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                    Text("Hold to record a command, release to parse it")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
+                Spacer()
+                Toggle("", isOn: Binding(
+                    get: { appState.config.enableComputerUseHotkey },
+                    set: { newValue in
+                        controller.updateComputerUseHotkeyEnabled(newValue)
+                    }
+                ))
+                .toggleStyle(.switch)
+                .tint(MuesliTheme.accent)
+                .labelsHidden()
+            }
+
+            Divider()
+                .background(MuesliTheme.surfaceBorder)
+
+            HStack(spacing: MuesliTheme.spacing12) {
+                hotkeyBadge(appState.config.computerUseHotkey.label)
+                changeButton(for: .computerUse)
+                    .disabled(!appState.config.enableComputerUseHotkey)
+                    .opacity(appState.config.enableComputerUseHotkey ? 1 : 0.55)
+            }
+
+            if appState.config.enableComputerUseHotkey,
+               appState.config.computerUseHotkey.keyCode == appState.config.dictationHotkey.keyCode {
+                Text("Choose a different key than dictation.")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.transcribing)
+            }
+        }
+        .padding(MuesliTheme.spacing16)
+        .background(MuesliTheme.backgroundRaised)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+        .overlay(
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
+                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+        )
+    }
+
+    private func hotkeyBadge(_ label: String) -> some View {
+        Text(label)
             .font(.system(size: 12, weight: .medium, design: .rounded))
             .foregroundStyle(MuesliTheme.textPrimary)
             .padding(.horizontal, MuesliTheme.spacing12)
@@ -76,26 +132,26 @@ struct ShortcutsView: View {
             )
     }
 
-    private var changeButton: some View {
+    private func changeButton(for target: ShortcutTarget) -> some View {
         Button {
-            if isRecording {
+            if recordingTarget == target {
                 stopRecording()
             } else {
-                startRecording()
+                startRecording(target)
             }
         } label: {
-            Text(isRecording ? "Press a modifier key..." : "Change Shortcut")
+            Text(recordingTarget == target ? "Press a modifier key..." : "Change Shortcut")
                 .font(MuesliTheme.body())
-                .foregroundStyle(isRecording ? MuesliTheme.accent : MuesliTheme.textPrimary)
+                .foregroundStyle(recordingTarget == target ? MuesliTheme.accent : MuesliTheme.textPrimary)
         }
         .buttonStyle(.plain)
         .padding(.horizontal, MuesliTheme.spacing12)
         .padding(.vertical, MuesliTheme.spacing8)
-        .background(isRecording ? MuesliTheme.accentSubtle : MuesliTheme.surfacePrimary)
+        .background(recordingTarget == target ? MuesliTheme.accentSubtle : MuesliTheme.surfacePrimary)
         .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
         .overlay(
             RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                .strokeBorder(isRecording ? MuesliTheme.accent.opacity(0.3) : MuesliTheme.surfaceBorder, lineWidth: 1)
+                .strokeBorder(recordingTarget == target ? MuesliTheme.accent.opacity(0.3) : MuesliTheme.surfaceBorder, lineWidth: 1)
         )
     }
 
@@ -134,22 +190,34 @@ struct ShortcutsView: View {
     private var resetButton: some View {
         Button {
             controller.updateDictationHotkey(.default)
+            controller.updateComputerUseHotkey(.computerUseDefault)
+            controller.updateComputerUseHotkeyEnabled(true)
         } label: {
-            Text("Reset to Default")
+            Text("Reset to Defaults")
                 .font(MuesliTheme.body())
                 .foregroundStyle(MuesliTheme.textSecondary)
         }
         .buttonStyle(.plain)
-        .disabled(appState.config.dictationHotkey == .default)
+        .disabled(
+            appState.config.dictationHotkey == .default
+                && appState.config.computerUseHotkey == .computerUseDefault
+                && appState.config.enableComputerUseHotkey
+        )
     }
 
-    private func startRecording() {
-        isRecording = true
+    private func startRecording(_ target: ShortcutTarget) {
+        stopRecording()
+        recordingTarget = target
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [self] event in
             let keyCode = event.keyCode
             if let label = HotkeyConfig.label(for: keyCode) {
                 let newConfig = HotkeyConfig(keyCode: keyCode, label: label)
-                controller.updateDictationHotkey(newConfig)
+                switch target {
+                case .dictation:
+                    controller.updateDictationHotkey(newConfig)
+                case .computerUse:
+                    controller.updateComputerUseHotkey(newConfig)
+                }
                 stopRecording()
             }
             return event
@@ -157,7 +225,7 @@ struct ShortcutsView: View {
     }
 
     private func stopRecording() {
-        isRecording = false
+        recordingTarget = nil
         if let monitor = eventMonitor {
             NSEvent.removeMonitor(monitor)
             eventMonitor = nil

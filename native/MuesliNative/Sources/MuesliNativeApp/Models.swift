@@ -518,6 +518,11 @@ struct HotkeyConfig: Codable, Equatable {
     }
 
     static let `default` = HotkeyConfig()
+    static let computerUseDefault = HotkeyConfig(keyCode: 54, label: "Right Cmd")
+
+    static func computerUseDefault(avoiding dictationHotkey: HotkeyConfig) -> HotkeyConfig {
+        dictationHotkey.keyCode == computerUseDefault.keyCode ? .default : .computerUseDefault
+    }
 }
 
 enum OnboardingUseCase: String, Codable, CaseIterable {
@@ -543,6 +548,8 @@ enum OnboardingUseCase: String, Codable, CaseIterable {
 
 struct AppConfig: Codable {
     var dictationHotkey: HotkeyConfig = .default
+    var computerUseHotkey: HotkeyConfig = .computerUseDefault
+    var enableComputerUseHotkey: Bool = true
     var sttBackend: String = BackendOption.whisper.backend
     var sttModel: String = BackendOption.whisper.model
     var cohereLanguage: String = CohereTranscribeLanguage.defaultLanguage.rawValue
@@ -599,6 +606,8 @@ struct AppConfig: Codable {
 
     enum CodingKeys: String, CodingKey {
         case dictationHotkey = "dictation_hotkey"
+        case computerUseHotkey = "computer_use_hotkey"
+        case enableComputerUseHotkey = "enable_computer_use_hotkey"
         case sttBackend = "stt_backend"
         case sttModel = "stt_model"
         case cohereLanguage = "cohere_language"
@@ -658,6 +667,9 @@ struct AppConfig: Codable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let defaults = AppConfig()
         dictationHotkey = (try? c.decode(HotkeyConfig.self, forKey: .dictationHotkey)) ?? defaults.dictationHotkey
+        computerUseHotkey = (try? c.decode(HotkeyConfig.self, forKey: .computerUseHotkey))
+            ?? HotkeyConfig.computerUseDefault(avoiding: dictationHotkey)
+        enableComputerUseHotkey = (try? c.decode(Bool.self, forKey: .enableComputerUseHotkey)) ?? defaults.enableComputerUseHotkey
         sttBackend = (try? c.decode(String.self, forKey: .sttBackend)) ?? defaults.sttBackend
         sttModel = (try? c.decode(String.self, forKey: .sttModel)) ?? defaults.sttModel
         cohereLanguage = CohereTranscribeLanguage.resolvedCode(try? c.decode(String.self, forKey: .cohereLanguage))

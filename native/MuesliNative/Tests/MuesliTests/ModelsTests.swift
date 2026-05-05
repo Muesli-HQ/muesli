@@ -354,6 +354,8 @@ struct AppConfigTests {
         #expect(config.openAIAPIKey.isEmpty)
         #expect(config.openRouterAPIKey.isEmpty)
         #expect(config.dictationHotkey == .default)
+        #expect(config.computerUseHotkey == .computerUseDefault)
+        #expect(config.enableComputerUseHotkey == true)
         #expect(config.showFloatingIndicator == true)
         #expect(config.indicatorAnchor == .midTrailing)
         #expect(config.hasCompletedOnboarding == false)
@@ -389,6 +391,8 @@ struct AppConfigTests {
         config.showScheduledMeetingNotifications = false
         config.showMeetingDetectionNotification = false
         config.mutedMeetingDetectionAppBundleIDs = ["com.google.Chrome", "com.tinyspeck.slackmacgap"]
+        config.computerUseHotkey = HotkeyConfig(keyCode: 62, label: "Right Ctrl")
+        config.enableComputerUseHotkey = false
 
         let data = try JSONEncoder().encode(config)
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
@@ -411,6 +415,8 @@ struct AppConfigTests {
         #expect(decoded.mutedMeetingDetectionAppBundleIDs == ["com.google.Chrome", "com.tinyspeck.slackmacgap"])
         #expect(decoded.meetingTranscriptionBackend == config.meetingTranscriptionBackend)
         #expect(decoded.indicatorAnchor == config.indicatorAnchor)
+        #expect(decoded.computerUseHotkey == HotkeyConfig(keyCode: 62, label: "Right Ctrl"))
+        #expect(decoded.enableComputerUseHotkey == false)
     }
 
     @Test("JSON coding keys use snake_case")
@@ -421,6 +427,8 @@ struct AppConfigTests {
 
         #expect(json["stt_backend"] != nil)
         #expect(json["stt_model"] != nil)
+        #expect(json["computer_use_hotkey"] != nil)
+        #expect(json["enable_computer_use_hotkey"] != nil)
         #expect(json["cohere_language"] != nil)
         #expect(json["meeting_transcription_backend"] != nil)
         #expect(json["meeting_transcription_model"] != nil)
@@ -456,9 +464,29 @@ struct AppConfigTests {
         #expect(config.showMeetingDetectionNotification == true)
         #expect(config.mutedMeetingDetectionAppBundleIDs.isEmpty)
         #expect(config.customMeetingTemplates.isEmpty)
+        #expect(config.computerUseHotkey == .computerUseDefault)
+        #expect(config.enableComputerUseHotkey == true)
         #expect(config.meetingHookEnabled == false)
         #expect(config.meetingHookPath.isEmpty)
         #expect(config.meetingHookTimeoutSeconds == 30)
+    }
+
+    @Test("computer use default avoids existing right command dictation hotkey")
+    func computerUseDefaultAvoidsExistingRightCommandDictationHotkey() throws {
+        let json = """
+        {
+          "dictation_hotkey": {
+            "keyCode": 54,
+            "label": "Right Cmd"
+          }
+        }
+        """
+
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.dictationHotkey == HotkeyConfig(keyCode: 54, label: "Right Cmd"))
+        #expect(config.computerUseHotkey == .default)
+        #expect(config.enableComputerUseHotkey == true)
     }
 
     @Test("unsupported onboarding use case falls back to dictation")
@@ -812,6 +840,19 @@ struct HotkeyConfigTests {
         let config = HotkeyConfig.default
         #expect(config.keyCode == 55)
         #expect(config.label == "Left Cmd")
+    }
+
+    @Test("computer use default is Right Cmd")
+    func computerUseDefaultConfig() {
+        let config = HotkeyConfig.computerUseDefault
+        #expect(config.keyCode == 54)
+        #expect(config.label == "Right Cmd")
+    }
+
+    @Test("computer use fallback avoids dictation hotkey")
+    func computerUseFallbackAvoidsDictationHotkey() {
+        #expect(HotkeyConfig.computerUseDefault(avoiding: .default) == .computerUseDefault)
+        #expect(HotkeyConfig.computerUseDefault(avoiding: .computerUseDefault) == .default)
     }
 
     @Test("label for known key codes")
