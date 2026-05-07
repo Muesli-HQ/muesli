@@ -655,22 +655,24 @@ enum MeetingSummaryClient {
                 maxTokens: nil,
                 extraHeaders: ["X-OpenRouter-Title": AppIdentity.displayName]
             )
-        } else if backend == MeetingSummaryBackendOption.ollama.backend {
-            return await generateTitleWithOllama(transcript: truncated, config: config)
-        } else {
-            let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? config.openAIAPIKey
-            guard !apiKey.isEmpty else { return nil }
-            let model = config.openAIModel.isEmpty ? defaultOpenAIModel : config.openAIModel
-            return await callChatCompletions(
-                url: URL(string: "https://api.openai.com/v1/chat/completions")!,
-                apiKey: apiKey,
-                model: model,
-                systemPrompt: titleInstructions,
-                userPrompt: truncated,
-                maxTokens: nil,
-                extraHeaders: [:]
-            )
         }
+
+        if backend == MeetingSummaryBackendOption.ollama.backend {
+            return await generateTitleWithOllama(transcript: truncated, config: config)
+        }
+
+        let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? config.openAIAPIKey
+        guard !apiKey.isEmpty else { return nil }
+        let model = config.openAIModel.isEmpty ? defaultOpenAIModel : config.openAIModel
+        return await callChatCompletions(
+            url: URL(string: "https://api.openai.com/v1/chat/completions")!,
+            apiKey: apiKey,
+            model: model,
+            systemPrompt: titleInstructions,
+            userPrompt: truncated,
+            maxTokens: nil,
+            extraHeaders: [:]
+        )
     }
 
     private static func callChatCompletions(
@@ -766,6 +768,7 @@ enum MeetingSummaryClient {
                 ["role": "system", "content": titleInstructions],
                 ["role": "user", "content": transcript],
             ],
+            "options": ["num_predict": 100],
             "stream": false,
         ]
 
