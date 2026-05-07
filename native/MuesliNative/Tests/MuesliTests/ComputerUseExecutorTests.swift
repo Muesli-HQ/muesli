@@ -30,6 +30,19 @@ struct ComputerUseExecutorTests {
         #expect(ComputerUseToolExecutor.scrollDeltas(direction: .right, pages: 1).horizontal > 0)
     }
 
+    @Test("element click fails stale snapshot instead of falling through")
+    @MainActor
+    func elementClickFailsStaleSnapshot() async {
+        let registry = ComputerUseElementRegistry()
+        let result = await ComputerUseToolExecutor.execute(
+            ComputerUseToolCall(tool: .click, elementIndex: 9, label: "Search"),
+            registry: registry
+        )
+
+        #expect(result.status == .failed)
+        #expect(result.message.contains("Stale or unknown element_index 9"))
+    }
+
     @Test("parses browser tab Apple Events output")
     func parsesBrowserTabs() {
         let tabs = ComputerUseBrowserAutomation.parseTabs(
@@ -96,6 +109,22 @@ struct ComputerUseExecutorTests {
         #expect(safe.status == .executed)
         #expect(capturedScript.contains("https://www.google.com/search?q=hello&hl=en"))
         #expect(unsafe.status == .needsConfirmation)
+    }
+
+    @Test("navigate URL validates tab hints before targeting")
+    func navigateURLValidatesTabHintsBeforeTargeting() {
+        let script = ComputerUseBrowserAutomation.navigateScript(
+            appBundleID: "com.google.Chrome",
+            windowIndex: 1,
+            tabIndex: 16,
+            url: "https://www.youtube.com/results?search_query=Drake+latest+song"
+        )
+
+        #expect(script.contains("set targetTab to active tab of targetWindow"))
+        #expect(script.contains("if 16 <= (count of tabs of targetWindow) then"))
+        #expect(script.contains("set targetTab to tab 16 of targetWindow"))
+        #expect(!script.contains("tab 16 of window 1"))
+        #expect(script.contains("used active tab fallback"))
     }
 
     @Test("page text and DOM query use read-only JavaScript")

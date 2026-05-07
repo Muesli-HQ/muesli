@@ -37,12 +37,17 @@ enum ComputerUsePlannerClient {
     - Prefer element-targeted click/set_value over coordinate clicks when a matching element exists.
     - For coordinate click/drag, use screenshot pixel coordinates from the current screenshot, not global screen coordinates.
     - Include screenshot_id from latest_window_state when using screenshot-coordinate tools.
+    - For click, choose exactly one addressing mode: either element_index/element_id OR x/y+screenshot_id. Never include both an element target and coordinates in the same click.
     - For YouTube, Hacker News, and browser tasks in Chrome, prefer list_browser_tabs, activate_browser_tab, navigate_url, page_get_text, and page_query_dom before AX clicking when those tools are available.
-    - Browser page tools are optional shortcuts, not the only way to use a page. If page_get_text or page_query_dom fails, is blocked by Chrome Apple Events JavaScript permission, or returns insufficient content, continue with get_window_state plus AX/screenshot actions such as click, type_text, press_key/hotkey, and scroll.
+    - Browser page tools are optional shortcuts, not the only way to use a page. If page_get_text or page_query_dom fails, is blocked by Chrome Apple Events JavaScript permission, or returns insufficient content, continue with get_window_state plus AX/screenshot actions such as click, paste_text/type_text, press_key/hotkey, and scroll.
+    - For text entry, prefer app-scoped calls: include app_name/app_bundle_id, and include element_index/element_id when an editable target is visible in the latest state.
+    - type_text sends literal keyboard input after Muesli activates the requested app and verifies a focused editable target. Use it for normal typing into focused text fields.
+    - For Apple Notes and native rich-text editors, first focus the editable note body/title, then prefer paste_text for multi-word text. Use type_text only for short direct key-event text entry when paste_text is inappropriate.
     - Do not use fail only because a browser DOM/page tool failed. Use fail only after trying the available AX/screenshot fallback path or when the requested task is unsafe or truly unsupported.
     - After get_window_state returns a fresh state, act on the visible AX/screenshot evidence. Do not call get_window_state repeatedly unless a tool result indicates the app/window changed or a previous action needs verification.
     - If browser page tools are blocked, use the screenshot and AX candidates to click, type, press keys, or scroll; do not loop on observation waiting for DOM access to appear.
     - navigate_url may only use http or https URLs. Never output javascript:, file:, data:, shell text, or arbitrary code.
+    - For navigate_url, omit window_index and tab_index unless they came from a recent list_browser_tabs result. After hotkey command+t, call navigate_url without tab_index so Muesli navigates the active new tab.
     - max_steps is a high safety ceiling, not a target. Use as few steps as needed.
     - Use finish only when the user's command is complete. Use fail(reason) when blocked, unsafe, unsupported, or incomplete.
     - Risky actions are locally blocked by Muesli; do not try to bypass confirmation.

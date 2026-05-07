@@ -62,19 +62,54 @@ enum ComputerUseBrowserAutomation {
         guard let safeURL = ComputerUseToolInvocation.safeHTTPURL(url) else {
             return .needsConfirmation("Confirm: unsafe navigation URL")
         }
-        let target = browserTabReference(windowIndex: windowIndex, tabIndex: tabIndex)
-        let script = """
-        tell application id "\(appleScriptString(appBundleID))"
-          activate
-          set URL of \(target) to "\(appleScriptString(safeURL.absoluteString))"
-        end tell
-        """
+        let script = navigateScript(
+            appBundleID: appBundleID,
+            windowIndex: windowIndex,
+            tabIndex: tabIndex,
+            url: safeURL.absoluteString
+        )
         do {
-            _ = try await runAppleScript(script)
-            return .executed("Navigated to \(safeURL.absoluteString)")
+            let output = try await runAppleScript(script)
+            let suffix = output.isEmpty ? "" : " (\(output))"
+            return .executed("Navigated to \(safeURL.absoluteString)\(suffix)")
         } catch {
             return .failed(browserScriptError(error))
         }
+    }
+
+    static func navigateScript(appBundleID: String, windowIndex: Int?, tabIndex: Int?, url: String) -> String {
+        let requestedWindow = max(1, windowIndex ?? 1)
+        let requestedTab = max(1, tabIndex ?? 1)
+        let hasWindowHint = windowIndex != nil
+        let hasTabHint = tabIndex != nil
+        return """
+        tell application id "\(appleScriptString(appBundleID))"
+          activate
+          if (count of windows) is 0 then make new window
+          set targetWindow to front window
+          set usedFallback to false
+          if \(appleScriptBool(hasWindowHint)) then
+            if \(requestedWindow) <= (count of windows) then
+              set targetWindow to window \(requestedWindow)
+            else
+              set usedFallback to true
+            end if
+          end if
+          set targetTab to active tab of targetWindow
+          if \(appleScriptBool(hasTabHint)) then
+            if \(requestedTab) <= (count of tabs of targetWindow) then
+              set targetTab to tab \(requestedTab) of targetWindow
+            else
+              set usedFallback to true
+            end if
+          end if
+          set URL of targetTab to "\(appleScriptString(url))"
+          if usedFallback then
+            return "used active tab fallback"
+          end if
+          return ""
+        end tell
+        """
     }
 
     static func pageText(appBundleID: String, windowIndex: Int?, tabIndex: Int?) async -> ComputerUseExecutionResult {
@@ -235,6 +270,10 @@ enum ComputerUseBrowserAutomation {
             .replacingOccurrences(of: "\n", with: "\\n")
             .replacingOccurrences(of: "\r", with: "\\r")
             .replacingOccurrences(of: "\u{0}", with: "")
+    }
+
+    private static func appleScriptBool(_ value: Bool) -> String {
+        value ? "true" : "false"
     }
 
     private static func jsonString(_ value: String) -> String {

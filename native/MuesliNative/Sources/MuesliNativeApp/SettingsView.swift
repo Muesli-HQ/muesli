@@ -388,6 +388,23 @@ struct SettingsView: View {
                         presets: SummaryModelPreset.computerUsePlannerModels
                     ) { val in controller.updateConfig { $0.computerUsePlannerModel = val } }
                 }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Timeout", controlWidth: meetingControlWidth) {
+                    Stepper(
+                        value: Binding(
+                            get: { max(appState.config.computerUseTimeoutSeconds, 1) },
+                            set: { newValue in
+                                controller.updateConfig { $0.computerUseTimeoutSeconds = max(newValue, 1) }
+                            }
+                        ),
+                        in: 1...600,
+                        step: 15
+                    ) {
+                        Text("\(max(appState.config.computerUseTimeoutSeconds, 1)) seconds")
+                            .font(MuesliTheme.body())
+                            .foregroundStyle(MuesliTheme.textPrimary)
+                    }
+                }
             }
         }
     }

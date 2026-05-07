@@ -37,7 +37,7 @@ struct ComputerUseToolSchemaProperty: Codable, Equatable {
     let type: String
     let description: String
     let enumValues: [String]?
-    let items: [String: String]?
+    let items: ComputerUseToolSchemaArrayItems?
 
     enum CodingKeys: String, CodingKey {
         case type
@@ -46,11 +46,26 @@ struct ComputerUseToolSchemaProperty: Codable, Equatable {
         case items
     }
 
-    init(type: String, description: String, enumValues: [String]? = nil, items: [String: String]? = nil) {
+    init(
+        type: String,
+        description: String,
+        enumValues: [String]? = nil,
+        items: ComputerUseToolSchemaArrayItems? = nil
+    ) {
         self.type = type
         self.description = description
         self.enumValues = enumValues
         self.items = items
+    }
+}
+
+struct ComputerUseToolSchemaArrayItems: Codable, Equatable {
+    let type: String
+    let enumValues: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case enumValues = "enum"
     }
 }
 
@@ -70,25 +85,44 @@ enum ComputerUseToolRegistry {
             "app_bundle_id": .string("Optional app bundle to activate before capture."),
             "window_id": .integer("Optional window id hint."),
         ], risk: "safe read-only"),
-        definition(.click, "Click an AX element from the latest get_window_state by element_index/element_id, or click a screenshot coordinate when no AX target exists.", required: [], properties: [
-            "element_index": .integer("Preferred temporary element index from the latest state."),
-            "element_id": .string("Temporary element id from the latest state, for example e12."),
-            "screenshot_id": .string("Current screenshot id when using x/y coordinates."),
+        definition(.moveCursor, "Move the visible Muesli CUA cursor to a screenshot coordinate without clicking. Use this before uncertain coordinate clicks to show intent.", required: ["screenshot_id", "x", "y"], properties: [
+            "screenshot_id": .string("Current screenshot id."),
             "x": .number("Screenshot pixel x coordinate."),
             "y": .number("Screenshot pixel y coordinate."),
+            "label": .string("Human target label for live feedback and trace."),
+        ], risk: "visual feedback only"),
+        definition(.click, "Click exactly one target: either an AX element from the latest get_window_state by element_index/element_id, or a screenshot coordinate when no AX target exists. Do not send both an element target and x/y.", required: [], properties: [
+            "element_index": .integer("Temporary element index from the latest state. Element-indexed clicks are scoped to the current snapshot and expire after a new get_window_state."),
+            "element_id": .string("Temporary element id from the latest state, for example e12. Use only when x/y are absent."),
+            "screenshot_id": .string("Required current screenshot id when using x/y coordinates."),
+            "x": .number("Screenshot pixel x coordinate. Use only with y and screenshot_id, and only when element_index/element_id are absent."),
+            "y": .number("Screenshot pixel y coordinate. Use only with x and screenshot_id, and only when element_index/element_id are absent."),
             "clicks": .integer("1 for single click, 2 for double click."),
             "button": .string("left or right."),
             "label": .string("Human target label for trace and safety."),
-        ], risk: "confirmation for risky labels or unknown coordinate targets"),
+        ], risk: "rejects mixed element/coordinate addressing; confirmation for risky labels or unknown coordinate targets"),
         definition(.setValue, "Set an AX element value by element_index/element_id from the latest state.", required: ["value"], properties: [
             "element_index": .integer("Temporary element index from the latest state."),
             "element_id": .string("Temporary element id from the latest state."),
             "value": .string("Value to set."),
             "label": .string("Human target label for trace."),
         ], risk: "local validation only; no send/submit bypass"),
-        definition(.typeText, "Type text into the focused field.", required: ["text"], properties: [
+        definition(.typeText, "Type literal text using keyboard input. Prefer app_name/app_bundle_id and, when available, element_index/element_id so Muesli can activate the app and focus the editable target before typing.", required: ["text"], properties: [
+            "app_name": .string("Optional target app name, for example Notes."),
+            "app_bundle_id": .string("Optional target app bundle identifier, for example com.apple.Notes."),
+            "element_index": .integer("Optional temporary editable element index from the latest state."),
+            "element_id": .string("Optional temporary editable element id from the latest state."),
             "text": .string("Text to type."),
-        ], risk: "safe primitive"),
+            "label": .string("Human target label for trace."),
+        ], risk: "safe primitive; activates optional app target and requires focused editable text"),
+        definition(.pasteText, "Paste text into the focused editable field using the clipboard, then restore the user's clipboard. Prefer app_name/app_bundle_id and element_index/element_id when available. Prefer this for Apple Notes, native rich-text editors, and multi-word text insertion after focusing the editable target.", required: ["text"], properties: [
+            "app_name": .string("Optional target app name, for example Notes."),
+            "app_bundle_id": .string("Optional target app bundle identifier, for example com.apple.Notes."),
+            "element_index": .integer("Optional temporary editable element index from the latest state."),
+            "element_id": .string("Optional temporary editable element id from the latest state."),
+            "text": .string("Text to paste."),
+            "label": .string("Human target label for trace."),
+        ], risk: "safe primitive; temporarily uses clipboard and restores it"),
         definition(.pressKey, "Press one key with optional modifiers.", required: ["key"], properties: [
             "key": .string("Key name, for example enter, tab, l, escape."),
             "modifiers": .array("Optional modifiers.", item: .string("Modifier", enumValues: ComputerUseKeyModifier.allCases.map(\.rawValue))),
@@ -231,7 +265,11 @@ private extension ComputerUseToolSchemaProperty {
     }
 
     static func array(_ description: String, item: ComputerUseToolSchemaProperty) -> ComputerUseToolSchemaProperty {
-        ComputerUseToolSchemaProperty(type: "array", description: description, items: ["type": item.type])
+        ComputerUseToolSchemaProperty(
+            type: "array",
+            description: description,
+            items: ComputerUseToolSchemaArrayItems(type: item.type, enumValues: item.enumValues)
+        )
     }
 
     var jsonSchema: [String: Any] {
@@ -243,7 +281,11 @@ private extension ComputerUseToolSchemaProperty {
             schema["enum"] = enumValues
         }
         if let items {
-            schema["items"] = items
+            var itemSchema: [String: Any] = ["type": items.type]
+            if let enumValues = items.enumValues {
+                itemSchema["enum"] = enumValues
+            }
+            schema["items"] = itemSchema
         }
         return schema
     }

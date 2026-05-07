@@ -94,6 +94,8 @@ enum ComputerUseToolExecutor {
                 return await focusApp(named: toolCall.appName?.isEmpty == false ? toolCall.appName! : toolCall.canonicalBundleID)
             }
             return .executed("Captured window state")
+        case .moveCursor:
+            return moveCursor(toolCall, registry: registry)
         case .click:
             return click(toolCall, registry: registry)
         case .setValue:
@@ -106,8 +108,9 @@ enum ComputerUseToolExecutor {
                 key: toolCall.key ?? ""
             ))
         case .typeText:
-            PasteController.typeText(toolCall.text ?? "")
-            return .executed("Typed text")
+            return await enterText(toolCall, registry: registry, mode: .keyboard)
+        case .pasteText:
+            return await enterText(toolCall, registry: registry, mode: .paste)
         case .scroll:
             return scroll(direction: toolCall.direction ?? .down, pages: toolCall.pages ?? 1)
         case .listBrowserTabs:
@@ -299,11 +302,16 @@ enum ComputerUseToolExecutor {
     }
 
     private static func click(_ toolCall: ComputerUseToolCall, registry: ComputerUseElementRegistry?) -> ComputerUseExecutionResult {
-        if let index = toolCall.elementIndex, let element = registry?.element(for: index) {
+        if let index = toolCall.elementIndex {
+            guard let element = registry?.element(for: index) else {
+                return .failed("Stale or unknown element_index \(index). Run get_window_state again and use an element from the fresh snapshot.")
+            }
             return clickElement(element, fallbackLabel: toolCall.label ?? "e\(index)")
         }
-        if let elementID = toolCall.elementID,
-           let element = registry?.element(for: elementID) {
+        if let elementID = toolCall.elementID, !elementID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            guard let element = registry?.element(for: elementID) else {
+                return .failed("Stale or unknown element_id \(elementID). Run get_window_state again and use an element from the fresh snapshot.")
+            }
             return clickElement(element, fallbackLabel: toolCall.label ?? elementID)
         }
         if toolCall.x != nil, toolCall.y != nil {
@@ -315,9 +323,15 @@ enum ComputerUseToolExecutor {
     private static func setValue(_ toolCall: ComputerUseToolCall, registry: ComputerUseElementRegistry?) -> ComputerUseExecutionResult {
         let element: AXUIElement?
         if let index = toolCall.elementIndex {
-            element = registry?.element(for: index)
+            guard let resolved = registry?.element(for: index) else {
+                return .failed("Stale or unknown element_index \(index). Run get_window_state again and use an element from the fresh snapshot.")
+            }
+            element = resolved
         } else if let elementID = toolCall.elementID {
-            element = registry?.element(for: elementID)
+            guard let resolved = registry?.element(for: elementID) else {
+                return .failed("Stale or unknown element_id \(elementID). Run get_window_state again and use an element from the fresh snapshot.")
+            }
+            element = resolved
         } else {
             element = nil
         }
@@ -330,6 +344,125 @@ enum ComputerUseToolExecutor {
             return .executed("Set value")
         }
         return .unsupported("Element does not support set_value")
+    }
+
+    private enum TextEntryMode {
+        case keyboard
+        case paste
+
+        var toolName: String {
+            switch self {
+            case .keyboard: "type_text"
+            case .paste: "paste_text"
+            }
+        }
+
+        var completedMessage: String {
+            switch self {
+            case .keyboard: "Typed text"
+            case .paste: "Pasted text"
+            }
+        }
+    }
+
+    private static func enterText(
+        _ toolCall: ComputerUseToolCall,
+        registry: ComputerUseElementRegistry?,
+        mode: TextEntryMode
+    ) async -> ComputerUseExecutionResult {
+        let targetApp = await prepareTextEntryApp(toolCall)
+        if case let .failure(message) = targetApp {
+            return .failed(message)
+        }
+        let app = targetApp.app
+
+        if let elementResult = await focusTextEntryElement(toolCall, registry: registry) {
+            if case let .failure(message) = elementResult {
+                return .failed(message)
+            }
+        }
+
+        guard focusedEditableTextTarget(requiredApp: app) != nil else {
+            let target = textEntryTargetDescription(app: app, toolCall: toolCall)
+            return .failed("No focused editable text target\(target). Click an editable note body, title, text field, or text area before using \(mode.toolName).")
+        }
+
+        switch mode {
+        case .keyboard:
+            PasteController.typeText(toolCall.text ?? "")
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        case .paste:
+            PasteController.paste(text: toolCall.text ?? "")
+            try? await Task.sleep(nanoseconds: 700_000_000)
+        }
+        return .executed(mode.completedMessage)
+    }
+
+    private enum AppPreparationResult {
+        case success(NSRunningApplication?)
+        case failure(String)
+
+        var app: NSRunningApplication? {
+            if case let .success(app) = self { return app }
+            return nil
+        }
+    }
+
+    private enum ElementFocusResult {
+        case success
+        case failure(String)
+    }
+
+    private static func prepareTextEntryApp(_ toolCall: ComputerUseToolCall) async -> AppPreparationResult {
+        let target = textEntryAppName(toolCall)
+        guard !target.isEmpty else {
+            return .success(nil)
+        }
+
+        let focusResult = await focusApp(named: target)
+        guard focusResult.status == .executed else {
+            return .failure(focusResult.message)
+        }
+        return .success(runningApplication(named: target))
+    }
+
+    private static func textEntryAppName(_ toolCall: ComputerUseToolCall) -> String {
+        if toolCall.appName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            return toolCall.appName ?? ""
+        }
+        if !toolCall.canonicalBundleID.isEmpty {
+            return toolCall.canonicalBundleID
+        }
+        return ""
+    }
+
+    private static func focusTextEntryElement(
+        _ toolCall: ComputerUseToolCall,
+        registry: ComputerUseElementRegistry?
+    ) async -> ElementFocusResult? {
+        let element: AXUIElement?
+        if let index = toolCall.elementIndex, index > 0 {
+            guard let resolved = registry?.element(for: index) else {
+                return .failure("Stale or unknown element_index \(index). Run get_window_state again and use an element from the fresh snapshot.")
+            }
+            element = resolved
+        } else if let elementID = toolCall.elementID, !elementID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            guard let resolved = registry?.element(for: elementID) else {
+                return .failure("Stale or unknown element_id \(elementID). Run get_window_state again and use an element from the fresh snapshot.")
+            }
+            element = resolved
+        } else {
+            element = nil
+        }
+        guard let element else { return nil }
+
+        _ = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, true as CFTypeRef)
+        if let rect = rect(of: element) {
+            ComputerUseCursorOverlay.shared.show(at: CGPoint(x: rect.midX, y: rect.midY), label: toolCall.label)
+        }
+        _ = clickCenter(of: element)
+        try? await Task.sleep(nanoseconds: 250_000_000)
+        return .success
     }
 
     private static func clickElement(labeled rawLabel: String) -> ComputerUseExecutionResult {
@@ -357,11 +490,30 @@ enum ComputerUseToolExecutor {
     }
 
     private static func clickElement(_ element: AXUIElement, fallbackLabel: String) -> ComputerUseExecutionResult {
+        if let rect = rect(of: element) {
+            ComputerUseCursorOverlay.shared.show(
+                at: CGPoint(x: rect.midX, y: rect.midY),
+                label: fallbackLabel
+            )
+        }
+        if axBool(element, kAXEnabledAttribute) == false {
+            return .failed("\(fallbackLabel) is disabled; click would likely be a no-op")
+        }
+
+        let advertisedActions = actionNames(of: element)
+        if let advertisedActions, !advertisedActions.contains(kAXPressAction) {
+            if clickCenter(of: element) {
+                return .executed("Clicked \(fallbackLabel) by coordinates; element does not advertise AXPress")
+            }
+            let actions = advertisedActions.isEmpty ? "none" : advertisedActions.joined(separator: ", ")
+            return .unsupported("\(fallbackLabel) does not advertise AXPress (actions: \(actions))")
+        }
+
         if AXUIElementPerformAction(element, kAXPressAction as CFString) == .success {
             return .executed("Clicked \(fallbackLabel)")
         }
         if clickCenter(of: element) {
-            return .executed("Clicked \(fallbackLabel)")
+            return .executed("Clicked \(fallbackLabel) by coordinates after AXPress failed")
         }
         return .failed("Could not click \(fallbackLabel)")
     }
@@ -378,6 +530,7 @@ enum ComputerUseToolExecutor {
         }
 
         ComputerUseCursorOverlay.shared.show(at: point, label: toolCall.label)
+        CGWarpMouseCursorPosition(point)
         let button = mouseButton(from: toolCall.button)
         let downType: CGEventType = button == .right ? .rightMouseDown : .leftMouseDown
         let upType: CGEventType = button == .right ? .rightMouseUp : .leftMouseUp
@@ -636,6 +789,78 @@ enum ComputerUseToolExecutor {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return "" }
         return value as? String ?? ""
+    }
+
+    private static func textEntryTargetDescription(
+        app: NSRunningApplication?,
+        toolCall: ComputerUseToolCall
+    ) -> String {
+        let appName = app?.localizedName ?? textEntryAppName(toolCall)
+        return appName.isEmpty ? "" : " in \(appName)"
+    }
+
+    private static func focusedEditableTextTarget(requiredApp: NSRunningApplication?) -> AXUIElement? {
+        guard AXIsProcessTrusted() else { return nil }
+        let system = AXUIElementCreateSystemWide()
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &value) == .success,
+              let rawElement = value,
+              CFGetTypeID(rawElement) == AXUIElementGetTypeID()
+        else { return nil }
+
+        let element = rawElement as! AXUIElement
+        if let requiredApp {
+            guard processID(of: element) == requiredApp.processIdentifier else {
+                return nil
+            }
+        }
+        return isEditableTextElement(element) ? element : nil
+    }
+
+    private static func isEditableTextElement(_ element: AXUIElement) -> Bool {
+        let role = axString(element, kAXRoleAttribute)
+        let subrole = axString(element, kAXSubroleAttribute)
+        let editableRoles = Set([
+            kAXTextAreaRole as String,
+            kAXTextFieldRole as String,
+            kAXComboBoxRole as String,
+        ])
+        if editableRoles.contains(role) {
+            return true
+        }
+        if subrole == "AXSearchField" {
+            return true
+        }
+
+        var settable = DarwinBoolean(false)
+        if AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable) == .success,
+           settable.boolValue {
+            return role.contains("Text") || role == "AXWebArea" || role == "AXGroup"
+        }
+        return false
+    }
+
+    private static func processID(of element: AXUIElement) -> pid_t? {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success else { return nil }
+        return pid
+    }
+
+    private static func axBool(_ element: AXUIElement, _ attribute: String) -> Bool? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
+              let value
+        else { return nil }
+        if CFGetTypeID(value) == CFBooleanGetTypeID() {
+            return CFBooleanGetValue((value as! CFBoolean))
+        }
+        return value as? Bool
+    }
+
+    private static func actionNames(of element: AXUIElement) -> [String]? {
+        var rawActions: CFArray?
+        guard AXUIElementCopyActionNames(element, &rawActions) == .success else { return nil }
+        return (rawActions as? [String]) ?? []
     }
 
     private static func clickCenter(of element: AXUIElement) -> Bool {

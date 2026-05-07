@@ -33,6 +33,13 @@ struct ComputerUseToolRegistryTests {
         let properties = parameters?["properties"] as? [String: Any]
         #expect(properties?["tool"] == nil)
         #expect(properties?["app_name"] != nil)
+
+        let hotkey = tools.first { ($0["name"] as? String) == "hotkey" }
+        let hotkeyParameters = hotkey?["parameters"] as? [String: Any]
+        let hotkeyProperties = hotkeyParameters?["properties"] as? [String: Any]
+        let modifiers = hotkeyProperties?["modifiers"] as? [String: Any]
+        let modifierItems = modifiers?["items"] as? [String: Any]
+        #expect(modifierItems?["enum"] as? [String] == ComputerUseKeyModifier.allCases.map(\.rawValue))
     }
 
     @Test("planner guidance treats browser page tools as optional")
@@ -46,6 +53,8 @@ struct ComputerUseToolRegistryTests {
         #expect(instructions.contains("Do not use fail only because a browser DOM/page tool failed"))
         #expect(instructions.contains("Do not call get_window_state repeatedly"))
         #expect(instructions.contains("do not loop on observation"))
+        #expect(instructions.contains("After hotkey command+t, call navigate_url without tab_index"))
+        #expect(instructions.contains("prefer paste_text for multi-word text"))
     }
 }
 
@@ -87,6 +96,17 @@ struct ComputerUsePlannerResponseTests {
         #expect(response.toolCall.key == "l")
     }
 
+    @Test("decodes modifier aliases")
+    func decodesModifierAliases() throws {
+        let response = try ComputerUsePlannerResponse.decodeNativeToolCall(
+            name: "hotkey",
+            arguments: #"{"modifiers":["cmd","ctrl","alt","fn"],"key":"t"}"#
+        )
+
+        #expect(response.toolCall.modifiers == [.command, .control, .option, .function])
+        #expect(response.toolCall.key == "t")
+    }
+
     @Test("decodes coordinate tool calls")
     func decodesCoordinateToolCalls() throws {
         let response = try ComputerUsePlannerResponse.decodeJSON(
@@ -97,6 +117,45 @@ struct ComputerUsePlannerResponseTests {
         #expect(response.toolCall.screenshotID == "s1")
         #expect(response.toolCall.x == 120)
         #expect(response.toolCall.y == 240)
+        #expect(!response.toolCall.requiresConfirmation)
+    }
+
+    @Test("coordinate clicks require screenshot id")
+    func coordinateClicksRequireScreenshotID() {
+        #expect(throws: Error.self) {
+            _ = try ComputerUsePlannerResponse.decodeJSON(
+                from: #"{"tool":"click","x":120,"y":240,"label":"Search"}"#
+            )
+        }
+    }
+
+    @Test("click rejects mixed element and coordinate addressing")
+    func clickRejectsMixedElementAndCoordinateAddressing() {
+        #expect(throws: Error.self) {
+            _ = try ComputerUsePlannerResponse.decodeJSON(
+                from: #"{"tool":"click","element_index":9,"screenshot_id":"s1","x":120,"y":240,"label":"Search"}"#
+            )
+        }
+    }
+
+    @Test("click rejects invalid element index")
+    func clickRejectsInvalidElementIndex() {
+        #expect(throws: Error.self) {
+            _ = try ComputerUsePlannerResponse.decodeJSON(
+                from: #"{"tool":"click","element_index":0,"label":"Search"}"#
+            )
+        }
+    }
+
+    @Test("decodes move cursor tool calls")
+    func decodesMoveCursorToolCalls() throws {
+        let response = try ComputerUsePlannerResponse.decodeJSON(
+            from: #"{"tool":"move_cursor","screenshot_id":"s1","x":120,"y":240,"label":"Search"}"#
+        )
+
+        #expect(response.toolCall.tool == .moveCursor)
+        #expect(response.toolCall.screenshotID == "s1")
+        #expect(response.toolCall.summary == "move cursor to 120,240")
     }
 
     @Test("decodes native tool call arguments")
@@ -109,6 +168,41 @@ struct ComputerUsePlannerResponseTests {
         #expect(response.toolCall.tool == .launchApp)
         #expect(response.toolCall.appName == "Google Chrome")
         #expect(response.rawModelOutput?.contains(#""tool":"launch_app""#) == true)
+    }
+
+    @Test("decodes app scoped type text tool calls")
+    func decodesAppScopedTypeTextToolCalls() throws {
+        let response = try ComputerUsePlannerResponse.decodeJSON(
+            from: #"{"tool":"type_text","app_bundle_id":"com.apple.Notes","element_index":12,"text":"this has been created using computer use","label":"note body"}"#
+        )
+
+        #expect(response.toolCall.tool == .typeText)
+        #expect(response.toolCall.canonicalBundleID == "com.apple.Notes")
+        #expect(response.toolCall.elementIndex == 12)
+        #expect(response.toolCall.summary == "type this has been created using computer use")
+    }
+
+    @Test("decodes paste text tool calls")
+    func decodesPasteTextToolCalls() throws {
+        let response = try ComputerUsePlannerResponse.decodeJSON(
+            from: #"{"tool":"paste_text","app_name":"Notes","text":"this has been created using computer use"}"#
+        )
+
+        #expect(response.toolCall.tool == .pasteText)
+        #expect(response.toolCall.appName == "Notes")
+        #expect(response.toolCall.summary == "paste this has been created using computer use")
+    }
+
+    @Test("text entry accepts zero element index as absent target")
+    func textEntryAcceptsZeroElementIndexAsAbsentTarget() throws {
+        let response = try ComputerUsePlannerResponse.decodeNativeToolCall(
+            name: "paste_text",
+            arguments: #"{"label":"note title","app_bundle_id":"com.apple.Notes","text":"hello","element_id":"","element_index":0,"app_name":"Notes"}"#
+        )
+
+        #expect(response.toolCall.tool == .pasteText)
+        #expect(response.toolCall.elementIndex == 0)
+        #expect(response.toolCall.canonicalBundleID == "com.apple.Notes")
     }
 
     @Test("native tool call rejects unsupported fields")
@@ -168,9 +262,11 @@ struct ComputerUsePlannerResponseTests {
     @Test("risky tool calls require confirmation")
     func riskyToolCallsRequireConfirmation() throws {
         let click = try ComputerUsePlannerResponse.decodeJSON(from: #"{"tool":"click","element_id":"e2","label":"Send"}"#)
+        let unlabeledPoint = try ComputerUsePlannerResponse.decodeJSON(from: #"{"tool":"click","screenshot_id":"s1","x":120,"y":240}"#)
         let key = try ComputerUsePlannerResponse.decodeJSON(from: #"{"tool":"hotkey","modifiers":["command"],"key":"q"}"#)
 
         #expect(click.toolCall.requiresConfirmation)
+        #expect(unlabeledPoint.toolCall.requiresConfirmation)
         #expect(key.toolCall.requiresConfirmation)
     }
 }
@@ -613,6 +709,88 @@ struct ComputerUsePlannerRuntimeTests {
 
         #expect(result.status == ComputerUsePlannerRuntimeResult.Status.done)
         #expect(result.message == "used screen fallback")
+        #expect(observeCount == 2)
+        #expect(result.traceEvents.contains { $0.title == "Screen fallback" })
+    }
+
+    @Test("type text focus failures continue with focus fallback")
+    @MainActor
+    func typeTextFocusFailuresContinueWithFocusFallback() async {
+        var observeCount = 0
+        let runtime = ComputerUsePlannerRuntime(
+            config: AppConfig(),
+            observe: { _, _, _ in
+                observeCount += 1
+                return Self.observation(
+                    appName: "Notes",
+                    bundleID: "com.apple.Notes",
+                    windowTitle: "All iCloud",
+                    screenshot: Self.screenshot()
+                )
+            },
+            plan: { request in
+                if request.step == 1 {
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(
+                        tool: .typeText,
+                        text: "this was created using computer use"
+                    ))
+                }
+                #expect(request.priorOutcomes.last?.tool == .typeText)
+                #expect(request.priorOutcomes.last?.status == "failed")
+                #expect(request.priorOutcomes.last?.message.contains("focus an editable target") == true)
+                return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish, reason: "focused fallback available"))
+            },
+            execute: { toolCall, _ in
+                #expect(toolCall.tool == .typeText)
+                return .failed("No focused editable text target. Click an editable note body, title, text field, or text area before using type_text.")
+            }
+        )
+
+        let result = await runtime.run(command: "write a note")
+
+        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.done)
+        #expect(result.message == "focused fallback available")
+        #expect(observeCount == 2)
+        #expect(result.traceEvents.contains { $0.title == "Screen fallback" })
+    }
+
+    @Test("paste text focus failures continue with focus fallback")
+    @MainActor
+    func pasteTextFocusFailuresContinueWithFocusFallback() async {
+        var observeCount = 0
+        let runtime = ComputerUsePlannerRuntime(
+            config: AppConfig(),
+            observe: { _, _, _ in
+                observeCount += 1
+                return Self.observation(
+                    appName: "Notes",
+                    bundleID: "com.apple.Notes",
+                    windowTitle: "All iCloud",
+                    screenshot: Self.screenshot()
+                )
+            },
+            plan: { request in
+                if request.step == 1 {
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(
+                        tool: .pasteText,
+                        text: "this was created using computer use"
+                    ))
+                }
+                #expect(request.priorOutcomes.last?.tool == .pasteText)
+                #expect(request.priorOutcomes.last?.status == "failed")
+                #expect(request.priorOutcomes.last?.message.contains("Prefer paste_text for Apple Notes") == true)
+                return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish, reason: "focused fallback available"))
+            },
+            execute: { toolCall, _ in
+                #expect(toolCall.tool == .pasteText)
+                return .failed("No focused editable text target. Click an editable note body, title, text field, or text area before using paste_text.")
+            }
+        )
+
+        let result = await runtime.run(command: "write a note")
+
+        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.done)
+        #expect(result.message == "focused fallback available")
         #expect(observeCount == 2)
         #expect(result.traceEvents.contains { $0.title == "Screen fallback" })
     }

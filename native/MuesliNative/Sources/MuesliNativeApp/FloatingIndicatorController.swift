@@ -102,6 +102,8 @@ final class FloatingIndicatorController: NSObject {
     private var transcribingTitle = "Transcribing"
     private var loadingSpinner: NSProgressIndicator?
     private var isShowingLoading = false
+    private var isComputerUseCursorMode = false
+    private var computerUseCursorReturnFrame: NSRect?
 
     init(configStore: ConfigStore) {
         self.configStore = configStore
@@ -213,6 +215,9 @@ final class FloatingIndicatorController: NSObject {
     func setState(_ state: DictationState, config: AppConfig) {
         let previousState = self.state
         let previousHover = isHovered
+        if isComputerUseCursorMode {
+            exitComputerUseCursorMode(restoreFrame: false)
+        }
         self.state = state
         if state != .transcribing {
             transcribingTitle = "Transcribing"
@@ -327,6 +332,78 @@ final class FloatingIndicatorController: NSObject {
         }
 
         panel.orderFrontRegardless()
+    }
+
+    func showComputerUseCursor(at quartzPoint: CGPoint, label rawLabel: String?) {
+        let config = configStore.load()
+        if panel == nil {
+            createPanel(config: config)
+        }
+        guard let panel, let contentView, let iconLabel, let textLabel else { return }
+
+        if !isComputerUseCursorMode {
+            computerUseCursorReturnFrame = panel.frame
+        }
+        isComputerUseCursorMode = true
+        hoverExitWorkItem?.cancel()
+        isHovered = false
+        isShowingLoading = false
+        loadingSpinner?.stopAnimation(nil)
+        loadingSpinner?.isHidden = true
+        stopWaveformAnimation()
+
+        let label = Self.cursorLabel(rawLabel)
+        let targetSize = Self.computerUseCursorSize(label: label)
+        let targetFrame = Self.computerUseCursorFrame(
+            forQuartzPoint: quartzPoint,
+            size: targetSize,
+            offsetFromTarget: !label.isEmpty
+        )
+
+        panel.level = .statusBar
+        panel.ignoresMouseEvents = true
+        glassView?.isHidden = true
+        tintLayer?.isHidden = true
+        micIconView?.isHidden = true
+        wandIconView?.isHidden = true
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.16
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            context.allowsImplicitAnimation = true
+
+            panel.animator().setFrame(targetFrame, display: true)
+            panel.animator().alphaValue = 1.0
+            contentView.animator().frame = NSRect(origin: .zero, size: targetSize)
+            contentView.layer?.cornerRadius = targetSize.height / 2
+            contentView.layer?.backgroundColor = NSColor.colorWith(hex: 0x1455D9, alpha: 0.88).cgColor
+            contentView.layer?.borderWidth = 1.0
+            contentView.layer?.borderColor = NSColor.colorWith(hex: 0xFFFFFF, alpha: 0.34).cgColor
+
+            iconLabel.isHidden = false
+            iconLabel.animator().alphaValue = 1
+            iconLabel.stringValue = "•"
+            iconLabel.font = NSFont.systemFont(ofSize: 18, weight: .heavy)
+            iconLabel.textColor = .white
+
+            textLabel.stringValue = label
+            textLabel.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+            textLabel.textColor = .white.withAlphaComponent(0.92)
+            textLabel.isHidden = label.isEmpty
+            textLabel.animator().alphaValue = label.isEmpty ? 0 : 1
+            layoutLabels(
+                iconLabel: iconLabel,
+                textLabel: textLabel,
+                in: targetSize,
+                hasTitle: !label.isEmpty,
+                animated: true
+            )
+        }
+        panel.orderFrontRegardless()
+    }
+
+    func hideComputerUseCursor() {
+        exitComputerUseCursorMode(restoreFrame: true)
     }
 
     func ensureVisible(config: AppConfig) {
@@ -771,6 +848,74 @@ final class FloatingIndicatorController: NSObject {
         self.textLabel = textLabel
 
         setupGlassLayer(in: contentView, iconLabel: iconLabel)
+    }
+
+    private func exitComputerUseCursorMode(restoreFrame: Bool) {
+        guard isComputerUseCursorMode else { return }
+        isComputerUseCursorMode = false
+        panel?.ignoresMouseEvents = false
+        panel?.level = .floating
+        if restoreFrame, let frame = computerUseCursorReturnFrame {
+            panel?.setFrame(frame, display: true)
+            contentView?.frame = NSRect(origin: .zero, size: frame.size)
+        }
+        computerUseCursorReturnFrame = nil
+    }
+
+    private static func cursorLabel(_ value: String?) -> String {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return "" }
+        if trimmed.count <= 24 { return trimmed }
+        return String(trimmed.prefix(21)) + "..."
+    }
+
+    private static func computerUseCursorSize(label: String) -> NSSize {
+        guard !label.isEmpty else {
+            return NSSize(width: 36, height: 36)
+        }
+        let font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        let textWidth = ceil((label as NSString).size(withAttributes: [.font: font]).width)
+        return NSSize(width: min(max(84, textWidth + 48), 190), height: 34)
+    }
+
+    private static func computerUseCursorFrame(
+        forQuartzPoint point: CGPoint,
+        size: NSSize,
+        offsetFromTarget: Bool
+    ) -> NSRect {
+        let screen = NSScreen.screens.first { screen in
+            let convertedY = screen.frame.maxY - point.y
+            return point.x >= screen.frame.minX
+                && point.x <= screen.frame.maxX
+                && convertedY >= screen.frame.minY
+                && convertedY <= screen.frame.maxY
+        } ?? NSScreen.main
+
+        guard let screen else {
+            return NSRect(
+                x: point.x - size.width / 2,
+                y: point.y - size.height / 2,
+                width: size.width,
+                height: size.height
+            )
+        }
+
+        let appKitPoint = CGPoint(x: point.x, y: screen.frame.maxY - point.y)
+        let xOffset: CGFloat = offsetFromTarget ? 14 : 0
+        let yOffset: CGFloat = offsetFromTarget ? 14 : 0
+        let proposed = NSRect(
+            x: appKitPoint.x - size.width / 2 + xOffset,
+            y: appKitPoint.y - size.height / 2 - yOffset,
+            width: size.width,
+            height: size.height
+        )
+        let bounds = screen.visibleFrame.insetBy(dx: 4, dy: 4)
+        return NSRect(
+            x: min(max(proposed.minX, bounds.minX), bounds.maxX - size.width),
+            y: min(max(proposed.minY, bounds.minY), bounds.maxY - size.height),
+            width: size.width,
+            height: size.height
+        )
     }
 
     private func setupGlassLayer(in contentView: HoverIndicatorView, iconLabel: NSTextField) {

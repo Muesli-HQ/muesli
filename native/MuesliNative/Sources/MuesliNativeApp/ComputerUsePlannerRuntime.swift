@@ -39,7 +39,7 @@ final class ComputerUsePlannerRuntime {
     init(
         config: AppConfig,
         maxSteps: Int? = 100,
-        timeoutSeconds: TimeInterval = 60,
+        timeoutSeconds: TimeInterval? = nil,
         onStatus: @escaping StatusHandler = { _ in },
         observe: @escaping ObserveHandler = { registry, includeScreenshot, target in
             ComputerUseObservationCapture.capture(
@@ -55,7 +55,7 @@ final class ComputerUsePlannerRuntime {
     ) {
         self.config = config
         self.maxSteps = maxSteps
-        self.timeoutSeconds = timeoutSeconds
+        self.timeoutSeconds = timeoutSeconds ?? TimeInterval(max(config.computerUseTimeoutSeconds, 1))
         self.onStatus = onStatus
         self.observe = observe
         self.plan = plan ?? { request in
@@ -305,7 +305,7 @@ final class ComputerUsePlannerRuntime {
 
     private func shouldTrackForRepetition(_ tool: ComputerUseToolName) -> Bool {
         switch tool {
-        case .click, .drag, .pressKey, .hotkey, .typeText, .setValue, .scroll, .navigateURL, .activateBrowserTab, .getWindowState:
+        case .moveCursor, .click, .drag, .pressKey, .hotkey, .typeText, .pasteText, .setValue, .scroll, .navigateURL, .activateBrowserTab, .getWindowState:
             return true
         case .listApps, .launchApp, .listWindows, .listBrowserTabs, .pageGetText, .pageQueryDOM, .finish, .fail:
             return false
@@ -320,7 +320,7 @@ final class ComputerUsePlannerRuntime {
             return ComputerUseObservationTarget(appName: appName, bundleID: nil)
         }
         switch toolCall.tool {
-        case .click, .setValue, .typeText, .pressKey, .hotkey, .scroll, .drag:
+        case .moveCursor, .click, .setValue, .typeText, .pasteText, .pressKey, .hotkey, .scroll, .drag:
             return fallback
         default:
             return nil
@@ -381,8 +381,12 @@ final class ComputerUsePlannerRuntime {
             return result.message.hasPrefix("Opened") ? result.message : "Opened app"
         case .click:
             return result.message.hasPrefix("Clicked") ? result.message : "Clicked"
+        case .moveCursor:
+            return "Moving cursor"
         case .typeText:
             return "Typed text"
+        case .pasteText:
+            return "Pasted text"
         case .navigateURL:
             return "Navigated"
         case .pressKey, .hotkey:
@@ -407,10 +411,14 @@ final class ComputerUsePlannerRuntime {
             return "Opening \(target?.isEmpty == false ? target! : "app")"
         case .click:
             return "Clicking"
+        case .moveCursor:
+            return toolCall.label?.isEmpty == false ? "Moving to \(toolCall.label!)" : "Moving cursor"
         case .setValue:
             return "Setting value"
         case .typeText:
             return "Typing"
+        case .pasteText:
+            return "Pasting"
         case .pressKey, .hotkey:
             return "Pressing key"
         case .scroll:
@@ -492,10 +500,14 @@ final class ComputerUsePlannerRuntime {
         result: ComputerUseExecutionResult
     ) -> String? {
         guard result.status == .failed || result.status == .unsupported else { return nil }
-        guard browserToolCanFallBackToScreen(toolCall.tool) else { return nil }
         let message = result.message.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard isBrowserAutomationPermissionFailure(message) else { return nil }
-        return "\(message). Continue with get_window_state plus AX/screenshot tools: click, type_text, press_key/hotkey, and scroll. Do not retry browser page tools unless the user grants Chrome Apple Events JavaScript permission."
+        if browserToolCanFallBackToScreen(toolCall.tool), isBrowserAutomationPermissionFailure(message) {
+            return "\(message). Continue with get_window_state plus AX/screenshot tools: click, paste_text/type_text, press_key/hotkey, and scroll. Do not retry browser page tools unless the user grants Chrome Apple Events JavaScript permission."
+        }
+        if (toolCall.tool == .typeText || toolCall.tool == .pasteText), isTextFocusFailure(message) {
+            return "\(message). Continue with get_window_state and focus an editable target using click or set_value before retrying text entry. Prefer paste_text for Apple Notes and native rich-text editors. Do not repeat text entry until the focused target changes."
+        }
+        return nil
     }
 
     private func browserToolCanFallBackToScreen(_ tool: ComputerUseToolName) -> Bool {
@@ -514,6 +526,10 @@ final class ComputerUsePlannerRuntime {
             || lowered.contains("not allowed")
             || lowered.contains("not authorized")
             || lowered.contains("automation")
+    }
+
+    private func isTextFocusFailure(_ message: String) -> Bool {
+        message.lowercased().contains("no focused editable text target")
     }
 
     private func executionTraceBody(toolCall: ComputerUseToolCall, observation: ComputerUseObservation) -> String {

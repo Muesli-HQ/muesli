@@ -6,10 +6,21 @@ final class ComputerUseCursorOverlay {
 
     private var panel: NSPanel?
     private var hideTask: Task<Void, Never>?
+    private weak var indicator: FloatingIndicatorController?
 
     private init() {}
 
+    func attachIndicator(_ indicator: FloatingIndicatorController) {
+        self.indicator = indicator
+        panel?.orderOut(nil)
+    }
+
     func show(at point: CGPoint, label: String?) {
+        if let indicator {
+            indicator.showComputerUseCursor(at: point, label: label)
+            return
+        }
+
         let size = CGSize(width: 30, height: 30)
         let panel = panel ?? makePanel(size: size)
         self.panel = panel
@@ -30,6 +41,13 @@ final class ComputerUseCursorOverlay {
                 self?.panel?.orderOut(nil)
             }
         }
+    }
+
+    func hide() {
+        hideTask?.cancel()
+        hideTask = nil
+        panel?.orderOut(nil)
+        indicator?.hideComputerUseCursor()
     }
 
     private func makePanel(size: CGSize) -> NSPanel {

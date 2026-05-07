@@ -5,9 +5,11 @@ enum ComputerUseToolName: String, Codable, Equatable, CaseIterable {
     case launchApp = "launch_app"
     case listWindows = "list_windows"
     case getWindowState = "get_window_state"
+    case moveCursor = "move_cursor"
     case click
     case setValue = "set_value"
     case typeText = "type_text"
+    case pasteText = "paste_text"
     case pressKey = "press_key"
     case hotkey
     case scroll
@@ -39,6 +41,36 @@ enum ComputerUseKeyModifier: String, Codable, CaseIterable, Equatable {
     case control
     case shift
     case function
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try container.decode(String.self)
+        let canonical = rawValue
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        switch canonical {
+        case "command", "cmd", "⌘", "meta":
+            self = .command
+        case "option", "opt", "alt", "⌥":
+            self = .option
+        case "control", "ctrl", "ctl", "⌃":
+            self = .control
+        case "shift", "⇧":
+            self = .shift
+        case "function", "fn":
+            self = .function
+        default:
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unsupported key modifier \(rawValue)"
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 }
 
 struct ComputerUseAppInfo: Codable, Equatable {
@@ -290,24 +322,52 @@ struct ComputerUseToolInvocation: Codable, Equatable {
             return nil
         case .launchApp:
             return trimmed(appName).isEmpty && canonicalBundleID.isEmpty ? "launch_app requires app_name or app_bundle_id" : nil
-        case .click:
-            if elementIndex != nil || !trimmed(elementID).isEmpty {
-                return nil
+        case .moveCursor:
+            if x == nil || y == nil {
+                return "move_cursor requires x and y"
             }
-            return x == nil || y == nil ? "click requires element_index, element_id, or x and y" : nil
+            return trimmed(screenshotID).isEmpty ? "move_cursor requires screenshot_id" : nil
+        case .click:
+            let hasElementIndex = elementIndex != nil
+            let hasElementID = !trimmed(elementID).isEmpty
+            let hasElementTarget = hasElementIndex || hasElementID
+            let hasX = x != nil
+            let hasY = y != nil
+            let hasCoordinateTarget = hasX || hasY
+            if let elementIndex, elementIndex <= 0 {
+                return "click element_index must be greater than 0"
+            }
+            if hasElementTarget && hasCoordinateTarget {
+                return "click requires exactly one addressing mode: element_index/element_id or x/y"
+            }
+            if hasX != hasY {
+                return "click coordinate mode requires both x and y"
+            }
+            if hasX && trimmed(screenshotID).isEmpty {
+                return "click coordinate mode requires screenshot_id"
+            }
+            return hasElementTarget || (hasX && hasY) ? nil : "click requires element_index, element_id, or x and y"
         case .setValue:
             if trimmed(value).isEmpty {
                 return "set_value requires value"
             }
+            if let elementIndex, elementIndex <= 0 {
+                return "set_value element_index must be greater than 0"
+            }
             return elementIndex == nil && trimmed(elementID).isEmpty ? "set_value requires element_index or element_id" : nil
         case .typeText:
             return trimmed(text).isEmpty ? "type_text requires text" : nil
+        case .pasteText:
+            return trimmed(text).isEmpty ? "paste_text requires text" : nil
         case .pressKey, .hotkey:
             return trimmed(key).isEmpty ? "\(tool.rawValue) requires key" : nil
         case .scroll:
             return direction == nil ? "scroll requires direction" : nil
         case .drag:
-            return x == nil || y == nil || toX == nil || toY == nil ? "drag requires x, y, to_x, and to_y" : nil
+            if x == nil || y == nil || toX == nil || toY == nil {
+                return "drag requires x, y, to_x, and to_y"
+            }
+            return trimmed(screenshotID).isEmpty ? "drag requires screenshot_id" : nil
         case .listBrowserTabs:
             return canonicalBundleID.isEmpty ? "list_browser_tabs requires app_bundle_id" : nil
         case .activateBrowserTab:
@@ -331,9 +391,12 @@ struct ComputerUseToolInvocation: Codable, Equatable {
 
     var requiresConfirmation: Bool {
         switch tool {
+        case .moveCursor:
+            return false
         case .click:
             if elementIndex == nil && trimmed(elementID).isEmpty {
-                return true
+                if trimmed(label).isEmpty { return true }
+                if screenshotID == nil { return true }
             }
             return containsRiskyWord([label, reason].compactMap { $0 }.joined(separator: " "))
         case .drag:
@@ -350,7 +413,7 @@ struct ComputerUseToolInvocation: Codable, Equatable {
 
     var isMutating: Bool {
         switch tool {
-        case .launchApp, .click, .setValue, .typeText, .pressKey, .hotkey, .scroll, .drag, .activateBrowserTab, .navigateURL:
+        case .launchApp, .moveCursor, .click, .setValue, .typeText, .pasteText, .pressKey, .hotkey, .scroll, .drag, .activateBrowserTab, .navigateURL:
             return true
         case .listApps, .listWindows, .getWindowState, .listBrowserTabs, .pageGetText, .pageQueryDOM, .finish, .fail:
             return false
@@ -367,6 +430,8 @@ struct ComputerUseToolInvocation: Codable, Equatable {
             return "list windows"
         case .getWindowState:
             return "get window state"
+        case .moveCursor:
+            return "move cursor to \(coordinateSummary(x, y))"
         case .click:
             if let elementIndex {
                 return "click element \(elementIndexLabel(elementIndex))"
@@ -380,6 +445,8 @@ struct ComputerUseToolInvocation: Codable, Equatable {
             return "set \(target) to \(truncateForSummary(trimmed(value)))"
         case .typeText:
             return "type \(truncateForSummary(trimmed(text)))"
+        case .pasteText:
+            return "paste \(truncateForSummary(trimmed(text)))"
         case .pressKey, .hotkey:
             let parts = (modifiers ?? []).map(\.rawValue) + [trimmed(key)]
             return "press \(parts.filter { !$0.isEmpty }.joined(separator: "+"))"

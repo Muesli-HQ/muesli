@@ -368,6 +368,7 @@ struct AppConfigTests {
         #expect(config.enableComputerUseHotkey == true)
         #expect(config.enableComputerUsePlanner == true)
         #expect(config.computerUsePlannerModel.isEmpty)
+        #expect(config.computerUseTimeoutSeconds == 120)
         #expect(config.showFloatingIndicator == true)
         #expect(config.indicatorAnchor == .midTrailing)
         #expect(config.hasCompletedOnboarding == false)
@@ -407,6 +408,7 @@ struct AppConfigTests {
         config.enableComputerUseHotkey = false
         config.enableComputerUsePlanner = false
         config.computerUsePlannerModel = "gpt-5.4"
+        config.computerUseTimeoutSeconds = 180
 
         let data = try JSONEncoder().encode(config)
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
@@ -433,6 +435,7 @@ struct AppConfigTests {
         #expect(decoded.enableComputerUseHotkey == false)
         #expect(decoded.enableComputerUsePlanner == false)
         #expect(decoded.computerUsePlannerModel == "gpt-5.4")
+        #expect(decoded.computerUseTimeoutSeconds == 180)
     }
 
     @Test("JSON coding keys use snake_case")
@@ -447,6 +450,7 @@ struct AppConfigTests {
         #expect(json["enable_computer_use_hotkey"] != nil)
         #expect(json["enable_computer_use_planner"] != nil)
         #expect(json["computer_use_planner_model"] != nil)
+        #expect(json["computer_use_timeout_seconds"] != nil)
         #expect(json["cohere_language"] != nil)
         #expect(json["meeting_transcription_backend"] != nil)
         #expect(json["meeting_transcription_model"] != nil)
@@ -486,6 +490,7 @@ struct AppConfigTests {
         #expect(config.enableComputerUseHotkey == true)
         #expect(config.enableComputerUsePlanner == true)
         #expect(config.computerUsePlannerModel.isEmpty)
+        #expect(config.computerUseTimeoutSeconds == 120)
         #expect(config.meetingHookEnabled == false)
         #expect(config.meetingHookPath.isEmpty)
         #expect(config.meetingHookTimeoutSeconds == 30)

@@ -168,6 +168,7 @@ final class MuesliController: NSObject {
             $0.backend == loadedConfig.meetingSummaryBackend
         }) ?? .openAI
         self.indicator = FloatingIndicatorController(configStore: configStore)
+        ComputerUseCursorOverlay.shared.attachIndicator(self.indicator)
         super.init()
     }
 
@@ -3116,6 +3117,7 @@ final class MuesliController: NSObject {
         }
 
         let result = await runtime.run(command: transcript)
+        indicator.hideComputerUseCursor()
         persistComputerUseTrace(result, dictationID: dictationID)
         computerUseCommandTask = nil
         await waitForComputerUseFloatingStatusDwell()
@@ -3207,6 +3209,8 @@ final class MuesliController: NSObject {
             || status.hasPrefix("Navigated")
             || status == "Navigating"
             || status == "Typing"
+            || status == "Moving cursor"
+            || status.hasPrefix("Moving to")
             || status == "Clicking"
             || status == "Scrolling"
             || status == "Pressing key"

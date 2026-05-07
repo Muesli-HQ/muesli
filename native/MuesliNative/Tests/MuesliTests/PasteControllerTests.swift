@@ -30,6 +30,13 @@ struct PasteControllerTests {
         #expect(pasteboard.string(forType: .string) == "clipboard-sentinel")
     }
 
+    @Test("common ASCII text uses physical keyboard path")
+    func commonASCIIUsesPhysicalKeyboardPath() {
+        #expect(PasteController.canTypeUsingPhysicalKeys("Hello, world! 123"))
+        #expect(PasteController.canTypeUsingPhysicalKeys("this has been created using computer use"))
+        #expect(!PasteController.canTypeUsingPhysicalKeys("नमस्ते"))
+    }
+
     @Test("UTF-16 encoding of SentencePiece leading-space deltas is correct")
     func sentencePieceLeadingSpaceUTF16() {
         // Nemotron streaming produces " word" (SentencePiece ▁ → " ").
