@@ -1190,6 +1190,11 @@ struct SettingsView: View {
             clearPendingScreenContextEnable()
             controller.updateConfig { $0.enableScreenContext = false }
         }
+        controller.reclassifyVoiceNotesAsDictationIfReady(
+            microphoneGranted: micGranted,
+            accessibilityGranted: accessibilityGranted,
+            inputMonitoringGranted: inputMonitoringGranted
+        )
         refreshSystemAudioPermissionIfNeeded()
     }
 

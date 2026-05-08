@@ -1473,6 +1473,33 @@ final class MuesliController: NSObject {
         )
     }
 
+    func reclassifyVoiceNotesAsDictationIfReady(
+        microphoneGranted: Bool,
+        accessibilityGranted: Bool,
+        inputMonitoringGranted: Bool
+    ) {
+        guard config.resolvedOnboardingUseCase == .voiceNotes else { return }
+        guard OnboardingPermissionGate.hasRequiredDictationPermissions(
+            OnboardingPermissionSnapshot(
+                microphone: microphoneGranted,
+                accessibility: accessibilityGranted,
+                inputMonitoring: inputMonitoringGranted,
+                systemAudio: false,
+                screenRecording: false
+            )
+        ) else { return }
+
+        updateConfig { $0.onboardingUseCase = OnboardingUseCase.dictation.rawValue }
+        hotkeyMonitor.configure(keyCode: config.dictationHotkey.keyCode)
+        hotkeyMonitor.start()
+        startComputerUseHotkeyMonitorIfNeeded()
+        TelemetryDeck.signal("onboarding.use_case_reclassified", parameters: [
+            "from_use_case": OnboardingUseCase.voiceNotes.rawValue,
+            "to_use_case": OnboardingUseCase.dictation.rawValue,
+            "reason": "dictation_permissions_granted",
+        ])
+    }
+
     private func ensureBasicDictationPermissionsBeforeDashboard() -> Bool {
         guard hasRequiredStartupPermissions(for: config.resolvedOnboardingUseCase) else {
             historyWindowController?.close()
