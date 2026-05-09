@@ -31,6 +31,8 @@ enum MeetingSummaryClient {
     private static let defaultChatGPTModel = "gpt-5.4-mini"
     private static let defaultOllamaModel = "llama3.2"
     private static let defaultSummaryMaxOutputTokens = 2500
+    private static let ollamaSummaryTimeout: TimeInterval = 300
+    private static let ollamaTitleTimeout: TimeInterval = 120
 
     private static let titleInstructions = """
     Generate a short, descriptive meeting title (3-7 words) from this transcript. \
@@ -454,6 +456,7 @@ enum MeetingSummaryClient {
         ]
 
         var request = URLRequest(url: chatURL)
+        request.timeoutInterval = ollamaSummaryTimeout
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
@@ -773,6 +776,7 @@ enum MeetingSummaryClient {
         ]
 
         var request = URLRequest(url: chatURL)
+        request.timeoutInterval = ollamaTitleTimeout
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
