@@ -83,6 +83,7 @@ struct CustomWordMatcher {
             let window = Array(words[index..<(index + count)])
             let parts = window.compactMap(tokenParts)
             guard parts.count == count else { continue }
+            guard preservesPhraseBoundaryPunctuation(parts) else { continue }
 
             let candidateTokens = parts.map { $0.core.lowercased() }
             let candidate = candidateTokens.joined(separator: " ")
@@ -112,6 +113,17 @@ struct CustomWordMatcher {
         }
 
         return nil
+    }
+
+    private static func preservesPhraseBoundaryPunctuation(_ parts: [TokenParts]) -> Bool {
+        guard parts.count > 1 else { return true }
+
+        for i in 0..<parts.count {
+            if i > 0, !parts[i].prefix.isEmpty { return false }
+            if i < parts.count - 1, !parts[i].suffix.isEmpty { return false }
+        }
+
+        return true
     }
 
     private static func similarity(candidateTokens: [String], entry: Entry) -> Double? {

@@ -177,4 +177,11 @@ struct CustomWordMatcherApplyTests {
         let result = CustomWordMatcher.apply(text: "try open telemetry, please", customWords: words)
         #expect(result == "try OpenTelemetry, please")
     }
+
+    @Test("multi-word phrase replacement does not drop internal punctuation")
+    func multiWordDoesNotDropInternalPunctuation() {
+        let words = [CustomWord(word: "open telemetry", replacement: "OpenTelemetry")]
+        let result = CustomWordMatcher.apply(text: "try open, telemetry now", customWords: words)
+        #expect(result == "try open, telemetry now")
+    }
 }
