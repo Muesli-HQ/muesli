@@ -10,61 +10,161 @@ import MuesliCore
 struct CustomWordMatcher {
 
     struct Entry {
-        let word: String
         let replacement: String
         let matchingThreshold: Double
+        let tokens: [String]
+        let normalizedPhrase: String
+
+        init?(word: String, replacement: String, matchingThreshold: Double) {
+            let tokens = Self.normalizedTokens(in: word)
+            guard !tokens.isEmpty else { return nil }
+            self.replacement = replacement
+            self.matchingThreshold = matchingThreshold
+            self.tokens = tokens
+            normalizedPhrase = tokens.joined(separator: " ")
+        }
+
+        private static func normalizedTokens(in text: String) -> [String] {
+            text.components(separatedBy: " ")
+                .compactMap { CustomWordMatcher.tokenParts(for: $0)?.core.lowercased() }
+        }
     }
 
     /// Apply custom word replacements to transcribed text.
     static func apply(text: String, customWords: [CustomWord]) -> String {
         guard !text.isEmpty, !customWords.isEmpty else { return text }
 
-        let entries = customWords.map {
+        let entries = customWords.compactMap {
             Entry(word: $0.word, replacement: $0.targetWord, matchingThreshold: $0.matchingThreshold)
         }
+        guard !entries.isEmpty else { return text }
+
+        let entriesByTokenCount = Dictionary(grouping: entries, by: { $0.tokens.count })
+        let tokenCounts = entriesByTokenCount.keys.sorted(by: >)
         let words = text.components(separatedBy: " ")
         var result: [String] = []
+        var index = 0
 
-        for word in words {
-            // Strip trailing punctuation for matching
-            let punctuation = CharacterSet(charactersIn: ".,!?;:")
-            let stripped = word.trimmingCharacters(in: punctuation)
-            let trailing = String(word.dropFirst(stripped.count))
-            let wordLower = stripped.lowercased()
-
-            guard !wordLower.isEmpty else {
-                result.append(word)
+        while index < words.count {
+            guard let match = bestMatch(in: words, startingAt: index, tokenCounts: tokenCounts, entriesByTokenCount: entriesByTokenCount) else {
+                result.append(words[index])
+                index += 1
                 continue
             }
 
-            var bestMatch: String?
-            var bestScore: Double = 0
-
-            for entry in entries {
-                let targetLower = entry.word.lowercased()
-
-                // Stage 1: Exact match
-                if wordLower == targetLower {
-                    bestMatch = entry.replacement
-                    break
-                }
-
-                // Stage 2: Jaro-Winkler similarity
-                let score = jaroWinklerSimilarity(wordLower, targetLower)
-                if score >= entry.matchingThreshold && score > bestScore {
-                    bestScore = score
-                    bestMatch = entry.replacement
-                }
-            }
-
-            if let match = bestMatch {
-                result.append(match + trailing)
-            } else {
-                result.append(word)
-            }
+            result.append(match.text)
+            index += match.consumed
         }
 
         return result.joined(separator: " ")
+    }
+
+    private struct TokenParts {
+        let prefix: String
+        let core: String
+        let suffix: String
+    }
+
+    private struct Match {
+        let text: String
+        let consumed: Int
+    }
+
+    private static let boundaryPunctuation = CharacterSet(charactersIn: ".,!?;:\"'()[]{}")
+
+    private static func bestMatch(
+        in words: [String],
+        startingAt index: Int,
+        tokenCounts: [Int],
+        entriesByTokenCount: [Int: [Entry]]
+    ) -> Match? {
+        for count in tokenCounts {
+            guard count > 0, index + count <= words.count, let entries = entriesByTokenCount[count] else { continue }
+            let window = Array(words[index..<(index + count)])
+            let parts = window.compactMap(tokenParts)
+            guard parts.count == count else { continue }
+            guard preservesPhraseBoundaryPunctuation(parts) else { continue }
+
+            let candidateTokens = parts.map { $0.core.lowercased() }
+            let candidate = candidateTokens.joined(separator: " ")
+            if let exact = entries.first(where: { $0.normalizedPhrase == candidate }) {
+                return Match(
+                    text: parts[0].prefix + exact.replacement + parts[count - 1].suffix,
+                    consumed: count
+                )
+            }
+
+            var bestEntry: Entry?
+            var bestScore = 0.0
+            for entry in entries {
+                guard let score = similarity(candidateTokens: candidateTokens, entry: entry) else { continue }
+                if score > bestScore {
+                    bestScore = score
+                    bestEntry = entry
+                }
+            }
+
+            if let bestEntry {
+                return Match(
+                    text: parts[0].prefix + bestEntry.replacement + parts[count - 1].suffix,
+                    consumed: count
+                )
+            }
+        }
+
+        return nil
+    }
+
+    private static func preservesPhraseBoundaryPunctuation(_ parts: [TokenParts]) -> Bool {
+        guard parts.count > 1 else { return true }
+
+        for i in 0..<parts.count {
+            if i > 0, !parts[i].prefix.isEmpty { return false }
+            if i < parts.count - 1, !parts[i].suffix.isEmpty { return false }
+        }
+
+        return true
+    }
+
+    private static func similarity(candidateTokens: [String], entry: Entry) -> Double? {
+        guard candidateTokens.count == entry.tokens.count else { return nil }
+
+        if entry.tokens.count == 1 {
+            let score = jaroWinklerSimilarity(candidateTokens[0], entry.tokens[0])
+            return score >= entry.matchingThreshold ? score : nil
+        }
+
+        let tokenScores = zip(candidateTokens, entry.tokens).map(jaroWinklerSimilarity)
+        guard tokenScores.allSatisfy({ $0 >= entry.matchingThreshold }) else { return nil }
+        return tokenScores.reduce(0, +) / Double(tokenScores.count)
+    }
+
+    private static func tokenParts(for token: String) -> TokenParts? {
+        var start = token.startIndex
+        var end = token.endIndex
+
+        while start < end, isBoundaryPunctuation(token[start]) {
+            start = token.index(after: start)
+        }
+
+        while start < end {
+            let beforeEnd = token.index(before: end)
+            guard isBoundaryPunctuation(token[beforeEnd]) else { break }
+            end = beforeEnd
+        }
+
+        let core = String(token[start..<end])
+        guard !core.isEmpty else { return nil }
+
+        return TokenParts(
+            prefix: String(token[..<start]),
+            core: core,
+            suffix: String(token[end...])
+        )
+    }
+
+    private static func isBoundaryPunctuation(_ character: Character) -> Bool {
+        character.unicodeScalars.allSatisfy { boundaryPunctuation.contains($0) }
     }
 
     // MARK: - Jaro-Winkler Similarity

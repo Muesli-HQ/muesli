@@ -125,4 +125,63 @@ struct CustomWordMatcherApplyTests {
         let result = CustomWordMatcher.apply(text: "talk to Kvex tomorrow", customWords: words)
         #expect(result == "talk to Kvex tomorrow")
     }
+
+    @Test("multi-word exact match replaces the full phrase")
+    func multiWordExactMatch() {
+        let words = [CustomWord(word: "open telemetry", replacement: "OpenTelemetry")]
+        let result = CustomWordMatcher.apply(text: "ship open telemetry traces", customWords: words)
+        #expect(result == "ship OpenTelemetry traces")
+    }
+
+    @Test("multi-word fuzzy match replaces only same-length phrase windows")
+    func multiWordFuzzyMatch() {
+        let words = [CustomWord(word: "open telemetry", replacement: "OpenTelemetry")]
+        let result = CustomWordMatcher.apply(text: "ship open telemtry traces", customWords: words)
+        #expect(result == "ship OpenTelemetry traces")
+    }
+
+    @Test("multi-word entries do not partial-match shorter utterances")
+    func multiWordDoesNotPartialMatchShorterUtterance() {
+        let words = [CustomWord(word: "new york city", replacement: "NYC")]
+        let result = CustomWordMatcher.apply(text: "book new york", customWords: words)
+        #expect(result == "book new york")
+    }
+
+    @Test("multi-word fuzzy match requires each token to match")
+    func multiWordFuzzyMatchRequiresEachTokenToMatch() {
+        let words = [CustomWord(word: "new york city", replacement: "NYC")]
+        let result = CustomWordMatcher.apply(text: "book new york flights", customWords: words)
+        #expect(result == "book new york flights")
+    }
+
+    @Test("three-word exact match replaces the full phrase")
+    func threeWordExactMatch() {
+        let words = [CustomWord(word: "new york city", replacement: "NYC")]
+        let result = CustomWordMatcher.apply(text: "book new york city flights", customWords: words)
+        #expect(result == "book NYC flights")
+    }
+
+    @Test("longest phrase match wins before shorter word match")
+    func longestPhraseWinsBeforeShorterWord() {
+        let words = [
+            CustomWord(word: "open", replacement: "Open"),
+            CustomWord(word: "open telemetry", replacement: "OpenTelemetry"),
+        ]
+        let result = CustomWordMatcher.apply(text: "open telemetry helps open systems", customWords: words)
+        #expect(result == "OpenTelemetry helps Open systems")
+    }
+
+    @Test("multi-word phrase replacement preserves trailing punctuation")
+    func multiWordPreservesTrailingPunctuation() {
+        let words = [CustomWord(word: "open telemetry", replacement: "OpenTelemetry")]
+        let result = CustomWordMatcher.apply(text: "try open telemetry, please", customWords: words)
+        #expect(result == "try OpenTelemetry, please")
+    }
+
+    @Test("multi-word phrase replacement does not drop internal punctuation")
+    func multiWordDoesNotDropInternalPunctuation() {
+        let words = [CustomWord(word: "open telemetry", replacement: "OpenTelemetry")]
+        let result = CustomWordMatcher.apply(text: "try open, telemetry now", customWords: words)
+        #expect(result == "try open, telemetry now")
+    }
 }

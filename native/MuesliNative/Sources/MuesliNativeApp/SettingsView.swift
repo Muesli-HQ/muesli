@@ -277,9 +277,14 @@ struct SettingsView: View {
     private var generalSettingsPane: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
             settingsSection("General") {
-                settingsRow("Launch at login") {
-                    settingsSwitch(isOn: appState.config.launchAtLogin) { newValue in
-                        controller.updateConfig { $0.launchAtLogin = newValue }
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                    settingsRow("Launch at login") {
+                        settingsSwitch(isOn: appState.config.launchAtLogin) { newValue in
+                            controller.setLaunchAtLogin(newValue)
+                        }
+                    }
+                    if appState.launchAtLoginRegistrationState == .requiresApproval {
+                        launchAtLoginApprovalPrompt
                     }
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
@@ -305,6 +310,38 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    private var launchAtLoginApprovalPrompt: some View {
+        HStack(spacing: MuesliTheme.spacing8) {
+            Image(systemName: "exclamationmark.circle.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(MuesliTheme.recording)
+            Text("Requires approval in System Settings")
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textTertiary)
+            Spacer(minLength: MuesliTheme.spacing12)
+            Button {
+                controller.openLaunchAtLoginSettings()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.up.forward.square")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("Open")
+                }
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(MuesliTheme.accent)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(MuesliTheme.accentSubtle)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            .help("Open Login Items in System Settings")
+        }
+        .padding(.leading, MuesliTheme.spacing16)
+        .padding(.trailing, MuesliTheme.spacing16)
+        .padding(.bottom, MuesliTheme.spacing8)
     }
 
     private var dictationSettingsPane: some View {
@@ -1195,6 +1232,7 @@ struct SettingsView: View {
         accessibilityGranted = AXIsProcessTrusted()
         inputMonitoringGranted = CGPreflightListenEventAccess()
         screenRecordingGranted = CGPreflightScreenCaptureAccess()
+        controller.refreshLaunchAtLoginState()
         if screenRecordingGranted && pendingScreenContextEnable {
             clearPendingScreenContextEnable()
             controller.updateConfig { $0.enableScreenContext = true }
