@@ -89,6 +89,7 @@ final class MuesliController: NSObject {
     private let configStore = ConfigStore()
     private let dictationStore: DictationStore
     private let meetingHookDispatcher: MeetingHookDispatching
+    private let launchAtLoginCoordinator: LaunchAtLoginCoordinator
     let transcriptionCoordinator = TranscriptionCoordinator()
     private let hotkeyMonitor = HotkeyMonitor()
     private let computerUseHotkeyMonitor = HotkeyMonitor()
@@ -162,7 +163,8 @@ final class MuesliController: NSObject {
     init(
         runtime: RuntimePaths,
         dictationStore: DictationStore? = nil,
-        meetingHookDispatcher: MeetingHookDispatching = MeetingHookRunner()
+        meetingHookDispatcher: MeetingHookDispatching = MeetingHookRunner(),
+        launchAtLoginManager: LaunchAtLoginManaging = SystemLaunchAtLoginManager()
     ) {
         let loadedConfig = configStore.load()
         self.runtime = runtime
@@ -170,6 +172,7 @@ final class MuesliController: NSObject {
             databaseURL: MuesliPaths.defaultDatabaseURL(appName: AppIdentity.supportDirectoryName)
         )
         self.meetingHookDispatcher = meetingHookDispatcher
+        self.launchAtLoginCoordinator = LaunchAtLoginCoordinator(manager: launchAtLoginManager)
         self.config = loadedConfig
         if loadedConfig.recordingColorHex != "1e1e2e" {
             MuesliTheme.accentOverrideHex = loadedConfig.recordingColorHex
@@ -198,6 +201,8 @@ final class MuesliController: NSObject {
 
         // Clean up phantom aggregate devices left by a previous crash
         CoreAudioSystemRecorder.cleanupStaleDevices()
+
+        syncLaunchAtLoginConfigWithSystem()
 
         // Clean up leftover audio temp files from previous sessions.
         cleanupTemporaryDirectory(
@@ -611,6 +616,41 @@ final class MuesliController: NSObject {
         appState.config = config
         appState.isChatGPTAuthenticated = chatGPTAuth.isAuthenticated
         updateMeetingNotificationVisibility()
+    }
+
+    func setLaunchAtLogin(_ enabled: Bool) {
+        let result = launchAtLoginCoordinator.setEnabled(enabled, config: config)
+        if let error = result.error {
+            fputs("[launch-at-login] failed to set enabled=\(enabled): \(error)\n", stderr)
+        }
+        appState.launchAtLoginRegistrationState = result.registrationState
+        updateConfig { $0.launchAtLogin = result.config.launchAtLogin }
+        if enabled, result.registrationState == .requiresApproval {
+            launchAtLoginCoordinator.openSystemSettingsLoginItems()
+        }
+    }
+
+    func openLaunchAtLoginSettings() {
+        launchAtLoginCoordinator.openSystemSettingsLoginItems()
+    }
+
+    func refreshLaunchAtLoginState() {
+        let result = launchAtLoginCoordinator.refreshStatus(config: config)
+        appState.launchAtLoginRegistrationState = result.registrationState
+        let refreshed = result.config
+        guard refreshed.launchAtLogin != config.launchAtLogin else { return }
+        updateConfig { $0.launchAtLogin = refreshed.launchAtLogin }
+    }
+
+    private func syncLaunchAtLoginConfigWithSystem() {
+        let result = launchAtLoginCoordinator.reconcileOnStartup(config: config)
+        if let error = result.error {
+            fputs("[launch-at-login] failed to apply saved launch-at-login setting: \(error)\n", stderr)
+        }
+        appState.launchAtLoginRegistrationState = result.registrationState
+        let reconciled = result.config
+        guard reconciled.launchAtLogin != config.launchAtLogin else { return }
+        updateConfig { $0.launchAtLogin = reconciled.launchAtLogin }
     }
 
     func selectBackend(_ option: BackendOption) {

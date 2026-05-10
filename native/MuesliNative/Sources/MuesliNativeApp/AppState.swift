@@ -55,6 +55,7 @@ final class AppState {
     var selectedMeetingSummaryBackend: MeetingSummaryBackendOption = .chatGPT
     var activePostProcessor: PostProcessorOption = PostProcessorOption.defaultOption
     var config: AppConfig = AppConfig()
+    var launchAtLoginRegistrationState: LaunchAtLoginRegistrationState = .disabled
 
     // Live status
     var isMeetingRecording: Bool = false
