@@ -29,42 +29,81 @@ final class AudioOutput: NSObject {
         let wavData = WAVEncoder.encode(samples: samples, sampleRate: sampleRate)
 
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            do {
-#if os(iOS)
-                do {
-                    try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
-                    try AVAudioSession.sharedInstance().setActive(true)
-                } catch {
-                    cont.resume(throwing: KittenTTSError.audioSessionFailed(error.localizedDescription))
-                    return
-                }
-#endif
-                let p = try AVAudioPlayer(data: wavData)
-                p.delegate = self
-                p.prepareToPlay()
-                self.player = p
-
-                // Stash continuation so the delegate can resume it on completion.
-                self.continuation = cont
-
-                p.play()
-            } catch {
-                cont.resume(throwing: KittenTTSError.playbackFailed(error.localizedDescription))
+            DispatchQueue.main.async {
+                self.startPlayback(wavData: wavData, continuation: cont)
             }
         }
     }
 
     /// Stop any currently active playback.
     func stop() {
-        player?.stop()
-        player = nil
-        continuation?.resume()
-        continuation = nil
+        DispatchQueue.main.async {
+            self.finishPlayback(.success(()), stopPlayer: true)
+        }
     }
 
     // MARK: - Private
 
     private var continuation: CheckedContinuation<Void, Error>?
+
+    private func startPlayback(wavData: Data, continuation cont: CheckedContinuation<Void, Error>) {
+        dispatchPrecondition(condition: .onQueue(.main))
+
+        if continuation != nil {
+            finishPlayback(.success(()), stopPlayer: true)
+        }
+
+        do {
+#if os(iOS)
+            do {
+                try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+                try AVAudioSession.sharedInstance().setActive(true)
+            } catch {
+                cont.resume(throwing: KittenTTSError.audioSessionFailed(error.localizedDescription))
+                return
+            }
+#endif
+            let p = try AVAudioPlayer(data: wavData)
+            p.delegate = self
+            p.prepareToPlay()
+            player = p
+
+            // Stash continuation so the delegate can resume it on completion.
+            continuation = cont
+
+            p.play()
+        } catch {
+            cont.resume(throwing: KittenTTSError.playbackFailed(error.localizedDescription))
+        }
+    }
+
+    private func finishPlayback(_ result: Result<Void, Error>, stopPlayer: Bool) {
+        dispatchPrecondition(condition: .onQueue(.main))
+
+        let cont = continuation
+        continuation = nil
+        if stopPlayer {
+            player?.stop()
+        }
+        player = nil
+
+        switch result {
+        case .success:
+            cont?.resume()
+        case .failure(let error):
+            cont?.resume(throwing: error)
+        }
+    }
+
+    private func finishPlaybackOnMain(_ result: Result<Void, Error>, stopPlayer: Bool) {
+        if Thread.isMainThread {
+            finishPlayback(result, stopPlayer: stopPlayer)
+        } else {
+            DispatchQueue.main.async {
+                self.finishPlayback(result, stopPlayer: stopPlayer)
+            }
+        }
+    }
 
     // MARK: - Audio availability
 
@@ -80,24 +119,24 @@ final class AudioOutput: NSObject {
     }
 }
 
+// Mutable playback state is serialized through DispatchQueue.main.
+extension AudioOutput: @unchecked Sendable {}
+
 // MARK: - AVAudioPlayerDelegate
 
 extension AudioOutput: AVAudioPlayerDelegate {
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        self.player = nil
         if flag {
-            continuation?.resume()
+            finishPlaybackOnMain(.success(()), stopPlayer: false)
         } else {
-            continuation?.resume(throwing: KittenTTSError.playbackFailed("Playback ended early"))
+            finishPlaybackOnMain(.failure(KittenTTSError.playbackFailed("Playback ended early")), stopPlayer: false)
         }
-        continuation = nil
     }
 
     func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
-        self.player = nil
-        continuation?.resume(
-            throwing: KittenTTSError.playbackFailed(error?.localizedDescription ?? "Decode error")
+        finishPlaybackOnMain(
+            .failure(KittenTTSError.playbackFailed(error?.localizedDescription ?? "Decode error")),
+            stopPlayer: false
         )
-        continuation = nil
     }
 }
