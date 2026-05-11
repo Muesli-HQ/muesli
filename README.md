@@ -22,6 +22,10 @@
 
 Muesli is a **lightweight native macOS app** that combines **WisprFlow-style dictation** and **Granola-style meeting transcription** in one tool. All transcription runs locally on Apple Silicon — your audio never leaves your device unless you choose a cloud-backed meeting summary provider.
 
+<p align="center">
+  <img src="assets/muesli-github-ss.png" alt="Muesli interface showing dictations and meeting history" width="900" />
+</p>
+
 ### Dictation
 Hold your hotkey (or double-tap for hands-free mode) → speak → release → transcribed text is pasted at your cursor. **~0.13 second latency** via Parakeet TDT on the Apple Neural Engine.
 
