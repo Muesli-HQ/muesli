@@ -161,6 +161,30 @@ struct GoogleCalendarTests {
         #expect(url?.absoluteString == "https://meet.google.com/abc-defg-hij")
     }
 
+    @Test("CalendarMonitor extracts Slack huddle URL from text")
+    func extractsSlackHuddleURL() {
+        let url = CalendarMonitor.findMeetingURL(in: "Join the standup huddle: https://app.slack.com/huddle/T026CMCFV4H/D026SCN0LAU thanks")
+        #expect(url?.absoluteString == "https://app.slack.com/huddle/T026CMCFV4H/D026SCN0LAU")
+    }
+
+    @Test("CalendarMonitor returns nil for non-huddle Slack URL")
+    func slackNonHuddleURLNotMatched() {
+        let url = CalendarMonitor.findMeetingURL(in: "Open the channel: https://app.slack.com/client/T026CMCFV4H/C026SCN0LAU")
+        #expect(url == nil)
+    }
+
+    @Test("MeetingPlatform.detect recognizes Slack huddle URL")
+    func detectSlackHuddle() {
+        let url = URL(string: "https://app.slack.com/huddle/T026CMCFV4H/D026SCN0LAU")!
+        #expect(MeetingPlatform.detect(from: url) == .slack)
+    }
+
+    @Test("MeetingPlatform.detect ignores non-huddle Slack URL")
+    func detectSlackNonHuddleReturnsNil() {
+        let url = URL(string: "https://app.slack.com/client/T026CMCFV4H/C026SCN0LAU")!
+        #expect(MeetingPlatform.detect(from: url) == nil)
+    }
+
     @Test("CalendarMonitor returns nil for text without meeting URLs")
     func returnsNilForNonMeetingText() {
         let url = CalendarMonitor.findMeetingURL(in: "Conference room 3B on the second floor")
