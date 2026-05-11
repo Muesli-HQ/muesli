@@ -20,13 +20,13 @@
 
 ## What is Muesli?
 
-Muesli is a **lightweight native macOS app** that combines **WisprFlow-style dictation** and **Granola-style meeting transcription** in one tool. All transcription runs locally on Apple Silicon — your audio never leaves your device unless you want to (meeting summaries).
+Muesli is a **lightweight native macOS app** that combines **WisprFlow-style dictation** and **Granola-style meeting transcription** in one tool. All transcription runs locally on Apple Silicon — your audio never leaves your device unless you choose a cloud-backed meeting summary provider.
 
 ### Dictation
 Hold your hotkey (or double-tap for hands-free mode) → speak → release → transcribed text is pasted at your cursor. **~0.13 second latency** via Parakeet TDT on the Apple Neural Engine.
 
 ### Meeting Transcription
-Start a meeting recording → Muesli captures your mic (You) and system audio (Others) simultaneously → VAD-driven chunked transcription happens during the meeting at natural speech boundaries → speaker diarization identifies individual remote speakers (Speaker 1, Speaker 2, etc.) → when you stop, the transcript is ready in seconds, not minutes. Generate structured meeting notes via OpenAI, free OpenRouter models, or your ChatGPT Plus/Pro subscription.
+Start a meeting recording → Muesli captures your mic (You) and system audio (Others) simultaneously → VAD-driven chunked transcription happens during the meeting at natural speech boundaries → speaker diarization identifies individual remote speakers (Speaker 1, Speaker 2, etc.) → when you stop, the transcript is ready in seconds, not minutes. Generate structured meeting notes via OpenAI, free OpenRouter models, your ChatGPT Plus/Pro subscription, or local Ollama models.
 
 ---
 
@@ -35,7 +35,7 @@ Start a meeting recording → Muesli captures your mic (You) and system audio (O
 - **Native Swift, zero Python** — Pure Swift app with CoreML and Metal backends. No bundled runtimes, no subprocess IPC.
 - **Multiple ASR models** — Parakeet TDT (Neural Engine), Cohere Transcribe 2B (mixed precision CoreML), Whisper Small/Medium/Large Turbo (CoreML/ANE via WhisperKit), and Qwen3 ASR (52 languages, CoreML).
 - **Hold-to-talk & hands-free** — Hold hotkey for quick dictation, or double-tap for sustained recording.
-- **Meeting recording** — Captures mic + system audio (including Bluetooth/AirPods) via ScreenCaptureKit.
+- **Meeting recording** — Captures mic + system audio (including Bluetooth/AirPods) with a CoreAudio process tap by default and ScreenCaptureKit fallback. System audio from Zoom, Teams, and other call clients stays on the Others side of the transcript.
 - **VAD-driven chunk rotation** — Silero VAD detects natural speech boundaries in real-time, splitting mic audio at pauses instead of fixed intervals. No mid-sentence cuts.
 - **Speaker diarization** — Identifies individual speakers in system audio (Speaker 1, Speaker 2, etc.) using FluidAudio's pyannote-based CoreML diarization model.
 - **Camera-based meeting detection** — Detects when your webcam + mic activate in a recognized meeting app (Zoom, Chrome, Teams, FaceTime, Slack, WhatsApp). Camera alone (e.g. Photo Booth) won't trigger false positives.
@@ -45,12 +45,13 @@ Start a meeting recording → Muesli captures your mic (You) and system audio (O
 - **Meeting templates** — Built-in and custom templates for meeting notes. Choose a template before or after recording — re-summarize any meeting with a different template.
 - **Dismiss calendar events** — Hide irrelevant events from Coming Up, status bar, and menu bar. Dismissed events are pruned automatically.
 - **Filler word removal** — Automatically strips "uh", "um", "er", "hmm" and verbal disfluencies.
-- **AI meeting notes** — BYOK with OpenAI or OpenRouter, or sign in with your ChatGPT Plus/Pro subscription (no API key needed). Auto-generated meeting titles. Re-summarize any meeting.
+- **AI meeting notes** — BYOK with OpenAI or OpenRouter, sign in with your ChatGPT Plus/Pro subscription (no API key needed), or use local Ollama models. Auto-generated meeting titles. Re-summarize any meeting.
 - **ChatGPT OAuth** — Sign in with your existing ChatGPT subscription via browser-based OAuth (PKCE). Tokens stored in the app support directory with owner-only file permissions.
-- **Personal dictionary** — Add custom words and replacement pairs. Jaro-Winkler fuzzy matching auto-corrects transcription output.
+- **Personal dictionary** — Add custom words, phrase matches, and replacement pairs. Jaro-Winkler fuzzy matching auto-corrects transcription output.
 - **Model management** — Download, delete, and switch between models from the Models tab. Background downloads that don't block the app.
 - **Configurable hotkeys** — Choose any modifier key (Cmd, Option, Ctrl, Fn, Shift) for dictation.
-- **Onboarding** — First-launch wizard with model selection, real OS permission verification, hotkey configuration, app restart for Accessibility activation, live dictation test to verify the full pipeline works, and optional API key entry. Progress saved on every step — survives crashes and manual quits.
+- **Onboarding** — First-launch wizard with model selection, real OS permission verification, hotkey configuration, smoother Accessibility handoff, live dictation test to verify the full pipeline works, and optional summary setup for ChatGPT, OpenAI, OpenRouter, or Ollama. Progress saved on every step — survives crashes and manual quits.
+- **Launch at Login** — Start Muesli automatically with macOS login items, with approval-state refresh in Settings.
 - **Dark & light mode** — Adaptive theme with toggle in sidebar.
 - **SwiftUI dashboard** — Dictation history, meeting notes (Notes-style split view), meeting folders, dictionary, models, shortcuts, settings, about page.
 - **Floating indicator** — Frosted glass pill with dynamic waveform, accent color customization, and click-to-stop for meetings.
@@ -246,9 +247,10 @@ Muesli needs these macOS permissions (guided during onboarding):
 │  ├── FillerWordFilter (uh/um removal)                 │
 │  ├── CustomWordMatcher (Jaro-Winkler fuzzy)           │
 │  ├── HotkeyMonitor (configurable modifier keys)       │
-│  ├── SystemAudioRecorder (ScreenCaptureKit)           │
+│  ├── CoreAudioSystemRecorder (process tap)             │
+│  ├── SystemAudioRecorder (ScreenCaptureKit fallback)   │
 │  ├── MeetingSession (VAD-driven chunked transcription)│
-│  ├── MeetingSummaryClient (OpenAI / OpenRouter / ChatGPT) │
+│  ├── MeetingSummaryClient (cloud providers + Ollama)  │
 │  ├── MeetingExporter (PDF + Markdown export)          │
 │  ├── GoogleCalendarAuthManager (OAuth + Calendar API)  │
 │  ├── MeetingNotificationController (Join & Record UI)  │
@@ -274,8 +276,8 @@ Everything runs in-process. No subprocesses, no IPC, no Python runtime.
 | Voice activity | Silero VAD via FluidAudio (streaming, event-driven) |
 | Speaker diarization | pyannote via FluidAudio (CoreML on ANE) |
 | Camera detection | CoreMediaIO property listeners (event-driven) |
-| System audio | ScreenCaptureKit (`SCStream`) |
-| Meeting notes | OpenAI / OpenRouter (BYOK) or ChatGPT subscription (OAuth) |
+| System audio | CoreAudio process tap by default; ScreenCaptureKit (`SCStream`) fallback |
+| Meeting notes | OpenAI / OpenRouter (BYOK), ChatGPT subscription (OAuth), or Ollama |
 | Calendar | Google Calendar API (OAuth 2.0) |
 | Export | PDF (NSPrintOperation, paginated US Letter) + Markdown |
 | Word correction | Jaro-Winkler similarity (native Swift) |
@@ -296,11 +298,11 @@ swift test --package-path native/MuesliNative
 ./scripts/test_packaged_cli.sh
 ```
 
-396 tests covering model configuration, custom word matching, filler removal, transcription routing, data persistence, CLI contract/path-resolution logic, speaker diarization alignment, token consolidation, camera-based meeting detection, ChatGPT OAuth logic, meeting export, meeting navigation, and Google Calendar URL extraction.
+684 tests covering model configuration, custom word and phrase matching, filler removal, transcription routing, data persistence, CLI contract/path-resolution logic, speaker diarization alignment, token consolidation, camera-based meeting detection, CoreAudio system capture, ChatGPT OAuth logic, Ollama summaries, update-flow policy, launch at login, paste/clipboard safety, meeting export, meeting navigation, and Google Calendar URL extraction.
 
 Current test scope:
 
-- Covered by tests: CLI command contract generation, CLI path-resolution logic, SQLite read/write behavior, note-state classification, and meeting/dictation retrieval/update flows.
+- Covered by tests: CLI command contract generation, CLI path-resolution logic, SQLite read/write behavior, note-state classification, meeting/dictation retrieval/update flows, update-flow policy, CoreAudio cleanup, paste/clipboard safety, launch at login, Ollama summary routing, and Computer Use planner foundations.
 - Not covered by Swift unit tests: app-bundle packaging and copying `muesli-cli` into `/Applications/Muesli.app/Contents/MacOS`.
 - Packaging is verified by `scripts/test_packaged_cli.sh`, which builds an isolated app bundle, checks that `Contents/MacOS/muesli-cli` exists and is executable, and runs `muesli-cli spec` from the packaged path.
 
@@ -320,7 +322,8 @@ If Muesli saves you time, consider supporting development:
 
 - [FluidAudio](https://github.com/FluidInference/FluidAudio) — CoreML speech models for Apple devices (Parakeet TDT, Qwen3 ASR, Silero VAD, speaker diarization)
 - [WhisperKit](https://github.com/argmaxinc/WhisperKit) — Swift Whisper inference on CoreML/ANE
-- [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit) by Apple — system audio capture
+- [Core Audio](https://developer.apple.com/documentation/coreaudio) by Apple — system audio process taps
+- [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit) by Apple — system audio fallback capture
 - [NVIDIA Parakeet](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) — FastConformer TDT speech recognition model
 - [Cohere Transcribe](https://huggingface.co/CohereLabs/cohere-transcribe-03-2026) — 2B parameter autoregressive ASR (#1 Open ASR Leaderboard)
 - [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-0.6B) — Multilingual speech recognition (52 languages)
