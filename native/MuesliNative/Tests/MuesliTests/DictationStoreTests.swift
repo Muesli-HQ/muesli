@@ -410,6 +410,44 @@ struct DictationStoreTests {
         #expect(updated?.selectedTemplatePrompt == "## Yesterday")
     }
 
+    @Test("update meeting transcript and summary replaces empty transcription")
+    func updateMeetingTranscriptAndSummary() throws {
+        let store = try makeStore()
+
+        let start = Date()
+        let meetingID = try store.insertMeeting(
+            title: "Recovered Meeting",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(60),
+            rawTranscript: "",
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil,
+            savedRecordingPath: "/tmp/recovered.wav"
+        )
+        try store.updateMeetingManualNotes(id: meetingID, manualNotes: "Manual note")
+        try store.updateMeetingStatus(id: meetingID, status: .failed)
+
+        try store.updateMeetingTranscriptAndSummary(
+            id: meetingID,
+            rawTranscript: "Recovered transcript words",
+            formattedNotes: "## Summary\nRecovered notes",
+            selectedTemplateID: "auto",
+            selectedTemplateName: "Auto",
+            selectedTemplateKind: .auto,
+            selectedTemplatePrompt: "Auto prompt"
+        )
+
+        let updated = try #require(try store.meeting(id: meetingID))
+        #expect(updated.rawTranscript == "Recovered transcript words")
+        #expect(updated.formattedNotes == "## Summary\nRecovered notes")
+        #expect(updated.status == .completed)
+        #expect(updated.wordCount == 5)
+        #expect(updated.savedRecordingPath == "/tmp/recovered.wav")
+        #expect(updated.manualNotes == "Manual note")
+    }
+
     @Test("fetch dictation by id returns the full record")
     func fetchDictationByID() throws {
         let store = try makeStore()

@@ -94,6 +94,42 @@ struct BackendOptionTests {
         #expect(BackendOption.whisperMedium.model == "medium.en")
         #expect(BackendOption.whisperLargeTurbo.model.contains("large"))
     }
+
+    @Test("resolveDownloaded keeps selected downloaded meeting model")
+    func resolveDownloadedKeepsSelectedDownloadedModel() {
+        let resolved = BackendOption.resolveDownloaded(
+            backend: BackendOption.whisperLargeTurbo.backend,
+            model: BackendOption.whisperLargeTurbo.model,
+            fallback: .parakeetMultilingual,
+            downloadedOptions: [.parakeetMultilingual, .whisperLargeTurbo]
+        )
+
+        #expect(resolved == .whisperLargeTurbo)
+    }
+
+    @Test("resolveDownloaded falls back when selected meeting model is unavailable")
+    func resolveDownloadedFallsBackWhenSelectedUnavailable() {
+        let resolved = BackendOption.resolveDownloaded(
+            backend: BackendOption.whisperLargeTurbo.backend,
+            model: BackendOption.whisperLargeTurbo.model,
+            fallback: .parakeetMultilingual,
+            downloadedOptions: [.parakeetMultilingual, .whisperSmall]
+        )
+
+        #expect(resolved == .parakeetMultilingual)
+    }
+
+    @Test("resolveDownloaded uses first downloaded model when fallback is unavailable")
+    func resolveDownloadedUsesFirstDownloadedWhenFallbackUnavailable() {
+        let resolved = BackendOption.resolveDownloaded(
+            backend: BackendOption.whisperLargeTurbo.backend,
+            model: BackendOption.whisperLargeTurbo.model,
+            fallback: .parakeetMultilingual,
+            downloadedOptions: [.whisperSmall]
+        )
+
+        #expect(resolved == .whisperSmall)
+    }
 }
 
 @Suite("PostProcessorOption")

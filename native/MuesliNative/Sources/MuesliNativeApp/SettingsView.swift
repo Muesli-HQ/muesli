@@ -110,7 +110,14 @@ struct SettingsView: View {
     }
 
     private var meetingBackendOptions: [BackendOption] {
-        backendOptions(including: appState.selectedMeetingTranscriptionBackend)
+        downloadedBackendOptions
+    }
+
+    private var selectedMeetingBackendLabel: String {
+        if meetingBackendOptions.contains(appState.selectedMeetingTranscriptionBackend) {
+            return appState.selectedMeetingTranscriptionBackend.label
+        }
+        return meetingBackendOptions.first?.label ?? "No downloaded models"
     }
 
     private var selectedCohereLanguage: CohereTranscribeLanguage {
@@ -186,6 +193,7 @@ struct SettingsView: View {
     }
 
     private func refreshDownloadedModelOptions() {
+        controller.refreshMeetingTranscriptionSelectionForAvailability()
         downloadedBackendOptions = BackendOption.downloaded
         downloadedPostProcOptions = PostProcessorOption.downloaded
     }
@@ -450,13 +458,21 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
             settingsSection("Meeting Transcription") {
                 settingsRow("Meeting model") {
-                    settingsMenu(
-                        selection: appState.selectedMeetingTranscriptionBackend.label,
-                        options: meetingBackendOptions.map(\.label)
-                    ) { label in
-                        if let option = meetingBackendOptions.first(where: { $0.label == label }) {
-                            controller.selectMeetingTranscriptionBackend(option)
+                    if meetingBackendOptions.isEmpty {
+                        Text("No downloaded models")
+                            .font(MuesliTheme.body())
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                            .frame(width: meetingControlWidth, alignment: .leading)
+                    } else {
+                        settingsMenu(
+                            selection: selectedMeetingBackendLabel,
+                            options: meetingBackendOptions.map(\.label)
+                        ) { label in
+                            if let option = meetingBackendOptions.first(where: { $0.label == label }) {
+                                controller.selectMeetingTranscriptionBackend(option)
+                            }
                         }
+                        .frame(width: meetingControlWidth)
                     }
                 }
                 if appState.selectedMeetingTranscriptionBackend.backend == BackendOption.cohereTranscribe.backend {

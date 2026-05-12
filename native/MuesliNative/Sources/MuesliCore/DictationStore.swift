@@ -890,6 +890,46 @@ public final class DictationStore {
         }
     }
 
+    public func updateMeetingTranscriptAndSummary(
+        id: Int64,
+        rawTranscript: String,
+        formattedNotes: String,
+        selectedTemplateID: String,
+        selectedTemplateName: String,
+        selectedTemplateKind: MeetingTemplateKind,
+        selectedTemplatePrompt: String
+    ) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let manualNotes = try manualNotesForMeeting(id: id, db: db)
+        let wordCount = Self.countWords(in: rawTranscript) + Self.countWords(in: manualNotes)
+        let sql = """
+        UPDATE meetings
+        SET raw_transcript = ?, formatted_notes = ?, meeting_status = ?, word_count = ?, selected_template_id = ?, selected_template_name = ?, selected_template_kind = ?, selected_template_prompt = ?
+        WHERE id = ?
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, (rawTranscript as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 2, (formattedNotes as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 3, (MeetingStatus.completed.rawValue as NSString).utf8String, -1, nil)
+        sqlite3_bind_int(statement, 4, Int32(wordCount))
+        sqlite3_bind_text(statement, 5, (selectedTemplateID as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 6, (selectedTemplateName as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 7, (selectedTemplateKind.rawValue as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 8, (selectedTemplatePrompt as NSString).utf8String, -1, nil)
+        sqlite3_bind_int64(statement, 9, id)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
+        guard sqlite3_changes(db) > 0 else {
+            throw DictationStoreError.meetingNotFound(id: id)
+        }
+    }
+
     public func updateMeetingTitle(id: Int64, title: String) throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
