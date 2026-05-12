@@ -25,6 +25,7 @@ struct MeetingDetailView: View {
     let onBack: (() -> Void)?
     let backLabel: String
     @State private var isSummarizing = false
+    @State private var isRetranscribing = false
     @State private var isEditingNotes = false
     @State private var editableTitle: String
     @State private var editableNotes: String
@@ -38,6 +39,7 @@ struct MeetingDetailView: View {
     @State private var notesSaveTask: DispatchWorkItem?
     @State private var manualNotesSaveStatusTask: DispatchWorkItem?
     @State private var summaryErrorMessage: String?
+    @State private var retranscriptionErrorMessage: String?
     @State private var showDeleteConfirmation = false
 
     init(
@@ -104,6 +106,13 @@ struct MeetingDetailView: View {
             }
         } message: {
             Text(summaryErrorMessage ?? "The updated meeting notes could not be saved.")
+        }
+        .alert("Couldn't Re-transcribe Meeting", isPresented: retranscriptionErrorBinding) {
+            Button("OK", role: .cancel) {
+                retranscriptionErrorMessage = nil
+            }
+        } message: {
+            Text(retranscriptionErrorMessage ?? "The saved recording could not be re-transcribed.")
         }
         .alert("Delete Meeting", isPresented: $showDeleteConfirmation) {
             Button("Delete", role: .destructive) {
@@ -362,6 +371,38 @@ struct MeetingDetailView: View {
     }
 
     @ViewBuilder
+    private func retranscribeAction(for meeting: MeetingRecord) -> some View {
+        if meeting.savedRecordingPath != nil {
+            if isRetranscribing {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Re-transcribing...")
+                        .font(.system(size: 11))
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                }
+                .padding(.horizontal, MuesliTheme.spacing8)
+            } else {
+                iconButton("arrow.clockwise", label: "Re-transcribe") {
+                    isRetranscribing = true
+                    controller.retranscribe(meeting: meeting) { [meeting] result in
+                        isRetranscribing = false
+                        switch result {
+                        case .success:
+                            if let updated = controller.meeting(id: meeting.id) {
+                                syncLocalState(with: updated)
+                            }
+                        case .failure(let error):
+                            retranscriptionErrorMessage = error.localizedDescription
+                        }
+                    }
+                }
+                .disabled(meeting.status == .recording || meeting.status == .processing)
+            }
+        }
+    }
+
+    @ViewBuilder
     private func templateMenu(for meeting: MeetingRecord, appliedTemplate: MeetingTemplateSnapshot) -> some View {
         Menu {
             Button {
@@ -438,6 +479,7 @@ struct MeetingDetailView: View {
         HStack {
             Spacer()
 
+            retranscribeAction(for: meeting)
             exportMenu(for: meeting)
 
             Button(action: {
@@ -876,6 +918,17 @@ struct MeetingDetailView: View {
             set: { isPresented in
                 if !isPresented {
                     summaryErrorMessage = nil
+                }
+            }
+        )
+    }
+
+    private var retranscriptionErrorBinding: Binding<Bool> {
+        Binding(
+            get: { retranscriptionErrorMessage != nil },
+            set: { isPresented in
+                if !isPresented {
+                    retranscriptionErrorMessage = nil
                 }
             }
         )

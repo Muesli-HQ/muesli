@@ -173,6 +173,94 @@ struct MeetingsNavigationTests {
         #expect(try store.meeting(id: meetingID) != nil)
     }
 
+    @Test("retranscribe missing recording preserves completed meeting status")
+    func retranscribeMissingRecordingPreservesCompletedStatus() async throws {
+        let store = try makeStore()
+        let missingRecordingURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("missing-meeting-recording-\(UUID().uuidString).wav")
+        let now = Date()
+        let meetingID = try store.insertMeeting(
+            title: "Recovered Meeting",
+            calendarEventID: nil,
+            startTime: now,
+            endTime: now.addingTimeInterval(60),
+            rawTranscript: "Existing transcript",
+            formattedNotes: "## Existing notes",
+            micAudioPath: nil,
+            systemAudioPath: nil,
+            savedRecordingPath: missingRecordingURL.path
+        )
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            dictationStore: store
+        )
+        let meeting = try #require(try store.meeting(id: meetingID))
+
+        let result = await withCheckedContinuation { continuation in
+            controller.retranscribe(meeting: meeting) { result in
+                continuation.resume(returning: result)
+            }
+        }
+
+        switch result {
+        case .success:
+            Issue.record("Expected re-transcription to fail when the retained recording is missing")
+        case .failure(let error):
+            #expect(error is MeetingRetranscriptionError)
+        }
+
+        let updated = try #require(try store.meeting(id: meetingID))
+        #expect(updated.status == .completed)
+        #expect(updated.rawTranscript == "Existing transcript")
+        #expect(updated.formattedNotes == "## Existing notes")
+    }
+
+    @Test("retranscribe empty transcript restores original meeting status")
+    func retranscribeEmptyTranscriptRestoresOriginalMeetingStatus() {
+        #expect(MuesliController.retranscriptionFailureStatus(
+            originalStatus: .completed,
+            didSetProcessing: true,
+            error: MeetingRetranscriptionError.emptyTranscript
+        ) == .completed)
+        #expect(MuesliController.retranscriptionFailureStatus(
+            originalStatus: .failed,
+            didSetProcessing: true,
+            error: MeetingRetranscriptionError.emptyTranscript
+        ) == .failed)
+    }
+
+    @Test("retranscribe status is unchanged before processing starts")
+    func retranscribeStatusIsUnchangedBeforeProcessingStarts() {
+        #expect(MuesliController.retranscriptionFailureStatus(
+            originalStatus: .completed,
+            didSetProcessing: false,
+            error: MeetingRetranscriptionError.recordingUnavailable
+        ) == nil)
+    }
+
+    @Test("retranscribe save failures restore original meeting status")
+    func retranscribeSaveFailuresRestoreOriginalMeetingStatus() {
+        #expect(MuesliController.retranscriptionFailureStatus(
+            originalStatus: .completed,
+            didSetProcessing: true,
+            error: MeetingRetranscriptionError.failedToSave(underlying: CocoaError(.fileWriteUnknown))
+        ) == .completed)
+    }
+
+    @Test("retranscribe processing failures mark meeting failed")
+    func retranscribeProcessingFailuresMarkMeetingFailed() {
+        #expect(MuesliController.retranscriptionFailureStatus(
+            originalStatus: .completed,
+            didSetProcessing: true,
+            error: CocoaError(.fileReadUnknown)
+        ) == .failed)
+    }
+
     @Test("cached manual notes are persisted before debounce")
     func cachedManualNotesPersistImmediately() throws {
         let store = try makeStore()
@@ -473,7 +561,7 @@ struct MeetingsNavigationTests {
         let controller = makeController()
 
         controller.selectBackend(.parakeetEnglish)
-        controller.selectMeetingTranscriptionBackend(.whisperLargeTurbo)
+        controller.selectMeetingTranscriptionBackend(.whisperLargeTurbo, requireDownloaded: false)
 
         #expect(controller.appState.selectedBackend == .parakeetEnglish)
         #expect(controller.appState.selectedMeetingTranscriptionBackend == .whisperLargeTurbo)
