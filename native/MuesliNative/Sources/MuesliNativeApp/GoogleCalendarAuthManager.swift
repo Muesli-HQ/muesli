@@ -346,6 +346,11 @@ final class GoogleCalendarAuthManager {
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             let errorBody = String(data: data, encoding: .utf8) ?? "unknown error"
+            if let httpResponse = response as? HTTPURLResponse,
+               (httpResponse.statusCode == 400 || httpResponse.statusCode == 401),
+               errorBody.contains("invalid_grant") {
+                throw GoogleCalendarAuthError.notAuthenticated
+            }
             throw GoogleCalendarAuthError.refreshFailed(errorBody)
         }
 

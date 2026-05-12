@@ -34,6 +34,13 @@ enum UserInitiatedUpdateAction: Equatable {
     case showBusy(message: String)
 }
 
+enum GoogleCalendarListLoadState: Equatable {
+    case idle
+    case loading
+    case loaded
+    case failed(String)
+}
+
 enum UpdateInteractionPolicy {
     static let busyMessage = "Sparkle is still finishing the previous update check. Try again in a moment."
 
@@ -86,6 +93,9 @@ final class AppState {
     var isGoogleCalendarAuthenticated: Bool = false
     var upcomingCalendarEvents: [UnifiedCalendarEvent] = []
     var hiddenCalendarEventIDs: Set<String> = []
+    var availableEventKitCalendars: [AvailableCalendar] = []
+    var availableGoogleCalendars: [GoogleCalendarSummary] = []
+    var googleCalendarListLoadState: GoogleCalendarListLoadState = .idle
     var sparkleUpdateStatus: SparkleUpdateStatus = .idle
     var sparkleLastCheckedAt: Date?
     var modelPreparationTitle: String?

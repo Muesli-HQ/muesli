@@ -57,7 +57,7 @@ struct GoogleCalendarTests {
             "end": ["dateTime": "2026-04-10T15:00:00+05:30"],
         ]
 
-        let event = GoogleCalendarClient().parseEvent(item)
+        let event = GoogleCalendarClient().parseEvent(item, calendarID: "primary")
         #expect(event != nil)
         #expect(event?.id == "event123")
         #expect(event?.title == "Sprint Planning")
@@ -74,7 +74,7 @@ struct GoogleCalendarTests {
             "end": ["date": "2026-04-11"],
         ]
 
-        let event = GoogleCalendarClient().parseEvent(item)
+        let event = GoogleCalendarClient().parseEvent(item, calendarID: "primary")
         #expect(event != nil)
         #expect(event?.isAllDay == true)
         #expect(event?.title == "Company Holiday")
@@ -88,7 +88,7 @@ struct GoogleCalendarTests {
             "end": ["dateTime": "2026-04-10T15:00:00Z"],
         ]
 
-        #expect(GoogleCalendarClient().parseEvent(item) == nil)
+        #expect(GoogleCalendarClient().parseEvent(item, calendarID: "primary") == nil)
     }
 
     @Test("returns nil for event missing id")
@@ -99,7 +99,7 @@ struct GoogleCalendarTests {
             "end": ["dateTime": "2026-04-10T15:00:00Z"],
         ]
 
-        #expect(GoogleCalendarClient().parseEvent(item) == nil)
+        #expect(GoogleCalendarClient().parseEvent(item, calendarID: "primary") == nil)
     }
 
     // MARK: - Meeting URL extraction
@@ -114,7 +114,7 @@ struct GoogleCalendarTests {
             "hangoutLink": "https://meet.google.com/abc-defg-hij",
         ]
 
-        let event = GoogleCalendarClient().parseEvent(item)
+        let event = GoogleCalendarClient().parseEvent(item, calendarID: "primary")
         #expect(event?.meetingURL?.absoluteString == "https://meet.google.com/abc-defg-hij")
     }
 
@@ -132,7 +132,7 @@ struct GoogleCalendarTests {
             ],
         ]
 
-        let event = GoogleCalendarClient().parseEvent(item)
+        let event = GoogleCalendarClient().parseEvent(item, calendarID: "primary")
         #expect(event?.meetingURL?.absoluteString == "https://us02web.zoom.us/j/123456789")
     }
 
@@ -145,7 +145,7 @@ struct GoogleCalendarTests {
             "end": ["dateTime": "2026-04-10T13:00:00Z"],
         ]
 
-        let event = GoogleCalendarClient().parseEvent(item)
+        let event = GoogleCalendarClient().parseEvent(item, calendarID: "primary")
         #expect(event?.meetingURL == nil)
     }
 
@@ -262,6 +262,53 @@ struct GoogleCalendarTests {
         let selected = selectCurrentOrNearbyCachedCalendarEvent(from: events, now: now)
         #expect(selected?.id == "soon")
         #expect(selected?.title == "Soon call")
+    }
+
+    // MARK: - parseCalendarListEntry
+
+    @Test("parses a calendarList entry with summary, primary flag, and color")
+    func parsesCalendarListEntry() {
+        let entry: [String: Any] = [
+            "id": "primary",
+            "summary": "spencer@dockstreet.com",
+            "primary": true,
+            "backgroundColor": "#9fe1e7",
+        ]
+        let summary = GoogleCalendarClient.parseCalendarListEntry(entry)
+        #expect(summary?.id == "primary")
+        #expect(summary?.summary == "spencer@dockstreet.com")
+        #expect(summary?.isPrimary == true)
+        #expect(summary?.colorHex == "9fe1e7")
+    }
+
+    @Test("calendarList entry prefers summaryOverride when present")
+    func calendarListPrefersOverride() {
+        let entry: [String: Any] = [
+            "id": "team@dockstreet.com",
+            "summary": "team@dockstreet.com",
+            "summaryOverride": "Team Standup",
+        ]
+        let summary = GoogleCalendarClient.parseCalendarListEntry(entry)
+        #expect(summary?.summary == "Team Standup")
+        #expect(summary?.isPrimary == false)
+    }
+
+    @Test("calendarList entry returns nil when id missing")
+    func calendarListNilWithoutID() {
+        let entry: [String: Any] = ["summary": "no id"]
+        #expect(GoogleCalendarClient.parseCalendarListEntry(entry) == nil)
+    }
+
+    @Test("parsed event records the calendarID")
+    func parsedEventCarriesCalendarID() {
+        let item: [String: Any] = [
+            "id": "ev1",
+            "summary": "Sync",
+            "start": ["dateTime": "2026-04-10T14:00:00Z"],
+            "end": ["dateTime": "2026-04-10T15:00:00Z"],
+        ]
+        let event = GoogleCalendarClient().parseEvent(item, calendarID: "team@dockstreet.com")
+        #expect(event?.calendarID == "team@dockstreet.com")
     }
 
     // MARK: - Helpers
