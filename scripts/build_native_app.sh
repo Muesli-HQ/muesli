@@ -154,6 +154,7 @@ ditto "$STAGED_APP_DIR" "$APP_DIR"
 if [[ "$SKIP_SIGN" != "1" ]]; then
   if ! security find-identity -v -p codesigning | grep -Fq "$SIGN_IDENTITY"; then
     echo "Signing identity not found: $SIGN_IDENTITY" >&2
+    echo "For local contributor builds without this certificate, run: MUESLI_SKIP_SIGN=1 ./scripts/dev-test.sh" >&2
     exit 1
   fi
 

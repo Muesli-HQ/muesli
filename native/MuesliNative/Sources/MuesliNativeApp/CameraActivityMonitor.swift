@@ -72,7 +72,8 @@ final class CameraActivityMonitor {
         for (deviceID, block) in monitoredDevices where !currentDeviceIDs.contains(deviceID) {
             removeRunningListener(deviceID: deviceID, block: block)
         }
-        for id in monitoredDevices.keys where !currentDeviceIDs.contains(id) {
+        let staleDeviceIDs = monitoredDevices.keys.filter { !currentDeviceIDs.contains($0) }
+        for id in staleDeviceIDs {
             monitoredDevices.removeValue(forKey: id)
         }
 
