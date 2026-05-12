@@ -887,17 +887,30 @@ struct OnboardingView: View {
                 if showStalePermissionHint,
                    grantingPermissionName == step.name,
                    let service = tccutilService(for: step.name) {
-                    Button {
-                        resetStalePermissionAndQuit(service: service)
-                    } label: {
-                        Text(isResettingStalePermission
-                            ? "Resetting…"
-                            : "Still stuck? Reset \(step.name) permission and quit Muesli")
+                    VStack(spacing: 4) {
+                        Text("Still stuck? macOS may have a stale permission entry.")
                             .font(.system(size: 11))
-                            .foregroundStyle(MuesliTheme.transcribing)
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                        Button {
+                            resetStalePermissionAndQuit(service: service)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.system(size: 11, weight: .semibold))
+                                Text(isResettingStalePermission
+                                    ? "Resetting…"
+                                    : "Reset \(step.name) Permission & Restart")
+                                    .font(.system(size: 12, weight: .semibold))
+                            }
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, MuesliTheme.spacing12)
+                            .padding(.vertical, 6)
+                            .background(MuesliTheme.transcribing)
+                            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isResettingStalePermission)
                     }
-                    .buttonStyle(.plain)
-                    .disabled(isResettingStalePermission)
                 }
 
                 if step.name == "Input Monitoring", grantingPermissionName == step.name {
