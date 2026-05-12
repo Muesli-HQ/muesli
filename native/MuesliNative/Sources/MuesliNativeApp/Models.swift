@@ -128,6 +128,26 @@ struct BackendOption: Equatable {
         all.filter { $0.isDownloaded }
     }
 
+    static func resolve(backend: String, model: String) -> BackendOption? {
+        all.first { $0.backend == backend && $0.model == model }
+    }
+
+    static func resolveDownloaded(
+        backend: String,
+        model: String,
+        fallback: BackendOption?,
+        downloadedOptions: [BackendOption]
+    ) -> BackendOption? {
+        if let selected = downloadedOptions.first(where: { $0.backend == backend && $0.model == model }) {
+            return selected
+        }
+        if let fallback,
+           downloadedOptions.contains(where: { $0.backend == fallback.backend && $0.model == fallback.model }) {
+            return fallback
+        }
+        return downloadedOptions.first
+    }
+
     /// Check if this model's files exist on disk.
     var isDownloaded: Bool {
         let fm = FileManager.default

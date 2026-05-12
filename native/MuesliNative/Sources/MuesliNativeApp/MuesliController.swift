@@ -61,6 +61,29 @@ enum MeetingTemplateSelectionError: Error, LocalizedError {
     }
 }
 
+enum MeetingRetranscriptionError: Error, LocalizedError {
+    case controllerUnavailable
+    case recordingUnavailable
+    case noDownloadedTranscriptionModel
+    case emptyTranscript
+    case failedToSave(underlying: Error)
+
+    var errorDescription: String? {
+        switch self {
+        case .controllerUnavailable:
+            return "Meeting re-transcription could not continue because Muesli is no longer available."
+        case .recordingUnavailable:
+            return "The saved meeting recording is no longer available on disk."
+        case .noDownloadedTranscriptionModel:
+            return "Download a transcription model before re-transcribing this meeting."
+        case .emptyTranscript:
+            return "Re-transcription finished, but no speech was detected in the saved recording."
+        case .failedToSave(let underlying):
+            return "The re-transcribed meeting could not be saved. \(underlying.localizedDescription)"
+        }
+    }
+}
+
 enum MeetingLifecycleError: Error, LocalizedError {
     case failedToSaveRecording(underlying: Error)
     case failedToDeleteRecording(underlying: Error)
@@ -179,9 +202,15 @@ final class MuesliController: NSObject {
         self.selectedBackend = BackendOption.all.first(where: {
             $0.backend == loadedConfig.sttBackend && $0.model == loadedConfig.sttModel
         }) ?? .whisper
-        self.selectedMeetingTranscriptionBackend = BackendOption.all.first(where: {
-            $0.backend == loadedConfig.meetingTranscriptionBackend && $0.model == loadedConfig.meetingTranscriptionModel
-        }) ?? self.selectedBackend
+        let configuredMeetingBackend = BackendOption.resolve(
+            backend: loadedConfig.meetingTranscriptionBackend,
+            model: loadedConfig.meetingTranscriptionModel
+        )
+        self.selectedMeetingTranscriptionBackend = Self.availableMeetingTranscriptionBackend(
+            config: loadedConfig,
+            dictationBackend: self.selectedBackend,
+            downloadedOptions: BackendOption.downloaded
+        ) ?? configuredMeetingBackend ?? self.selectedBackend
         self.selectedMeetingSummaryBackend = MeetingSummaryBackendOption.all.first(where: {
             $0.backend == loadedConfig.meetingSummaryBackend
         }) ?? .chatGPT
@@ -197,6 +226,7 @@ final class MuesliController: NSObject {
             fputs("[muesli-native] startup error: \(error)\n", stderr)
         }
         recoverStaleLiveMeetings()
+        normalizeMeetingTranscriptionSelectionForAvailability()
 
         // Clean up phantom aggregate devices left by a previous crash
         CoreAudioSystemRecorder.cleanupStaleDevices()
@@ -585,6 +615,60 @@ final class MuesliController: NSObject {
         appState.searchResultMeetings = []
     }
 
+    private static func availableMeetingTranscriptionBackend(
+        config: AppConfig,
+        dictationBackend: BackendOption,
+        downloadedOptions: [BackendOption] = BackendOption.downloaded
+    ) -> BackendOption? {
+        BackendOption.resolveDownloaded(
+            backend: config.meetingTranscriptionBackend,
+            model: config.meetingTranscriptionModel,
+            fallback: dictationBackend,
+            downloadedOptions: downloadedOptions
+        )
+    }
+
+    @discardableResult
+    private func normalizeMeetingTranscriptionSelectionForAvailability(
+        downloadedOptions: [BackendOption] = BackendOption.downloaded
+    ) -> BackendOption? {
+        let dictationBackend = BackendOption.resolve(
+            backend: config.sttBackend,
+            model: config.sttModel
+        ) ?? selectedBackend
+        guard let resolved = Self.availableMeetingTranscriptionBackend(
+            config: config,
+            dictationBackend: dictationBackend,
+            downloadedOptions: downloadedOptions
+        ) else {
+            selectedMeetingTranscriptionBackend = BackendOption.resolve(
+                backend: config.meetingTranscriptionBackend,
+                model: config.meetingTranscriptionModel
+            ) ?? dictationBackend
+            appState.selectedMeetingTranscriptionBackend = selectedMeetingTranscriptionBackend
+            appState.config = config
+            return nil
+        }
+
+        selectedMeetingTranscriptionBackend = resolved
+        activeMeetingSession?.updateBackend(resolved)
+        if config.meetingTranscriptionBackend != resolved.backend ||
+            config.meetingTranscriptionModel != resolved.model {
+            config.meetingTranscriptionBackend = resolved.backend
+            config.meetingTranscriptionModel = resolved.model
+            configStore.save(config)
+            fputs("[muesli-native] meeting transcription model unavailable; switched to \(resolved.label)\n", stderr)
+        }
+        appState.selectedMeetingTranscriptionBackend = resolved
+        appState.config = config
+        return resolved
+    }
+
+    @discardableResult
+    func refreshMeetingTranscriptionSelectionForAvailability() -> BackendOption? {
+        normalizeMeetingTranscriptionSelectionForAvailability()
+    }
+
     func updateConfig(_ mutate: (inout AppConfig) -> Void) {
         mutate(&config)
         configStore.save(config)
@@ -689,11 +773,20 @@ final class MuesliController: NSObject {
         }
     }
 
-    func selectMeetingTranscriptionBackend(_ option: BackendOption) {
+    func selectMeetingTranscriptionBackend(_ option: BackendOption, requireDownloaded: Bool = true) {
+        guard !requireDownloaded || option.isDownloaded else {
+            presentErrorAlert(
+                title: "Meeting model unavailable",
+                message: "Download \(option.label) before using it for meeting transcription."
+            )
+            normalizeMeetingTranscriptionSelectionForAvailability()
+            return
+        }
         updateConfig {
             $0.meetingTranscriptionBackend = option.backend
             $0.meetingTranscriptionModel = option.model
         }
+        activeMeetingSession?.updateBackend(option)
         Task { [weak self] in
             guard let self else { return }
             await self.transcriptionCoordinator.preload(
@@ -1815,6 +1908,120 @@ final class MuesliController: NSObject {
         }
     }
 
+    func retranscribe(meeting: MeetingRecord, completion: @escaping (Result<Void, Error>) -> Void) {
+        Task { @MainActor [weak self] in
+            guard let self else {
+                completion(.failure(MeetingRetranscriptionError.controllerUnavailable))
+                return
+            }
+            var didSetProcessing = false
+            do {
+                guard let savedRecordingPath = meeting.savedRecordingPath,
+                      !savedRecordingPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw MeetingRetranscriptionError.recordingUnavailable
+                }
+                let recordingURL = URL(fileURLWithPath: savedRecordingPath)
+                guard FileManager.default.fileExists(atPath: recordingURL.path) else {
+                    throw MeetingRetranscriptionError.recordingUnavailable
+                }
+                guard let backend = self.normalizeMeetingTranscriptionSelectionForAvailability() else {
+                    throw MeetingRetranscriptionError.noDownloadedTranscriptionModel
+                }
+
+                try self.dictationStore.updateMeetingStatus(id: meeting.id, status: .processing)
+                didSetProcessing = true
+                self.syncAppState()
+                self.historyWindowController?.reload()
+
+                try await self.transcriptionCoordinator.preloadRequired(
+                    backend: backend,
+                    enablePostProcessor: false,
+                    includeMeetingHelpers: true
+                )
+                let transcription = try await self.transcriptionCoordinator.transcribeMeeting(
+                    at: recordingURL,
+                    backend: backend,
+                    cohereLanguage: self.config.resolvedCohereLanguage
+                )
+                let rawTranscript = transcription.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !rawTranscript.isEmpty else {
+                    throw MeetingRetranscriptionError.emptyTranscript
+                }
+
+                let templateSnapshot = MeetingTemplates.snapshot(
+                    for: meeting,
+                    customTemplates: self.config.customMeetingTemplates
+                )
+                let formattedNotes: String
+                do {
+                    formattedNotes = try await MeetingSummaryClient.summarize(
+                        transcript: rawTranscript,
+                        meetingTitle: meeting.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Meeting" : meeting.title,
+                        config: self.config,
+                        template: templateSnapshot,
+                        existingNotes: self.notesContextForResummary(meeting),
+                        manualNotesToRetain: meeting.manualNotes
+                    )
+                } catch {
+                    fputs("[muesli-native] re-transcription summary generation failed: \(error)\n", stderr)
+                    formattedNotes = MeetingSummaryClient.summaryFailureNotes(
+                        transcript: rawTranscript,
+                        meetingTitle: meeting.title,
+                        error: error,
+                        manualNotes: meeting.manualNotes
+                    )
+                }
+
+                do {
+                    try self.dictationStore.updateMeetingTranscriptAndSummary(
+                        id: meeting.id,
+                        rawTranscript: rawTranscript,
+                        formattedNotes: formattedNotes,
+                        selectedTemplateID: templateSnapshot.id,
+                        selectedTemplateName: templateSnapshot.name,
+                        selectedTemplateKind: templateSnapshot.kind,
+                        selectedTemplatePrompt: templateSnapshot.prompt
+                    )
+                } catch {
+                    throw MeetingRetranscriptionError.failedToSave(underlying: error)
+                }
+
+                self.syncAppState()
+                self.historyWindowController?.reload()
+                completion(.success(()))
+            } catch {
+                fputs("[muesli-native] failed to re-transcribe meeting \(meeting.id): \(error)\n", stderr)
+                if let status = Self.retranscriptionFailureStatus(
+                    originalStatus: meeting.status,
+                    didSetProcessing: didSetProcessing,
+                    error: error
+                ) {
+                    try? self.dictationStore.updateMeetingStatus(id: meeting.id, status: status)
+                }
+                self.syncAppState()
+                self.historyWindowController?.reload()
+                completion(.failure(error))
+            }
+        }
+    }
+
+    static func retranscriptionFailureStatus(
+        originalStatus: MeetingStatus,
+        didSetProcessing: Bool,
+        error: Error
+    ) -> MeetingStatus? {
+        guard didSetProcessing else { return nil }
+        if let retranscriptionError = error as? MeetingRetranscriptionError {
+            switch retranscriptionError {
+            case .emptyTranscript, .failedToSave:
+                return originalStatus
+            case .controllerUnavailable, .recordingUnavailable, .noDownloadedTranscriptionModel:
+                break
+            }
+        }
+        return .failed
+    }
+
     // MARK: - Meeting Editing
 
     private func notesContextForResummary(_ meeting: MeetingRecord) -> String? {
@@ -2301,6 +2508,13 @@ final class MuesliController: NSObject {
 
     func startMeetingRecording(title: String = "Meeting", calendarEventID: String? = nil, openDocument: Bool = false) {
         guard !isMeetingRecording(), !isStartingMeetingRecording else { return }
+        guard normalizeMeetingTranscriptionSelectionForAvailability() != nil else {
+            presentErrorAlert(
+                title: "Meeting failed to start",
+                message: "Download a transcription model before recording a meeting."
+            )
+            return
+        }
         let templateSnapshot = defaultMeetingTemplate()
         let meetingID: Int64
         do {
