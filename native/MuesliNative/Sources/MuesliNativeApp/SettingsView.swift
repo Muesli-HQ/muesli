@@ -48,6 +48,7 @@ struct SettingsView: View {
         case dictation
         case computerUse
         case meetings
+        case autoCapture
         case appearance
 
         var id: String { rawValue }
@@ -58,6 +59,7 @@ struct SettingsView: View {
             case .dictation: return "Dictation"
             case .computerUse: return "Computer Use"
             case .meetings: return "Meetings"
+            case .autoCapture: return "Auto-Capture"
             case .appearance: return "Appearance"
             }
         }
@@ -277,6 +279,8 @@ struct SettingsView: View {
             computerUseSettingsPane
         case .meetings:
             meetingsSettingsPane
+        case .autoCapture:
+            AutoCaptureSettingsView(appState: appState, controller: controller)
         case .appearance:
             appearanceSettingsPane
         }
