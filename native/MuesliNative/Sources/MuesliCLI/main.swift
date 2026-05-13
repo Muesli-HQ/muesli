@@ -287,7 +287,7 @@ struct MuesliCLI: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "muesli-cli",
         abstract: "Agent-friendly CLI for local Muesli meetings and dictations.",
-        subcommands: [SpecCommand.self, InfoCommand.self, MeetingsCommand.self, DictationsCommand.self]
+        subcommands: [SpecCommand.self, InfoCommand.self, MeetingsCommand.self, DictationsCommand.self, AutoCaptureCommand.self]
     )
 
     static func exit(withError error: Error? = nil) -> Never {
@@ -332,6 +332,7 @@ struct MuesliCLI: ParsableCommand {
             .init(name: "meetings update-notes", usage: "muesli-cli meetings update-notes <id> (--stdin | --file <path>)", summary: "Replace stored meeting notes only.", examples: ["muesli-cli meetings update-notes 42 --file notes.md", "cat notes.md | muesli-cli meetings update-notes 42 --stdin"]),
             .init(name: "dictations list", usage: "muesli-cli dictations list [--limit <n>]", summary: "List recent dictations.", examples: ["muesli-cli dictations list --limit 10"]),
             .init(name: "dictations get", usage: "muesli-cli dictations get <id>", summary: "Return a full dictation record.", examples: ["muesli-cli dictations get 7"]),
+            .init(name: "auto-capture status", usage: "muesli-cli auto-capture status [--support-dir <dir>]", summary: "Show the current Auto-Capture state and config snapshot.", examples: ["muesli-cli auto-capture status"]),
         ])
     }
 }
@@ -493,5 +494,150 @@ struct DictationsGetCommand: ParsableCommand {
             throw CLIError.notFound("No dictation exists with id \(id).", fix: "Run `muesli-cli dictations list` to find a valid ID.")
         }
         emitSuccess(command: "muesli-cli dictations get", data: DictationDetailPayload(dictation), dbPath: context.databaseURL)
+    }
+}
+
+// MARK: - Auto-Capture
+
+struct AutoCaptureCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "auto-capture",
+        abstract: "Inspect Muesli auto-capture state and configuration.",
+        subcommands: [AutoCaptureStatusCommand.self]
+    )
+}
+
+private struct AutoCaptureConfigSnapshot: Decodable, Encodable {
+    var enabled: Bool
+    var allowedAppBundleIDs: [String]
+    var acknowledgedAppBundleIDs: [String]
+    var startDelaySeconds: Double
+    var requireCalendarMatch: Bool
+    var disableDuringFocus: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case enabled
+        case allowedAppBundleIDs = "allowed_app_bundle_ids"
+        case acknowledgedAppBundleIDs = "acknowledged_app_bundle_ids"
+        case startDelaySeconds = "start_delay_seconds"
+        case requireCalendarMatch = "require_calendar_match"
+        case disableDuringFocus = "disable_during_focus"
+    }
+
+    static let defaults = AutoCaptureConfigSnapshot(
+        enabled: false,
+        allowedAppBundleIDs: [],
+        acknowledgedAppBundleIDs: [],
+        startDelaySeconds: 5,
+        requireCalendarMatch: false,
+        disableDuringFocus: true
+    )
+
+    init(
+        enabled: Bool,
+        allowedAppBundleIDs: [String],
+        acknowledgedAppBundleIDs: [String],
+        startDelaySeconds: Double,
+        requireCalendarMatch: Bool,
+        disableDuringFocus: Bool
+    ) {
+        self.enabled = enabled
+        self.allowedAppBundleIDs = allowedAppBundleIDs.sorted()
+        self.acknowledgedAppBundleIDs = acknowledgedAppBundleIDs.sorted()
+        self.startDelaySeconds = startDelaySeconds
+        self.requireCalendarMatch = requireCalendarMatch
+        self.disableDuringFocus = disableDuringFocus
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = AutoCaptureConfigSnapshot.defaults
+        self.enabled = (try? c.decode(Bool.self, forKey: .enabled)) ?? defaults.enabled
+        let allowedSet = (try? c.decode(Set<String>.self, forKey: .allowedAppBundleIDs)) ?? Set(defaults.allowedAppBundleIDs)
+        self.allowedAppBundleIDs = allowedSet.sorted()
+        let ackSet = (try? c.decode(Set<String>.self, forKey: .acknowledgedAppBundleIDs)) ?? Set(defaults.acknowledgedAppBundleIDs)
+        self.acknowledgedAppBundleIDs = ackSet.sorted()
+        self.startDelaySeconds = (try? c.decode(Double.self, forKey: .startDelaySeconds)) ?? defaults.startDelaySeconds
+        self.requireCalendarMatch = (try? c.decode(Bool.self, forKey: .requireCalendarMatch)) ?? defaults.requireCalendarMatch
+        self.disableDuringFocus = (try? c.decode(Bool.self, forKey: .disableDuringFocus)) ?? defaults.disableDuringFocus
+    }
+}
+
+private struct AutoCaptureConfigEnvelope: Decodable {
+    let autoCapture: AutoCaptureConfigSnapshot?
+
+    enum CodingKeys: String, CodingKey {
+        case autoCapture = "auto_capture"
+    }
+}
+
+struct AutoCaptureStatusPayload: Encodable {
+    let state: String
+    let lastDecisionReason: String
+    let lastDecisionAt: String?
+    let configSource: String
+    let config: AutoCaptureConfigEncodableSnapshot
+}
+
+struct AutoCaptureConfigEncodableSnapshot: Encodable {
+    let enabled: Bool
+    let allowedAppBundleIDs: [String]
+    let acknowledgedAppBundleIDs: [String]
+    let startDelaySeconds: Double
+    let requireCalendarMatch: Bool
+    let disableDuringFocus: Bool
+}
+
+struct AutoCaptureStatusCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "status",
+        abstract: "Show the current Auto-Capture state and config snapshot."
+    )
+
+    @OptionGroup var global: GlobalOptions
+
+    func run() throws {
+        let context = CLIContext(options: global)
+        let configURL = context.supportDirectory.appendingPathComponent("config.json")
+        var warnings: [String] = ["coordinator_not_running"]
+        var snapshot = AutoCaptureConfigSnapshot.defaults
+
+        if FileManager.default.fileExists(atPath: configURL.path) {
+            do {
+                let data = try Data(contentsOf: configURL)
+                let envelope = try JSONDecoder().decode(AutoCaptureConfigEnvelope.self, from: data)
+                if let parsed = envelope.autoCapture {
+                    snapshot = parsed
+                } else {
+                    warnings.append("auto_capture_section_missing")
+                }
+            } catch {
+                warnings.append("config_parse_failed")
+            }
+        } else {
+            warnings.append("config_not_found")
+        }
+
+        let payload = AutoCaptureStatusPayload(
+            state: "idle",
+            lastDecisionReason: "no_signal",
+            lastDecisionAt: nil,
+            configSource: "config_snapshot",
+            config: AutoCaptureConfigEncodableSnapshot(
+                enabled: snapshot.enabled,
+                allowedAppBundleIDs: snapshot.allowedAppBundleIDs,
+                acknowledgedAppBundleIDs: snapshot.acknowledgedAppBundleIDs,
+                startDelaySeconds: snapshot.startDelaySeconds,
+                requireCalendarMatch: snapshot.requireCalendarMatch,
+                disableDuringFocus: snapshot.disableDuringFocus
+            )
+        )
+
+        emitSuccess(
+            command: "muesli-cli auto-capture status",
+            data: payload,
+            dbPath: context.databaseURL,
+            warnings: warnings
+        )
     }
 }
