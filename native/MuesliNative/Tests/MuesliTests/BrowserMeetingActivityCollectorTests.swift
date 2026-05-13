@@ -67,6 +67,72 @@ struct BrowserMeetingActivityCollectorTests {
         #expect(cachedAfterFailedRefresh.isEmpty)
     }
 
+    @Test("refresh preserves cache when AppleScript probe is throttled")
+    func refreshPreservesCacheWhenAppleScriptProbeIsThrottled() async {
+        var activeTabURL: String? = "https://meet.google.com/pwm-txwq-txy"
+        let collector = BrowserMeetingActivityCollector(
+            activeBrowserURLProvider: { _ in activeTabURL }
+        )
+
+        let first = await collector.collect(
+            runningApps: [chrome(isActive: false)],
+            refresh: true,
+            now: now,
+            shouldAttemptAppleScript: { _ in true }
+        )
+
+        activeTabURL = nil
+        let second = await collector.collect(
+            runningApps: [chrome(isActive: false)],
+            refresh: true,
+            now: now.addingTimeInterval(1),
+            shouldAttemptAppleScript: { _ in false }
+        )
+        let cachedAfterSkippedRefresh = await collector.collect(
+            runningApps: [chrome(isActive: false)],
+            refresh: false,
+            now: now.addingTimeInterval(2),
+            shouldAttemptAppleScript: { _ in false }
+        )
+
+        #expect(first.count == 1)
+        #expect(second.isEmpty)
+        #expect(cachedAfterSkippedRefresh.map(\.normalizedID) == ["googleMeet:meet.google.com/pwm-txwq-txy"])
+    }
+
+    @Test("refresh clears cache when AppleScript probe runs and finds no meeting URL")
+    func refreshClearsCacheWhenAppleScriptProbeFindsNoMeetingURL() async {
+        var activeTabURL: String? = "https://meet.google.com/pwm-txwq-txy"
+        let collector = BrowserMeetingActivityCollector(
+            activeBrowserURLProvider: { _ in activeTabURL }
+        )
+
+        let first = await collector.collect(
+            runningApps: [chrome(isActive: false)],
+            refresh: true,
+            now: now,
+            shouldAttemptAppleScript: { _ in true }
+        )
+
+        activeTabURL = "https://example.com"
+        let second = await collector.collect(
+            runningApps: [chrome(isActive: false)],
+            refresh: true,
+            now: now.addingTimeInterval(1),
+            shouldAttemptAppleScript: { _ in true }
+        )
+        let cachedAfterFailedRefresh = await collector.collect(
+            runningApps: [chrome(isActive: false)],
+            refresh: false,
+            now: now.addingTimeInterval(2),
+            shouldAttemptAppleScript: { _ in false }
+        )
+
+        #expect(first.count == 1)
+        #expect(second.isEmpty)
+        #expect(cachedAfterFailedRefresh.isEmpty)
+    }
+
     @Test("non-refresh pass can reuse recent cached browser room")
     func nonRefreshPassCanReuseRecentCachedRoom() async {
         var focusedURL: String? = "https://meet.google.com/pwm-txwq-txy"

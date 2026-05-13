@@ -42,11 +42,15 @@ final class BrowserMeetingActivityCollector {
 
         var liveMeetings: [BrowserMeetingContext] = []
         for app in browserApps {
-            guard let normalized = await normalizedFocusedURL(
+            let probeResult = await probeFocusedMeetingURL(
                 for: app,
                 shouldAttemptAppleScript: shouldAttemptAppleScript
-            ) else {
-                cachedMeetings.removeValue(forKey: app.bundleID)
+            )
+
+            guard case .meeting(let normalized) = probeResult else {
+                if case .noMeeting = probeResult {
+                    cachedMeetings.removeValue(forKey: app.bundleID)
+                }
                 continue
             }
 
@@ -66,22 +70,31 @@ final class BrowserMeetingActivityCollector {
         return liveMeetings
     }
 
-    private func normalizedFocusedURL(
+    private func probeFocusedMeetingURL(
         for app: RunningAppSnapshot,
         shouldAttemptAppleScript: (String) -> Bool
-    ) async -> NormalizedMeetingURL? {
-        if let normalized = normalizedAXDocumentURL(for: app) {
-            return normalized
+    ) async -> BrowserMeetingURLProbeResult {
+        if let focusedDocumentURLProvider {
+            guard let rawURL = focusedDocumentURLProvider(app) else {
+                return .noMeeting
+            }
+            return MeetingURLNormalizer.normalize(rawURL).map(BrowserMeetingURLProbeResult.meeting) ?? .noMeeting
+        }
+
+        if let rawURL = axDocumentURL(for: app) {
+            return MeetingURLNormalizer.normalize(rawURL).map(BrowserMeetingURLProbeResult.meeting) ?? .noMeeting
         }
 
         // Query the browser's active tab even after another app/overlay becomes
         // frontmost. Strict URL normalization plus resolver media checks keep
         // background meeting tabs from prompting by themselves.
-        guard shouldAttemptAppleScript(app.bundleID) else { return nil }
-        guard let url = await activeBrowserURLViaAppleScript(bundleID: app.bundleID) else {
-            return nil
+        guard shouldAttemptAppleScript(app.bundleID) else {
+            return .skipped
         }
-        return MeetingURLNormalizer.normalize(url)
+        guard let url = await activeBrowserURLViaAppleScript(bundleID: app.bundleID) else {
+            return .noMeeting
+        }
+        return MeetingURLNormalizer.normalize(url).map(BrowserMeetingURLProbeResult.meeting) ?? .noMeeting
     }
 
     private func pruneCache(runningBrowserIDs: Set<String>, now: Date) {
@@ -112,11 +125,7 @@ final class BrowserMeetingActivityCollector {
         )
     }
 
-    private func normalizedAXDocumentURL(for app: RunningAppSnapshot) -> NormalizedMeetingURL? {
-        if let rawURL = focusedDocumentURLProvider?(app) {
-            return MeetingURLNormalizer.normalize(rawURL)
-        }
-
+    private func axDocumentURL(for app: RunningAppSnapshot) -> String? {
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
         var windowRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &windowRef) == .success,
@@ -132,27 +141,40 @@ final class BrowserMeetingActivityCollector {
             return nil
         }
 
-        return MeetingURLNormalizer.normalize(rawURL)
+        return rawURL
     }
 
-    @MainActor
-    private func activeBrowserURLViaAppleScript(bundleID: String) -> String? {
-        if let url = activeBrowserURLProvider?(bundleID) {
-            return url
+    private func activeBrowserURLViaAppleScript(bundleID: String) async -> String? {
+        if let activeBrowserURLProvider {
+            return activeBrowserURLProvider(bundleID)
         }
 
+        guard let source = activeBrowserURLAppleScriptSource(bundleID: bundleID) else {
+            return nil
+        }
+
+        return await Task.detached(priority: .utility) {
+            var errorInfo: NSDictionary?
+            guard let output = NSAppleScript(source: source)?.executeAndReturnError(&errorInfo).stringValue,
+                  !output.isEmpty else {
+                return nil
+            }
+            return output
+        }.value
+    }
+
+    private func activeBrowserURLAppleScriptSource(bundleID: String) -> String? {
         let escapedBundleID = bundleID.replacingOccurrences(of: "\"", with: "\\\"")
-        let source: String
         switch bundleID {
         case "com.apple.Safari":
-            source = """
+            return """
             tell application id "\(escapedBundleID)"
                 if (count of windows) is 0 then return ""
                 return URL of current tab of front window
             end tell
             """
         case "com.google.Chrome", "com.brave.Browser", "company.thebrowser.Browser", "com.microsoft.edgemac":
-            source = """
+            return """
             tell application id "\(escapedBundleID)"
                 if (count of windows) is 0 then return ""
                 return URL of active tab of front window
@@ -161,14 +183,13 @@ final class BrowserMeetingActivityCollector {
         default:
             return nil
         }
-
-        var errorInfo: NSDictionary?
-        guard let output = NSAppleScript(source: source)?.executeAndReturnError(&errorInfo).stringValue,
-              !output.isEmpty else {
-            return nil
-        }
-        return output
     }
+}
+
+private enum BrowserMeetingURLProbeResult {
+    case meeting(NormalizedMeetingURL)
+    case noMeeting
+    case skipped
 }
 
 private struct CachedBrowserMeeting {
