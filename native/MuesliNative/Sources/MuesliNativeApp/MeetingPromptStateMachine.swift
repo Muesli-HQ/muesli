@@ -166,6 +166,7 @@ final class MeetingPromptStateMachine {
     }
 
     private func autoDismissExpiry(for candidate: MeetingCandidate, now: Date) -> Date {
+        guard !candidate.suppressionID.hasPrefix("meeting-session:") else { return .distantFuture }
         guard candidate.evidence.contains(.browserURL) else { return .distantFuture }
         return now.addingTimeInterval(browserAutoDismissCooldown)
     }

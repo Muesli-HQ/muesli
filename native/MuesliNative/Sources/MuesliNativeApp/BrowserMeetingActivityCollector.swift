@@ -11,17 +11,36 @@ struct RunningAppSnapshot: Sendable {
 
 final class BrowserMeetingActivityCollector {
     private let browserBundleIDs = Set(MeetingCandidateResolver.browserApps.keys)
-    private let cachedMeetingTTL: TimeInterval = 8
+    // Keep a recently seen meeting URL across tab/app focus dropouts so the
+    // resolver does not churn from a room-specific Meet candidate to a generic
+    // browser-audio candidate while the same call is still active.
+    private let cachedMeetingTTL: TimeInterval = 120
     private var cachedMeetings: [String: CachedBrowserMeeting] = [:]
 
-    func collect(runningApps: [RunningAppSnapshot]) async -> [BrowserMeetingContext] {
-        let now = Date()
+    func collect(
+        runningApps: [RunningAppSnapshot],
+        refresh: Bool,
+        now: Date = Date(),
+        shouldAttemptAppleScript: (String) -> Bool = { _ in true }
+    ) async -> [BrowserMeetingContext] {
         let browserApps = runningApps.filter { browserBundleIDs.contains($0.bundleID) }
         let runningBrowserIDs = Set(browserApps.map(\.bundleID))
 
+        pruneCache(runningBrowserIDs: runningBrowserIDs, now: now)
+        guard refresh else {
+            return cachedContexts(runningApps: browserApps)
+        }
+
         var liveMeetings: [BrowserMeetingContext] = []
-        for app in browserApps {
-            guard let normalized = await normalizedFocusedURL(for: app) else {
+        let browsersToProbe = browserApps.filter { app in
+            app.isActive || cachedMeetings[app.bundleID] != nil
+        }
+
+        for app in browsersToProbe {
+            guard let normalized = await normalizedFocusedURL(
+                for: app,
+                shouldAttemptAppleScript: shouldAttemptAppleScript
+            ) else {
                 if app.isActive {
                     cachedMeetings.removeValue(forKey: app.bundleID)
                 }
@@ -42,28 +61,20 @@ final class BrowserMeetingActivityCollector {
         }
 
         let liveBundleIDs = Set(liveMeetings.map(\.bundleID))
-        cachedMeetings = cachedMeetings.filter { bundleID, cached in
-            runningBrowserIDs.contains(bundleID) && now.timeIntervalSince(cached.observedAt) <= cachedMeetingTTL
-        }
 
         let cachedOnlyMeetings = cachedMeetings.values
             .filter { !liveBundleIDs.contains($0.context.bundleID) }
             .map { cached in
-                BrowserMeetingContext(
-                    bundleID: cached.context.bundleID,
-                    appName: cached.context.appName,
-                    pid: cached.context.pid,
-                    url: cached.context.url,
-                    normalizedID: cached.context.normalizedID,
-                    platform: cached.context.platform,
-                    isFocused: false
-                )
+                context(cached.context, runningApps: browserApps)
             }
 
         return liveMeetings + cachedOnlyMeetings
     }
 
-    private func normalizedFocusedURL(for app: RunningAppSnapshot) async -> NormalizedMeetingURL? {
+    private func normalizedFocusedURL(
+        for app: RunningAppSnapshot,
+        shouldAttemptAppleScript: (String) -> Bool
+    ) async -> NormalizedMeetingURL? {
         if let normalized = normalizedAXDocumentURL(for: app) {
             return normalized
         }
@@ -71,10 +82,39 @@ final class BrowserMeetingActivityCollector {
         // Query the browser's active tab even after another app/overlay becomes
         // frontmost. Strict URL normalization plus resolver media checks keep
         // background meeting tabs from prompting by themselves.
+        guard shouldAttemptAppleScript(app.bundleID) else { return nil }
         guard let url = await activeBrowserURLViaAppleScript(bundleID: app.bundleID) else {
             return nil
         }
         return MeetingURLNormalizer.normalize(url)
+    }
+
+    private func pruneCache(runningBrowserIDs: Set<String>, now: Date) {
+        cachedMeetings = cachedMeetings.filter { bundleID, cached in
+            runningBrowserIDs.contains(bundleID) && now.timeIntervalSince(cached.observedAt) <= cachedMeetingTTL
+        }
+    }
+
+    private func cachedContexts(runningApps: [RunningAppSnapshot]) -> [BrowserMeetingContext] {
+        cachedMeetings.values.map { cached in
+            context(cached.context, runningApps: runningApps)
+        }
+    }
+
+    private func context(
+        _ cached: BrowserMeetingContext,
+        runningApps: [RunningAppSnapshot]
+    ) -> BrowserMeetingContext {
+        let app = runningApps.first { $0.bundleID == cached.bundleID }
+        return BrowserMeetingContext(
+            bundleID: cached.bundleID,
+            appName: app?.appName ?? cached.appName,
+            pid: app?.processIdentifier ?? cached.pid,
+            url: cached.url,
+            normalizedID: cached.normalizedID,
+            platform: cached.platform,
+            isFocused: app?.isActive ?? false
+        )
     }
 
     private func normalizedAXDocumentURL(for app: RunningAppSnapshot) -> NormalizedMeetingURL? {

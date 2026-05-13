@@ -129,6 +129,8 @@ final class MuesliController: NSObject {
     private var calendarCheckTimer: Timer?
     private var meetingStartingNowTimers = [String: Timer]()
     private var notifiedUpcomingEventIDs = Set<String>()
+    private var meetingFeatureMonitorsAllowed = false
+    private var meetingDetectionMonitorStarted = false
 
     private var searchTask: Task<Void, Never>?
     private var onboardingModelPreparationTask: Task<Void, Never>?
@@ -259,6 +261,7 @@ final class MuesliController: NSObject {
         computerUseHotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
         let canRunMainApp = config.hasCompletedOnboarding
             && hasRequiredStartupPermissions(for: config.resolvedOnboardingUseCase)
+        meetingFeatureMonitorsAllowed = canRunMainApp
 
         // Defer permission-triggering monitors until after onboarding
         if canRunMainApp && config.resolvedOnboardingUseCase.includesPushToTalk {
@@ -368,7 +371,7 @@ final class MuesliController: NSObject {
         }
 
         // Defer permission-triggering monitors until after onboarding
-        if canRunMainApp && config.resolvedOnboardingUseCase.includesMeetings {
+        if canRunMainApp && shouldRunMeetingFeatureMonitors {
             startMeetingFeatureMonitors(includeMaraudersMap: true)
         }
 
@@ -436,7 +439,9 @@ final class MuesliController: NSObject {
         calendarMonitor.stop()
         meetingStartingNowTimers.values.forEach { $0.invalidate() }
         meetingStartingNowTimers.removeAll()
+        meetingFeatureMonitorsAllowed = false
         meetingMonitor.stop()
+        meetingDetectionMonitorStarted = false
         dismissPresentedMeetingDetection()
         meetingNotification.close()
         activeMeetingSession?.discard()
@@ -698,6 +703,7 @@ final class MuesliController: NSObject {
         appState.selectedMeetingSummaryBackend = selectedMeetingSummaryBackend
         appState.config = config
         appState.isChatGPTAuthenticated = chatGPTAuth.isAuthenticated
+        syncMeetingDetectionMonitor()
         updateMeetingNotificationVisibility()
     }
 
@@ -1085,6 +1091,7 @@ final class MuesliController: NSObject {
                 self.refreshAvailableEventKitCalendars()
                 await self.refreshUpcomingCalendarEvents()
                 self.checkUpcomingCalendarNotifications()
+                self.meetingMonitor.refreshState(trigger: .calendarChanged)
             }
         }
 
@@ -1100,6 +1107,7 @@ final class MuesliController: NSObject {
             Task { @MainActor in
                 await self.refreshUpcomingCalendarEvents()
                 self.checkUpcomingCalendarNotifications()
+                self.meetingMonitor.refreshState(trigger: .calendarChanged)
             }
         }
 
@@ -1108,6 +1116,7 @@ final class MuesliController: NSObject {
             self.refreshAvailableEventKitCalendars()
             await self.refreshUpcomingCalendarEvents()
             self.checkUpcomingCalendarNotifications()
+            self.meetingMonitor.refreshState(trigger: .calendarChanged)
         }
     }
 
@@ -1121,7 +1130,26 @@ final class MuesliController: NSObject {
         if includeMaraudersMap, config.maraudersMapUnlocked {
             startMaraudersMapMonitoring()
         }
-        meetingMonitor.start()
+        syncMeetingDetectionMonitor()
+    }
+
+    private var shouldRunMeetingFeatureMonitors: Bool {
+        config.showMeetingDetectionNotification
+            || config.showScheduledMeetingNotifications
+            || config.autoRecordMeetings
+    }
+
+    private func syncMeetingDetectionMonitor() {
+        let shouldRun = meetingFeatureMonitorsAllowed
+            && config.showMeetingDetectionNotification
+        if shouldRun && !meetingDetectionMonitorStarted {
+            meetingMonitor.start()
+            meetingDetectionMonitorStarted = true
+        } else if !shouldRun && meetingDetectionMonitorStarted {
+            meetingMonitor.stop()
+            meetingDetectionMonitorStarted = false
+            dismissPresentedMeetingDetection()
+        }
     }
 
     /// Check all upcoming calendar events (EventKit + Google) for events starting within 5 minutes.
@@ -1609,12 +1637,13 @@ final class MuesliController: NSObject {
         onboardingWindowController?.close()
         onboardingWindowController = nil
         if hasRequiredStartupPermissions(for: onboardingUseCase) {
+            meetingFeatureMonitorsAllowed = true
             if onboardingUseCase.includesPushToTalk {
                 hotkeyMonitor.start()
                 startComputerUseHotkeyMonitorIfNeeded()
             }
             // Start monitors that were deferred during onboarding
-            if onboardingUseCase.includesMeetings {
+            if shouldRunMeetingFeatureMonitors {
                 startMeetingFeatureMonitors(includeMaraudersMap: false)
             }
             TelemetryDeck.signal("onboarding.completed", parameters: [

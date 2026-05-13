@@ -217,6 +217,24 @@ struct MeetingPromptStateMachineTests {
         #expect(result.reason == .autoDismissedSuppression)
     }
 
+    @Test("browser media session auto-dismiss suppression does not expire while session is stable")
+    func browserMediaSessionAutoDismissSuppressionDoesNotExpire() {
+        let machine = immediateMachine()
+        let candidate = candidate(
+            "meeting-session:browser:com.google.Chrome:1800000000",
+            suppressionID: "meeting-session:browser:com.google.Chrome:1800000000",
+            evidence: [.micActive, .audioInputProcess, .browserURL]
+        )
+
+        machine.markShown(candidate)
+        machine.markAutoDismissed(candidate, now: now)
+
+        let result = decision(machine, candidate: candidate, now: now.addingTimeInterval(3_600))
+
+        #expect(result.action == .none)
+        #expect(result.reason == .autoDismissedSuppression)
+    }
+
     @Test("prompt does not show while recording or starting recording")
     func promptBlockedDuringRecordingStates() {
         let machine = immediateMachine()
