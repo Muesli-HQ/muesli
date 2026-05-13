@@ -34,6 +34,11 @@ struct AutoCaptureConfig: Codable, Equatable {
     /// coordinator by `MuesliController` at construction time.
     var disableDuringFocus: Bool
 
+    /// Per-browser opt-in flags for the v1 AppleScript URL poller. All flags
+    /// default to off so users running v0 see no behavioural change after
+    /// upgrading to a v1 build. See ADR-0003.
+    var browserUrlPolling: BrowserURLPollingConfig
+
     static let defaultStartDelaySeconds: Double = 5
     static let minStartDelaySeconds: Double = 0
     static let maxStartDelaySeconds: Double = 60
@@ -68,7 +73,8 @@ struct AutoCaptureConfig: Codable, Equatable {
         acknowledgedAppBundleIDs: Set<String> = [],
         startDelaySeconds: Double = AutoCaptureConfig.defaultStartDelaySeconds,
         requireCalendarMatch: Bool = false,
-        disableDuringFocus: Bool = true
+        disableDuringFocus: Bool = true,
+        browserUrlPolling: BrowserURLPollingConfig = .disabled
     ) {
         self.enabled = enabled
         self.allowedAppBundleIDs = allowedAppBundleIDs
@@ -76,6 +82,7 @@ struct AutoCaptureConfig: Codable, Equatable {
         self.startDelaySeconds = AutoCaptureConfig.clampedStartDelay(startDelaySeconds)
         self.requireCalendarMatch = requireCalendarMatch
         self.disableDuringFocus = disableDuringFocus
+        self.browserUrlPolling = browserUrlPolling
     }
 
     /// Returns the start delay clamped to the allowed range. Used at decode
@@ -108,6 +115,7 @@ struct AutoCaptureConfig: Codable, Equatable {
         case startDelaySeconds = "start_delay_seconds"
         case requireCalendarMatch = "require_calendar_match"
         case disableDuringFocus = "disable_during_focus"
+        case browserUrlPolling = "browser_url_polling"
     }
 
     init(from decoder: Decoder) throws {
@@ -124,5 +132,7 @@ struct AutoCaptureConfig: Codable, Equatable {
             (try? c.decode(Bool.self, forKey: .requireCalendarMatch)) ?? defaults.requireCalendarMatch
         self.disableDuringFocus =
             (try? c.decode(Bool.self, forKey: .disableDuringFocus)) ?? defaults.disableDuringFocus
+        self.browserUrlPolling =
+            (try? c.decode(BrowserURLPollingConfig.self, forKey: .browserUrlPolling)) ?? defaults.browserUrlPolling
     }
 }
