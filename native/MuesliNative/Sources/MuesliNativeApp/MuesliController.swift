@@ -122,6 +122,8 @@ final class MuesliController: NSObject {
     private let meetingMonitor = MeetingMonitor()
     private let meetingNotification = MeetingNotificationController()
     private let meetingSourceWindowLocator = MeetingSourceWindowLocator()
+    private let autoCaptureConfirmationPresenter: AutoCaptureConfirmationPresenting = AutoCaptureAlertPresenter()
+    private var autoCaptureCoordinator: AutoCaptureCoordinator?
 
     private let chatGPTAuth = ChatGPTAuthManager.shared
     private let googleCalAuth = GoogleCalendarAuthManager.shared
@@ -365,7 +367,10 @@ final class MuesliController: NSObject {
             } else {
                 self.dismissPresentedMeetingDetection()
             }
+            self.deliverAutoCaptureSignal(from: candidate)
         }
+
+        configureAutoCaptureCoordinator()
 
         // Defer permission-triggering monitors until after onboarding
         if canRunMainApp && config.resolvedOnboardingUseCase.includesMeetings {
@@ -436,6 +441,7 @@ final class MuesliController: NSObject {
         calendarMonitor.stop()
         meetingStartingNowTimers.values.forEach { $0.invalidate() }
         meetingStartingNowTimers.removeAll()
+        autoCaptureCoordinator?.stop()
         meetingMonitor.stop()
         dismissPresentedMeetingDetection()
         meetingNotification.close()
@@ -3249,6 +3255,84 @@ final class MuesliController: NSObject {
 
     private func updateMeetingNotificationVisibility() {
         meetingMonitor.refreshState()
+    }
+
+    // MARK: - Auto-Capture
+
+    private func configureAutoCaptureCoordinator() {
+        let coordinator = AutoCaptureCoordinator(
+            config: { [weak self] in
+                self?.config.autoCapture ?? AutoCaptureConfig()
+            },
+            configWriter: { [weak self] newConfig in
+                self?.updateConfig { $0.autoCapture = newConfig }
+            },
+            recordingStarter: { [weak self] title in
+                guard let self else { return false }
+                guard !self.isMeetingRecording(), !self.isStartingMeetingRecording else { return false }
+                self.startMeetingRecording(title: title ?? "Meeting")
+                return true
+            },
+            isRecordingNow: { [weak self] in
+                guard let self else { return false }
+                return self.isMeetingRecording() || self.isStartingMeetingRecording
+            },
+            isFocusModeActive: { false },
+            confirmationPresenter: autoCaptureConfirmationPresenter
+        )
+        autoCaptureCoordinator = coordinator
+        coordinator.start()
+    }
+
+    private func deliverAutoCaptureSignal(from candidate: MeetingCandidate?) {
+        guard let coordinator = autoCaptureCoordinator else { return }
+        guard let candidate else {
+            coordinator.handle(nil)
+            return
+        }
+        let signal = AutoCaptureSignal(
+            appName: candidate.appName,
+            bundleID: candidate.sourceBundleID,
+            meetingTitle: candidate.meetingTitle,
+            hasCalendarMatch: candidate.evidence.contains(.calendarEvent)
+        )
+        coordinator.handle(signal)
+    }
+
+    /// Snapshot consumed by `muesli-cli auto-capture status`.
+    struct AutoCaptureStatusSnapshot: Encodable {
+        let stateName: String
+        let lastDecisionReason: String
+        let lastDecisionAt: String?
+        let lastSignalAppName: String?
+        let lastSignalBundleID: String?
+        let lastSignalHasCalendarMatch: Bool?
+        let configEnabled: Bool
+        let startDelaySeconds: Double
+        let requireCalendarMatch: Bool
+        let disableDuringFocus: Bool
+        let allowedAppBundleIDs: [String]
+        let acknowledgedAppBundleIDs: [String]
+    }
+
+    func autoCaptureStatusSnapshot() -> AutoCaptureStatusSnapshot {
+        let coordinator = autoCaptureCoordinator
+        let configSnapshot = config.autoCapture
+        return AutoCaptureStatusSnapshot(
+            stateName: coordinator?.state.name ?? AutoCaptureState.idle.name,
+            lastDecisionReason: coordinator?.lastDecisionReason.rawValue
+                ?? AutoCaptureDecisionReason.noSignal.rawValue,
+            lastDecisionAt: coordinator?.lastDecisionAt.map { ISO8601DateFormatter().string(from: $0) },
+            lastSignalAppName: coordinator?.lastSignal?.appName,
+            lastSignalBundleID: coordinator?.lastSignal?.bundleID,
+            lastSignalHasCalendarMatch: coordinator?.lastSignal?.hasCalendarMatch,
+            configEnabled: configSnapshot.enabled,
+            startDelaySeconds: configSnapshot.startDelaySeconds,
+            requireCalendarMatch: configSnapshot.requireCalendarMatch,
+            disableDuringFocus: configSnapshot.disableDuringFocus,
+            allowedAppBundleIDs: configSnapshot.allowedAppBundleIDs.sorted(),
+            acknowledgedAppBundleIDs: configSnapshot.acknowledgedAppBundleIDs.sorted()
+        )
     }
 
     private func presentMeetingDetection(_ candidate: MeetingCandidate) {
