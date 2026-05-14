@@ -2824,7 +2824,7 @@ final class MuesliController: NSObject {
         alert.alertStyle = .warning
         var manualNotesCheckbox: NSButton?
         if hasManualNotes {
-            alert.informativeText = "This will stop the meeting recording. Select what should be deleted."
+            alert.informativeText = "This will stop the meeting. Choose whether to delete the written notes too."
             let accessory = Self.makeDiscardMeetingAccessoryView()
             manualNotesCheckbox = accessory.manualNotesCheckbox
             alert.accessoryView = accessory.view
@@ -2841,7 +2841,7 @@ final class MuesliController: NSObject {
     }
 
     private static func makeDiscardMeetingAccessoryView() -> MeetingDiscardAccessory {
-        let label = NSTextField(labelWithString: "Delete")
+        let label = NSTextField(labelWithString: "Will delete:")
         label.font = .systemFont(ofSize: NSFont.systemFontSize)
         label.textColor = .secondaryLabelColor
 
@@ -2852,13 +2852,15 @@ final class MuesliController: NSObject {
         let notesCheckbox = NSButton(checkboxWithTitle: "Manual notes", target: nil, action: nil)
         notesCheckbox.state = .off
 
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 230, height: 76))
         let stack = NSStackView(views: [label, recordingCheckbox, notesCheckbox])
+        stack.frame = container.bounds
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 6
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.widthAnchor.constraint(greaterThanOrEqualToConstant: 260).isActive = true
-        return MeetingDiscardAccessory(view: stack, manualNotesCheckbox: notesCheckbox)
+        stack.autoresizingMask = [.width, .height]
+        container.addSubview(stack)
+        return MeetingDiscardAccessory(view: container, manualNotesCheckbox: notesCheckbox)
     }
 
     private func presentDiscardMeetingAlert(_ alert: NSAlert, manualNotesCheckbox: NSButton?, attempt: Int = 0) {
