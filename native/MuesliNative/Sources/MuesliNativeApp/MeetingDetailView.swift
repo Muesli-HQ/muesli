@@ -45,6 +45,8 @@ struct MeetingDetailView: View {
     @State private var retranscriptionErrorMessage: String?
     @State private var showDeleteConfirmation = false
     @State private var transcriptResummaryPromptMeetingID: Int64?
+    @State private var transcriptEditOriginalTranscript: String?
+    @State private var transcriptEditHadStructuredNotes = false
 
     init(
         meeting: MeetingRecord?,
@@ -377,16 +379,21 @@ struct MeetingDetailView: View {
                 transcriptSaveTask?.cancel()
                 transcriptSaveTask = nil
                 let shouldPromptForResummary = Self.shouldPromptForTranscriptResummary(
-                    meeting: meeting,
+                    hadStructuredNotes: transcriptEditHadStructuredNotes,
+                    originalTranscript: transcriptEditOriginalTranscript,
                     editedTranscript: editableTranscript
                 )
                 controller.updateMeetingTranscript(id: meeting.id, transcript: editableTranscript)
                 isEditingTranscript = false
+                transcriptEditOriginalTranscript = nil
+                transcriptEditHadStructuredNotes = false
                 if shouldPromptForResummary {
                     transcriptResummaryPromptMeetingID = meeting.id
                 }
             } else if documentMode == .transcript {
                 editableTranscript = meeting.rawTranscript
+                transcriptEditOriginalTranscript = meeting.rawTranscript
+                transcriptEditHadStructuredNotes = meeting.notesState == .structuredNotes
                 isEditingTranscript = true
             } else {
                 documentMode = .notes
@@ -996,9 +1003,13 @@ struct MeetingDetailView: View {
         )
     }
 
-    private static func shouldPromptForTranscriptResummary(meeting: MeetingRecord, editedTranscript: String) -> Bool {
-        guard meeting.notesState == .structuredNotes else { return false }
-        return meeting.rawTranscript != editedTranscript
+    private static func shouldPromptForTranscriptResummary(
+        hadStructuredNotes: Bool,
+        originalTranscript: String?,
+        editedTranscript: String
+    ) -> Bool {
+        guard hadStructuredNotes, let originalTranscript else { return false }
+        return originalTranscript != editedTranscript
     }
 
     private func resummarizeAfterTranscriptEdit() {
@@ -1045,20 +1056,29 @@ struct MeetingDetailView: View {
 
     private func syncLocalState(with meeting: MeetingRecord?) {
         let previousMeetingID = loadedMeetingID
+        let meetingChanged = previousMeetingID != meeting?.id
         loadedMeetingID = meeting?.id
         editableTitle = meeting?.title ?? ""
-        editableNotes = meeting.map { Self.notesContent(for: $0) } ?? ""
-        editableTranscript = meeting?.rawTranscript ?? ""
-        if previousMeetingID != meeting?.id {
+        if meetingChanged || !isEditingNotes {
+            editableNotes = meeting.map { Self.notesContent(for: $0) } ?? ""
+        }
+        if meetingChanged || !isEditingTranscript {
+            editableTranscript = meeting?.rawTranscript ?? ""
+        }
+        if meetingChanged {
             editableManualNotes = meeting?.manualNotes ?? ""
             manualNotesSaveStatus = .saved
+            transcriptEditOriginalTranscript = nil
+            transcriptEditHadStructuredNotes = false
         } else {
             syncManualNotesState(with: meeting)
         }
         pendingTemplateID = meeting.map { controller.meetingTemplateSnapshot(for: $0).id } ?? controller.defaultMeetingTemplate().id
-        documentMode = meeting.map(Self.defaultDocumentMode(for:)) ?? .notes
-        isEditingNotes = false
-        isEditingTranscript = false
+        if meetingChanged {
+            documentMode = meeting.map(Self.defaultDocumentMode(for:)) ?? .notes
+            isEditingNotes = false
+            isEditingTranscript = false
+        }
     }
 
     private func syncManualNotesState(with meeting: MeetingRecord?) {
