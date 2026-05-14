@@ -2434,6 +2434,10 @@ final class MuesliController: NSObject {
         activeMeetingSession?.isRecording == true || isStoppingMeetingRecording
     }
 
+    private var isMeetingCapturingAudio: Bool {
+        activeMeetingSession?.isRecording == true || isStartingMeetingRecording
+    }
+
     func isMeetingRecordingPaused() -> Bool {
         activeMeetingSession?.isPaused == true
     }
@@ -3004,8 +3008,7 @@ final class MuesliController: NSObject {
             syncAppState()
         }
         indicator.setMeetingRecording(false, config: config)
-        indicator.setTranscribingTitle("Transcribing", config: config)
-        setState(.transcribing)
+        setMeetingProcessingStatus("Meeting: Transcribing")
         sessionToStop.onProgress = { [weak self] stage in
             Task { @MainActor [weak self] in
                 self?.setMeetingProcessingStage(stage)
@@ -3054,7 +3057,9 @@ final class MuesliController: NSObject {
                 self.activeMeetingID = nil
                 self.isStoppingMeetingRecording = false
                 self.endMeetingActivity()
-                self.setState(.idle)
+                if !self.isDictationActivityInProgress {
+                    self.setState(.idle)
+                }
                 self.meetingMonitor.resumeAfterCooldown()
                 self.meetingMonitor.refreshState()
                 self.statusBarController?.refresh()
@@ -3623,7 +3628,7 @@ final class MuesliController: NSObject {
     }
 
     private var canPrepareComputerUseCommand: Bool {
-        !isMeetingRecording()
+        !isMeetingCapturingAudio
             && !isDictationTestMode
             && dictationStartedAt == nil
             && computerUseCommandStartedAt == nil
@@ -3632,7 +3637,7 @@ final class MuesliController: NSObject {
     }
 
     private var canStartComputerUseCommand: Bool {
-        !isMeetingRecording()
+        !isMeetingCapturingAudio
             && !isDictationTestMode
             && dictationStartedAt == nil
             && computerUseCommandStartedAt == nil
@@ -3861,7 +3866,7 @@ final class MuesliController: NSObject {
     }
 
     private func handlePrepare() {
-        if isMeetingRecording() { return }
+        if isMeetingCapturingAudio { return }
         fputs("[muesli-native] prepare\n", stderr)
         meetingMonitor.suppressWhileActive()
         meetingMonitor.refreshState()
@@ -3891,7 +3896,7 @@ final class MuesliController: NSObject {
     }
 
     private func handleStart() {
-        if isMeetingRecording() { return }
+        if isMeetingCapturingAudio { return }
 
         // Nemotron is handsfree-only — block hold-to-talk and show a hint
         if selectedBackend.backend == "nemotron" {
@@ -3964,7 +3969,7 @@ final class MuesliController: NSObject {
     }
 
     private func handleCancel() {
-        if isMeetingRecording() { return }
+        if isMeetingCapturingAudio { return }
         fputs("[muesli-native] cancel\n", stderr)
         resetDictationOutputMode()
 
@@ -3985,7 +3990,7 @@ final class MuesliController: NSObject {
     }
 
     private func handleToggleStart(outputMode: DictationOutputMode? = nil) {
-        if isMeetingRecording() { return }
+        if isMeetingCapturingAudio { return }
         fputs("[muesli-native] toggle dictation start\n", stderr)
         meetingMonitor.suppressWhileActive()
         beginDictationOutput(mode: outputMode)
@@ -4043,7 +4048,7 @@ final class MuesliController: NSObject {
     }
 
     private func handleStop() {
-        if isMeetingRecording() { return }
+        if isMeetingCapturingAudio { return }
         fputs("[muesli-native] stop\n", stderr)
         let startedAt = dictationStartedAt ?? Date()
         dictationStartedAt = nil
