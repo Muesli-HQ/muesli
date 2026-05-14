@@ -2400,6 +2400,12 @@ final class MuesliController: NSObject {
         activeMeetingSession?.isRecording == true || isStoppingMeetingRecording
     }
 
+    func isMeetingActivelyCapturing() -> Bool {
+        activeMeetingSession?.isRecording == true
+            && activeMeetingSession?.isPaused != true
+            && !isStoppingMeetingRecording
+    }
+
     func isMeetingRecordingPaused() -> Bool {
         activeMeetingSession?.isPaused == true
     }
@@ -3182,6 +3188,7 @@ final class MuesliController: NSObject {
         case .transcribing: status = "Transcribing"
         }
         statusBarController?.setStatus(status)
+        statusBarController?.refreshIcon()
         if !isDictationTestMode {
             indicator.setState(state, config: config)
         }
@@ -3869,6 +3876,7 @@ final class MuesliController: NSObject {
             indicator.powerProvider = { [weak self] in
                 self?.recorder.currentPower() ?? -160
             }
+            setState(.recording)
             indicator.setToggleDictation(true, config: config)
         } catch {
             fputs("[muesli-native] toggle start failed: \(error)\n", stderr)
