@@ -914,6 +914,9 @@ struct MeetingDetailView: View {
             return appState.isChatGPTAuthenticated
         } else if appState.selectedMeetingSummaryBackend == .openAI {
             return !config.openAIAPIKey.isEmpty || ProcessInfo.processInfo.environment["OPENAI_API_KEY"] != nil
+        } else if appState.selectedMeetingSummaryBackend == .ollama
+                    || appState.selectedMeetingSummaryBackend == .customCommand {
+            return true
         } else {
             return !config.openRouterAPIKey.isEmpty || ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"] != nil
         }

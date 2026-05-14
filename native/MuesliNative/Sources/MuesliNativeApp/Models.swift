@@ -343,7 +343,12 @@ struct MeetingSummaryBackendOption: Equatable {
         label: "Ollama"
     )
 
-    static let all: [MeetingSummaryBackendOption] = [.chatGPT, .openAI, .openRouter, .ollama]
+    static let customCommand = MeetingSummaryBackendOption(
+        backend: "custom-command",
+        label: "Custom Command"
+    )
+
+    static let all: [MeetingSummaryBackendOption] = [.chatGPT, .openAI, .openRouter, .ollama, .customCommand]
 
     static func resolved(_ backend: String?) -> MeetingSummaryBackendOption {
         guard let backend, let option = all.first(where: { $0.backend == backend }) else {
@@ -632,6 +637,7 @@ struct AppConfig: Codable {
     var chatGPTModel: String = ""
     var ollamaURL: String = "http://localhost:11434"
     var ollamaModel: String = "qwen3.5"
+    var customSummaryCommand: String = "claude -p"
     var summaryModel: String = ""
     var meetingSummaryModel: String = ""
     var hasCompletedOnboarding: Bool = false
@@ -700,6 +706,7 @@ struct AppConfig: Codable {
         case chatGPTModel = "chatgpt_model"
         case ollamaURL = "ollama_url"
         case ollamaModel = "ollama_model"
+        case customSummaryCommand = "custom_summary_command"
         case summaryModel = "summary_model"
         case meetingSummaryModel = "meeting_summary_model"
         case hasCompletedOnboarding = "has_completed_onboarding"
@@ -782,6 +789,7 @@ struct AppConfig: Codable {
         chatGPTModel = (try? c.decode(String.self, forKey: .chatGPTModel)) ?? defaults.chatGPTModel
         ollamaURL = (try? c.decode(String.self, forKey: .ollamaURL)) ?? defaults.ollamaURL
         ollamaModel = (try? c.decode(String.self, forKey: .ollamaModel)) ?? defaults.ollamaModel
+        customSummaryCommand = (try? c.decode(String.self, forKey: .customSummaryCommand)) ?? defaults.customSummaryCommand
         summaryModel = (try? c.decode(String.self, forKey: .summaryModel)) ?? defaults.summaryModel
         meetingSummaryModel = (try? c.decode(String.self, forKey: .meetingSummaryModel)) ?? defaults.meetingSummaryModel
         hasCompletedOnboarding = (try? c.decode(Bool.self, forKey: .hasCompletedOnboarding)) ?? defaults.hasCompletedOnboarding

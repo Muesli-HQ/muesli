@@ -569,6 +569,19 @@ struct SettingsView: View {
                             placeholder: "qwen3.5"
                         ) { val in controller.updateConfig { $0.ollamaModel = val } }
                     }
+                } else if appState.selectedMeetingSummaryBackend == .customCommand {
+                    settingsRow("Command", controlWidth: meetingControlWidth) {
+                        PastableTextField(
+                            text: appState.config.customSummaryCommand,
+                            placeholder: "claude -p",
+                            onChange: { val in controller.updateConfig { $0.customSummaryCommand = val } }
+                        )
+                        .frame(height: 22)
+                    }
+                    Text("The prompt is piped to stdin. Stdout is captured as the summary.")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                        .padding(.horizontal, MuesliTheme.spacing16)
                 } else {
                     settingsRow("API Key", controlWidth: meetingControlWidth) {
                         PastableSecureField(
