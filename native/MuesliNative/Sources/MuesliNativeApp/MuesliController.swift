@@ -2803,7 +2803,7 @@ final class MuesliController: NSObject {
     }
 
     private enum MeetingDiscardResolution {
-        case discard
+        case discardRecording
         case keepManualNotes
         case deleteDraft
     }
@@ -2876,7 +2876,7 @@ final class MuesliController: NSObject {
                 return nil
             }
         }
-        return response == .alertFirstButtonReturn ? .discard : nil
+        return response == .alertFirstButtonReturn ? .discardRecording : nil
     }
 
     private func confirmationAnchorWindow() -> NSWindow? {
@@ -2892,7 +2892,7 @@ final class MuesliController: NSObject {
         }
     }
 
-    private func discardMeetingRecording(resolution: MeetingDiscardResolution = .discard) {
+    private func discardMeetingRecording(resolution: MeetingDiscardResolution = .discardRecording) {
         guard let sessionToDiscard = activeMeetingSession else {
             // Fallback recovery: reset indicator if session is nil
             guard !isStartingMeetingRecording else { return }
@@ -2933,11 +2933,14 @@ final class MuesliController: NSObject {
             keepManualNotesAfterDiscard(id: id)
         case .deleteDraft:
             deleteManualNotesDraftAfterDiscard(id: id)
-        case .discard:
+        case .discardRecording:
             let manualNotes = manualNotesForLiveMeeting(id: id)
             if manualNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 deleteManualNotesDraftAfterDiscard(id: id)
             } else {
+                // Defensive fallback: the UI routes manual-note meetings through
+                // explicit Keep Notes/Delete Draft choices. If notes appear after
+                // the simpler discard alert was built, preserve user-written text.
                 keepManualNotesAfterDiscard(id: id)
             }
         }
