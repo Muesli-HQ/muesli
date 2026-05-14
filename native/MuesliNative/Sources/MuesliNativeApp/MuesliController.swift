@@ -1236,9 +1236,7 @@ final class MuesliController: NSObject {
             onStartRecording: { [weak self] in
                 guard let self else { return }
                 self.isShowingCalendarNotification = false
-                if self.startForegroundMeetingRecording(title: title, calendarEventID: calendarEventID) {
-                    self.scheduleMeetingEndNotification(endDate: endDate, title: title)
-                }
+                self.startForegroundMeetingRecording(title: title, calendarEventID: calendarEventID, endDate: endDate)
             },
             onJoinAndRecord: meetingURL != nil ? { [weak self] in
                 guard let self else { return }
@@ -2487,6 +2485,7 @@ final class MuesliController: NSObject {
         activeMeetingSession = nil
         if let meetingStartMeetingID {
             canceledMeetingStartIDs.insert(meetingStartMeetingID)
+            resolveLiveMeetingAfterStartFailure(id: meetingStartMeetingID)
         }
         meetingStartTask?.cancel()
         meetingStartTask = nil
@@ -2546,21 +2545,21 @@ final class MuesliController: NSObject {
     }
 
     @discardableResult
-    func startForegroundMeetingRecording(title: String = "Meeting", calendarEventID: String? = nil) -> Bool {
+    func startForegroundMeetingRecording(title: String = "Meeting", calendarEventID: String? = nil, endDate: Date? = nil) -> Bool {
         guard ensureBasicDictationPermissionsBeforeDashboard() else { return false }
         if isMeetingRecording() {
             presentHistoryWindow(tab: .meetings)
             return false
         }
         guard !isStartingMeetingRecording else { return false }
-        let didStart = startMeetingRecording(title: title, calendarEventID: calendarEventID, openDocument: true)
+        let didStart = startMeetingRecording(title: title, calendarEventID: calendarEventID, openDocument: true, endDate: endDate)
         guard didStart else { return false }
         presentHistoryWindow(tab: .meetings)
         return true
     }
 
     @discardableResult
-    func startMeetingRecording(title: String = "Meeting", calendarEventID: String? = nil, openDocument: Bool = false) -> Bool {
+    func startMeetingRecording(title: String = "Meeting", calendarEventID: String? = nil, openDocument: Bool = false, endDate: Date? = nil) -> Bool {
         guard !isMeetingRecording(), !isStartingMeetingRecording else { return false }
         guard let meetingBackend = normalizeMeetingTranscriptionSelectionForAvailability() else {
             presentErrorAlert(
@@ -2607,7 +2606,8 @@ final class MuesliController: NSObject {
                     title: title,
                     calendarEventID: calendarEventID,
                     meetingID: meetingID,
-                    backend: meetingBackend
+                    backend: meetingBackend,
+                    endDate: endDate
                 )
             } catch is CancellationError {
                 if self.meetingStartMeetingID == meetingID {
@@ -2681,8 +2681,8 @@ final class MuesliController: NSObject {
     }
 
     private func finishMeetingStartAttempt(meetingID: Int64) {
-        canceledMeetingStartIDs.remove(meetingID)
         guard meetingStartMeetingID == meetingID else { return }
+        canceledMeetingStartIDs.remove(meetingID)
         meetingStartTask = nil
         meetingStartMeetingID = nil
         isStartingMeetingRecording = false
@@ -2695,7 +2695,8 @@ final class MuesliController: NSObject {
         title: String,
         calendarEventID: String?,
         meetingID: Int64,
-        backend: BackendOption
+        backend: BackendOption,
+        endDate: Date?
     ) async throws {
         var shouldRetryAfterPermissionRequest = config.useCoreAudioTap
         statusBarController?.setStatus("Preparing meeting transcription...")
@@ -2750,6 +2751,7 @@ final class MuesliController: NSObject {
                 indicator.setMeetingRecording(true, config: config)
                 statusBarController?.refresh()
                 syncAppState()
+                scheduleMeetingEndNotification(endDate: endDate, title: title)
                 return
             } catch {
                 guard shouldRetryAfterPermissionRequest,
@@ -2788,9 +2790,7 @@ final class MuesliController: NSObject {
     /// Single entry point for "Join & Record" from both notification panel and Coming Up section.
     func joinAndRecord(title: String, meetingURL: URL, endDate: Date?, calendarEventID: String? = nil) {
         NSWorkspace.shared.open(meetingURL)
-        if startForegroundMeetingRecording(title: title, calendarEventID: calendarEventID) {
-            scheduleMeetingEndNotification(endDate: endDate, title: title)
-        }
+        startForegroundMeetingRecording(title: title, calendarEventID: calendarEventID, endDate: endDate)
     }
 
     /// Open meeting URL and suppress detection for the event duration.
@@ -4314,9 +4314,7 @@ final class MuesliController: NSObject {
         let meetingURL = event.meetingURL ?? calendarEvent?.meetingURL
 
         if config.autoRecordMeetings, !isMeetingRecording() {
-            if startMeetingRecording(title: event.title, calendarEventID: event.id, openDocument: true) {
-                scheduleMeetingEndNotification(endDate: calendarEndDate, title: event.title)
-            }
+            startMeetingRecording(title: event.title, calendarEventID: event.id, openDocument: true, endDate: calendarEndDate)
             return
         }
 
@@ -4346,9 +4344,7 @@ final class MuesliController: NSObject {
             onStartRecording: { [weak self] in
                 guard let self else { return }
                 self.isShowingCalendarNotification = false
-                if self.startForegroundMeetingRecording(title: title, calendarEventID: event.id) {
-                    self.scheduleMeetingEndNotification(endDate: calendarEndDate, title: title)
-                }
+                self.startForegroundMeetingRecording(title: title, calendarEventID: event.id, endDate: calendarEndDate)
             },
             onJoinAndRecord: meetingURL != nil ? { [weak self] in
                 guard let self else { return }
@@ -4378,23 +4374,30 @@ final class MuesliController: NSObject {
         guard let endDate else { return }
 
         let delay = endDate.timeIntervalSinceNow
-        guard delay > 0 else { return }
+        guard delay > 0 else {
+            showMeetingEndNotification(title: title)
+            return
+        }
 
         meetingEndTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
             DispatchQueue.main.async { [weak self] in
-                guard let self, self.isMeetingRecording() else { return }
-                self.meetingNotification.show(
-                    title: "Meeting ended",
-                    subtitle: "\(title) · scheduled time is over",
-                    actionLabel: "Stop Recording",
-                    dismissAfter: 45,
-                    onStartRecording: { [weak self] in
-                        self?.stopMeetingRecording()
-                    },
-                    onDismiss: nil
-                )
+                self?.showMeetingEndNotification(title: title)
             }
         }
+    }
+
+    private func showMeetingEndNotification(title: String) {
+        guard isMeetingRecording() else { return }
+        meetingNotification.show(
+            title: "Meeting ended",
+            subtitle: "\(title) · scheduled time is over",
+            actionLabel: "Stop Recording",
+            dismissAfter: 45,
+            onStartRecording: { [weak self] in
+                self?.stopMeetingRecording()
+            },
+            onDismiss: nil
+        )
     }
 
     func serializedCustomWords() -> [[String: Any]] {

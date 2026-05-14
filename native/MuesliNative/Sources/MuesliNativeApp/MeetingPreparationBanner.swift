@@ -9,6 +9,7 @@ struct MeetingPreparationBanner: View {
             ProgressView()
                 .controlSize(.small)
                 .frame(width: 18, height: 18)
+                .accessibilityLabel("Preparing meeting")
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("Preparing meeting")
