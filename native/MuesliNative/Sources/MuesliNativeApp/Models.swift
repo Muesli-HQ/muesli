@@ -776,7 +776,15 @@ struct AppConfig: Codable {
         summaryModel = (try? c.decode(String.self, forKey: .summaryModel)) ?? defaults.summaryModel
         meetingSummaryModel = (try? c.decode(String.self, forKey: .meetingSummaryModel)) ?? defaults.meetingSummaryModel
         hasCompletedOnboarding = (try? c.decode(Bool.self, forKey: .hasCompletedOnboarding)) ?? defaults.hasCompletedOnboarding
-        onboardingUseCase = OnboardingUseCase.resolved(try? c.decode(String.self, forKey: .onboardingUseCase)).rawValue
+        let decodedOnboardingUseCase = try? c.decode(String.self, forKey: .onboardingUseCase)
+        if let decodedOnboardingUseCase,
+           OnboardingUseCase(rawValue: decodedOnboardingUseCase) != nil {
+            onboardingUseCase = decodedOnboardingUseCase
+        } else if hasCompletedOnboarding {
+            onboardingUseCase = OnboardingUseCase.dictationAndMeetings.rawValue
+        } else {
+            onboardingUseCase = defaults.onboardingUseCase
+        }
         userName = (try? c.decode(String.self, forKey: .userName)) ?? defaults.userName
         customMeetingTemplates = (try? c.decode([CustomMeetingTemplate].self, forKey: .customMeetingTemplates)) ?? defaults.customMeetingTemplates
         customWords = (try? c.decode([CustomWord].self, forKey: .customWords)) ?? defaults.customWords

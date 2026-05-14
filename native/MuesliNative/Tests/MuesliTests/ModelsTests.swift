@@ -549,6 +549,102 @@ struct AppConfigTests {
         #expect(config.meetingHookTimeoutSeconds == 30)
     }
 
+    @Test("legacy completed onboarding enables meetings when use case is missing")
+    func legacyCompletedOnboardingEnablesMeetingsWhenUseCaseMissing() throws {
+        let json = """
+        {
+          "has_completed_onboarding": true,
+          "stt_backend": "fluidaudio",
+          "stt_model": "FluidInference/parakeet-tdt-0.6b-v3-coreml"
+        }
+        """
+
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.hasCompletedOnboarding)
+        #expect(config.resolvedOnboardingUseCase == .dictationAndMeetings)
+        #expect(config.resolvedOnboardingUseCase.includesMeetings)
+    }
+
+    @Test("legacy completed onboarding enables meetings when use case is malformed")
+    func legacyCompletedOnboardingEnablesMeetingsWhenUseCaseMalformed() throws {
+        let jsonCases = [
+            """
+            {
+              "has_completed_onboarding": true,
+              "onboarding_use_case": null
+            }
+            """,
+            """
+            {
+              "has_completed_onboarding": true,
+              "onboarding_use_case": 7
+            }
+            """,
+            """
+            {
+              "has_completed_onboarding": true,
+              "onboarding_use_case": "future-meeting-mode"
+            }
+            """
+        ]
+
+        for json in jsonCases {
+            let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+            #expect(config.hasCompletedOnboarding)
+            #expect(config.resolvedOnboardingUseCase == .dictationAndMeetings)
+            #expect(config.resolvedOnboardingUseCase.includesMeetings)
+        }
+    }
+
+    @Test("incomplete onboarding defaults malformed use case to dictation")
+    func incompleteOnboardingDefaultsMalformedUseCaseToDictation() throws {
+        let jsonCases = [
+            """
+            {
+              "has_completed_onboarding": false
+            }
+            """,
+            """
+            {
+              "has_completed_onboarding": false,
+              "onboarding_use_case": null
+            }
+            """,
+            """
+            {
+              "has_completed_onboarding": false,
+              "onboarding_use_case": "future-meeting-mode"
+            }
+            """
+        ]
+
+        for json in jsonCases {
+            let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+            #expect(!config.hasCompletedOnboarding)
+            #expect(config.resolvedOnboardingUseCase == .dictation)
+            #expect(!config.resolvedOnboardingUseCase.includesMeetings)
+        }
+    }
+
+    @Test("explicit completed dictation-only onboarding remains dictation-only")
+    func explicitCompletedDictationOnlyOnboardingRemainsDictationOnly() throws {
+        let json = """
+        {
+          "has_completed_onboarding": true,
+          "onboarding_use_case": "dictation"
+        }
+        """
+
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.hasCompletedOnboarding)
+        #expect(config.resolvedOnboardingUseCase == .dictation)
+        #expect(!config.resolvedOnboardingUseCase.includesMeetings)
+    }
+
     @Test("computer use default avoids existing right command dictation hotkey")
     func computerUseDefaultAvoidsExistingRightCommandDictationHotkey() throws {
         let json = """

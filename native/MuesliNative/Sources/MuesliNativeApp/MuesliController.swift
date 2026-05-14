@@ -177,12 +177,16 @@ final class MuesliController: NSObject {
     private var workspaceObserver: NSObjectProtocol?
     private var dataDidChangeObserver: NSObjectProtocol?
     private var isStartingMeetingRecording = false
+    private var meetingStartStatus: String?
     private var isShowingCalendarNotification = false
     private var presentedMeetingCandidate: MeetingCandidate?
     private var meetingEndTimer: Timer?
     private var activeMeetingCalendarEndDate: Date?
     private var meetingActivity: NSObjectProtocol?
     private var isStoppingMeetingRecording = false
+    private var meetingStartTask: Task<Void, Never>?
+    private var meetingStartMeetingID: Int64?
+    private var canceledMeetingStartIDs = Set<Int64>()
 
     init(
         runtime: RuntimePaths,
@@ -551,6 +555,8 @@ final class MuesliController: NSObject {
         appState.config = config
         appState.isMeetingRecording = isMeetingRecording()
         appState.isMeetingRecordingPaused = isMeetingRecordingPaused()
+        appState.isMeetingStarting = isStartingMeetingRecording
+        appState.meetingStartStatus = meetingStartStatus
         indicator.setMeetingRecordingPaused(appState.isMeetingRecordingPaused, config: config)
         appState.isChatGPTAuthenticated = chatGPTAuth.isAuthenticated
         appState.isGoogleCalendarAvailable = googleCalAuth.isAvailable
@@ -1230,8 +1236,7 @@ final class MuesliController: NSObject {
             onStartRecording: { [weak self] in
                 guard let self else { return }
                 self.isShowingCalendarNotification = false
-                self.startForegroundMeetingRecording(title: title, calendarEventID: calendarEventID)
-                self.scheduleMeetingEndNotification(endDate: endDate, title: title)
+                self.startForegroundMeetingRecording(title: title, calendarEventID: calendarEventID, endDate: endDate)
             },
             onJoinAndRecord: meetingURL != nil ? { [weak self] in
                 guard let self else { return }
@@ -2478,9 +2483,19 @@ final class MuesliController: NSObject {
 
         activeMeetingSession?.discard()
         activeMeetingSession = nil
+        if let meetingStartMeetingID {
+            canceledMeetingStartIDs.insert(meetingStartMeetingID)
+            resolveLiveMeetingAfterStartFailure(id: meetingStartMeetingID)
+        }
+        meetingStartTask?.cancel()
+        meetingStartTask = nil
+        meetingStartMeetingID = nil
         isStartingMeetingRecording = false
         isStoppingMeetingRecording = false
+        updateMeetingStartStatus(nil)
+        updateMeetingNotificationVisibility()
         endMeetingActivity()
+        syncAppState()
         return true
     }
 
@@ -2529,20 +2544,29 @@ final class MuesliController: NSObject {
         startForegroundMeetingRecording(title: title)
     }
 
-    func startForegroundMeetingRecording(title: String = "Meeting", calendarEventID: String? = nil) {
-        guard ensureBasicDictationPermissionsBeforeDashboard() else { return }
-        startMeetingRecording(title: title, calendarEventID: calendarEventID, openDocument: true)
+    @discardableResult
+    func startForegroundMeetingRecording(title: String = "Meeting", calendarEventID: String? = nil, endDate: Date? = nil) -> Bool {
+        guard ensureBasicDictationPermissionsBeforeDashboard() else { return false }
+        if isMeetingRecording() {
+            presentHistoryWindow(tab: .meetings)
+            return false
+        }
+        guard !isStartingMeetingRecording else { return false }
+        let didStart = startMeetingRecording(title: title, calendarEventID: calendarEventID, openDocument: true, endDate: endDate)
+        guard didStart else { return false }
         presentHistoryWindow(tab: .meetings)
+        return true
     }
 
-    func startMeetingRecording(title: String = "Meeting", calendarEventID: String? = nil, openDocument: Bool = false) {
-        guard !isMeetingRecording(), !isStartingMeetingRecording else { return }
-        guard normalizeMeetingTranscriptionSelectionForAvailability() != nil else {
+    @discardableResult
+    func startMeetingRecording(title: String = "Meeting", calendarEventID: String? = nil, openDocument: Bool = false, endDate: Date? = nil) -> Bool {
+        guard !isMeetingRecording(), !isStartingMeetingRecording else { return false }
+        guard let meetingBackend = normalizeMeetingTranscriptionSelectionForAvailability() else {
             presentErrorAlert(
                 title: "Meeting failed to start",
                 message: "Download a transcription model before recording a meeting."
             )
-            return
+            return false
         }
         let templateSnapshot = defaultMeetingTemplate()
         let meetingID: Int64
@@ -2564,64 +2588,135 @@ final class MuesliController: NSObject {
         } catch {
             fputs("[muesli-native] failed to create live meeting: \(error)\n", stderr)
             presentErrorAlert(title: "Meeting failed to start", message: error.localizedDescription)
-            return
+            return false
         }
         isStartingMeetingRecording = true
+        meetingStartMeetingID = meetingID
+        updateMeetingStartStatus("Preparing meeting transcription...")
         beginMeetingActivity(reason: "Recording and transcribing a meeting")
         meetingMonitor.suppressWhileActive()
         meetingMonitor.refreshState()
         updateMeetingNotificationVisibility()
-        statusBarController?.setStatus("Starting meeting: \(title)")
-        statusBarController?.refresh()
 
-        Task { @MainActor [weak self] in
+        meetingStartTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                try await self.startMeetingRecordingWithSystemAudioRecovery(title: title, calendarEventID: calendarEventID, meetingID: meetingID)
+                try Task.checkCancellation()
+                try await self.startMeetingRecordingWithSystemAudioRecovery(
+                    title: title,
+                    calendarEventID: calendarEventID,
+                    meetingID: meetingID,
+                    backend: meetingBackend,
+                    endDate: endDate
+                )
+            } catch is CancellationError {
+                if self.meetingStartMeetingID == meetingID {
+                    self.resolveLiveMeetingAfterStartFailure(id: meetingID)
+                    self.meetingMonitor.resumeAfterCooldown()
+                    self.meetingMonitor.refreshState()
+                    self.statusBarController?.setStatus("Idle")
+                    self.statusBarController?.refresh()
+                    self.setState(.idle)
+                    self.endMeetingActivity()
+                }
             } catch {
-                fputs("[muesli-native] failed to start meeting: \(error)\n", stderr)
-                self.resolveLiveMeetingAfterStartFailure(id: meetingID)
-                self.meetingMonitor.resumeAfterCooldown()
-                self.meetingMonitor.refreshState()
-                self.statusBarController?.setStatus("Idle")
-                self.statusBarController?.refresh()
-                self.setState(.idle)
-                self.endMeetingActivity()
+                if self.meetingStartMeetingID == meetingID {
+                    fputs("[muesli-native] failed to start meeting: \(error)\n", stderr)
+                    self.resolveLiveMeetingAfterStartFailure(id: meetingID)
+                    self.meetingMonitor.resumeAfterCooldown()
+                    self.meetingMonitor.refreshState()
+                    self.statusBarController?.setStatus("Idle")
+                    self.statusBarController?.refresh()
+                    self.setState(.idle)
+                    self.endMeetingActivity()
 
-                let isSystemAudioError = error is CoreAudioSystemRecorder.RecorderError
-                let alert = NSAlert()
-                alert.alertStyle = .warning
-                if isSystemAudioError {
-                    alert.messageText = "System audio capture failed"
-                    alert.informativeText = "Could not start system audio recording. Open System Settings > Privacy & Security > Screen & System Audio Recording and enable \(AppIdentity.displayName) under \"System Audio Recording Only\".\n\nError: \(error.localizedDescription)"
-                    alert.addButton(withTitle: "Open System Settings")
-                    alert.addButton(withTitle: "OK")
-                    if alert.runModal() == .alertFirstButtonReturn {
-                        CoreAudioSystemRecorder.openSystemAudioSettings()
+                    let isSystemAudioError = error is CoreAudioSystemRecorder.RecorderError
+                    let alert = NSAlert()
+                    alert.alertStyle = .warning
+                    if isSystemAudioError {
+                        alert.messageText = "System audio capture failed"
+                        alert.informativeText = "Could not start system audio recording. Open System Settings > Privacy & Security > Screen & System Audio Recording and enable \(AppIdentity.displayName) under \"System Audio Recording Only\".\n\nError: \(error.localizedDescription)"
+                        alert.addButton(withTitle: "Open System Settings")
+                        alert.addButton(withTitle: "OK")
+                        if alert.runModal() == .alertFirstButtonReturn {
+                            CoreAudioSystemRecorder.openSystemAudioSettings()
+                        }
+                    } else {
+                        alert.messageText = "Meeting failed to start"
+                        alert.informativeText = error.localizedDescription
+                        alert.runModal()
                     }
-                } else {
-                    alert.messageText = "Meeting failed to start"
-                    alert.informativeText = error.localizedDescription
-                    alert.runModal()
                 }
             }
-            self.isStartingMeetingRecording = false
-            self.updateMeetingNotificationVisibility()
+            self.finishMeetingStartAttempt(meetingID: meetingID)
         }
+        return true
     }
 
     func startQuickNoteMeeting() {
         startForegroundMeetingRecording(title: "Meeting")
     }
 
-    private func startMeetingRecordingWithSystemAudioRecovery(title: String, calendarEventID: String?, meetingID: Int64) async throws {
+    func cancelMeetingPreparation() {
+        guard isStartingMeetingRecording,
+              activeMeetingSession == nil,
+              let meetingID = meetingStartMeetingID else {
+            return
+        }
+        canceledMeetingStartIDs.insert(meetingID)
+        meetingStartTask?.cancel()
+        resolveLiveMeetingAfterStartFailure(id: meetingID)
+        meetingMonitor.resumeAfterCooldown()
+        meetingMonitor.refreshState()
+        statusBarController?.setStatus("Idle")
+        statusBarController?.refresh()
+        setState(.idle)
+        endMeetingActivity()
+        meetingStartTask = nil
+        meetingStartMeetingID = nil
+        isStartingMeetingRecording = false
+        updateMeetingStartStatus(nil)
+        updateMeetingNotificationVisibility()
+        syncAppState()
+    }
+
+    private func finishMeetingStartAttempt(meetingID: Int64) {
+        guard meetingStartMeetingID == meetingID else { return }
+        canceledMeetingStartIDs.remove(meetingID)
+        meetingStartTask = nil
+        meetingStartMeetingID = nil
+        isStartingMeetingRecording = false
+        updateMeetingStartStatus(nil)
+        updateMeetingNotificationVisibility()
+        syncAppState()
+    }
+
+    private func startMeetingRecordingWithSystemAudioRecovery(
+        title: String,
+        calendarEventID: String?,
+        meetingID: Int64,
+        backend: BackendOption,
+        endDate: Date?
+    ) async throws {
         var shouldRetryAfterPermissionRequest = config.useCoreAudioTap
+        statusBarController?.setStatus("Preparing meeting transcription...")
+        statusBarController?.refresh()
+        try Task.checkCancellation()
+        try await transcriptionCoordinator.preloadRequired(
+            backend: backend,
+            enablePostProcessor: false,
+            includeMeetingHelpers: true
+        )
+        try Task.checkCancellation()
+        try checkMeetingStartStillCurrent(meetingID)
 
         while true {
+            try Task.checkCancellation()
+            try checkMeetingStartStillCurrent(meetingID)
             let meetingSession = MeetingSession(
                 title: title,
                 calendarEventID: calendarEventID,
-                backend: selectedMeetingTranscriptionBackend,
+                backend: backend,
                 runtime: runtime,
                 config: config,
                 transcriptionCoordinator: transcriptionCoordinator
@@ -2641,6 +2736,10 @@ final class MuesliController: NSObject {
                     }
                 }
                 try await meetingSession.start()
+                if Task.isCancelled || canceledMeetingStartIDs.contains(meetingID) {
+                    meetingSession.discard()
+                    throw CancellationError()
+                }
                 activeMeetingSession = meetingSession
                 activeMeetingID = meetingID
                 meetingMonitor.suppressWhileActive()
@@ -2652,6 +2751,7 @@ final class MuesliController: NSObject {
                 indicator.setMeetingRecording(true, config: config)
                 statusBarController?.refresh()
                 syncAppState()
+                scheduleMeetingEndNotification(endDate: endDate, title: title)
                 return
             } catch {
                 guard shouldRetryAfterPermissionRequest,
@@ -2661,10 +2761,16 @@ final class MuesliController: NSObject {
 
                 shouldRetryAfterPermissionRequest = false
                 meetingSession.discard()
+                try Task.checkCancellation()
+                try checkMeetingStartStillCurrent(meetingID)
+                updateMeetingStartStatus("Requesting system audio permission...")
                 statusBarController?.setStatus("Requesting system audio permission...")
                 statusBarController?.refresh()
                 let granted = await CoreAudioSystemRecorder.requestSystemAudioAccess()
+                try Task.checkCancellation()
+                try checkMeetingStartStillCurrent(meetingID)
                 if granted {
+                    updateMeetingStartStatus("Retrying meeting start...")
                     statusBarController?.setStatus("Retrying meeting start...")
                     statusBarController?.refresh()
                     continue
@@ -2674,12 +2780,17 @@ final class MuesliController: NSObject {
         }
     }
 
+    private func checkMeetingStartStillCurrent(_ meetingID: Int64) throws {
+        if canceledMeetingStartIDs.contains(meetingID) || meetingStartMeetingID != meetingID {
+            throw CancellationError()
+        }
+    }
+
     /// Open meeting URL, start recording, schedule end notification, and suppress detection.
     /// Single entry point for "Join & Record" from both notification panel and Coming Up section.
     func joinAndRecord(title: String, meetingURL: URL, endDate: Date?, calendarEventID: String? = nil) {
         NSWorkspace.shared.open(meetingURL)
-        startForegroundMeetingRecording(title: title, calendarEventID: calendarEventID)
-        scheduleMeetingEndNotification(endDate: endDate, title: title)
+        startForegroundMeetingRecording(title: title, calendarEventID: calendarEventID, endDate: endDate)
     }
 
     /// Open meeting URL and suppress detection for the event duration.
@@ -3260,6 +3371,12 @@ final class MuesliController: NSObject {
         )
     }
 
+    private func updateMeetingStartStatus(_ status: String?) {
+        meetingStartStatus = status
+        appState.isMeetingStarting = isStartingMeetingRecording
+        appState.meetingStartStatus = status
+    }
+
     private func endMeetingActivity() {
         guard let activity = meetingActivity else { return }
         ProcessInfo.processInfo.endActivity(activity)
@@ -3302,9 +3419,12 @@ final class MuesliController: NSObject {
             platform: MeetingPlatform(candidate.platform),
             onStartRecording: { [weak self] in
                 guard let self else { return }
-                self.meetingMonitor.markRecordingStarted(candidate)
-                self.presentedMeetingCandidate = nil
-                self.startForegroundMeetingRecording(title: title)
+                if self.startForegroundMeetingRecording(title: title) {
+                    self.meetingMonitor.markRecordingStarted(candidate)
+                    self.presentedMeetingCandidate = nil
+                } else {
+                    self.meetingMonitor.refreshState()
+                }
             },
             onDismiss: { [weak self] in
                 guard let self else { return }
@@ -4194,8 +4314,7 @@ final class MuesliController: NSObject {
         let meetingURL = event.meetingURL ?? calendarEvent?.meetingURL
 
         if config.autoRecordMeetings, !isMeetingRecording() {
-            startMeetingRecording(title: event.title, calendarEventID: event.id, openDocument: true)
-            scheduleMeetingEndNotification(endDate: calendarEndDate, title: event.title)
+            startMeetingRecording(title: event.title, calendarEventID: event.id, openDocument: true, endDate: calendarEndDate)
             return
         }
 
@@ -4225,8 +4344,7 @@ final class MuesliController: NSObject {
             onStartRecording: { [weak self] in
                 guard let self else { return }
                 self.isShowingCalendarNotification = false
-                self.startForegroundMeetingRecording(title: title, calendarEventID: event.id)
-                self.scheduleMeetingEndNotification(endDate: calendarEndDate, title: title)
+                self.startForegroundMeetingRecording(title: title, calendarEventID: event.id, endDate: calendarEndDate)
             },
             onJoinAndRecord: meetingURL != nil ? { [weak self] in
                 guard let self else { return }
@@ -4256,23 +4374,30 @@ final class MuesliController: NSObject {
         guard let endDate else { return }
 
         let delay = endDate.timeIntervalSinceNow
-        guard delay > 0 else { return }
+        guard delay > 0 else {
+            showMeetingEndNotification(title: title)
+            return
+        }
 
         meetingEndTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
             DispatchQueue.main.async { [weak self] in
-                guard let self, self.isMeetingRecording() else { return }
-                self.meetingNotification.show(
-                    title: "Meeting ended",
-                    subtitle: "\(title) · scheduled time is over",
-                    actionLabel: "Stop Recording",
-                    dismissAfter: 45,
-                    onStartRecording: { [weak self] in
-                        self?.stopMeetingRecording()
-                    },
-                    onDismiss: nil
-                )
+                self?.showMeetingEndNotification(title: title)
             }
         }
+    }
+
+    private func showMeetingEndNotification(title: String) {
+        guard isMeetingRecording() else { return }
+        meetingNotification.show(
+            title: "Meeting ended",
+            subtitle: "\(title) · scheduled time is over",
+            actionLabel: "Stop Recording",
+            dismissAfter: 45,
+            onStartRecording: { [weak self] in
+                self?.stopMeetingRecording()
+            },
+            onDismiss: nil
+        )
     }
 
     func serializedCustomWords() -> [[String: Any]] {
