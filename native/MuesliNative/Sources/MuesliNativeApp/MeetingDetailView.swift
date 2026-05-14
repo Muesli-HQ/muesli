@@ -188,16 +188,7 @@ struct MeetingDetailView: View {
                     } else {
                         documentModePicker
 
-                        HStack(spacing: MuesliTheme.spacing8) {
-                            templateMenu(for: meeting, appliedTemplate: appliedTemplate)
-                            recordingAction(for: meeting)
-                            summaryAction(for: meeting)
-                            editButton(for: meeting)
-                            if controller.canDeleteMeeting(meeting) {
-                                deleteButton
-                            }
-                        }
-                        .fixedSize(horizontal: true, vertical: false)
+                        headerActions(for: meeting, appliedTemplate: appliedTemplate)
                     }
                 }
             }
@@ -328,6 +319,35 @@ struct MeetingDetailView: View {
     }
 
     @ViewBuilder
+    private func headerActions(for meeting: MeetingRecord, appliedTemplate: MeetingTemplateSnapshot) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: MuesliTheme.spacing8) {
+                templateMenu(for: meeting, appliedTemplate: appliedTemplate)
+                recordingAction(for: meeting)
+                summaryAction(for: meeting)
+                editButton(for: meeting)
+                if controller.canDeleteMeeting(meeting) {
+                    deleteButton
+                }
+            }
+
+            VStack(alignment: .trailing, spacing: MuesliTheme.spacing8) {
+                HStack(spacing: MuesliTheme.spacing8) {
+                    templateMenu(for: meeting, appliedTemplate: appliedTemplate)
+                    recordingAction(for: meeting)
+                    summaryAction(for: meeting)
+                }
+                HStack(spacing: MuesliTheme.spacing8) {
+                    editButton(for: meeting)
+                    if controller.canDeleteMeeting(meeting) {
+                        deleteButton
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
     private func summaryAction(for meeting: MeetingRecord) -> some View {
         if isSummarizing {
             HStack(spacing: 6) {
@@ -439,7 +459,7 @@ struct MeetingDetailView: View {
                         }
                     }
                 }
-                .disabled(meeting.status == .recording || meeting.status == .processing)
+                .disabled(meeting.status == .recording || meeting.status == .processing || isEditingNotes || isEditingTranscript)
             }
         }
     }
@@ -1140,6 +1160,7 @@ private struct MarqueeTitleTextField: View {
     @State private var containerWidth: CGFloat = 0
     @State private var marqueeOffset: CGFloat = 0
     @State private var marqueeRunID = UUID()
+    @FocusState private var isTitleFocused: Bool
 
     private let titleFont = Font.system(size: 30, weight: .bold)
 
@@ -1151,10 +1172,13 @@ private struct MarqueeTitleTextField: View {
                 .textFieldStyle(.plain)
                 .lineLimit(1)
                 .opacity(shouldShowMarquee ? 0 : 1)
-                .allowsHitTesting(!shouldShowMarquee)
+                .focused($isTitleFocused)
                 .onSubmit(onSubmit)
                 .onChange(of: text) { _, _ in
                     onTextChange()
+                    restartMarqueeIfNeeded()
+                }
+                .onChange(of: isTitleFocused) { _, _ in
                     restartMarqueeIfNeeded()
                 }
 
@@ -1208,7 +1232,7 @@ private struct MarqueeTitleTextField: View {
     }
 
     private var shouldShowMarquee: Bool {
-        isHovering && overflowDistance > 8
+        isHovering && !isTitleFocused && overflowDistance > 8
     }
 
     private func restartMarqueeIfNeeded() {
