@@ -12,11 +12,15 @@ final class MeetingMonitor {
     var isCalendarNotificationVisibleProvider: (() -> Bool)?
     var promptVisibilityProvider: (() -> MeetingPromptVisibility)?
     var mutedDetectionBundleIDsProvider: (() -> Set<String>)?
+    var onActivityCandidateChanged: ((MeetingCandidate?) -> Void)?
     var onPromptCandidateChanged: ((MeetingCandidate?) -> Void)?
 
     private lazy var detectionService = MeetingDetectionService(
         contextProvider: { [weak self] now in
             self?.makeEvaluationContext(now: now) ?? .disabled
+        },
+        activityHandler: { [weak self] candidate in
+            self?.onActivityCandidateChanged?(candidate)
         },
         promptHandler: { [weak self] update in
             self?.handlePromptUpdate(update)
@@ -287,6 +291,7 @@ private actor MeetingDetectionService {
     private static let logger = Logger(subsystem: "com.muesli.native", category: "MeetingDetection")
 
     private let contextProvider: @MainActor (Date) -> MeetingDetectionEvaluationContext
+    private let activityHandler: @MainActor (MeetingCandidate?) -> Void
     private let promptHandler: @MainActor (MeetingPromptUpdate) -> Void
     private let resolver = MeetingCandidateResolver()
     private let mediaSessionTracker = MeetingMediaSessionTracker()
@@ -311,9 +316,11 @@ private actor MeetingDetectionService {
 
     init(
         contextProvider: @escaping @MainActor (Date) -> MeetingDetectionEvaluationContext,
+        activityHandler: @escaping @MainActor (MeetingCandidate?) -> Void,
         promptHandler: @escaping @MainActor (MeetingPromptUpdate) -> Void
     ) {
         self.contextProvider = contextProvider
+        self.activityHandler = activityHandler
         self.promptHandler = promptHandler
     }
 
@@ -509,13 +516,18 @@ private actor MeetingDetectionService {
         )
 
         let resolverStart = Date()
-        let resolvedCandidate = isGloballySuppressed(now: now) ? nil : resolver.resolve(snapshot)
+        let resolvedActivityCandidate = resolver.resolve(snapshot)
         let resolverDuration = Date().timeIntervalSince(resolverStart)
-        let unmutedCandidate = isMuted(resolvedCandidate, mutedBundleIDs: context.mutedBundleIDs) ? nil : resolvedCandidate
-        let candidate = await mediaSessionTracker.stabilize(
-            candidate: unmutedCandidate,
+        let unmutedActivityCandidate = isMuted(
+            resolvedActivityCandidate,
+            mutedBundleIDs: context.mutedBundleIDs
+        ) ? nil : resolvedActivityCandidate
+        let activityCandidate = await mediaSessionTracker.stabilize(
+            candidate: unmutedActivityCandidate,
             snapshot: snapshot
         )
+        emitActivityUpdate(activityCandidate)
+        let candidate = isGloballySuppressed(now: now) ? nil : activityCandidate
         logCandidateIfChanged(candidate)
         updateRefreshState(
             trigger: trigger,
@@ -525,7 +537,8 @@ private actor MeetingDetectionService {
             browserMeetings: collectedSignals.browserMeetings,
             foregroundBundleID: collectedSignals.foregroundBundleID,
             visibility: context.promptVisibility,
-            candidate: candidate,
+            candidate: activityCandidate,
+            keepSuspicious: context.isRecording || context.isStartingRecording,
             now: now
         )
 
@@ -572,6 +585,12 @@ private actor MeetingDetectionService {
     private func emitPromptUpdate(_ update: MeetingPromptUpdate) {
         Task { @MainActor [promptHandler] in
             promptHandler(update)
+        }
+    }
+
+    private func emitActivityUpdate(_ candidate: MeetingCandidate?) {
+        Task { @MainActor [activityHandler] in
+            activityHandler(candidate)
         }
     }
 
@@ -697,11 +716,12 @@ private actor MeetingDetectionService {
         foregroundBundleID: String?,
         visibility: MeetingPromptVisibility,
         candidate: MeetingCandidate?,
+        keepSuspicious: Bool = false,
         now: Date
     ) {
         signalRefreshState.hasMicOrCameraSignal = micActive || cameraActive
         signalRefreshState.hasRecentBrowserMeeting = !browserMeetings.isEmpty
-        signalRefreshState.hasActiveCandidate = candidate != nil
+        signalRefreshState.hasActiveCandidate = candidate != nil || keepSuspicious
         signalRefreshState.hasPromptVisible = visibility.isVisible
         signalRefreshState.hasCalendarEvent = calendarEvent != nil
         signalRefreshState.foregroundIsMeetingCapableApp = foregroundBundleID.map { bundleID in
