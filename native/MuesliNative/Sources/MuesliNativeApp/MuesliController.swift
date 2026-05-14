@@ -4644,6 +4644,10 @@ final class MuesliController: NSObject {
         activeMeetingSession?.isRecording == true || isStoppingMeetingRecording
     }
 
+    private var isMeetingCapturingAudio: Bool {
+        activeMeetingSession?.isRecording == true || isStartingMeetingRecording
+    }
+
     func isMeetingRecordingPaused() -> Bool {
         activeMeetingSession?.isPaused == true
     }
@@ -6007,8 +6011,7 @@ final class MuesliController: NSObject {
             syncAppState()
         }
         indicator.setMeetingRecording(false, config: config)
-        indicator.setTranscribingTitle("Transcribing", config: config)
-        setState(.transcribing)
+        setMeetingProcessingStatus("Transcribing")
         let processingGeneration = backgroundMeetingProcessingCount + 1
         sessionToStop.onProgress = { [weak self] stage in
             Task { @MainActor [weak self] in
@@ -6100,7 +6103,9 @@ final class MuesliController: NSObject {
                     self.pendingResumePriorTranscript[liveMeetingID] = nil
                 }
                 if !self.isMeetingRecording() && !self.isStartingMeetingRecording && self.backgroundMeetingProcessingCount == 0 {
-                    self.setState(.idle)
+                    if !self.isDictationActivityInProgress {
+                        self.setState(.idle)
+                    }
                     self.statusBarController?.refresh()
                 }
                 self.endMeetingActivity()
@@ -7254,7 +7259,7 @@ final class MuesliController: NSObject {
     }
 
     private var canPrepareComputerUseCommand: Bool {
-        !isMeetingRecording()
+        !isMeetingCapturingAudio
             && !isDictationTestMode
             && dictationStartedAt == nil
             && computerUseCommandStartedAt == nil
@@ -7266,7 +7271,7 @@ final class MuesliController: NSObject {
     }
 
     private var canStartComputerUseCommand: Bool {
-        !isMeetingRecording()
+        !isMeetingCapturingAudio
             && !isDictationTestMode
             && dictationStartedAt == nil
             && computerUseCommandStartedAt == nil
@@ -7566,7 +7571,7 @@ final class MuesliController: NSObject {
     private func handlePrepare() {
         if shouldRejectDictationForComputerUseActivity() { return }
         guard ensureDictationBackendReady() else { return }
-        if isMeetingRecording() { return }
+        if isMeetingCapturingAudio { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
         fputs("[muesli-native] prepare\n", stderr)
         if dictationLatencyTraceID == nil {
@@ -7587,7 +7592,7 @@ final class MuesliController: NSObject {
     private func handleArm() {
         if shouldRejectDictationForComputerUseActivity() { return }
         guard ensureDictationBackendReady() else { return }
-        if isMeetingRecording() { return }
+        if isMeetingCapturingAudio { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
         if dictationLatencyTraceID == nil {
             beginDictationLatencyTrace(reason: "hotkey")
@@ -7623,7 +7628,7 @@ final class MuesliController: NSObject {
             && AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
             && dictationState == .idle
             && computerUseCommandStartedAt == nil
-            && !isMeetingRecording()
+            && !isMeetingCapturingAudio
             && !isStartingMeetingRecording
             && !isStoppingMeetingRecording
     }
@@ -7933,7 +7938,7 @@ final class MuesliController: NSObject {
     private func handleStart() {
         if shouldRejectDictationForComputerUseActivity() { return }
         guard ensureDictationBackendReady() else { return }
-        if isMeetingRecording() { return }
+        if isMeetingCapturingAudio { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
 
         // Nemotron backends support hold-to-talk (record → transcribe on release) in
@@ -8078,7 +8083,7 @@ final class MuesliController: NSObject {
     }
 
     private func handleCancel() {
-        if isMeetingRecording() { return }
+        if isMeetingCapturingAudio { return }
         if shouldIgnoreDictationCleanupForComputerUseActivity() { return }
         fputs("[muesli-native] cancel\n", stderr)
         resetDictationOutputMode()
@@ -8109,7 +8114,7 @@ final class MuesliController: NSObject {
     private func handleToggleStart(outputMode: DictationOutputMode? = nil) {
         if shouldRejectDictationForComputerUseActivity() { return }
         guard ensureDictationBackendReady() else { return }
-        if isMeetingRecording() { return }
+        if isMeetingCapturingAudio { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
         fputs("[muesli-native] toggle dictation start\n", stderr)
         if dictationLatencyTraceID == nil {
@@ -8169,7 +8174,7 @@ final class MuesliController: NSObject {
     }
 
     private func handleStop() {
-        if isMeetingRecording() {
+        if isMeetingCapturingAudio {
             cancelDictationAudioSessionForMeetingRecordingIfNeeded()
             return
         }
