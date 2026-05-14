@@ -670,6 +670,51 @@ struct DictationStoreTests {
         #expect(remaining.first?.title == "Keep Me")
     }
 
+    @Test("recent meetings sort by meeting start time rather than insertion order")
+    func recentMeetingsSortByStartTime() throws {
+        let store = try makeStore()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+
+        try store.insertMeeting(
+            title: "Newest Inserted First",
+            calendarEventID: nil,
+            startTime: base.addingTimeInterval(3_600),
+            endTime: base.addingTimeInterval(3_900),
+            rawTranscript: "newest",
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+        try store.insertMeeting(
+            title: "Oldest Inserted Second",
+            calendarEventID: nil,
+            startTime: base,
+            endTime: base.addingTimeInterval(300),
+            rawTranscript: "oldest",
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+        try store.insertMeeting(
+            title: "Middle Inserted Last",
+            calendarEventID: nil,
+            startTime: base.addingTimeInterval(1_800),
+            endTime: base.addingTimeInterval(2_100),
+            rawTranscript: "middle",
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+
+        let meetings = try store.recentMeetings(limit: 3)
+
+        #expect(meetings.map(\.title) == [
+            "Newest Inserted First",
+            "Middle Inserted Last",
+            "Oldest Inserted Second"
+        ])
+    }
+
     @Test("recent dictations respects limit")
     func limitRespected() throws {
         let store = try makeStore()

@@ -135,7 +135,8 @@ final class CalendarMonitor {
                 isAllDay: false,
                 source: .eventKit,
                 calendarID: event.calendar?.calendarIdentifier,
-                meetingURL: Self.extractMeetingURL(from: event)
+                meetingURL: Self.extractMeetingURL(from: event),
+                attendees: Self.extractAttendees(from: event)
             )
         }
         return UnifiedCalendarEvent
@@ -217,6 +218,40 @@ final class CalendarMonitor {
         }
 
         return nil
+    }
+
+    static func extractAttendees(from event: EKEvent) -> [CalendarEventAttendee] {
+        guard let participants = event.attendees else { return [] }
+        var attendees: [CalendarEventAttendee] = []
+        var seen = Set<String>()
+
+        for participant in participants where participant.participantType != .resource {
+            let attendee = CalendarEventAttendee(
+                name: participant.name,
+                email: emailAddress(from: participant.url)
+            )
+            let key = (attendee.email ?? attendee.name ?? attendee.markdownLabel).lowercased()
+            guard !key.isEmpty, !seen.contains(key) else { continue }
+            seen.insert(key)
+            attendees.append(attendee)
+        }
+
+        return attendees
+    }
+
+    private static func emailAddress(from url: URL?) -> String? {
+        guard let url else { return nil }
+        if url.scheme?.lowercased() == "mailto" {
+            let raw = url.absoluteString.dropFirst("mailto:".count)
+            let address = raw.split(separator: "?", maxSplits: 1).first.map(String.init) ?? String(raw)
+            return address.removingPercentEncoding
+        }
+        let raw = url.absoluteString.removingPercentEncoding ?? url.absoluteString
+        guard let range = raw.range(
+            of: #"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) else { return nil }
+        return String(raw[range])
     }
 
     private static func isMeetingURL(_ url: URL) -> Bool {

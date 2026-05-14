@@ -66,10 +66,27 @@ struct MeetingListItemView: View {
                 }
             }
 
-            Text(previewText())
-                .font(MuesliTheme.caption())
-                .foregroundStyle(MuesliTheme.textTertiary)
-                .lineLimit(2)
+            if let participantLine = MeetingListItemMetadata.participantLine(from: record) {
+                HStack(spacing: 5) {
+                    Image(systemName: "person.2.fill")
+                        .font(.system(size: 10, weight: .medium))
+                    Text(participantLine)
+                        .font(MuesliTheme.caption())
+                        .lineLimit(1)
+                }
+                .foregroundStyle(MuesliTheme.textSecondary)
+                .help(MeetingListItemMetadata.fullParticipantLine(from: record) ?? participantLine)
+            }
+
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Image(systemName: "text.alignleft")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                Text(MeetingListItemMetadata.notesPreview(from: record))
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .lineLimit(2)
+            }
         }
         .padding(MuesliTheme.spacing16)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -206,17 +223,9 @@ struct MeetingListItemView: View {
     }
 
     private func formatMeta() -> String {
-        let time = formatTime(record.startTime)
+        let time = MeetingListItemMetadata.friendlyDate(record.startTime)
         let duration = formatDuration(record.durationSeconds)
         return "\(time)  \u{2022}  \(duration)"
-    }
-
-    private func formatTime(_ raw: String) -> String {
-        let clean = raw.replacingOccurrences(of: "T", with: " ")
-        if clean.count > 16 {
-            return String(clean.prefix(16))
-        }
-        return clean
     }
 
     private func formatDuration(_ seconds: Double) -> String {
@@ -230,17 +239,6 @@ struct MeetingListItemView: View {
             return s == 0 ? "\(m)m" : "\(m)m \(s)s"
         }
         return "\(rounded)s"
-    }
-
-    private func previewText() -> String {
-        let source: String
-        if !record.manualNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           record.status != .completed {
-            source = record.manualNotes
-        } else {
-            source = record.formattedNotes.isEmpty ? record.rawTranscript : record.formattedNotes
-        }
-        return MeetingPreviewText.snippet(from: source)
     }
 
 }
