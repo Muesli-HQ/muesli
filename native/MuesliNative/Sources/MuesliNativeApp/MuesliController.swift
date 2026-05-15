@@ -4645,7 +4645,7 @@ final class MuesliController: NSObject {
     }
 
     private var isMeetingCapturingAudio: Bool {
-        activeMeetingSession?.isRecording == true || isStartingMeetingRecording
+        activeMeetingSession?.isRecording == true
     }
 
     func isMeetingRecordingPaused() -> Bool {
@@ -6109,10 +6109,7 @@ final class MuesliController: NSObject {
                     self.statusBarController?.refresh()
                 }
                 self.endMeetingActivity()
-                if self.isDictationActivityInProgress {
-                    self.meetingMonitor.suppressWhileActive()
-                    self.meetingMonitor.refreshState()
-                }
+                self.resumeMeetingMonitorAfterForegroundCapture()
                 self.historyWindowController?.reload()
                 self.syncAppState()
                 self.clearLiveMeetingTranscript(ownerID: liveMeetingID)
@@ -7068,6 +7065,18 @@ final class MuesliController: NSObject {
         indicator.setState(.transcribing, config: config)
     }
 
+    private func resumeMeetingMonitorAfterForegroundCapture() {
+        if isMeetingRecording()
+            || isStartingMeetingRecording
+            || isDictationActivityInProgress
+            || backgroundMeetingProcessingCount > 0 {
+            meetingMonitor.suppressWhileActive()
+        } else {
+            meetingMonitor.resumeAfterCooldown()
+        }
+        meetingMonitor.refreshState()
+    }
+
     private func handleComputerUsePrepare() {
         guard canPrepareComputerUseCommand else { return }
         fputs("[cua] prepare\n", stderr)
@@ -7821,8 +7830,7 @@ final class MuesliController: NSObject {
             pendingReleaseSoundSessionID = nil
             clearCapturedDictationSessionContext()
             setState(.idle)
-            meetingMonitor.resumeAfterCooldown()
-            meetingMonitor.refreshState()
+            resumeMeetingMonitorAfterForegroundCapture()
             finishDictationLatencyTrace("audio_session_failed")
         case .latency(let event, let date):
             markDictationLatency(event, at: date)
@@ -8054,8 +8062,7 @@ final class MuesliController: NSObject {
         indicator.setToggleDictation(false, config: config)
         resetDictationOutputMode()
         setState(.idle)
-        meetingMonitor.resumeAfterCooldown()
-        meetingMonitor.refreshState()
+        resumeMeetingMonitorAfterForegroundCapture()
         finishDictationLatencyTrace("nemotron_start_failed")
         syncDictationRecorderWarmup(intent: .idlePrewarm(.backendRecovery))
     }
@@ -8082,8 +8089,7 @@ final class MuesliController: NSObject {
         indicator.setToggleDictation(false, config: config)
         resetDictationOutputMode()
         setState(.idle)
-        meetingMonitor.resumeAfterCooldown()
-        meetingMonitor.refreshState()
+        resumeMeetingMonitorAfterForegroundCapture()
         finishDictationLatencyTrace("nemotron_runtime_failed")
         syncDictationRecorderWarmup(intent: .idlePrewarm(.backendRecovery))
     }
@@ -8111,8 +8117,7 @@ final class MuesliController: NSObject {
         pendingDictationStopStartedAt = nil
         pendingReleaseSoundSessionID = nil
         setState(.idle)
-        meetingMonitor.resumeAfterCooldown()
-        meetingMonitor.refreshState()
+        resumeMeetingMonitorAfterForegroundCapture()
         finishDictationLatencyTrace("cancelled")
         syncDictationRecorderWarmup(intent: .postDictation(.cancel))
     }
@@ -8302,7 +8307,7 @@ final class MuesliController: NSObject {
         clearCapturedDictationSessionContext()
         resetDictationOutputMode()
         setState(.idle)
-        meetingMonitor.resumeAfterCooldown()
+        resumeMeetingMonitorAfterForegroundCapture()
         fputs("[muesli-native] Nemotron streaming done (\(String(format: "%.1f", duration))s)\n", stderr)
         finishDictationLatencyTrace("nemotron_stop")
         syncDictationRecorderWarmup(intent: .idlePrewarm(.backendRecovery))
@@ -8315,7 +8320,7 @@ final class MuesliController: NSObject {
             clearCapturedDictationSessionContext()
             resetDictationOutputMode()
             setState(.idle)
-            meetingMonitor.resumeAfterCooldown()
+            resumeMeetingMonitorAfterForegroundCapture()
             finishDictationLatencyTrace("stop_without_wav")
             syncDictationRecorderWarmup(intent: .postDictation(.stopWithoutWav))
             return
@@ -8330,7 +8335,7 @@ final class MuesliController: NSObject {
             clearCapturedDictationSessionContext()
             resetDictationOutputMode()
             setState(.idle)
-            meetingMonitor.resumeAfterCooldown()
+            resumeMeetingMonitorAfterForegroundCapture()
             finishDictationLatencyTrace("short_recording")
             syncDictationRecorderWarmup(intent: .postDictation(.shortRecording))
             return
@@ -8382,7 +8387,7 @@ final class MuesliController: NSObject {
                         self.clearCapturedDictationSessionContext()
                         self.resetDictationOutputMode()
                         self.setState(.idle)
-                        self.meetingMonitor.resumeAfterCooldown()
+                        self.resumeMeetingMonitorAfterForegroundCapture()
                         self.syncDictationRecorderWarmup(intent: .postDictation(.transcriptionComplete))
                     }
                     return
@@ -8396,7 +8401,7 @@ final class MuesliController: NSObject {
                         self.clearCapturedDictationSessionContext()
                         self.resetDictationOutputMode()
                         self.setState(.idle)
-                        self.meetingMonitor.resumeAfterCooldown()
+                        self.resumeMeetingMonitorAfterForegroundCapture()
                         self.syncDictationRecorderWarmup(intent: .postDictation(.transcriptionComplete))
                     }
                     return
@@ -8432,7 +8437,7 @@ final class MuesliController: NSObject {
                     }
                     self.resetDictationOutputMode()
                     self.setState(.idle)
-                    self.meetingMonitor.resumeAfterCooldown()
+                    self.resumeMeetingMonitorAfterForegroundCapture()
                     self.syncDictationRecorderWarmup(intent: .postDictation(.transcriptionComplete))
                     TelemetryDeck.signal("dictation.completed", parameters: [
                         "backend": self.selectedBackend.backend,
@@ -8445,7 +8450,7 @@ final class MuesliController: NSObject {
                     self.clearCapturedDictationSessionContext()
                     self.resetDictationOutputMode()
                     self.setState(.idle)
-                    self.meetingMonitor.resumeAfterCooldown()
+                    self.resumeMeetingMonitorAfterForegroundCapture()
                     self.syncDictationRecorderWarmup(intent: .postDictation(.transcriptionCancelled))
                 }
             } catch {
@@ -8464,7 +8469,7 @@ final class MuesliController: NSObject {
                     self.clearCapturedDictationSessionContext()
                     self.resetDictationOutputMode()
                     self.setState(.idle)
-                    self.meetingMonitor.resumeAfterCooldown()
+                    self.resumeMeetingMonitorAfterForegroundCapture()
                     self.syncDictationRecorderWarmup(intent: .postDictation(.transcriptionFailed))
                 }
             }
