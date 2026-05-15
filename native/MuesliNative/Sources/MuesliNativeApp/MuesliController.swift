@@ -2106,6 +2106,15 @@ final class MuesliController: NSObject {
         syncAppState()
     }
 
+    func updateMeetingTranscript(id: Int64, transcript: String) {
+        do {
+            try dictationStore.updateMeetingTranscript(id: id, rawTranscript: transcript)
+        } catch {
+            fputs("[muesli-native] failed to update meeting transcript \(id): \(error)\n", stderr)
+        }
+        syncAppState()
+    }
+
     func updateMeetingManualNotes(id: Int64, notes: String) {
         liveManualNotesPersistWorkItems[id]?.cancel()
         liveManualNotesPersistWorkItems[id] = nil

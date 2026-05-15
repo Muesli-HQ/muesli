@@ -448,6 +448,35 @@ struct DictationStoreTests {
         #expect(updated.manualNotes == "Manual note")
     }
 
+    @Test("update meeting transcript preserves notes and refreshes word count")
+    func updateMeetingTranscript() throws {
+        let store = try makeStore()
+
+        let start = Date()
+        let meetingID = try store.insertMeeting(
+            title: "Editable Transcript",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(60),
+            rawTranscript: "Original words",
+            formattedNotes: "## Summary\nExisting notes",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+        try store.updateMeetingManualNotes(id: meetingID, manualNotes: "Manual note")
+
+        try store.updateMeetingTranscript(
+            id: meetingID,
+            rawTranscript: "[10:00:00] You: Edited transcript words"
+        )
+
+        let updated = try #require(try store.meeting(id: meetingID))
+        #expect(updated.rawTranscript == "[10:00:00] You: Edited transcript words")
+        #expect(updated.formattedNotes == "## Summary\nExisting notes")
+        #expect(updated.manualNotes == "Manual note")
+        #expect(updated.wordCount == 7)
+    }
+
     @Test("fetch dictation by id returns the full record")
     func fetchDictationByID() throws {
         let store = try makeStore()

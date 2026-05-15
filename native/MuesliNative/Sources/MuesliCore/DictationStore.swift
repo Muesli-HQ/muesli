@@ -727,6 +727,28 @@ public final class DictationStore {
         }
     }
 
+    public func updateMeetingTranscript(id: Int64, rawTranscript: String) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let manualNotes = try manualNotesForMeeting(id: id, db: db)
+        let wordCount = Self.countWords(in: rawTranscript) + Self.countWords(in: manualNotes)
+        let sql = "UPDATE meetings SET raw_transcript = ?, word_count = ? WHERE id = ?"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, (rawTranscript as NSString).utf8String, -1, nil)
+        sqlite3_bind_int(statement, 2, Int32(wordCount))
+        sqlite3_bind_int64(statement, 3, id)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
+        guard sqlite3_changes(db) > 0 else {
+            throw DictationStoreError.meetingNotFound(id: id)
+        }
+    }
+
     public func updateMeetingManualNotes(id: Int64, manualNotes: String) throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
