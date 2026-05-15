@@ -325,8 +325,9 @@ def import_notes(connection: sqlite3.Connection, notes: list[dict[str, Any]], dr
         stats.with_transcript += 1
 
         external_id = f"granola:{note_id.strip()}"
+        calendar_id = calendar_event_id(note)
         duplicate_ids = [external_id]
-        if calendar_id := calendar_event_id(note):
+        if calendar_id:
             duplicate_ids.append(calendar_id)
         existing = connection.execute(
             f"SELECT id FROM meetings WHERE calendar_event_id IN ({','.join('?' for _ in duplicate_ids)}) LIMIT 1",
@@ -353,7 +354,7 @@ def import_notes(connection: sqlite3.Connection, notes: list[dict[str, Any]], dr
                 """,
                 (
                     title.strip(),
-                    external_id,
+                calendar_id or external_id,
                     iso_z(start),
                     iso_z(end),
                     duration_seconds,
