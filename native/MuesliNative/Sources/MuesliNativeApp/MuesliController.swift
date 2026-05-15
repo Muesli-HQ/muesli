@@ -6109,6 +6109,10 @@ final class MuesliController: NSObject {
                     self.statusBarController?.refresh()
                 }
                 self.endMeetingActivity()
+                if self.isDictationActivityInProgress {
+                    self.meetingMonitor.suppressWhileActive()
+                    self.meetingMonitor.refreshState()
+                }
                 self.historyWindowController?.reload()
                 self.syncAppState()
                 self.clearLiveMeetingTranscript(ownerID: liveMeetingID)
@@ -7059,7 +7063,9 @@ final class MuesliController: NSObject {
     private func setMeetingProcessingStatus(_ status: String) {
         statusBarController?.setStatus(status)
         statusBarController?.refresh()
+        guard !isDictationActivityInProgress else { return }
         indicator.setTranscribingTitle(status, config: config)
+        indicator.setState(.transcribing, config: config)
     }
 
     private func handleComputerUsePrepare() {
