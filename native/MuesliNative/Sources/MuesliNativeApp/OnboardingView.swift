@@ -1530,6 +1530,11 @@ struct OnboardingView: View {
                             .font(.system(size: 11))
                             .foregroundStyle(MuesliTheme.success)
                     }
+
+                    Text("Select a model in Settings after setup.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(MuesliTheme.warning)
+                        .padding(.top, 4)
                 }
             } else {
                 if summaryBackend == .openRouter {

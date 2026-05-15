@@ -1922,16 +1922,15 @@ struct SettingsView: View {
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
         } else if !lmStudioModels.isEmpty {
-            let allOptions = ["(Default)"] + lmStudioModels
-            let currentIndex = appState.config.lmStudioModel.isEmpty ? 0 : (lmStudioModels.firstIndex(of: appState.config.lmStudioModel).map { $0 + 1 } ?? 0)
-            let selectedLabel = currentIndex < allOptions.count ? allOptions[currentIndex] : allOptions[0]
+            let selectedModel = appState.config.lmStudioModel
+            let selectedLabel = lmStudioModels.contains(selectedModel) ? selectedModel : lmStudioModels[0]
 
             FixedWidthPopUp(
                 selection: selectedLabel,
-                options: allOptions,
+                options: lmStudioModels,
                 onSelectIndex: { index in
-                    let selected = index == 0 ? "" : lmStudioModels[index - 1]
-                    controller.updateConfig { $0.lmStudioModel = selected }
+                    guard index >= 0 && index < lmStudioModels.count else { return }
+                    controller.updateConfig { $0.lmStudioModel = lmStudioModels[index] }
                 }
             )
             .frame(height: 24)
@@ -2011,6 +2010,8 @@ struct SettingsView: View {
             baseURL = url
         }
 
+        let urlAtStart = baseURLString
+
         Task {
             do {
                 let tagsURL = baseURL.appendingPathComponent("api/tags")
@@ -2028,12 +2029,14 @@ struct SettingsView: View {
                 let modelNames = tagsResponse.models.map { $0.name }.sorted()
 
                 await MainActor.run {
+                    guard appState.config.ollamaURL.trimmingCharacters(in: .whitespacesAndNewlines) == urlAtStart else { return }
                     ollamaModels = modelNames
                     ollamaModelsError = modelNames.isEmpty ? "No models found" : nil
                     isLoadingOllamaModels = false
                 }
             } catch {
                 await MainActor.run {
+                    guard appState.config.ollamaURL.trimmingCharacters(in: .whitespacesAndNewlines) == urlAtStart else { return }
                     ollamaModels = []
                     ollamaModelsError = "Could not load"
                     isLoadingOllamaModels = false
@@ -2065,6 +2068,8 @@ struct SettingsView: View {
             baseURL = url
         }
 
+        let urlAtStart = baseURLString
+
         Task {
             do {
                 let modelsURL = baseURL.appendingPathComponent("api/v0/models")
@@ -2082,12 +2087,14 @@ struct SettingsView: View {
                 let modelNames = modelsResponse.data.map { $0.id }.sorted()
 
                 await MainActor.run {
+                    guard appState.config.lmStudioURL.trimmingCharacters(in: .whitespacesAndNewlines) == urlAtStart else { return }
                     lmStudioModels = modelNames
                     lmStudioModelsError = modelNames.isEmpty ? "No models found" : nil
                     isLoadingLMStudioModels = false
                 }
             } catch {
                 await MainActor.run {
+                    guard appState.config.lmStudioURL.trimmingCharacters(in: .whitespacesAndNewlines) == urlAtStart else { return }
                     lmStudioModels = []
                     lmStudioModelsError = "Could not load"
                     isLoadingLMStudioModels = false
