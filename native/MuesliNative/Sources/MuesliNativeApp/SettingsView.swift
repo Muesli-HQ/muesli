@@ -304,8 +304,7 @@ struct SettingsView: View {
 
             permissionsSection
 
-            VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
-                settingsSectionLabel("Data")
+            settingsSection("Data") {
                 HStack(spacing: MuesliTheme.spacing12) {
                     actionButton("Clear dictation history", role: .destructive) {
                         pendingDataDestruction = .dictations
