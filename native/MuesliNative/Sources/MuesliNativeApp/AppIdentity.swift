@@ -18,7 +18,7 @@ enum AppIdentity {
     }
 
     static var supportDirectoryName: String {
-        stringValue(for: "MuesliSupportDirectoryName") ?? displayName
+        stringValue(for: "MuesliSupportDirectoryName") ?? bundleName
     }
 
     static var supportDirectoryURL: URL {

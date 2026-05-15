@@ -16,6 +16,20 @@ struct SearchResultsView: View {
         appState.searchResultDictations.count + appState.searchResultMeetings.count
     }
 
+    private var activeTab: SearchTab {
+        if selectedTab == .meetings,
+           appState.searchResultMeetings.isEmpty,
+           !appState.searchResultDictations.isEmpty {
+            return .dictations
+        }
+        if selectedTab == .dictations,
+           appState.searchResultDictations.isEmpty,
+           !appState.searchResultMeetings.isEmpty {
+            return .meetings
+        }
+        return selectedTab
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
@@ -53,7 +67,7 @@ struct SearchResultsView: View {
 
     @ViewBuilder
     private func tabButton(_ tab: SearchTab, count: Int) -> some View {
-        let isSelected = selectedTab == tab
+        let isSelected = activeTab == tab
         Button {
             withAnimation(.easeInOut(duration: 0.15)) { selectedTab = tab }
         } label: {
@@ -81,7 +95,7 @@ struct SearchResultsView: View {
 
     @ViewBuilder
     private var tabContent: some View {
-        switch selectedTab {
+        switch activeTab {
         case .dictations:
             if appState.searchResultDictations.isEmpty {
                 noResultsForTab("dictations")

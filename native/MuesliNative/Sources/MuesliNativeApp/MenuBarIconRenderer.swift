@@ -20,11 +20,12 @@ enum MenuBarIconRenderer {
     /// Returns a menu bar icon for the given choice.
     /// "muesli" loads the bundled M logo; anything else renders an SF Symbol.
     static func make(choice: String = "muesli", customLogoPath: String? = nil) -> NSImage? {
-        if let customLogo = AppBrandingAssets.image(at: customLogoPath) {
-            customLogo.isTemplate = false
-            customLogo.size = NSSize(width: 18, height: 18)
-            return customLogo
-        } else if choice == "muesli" {
+        if choice == "muesli" {
+            if let customLogo = AppBrandingAssets.image(at: customLogoPath) {
+                customLogo.isTemplate = false
+                customLogo.size = NSSize(width: 18, height: 18)
+                return customLogo
+            }
             if let url = Bundle.main.url(forResource: "menu_m_template", withExtension: "png"),
                let image = NSImage(contentsOf: url) {
                 image.isTemplate = true
