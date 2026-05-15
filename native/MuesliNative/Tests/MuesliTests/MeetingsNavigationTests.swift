@@ -687,6 +687,30 @@ struct MeetingBrowserLogicTests {
         #expect(filtered.map(\.id) == [12, 11, 10])
     }
 
+    @Test("count text discloses capped filtered data")
+    func countTextDisclosesCappedFilteredData() {
+        #expect(MeetingBrowserLogic.countText(
+            visibleCount: 200,
+            loadedCount: 200,
+            totalCount: 559,
+            filter: .all
+        ) == "Showing 200 of 559 meetings")
+
+        #expect(MeetingBrowserLogic.countText(
+            visibleCount: 8,
+            loadedCount: 200,
+            totalCount: 559,
+            filter: .lastWeek
+        ) == "Showing 8 filtered from newest 200 of 559 meetings")
+
+        #expect(MeetingBrowserLogic.countText(
+            visibleCount: 1,
+            loadedCount: 20,
+            totalCount: 20,
+            filter: .lastWeek
+        ) == "1 meeting")
+    }
+
     private static func isoDate(daysAgo: Int, now: Date, calendar: Calendar) -> String {
         let date = calendar.date(byAdding: .day, value: -daysAgo, to: now) ?? now
         let formatter = ISO8601DateFormatter()

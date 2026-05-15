@@ -29,6 +29,23 @@ enum MeetingBrowserSort: Hashable {
 }
 
 enum MeetingBrowserLogic {
+    static func countText(
+        visibleCount: Int,
+        loadedCount: Int,
+        totalCount: Int,
+        filter: MeetingBrowserFilter
+    ) -> String {
+        guard totalCount > loadedCount else {
+            return "\(visibleCount) meeting\(visibleCount == 1 ? "" : "s")"
+        }
+
+        if filter == .all {
+            return "Showing \(visibleCount) of \(totalCount) meetings"
+        }
+
+        return "Showing \(visibleCount) filtered from newest \(loadedCount) of \(totalCount) meetings"
+    }
+
     static func availableFilters(
         for meetings: [MeetingRecord],
         now: Date = Date(),
@@ -155,6 +172,7 @@ struct MeetingsView: View {
 
     private var browserMeetingCountText: String {
         let visibleCount = filteredMeetings.count
+        let loadedCount = scopedMeetings.count
         let totalCount: Int
         if let folderID = appState.selectedFolderID {
             totalCount = appState.meetingCountsByFolder[folderID] ?? visibleCount
@@ -162,10 +180,12 @@ struct MeetingsView: View {
             totalCount = appState.totalMeetingCount
         }
 
-        guard selectedFilter == .all, totalCount > visibleCount else {
-            return "\(visibleCount) meeting\(visibleCount == 1 ? "" : "s")"
-        }
-        return "Showing \(visibleCount) of \(totalCount) meetings"
+        return MeetingBrowserLogic.countText(
+            visibleCount: visibleCount,
+            loadedCount: loadedCount,
+            totalCount: totalCount,
+            filter: selectedFilter
+        )
     }
 
     private var currentDocumentMeeting: MeetingRecord? {

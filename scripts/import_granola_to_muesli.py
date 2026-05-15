@@ -161,11 +161,12 @@ def note_end(note: dict[str, Any], start: datetime) -> datetime:
         last_transcript_time(transcript, "end_time"),
         last_transcript_time(transcript, "start_time"),
     ]
+    parsed_candidates: list[datetime] = []
     for candidate in candidates:
         parsed = parse_date(candidate)
         if parsed and parsed >= start:
-            return parsed
-    return start
+            parsed_candidates.append(parsed)
+    return max(parsed_candidates) if parsed_candidates else start
 
 
 def first_transcript_time(transcript: list[Any], key: str) -> Any:
@@ -274,6 +275,14 @@ def formatted_notes(note: dict[str, Any]) -> str:
     return "\n\n".join(parts).strip() + "\n"
 
 
+def calendar_event_id(note: dict[str, Any]) -> str | None:
+    calendar_event = note.get("calendar_event") if isinstance(note.get("calendar_event"), dict) else {}
+    value = calendar_event.get("calendar_event_id")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
 def connect(db_path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(str(db_path))
     connection.row_factory = sqlite3.Row
@@ -316,9 +325,12 @@ def import_notes(connection: sqlite3.Connection, notes: list[dict[str, Any]], dr
         stats.with_transcript += 1
 
         external_id = f"granola:{note_id.strip()}"
+        duplicate_ids = [external_id]
+        if calendar_id := calendar_event_id(note):
+            duplicate_ids.append(calendar_id)
         existing = connection.execute(
-            "SELECT id FROM meetings WHERE calendar_event_id = ? LIMIT 1",
-            (external_id,),
+            f"SELECT id FROM meetings WHERE calendar_event_id IN ({','.join('?' for _ in duplicate_ids)}) LIMIT 1",
+            duplicate_ids,
         ).fetchone()
         if existing:
             stats.skipped_existing += 1

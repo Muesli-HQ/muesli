@@ -102,14 +102,21 @@ enum MeetingListItemMetadata {
     }
 
     private static func participant(from rawLine: String) -> MeetingListParticipant? {
+        let hasListMarker = rawLine.range(
+            of: #"^\s*(?:[-+*]|\d+[.)]|\[[ xX]\])\s+"#,
+            options: .regularExpression
+        ) != nil
+        let email = firstEmail(in: rawLine)
+        guard hasListMarker || email != nil else { return nil }
+
         let line = rawLine
             .replacingOccurrences(of: #"^\s*(?:[-+*]|\d+[.)])\s+"#, with: "", options: .regularExpression)
             .replacingOccurrences(of: #"^\s*\[[ xX]\]\s+"#, with: "", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !line.isEmpty else { return nil }
+        guard !isParticipantPlaceholder(line) else { return nil }
 
-        let email = firstEmail(in: line)
         var name = line
         if let email {
             name = name.replacingOccurrences(of: email, with: "")
@@ -120,6 +127,24 @@ enum MeetingListItemMetadata {
 
         if name.isEmpty, email == nil { return nil }
         return MeetingListParticipant(name: name.isEmpty ? nil : name, email: email)
+    }
+
+    private static func isParticipantPlaceholder(_ line: String) -> Bool {
+        let normalized = line
+            .lowercased()
+            .replacingOccurrences(of: #"[^a-z0-9 ]+"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return [
+            "none",
+            "na",
+            "no attendees",
+            "no attendees captured",
+            "no participants",
+            "no participants captured",
+            "no invitees",
+            "no invitees captured"
+        ].contains(normalized)
     }
 
     private static func firstEmail(in line: String) -> String? {

@@ -50,6 +50,19 @@ struct MeetingListItemMetadataTests {
         #expect(MeetingListItemMetadata.fullParticipantLine(from: meeting) == "Sam Gaddis <sam@runpoint.ai>, Jonathan Layton <jonathan.layton@runpoint.ai>, ops@example.com")
     }
 
+    @Test("participant extraction ignores prose placeholders")
+    func participantExtractionIgnoresProsePlaceholders() {
+        let meeting = makeMeeting(formattedNotes: """
+        ## Attendees
+
+        No attendees captured
+        The discussion focused on pipeline progress.
+        - Sam Gaddis <sam@runpoint.ai>
+        """)
+
+        #expect(MeetingListItemMetadata.fullParticipantLine(from: meeting) == "Sam Gaddis <sam@runpoint.ai>")
+    }
+
     @Test("notes preview skips generic headings and attendee/source sections")
     func notesPreviewSkipsMetadataSections() {
         let meeting = makeMeeting(formattedNotes: """

@@ -96,7 +96,7 @@ enum MeetingPreviewText {
     static func notePlainText(from markdown: String) -> String {
         var lines: [String] = []
         var isInsideFence = false
-        var isInsideSkippedSection = false
+        var skippedSectionHeading: String?
 
         for rawLine in markdown
             .replacingOccurrences(of: "\r\n", with: "\n")
@@ -118,12 +118,15 @@ enum MeetingPreviewText {
 
             if let heading = headingTitle(from: line) {
                 let normalized = MeetingListItemMetadata.normalizedHeading(heading)
-                isInsideSkippedSection = skippedSectionHeadings.contains(normalized)
-                if isInsideSkippedSection || genericNoteHeadings.contains(normalized) {
+                skippedSectionHeading = skippedSectionHeadings.contains(normalized) ? normalized : nil
+                if skippedSectionHeading != nil || genericNoteHeadings.contains(normalized) {
                     continue
                 }
-            } else if isInsideSkippedSection {
-                continue
+            } else if let section = skippedSectionHeading {
+                if isMetadataLine(line, inSection: section) {
+                    continue
+                }
+                skippedSectionHeading = nil
             }
 
             line = line.replacingOccurrences(
@@ -204,6 +207,31 @@ enum MeetingPreviewText {
         "source",
         "source trail"
     ]
+
+    private static func isMetadataLine(_ line: String, inSection section: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stripped = trimmed
+            .replacingOccurrences(of: #"^\s*(?:[-+*]|\d+[.)])\s+"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"^\s*\[[ xX]\]\s+"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = stripped.lowercased()
+
+        if ["none", "n/a", "no attendees", "no attendees captured", "no participants", "no invitees"].contains(normalized) {
+            return true
+        }
+
+        if section == "source" || section == "source trail" {
+            return trimmed.range(of: #"^\s*(?:[-+*]|\d+[.)])\s+"#, options: .regularExpression) != nil ||
+                normalized.contains("granola") ||
+                normalized.contains("calendar event") ||
+                normalized.contains("source") ||
+                normalized.contains("http://") ||
+                normalized.contains("https://")
+        }
+
+        return trimmed.range(of: #"^\s*(?:[-+*]|\d+[.)])\s+"#, options: .regularExpression) != nil ||
+            stripped.range(of: #"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
 
     private static func stripMarkdownDelimiters(from text: String) -> String {
         var result = text
