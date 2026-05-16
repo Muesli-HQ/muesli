@@ -20,6 +20,10 @@ private enum DictationOutputMode {
     }
 }
 
+private enum DictationAudioRouteTiming {
+    static let stabilizationDelay: TimeInterval = 1.0
+}
+
 struct MeetingResummarizationPlan: Equatable {
     let promptTitle: String
     let persistedTitle: String
@@ -209,6 +213,7 @@ final class MuesliController: NSObject {
     private var dictationStartedAt: Date?
     private var dictationLatencyTraceID: UUID?
     private var dictationLatencyTraceStartedAt: Date?
+    private var dictationAudioRouteStabilizingUntil: Date?
     private var currentDictationOutputMode: DictationOutputMode = .paste
     private var computerUseCommandStartedAt: Date?
     private var computerUseCommandTask: Task<Void, Never>?
@@ -285,13 +290,19 @@ final class MuesliController: NSObject {
         dictationAudioRoutingController.onPreferredInputDeviceChanged = { [weak self] preferredInputDeviceID in
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                self.dictationAudioRouteStabilizingUntil = Date()
+                    .addingTimeInterval(DictationAudioRouteTiming.stabilizationDelay)
+                self.coolDownDictationRecorder(reason: "route-change")
                 if self.dictationState == .preparing {
                     self.primeDictationRecorderForHotkey(
                         reason: "route-change",
                         preferredInputDeviceID: preferredInputDeviceID
                     )
                 } else {
-                    self.syncDictationRecorderWarmup(reason: "route-change")
+                    self.syncDictationRecorderWarmup(
+                        reason: "route-change",
+                        delay: DictationAudioRouteTiming.stabilizationDelay
+                    )
                 }
             }
         }
@@ -4099,14 +4110,18 @@ final class MuesliController: NSObject {
             && !isStoppingMeetingRecording
     }
 
-    private func syncDictationRecorderWarmup(reason: String) {
+    private func coolDownDictationRecorder(reason: String) {
+        recorder.keepsAudioGraphWarm = false
+        let recorder = self.recorder
+        dictationAudioQueue.async {
+            recorder.coolDown()
+            fputs("[dictation-prime] cooled reason=\(reason)\n", stderr)
+        }
+    }
+
+    private func syncDictationRecorderWarmup(reason: String, delay: TimeInterval = 0) {
         guard canPrimeDictationRecorder, selectedBackend.backend != "nemotron" else {
-            recorder.keepsAudioGraphWarm = false
-            let recorder = self.recorder
-            dictationAudioQueue.async {
-                recorder.coolDown()
-                fputs("[dictation-prime] cooled reason=\(reason)\n", stderr)
-            }
+            coolDownDictationRecorder(reason: reason)
             return
         }
 
@@ -4114,6 +4129,9 @@ final class MuesliController: NSObject {
         let recorder = self.recorder
         let preferredInputDeviceID = cachedPreferredDictationInputDeviceID()
         dictationAudioQueue.async { [route = dictationAudioRoutingController.currentRouteDebugDescription()] in
+            if delay > 0 {
+                Thread.sleep(forTimeInterval: delay)
+            }
             do {
                 try recorder.warmUp(preferredInputDeviceID: preferredInputDeviceID)
                 fputs("[dictation-prime] warmed-idle reason=\(reason) \(route)\n", stderr)
@@ -4132,6 +4150,7 @@ final class MuesliController: NSObject {
         guard canPrimeDictationRecorder, selectedBackend.backend != "nemotron" else { return }
         recorder.keepsAudioGraphWarm = true
         let recorder = self.recorder
+        let routeStabilizationDelay = dictationAudioRouteStabilizationDelay()
         markDictationLatency("prime_enqueue:\(reason)")
         let markLatency: @Sendable (String) -> Void = { [weak self] event in
             DispatchQueue.main.async { [weak self] in
@@ -4140,6 +4159,11 @@ final class MuesliController: NSObject {
         }
         dictationAudioQueue.async { [route = dictationAudioRoutingController.currentRouteDebugDescription(), markLatency] in
             do {
+                if routeStabilizationDelay > 0 {
+                    markLatency("route_stabilization_wait_begin:\(reason)")
+                    Thread.sleep(forTimeInterval: routeStabilizationDelay)
+                    markLatency("route_stabilization_wait_end:\(reason)")
+                }
                 markLatency("activation_begin:\(reason)")
                 try recorder.activateWarmEngine(preferredInputDeviceID: preferredInputDeviceID)
                 markLatency("activation_end:\(reason)")
@@ -4149,6 +4173,16 @@ final class MuesliController: NSObject {
                 fputs("[dictation-prime] activation failed reason=\(reason) \(route) error=\(error)\n", stderr)
             }
         }
+    }
+
+    private func dictationAudioRouteStabilizationDelay() -> TimeInterval {
+        guard let stabilizingUntil = dictationAudioRouteStabilizingUntil else { return 0 }
+        let delay = stabilizingUntil.timeIntervalSinceNow
+        if delay <= 0 {
+            dictationAudioRouteStabilizingUntil = nil
+            return 0
+        }
+        return delay
     }
 
     private func beginDictationLatencyTrace(reason: String) {
@@ -4260,6 +4294,7 @@ final class MuesliController: NSObject {
     ) {
         let recorder = self.recorder
         let tracker = dictationAudioSessionTracker
+        let routeStabilizationDelay = dictationAudioRouteStabilizationDelay()
         let markLatency: @Sendable (String) -> Void = { [weak self] event in
             DispatchQueue.main.async { [weak self] in
                 self?.markDictationLatency(event)
@@ -4269,6 +4304,11 @@ final class MuesliController: NSObject {
             guard tracker.isCurrent(sessionID) else { return }
             recorder.preferredInputDeviceID = preferredInputDeviceID
             do {
+                if routeStabilizationDelay > 0 {
+                    markLatency("route_stabilization_wait_begin:prepare")
+                    Thread.sleep(forTimeInterval: routeStabilizationDelay)
+                    markLatency("route_stabilization_wait_end:prepare")
+                }
                 markLatency("prepare_begin")
                 try recorder.prepare()
                 markLatency("prepare_end")

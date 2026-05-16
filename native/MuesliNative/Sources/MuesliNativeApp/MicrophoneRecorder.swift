@@ -72,7 +72,12 @@ final class MicrophoneRecorder: @unchecked Sendable {
             state.latestPowerDB = -160
             state.hasReceivedFirstAudioBuffer = false
         }
-        try engine.start()
+        do {
+            try engine.start()
+        } catch {
+            stopWarmGraphLocked()
+            throw error
+        }
         fputs(
             "[mic-recorder] warm engine activated preferredInput=\(preferredInputDeviceID.map(String.init) ?? "default")\n",
             stderr
@@ -170,6 +175,7 @@ final class MicrophoneRecorder: @unchecked Sendable {
                 state.isCapturing = false
                 state.latestPowerDB = -160
             }
+            stopWarmGraphLocked()
             throw error
         }
     }
