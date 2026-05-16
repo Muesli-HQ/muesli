@@ -213,8 +213,7 @@ final class FloatingIndicatorController: NSObject {
         recordingWaveformMode = .waiting
         guard state == .recording else { return }
         if let panel {
-            setupWaveformBars(in: panel.frame.size)
-            startWaveformAnimation(mode: .waiting)
+            ensureWaveformAnimation(in: panel.frame.size, mode: .waiting)
         }
     }
 
@@ -225,8 +224,7 @@ final class FloatingIndicatorController: NSObject {
             return
         }
         if let panel {
-            setupWaveformBars(in: panel.frame.size)
-            startWaveformAnimation(mode: .level)
+            ensureWaveformAnimation(in: panel.frame.size, mode: .level)
         }
     }
 
@@ -277,7 +275,10 @@ final class FloatingIndicatorController: NSObject {
         }
         guard let panel, let contentView, let iconLabel, let textLabel else { return }
 
-        if (previousState == .recording || previousState == .preparing) && state != previousState {
+        let preservesWaveformAcrossTransition = previousState == .preparing && state == .recording
+        if (previousState == .recording || previousState == .preparing)
+            && state != previousState
+            && !preservesWaveformAcrossTransition {
             stopWaveformAnimation()
         }
 
@@ -365,8 +366,7 @@ final class FloatingIndicatorController: NSObject {
 
         switch state {
         case .recording:
-            setupWaveformBars(in: targetFrame.size)
-            startWaveformAnimation(mode: recordingWaveformMode)
+            ensureWaveformAnimation(in: targetFrame.size, mode: recordingWaveformMode)
             addStopLayer(in: targetFrame.size)
         case .transcribing:
             if #available(macOS 15, *) {
@@ -376,8 +376,7 @@ final class FloatingIndicatorController: NSObject {
                 )
             }
         case .preparing:
-            setupWaveformBars(in: targetFrame.size)
-            startWaveformAnimation(mode: .waiting)
+            ensureWaveformAnimation(in: targetFrame.size, mode: .waiting)
         default:
             break
         }
@@ -736,6 +735,43 @@ final class FloatingIndicatorController: NSObject {
             layer.addSublayer(bar)
             barLayers.append(bar)
         }
+    }
+
+    private func updateWaveformBarsLayout(in frameSize: NSSize) {
+        guard !barLayers.isEmpty else { return }
+        let barWidth: CGFloat = 3
+        let barSpacing: CGFloat = 3
+        let totalWidth = CGFloat(barLayers.count) * barWidth + CGFloat(max(0, barLayers.count - 1)) * barSpacing
+        let startX = (frameSize.width - totalWidth) / 2
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for (i, bar) in barLayers.enumerated() {
+            var frame = bar.frame
+            frame.origin.x = startX + CGFloat(i) * (barWidth + barSpacing)
+            frame.origin.y = (frameSize.height - frame.height) / 2
+            frame.size.width = barWidth
+            bar.frame = frame
+            bar.cornerRadius = barWidth / 2
+        }
+        CATransaction.commit()
+    }
+
+    private func ensureWaveformAnimation(in frameSize: NSSize, mode: WaveformAnimationMode) {
+        if barLayers.isEmpty {
+            setupWaveformBars(in: frameSize)
+        } else {
+            updateWaveformBarsLayout(in: frameSize)
+        }
+        setWaveformAnimationMode(mode)
+        if amplitudeTimer == nil {
+            startWaveformAnimation(mode: mode)
+        }
+    }
+
+    private func setWaveformAnimationMode(_ mode: WaveformAnimationMode) {
+        guard waveformAnimationMode != mode else { return }
+        waveformAnimationMode = mode
+        waveformAnimationStartedAt = Date()
     }
 
     private func startWaveformAnimation(mode: WaveformAnimationMode) {

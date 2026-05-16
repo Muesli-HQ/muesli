@@ -67,7 +67,9 @@ final class HotkeyMonitor {
     func configureTriggerThreshold(milliseconds: Int) {
         prepareDelay = HotkeyTriggerTiming.prepareDelay(forThresholdMilliseconds: milliseconds)
         startDelay = HotkeyTriggerTiming.startDelay(forThresholdMilliseconds: milliseconds)
-        restartIfRunning()
+        if isRunning && !targetKeyDown && !armed && !prepared && !active && !toggleActive {
+            restart()
+        }
     }
 
     func start() {

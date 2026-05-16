@@ -81,8 +81,13 @@ final class AudioDuckingController: AudioDuckingManaging {
         queue.async { [self] in
             self.restoreWorkItem?.cancel()
             self.restoreWorkItem = nil
-            self.duckingEnabledForSession = enabled
-            guard enabled, self.shouldDuckCurrentOutput() else { return }
+            guard enabled else {
+                self.duckingEnabledForSession = false
+                self.restoreLocked()
+                return
+            }
+            self.duckingEnabledForSession = true
+            guard self.shouldDuckCurrentOutput() else { return }
             self.duckCurrentDefaultDevice()
         }
     }

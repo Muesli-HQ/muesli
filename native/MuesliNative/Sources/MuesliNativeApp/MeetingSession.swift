@@ -757,11 +757,6 @@ final class MeetingSession {
 
             let floatSamples = rawSamples.map { Float($0) / 32767.0 }
 
-            // VAD always sees raw audio for reliable speech boundary detection
-            if let vadController = self.vadController {
-                vadController.processAudio(floatSamples)
-            }
-
             // AEC: clean mic using position-aligned system reference
             let cleanedFloat = self.neuralAec.processStreamingMic(floatSamples)
             if !cleanedFloat.isEmpty {
@@ -769,6 +764,12 @@ final class MeetingSession {
                     Int16(max(-1.0, min(1.0, sample)) * 32767)
                 }
                 self.rawMicChunkRecorder?.append(cleanedInt16)
+            }
+
+            // VAD sees raw audio, but only after the cleaned samples for this
+            // buffer have been appended so boundary rotation stays ordered.
+            if let vadController = self.vadController {
+                vadController.processAudio(floatSamples)
             }
         }
     }

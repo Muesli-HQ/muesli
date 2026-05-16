@@ -4015,16 +4015,15 @@ final class MuesliController: NSObject {
             beginDictationLatencyTrace(reason: "prepare")
         }
         markDictationLatency("prepare_requested")
+        guard selectedBackend.backend != "nemotron" else {
+            setState(.idle)
+            meetingMonitor.resumeAfterCooldown()
+            meetingMonitor.refreshState()
+            return
+        }
         meetingMonitor.suppressWhileActive()
         meetingMonitor.refreshState()
         setState(.preparing)
-        guard selectedBackend.backend != "nemotron" else {
-            return
-        }
-        dictationAudioSessionManager.beginRecording(
-            mode: "hold-prepare",
-            duckingEnabled: config.muteSystemAudioDuringDictation
-        )
     }
 
     private func handleArm() {
@@ -4034,6 +4033,8 @@ final class MuesliController: NSObject {
         }
         setState(.preparing)
         if selectedBackend.backend != "nemotron" {
+            meetingMonitor.suppressWhileActive()
+            meetingMonitor.refreshState()
             dictationAudioSessionManager.arm(
                 source: "hotkey_arm",
                 duckingEnabled: config.muteSystemAudioDuringDictation
@@ -4256,6 +4257,9 @@ final class MuesliController: NSObject {
             dictationAudioSessionManager.cancel(reason: "nemotron-hold-blocked")
             fputs("[muesli-native] hold-to-talk blocked for Nemotron, showing warning\n", stderr)
             indicator.showWarning("Double-tap for Nemotron handsfree mode", icon: "⚡")
+            setState(.idle)
+            meetingMonitor.resumeAfterCooldown()
+            meetingMonitor.refreshState()
             finishDictationLatencyTrace("nemotron_hold_blocked")
             return
         }

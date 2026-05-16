@@ -32,6 +32,7 @@ final class MicrophoneRecorder: @unchecked Sendable {
     private let lifecycleLock = NSRecursiveLock()
     private let writerQueue = DispatchQueue(label: "com.muesli.microphone-recorder-writer")
     private let timeoutQueue = DispatchQueue(label: "com.muesli.microphone-recorder-timeout")
+    private let tapCallbackGroup = DispatchGroup()
     private var isPrepared = false
     private var isRunning = false
     private var isGraphPrepared = false
@@ -209,6 +210,7 @@ final class MicrophoneRecorder: @unchecked Sendable {
         }
         isPrepared = false
         engine.stop()
+        tapCallbackGroup.wait()
         waitForPendingWrites()
         if keepsAudioGraphWarm {
             lock.withLock { $0.latestPowerDB = -160 }
@@ -258,6 +260,7 @@ final class MicrophoneRecorder: @unchecked Sendable {
             return old
         }
         engine.stop()
+        tapCallbackGroup.wait()
         waitForPendingWrites()
         state.fileHandle?.closeFile()
         if let url = state.fileURL {
@@ -284,6 +287,8 @@ final class MicrophoneRecorder: @unchecked Sendable {
             return true
         }
         guard shouldCapture else { return }
+        tapCallbackGroup.enter()
+        defer { tapCallbackGroup.leave() }
 
         let monoBuffer: AVAudioPCMBuffer
         if let converter {
