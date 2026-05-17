@@ -57,6 +57,8 @@ final class DictationAudioSessionManager: @unchecked Sendable {
         let debugDescription: String
 
         var shouldDuck: Bool {
+            // Unknown routes are ducked to avoid speaker bleed during route
+            // transitions. Lifecycle sounds separately avoid unknown outputs.
             routeKind != .headphoneLike
         }
     }
@@ -177,12 +179,19 @@ final class DictationAudioSessionManager: @unchecked Sendable {
             self.emit(.acquiringAudio(sessionID))
             self.emitLatency("threshold_met:\(mode)")
             if case .armed = previousState {
+                let armedRouteSnapshot = self.routeSnapshot
+                // arm() already refreshed the preferred input; keep threshold
+                // transition on the cached hotkey path.
                 self.routeSnapshot = self.makeRouteSnapshot(refreshInput: false)
                 self.emitLatency("route_snapshot_cached:\(mode) \(self.routeSnapshot.debugDescription)")
+                if armedRouteSnapshot.routeKind != self.routeSnapshot.routeKind
+                    || armedRouteSnapshot.preferredInputDeviceID != self.routeSnapshot.preferredInputDeviceID {
+                    self.beginSessionAudioControls(duckingEnabled: duckingEnabled, mediaPauseEnabled: mediaPauseEnabled)
+                }
             } else {
                 self.routeSnapshot = self.makeRouteSnapshot(refreshInput: true)
+                self.beginSessionAudioControls(duckingEnabled: duckingEnabled, mediaPauseEnabled: mediaPauseEnabled)
             }
-            self.beginSessionAudioControls(duckingEnabled: duckingEnabled, mediaPauseEnabled: mediaPauseEnabled)
             self.duckingController.ensureCurrentDefaultDucked()
             self.recorder.preferredInputDeviceID = self.routeSnapshot.preferredInputDeviceID
             self.recorder.keepsAudioGraphWarm = true

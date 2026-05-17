@@ -177,9 +177,7 @@ final class AudioDuckingController: AudioDuckingManaging {
         guard isRestorePending else { return }
         restoreGeneration += 1
         isRestorePending = false
-        let completions = restoreCompletions
         restoreCompletions.removeAll()
-        completions.forEach { $0() }
     }
 
     private func scheduleRestoreAfterCodecStabilizationLocked(generation: Int, deadline: Date) {

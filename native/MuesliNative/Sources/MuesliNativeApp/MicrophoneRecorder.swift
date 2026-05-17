@@ -295,6 +295,9 @@ final class MicrophoneRecorder: @unchecked Sendable {
         targetFormat: AVAudioFormat
     ) {
         let capturedAt = Date()
+        tapCallbackGroup.enter()
+        defer { tapCallbackGroup.leave() }
+
         let shouldCapture = lock.withLock { state -> Bool in
             guard state.isCapturing, !state.isPaused else {
                 state.latestPowerDB = -160
@@ -303,8 +306,6 @@ final class MicrophoneRecorder: @unchecked Sendable {
             return true
         }
         guard shouldCapture else { return }
-        tapCallbackGroup.enter()
-        defer { tapCallbackGroup.leave() }
 
         let monoBuffer: AVAudioPCMBuffer
         if let converter {

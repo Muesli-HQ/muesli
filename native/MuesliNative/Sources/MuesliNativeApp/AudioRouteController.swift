@@ -104,10 +104,12 @@ enum AudioRouteClassifier {
     private static func isLikelyPersonalWiredOutput(_ device: AudioOutputDeviceDescription) -> Bool {
         guard let transportType = device.transportType else { return false }
         switch transportType {
-        case kAudioDeviceTransportTypeBuiltIn,
-             kAudioDeviceTransportTypeUSB,
+        case kAudioDeviceTransportTypeUSB,
              kAudioDeviceTransportTypeThunderbolt:
-            return true
+            // Missing terminal metadata leaves USB/TB ambiguous. Only
+            // bidirectional devices can plausibly be headsets; pure outputs
+            // stay speaker-like so ducking remains available.
+            return device.hasInputStreams
         default:
             return false
         }

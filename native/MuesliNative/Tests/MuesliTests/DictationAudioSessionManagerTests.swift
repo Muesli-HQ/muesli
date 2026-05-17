@@ -325,6 +325,20 @@ struct DictationAudioSessionManagerTests {
         ])
     }
 
+    @Test("begin recording after arm does not restart audio controls")
+    func beginRecordingAfterArmDoesNotRestartAudioControls() {
+        let harness = Harness(routeKind: .speakerLike)
+
+        harness.manager.arm(source: "hotkey", duckingEnabled: true, mediaPauseEnabled: true)
+        harness.wait()
+        harness.manager.beginRecording(mode: "hold-start", duckingEnabled: true, mediaPauseEnabled: true)
+        harness.wait()
+
+        #expect(harness.media.beginCalls.count == 1)
+        #expect(harness.ducking.beginCalls == [true])
+        #expect(harness.ducking.ensureCalls == 1)
+    }
+
     @Test("stop restores media pause state")
     func stopRestoresMediaPauseState() {
         let harness = Harness(routeKind: .speakerLike)
