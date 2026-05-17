@@ -286,6 +286,41 @@ struct AudioDuckingControllerTests {
         ])
     }
 
+    @Test("disabling ducking during pending restore cancels stale completions")
+    func disablingDuckingDuringPendingRestoreCancelsStaleCompletions() {
+        let client = FakeAudioDuckingDeviceClient()
+        client.activityStatus = .active
+        client.defaultDeviceID = 1
+        client.availableDevices = [1]
+        client.muteElementsByDevice[1] = [kAudioObjectPropertyElementMain]
+        client.muteValues[.init(1, kAudioObjectPropertyElementMain)] = false
+        client.sampleRateValues[1] = [48_000, 24_000, 24_000, 24_000]
+
+        let controller = AudioDuckingController(
+            client: client,
+            queue: DispatchQueue(label: "test.audio-ducking.disable-pending"),
+            stabilizationTimeout: 0.05,
+            stabilizationPollInterval: 0.001
+        )
+
+        controller.beginDictationDucking(enabled: true)
+        controller.waitForIdle()
+        var restoreCompletionCount = 0
+        controller.restoreDictationDucking {
+            restoreCompletionCount += 1
+        }
+        controller.beginDictationDucking(enabled: false)
+        Thread.sleep(forTimeInterval: 0.07)
+        controller.waitForIdle()
+
+        #expect(restoreCompletionCount == 0)
+        #expect(client.muteValues[.init(1, kAudioObjectPropertyElementMain)] == false)
+        #expect(client.muteSetCalls == [
+            .init(deviceID: 1, element: kAudioObjectPropertyElementMain, value: true),
+            .init(deviceID: 1, element: kAudioObjectPropertyElementMain, value: false),
+        ])
+    }
+
     @Test("rapid second dictation preserves original volume while restore is pending")
     func rapidSecondDictationPreservesOriginalVolumeWhileRestoreIsPending() {
         let client = FakeAudioDuckingDeviceClient()

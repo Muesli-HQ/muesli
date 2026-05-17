@@ -96,7 +96,8 @@ enum AudioRouteClassifier {
 
     private static func isAmbiguousBluetoothWithoutRouteMetadata(_ device: AudioOutputDeviceDescription) -> Bool {
         guard device.hasOutputStreams, device.hasInputStreams else { return false }
-        guard device.transportType == kAudioDeviceTransportTypeBluetoothLE else { return false }
+        guard device.transportType == kAudioDeviceTransportTypeBluetooth
+            || device.transportType == kAudioDeviceTransportTypeBluetoothLE else { return false }
         return device.outputTerminalTypes.union(device.outputDataSourceKinds).isEmpty
     }
 }

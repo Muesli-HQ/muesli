@@ -69,6 +69,12 @@ final class StreamingDictationController {
         case waitingForStreamState
     }
 
+    private enum StopSetup {
+        case start(UUID)
+        case attached
+        case immediate(String)
+    }
+
     /// Called with the full accumulated transcript so far (on a background thread).
     var onPartialText: ((String) -> Void)?
     var onFailure: ((Error) -> Void)?
@@ -194,42 +200,47 @@ final class StreamingDictationController {
 
     /// Stop recording and finish queued audio off the caller's thread.
     func stop(completion: @escaping (String) -> Void) {
+        let setup = stopLock.withLock { () -> StopSetup in
+            let sessionIDs = bufferLock.withLock {
+                (active: activeSessionID, stopping: stoppingSessionID)
+            }
+            if let activeSessionID = sessionIDs.active {
+                if var stopState {
+                    guard stopState.sessionID == activeSessionID else {
+                        return .immediate(fullTranscript)
+                    }
+                    stopState.completions.append(completion)
+                    self.stopState = stopState
+                    return .attached
+                }
+                stopState = StopState(sessionID: activeSessionID, completions: [completion])
+                bufferLock.withLock {
+                    isActive = false
+                    self.activeSessionID = nil
+                    stoppingSessionID = activeSessionID
+                }
+                return .start(activeSessionID)
+            }
+            if let stoppingSessionID = sessionIDs.stopping {
+                guard var stopState, stopState.sessionID == stoppingSessionID else {
+                    return .immediate(fullTranscript)
+                }
+                stopState.completions.append(completion)
+                self.stopState = stopState
+                return .attached
+            }
+            return .immediate(fullTranscript)
+        }
+
         let sessionID: UUID
-        let sessionIDs = bufferLock.withLock {
-            (active: activeSessionID, stopping: stoppingSessionID)
-        }
-        if let activeSessionID = sessionIDs.active {
-            sessionID = activeSessionID
-        } else if sessionIDs.stopping != nil {
-            let didAttachToStop = stopLock.withLock {
-                guard var stopState else { return false }
-                stopState.completions.append(completion)
-                self.stopState = stopState
-                return true
-            }
-            if !didAttachToStop {
-                completion(fullTranscript)
-            }
+        switch setup {
+        case .start(let id):
+            sessionID = id
+        case .attached:
             return
-        } else {
-            completion(fullTranscript)
+        case .immediate(let transcript):
+            completion(transcript)
             return
-        }
-        let shouldStartStop = stopLock.withLock {
-            if var stopState {
-                guard stopState.sessionID == sessionID else { return false }
-                stopState.completions.append(completion)
-                self.stopState = stopState
-                return false
-            }
-            stopState = StopState(sessionID: sessionID, completions: [completion])
-            return true
-        }
-        guard shouldStartStop else { return }
-        bufferLock.withLock {
-            isActive = false
-            activeSessionID = nil
-            stoppingSessionID = sessionID
         }
 
         if let wavURL = recorder.stop() {

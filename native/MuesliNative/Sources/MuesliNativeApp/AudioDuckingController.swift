@@ -88,6 +88,7 @@ final class AudioDuckingController: AudioDuckingManaging {
     func beginDictationDucking(enabled: Bool) {
         queue.async { [self] in
             guard enabled else {
+                self.cancelPendingRestoreLocked()
                 self.duckingEnabledForSession = false
                 self.restoreLocked(completion: nil)
                 return
