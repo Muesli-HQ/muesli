@@ -60,8 +60,11 @@ final class StreamingDictationController {
     private let queueLock = OSAllocatedUnfairLock()
     private var isDraining = false
     private let drainLock = OSAllocatedUnfairLock()
-    private var isStopping = false
-    private var stopCompletions: [(String) -> Void] = []
+    private struct StopState {
+        let sessionID: UUID
+        var completions: [(String) -> Void]
+    }
+    private var stopState: StopState?
     private let stopLock = OSAllocatedUnfairLock()
     private var fullTranscript = ""
     private var isActive = false
@@ -109,7 +112,7 @@ final class StreamingDictationController {
 
     @discardableResult
     func start() -> Bool {
-        guard stopLock.withLock({ !isStopping }) else { return false }
+        guard stopLock.withLock({ stopState == nil }) else { return false }
         let sessionID = UUID()
         let didStartSession = bufferLock.withLock { () -> Bool in
             guard !isActive else { return false }
@@ -122,9 +125,6 @@ final class StreamingDictationController {
         fullTranscript = ""
         queueLock.withLock {
             chunkQueue.removeAll()
-        }
-        stopLock.withLock {
-            stopCompletions.removeAll()
         }
         streamState = nil
         drainLock.withLock {
@@ -173,8 +173,9 @@ final class StreamingDictationController {
             sessionID = activeSessionID
         } else if sessionIDs.stopping != nil {
             let didAttachToStop = stopLock.withLock {
-                guard isStopping else { return false }
-                stopCompletions.append(completion)
+                guard var stopState else { return false }
+                stopState.completions.append(completion)
+                self.stopState = stopState
                 return true
             }
             if !didAttachToStop {
@@ -186,9 +187,13 @@ final class StreamingDictationController {
             return
         }
         let shouldStartStop = stopLock.withLock {
-            stopCompletions.append(completion)
-            guard !isStopping else { return false }
-            isStopping = true
+            if var stopState {
+                guard stopState.sessionID == sessionID else { return false }
+                stopState.completions.append(completion)
+                self.stopState = stopState
+                return false
+            }
+            stopState = StopState(sessionID: sessionID, completions: [completion])
             return true
         }
         guard shouldStartStop else { return }
@@ -227,13 +232,13 @@ final class StreamingDictationController {
                 timeout: Self.stopStreamStateTimeout
             )
             guard self.isCurrentSession(sessionID) else {
-                self.completeStop(with: self.fullTranscript)
+                self.completeStop(sessionID: sessionID, with: self.fullTranscript)
                 return
             }
             self.startDrainIfNeeded(sessionID: sessionID)
             await self.waitForDrain(sessionID: sessionID, timeout: Self.stopDrainTimeout)
             let transcript = self.finishStoppedSession(sessionID: sessionID)
-            self.completeStop(with: transcript)
+            self.completeStop(sessionID: sessionID, with: transcript)
         }
     }
 
@@ -256,7 +261,7 @@ final class StreamingDictationController {
         }
         streamStateTask?.cancel()
         streamStateTask = nil
-        completeStop(with: fullTranscript)
+        completeStop(sessionID: nil, with: fullTranscript)
         if cancelRecorder {
             recorder.cancel()
         }
@@ -269,11 +274,14 @@ final class StreamingDictationController {
         streamState = nil
     }
 
-    private func completeStop(with transcript: String) {
-        let completions = stopLock.withLock {
-            let completions = stopCompletions
-            stopCompletions.removeAll()
-            isStopping = false
+    private func completeStop(sessionID: UUID?, with transcript: String) {
+        let completions: [(String) -> Void] = stopLock.withLock {
+            guard let state = stopState else { return [] }
+            if let sessionID, state.sessionID != sessionID {
+                return []
+            }
+            stopState = nil
+            let completions = state.completions
             return completions
         }
         for completion in completions {
