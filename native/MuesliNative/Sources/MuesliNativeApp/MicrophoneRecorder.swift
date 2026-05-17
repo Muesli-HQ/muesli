@@ -219,6 +219,9 @@ final class MicrophoneRecorder: @unchecked Sendable {
         }
         isPrepared = false
         engine.stop()
+        // AVAudioEngine.stop() must happen before waiting here: after it returns,
+        // CoreAudio will not enter new tap callbacks, so this wait only drains
+        // callbacks that already reached the dispatch group.
         tapCallbackGroup.wait()
         waitForPendingWrites()
         if keepsAudioGraphWarm {
@@ -269,6 +272,8 @@ final class MicrophoneRecorder: @unchecked Sendable {
             return old
         }
         engine.stop()
+        // See stop(): engine.stop() closes the door on new tap callbacks before
+        // we wait for callbacks that were already in flight.
         tapCallbackGroup.wait()
         waitForPendingWrites()
         state.fileHandle?.closeFile()

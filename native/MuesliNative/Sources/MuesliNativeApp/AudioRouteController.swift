@@ -106,6 +106,7 @@ final class DictationAudioRouteController: DictationAudioRouting {
     private let lock = NSLock()
     private var snapshot = RouteSnapshot()
     private var defaultOutputListener: AudioObjectPropertyListenerBlock?
+    private var defaultInputListener: AudioObjectPropertyListenerBlock?
     var onPreferredInputDeviceChanged: ((AudioObjectID?) -> Void)?
 
     init(
@@ -124,22 +125,37 @@ final class DictationAudioRouteController: DictationAudioRouting {
         )
         if observesDefaultOutputChanges {
             installDefaultOutputListener()
+            installDefaultInputListener()
         }
         refreshRouteCache()
     }
 
     deinit {
-        guard let defaultOutputListener else { return }
-        var address = Self.defaultOutputDeviceAddress()
-        AudioObjectRemovePropertyListenerBlock(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            queue,
-            defaultOutputListener
-        )
+        if let defaultOutputListener {
+            var address = Self.defaultOutputDeviceAddress()
+            AudioObjectRemovePropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject),
+                &address,
+                queue,
+                defaultOutputListener
+            )
+        }
+        if let defaultInputListener {
+            var address = Self.defaultInputDeviceAddress()
+            AudioObjectRemovePropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject),
+                &address,
+                queue,
+                defaultInputListener
+            )
+        }
     }
 
     func refreshRouteCache() {
+        refreshRouteCache(notifyEvenIfPreferredUnchanged: false)
+    }
+
+    private func refreshRouteCache(notifyEvenIfPreferredUnchanged: Bool) {
         queue.async { [weak self] in
             guard let self else { return }
             let next = self.makeRouteSnapshot()
@@ -149,7 +165,7 @@ final class DictationAudioRouteController: DictationAudioRouting {
                 return Self.preferredInputDeviceID(for: previous)
             }
             let preferredInputDeviceID = Self.preferredInputDeviceID(for: next)
-            if previousPreferredInputDeviceID != preferredInputDeviceID {
+            if notifyEvenIfPreferredUnchanged || previousPreferredInputDeviceID != preferredInputDeviceID {
                 self.onPreferredInputDeviceChanged?(preferredInputDeviceID)
             }
         }
@@ -237,9 +253,33 @@ final class DictationAudioRouteController: DictationAudioRouting {
         }
     }
 
+    private func installDefaultInputListener() {
+        var address = Self.defaultInputDeviceAddress()
+        let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            self?.refreshRouteCache(notifyEvenIfPreferredUnchanged: true)
+        }
+        let status = AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            queue,
+            listener
+        )
+        if status == noErr {
+            defaultInputListener = listener
+        }
+    }
+
     private static func defaultOutputDeviceAddress() -> AudioObjectPropertyAddress {
         AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+    }
+
+    private static func defaultInputDeviceAddress() -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )

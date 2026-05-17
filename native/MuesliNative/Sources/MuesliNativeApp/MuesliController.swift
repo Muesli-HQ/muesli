@@ -4130,6 +4130,7 @@ final class MuesliController: NSObject {
                     at: url.deletingLastPathComponent(),
                     withIntermediateDirectories: true
                 )
+                try Self.trimDictationLatencyLogIfNeeded(at: url)
                 let data = Data((line + "\n").utf8)
                 if FileManager.default.fileExists(atPath: url.path) {
                     let handle = try FileHandle(forWritingTo: url)
@@ -4143,6 +4144,20 @@ final class MuesliController: NSObject {
                 fputs("[dictation-latency] failed to append log: \(error)\n", stderr)
             }
         }
+    }
+
+    private nonisolated static func trimDictationLatencyLogIfNeeded(at url: URL) throws {
+        let maxBytes: UInt64 = 2 * 1024 * 1024
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        guard let fileSize = attributes?[.size] as? UInt64,
+              fileSize > maxBytes else { return }
+
+        let data = try Data(contentsOf: url)
+        let keepCount = min(data.count, Int(maxBytes / 2))
+        let tail = data.suffix(keepCount)
+        let newlineIndex = tail.firstIndex(of: UInt8(ascii: "\n"))
+        let trimmed = newlineIndex.map { tail[tail.index(after: $0)...] } ?? tail[...]
+        try Data(trimmed).write(to: url, options: .atomic)
     }
 
     private func finishDictationLatencyTrace(_ event: String) {
@@ -4400,7 +4415,6 @@ final class MuesliController: NSObject {
         }
         markDictationLatency("toggle_start")
         meetingMonitor.suppressWhileActive()
-        let preferredInputDeviceID = cachedPreferredDictationInputDeviceID()
         beginDictationOutput(mode: outputMode)
         dictationStartedAt = nil
         setState(.preparing)
@@ -4408,6 +4422,7 @@ final class MuesliController: NSObject {
         // Nemotron streaming: live text at cursor in handsfree mode too
         if selectedBackend.backend == "nemotron" {
             if #available(macOS 15, *) {
+                let preferredInputDeviceID = dictationAudioRoutingController.preferredInputDeviceIDForDictation()
                 let sessionID = UUID()
                 isNemotronStreaming = true
                 nemotronStreamingSessionID = sessionID
