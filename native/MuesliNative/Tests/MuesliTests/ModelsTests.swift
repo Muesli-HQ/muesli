@@ -420,6 +420,7 @@ struct AppConfigTests {
         #expect(config.enableComputerUsePlanner == true)
         #expect(config.computerUsePlannerModel.isEmpty)
         #expect(config.computerUseTimeoutSeconds == 120)
+        #expect(config.hotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds)
         #expect(config.showFloatingIndicator == true)
         #expect(config.indicatorAnchor == .midTrailing)
         #expect(config.hasCompletedOnboarding == false)
@@ -460,6 +461,7 @@ struct AppConfigTests {
         config.enableComputerUsePlanner = false
         config.computerUsePlannerModel = "gpt-5.4"
         config.computerUseTimeoutSeconds = 180
+        config.hotkeyTriggerThresholdMS = 125
 
         let data = try JSONEncoder().encode(config)
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
@@ -487,6 +489,7 @@ struct AppConfigTests {
         #expect(decoded.enableComputerUsePlanner == false)
         #expect(decoded.computerUsePlannerModel == "gpt-5.4")
         #expect(decoded.computerUseTimeoutSeconds == 180)
+        #expect(decoded.hotkeyTriggerThresholdMS == 125)
     }
 
     @Test("JSON coding keys use snake_case")
@@ -503,6 +506,7 @@ struct AppConfigTests {
         #expect(json["enable_computer_use_planner"] != nil)
         #expect(json["computer_use_planner_model"] != nil)
         #expect(json["computer_use_timeout_seconds"] != nil)
+        #expect(json["hotkey_trigger_threshold_ms"] != nil)
         #expect(json["cohere_language"] != nil)
         #expect(json["meeting_transcription_backend"] != nil)
         #expect(json["meeting_transcription_model"] != nil)
@@ -544,9 +548,106 @@ struct AppConfigTests {
         #expect(config.enableComputerUsePlanner == true)
         #expect(config.computerUsePlannerModel.isEmpty)
         #expect(config.computerUseTimeoutSeconds == 120)
+        #expect(config.hotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds)
         #expect(config.meetingHookEnabled == false)
         #expect(config.meetingHookPath.isEmpty)
         #expect(config.meetingHookTimeoutSeconds == 30)
+    }
+
+    @Test("legacy completed onboarding enables meetings when use case is missing")
+    func legacyCompletedOnboardingEnablesMeetingsWhenUseCaseMissing() throws {
+        let json = """
+        {
+          "has_completed_onboarding": true,
+          "stt_backend": "fluidaudio",
+          "stt_model": "FluidInference/parakeet-tdt-0.6b-v3-coreml"
+        }
+        """
+
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.hasCompletedOnboarding)
+        #expect(config.resolvedOnboardingUseCase == .dictationAndMeetings)
+        #expect(config.resolvedOnboardingUseCase.includesMeetings)
+    }
+
+    @Test("legacy completed onboarding enables meetings when use case is malformed")
+    func legacyCompletedOnboardingEnablesMeetingsWhenUseCaseMalformed() throws {
+        let jsonCases = [
+            """
+            {
+              "has_completed_onboarding": true,
+              "onboarding_use_case": null
+            }
+            """,
+            """
+            {
+              "has_completed_onboarding": true,
+              "onboarding_use_case": 7
+            }
+            """,
+            """
+            {
+              "has_completed_onboarding": true,
+              "onboarding_use_case": "future-meeting-mode"
+            }
+            """
+        ]
+
+        for json in jsonCases {
+            let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+            #expect(config.hasCompletedOnboarding)
+            #expect(config.resolvedOnboardingUseCase == .dictationAndMeetings)
+            #expect(config.resolvedOnboardingUseCase.includesMeetings)
+        }
+    }
+
+    @Test("incomplete onboarding defaults malformed use case to dictation")
+    func incompleteOnboardingDefaultsMalformedUseCaseToDictation() throws {
+        let jsonCases = [
+            """
+            {
+              "has_completed_onboarding": false
+            }
+            """,
+            """
+            {
+              "has_completed_onboarding": false,
+              "onboarding_use_case": null
+            }
+            """,
+            """
+            {
+              "has_completed_onboarding": false,
+              "onboarding_use_case": "future-meeting-mode"
+            }
+            """
+        ]
+
+        for json in jsonCases {
+            let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+            #expect(!config.hasCompletedOnboarding)
+            #expect(config.resolvedOnboardingUseCase == .dictation)
+            #expect(!config.resolvedOnboardingUseCase.includesMeetings)
+        }
+    }
+
+    @Test("explicit completed dictation-only onboarding remains dictation-only")
+    func explicitCompletedDictationOnlyOnboardingRemainsDictationOnly() throws {
+        let json = """
+        {
+          "has_completed_onboarding": true,
+          "onboarding_use_case": "dictation"
+        }
+        """
+
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.hasCompletedOnboarding)
+        #expect(config.resolvedOnboardingUseCase == .dictation)
+        #expect(!config.resolvedOnboardingUseCase.includesMeetings)
     }
 
     @Test("computer use default avoids existing right command dictation hotkey")
@@ -859,6 +960,160 @@ struct HotkeyMonitorTests {
             ) == true
         )
     }
+
+    @Test("trigger threshold derives prepare and start delays")
+    func triggerThresholdTiming() {
+        #expect(HotkeyTriggerTiming.clampedMilliseconds(10) == HotkeyTriggerTiming.minThresholdMilliseconds)
+        #expect(HotkeyTriggerTiming.clampedMilliseconds(2_000) == HotkeyTriggerTiming.maxThresholdMilliseconds)
+        #expect(HotkeyTriggerTiming.startDelay(forThresholdMilliseconds: 250) == 0.25)
+        #expect(HotkeyTriggerTiming.prepareDelay(forThresholdMilliseconds: 250) == 0.15)
+        #expect(HotkeyTriggerTiming.prepareDelay(forThresholdMilliseconds: 100) == 0)
+    }
+
+    @Test("low trigger threshold still allows double-tap toggle")
+    @MainActor
+    func lowTriggerThresholdStillAllowsDoubleTapToggle() async throws {
+        let monitor = HotkeyMonitor(doubleTapWindow: 0.35)
+        monitor.configureTriggerThreshold(milliseconds: 75)
+        var prepareCount = 0
+        var toggleStartCount = 0
+        monitor.onPrepare = {
+            prepareCount += 1
+        }
+        monitor.onToggleStart = {
+            toggleStartCount += 1
+        }
+
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        try await Task.sleep(for: .milliseconds(100))
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+
+        #expect(prepareCount == 0)
+        #expect(toggleStartCount == 1)
+    }
+
+    @Test("low trigger threshold arms immediately but defers audio while double-tap is possible")
+    @MainActor
+    func lowTriggerThresholdArmsImmediatelyButDefersAudio() async throws {
+        let monitor = HotkeyMonitor(doubleTapWindow: 0.35)
+        monitor.configureTriggerThreshold(milliseconds: 75)
+        var armCount = 0
+        var prepareCount = 0
+        var startCount = 0
+        monitor.onArm = {
+            armCount += 1
+        }
+        monitor.onPrepare = {
+            prepareCount += 1
+        }
+        monitor.onStart = {
+            startCount += 1
+        }
+
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        #expect(armCount == 1)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(prepareCount == 0)
+        #expect(startCount == 0)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+    }
+
+    @Test("quick armed tap cancels after double-tap window")
+    @MainActor
+    func quickArmedTapCancelsAfterDoubleTapWindow() async throws {
+        let monitor = HotkeyMonitor(doubleTapWindow: 0.05)
+        monitor.configureTriggerThreshold(milliseconds: 75)
+        var cancelCount = 0
+        monitor.onArm = {}
+        monitor.onCancel = {
+            cancelCount += 1
+        }
+
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        #expect(cancelCount == 0)
+
+        try await Task.sleep(for: .milliseconds(80))
+        #expect(cancelCount == 1)
+    }
+
+    @Test("low trigger threshold starts quickly when double-tap is disabled")
+    @MainActor
+    func lowTriggerThresholdStartsQuicklyWhenDoubleTapDisabled() async throws {
+        let monitor = HotkeyMonitor(doubleTapWindow: 0.35)
+        monitor.configureTriggerThreshold(milliseconds: 75)
+        monitor.doubleTapEnabled = false
+        var startCount = 0
+        monitor.onStart = {
+            startCount += 1
+        }
+
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        try await Task.sleep(for: .milliseconds(100))
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+
+        #expect(startCount == 1)
+    }
+
+    @Test("reconfiguring hotkey during active recording stops cleanly")
+    func configureKeyCodeDuringActiveRecordingStopsCleanly() {
+        let monitor = HotkeyMonitor()
+        var stopCount = 0
+        var cancelCount = 0
+        monitor.onStop = {
+            stopCount += 1
+        }
+        monitor.onCancel = {
+            cancelCount += 1
+        }
+
+        monitor.setHoldRecordingActiveForTests()
+        monitor.configure(keyCode: 56)
+
+        #expect(stopCount == 1)
+        #expect(cancelCount == 0)
+        #expect(monitor.targetKeyCode == 56)
+    }
+
+    @Test("reconfiguring hotkey during pending double tap cancel cancels cleanly")
+    @MainActor
+    func configureKeyCodeDuringPendingDoubleTapCancelCancelsCleanly() async throws {
+        let monitor = HotkeyMonitor(doubleTapWindow: 0.35)
+        monitor.configureTriggerThreshold(milliseconds: 75)
+        var cancelCount = 0
+        monitor.onArm = {}
+        monitor.onCancel = {
+            cancelCount += 1
+        }
+
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        monitor.configure(keyCode: 56)
+        try await Task.sleep(for: .milliseconds(380))
+
+        #expect(cancelCount == 1)
+        #expect(monitor.targetKeyCode == 56)
+    }
+
+    @Test("changing trigger threshold during pending double tap cancel preserves cleanup")
+    @MainActor
+    func configureTriggerThresholdDuringPendingDoubleTapCancelPreservesCleanup() async throws {
+        let monitor = HotkeyMonitor(doubleTapWindow: 0.05)
+        monitor.configureTriggerThreshold(milliseconds: 75)
+        var cancelCount = 0
+        monitor.onArm = {}
+        monitor.onCancel = {
+            cancelCount += 1
+        }
+
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        monitor.configureTriggerThreshold(milliseconds: 125)
+        try await Task.sleep(for: .milliseconds(80))
+
+        #expect(cancelCount == 1)
+    }
 }
 
 @Suite("MeetingResummarizationPolicy")
@@ -1105,6 +1360,18 @@ struct AppConfigAppearanceTests {
         #expect(config.soundEnabled == true)
     }
 
+    @Test("muteSystemAudioDuringDictation defaults to false")
+    func muteSystemAudioDuringDictationDefault() {
+        let config = AppConfig()
+        #expect(config.muteSystemAudioDuringDictation == false)
+    }
+
+    @Test("pauseMediaDuringDictation defaults to false")
+    func pauseMediaDuringDictationDefault() {
+        let config = AppConfig()
+        #expect(config.pauseMediaDuringDictation == false)
+    }
+
     @Test("recordingColorHex defaults to Catppuccin Mocha base")
     func recordingColorHexDefault() {
         let config = AppConfig()
@@ -1118,6 +1385,24 @@ struct AppConfigAppearanceTests {
         let data = try JSONEncoder().encode(config)
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
         #expect(decoded.soundEnabled == false)
+    }
+
+    @Test("muteSystemAudioDuringDictation round-trips through JSON")
+    func muteSystemAudioDuringDictationRoundTrip() throws {
+        var config = AppConfig()
+        config.muteSystemAudioDuringDictation = true
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+        #expect(decoded.muteSystemAudioDuringDictation == true)
+    }
+
+    @Test("pauseMediaDuringDictation round-trips through JSON")
+    func pauseMediaDuringDictationRoundTrip() throws {
+        var config = AppConfig()
+        config.pauseMediaDuringDictation = true
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+        #expect(decoded.pauseMediaDuringDictation == true)
     }
 
     @Test("recordingColorHex round-trips through JSON")
@@ -1136,6 +1421,20 @@ struct AppConfigAppearanceTests {
         #expect(decoded.soundEnabled == true)
     }
 
+    @Test("unknown JSON keys are ignored — muteSystemAudioDuringDictation falls back to default")
+    func muteSystemAudioDuringDictationFallsBackOnMissingKey() throws {
+        let json = Data("{}".utf8)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: json)
+        #expect(decoded.muteSystemAudioDuringDictation == false)
+    }
+
+    @Test("unknown JSON keys are ignored — pauseMediaDuringDictation falls back to default")
+    func pauseMediaDuringDictationFallsBackOnMissingKey() throws {
+        let json = Data("{}".utf8)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: json)
+        #expect(decoded.pauseMediaDuringDictation == false)
+    }
+
     @Test("unknown JSON keys are ignored — recordingColorHex falls back to default")
     func recordingColorHexFallsBackOnMissingKey() throws {
         let json = Data("{}".utf8)
@@ -1150,6 +1449,24 @@ struct AppConfigAppearanceTests {
         let data = try JSONEncoder().encode(config)
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         #expect(json?["sound_enabled"] as? Bool == false)
+    }
+
+    @Test("muteSystemAudioDuringDictation CodingKey is mute_system_audio_during_dictation")
+    func muteSystemAudioDuringDictationCodingKey() throws {
+        var config = AppConfig()
+        config.muteSystemAudioDuringDictation = true
+        let data = try JSONEncoder().encode(config)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        #expect(json?["mute_system_audio_during_dictation"] as? Bool == true)
+    }
+
+    @Test("pauseMediaDuringDictation CodingKey is pause_media_during_dictation")
+    func pauseMediaDuringDictationCodingKey() throws {
+        var config = AppConfig()
+        config.pauseMediaDuringDictation = true
+        let data = try JSONEncoder().encode(config)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        #expect(json?["pause_media_during_dictation"] as? Bool == true)
     }
 
     @Test("recordingColorHex CodingKey is recording_color_hex")

@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import CoreAudio
 @testable import MuesliNativeApp
 
 @Suite("NemotronStreamState")
@@ -67,11 +68,455 @@ struct StreamingDictationControllerTests {
 
     @available(macOS 15, *)
     @Test("stop returns empty string when not started")
-    func stopWithoutStart() {
+    func stopWithoutStart() async {
         let transcriber = NemotronStreamingTranscriber()
         let controller = StreamingDictationController(transcriber: transcriber)
-        let result = controller.stop()
+        let result = await stop(controller)
         #expect(result.isEmpty)
+    }
+
+    @available(macOS 15, *)
+    @Test("failed mic start resets active state")
+    func failedMicStartResetsActiveState() {
+        let transcriber = NemotronStreamingTranscriber()
+        let recorder = FailingStreamingDictationRecorder()
+        let controller = StreamingDictationController(
+            transcriber: transcriber,
+            recorder: recorder
+        )
+
+        #expect(controller.start() == false)
+        #expect(controller.start() == false)
+        #expect(recorder.prepareCalls == 2)
+        #expect(recorder.cancelCalls == 2)
+    }
+
+    @available(macOS 15, *)
+    @Test("stream state failure cancels mic session and permits retry")
+    func streamStateFailureCancelsMicSessionAndPermitsRetry() async {
+        let transcriber = FailingNemotronStreamingTranscriber()
+        let recorder = InspectableStreamingDictationRecorder()
+        let failures = FailureCounter()
+        let controller = StreamingDictationController(
+            transcriber: transcriber,
+            recorder: recorder
+        )
+        controller.onFailure = { _ in
+            failures.increment()
+        }
+
+        #expect(controller.start() == true)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        #expect(transcriber.makeStateCalls == 1)
+        #expect(recorder.prepareCalls == 1)
+        #expect(recorder.startCalls == 1)
+        #expect(recorder.cancelCalls == 1)
+        #expect(failures.value == 1)
+
+        #expect(controller.start() == true)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        #expect(transcriber.makeStateCalls == 2)
+        #expect(recorder.prepareCalls == 2)
+        #expect(recorder.startCalls == 2)
+        #expect(recorder.cancelCalls == 2)
+        #expect(failures.value == 2)
+    }
+
+    @available(macOS 15, *)
+    @Test("start prepares routed input before mic capture")
+    func startPreparesRoutedInputBeforeMicCapture() {
+        let transcriber = FailingNemotronStreamingTranscriber()
+        let recorder = InspectableStreamingDictationRecorder()
+        let controller = StreamingDictationController(
+            transcriber: transcriber,
+            preferredInputDeviceID: 82,
+            recorder: recorder
+        )
+
+        #expect(controller.start() == true)
+        #expect(recorder.preparedPreferredInputDeviceID == 82)
+        #expect(recorder.startedPreferredInputDeviceID == 82)
+        #expect(recorder.prepareCalls == 1)
+        #expect(recorder.startCalls == 1)
+        controller.cancel()
+    }
+
+    @available(macOS 15, *)
+    @Test("stop waits for pending stream state before draining queued audio")
+    func stopWaitsForPendingStreamStateBeforeDrainingQueuedAudio() async {
+        let transcriber = DelayedNemotronStreamingTranscriber()
+        let recorder = InspectableStreamingDictationRecorder()
+        let controller = StreamingDictationController(
+            transcriber: transcriber,
+            recorder: recorder
+        )
+
+        #expect(controller.start() == true)
+        recorder.emit(samples: [Float](repeating: 0.2, count: 8960))
+
+        async let stoppedText = stop(controller)
+        try? await Task.sleep(for: .milliseconds(25))
+        #expect(await transcriber.transcribeCalls == 0)
+
+        await transcriber.releaseState()
+        let text = await stoppedText
+        #expect(text == " hello")
+        #expect(await transcriber.transcribeCalls == 1)
+    }
+
+    @available(macOS 15, *)
+    @Test("concurrent stops share one drain and transcript")
+    func concurrentStopsShareOneDrainAndTranscript() async {
+        let transcriber = DelayedNemotronStreamingTranscriber()
+        let recorder = InspectableStreamingDictationRecorder()
+        let controller = StreamingDictationController(
+            transcriber: transcriber,
+            recorder: recorder
+        )
+
+        #expect(controller.start() == true)
+        recorder.emit(samples: [Float](repeating: 0.2, count: 8960))
+
+        async let firstStop = stop(controller)
+        async let secondStop = stop(controller)
+        try? await Task.sleep(for: .milliseconds(25))
+        #expect(recorder.stopCalls == 1)
+        #expect(await transcriber.transcribeCalls == 0)
+
+        await transcriber.releaseState()
+        let results = await [firstStop, secondStop]
+        #expect(results == [" hello", " hello"])
+        #expect(await transcriber.transcribeCalls == 1)
+    }
+
+    @available(macOS 15, *)
+    @Test("start during stop does not drop pending stop completion")
+    func startDuringStopDoesNotDropPendingStopCompletion() async {
+        let transcriber = DelayedNemotronStreamingTranscriber()
+        let recorder = InspectableStreamingDictationRecorder()
+        let controller = StreamingDictationController(
+            transcriber: transcriber,
+            recorder: recorder
+        )
+
+        #expect(controller.start() == true)
+        recorder.emit(samples: [Float](repeating: 0.2, count: 8960))
+
+        async let stoppedText = stop(controller)
+        try? await Task.sleep(for: .milliseconds(25))
+        #expect(controller.start() == false)
+        #expect(recorder.stopCalls == 1)
+        #expect(recorder.startCalls == 1)
+
+        await transcriber.releaseState()
+        let text = await stoppedText
+        #expect(text == " hello")
+        #expect(controller.start() == true)
+        controller.cancel()
+    }
+
+    @available(macOS 15, *)
+    @Test("stop removes unused recorder WAV output")
+    func stopRemovesUnusedRecorderWavOutput() async throws {
+        let transcriber = DelayedNemotronStreamingTranscriber()
+        let recorder = InspectableStreamingDictationRecorder()
+        let controller = StreamingDictationController(
+            transcriber: transcriber,
+            recorder: recorder
+        )
+        let wavURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("wav")
+        try Data([1, 2, 3]).write(to: wavURL)
+        recorder.stopURL = wavURL
+
+        #expect(controller.start() == true)
+        async let stoppedText = stop(controller)
+        await transcriber.releaseState()
+        _ = await stoppedText
+
+        #expect(!FileManager.default.fileExists(atPath: wavURL.path))
+    }
+
+    @available(macOS 15, *)
+    @Test("chunk transcription failure cancels mic session and permits retry")
+    func chunkTranscriptionFailureCancelsMicSessionAndPermitsRetry() async {
+        let transcriber = ThrowingChunkNemotronStreamingTranscriber()
+        let recorder = InspectableStreamingDictationRecorder()
+        let failures = FailureCounter()
+        let controller = StreamingDictationController(
+            transcriber: transcriber,
+            recorder: recorder
+        )
+        controller.onFailure = { _ in
+            failures.increment()
+        }
+
+        #expect(controller.start() == true)
+        recorder.emit(samples: [Float](repeating: 0.2, count: 8960))
+        try? await Task.sleep(for: .milliseconds(50))
+
+        #expect(await transcriber.transcribeCalls == 1)
+        #expect(recorder.cancelCalls == 1)
+        #expect(failures.value == 1)
+        #expect(controller.start() == true)
+        controller.cancel()
+    }
+
+    @available(macOS 15, *)
+    @Test("stop completes when stream state initialization stalls")
+    func stopCompletesWhenStreamStateInitializationStalls() async {
+        let transcriber = HangingNemotronStreamingTranscriber()
+        let recorder = InspectableStreamingDictationRecorder()
+        let controller = StreamingDictationController(
+            transcriber: transcriber,
+            recorder: recorder,
+            stopStreamStateTimeout: 1.0
+        )
+
+        #expect(controller.start() == true)
+        recorder.emit(samples: [Float](repeating: 0.2, count: 8960))
+
+        let startedAt = Date()
+        let text = await stop(controller)
+        let elapsed = Date().timeIntervalSince(startedAt)
+
+        #expect(text.isEmpty)
+        #expect(elapsed < 2.5)
+    }
+
+    @available(macOS 15, *)
+    @Test("stop completes when stream state initialization ignores cancellation")
+    func stopCompletesWhenStreamStateInitializationIgnoresCancellation() async {
+        let transcriber = CancellationIgnoringNemotronStreamingTranscriber()
+        let recorder = InspectableStreamingDictationRecorder()
+        let controller = StreamingDictationController(
+            transcriber: transcriber,
+            recorder: recorder,
+            stopStreamStateTimeout: 1.0
+        )
+
+        #expect(controller.start() == true)
+        recorder.emit(samples: [Float](repeating: 0.2, count: 8960))
+
+        let startedAt = Date()
+        let text = await stop(controller)
+        let elapsed = Date().timeIntervalSince(startedAt)
+        await transcriber.releaseState()
+
+        #expect(text.isEmpty)
+        #expect(elapsed < 2.5)
+    }
+
+    @available(macOS 15, *)
+    @Test("stop waits for cold stream state and drains final queued chunk")
+    func stopWaitsForColdStreamStateAndDrainsFinalQueuedChunk() async {
+        let transcriber = DelayedNemotronStreamingTranscriber()
+        let recorder = InspectableStreamingDictationRecorder()
+        let controller = StreamingDictationController(
+            transcriber: transcriber,
+            recorder: recorder,
+            stopStreamStateTimeout: 2.0
+        )
+
+        #expect(controller.start() == true)
+        recorder.emit(samples: [Float](repeating: 0.2, count: 8960))
+
+        async let stoppedText = stop(controller)
+        try? await Task.sleep(for: .milliseconds(1_100))
+        await transcriber.releaseState()
+
+        let text = await stoppedText
+        #expect(text == " hello")
+        #expect(await transcriber.transcribeCalls == 1)
+    }
+}
+
+private final class FailingStreamingDictationRecorder: StreamingDictationRecording {
+    var onAudioBuffer: (([Float]) -> Void)?
+    var preferredInputDeviceID: AudioObjectID?
+    var prepareCalls = 0
+    var startCalls = 0
+    var cancelCalls = 0
+
+    func prepare() throws {
+        prepareCalls += 1
+        throw NSError(domain: "FailingStreamingDictationRecorder", code: 1)
+    }
+
+    func start() throws {
+        startCalls += 1
+    }
+
+    func stop() -> URL? {
+        nil
+    }
+
+    func cancel() {
+        cancelCalls += 1
+    }
+}
+
+@available(macOS 15, *)
+private final class FailingNemotronStreamingTranscriber: NemotronStreamingTranscribing {
+    var makeStateCalls = 0
+
+    func makeStreamState() async throws -> NemotronStreamingTranscriber.StreamState {
+        makeStateCalls += 1
+        throw NSError(domain: "FailingNemotronStreamingTranscriber", code: 1)
+    }
+
+    func transcribeChunk(
+        samples: [Float],
+        state: inout NemotronStreamingTranscriber.StreamState
+    ) async throws -> String {
+        ""
+    }
+}
+
+private final class InspectableStreamingDictationRecorder: StreamingDictationRecording {
+    var onAudioBuffer: (([Float]) -> Void)?
+    var preferredInputDeviceID: AudioObjectID?
+    var prepareCalls = 0
+    var startCalls = 0
+    var stopCalls = 0
+    var cancelCalls = 0
+    var preparedPreferredInputDeviceID: AudioObjectID?
+    var startedPreferredInputDeviceID: AudioObjectID?
+    var stopURL: URL?
+
+    func prepare() throws {
+        prepareCalls += 1
+        preparedPreferredInputDeviceID = preferredInputDeviceID
+    }
+
+    func start() throws {
+        startCalls += 1
+        startedPreferredInputDeviceID = preferredInputDeviceID
+    }
+
+    func emit(samples: [Float]) {
+        onAudioBuffer?(samples)
+    }
+
+    func stop() -> URL? {
+        stopCalls += 1
+        return stopURL
+    }
+
+    func cancel() {
+        cancelCalls += 1
+    }
+}
+
+@available(macOS 15, *)
+private actor DelayedNemotronStreamingTranscriber: NemotronStreamingTranscribing {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var released = false
+    private(set) var transcribeCalls = 0
+
+    func makeStreamState() async throws -> NemotronStreamingTranscriber.StreamState {
+        if !released {
+            await withCheckedContinuation { continuation in
+                self.continuation = continuation
+            }
+        }
+        return try await NemotronStreamingTranscriber().makeStreamState()
+    }
+
+    func releaseState() {
+        released = true
+        if let continuation {
+            self.continuation = nil
+            continuation.resume()
+        }
+    }
+
+    func transcribeChunk(
+        samples: [Float],
+        state: inout NemotronStreamingTranscriber.StreamState
+    ) async throws -> String {
+        transcribeCalls += 1
+        return " hello"
+    }
+}
+
+@available(macOS 15, *)
+private actor ThrowingChunkNemotronStreamingTranscriber: NemotronStreamingTranscribing {
+    private(set) var transcribeCalls = 0
+
+    func makeStreamState() async throws -> NemotronStreamingTranscriber.StreamState {
+        try await NemotronStreamingTranscriber().makeStreamState()
+    }
+
+    func transcribeChunk(
+        samples: [Float],
+        state: inout NemotronStreamingTranscriber.StreamState
+    ) async throws -> String {
+        transcribeCalls += 1
+        throw NSError(domain: "ThrowingChunkNemotronStreamingTranscriber", code: 1)
+    }
+}
+
+@available(macOS 15, *)
+private final class HangingNemotronStreamingTranscriber: NemotronStreamingTranscribing {
+    func makeStreamState() async throws -> NemotronStreamingTranscriber.StreamState {
+        while true {
+            try Task.checkCancellation()
+            try await Task.sleep(for: .milliseconds(100))
+        }
+    }
+
+    func transcribeChunk(
+        samples: [Float],
+        state: inout NemotronStreamingTranscriber.StreamState
+    ) async throws -> String {
+        "should not be reached"
+    }
+}
+
+@available(macOS 15, *)
+private actor CancellationIgnoringNemotronStreamingTranscriber: NemotronStreamingTranscribing {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var released = false
+
+    func makeStreamState() async throws -> NemotronStreamingTranscriber.StreamState {
+        if !released {
+            await withCheckedContinuation { continuation in
+                self.continuation = continuation
+            }
+        }
+        return try await NemotronStreamingTranscriber().makeStreamState()
+    }
+
+    func releaseState() {
+        released = true
+        if let continuation {
+            self.continuation = nil
+            continuation.resume()
+        }
+    }
+
+    func transcribeChunk(
+        samples: [Float],
+        state: inout NemotronStreamingTranscriber.StreamState
+    ) async throws -> String {
+        "should not be reached"
+    }
+}
+
+private final class FailureCounter {
+    private let lock = NSLock()
+    private var storage = 0
+
+    var value: Int {
+        lock.withLock { storage }
+    }
+
+    func increment() {
+        lock.withLock {
+            storage += 1
+        }
     }
 }
 
@@ -186,11 +631,11 @@ struct StreamingDictationControllerLifecycleTests {
 
     @available(macOS 15, *)
     @Test("double stop is safe")
-    func doubleStop() {
+    func doubleStop() async {
         let transcriber = NemotronStreamingTranscriber()
         let controller = StreamingDictationController(transcriber: transcriber)
-        let result1 = controller.stop()
-        let result2 = controller.stop()
+        let result1 = await stop(controller)
+        let result2 = await stop(controller)
         #expect(result1.isEmpty)
         #expect(result2.isEmpty)
     }
@@ -202,6 +647,15 @@ struct StreamingDictationControllerLifecycleTests {
         let controller = StreamingDictationController(transcriber: transcriber)
         // warmup should handle errors gracefully
         controller.warmup()
+    }
+}
+
+@available(macOS 15, *)
+private func stop(_ controller: StreamingDictationController) async -> String {
+    await withCheckedContinuation { continuation in
+        controller.stop { text in
+            continuation.resume(returning: text)
+        }
     }
 }
 

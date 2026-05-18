@@ -1,4 +1,5 @@
 import Testing
+import AppKit
 import Foundation
 import MuesliCore
 @testable import MuesliNativeApp
@@ -32,6 +33,34 @@ struct MeetingsNavigationTests {
 
         #expect(appState.meetingsNavigationState == .browser)
         #expect(appState.selectedMeeting == nil)
+    }
+
+    @Test("discard confirmation maps checkbox selections to meeting discard resolutions")
+    func discardConfirmationResolutionMapping() {
+        #expect(
+            MuesliController.discardResolution(
+                for: .alertFirstButtonReturn,
+                deleteManualNotes: nil
+            ) == .discardRecording
+        )
+        #expect(
+            MuesliController.discardResolution(
+                for: .alertFirstButtonReturn,
+                deleteManualNotes: false
+            ) == .keepManualNotes
+        )
+        #expect(
+            MuesliController.discardResolution(
+                for: .alertFirstButtonReturn,
+                deleteManualNotes: true
+            ) == .deleteDraft
+        )
+        #expect(
+            MuesliController.discardResolution(
+                for: .alertSecondButtonReturn,
+                deleteManualNotes: false
+            ) == nil
+        )
     }
 
     @Test("selectedMeeting resolves the selected row only")

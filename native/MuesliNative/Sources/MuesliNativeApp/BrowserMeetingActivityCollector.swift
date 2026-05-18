@@ -9,20 +9,47 @@ struct RunningAppSnapshot: Sendable {
     let isActive: Bool
 }
 
+// Not thread-safe; MeetingSignalCollector owns this collector from a single actor context.
 final class BrowserMeetingActivityCollector {
     private let browserBundleIDs = Set(MeetingCandidateResolver.browserApps.keys)
-    private let cachedMeetingTTL: TimeInterval = 8
+    private let cachedMeetingTTL: TimeInterval
+    private let focusedDocumentURLProvider: ((RunningAppSnapshot) -> String?)?
+    private let activeBrowserURLProvider: ((String) -> String?)?
     private var cachedMeetings: [String: CachedBrowserMeeting] = [:]
 
-    func collect(runningApps: [RunningAppSnapshot]) async -> [BrowserMeetingContext] {
-        let now = Date()
+    init(
+        cachedMeetingTTL: TimeInterval = 30,
+        focusedDocumentURLProvider: ((RunningAppSnapshot) -> String?)? = nil,
+        activeBrowserURLProvider: ((String) -> String?)? = nil
+    ) {
+        self.cachedMeetingTTL = cachedMeetingTTL
+        self.focusedDocumentURLProvider = focusedDocumentURLProvider
+        self.activeBrowserURLProvider = activeBrowserURLProvider
+    }
+
+    func collect(
+        runningApps: [RunningAppSnapshot],
+        refresh: Bool,
+        now: Date = Date(),
+        shouldAttemptAppleScript: (String) -> Bool = { _ in true }
+    ) async -> [BrowserMeetingContext] {
         let browserApps = runningApps.filter { browserBundleIDs.contains($0.bundleID) }
         let runningBrowserIDs = Set(browserApps.map(\.bundleID))
 
+        pruneCache(runningBrowserIDs: runningBrowserIDs, now: now)
+        guard refresh else {
+            return cachedContexts(runningApps: browserApps)
+        }
+
         var liveMeetings: [BrowserMeetingContext] = []
         for app in browserApps {
-            guard let normalized = await normalizedFocusedURL(for: app) else {
-                if app.isActive {
+            let probeResult = await probeFocusedMeetingURL(
+                for: app,
+                shouldAttemptAppleScript: shouldAttemptAppleScript
+            )
+
+            guard case .meeting(let normalized) = probeResult else {
+                if case .noMeeting = probeResult {
                     cachedMeetings.removeValue(forKey: app.bundleID)
                 }
                 continue
@@ -41,43 +68,67 @@ final class BrowserMeetingActivityCollector {
             liveMeetings.append(context)
         }
 
-        let liveBundleIDs = Set(liveMeetings.map(\.bundleID))
-        cachedMeetings = cachedMeetings.filter { bundleID, cached in
-            runningBrowserIDs.contains(bundleID) && now.timeIntervalSince(cached.observedAt) <= cachedMeetingTTL
-        }
-
-        let cachedOnlyMeetings = cachedMeetings.values
-            .filter { !liveBundleIDs.contains($0.context.bundleID) }
-            .map { cached in
-                BrowserMeetingContext(
-                    bundleID: cached.context.bundleID,
-                    appName: cached.context.appName,
-                    pid: cached.context.pid,
-                    url: cached.context.url,
-                    normalizedID: cached.context.normalizedID,
-                    platform: cached.context.platform,
-                    isFocused: false
-                )
-            }
-
-        return liveMeetings + cachedOnlyMeetings
+        // Refresh passes intentionally return only fresh probe results. Skipped
+        // probes preserve cache entries for later non-refresh passes.
+        return liveMeetings
     }
 
-    private func normalizedFocusedURL(for app: RunningAppSnapshot) async -> NormalizedMeetingURL? {
-        if let normalized = normalizedAXDocumentURL(for: app) {
-            return normalized
+    private func probeFocusedMeetingURL(
+        for app: RunningAppSnapshot,
+        shouldAttemptAppleScript: (String) -> Bool
+    ) async -> BrowserMeetingURLProbeResult {
+        if let focusedDocumentURLProvider {
+            guard let rawURL = focusedDocumentURLProvider(app) else {
+                return .noMeeting
+            }
+            return MeetingURLNormalizer.normalize(rawURL).map(BrowserMeetingURLProbeResult.meeting) ?? .noMeeting
+        }
+
+        if let rawURL = axDocumentURL(for: app) {
+            return MeetingURLNormalizer.normalize(rawURL).map(BrowserMeetingURLProbeResult.meeting) ?? .noMeeting
         }
 
         // Query the browser's active tab even after another app/overlay becomes
         // frontmost. Strict URL normalization plus resolver media checks keep
         // background meeting tabs from prompting by themselves.
-        guard let url = await activeBrowserURLViaAppleScript(bundleID: app.bundleID) else {
-            return nil
+        guard shouldAttemptAppleScript(app.bundleID) else {
+            return .skipped
         }
-        return MeetingURLNormalizer.normalize(url)
+        guard let url = await activeBrowserURLViaAppleScript(bundleID: app.bundleID) else {
+            return .noMeeting
+        }
+        return MeetingURLNormalizer.normalize(url).map(BrowserMeetingURLProbeResult.meeting) ?? .noMeeting
     }
 
-    private func normalizedAXDocumentURL(for app: RunningAppSnapshot) -> NormalizedMeetingURL? {
+    private func pruneCache(runningBrowserIDs: Set<String>, now: Date) {
+        cachedMeetings = cachedMeetings.filter { bundleID, cached in
+            runningBrowserIDs.contains(bundleID) && now.timeIntervalSince(cached.observedAt) <= cachedMeetingTTL
+        }
+    }
+
+    private func cachedContexts(runningApps: [RunningAppSnapshot]) -> [BrowserMeetingContext] {
+        cachedMeetings.values.map { cached in
+            context(cached.context, runningApps: runningApps)
+        }
+    }
+
+    private func context(
+        _ cached: BrowserMeetingContext,
+        runningApps: [RunningAppSnapshot]
+    ) -> BrowserMeetingContext {
+        let app = runningApps.first { $0.bundleID == cached.bundleID }
+        return BrowserMeetingContext(
+            bundleID: cached.bundleID,
+            appName: app?.appName ?? cached.appName,
+            pid: app?.processIdentifier ?? cached.pid,
+            url: cached.url,
+            normalizedID: cached.normalizedID,
+            platform: cached.platform,
+            isFocused: app?.isActive ?? false
+        )
+    }
+
+    private func axDocumentURL(for app: RunningAppSnapshot) -> String? {
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
         var windowRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &windowRef) == .success,
@@ -93,23 +144,41 @@ final class BrowserMeetingActivityCollector {
             return nil
         }
 
-        return MeetingURLNormalizer.normalize(rawURL)
+        return rawURL
     }
 
-    @MainActor
-    private func activeBrowserURLViaAppleScript(bundleID: String) -> String? {
-        let source: String
+    private func activeBrowserURLViaAppleScript(bundleID: String) async -> String? {
+        if let activeBrowserURLProvider {
+            return activeBrowserURLProvider(bundleID)
+        }
+
+        guard let source = activeBrowserURLAppleScriptSource(bundleID: bundleID) else {
+            return nil
+        }
+
+        return await Task.detached(priority: .utility) {
+            var errorInfo: NSDictionary?
+            guard let output = NSAppleScript(source: source)?.executeAndReturnError(&errorInfo).stringValue,
+                  !output.isEmpty else {
+                return nil
+            }
+            return output
+        }.value
+    }
+
+    private func activeBrowserURLAppleScriptSource(bundleID: String) -> String? {
+        let escapedBundleID = bundleID.replacingOccurrences(of: "\"", with: "\\\"")
         switch bundleID {
         case "com.apple.Safari":
-            source = """
-            tell application id "\(bundleID)"
+            return """
+            tell application id "\(escapedBundleID)"
                 if (count of windows) is 0 then return ""
                 return URL of current tab of front window
             end tell
             """
         case "com.google.Chrome", "com.brave.Browser", "company.thebrowser.Browser", "com.microsoft.edgemac":
-            source = """
-            tell application id "\(bundleID)"
+            return """
+            tell application id "\(escapedBundleID)"
                 if (count of windows) is 0 then return ""
                 return URL of active tab of front window
             end tell
@@ -117,14 +186,13 @@ final class BrowserMeetingActivityCollector {
         default:
             return nil
         }
-
-        var errorInfo: NSDictionary?
-        guard let output = NSAppleScript(source: source)?.executeAndReturnError(&errorInfo).stringValue,
-              !output.isEmpty else {
-            return nil
-        }
-        return output
     }
+}
+
+private enum BrowserMeetingURLProbeResult {
+    case meeting(NormalizedMeetingURL)
+    case noMeeting
+    case skipped
 }
 
 private struct CachedBrowserMeeting {

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/muesli_app_icon.png" alt="Muesli" width="128" height="128" />
+  <img src="assets/muesli-readme-og.jpg" alt="Muesli - Speech that is free, Speech that is yours" width="900" />
 </p>
 
 <h1 align="center">Muesli</h1>

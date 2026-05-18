@@ -85,6 +85,8 @@ final class AppState {
     // Live status
     var isMeetingRecording: Bool = false
     var isMeetingRecordingPaused: Bool = false
+    var isMeetingStarting: Bool = false
+    var meetingStartStatus: String?
     var dictationState: DictationState = .idle
     var isVoiceNoteRecording: Bool = false
     var isChatGPTAuthenticated: Bool = false
