@@ -623,6 +623,7 @@ struct AppConfig: Codable {
     var meetingRecordingSavePolicy: MeetingRecordingSavePolicy = .never
     var darkMode: Bool = true
     var enableDoubleTapDictation: Bool = true
+    var hotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
     var launchAtLogin: Bool = false
     var openDashboardOnLaunch: Bool = true
     var showFloatingIndicator: Bool = true
@@ -653,6 +654,8 @@ struct AppConfig: Codable {
     ]
     var folderOrder: [Int64] = []
     var soundEnabled: Bool = true
+    var pauseMediaDuringDictation: Bool = false
+    var muteSystemAudioDuringDictation: Bool = false
     var recordingColorHex: String = "1e1e2e"   // Catppuccin Mocha base, without #
     var menuBarIcon: String = "muesli"
     var showNextMeetingInMenuBar: Bool = true
@@ -694,6 +697,7 @@ struct AppConfig: Codable {
         case meetingRecordingSavePolicy = "meeting_recording_save_policy"
         case darkMode = "dark_mode"
         case enableDoubleTapDictation = "enable_double_tap_dictation"
+        case hotkeyTriggerThresholdMS = "hotkey_trigger_threshold_ms"
         case launchAtLogin = "launch_at_login"
         case openDashboardOnLaunch = "open_dashboard_on_launch"
         case showFloatingIndicator = "show_floating_indicator"
@@ -722,6 +726,8 @@ struct AppConfig: Codable {
         case customWords = "custom_words"
         case folderOrder = "folder_order"
         case soundEnabled = "sound_enabled"
+        case pauseMediaDuringDictation = "pause_media_during_dictation"
+        case muteSystemAudioDuringDictation = "mute_system_audio_during_dictation"
         case recordingColorHex = "recording_color_hex"
         case menuBarIcon = "menu_bar_icon"
         case showNextMeetingInMenuBar = "show_next_meeting_in_menu_bar"
@@ -776,6 +782,9 @@ struct AppConfig: Codable {
         meetingRecordingSavePolicy = (try? c.decode(MeetingRecordingSavePolicy.self, forKey: .meetingRecordingSavePolicy)) ?? defaults.meetingRecordingSavePolicy
         darkMode = (try? c.decode(Bool.self, forKey: .darkMode)) ?? defaults.darkMode
         enableDoubleTapDictation = (try? c.decode(Bool.self, forKey: .enableDoubleTapDictation)) ?? defaults.enableDoubleTapDictation
+        hotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(
+            (try? c.decode(Int.self, forKey: .hotkeyTriggerThresholdMS)) ?? defaults.hotkeyTriggerThresholdMS
+        )
         launchAtLogin = (try? c.decode(Bool.self, forKey: .launchAtLogin)) ?? defaults.launchAtLogin
         openDashboardOnLaunch = (try? c.decode(Bool.self, forKey: .openDashboardOnLaunch)) ?? defaults.openDashboardOnLaunch
         showFloatingIndicator = (try? c.decode(Bool.self, forKey: .showFloatingIndicator)) ?? defaults.showFloatingIndicator
@@ -813,6 +822,8 @@ struct AppConfig: Codable {
         customWords = (try? c.decode([CustomWord].self, forKey: .customWords)) ?? defaults.customWords
         folderOrder = (try? c.decode([Int64].self, forKey: .folderOrder)) ?? defaults.folderOrder
         soundEnabled = (try? c.decode(Bool.self, forKey: .soundEnabled)) ?? defaults.soundEnabled
+        pauseMediaDuringDictation = (try? c.decode(Bool.self, forKey: .pauseMediaDuringDictation)) ?? defaults.pauseMediaDuringDictation
+        muteSystemAudioDuringDictation = (try? c.decode(Bool.self, forKey: .muteSystemAudioDuringDictation)) ?? defaults.muteSystemAudioDuringDictation
         recordingColorHex = (try? c.decode(String.self, forKey: .recordingColorHex)) ?? defaults.recordingColorHex
         menuBarIcon = (try? c.decode(String.self, forKey: .menuBarIcon)) ?? defaults.menuBarIcon
         showNextMeetingInMenuBar = (try? c.decode(Bool.self, forKey: .showNextMeetingInMenuBar)) ?? defaults.showNextMeetingInMenuBar

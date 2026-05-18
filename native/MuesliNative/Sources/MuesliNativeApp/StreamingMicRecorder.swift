@@ -1,18 +1,31 @@
 import AVFoundation
+import CoreAudio
 import Foundation
 import os
 
 /// Mic recorder using AVAudioEngine for real-time buffer access.
 /// Used by MeetingSession for VAD-driven chunk rotation (zero-gap file switching).
-final class StreamingMicRecorder {
+protocol StreamingDictationRecording: AnyObject {
+    var onAudioBuffer: (([Float]) -> Void)? { get set }
+    var preferredInputDeviceID: AudioObjectID? { get set }
+
+    func prepare() throws
+    func start() throws
+    func stop() -> URL?
+    func cancel()
+}
+
+final class StreamingMicRecorder: StreamingDictationRecording {
     /// Called with 4096-sample Float chunks (256ms at 16kHz) for VAD processing.
     var onAudioBuffer: (([Float]) -> Void)?
     /// Called with 16-bit PCM mono samples for retained meeting recording.
     var onPCMSamples: (([Int16]) -> Void)?
+    var preferredInputDeviceID: AudioObjectID?
 
     private let engine = AVAudioEngine()
     private let lock = OSAllocatedUnfairLock(initialState: FileState())
     private var isRunning = false
+    private var tapInstalled = false
 
     private struct FileState {
         var fileHandle: FileHandle?
@@ -26,6 +39,12 @@ final class StreamingMicRecorder {
     private static let bufferSize: AVAudioFrameCount = 4096 // 256ms at 16kHz
 
     func prepare() throws {
+        AudioInputDeviceSelection.applyPreferredInputDeviceID(
+            preferredInputDeviceID,
+            to: engine,
+            logPrefix: "streaming-mic"
+        )
+
         let inputNode = engine.inputNode
         let hwFormat = inputNode.outputFormat(forBus: 0)
         guard hwFormat.sampleRate > 0 else {
@@ -37,9 +56,7 @@ final class StreamingMicRecorder {
 
     func start() throws {
         guard !isRunning else { return }
-
-        let fileState = try createNewFile()
-        lock.withLock { $0 = fileState }
+        try prepare()
 
         let inputNode = engine.inputNode
         let hwFormat = inputNode.outputFormat(forBus: 0)
@@ -62,6 +79,9 @@ final class StreamingMicRecorder {
             ? AVAudioConverter(from: hwFormat, to: targetFormat)
             : nil
 
+        let fileState = try createNewFile()
+        lock.withLock { $0 = fileState }
+
         inputNode.installTap(onBus: 0, bufferSize: Self.bufferSize, format: nil) { [weak self] buffer, _ in
             guard let self else { return }
 
@@ -72,7 +92,13 @@ final class StreamingMicRecorder {
                 )
                 guard let converted = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: frameCapacity) else { return }
                 var error: NSError?
+                var didProvideInput = false
                 let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
+                    guard !didProvideInput else {
+                        outStatus.pointee = .noDataNow
+                        return nil
+                    }
+                    didProvideInput = true
                     outStatus.pointee = .haveData
                     return buffer
                 }
@@ -123,9 +149,24 @@ final class StreamingMicRecorder {
             let floats = Array(UnsafeBufferPointer(start: floatData, count: frameCount))
             self.onAudioBuffer?(floats)
         }
+        tapInstalled = true
 
-        try engine.start()
-        isRunning = true
+        do {
+            try engine.start()
+            isRunning = true
+        } catch {
+            removeTapIfNeeded()
+            engine.stop()
+            let state = lock.withLock { state -> FileState in
+                let old = state
+                state = FileState()
+                return old
+            }
+            if let url = state.fileURL {
+                try? FileManager.default.removeItem(at: url)
+            }
+            throw error
+        }
     }
 
     /// Rotate to a new file. Returns the completed WAV URL. No audio gap.
@@ -154,7 +195,7 @@ final class StreamingMicRecorder {
         guard isRunning else { return nil }
         isRunning = false
 
-        engine.inputNode.removeTap(onBus: 0)
+        removeTapIfNeeded()
         engine.stop()
 
         let finalState = lock.withLock { state -> FileState in
@@ -183,7 +224,7 @@ final class StreamingMicRecorder {
 
     func cancel() {
         isRunning = false
-        engine.inputNode.removeTap(onBus: 0)
+        removeTapIfNeeded()
         engine.stop()
         onAudioBuffer = nil
         onPCMSamples = nil
@@ -201,6 +242,12 @@ final class StreamingMicRecorder {
     /// Approximate current power level (dB) from recent samples.
     func currentPower() -> Float {
         lock.withLock { $0.latestPowerDB }
+    }
+
+    private func removeTapIfNeeded() {
+        guard tapInstalled else { return }
+        engine.inputNode.removeTap(onBus: 0)
+        tapInstalled = false
     }
 
     // MARK: - File Management

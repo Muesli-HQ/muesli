@@ -91,7 +91,7 @@ final class MeetingSession {
     private let config: AppConfig
     private let transcriptionCoordinator: TranscriptionCoordinator
     private let systemAudioRecorder: SystemAudioCapturing
-    private let fullSessionMicRecorder = MicrophoneRecorder()
+    private let fullSessionMicRecorder = MeetingMicrophoneRecorder()
     private let neuralAec = MeetingNeuralAec()
 
     /// Streaming mic recorder with real-time buffer access (AVAudioEngine)
@@ -720,14 +720,20 @@ final class MeetingSession {
         if let vadManager {
             let controller = StreamingVadController(vadManager: vadManager)
             controller.onChunkBoundary = { [weak self] in
-                self?.rotateChunk()
+                // Streaming VAD callbacks can arrive off-main; serialize chunk rotation explicitly.
+                self?.chunkRotationQueue.async { [weak self] in
+                    self?.rotateChunkOnQueue()
+                }
             }
             controller.start()
             vadController = controller
 
             let systemController = StreamingVadController(vadManager: vadManager)
             systemController.onChunkBoundary = { [weak self] in
-                self?.rotateSystemChunk()
+                // Streaming VAD callbacks can arrive off-main; serialize chunk rotation explicitly.
+                self?.chunkRotationQueue.async { [weak self] in
+                    self?.rotateSystemChunkOnQueue()
+                }
             }
             systemController.start()
             systemVadController = systemController
@@ -757,11 +763,6 @@ final class MeetingSession {
 
             let floatSamples = rawSamples.map { Float($0) / 32767.0 }
 
-            // VAD always sees raw audio for reliable speech boundary detection
-            if let vadController = self.vadController {
-                vadController.processAudio(floatSamples)
-            }
-
             // AEC: clean mic using position-aligned system reference
             let cleanedFloat = self.neuralAec.processStreamingMic(floatSamples)
             if !cleanedFloat.isEmpty {
@@ -769,6 +770,12 @@ final class MeetingSession {
                     Int16(max(-1.0, min(1.0, sample)) * 32767)
                 }
                 self.rawMicChunkRecorder?.append(cleanedInt16)
+            }
+
+            // VAD sees raw audio, but only after the cleaned samples for this
+            // buffer have been appended so boundary rotation stays ordered.
+            if let vadController = self.vadController {
+                vadController.processAudio(floatSamples)
             }
         }
     }
