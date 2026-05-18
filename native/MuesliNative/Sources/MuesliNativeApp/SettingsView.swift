@@ -1978,6 +1978,13 @@ struct SettingsView: View {
             .frame(height: 24)
         } else {
             HStack(spacing: 8) {
+                settingsModelTextField(
+                    currentModel: appState.config.ollamaModel,
+                    placeholder: "Model name",
+                    onChange: { val in controller.updateConfig { $0.ollamaModel = val } }
+                )
+                .layoutPriority(1)
+
                 if let ollamaModelsError {
                     Text(ollamaModelsError)
                         .font(.system(size: 11))
@@ -2019,6 +2026,13 @@ struct SettingsView: View {
             .frame(height: 24)
         } else {
             HStack(spacing: 8) {
+                settingsModelTextField(
+                    currentModel: appState.config.lmStudioModel,
+                    placeholder: "Model name",
+                    onChange: { val in controller.updateConfig { $0.lmStudioModel = val } }
+                )
+                .layoutPriority(1)
+
                 if let lmStudioModelsError {
                     Text(lmStudioModelsError)
                         .font(.system(size: 11))
