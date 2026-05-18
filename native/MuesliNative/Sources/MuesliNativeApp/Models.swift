@@ -638,6 +638,10 @@ struct AppConfig: Codable {
     var ollamaModel: String = "qwen3.5"
     var lmStudioURL: String = "http://localhost:1234"
     var lmStudioModel: String = ""
+    var openAISummaryMaxTokens: Int = 2500
+    var openRouterSummaryMaxTokens: Int = 2500
+    var ollamaSummaryMaxTokens: Int = 2500
+    var lmStudioSummaryMaxTokens: Int = 2500
     var summaryModel: String = ""
     var meetingSummaryModel: String = ""
     var hasCompletedOnboarding: Bool = false
@@ -705,6 +709,10 @@ struct AppConfig: Codable {
         case ollamaModel = "ollama_model"
         case lmStudioURL = "lmstudio_url"
         case lmStudioModel = "lmstudio_model"
+        case openAISummaryMaxTokens = "openai_summary_max_tokens"
+        case openRouterSummaryMaxTokens = "openrouter_summary_max_tokens"
+        case ollamaSummaryMaxTokens = "ollama_summary_max_tokens"
+        case lmStudioSummaryMaxTokens = "lmstudio_summary_max_tokens"
         case summaryModel = "summary_model"
         case meetingSummaryModel = "meeting_summary_model"
         case hasCompletedOnboarding = "has_completed_onboarding"
@@ -784,6 +792,10 @@ struct AppConfig: Codable {
         ollamaModel = (try? c.decode(String.self, forKey: .ollamaModel)) ?? defaults.ollamaModel
         lmStudioURL = (try? c.decode(String.self, forKey: .lmStudioURL)) ?? defaults.lmStudioURL
         lmStudioModel = (try? c.decode(String.self, forKey: .lmStudioModel)) ?? defaults.lmStudioModel
+        openAISummaryMaxTokens = (try? c.decode(Int.self, forKey: .openAISummaryMaxTokens)) ?? defaults.openAISummaryMaxTokens
+        openRouterSummaryMaxTokens = (try? c.decode(Int.self, forKey: .openRouterSummaryMaxTokens)) ?? defaults.openRouterSummaryMaxTokens
+        ollamaSummaryMaxTokens = (try? c.decode(Int.self, forKey: .ollamaSummaryMaxTokens)) ?? defaults.ollamaSummaryMaxTokens
+        lmStudioSummaryMaxTokens = (try? c.decode(Int.self, forKey: .lmStudioSummaryMaxTokens)) ?? defaults.lmStudioSummaryMaxTokens
         summaryModel = (try? c.decode(String.self, forKey: .summaryModel)) ?? defaults.summaryModel
         meetingSummaryModel = (try? c.decode(String.self, forKey: .meetingSummaryModel)) ?? defaults.meetingSummaryModel
         hasCompletedOnboarding = (try? c.decode(Bool.self, forKey: .hasCompletedOnboarding)) ?? defaults.hasCompletedOnboarding

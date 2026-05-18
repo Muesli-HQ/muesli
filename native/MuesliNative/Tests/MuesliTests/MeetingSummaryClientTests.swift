@@ -411,4 +411,12 @@ struct MeetingSummaryClientTests {
 
         #expect(title == nil)
     }
+
+    @Test("emptyResponse error suggests increasing output token limit")
+    func emptyResponseSuggestsTokenLimit() {
+        let error = MeetingSummaryError.emptyResponse(backend: "LM Studio")
+        let description = error.errorDescription ?? ""
+        #expect(description.contains("output token limit"))
+        #expect(description.contains("Settings"))
+    }
 }

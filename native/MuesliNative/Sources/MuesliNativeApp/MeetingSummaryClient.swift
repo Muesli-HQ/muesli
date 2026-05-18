@@ -13,7 +13,7 @@ enum MeetingSummaryError: LocalizedError {
             let statusText = statusCode.map { " Status \($0)." } ?? ""
             return "\(backend) could not generate meeting notes.\(statusText) \(message) The selected model may be unavailable or retired."
         case let .emptyResponse(backend):
-            return "\(backend) returned an empty response while generating meeting notes. The selected model may be unavailable or incompatible."
+            return "\(backend) returned an empty response while generating meeting notes. The selected model may be unavailable or incompatible. If using a reasoning or thinking model, try increasing the output token limit in Settings."
         case let .requestFailed(backend, underlying):
             return "\(backend) could not be reached while generating meeting notes. \(underlying.localizedDescription)"
         }
@@ -31,7 +31,6 @@ enum MeetingSummaryClient {
     private static let defaultOpenRouterModel = "stepfun/step-3.5-flash:free"
     private static let defaultChatGPTModel = "gpt-5.4-mini"
     private static let defaultOllamaModel = "qwen3.5"
-    private static let defaultSummaryMaxOutputTokens = 2500
     private static let ollamaSummaryTimeout: TimeInterval = 300
     private static let ollamaTitleTimeout: TimeInterval = 120
     private static let lmStudioSummaryTimeout: TimeInterval = 300
@@ -310,7 +309,7 @@ enum MeetingSummaryClient {
             ],
             "reasoning": ["effort": "low"],
             "text": ["verbosity": "low"],
-            "max_output_tokens": defaultSummaryMaxOutputTokens,
+            "max_output_tokens": config.openAISummaryMaxTokens,
         ]
 
         var request = URLRequest(url: openAIURL)
@@ -368,7 +367,7 @@ enum MeetingSummaryClient {
                 ["role": "system", "content": instructions],
                 ["role": "user", "content": userPrompt],
             ],
-            "max_tokens": defaultSummaryMaxOutputTokens,
+            "max_tokens": config.openRouterSummaryMaxTokens,
         ]
 
         var request = URLRequest(url: openRouterURL)
@@ -467,7 +466,7 @@ enum MeetingSummaryClient {
                 ["role": "user", "content": userPrompt],
             ],
             "stream": false,
-            "options": ["num_predict": defaultSummaryMaxOutputTokens],
+            "options": ["num_predict": config.ollamaSummaryMaxTokens],
         ]
 
         var request = URLRequest(url: chatURL)
@@ -539,7 +538,7 @@ enum MeetingSummaryClient {
                 ["role": "system", "content": instructions],
                 ["role": "user", "content": userPrompt],
             ],
-            "max_tokens": defaultSummaryMaxOutputTokens,
+            "max_tokens": config.lmStudioSummaryMaxTokens,
         ]
 
         var request = URLRequest(url: chatURL)

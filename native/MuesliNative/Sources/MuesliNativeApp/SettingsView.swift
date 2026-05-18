@@ -574,6 +574,23 @@ struct SettingsView: View {
                             presets: SummaryModelPreset.openAIModels
                         ) { val in controller.updateConfig { $0.openAIModel = val } }
                     }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Max output tokens", controlWidth: meetingControlWidth) {
+                        Stepper(
+                            value: Binding(
+                                get: { max(appState.config.openAISummaryMaxTokens, 100) },
+                                set: { newValue in
+                                    controller.updateConfig { $0.openAISummaryMaxTokens = max(newValue, 100) }
+                                }
+                            ),
+                            in: 100...100000,
+                            step: 500
+                        ) {
+                            Text("\(max(appState.config.openAISummaryMaxTokens, 100))")
+                                .font(MuesliTheme.body())
+                                .foregroundStyle(MuesliTheme.textPrimary)
+                        }
+                    }
                     keyStatusRow(key: appState.config.openAIAPIKey)
                 } else if appState.selectedMeetingSummaryBackend == .ollama {
                     settingsRow("Ollama URL", controlWidth: meetingControlWidth) {
@@ -593,6 +610,23 @@ struct SettingsView: View {
                     settingsRow("Model", controlWidth: meetingControlWidth) {
                         ollamaModelPicker
                     }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Max output tokens", controlWidth: meetingControlWidth) {
+                        Stepper(
+                            value: Binding(
+                                get: { max(appState.config.ollamaSummaryMaxTokens, 100) },
+                                set: { newValue in
+                                    controller.updateConfig { $0.ollamaSummaryMaxTokens = max(newValue, 100) }
+                                }
+                            ),
+                            in: 100...100000,
+                            step: 500
+                        ) {
+                            Text("\(max(appState.config.ollamaSummaryMaxTokens, 100))")
+                                .font(MuesliTheme.body())
+                                .foregroundStyle(MuesliTheme.textPrimary)
+                        }
+                    }
                 } else if appState.selectedMeetingSummaryBackend == .lmStudio {
                     settingsRow("LM Studio URL", controlWidth: meetingControlWidth) {
                         PastableTextField(
@@ -610,6 +644,23 @@ struct SettingsView: View {
                     Divider().background(MuesliTheme.surfaceBorder)
                     settingsRow("Model", controlWidth: meetingControlWidth) {
                         lmStudioModelPicker
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Max output tokens", controlWidth: meetingControlWidth) {
+                        Stepper(
+                            value: Binding(
+                                get: { max(appState.config.lmStudioSummaryMaxTokens, 100) },
+                                set: { newValue in
+                                    controller.updateConfig { $0.lmStudioSummaryMaxTokens = max(newValue, 100) }
+                                }
+                            ),
+                            in: 100...100000,
+                            step: 500
+                        ) {
+                            Text("\(max(appState.config.lmStudioSummaryMaxTokens, 100))")
+                                .font(MuesliTheme.body())
+                                .foregroundStyle(MuesliTheme.textPrimary)
+                        }
                     }
                 } else {
                     settingsRow("API Key", controlWidth: meetingControlWidth) {
@@ -630,6 +681,23 @@ struct SettingsView: View {
                             currentModel: appState.config.openRouterModel,
                             placeholder: "provider/model or openrouter/free"
                         ) { val in controller.updateConfig { $0.openRouterModel = val } }
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Max output tokens", controlWidth: meetingControlWidth) {
+                        Stepper(
+                            value: Binding(
+                                get: { max(appState.config.openRouterSummaryMaxTokens, 100) },
+                                set: { newValue in
+                                    controller.updateConfig { $0.openRouterSummaryMaxTokens = max(newValue, 100) }
+                                }
+                            ),
+                            in: 100...100000,
+                            step: 500
+                        ) {
+                            Text("\(max(appState.config.openRouterSummaryMaxTokens, 100))")
+                                .font(MuesliTheme.body())
+                                .foregroundStyle(MuesliTheme.textPrimary)
+                        }
                     }
                     keyStatusRow(key: appState.config.openRouterAPIKey)
                 }
