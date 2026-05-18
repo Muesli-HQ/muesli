@@ -116,9 +116,11 @@ struct SettingsView: View {
     @State private var openRouterFreeModels: [SummaryModelPreset] = []
     @State private var isLoadingOpenRouterFreeModels = false
     @State private var openRouterFreeModelsError: String?
+    @State private var openRouterModelCaps: [String: Int] = [:]
     @State private var ollamaModels: [String] = []
     @State private var isLoadingOllamaModels = false
     @State private var ollamaModelsError: String?
+    @State private var ollamaModelCaps: [String: Int] = [:]
     @State private var lmStudioModels: [String] = []
     @State private var isLoadingLMStudioModels = false
     @State private var lmStudioModelsError: String?
@@ -575,20 +577,51 @@ struct SettingsView: View {
                         ) { val in controller.updateConfig { $0.openAIModel = val } }
                     }
                     Divider().background(MuesliTheme.surfaceBorder)
-                    settingsRow("Max output tokens", controlWidth: meetingControlWidth) {
-                        Stepper(
-                            value: Binding(
-                                get: { max(appState.config.openAISummaryMaxTokens, 100) },
-                                set: { newValue in
-                                    controller.updateConfig { $0.openAISummaryMaxTokens = max(newValue, 100) }
+                    settingsRow("Thinking budget (tokens)", controlWidth: meetingControlWidth) {
+                        let effectiveMax = effectiveMaxOutputTokens(for: .openAI)
+                        HStack(spacing: 8) {
+                            Slider(
+                                value: Binding(
+                                    get: { Double(min(max(appState.config.openAISummaryMaxTokens, 100), effectiveMax)) },
+                                    set: { newValue in
+                                        controller.updateConfig { $0.openAISummaryMaxTokens = Int(newValue) }
+                                    }
+                                ),
+                                in: 100.0...Double(effectiveMax),
+                                step: 500.0
+                            )
+                            .frame(maxWidth: .infinity)
+
+                            TextField("100", text: Binding(
+                                get: { "\(min(max(appState.config.openAISummaryMaxTokens, 100), effectiveMax))" },
+                                set: { newText in
+                                    if let val = Int(newText.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                                        let clamped = min(max(val, 100), effectiveMax)
+                                        controller.updateConfig { $0.openAISummaryMaxTokens = clamped }
+                                    }
                                 }
-                            ),
-                            in: 100...100000,
-                            step: 500
-                        ) {
-                            Text("\(max(appState.config.openAISummaryMaxTokens, 100))")
-                                .font(MuesliTheme.body())
-                                .foregroundStyle(MuesliTheme.textPrimary)
+                            ))
+                            .textFieldStyle(.plain)
+                            .frame(width: 60)
+                            .font(MuesliTheme.body())
+                            .foregroundStyle(MuesliTheme.textPrimary)
+                            .multilineTextAlignment(.trailing)
+
+                            Button(action: {
+                                controller.updateConfig { $0.openAISummaryMaxTokens = 2500 }
+                            }) {
+                                Image(systemName: "arrow.counterclockwise.circle")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(MuesliTheme.textSecondary)
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Reset to default (2500)")
+                        }
+                        .onChange(of: appState.config.openAIModel) { _, _ in
+                            let newMax = effectiveMaxOutputTokens(for: .openAI)
+                            if appState.config.openAISummaryMaxTokens > newMax {
+                                controller.updateConfig { $0.openAISummaryMaxTokens = newMax }
+                            }
                         }
                     }
                     keyStatusRow(key: appState.config.openAIAPIKey)
@@ -611,20 +644,51 @@ struct SettingsView: View {
                         ollamaModelPicker
                     }
                     Divider().background(MuesliTheme.surfaceBorder)
-                    settingsRow("Max output tokens", controlWidth: meetingControlWidth) {
-                        Stepper(
-                            value: Binding(
-                                get: { max(appState.config.ollamaSummaryMaxTokens, 100) },
-                                set: { newValue in
-                                    controller.updateConfig { $0.ollamaSummaryMaxTokens = max(newValue, 100) }
+                    settingsRow("Thinking budget (tokens)", controlWidth: meetingControlWidth) {
+                        let effectiveMax = effectiveMaxOutputTokens(for: .ollama)
+                        HStack(spacing: 8) {
+                            Slider(
+                                value: Binding(
+                                    get: { Double(min(max(appState.config.ollamaSummaryMaxTokens, 100), effectiveMax)) },
+                                    set: { newValue in
+                                        controller.updateConfig { $0.ollamaSummaryMaxTokens = Int(newValue) }
+                                    }
+                                ),
+                                in: 100.0...Double(effectiveMax),
+                                step: 500.0
+                            )
+                            .frame(maxWidth: .infinity)
+
+                            TextField("100", text: Binding(
+                                get: { "\(min(max(appState.config.ollamaSummaryMaxTokens, 100), effectiveMax))" },
+                                set: { newText in
+                                    if let val = Int(newText.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                                        let clamped = min(max(val, 100), effectiveMax)
+                                        controller.updateConfig { $0.ollamaSummaryMaxTokens = clamped }
+                                    }
                                 }
-                            ),
-                            in: 100...100000,
-                            step: 500
-                        ) {
-                            Text("\(max(appState.config.ollamaSummaryMaxTokens, 100))")
-                                .font(MuesliTheme.body())
-                                .foregroundStyle(MuesliTheme.textPrimary)
+                            ))
+                            .textFieldStyle(.plain)
+                            .frame(width: 60)
+                            .font(MuesliTheme.body())
+                            .foregroundStyle(MuesliTheme.textPrimary)
+                            .multilineTextAlignment(.trailing)
+
+                            Button(action: {
+                                controller.updateConfig { $0.ollamaSummaryMaxTokens = 2500 }
+                            }) {
+                                Image(systemName: "arrow.counterclockwise.circle")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(MuesliTheme.textSecondary)
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Reset to default (2500)")
+                        }
+                        .onChange(of: appState.config.ollamaModel) { _, _ in
+                            let newMax = effectiveMaxOutputTokens(for: .ollama)
+                            if appState.config.ollamaSummaryMaxTokens > newMax {
+                                controller.updateConfig { $0.ollamaSummaryMaxTokens = newMax }
+                            }
                         }
                     }
                 } else if appState.selectedMeetingSummaryBackend == .lmStudio {
@@ -646,20 +710,51 @@ struct SettingsView: View {
                         lmStudioModelPicker
                     }
                     Divider().background(MuesliTheme.surfaceBorder)
-                    settingsRow("Max output tokens", controlWidth: meetingControlWidth) {
-                        Stepper(
-                            value: Binding(
-                                get: { max(appState.config.lmStudioSummaryMaxTokens, 100) },
-                                set: { newValue in
-                                    controller.updateConfig { $0.lmStudioSummaryMaxTokens = max(newValue, 100) }
+                    settingsRow("Thinking budget (tokens)", controlWidth: meetingControlWidth) {
+                        let effectiveMax = effectiveMaxOutputTokens(for: .lmStudio)
+                        HStack(spacing: 8) {
+                            Slider(
+                                value: Binding(
+                                    get: { Double(min(max(appState.config.lmStudioSummaryMaxTokens, 100), effectiveMax)) },
+                                    set: { newValue in
+                                        controller.updateConfig { $0.lmStudioSummaryMaxTokens = Int(newValue) }
+                                    }
+                                ),
+                                in: 100.0...Double(effectiveMax),
+                                step: 500.0
+                            )
+                            .frame(maxWidth: .infinity)
+
+                            TextField("100", text: Binding(
+                                get: { "\(min(max(appState.config.lmStudioSummaryMaxTokens, 100), effectiveMax))" },
+                                set: { newText in
+                                    if let val = Int(newText.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                                        let clamped = min(max(val, 100), effectiveMax)
+                                        controller.updateConfig { $0.lmStudioSummaryMaxTokens = clamped }
+                                    }
                                 }
-                            ),
-                            in: 100...100000,
-                            step: 500
-                        ) {
-                            Text("\(max(appState.config.lmStudioSummaryMaxTokens, 100))")
-                                .font(MuesliTheme.body())
-                                .foregroundStyle(MuesliTheme.textPrimary)
+                            ))
+                            .textFieldStyle(.plain)
+                            .frame(width: 60)
+                            .font(MuesliTheme.body())
+                            .foregroundStyle(MuesliTheme.textPrimary)
+                            .multilineTextAlignment(.trailing)
+
+                            Button(action: {
+                                controller.updateConfig { $0.lmStudioSummaryMaxTokens = 2500 }
+                            }) {
+                                Image(systemName: "arrow.counterclockwise.circle")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(MuesliTheme.textSecondary)
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Reset to default (2500)")
+                        }
+                        .onChange(of: appState.config.lmStudioModel) { _, _ in
+                            let newMax = effectiveMaxOutputTokens(for: .lmStudio)
+                            if appState.config.lmStudioSummaryMaxTokens > newMax {
+                                controller.updateConfig { $0.lmStudioSummaryMaxTokens = newMax }
+                            }
                         }
                     }
                 } else {
@@ -683,20 +778,51 @@ struct SettingsView: View {
                         ) { val in controller.updateConfig { $0.openRouterModel = val } }
                     }
                     Divider().background(MuesliTheme.surfaceBorder)
-                    settingsRow("Max output tokens", controlWidth: meetingControlWidth) {
-                        Stepper(
-                            value: Binding(
-                                get: { max(appState.config.openRouterSummaryMaxTokens, 100) },
-                                set: { newValue in
-                                    controller.updateConfig { $0.openRouterSummaryMaxTokens = max(newValue, 100) }
+                    settingsRow("Thinking budget (tokens)", controlWidth: meetingControlWidth) {
+                        let effectiveMax = effectiveMaxOutputTokens(for: .openRouter)
+                        HStack(spacing: 8) {
+                            Slider(
+                                value: Binding(
+                                    get: { Double(min(max(appState.config.openRouterSummaryMaxTokens, 100), effectiveMax)) },
+                                    set: { newValue in
+                                        controller.updateConfig { $0.openRouterSummaryMaxTokens = Int(newValue) }
+                                    }
+                                ),
+                                in: 100.0...Double(effectiveMax),
+                                step: 500.0
+                            )
+                            .frame(maxWidth: .infinity)
+
+                            TextField("100", text: Binding(
+                                get: { "\(min(max(appState.config.openRouterSummaryMaxTokens, 100), effectiveMax))" },
+                                set: { newText in
+                                    if let val = Int(newText.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                                        let clamped = min(max(val, 100), effectiveMax)
+                                        controller.updateConfig { $0.openRouterSummaryMaxTokens = clamped }
+                                    }
                                 }
-                            ),
-                            in: 100...100000,
-                            step: 500
-                        ) {
-                            Text("\(max(appState.config.openRouterSummaryMaxTokens, 100))")
-                                .font(MuesliTheme.body())
-                                .foregroundStyle(MuesliTheme.textPrimary)
+                            ))
+                            .textFieldStyle(.plain)
+                            .frame(width: 60)
+                            .font(MuesliTheme.body())
+                            .foregroundStyle(MuesliTheme.textPrimary)
+                            .multilineTextAlignment(.trailing)
+
+                            Button(action: {
+                                controller.updateConfig { $0.openRouterSummaryMaxTokens = 2500 }
+                            }) {
+                                Image(systemName: "arrow.counterclockwise.circle")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(MuesliTheme.textSecondary)
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Reset to default (2500)")
+                        }
+                        .onChange(of: appState.config.openRouterModel) { _, _ in
+                            let newMax = effectiveMaxOutputTokens(for: .openRouter)
+                            if appState.config.openRouterSummaryMaxTokens > newMax {
+                                controller.updateConfig { $0.openRouterSummaryMaxTokens = newMax }
+                            }
                         }
                     }
                     keyStatusRow(key: appState.config.openRouterAPIKey)
@@ -1918,6 +2044,30 @@ struct SettingsView: View {
         .frame(height: 22)
     }
 
+    private func effectiveMaxOutputTokens(for backend: MeetingSummaryBackendOption) -> Int {
+        let fallback = 100_000
+        switch backend {
+        case .openAI:
+            return ModelTokenCap.maxOutputTokens(forModelID: appState.config.openAIModel) ?? fallback
+        case .openRouter:
+            return openRouterModelCaps[appState.config.openRouterModel]
+                ?? ModelTokenCap.maxOutputTokens(forModelID: appState.config.openRouterModel)
+                ?? fallback
+        case .chatGPT:
+            return ModelTokenCap.maxOutputTokens(forModelID: appState.config.chatGPTModel) ?? fallback
+        case .ollama:
+            return ollamaModelCaps[appState.config.ollamaModel]
+                ?? ModelTokenCap.contextLengthHint(forModelID: appState.config.ollamaModel)
+                ?? fallback
+        case .lmStudio:
+            return ModelTokenCap.maxOutputTokens(forModelID: appState.config.lmStudioModel)
+                ?? ModelTokenCap.contextLengthHint(forModelID: appState.config.lmStudioModel)
+                ?? fallback
+        default:
+            return fallback
+        }
+    }
+
     @ViewBuilder
     private var openRouterFreeModelMenu: some View {
         if isLoadingOpenRouterFreeModels {
@@ -1978,11 +2128,13 @@ struct SettingsView: View {
             .frame(height: 24)
         } else {
             HStack(spacing: 8) {
-                settingsModelTextField(
-                    currentModel: appState.config.ollamaModel,
-                    placeholder: "Model name",
-                    onChange: { val in controller.updateConfig { $0.ollamaModel = val } }
-                )
+                TextField("Model name", text: Binding(
+                    get: { appState.config.ollamaModel },
+                    set: { val in controller.updateConfig { $0.ollamaModel = val } }
+                ))
+                .font(MuesliTheme.body())
+                .foregroundStyle(MuesliTheme.textPrimary)
+                .frame(height: 22)
                 .layoutPriority(1)
 
                 if let ollamaModelsError {
@@ -2026,11 +2178,13 @@ struct SettingsView: View {
             .frame(height: 24)
         } else {
             HStack(spacing: 8) {
-                settingsModelTextField(
-                    currentModel: appState.config.lmStudioModel,
-                    placeholder: "Model name",
-                    onChange: { val in controller.updateConfig { $0.lmStudioModel = val } }
-                )
+                TextField("Model name", text: Binding(
+                    get: { appState.config.lmStudioModel },
+                    set: { val in controller.updateConfig { $0.lmStudioModel = val } }
+                ))
+                .font(MuesliTheme.body())
+                .foregroundStyle(MuesliTheme.textPrimary)
+                .frame(height: 22)
                 .layoutPriority(1)
 
                 if let lmStudioModelsError {
@@ -2073,6 +2227,13 @@ struct SettingsView: View {
                     openRouterFreeModels = presets
                     openRouterFreeModelsError = presets.isEmpty ? "No free text models found" : nil
                     isLoadingOpenRouterFreeModels = false
+                    openRouterModelCaps = Dictionary(
+                        catalog.data.compactMap { model in
+                            guard let ctx = model.contextLength else { return nil }
+                            return (model.id, ctx)
+                        },
+                        uniquingKeysWith: { first, _ in first }
+                    )
                 }
             } catch {
                 await MainActor.run {
@@ -2128,10 +2289,49 @@ struct SettingsView: View {
                     .filter { !$0.lowercased().contains("embed") }
                     .sorted()
 
+                let caps: [String: Int] = await withTaskGroup(of: (String, Int)?.self) { group in
+                    for name in modelNames {
+                        group.addTask {
+                            do {
+                                let showURL = baseURL.appendingPathComponent("api/show")
+                                var req = URLRequest(url: showURL)
+                                req.httpMethod = "POST"
+                                req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                                req.httpBody = try JSONSerialization.data(withJSONObject: ["name": name])
+                                req.timeoutInterval = 10
+                                let (showData, _) = try await URLSession.shared.data(for: req)
+                                guard let json = try JSONSerialization.jsonObject(with: showData) as? [String: Any],
+                                      let modelInfo = json["model_info"] as? [String: Any] else { return nil }
+                                for (key, value) in modelInfo {
+                                    let k = key.lowercased()
+                                    if k.contains("context_length") || k.contains("max_position_embeddings") || k.contains("sliding_window") {
+                                        if let intVal = value as? Int {
+                                            return (name, intVal)
+                                        } else if let doubleVal = value as? Double {
+                                            return (name, Int(doubleVal))
+                                        }
+                                    }
+                                }
+                                return nil
+                            } catch {
+                                return nil
+                            }
+                        }
+                    }
+                    var result: [String: Int] = [:]
+                    for await pair in group {
+                        if let (name, cap) = pair {
+                            result[name] = cap
+                        }
+                    }
+                    return result
+                }
+
                 await MainActor.run {
                     guard appState.config.ollamaURL.trimmingCharacters(in: .whitespacesAndNewlines) == urlAtStart else { return }
                     ollamaModels = modelNames
                     ollamaModelsError = modelNames.isEmpty ? "No models found" : nil
+                    ollamaModelCaps = caps
                     isLoadingOllamaModels = false
                 }
             } catch {
@@ -2139,6 +2339,7 @@ struct SettingsView: View {
                     guard appState.config.ollamaURL.trimmingCharacters(in: .whitespacesAndNewlines) == urlAtStart else { return }
                     ollamaModels = []
                     ollamaModelsError = "Could not load"
+                    ollamaModelCaps = [:]
                     isLoadingOllamaModels = false
                 }
             }
