@@ -468,6 +468,11 @@ struct AppConfigTests {
         config.enableComputerUsePlanner = false
         config.computerUsePlannerModel = "gpt-5.4"
         config.computerUseTimeoutSeconds = 180
+        config.hotkeyTriggerThresholdMS = 125
+        config.openAISummaryMaxTokens = 4000
+        config.openRouterSummaryMaxTokens = 5000
+        config.ollamaSummaryMaxTokens = 6000
+        config.lmStudioSummaryMaxTokens = 12000
 
         let data = try JSONEncoder().encode(config)
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
