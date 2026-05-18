@@ -2180,6 +2180,9 @@ struct SettingsView: View {
                     lmStudioModels = modelNames
                     lmStudioModelsError = modelNames.isEmpty ? "No models found" : nil
                     isLoadingLMStudioModels = false
+                    if !modelNames.isEmpty && appState.config.lmStudioModel.isEmpty {
+                        controller.updateConfig { $0.lmStudioModel = modelNames[0] }
+                    }
                 }
             } catch {
                 await MainActor.run {

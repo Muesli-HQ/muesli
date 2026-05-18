@@ -792,10 +792,10 @@ struct AppConfig: Codable {
         ollamaModel = (try? c.decode(String.self, forKey: .ollamaModel)) ?? defaults.ollamaModel
         lmStudioURL = (try? c.decode(String.self, forKey: .lmStudioURL)) ?? defaults.lmStudioURL
         lmStudioModel = (try? c.decode(String.self, forKey: .lmStudioModel)) ?? defaults.lmStudioModel
-        openAISummaryMaxTokens = (try? c.decode(Int.self, forKey: .openAISummaryMaxTokens)) ?? defaults.openAISummaryMaxTokens
-        openRouterSummaryMaxTokens = (try? c.decode(Int.self, forKey: .openRouterSummaryMaxTokens)) ?? defaults.openRouterSummaryMaxTokens
-        ollamaSummaryMaxTokens = (try? c.decode(Int.self, forKey: .ollamaSummaryMaxTokens)) ?? defaults.ollamaSummaryMaxTokens
-        lmStudioSummaryMaxTokens = (try? c.decode(Int.self, forKey: .lmStudioSummaryMaxTokens)) ?? defaults.lmStudioSummaryMaxTokens
+        openAISummaryMaxTokens = min(max((try? c.decode(Int.self, forKey: .openAISummaryMaxTokens)) ?? defaults.openAISummaryMaxTokens, 100), 100000)
+        openRouterSummaryMaxTokens = min(max((try? c.decode(Int.self, forKey: .openRouterSummaryMaxTokens)) ?? defaults.openRouterSummaryMaxTokens, 100), 100000)
+        ollamaSummaryMaxTokens = min(max((try? c.decode(Int.self, forKey: .ollamaSummaryMaxTokens)) ?? defaults.ollamaSummaryMaxTokens, 100), 100000)
+        lmStudioSummaryMaxTokens = min(max((try? c.decode(Int.self, forKey: .lmStudioSummaryMaxTokens)) ?? defaults.lmStudioSummaryMaxTokens, 100), 100000)
         summaryModel = (try? c.decode(String.self, forKey: .summaryModel)) ?? defaults.summaryModel
         meetingSummaryModel = (try? c.decode(String.self, forKey: .meetingSummaryModel)) ?? defaults.meetingSummaryModel
         hasCompletedOnboarding = (try? c.decode(Bool.self, forKey: .hasCompletedOnboarding)) ?? defaults.hasCompletedOnboarding
