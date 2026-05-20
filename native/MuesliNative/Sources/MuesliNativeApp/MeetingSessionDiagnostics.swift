@@ -156,6 +156,8 @@ final class MeetingSessionDiagnostics {
     private let cleanedMicFile: FileHandle?
     private let lock = OSAllocatedUnfairLock(initialState: CleanedMicState())
     private let enabled: Bool
+    private static let maxDiagnosticRuns = 10
+    private static let maxDiagnosticBytes = 2 * 1_024 * 1_024 * 1_024
 
     private struct CleanedMicState {
         var bytesWritten = 0
@@ -182,12 +184,14 @@ final class MeetingSessionDiagnostics {
 
         let timestamp = Self.fileTimestamp.string(from: startedAt)
         let safeTitle = Self.safePathComponent(title)
-        let runDirectory = AppIdentity.supportDirectoryURL
+        let diagnosticsRoot = AppIdentity.supportDirectoryURL
             .appendingPathComponent("MeetingDiagnostics", isDirectory: true)
+        let runDirectory = diagnosticsRoot
             .appendingPathComponent("\(timestamp)-\(safeTitle)-\(UUID().uuidString.prefix(8))", isDirectory: true)
 
         do {
             try FileManager.default.createDirectory(at: runDirectory, withIntermediateDirectories: true)
+            Self.pruneOldRuns(in: diagnosticsRoot, preserving: runDirectory)
             let cleanedURL = runDirectory.appendingPathComponent("cleaned-mic-aec.wav")
             FileManager.default.createFile(atPath: cleanedURL.path, contents: nil)
             let file = FileHandle(forWritingAtPath: cleanedURL.path)
@@ -317,20 +321,67 @@ final class MeetingSessionDiagnostics {
         }
     }
 
-    static func measureInt16Wav(at url: URL) -> AudioSampleStatsSnapshot? {
-        guard let data = try? Data(contentsOf: url), data.count > 44 else { return nil }
-        var stats = AudioSampleStats()
-        data.withUnsafeBytes { rawBuffer in
-            let bytes = rawBuffer.bindMemory(to: UInt8.self)
-            var offset = 44
-            while offset + 1 < bytes.count {
-                let low = UInt16(bytes[offset])
-                let high = UInt16(bytes[offset + 1]) << 8
-                let sample = Int16(bitPattern: high | low)
-                stats.addInt16Sample(sample)
-                offset += 2
+    private static func pruneOldRuns(in diagnosticsRoot: URL, preserving preservedRun: URL) {
+        let fileManager = FileManager.default
+        guard let contents = try? fileManager.contentsOfDirectory(
+            at: diagnosticsRoot,
+            includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else { return }
+
+        var runs = contents.compactMap { url -> DiagnosticRun? in
+            guard url.standardizedFileURL != preservedRun.standardizedFileURL else { return nil }
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .contentModificationDateKey])
+            guard values?.isDirectory == true else { return nil }
+            return DiagnosticRun(
+                url: url,
+                modifiedAt: values?.contentModificationDate ?? .distantPast,
+                byteSize: directoryByteSize(url)
+            )
+        }
+        runs.sort { $0.modifiedAt > $1.modifiedAt }
+
+        var retainedCount = 1
+        var retainedBytes = directoryByteSize(preservedRun)
+        for run in runs {
+            let shouldKeep = retainedCount < maxDiagnosticRuns
+                && retainedBytes + run.byteSize <= maxDiagnosticBytes
+            if shouldKeep {
+                retainedCount += 1
+                retainedBytes += run.byteSize
+            } else {
+                try? fileManager.removeItem(at: run.url)
             }
         }
+    }
+
+    private struct DiagnosticRun {
+        let url: URL
+        let modifiedAt: Date
+        let byteSize: Int
+    }
+
+    private static func directoryByteSize(_ url: URL) -> Int {
+        let fileManager = FileManager.default
+        guard let enumerator = fileManager.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else { return 0 }
+
+        var total = 0
+        for case let fileURL as URL in enumerator {
+            let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values?.isRegularFile == true else { continue }
+            total += values?.fileSize ?? 0
+        }
+        return total
+    }
+
+    static func measureInt16Wav(at url: URL) -> AudioSampleStatsSnapshot? {
+        guard let wav = loadInt16Wav(at: url) else { return nil }
+        var stats = AudioSampleStats()
+        stats.addInt16(wav.samples)
         return stats.snapshot()
     }
 
@@ -339,15 +390,17 @@ final class MeetingSessionDiagnostics {
         systemAudioURL: URL,
         candidateDelaysMs: [Int] = MeetingAecDelayEstimator.defaultCandidateDelaysMs
     ) -> AecDelayEstimate? {
-        guard let rawMicSamples = loadInt16WavSamples(at: rawMicURL),
-              let systemSamples = loadInt16WavSamples(at: systemAudioURL),
-              !rawMicSamples.isEmpty,
-              !systemSamples.isEmpty
+        guard let rawMic = loadInt16Wav(at: rawMicURL),
+              let system = loadInt16Wav(at: systemAudioURL),
+              rawMic.sampleRate == 16_000,
+              system.sampleRate == 16_000,
+              !rawMic.samples.isEmpty,
+              !system.samples.isEmpty
         else { return nil }
 
         let frameSize = 320 // 20ms at 16kHz
-        let micEnvelope = rmsEnvelope(samples: rawMicSamples, frameSize: frameSize)
-        let systemEnvelope = rmsEnvelope(samples: systemSamples, frameSize: frameSize)
+        let micEnvelope = rmsEnvelope(samples: rawMic.samples, frameSize: frameSize)
+        let systemEnvelope = rmsEnvelope(samples: system.samples, frameSize: frameSize)
         guard !micEnvelope.isEmpty, !systemEnvelope.isEmpty else { return nil }
 
         let scores = candidateDelaysMs.map { delayMs in
@@ -382,22 +435,100 @@ final class MeetingSessionDiagnostics {
         )
     }
 
-    private static func loadInt16WavSamples(at url: URL) -> [Int16]? {
-        guard let data = try? Data(contentsOf: url), data.count > 44 else { return nil }
-        return data.withUnsafeBytes { rawBuffer in
-            let bytes = rawBuffer.bindMemory(to: UInt8.self)
-            var samples: [Int16] = []
-            samples.reserveCapacity((bytes.count - 44) / 2)
+    private struct Int16WavData {
+        let sampleRate: Int
+        let samples: [Int16]
+    }
 
-            var offset = 44
-            while offset + 1 < bytes.count {
-                let low = UInt16(bytes[offset])
-                let high = UInt16(bytes[offset + 1]) << 8
-                samples.append(Int16(bitPattern: high | low))
-                offset += 2
+    private static func loadInt16Wav(at url: URL) -> Int16WavData? {
+        guard let data = try? Data(contentsOf: url), data.count >= 12 else { return nil }
+        guard String(bytes: data[0..<4], encoding: .ascii) == "RIFF",
+              String(bytes: data[8..<12], encoding: .ascii) == "WAVE"
+        else { return nil }
+
+        var sampleRate: Int?
+        var channels: Int?
+        var bitsPerSample: Int?
+        var audioFormat: Int?
+        var dataRange: Range<Int>?
+        var offset = 12
+
+        while offset + 8 <= data.count {
+            guard let chunkID = String(bytes: data[offset..<(offset + 4)], encoding: .ascii),
+                  let chunkSize = readUInt32LE(data, at: offset + 4)
+            else { return nil }
+
+            let payloadStart = offset + 8
+            let payloadEnd = payloadStart + Int(chunkSize)
+            guard payloadEnd <= data.count else { return nil }
+
+            if chunkID == "fmt " {
+                guard Int(chunkSize) >= 16,
+                      let parsedFormat = readUInt16LE(data, at: payloadStart),
+                      let parsedChannels = readUInt16LE(data, at: payloadStart + 2),
+                      let parsedSampleRate = readUInt32LE(data, at: payloadStart + 4),
+                      let parsedBits = readUInt16LE(data, at: payloadStart + 14)
+                else { return nil }
+                audioFormat = Int(parsedFormat)
+                channels = Int(parsedChannels)
+                sampleRate = Int(parsedSampleRate)
+                bitsPerSample = Int(parsedBits)
+            } else if chunkID == "data" {
+                dataRange = payloadStart..<payloadEnd
             }
-            return samples
+
+            offset = payloadEnd + (Int(chunkSize) % 2)
         }
+
+        guard audioFormat == 1,
+              bitsPerSample == 16,
+              let sampleRate,
+              let channelCount = channels,
+              channelCount > 0,
+              let dataRange
+        else { return nil }
+
+        let byteCount = dataRange.count - (dataRange.count % 2)
+        var interleaved: [Int16] = []
+        interleaved.reserveCapacity(byteCount / 2)
+
+        var sampleOffset = dataRange.lowerBound
+        let sampleEnd = dataRange.lowerBound + byteCount
+        while sampleOffset + 1 < sampleEnd {
+            let low = UInt16(data[sampleOffset])
+            let high = UInt16(data[sampleOffset + 1]) << 8
+            interleaved.append(Int16(bitPattern: high | low))
+            sampleOffset += 2
+        }
+
+        let monoSamples: [Int16]
+        if channelCount == 1 {
+            monoSamples = interleaved
+        } else {
+            let frameCount = interleaved.count / channelCount
+            monoSamples = (0..<frameCount).map { frame in
+                var sum = 0
+                for channel in 0..<channelCount {
+                    sum += Int(interleaved[frame * channelCount + channel])
+                }
+                return Int16(clamping: sum / channelCount)
+            }
+        }
+
+        return Int16WavData(sampleRate: sampleRate, samples: monoSamples)
+    }
+
+    private static func readUInt16LE(_ data: Data, at offset: Int) -> UInt16? {
+        guard offset + 2 <= data.count else { return nil }
+        return UInt16(data[offset]) | (UInt16(data[offset + 1]) << 8)
+    }
+
+    private static func readUInt32LE(_ data: Data, at offset: Int) -> UInt32? {
+        guard offset + 4 <= data.count else { return nil }
+        return UInt32(data[offset])
+            | (UInt32(data[offset + 1]) << 8)
+            | (UInt32(data[offset + 2]) << 16)
+            | (UInt32(data[offset + 3]) << 24)
     }
 
     private static func rmsEnvelope(samples: [Int16], frameSize: Int) -> [Double] {

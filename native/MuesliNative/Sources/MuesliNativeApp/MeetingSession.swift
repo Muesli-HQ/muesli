@@ -799,8 +799,7 @@ final class MeetingSession {
             self.systemChunkTimingTracker.append(sampleCount: samples.count)
 
             let floatSamples = samples.map { Float($0) / 32767.0 }
-            let cleanedFloat = self.neuralAec.feedSystemSamples(floatSamples)
-            self.appendCleanedMicSamplesOnQueue(cleanedFloat)
+            self.neuralAec.feedSystemSamples(floatSamples)
 
             if let systemVadController = self.systemVadController {
                 systemVadController.processAudio(floatSamples)

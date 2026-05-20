@@ -263,16 +263,40 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SystemAudioCapturing,
             }
             onPCMSamples?(int16Samples)
         } else {
-            // Already PCM int16, write directly
+            guard asbd.mFormatID == kAudioFormatLinearPCM,
+                  asbd.mBitsPerChannel == 16,
+                  abs(asbd.mSampleRate - Self.sampleRate) < 1.0,
+                  (asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved) == 0
+            else {
+                diagnosticsLock.withLock { $0.unsupportedFormatCount += 1 }
+                fputs("[system-audio] unsupported SCStream integer PCM format rate=\(asbd.mSampleRate) channels=\(asbd.mChannelsPerFrame) bits=\(asbd.mBitsPerChannel) flags=\(asbd.mFormatFlags)\n", stderr)
+                return
+            }
+
             let rawData = Data(bytes: dataPointer, count: length)
-            let int16Samples = rawData.withUnsafeBytes { rawBuffer in
+            let interleavedSamples = rawData.withUnsafeBytes { rawBuffer in
                 Array(rawBuffer.bindMemory(to: Int16.self))
             }
-            outputFile?.write(rawData)
-            totalBytesWritten += length
+            let channels = max(Int(asbd.mChannelsPerFrame), 1)
+            let int16Samples: [Int16]
+            if channels == 1 {
+                int16Samples = interleavedSamples
+            } else {
+                let frameCount = interleavedSamples.count / channels
+                int16Samples = (0..<frameCount).map { frame in
+                    var sum = 0
+                    for channel in 0..<channels {
+                        sum += Int(interleavedSamples[frame * channels + channel])
+                    }
+                    return Int16(clamping: sum / channels)
+                }
+            }
+            let int16Data = int16Samples.withUnsafeBufferPointer { Data(buffer: $0) }
+            outputFile?.write(int16Data)
+            totalBytesWritten += int16Data.count
             diagnosticsLock.withLock { state in
-                state.bytesWritten += length
-                state.preConversion.addInt16(int16Samples)
+                state.bytesWritten += int16Data.count
+                state.preConversion.addInt16(interleavedSamples)
                 state.postConversion.addInt16(int16Samples)
             }
             onPCMSamples?(int16Samples)

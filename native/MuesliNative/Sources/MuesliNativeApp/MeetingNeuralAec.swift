@@ -66,10 +66,9 @@ final class MeetingNeuralAec {
     private var fullReferenceFrames = 0
     private var partialReferenceFrames = 0
     private var missingReferenceFrames = 0
-    private let maxReferenceWaitSamples = 16_000
     private let delayEstimator = MeetingAecDelayEstimator()
     private var currentDelaySamples = 0
-    private var nextDelayEstimateSample = 16_000
+    private var nextDelayEstimateSample = 8_000
     private var recentDelayResults: [MeetingAecDelayEstimator.Result] = []
     private var delayHistory: [MeetingAecDelayObservation] = []
     private var delaySkipHistory: [MeetingAecDelaySkip] = []
@@ -104,19 +103,18 @@ final class MeetingNeuralAec {
         partialReferenceFrames = 0
         missingReferenceFrames = 0
         currentDelaySamples = 0
-        nextDelayEstimateSample = sampleRate
+        nextDelayEstimateSample = sampleRate / 2
         recentDelayResults.removeAll(keepingCapacity: true)
         delayHistory.removeAll(keepingCapacity: true)
         delaySkipHistory.removeAll(keepingCapacity: true)
     }
 
     /// Buffer system audio samples indexed by absolute position.
-    func feedSystemSamples(_ samples: [Float]) -> [Float] {
-        guard let processor else { return [] }
+    func feedSystemSamples(_ samples: [Float]) {
         systemHistory.append(contentsOf: samples)
         systemSamplesReceived += samples.count
         updateDelayEstimateIfNeeded()
-        return processQueuedFrames(processor: processor, flush: false)
+        trimHistoryBuffersIfNeeded()
     }
 
     /// Process mic samples through DTLN-aec using the currently estimated far-end delay.
@@ -144,9 +142,6 @@ final class MeetingNeuralAec {
         cleaned.reserveCapacity(pendingMicSamples.count)
 
         while pendingMicSamples.count >= frameSize {
-            let referenceState = referenceAvailability(forMicFrameStartingAt: pendingMicStartSample)
-            guard referenceState.isReady || flush else { break }
-
             let micFrame = Array(pendingMicSamples.prefix(frameSize))
             pendingMicSamples.removeFirst(frameSize)
 
@@ -180,41 +175,6 @@ final class MeetingNeuralAec {
         return cleaned
     }
 
-    private enum ReferenceAvailability {
-        case full
-        case partial
-        case missing
-        case waiting
-
-        var isReady: Bool {
-            switch self {
-            case .full, .partial, .missing:
-                true
-            case .waiting:
-                false
-            }
-        }
-    }
-
-    private func referenceAvailability(forMicFrameStartingAt micStart: Int) -> ReferenceAvailability {
-        let referenceStart = micStart - currentDelaySamples
-        let referenceEnd = referenceStart + frameSize
-
-        if referenceEnd > systemSamplesReceived {
-            return .waiting
-        }
-
-        if referenceEnd <= systemHistoryStartSample || referenceStart >= systemSamplesReceived {
-            return .missing
-        }
-
-        if referenceStart >= systemHistoryStartSample && referenceEnd <= systemSamplesReceived {
-            return .full
-        }
-
-        return .partial
-    }
-
     private func systemFrame(forMicFrameStartingAt micStart: Int, force: Bool) -> [Float] {
         let referenceStart = micStart - currentDelaySamples
         let referenceEnd = referenceStart + frameSize
@@ -233,11 +193,6 @@ final class MeetingNeuralAec {
             return [Float](repeating: 0, count: frameSize)
         }
 
-        if !force, referenceEnd > systemSamplesReceived {
-            missingReferenceFrames += 1
-            return [Float](repeating: 0, count: frameSize)
-        }
-
         var frame = [Float](repeating: 0, count: frameSize)
         let sourceStartIndex = overlapStart - systemHistoryStartSample
         let destinationStartIndex = overlapStart - referenceStart
@@ -251,6 +206,10 @@ final class MeetingNeuralAec {
     }
 
     private func updateDelayEstimateIfNeeded() {
+        // The live estimator is gated by mic sample position because each
+        // candidate compares a mic window against the already captured system
+        // history. System callbacks may call this too, but cannot advance the
+        // gate without new mic samples to compare.
         guard micSamplesReceived >= nextDelayEstimateSample else { return }
 
         let maxCandidateDelaySamples = delayEstimator.maxCandidateDelaySamples
@@ -305,7 +264,7 @@ final class MeetingNeuralAec {
 
     private func trimHistoryBuffersIfNeeded() {
         let maxCandidateDelaySamples = delayEstimator.maxCandidateDelaySamples
-        let retentionSamples = delayEstimator.windowSamples + maxCandidateDelaySamples + maxReferenceWaitSamples
+        let retentionSamples = delayEstimator.windowSamples + maxCandidateDelaySamples
         let latestComparableSystemSample = min(systemSamplesReceived, micSamplesReceived - maxCandidateDelaySamples)
         let oldestNeededForEstimator = latestComparableSystemSample > 0
             ? max(0, latestComparableSystemSample - delayEstimator.windowSamples)
@@ -329,25 +288,19 @@ final class MeetingNeuralAec {
             }
         }
 
-        if hasConsistentRecentDelaySupport() {
+        if result.score >= 0.55, hasConsistentRecentDelaySupport(around: result.delayMs) {
             return (true, "acceptedRepeatedSupport")
         }
 
         return (false, "rejectedLowConfidence")
     }
 
-    private func hasConsistentRecentDelaySupport() -> Bool {
+    private func hasConsistentRecentDelaySupport(around delayMs: Int) -> Bool {
         let candidates = Array(recentDelayResults.suffix(5))
         guard candidates.count >= 3 else { return false }
 
-        for candidate in candidates {
-            let nearby = candidates.filter { abs($0.delayMs - candidate.delayMs) <= 80 }
-            if nearby.count >= 3 {
-                return true
-            }
-        }
-
-        return false
+        let nearby = candidates.filter { abs($0.delayMs - delayMs) <= 80 }
+        return nearby.count >= 3
     }
 
     private func recordDelayObservation(_ result: MeetingAecDelayEstimator.Result, decision: String) {

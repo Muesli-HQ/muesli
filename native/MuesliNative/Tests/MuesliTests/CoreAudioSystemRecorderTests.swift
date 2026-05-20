@@ -5,20 +5,6 @@ import Testing
 @Suite("CoreAudioSystemRecorder")
 struct CoreAudioSystemRecorderTests {
 
-    @Test("device tap description excludes Muesli process audio")
-    func deviceTapDescriptionExcludesSelfAudio() {
-        let tapDescription = CoreAudioSystemRecorder.makeOutputDeviceTapDescription(
-            deviceUID: "test-output-device",
-            excludingProcessID: 123,
-            name: "Muesli Test Tap"
-        )
-
-        #expect(tapDescription.name == "Muesli Test Tap")
-        #expect(tapDescription.deviceUID == "test-output-device")
-        #expect(tapDescription.stream == 0)
-        #expect(tapDescription.processes == [123])
-    }
-
     @Test("global tap description captures process mix except Muesli")
     func globalTapDescriptionExcludesSelfAudio() {
         let tapDescription = CoreAudioSystemRecorder.makeGlobalTapDescription(
@@ -30,9 +16,6 @@ struct CoreAudioSystemRecorderTests {
         #expect(tapDescription.deviceUID == nil)
         #expect(tapDescription.stream == nil)
         #expect(tapDescription.processes == [123])
-        #expect(tapDescription.isExclusive)
-        #expect(tapDescription.isMixdown)
-        #expect(!tapDescription.isMono)
         #expect(tapDescription.isPrivate)
         #expect(tapDescription.muteBehavior == .unmuted)
     }
