@@ -618,6 +618,7 @@ final class MeetingSession {
 
     private func rotateChunkOnQueue() {
         guard isRecording, !isPaused else { return }
+        appendFlushedStreamingMicOnQueue()
         guard let chunkTiming = chunkTimingTracker.rotate() else {
             return
         }

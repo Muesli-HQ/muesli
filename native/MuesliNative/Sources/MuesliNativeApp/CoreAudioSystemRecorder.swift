@@ -57,6 +57,9 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
     private var sourceSampleRate: Double = 48_000
     private var sourceChannels: UInt32 = 2
     private var sourceFormat = AudioStreamBasicDescription()
+    private var resampler: AVAudioConverter?
+    private var resamplerInputFormat: AVAudioFormat?
+    private var resamplerOutputFormat: AVAudioFormat?
     private let diagnosticsLock = OSAllocatedUnfairLock(initialState: DiagnosticsState())
 
     private struct DiagnosticsState {
@@ -243,6 +246,7 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
 
     private func setupAndStartAudioDevice() throws {
         let format = sourceFormat
+        configureResampler(for: format)
         activeCaptureGeneration &+= 1
         let generation = activeCaptureGeneration
         let block: AudioDeviceIOBlock = { [weak self] _, inputData, _, _, _ in
@@ -343,19 +347,14 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
             return samples.map { Int16(max(-1.0, min(1.0, $0)) * 32767.0) }
         }
 
-        guard let inputFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: sourceSampleRate,
-            channels: 1,
-            interleaved: false
-        ), let outputFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: Self.targetSampleRate,
-            channels: 1,
-            interleaved: false
-        ), let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
+        guard let converter = resampler,
+              let inputFormat = resamplerInputFormat,
+              let outputFormat = resamplerOutputFormat,
+              abs(inputFormat.sampleRate - sourceSampleRate) < 1.0
+        else {
             return nil
         }
+        converter.reset()
 
         let inputFrameCount = AVAudioFrameCount(samples.count)
         guard let inputBuffer = AVAudioPCMBuffer(
@@ -401,6 +400,33 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
         return (0..<frameLength).map { index in
             Int16(max(-1.0, min(1.0, outputChannel[index])) * 32767.0)
         }
+    }
+
+    private func configureResampler(for format: AudioStreamBasicDescription) {
+        resampler = nil
+        resamplerInputFormat = nil
+        resamplerOutputFormat = nil
+
+        guard abs(format.mSampleRate - Self.targetSampleRate) >= 1.0 else { return }
+        guard let inputFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: format.mSampleRate,
+            channels: 1,
+            interleaved: false
+        ), let outputFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: Self.targetSampleRate,
+            channels: 1,
+            interleaved: false
+        ), let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
+            diagnosticsLock.withLock { $0.unsupportedFormatCount += 1 }
+            fputs("[system-audio] failed to configure AVAudioConverter for \(format.mSampleRate)Hz\n", stderr)
+            return
+        }
+
+        resampler = converter
+        resamplerInputFormat = inputFormat
+        resamplerOutputFormat = outputFormat
     }
 
     private func mixToMonoFloat(
@@ -763,6 +789,9 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
 
     private func teardownTapAndAudioDevice() {
         activeCaptureGeneration &+= 1
+        resampler = nil
+        resamplerInputFormat = nil
+        resamplerOutputFormat = nil
 
         if let procID = deviceIOProcID, aggregateDeviceID != kAudioObjectUnknown {
             AudioDeviceStop(aggregateDeviceID, procID)
