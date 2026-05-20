@@ -9,14 +9,17 @@ import UniformTypeIdentifiers
 /// Converts the source file to 16kHz mono WAV, transcribes it, optionally runs
 /// speaker diarization, and creates a meeting record with the result.
 enum AudioFileImportController {
-    private static let allowedTypes: [UTType] = [
-        .wav,
-        .mp3,
-        .mpeg4Audio,
-        .appleProtectedMPEG4Audio,
-        UTType(filenameExtension: "m4a") ?? .audio,
-        UTType(filenameExtension: "mp4") ?? .audio,
-    ].filter { $0 != .audio }  // drop fallback if real types are present
+    private static let allowedTypes: [UTType] = {
+        var types: [UTType] = [
+            .wav,
+            .mp3,
+            .mpeg4Audio,
+            .appleProtectedMPEG4Audio,
+        ]
+        if let m4a = UTType(filenameExtension: "m4a") { types.append(m4a) }
+        if let mp4 = UTType(filenameExtension: "mp4") { types.append(mp4) }
+        return types
+    }()
 
     // MARK: - File Selection
 
@@ -100,13 +103,7 @@ enum AudioFileImportController {
         reader.add(readerOutput)
 
         let writer = try AVAssetWriter(url: outputURL, fileType: .wav)
-        let sourceFormat = AVAudioFormat(
-            commonFormat: .pcmFormatInt16,
-            sampleRate: 16000,
-            channels: 1,
-            interleaved: false
-        )!
-        let writerInput = AVAssetWriterInput(mediaType: .audio, outputSettings: sourceFormat.settings)
+        let writerInput = AVAssetWriterInput(mediaType: .audio, outputSettings: outputSettings)
         writerInput.expectsMediaDataInRealTime = false
         writer.add(writerInput)
 
@@ -118,24 +115,21 @@ enum AudioFileImportController {
         }
         writer.startSession(atSourceTime: .zero)
 
-        let dispatchGroup = DispatchGroup()
-        dispatchGroup.enter()
-        writerInput.requestMediaDataWhenReady(on: DispatchQueue(label: "com.muesli.import.convert")) {
-            while writerInput.isReadyForMoreMediaData {
-                if let sampleBuffer = readerOutput.copyNextSampleBuffer() {
-                    writerInput.append(sampleBuffer)
-                } else {
-                    writerInput.markAsFinished()
-                    dispatchGroup.leave()
-                    return
+        // Use async dispatch group to avoid blocking cooperative thread pool
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let queue = DispatchQueue(label: "com.muesli.import.convert")
+            writerInput.requestMediaDataWhenReady(on: queue) {
+                while writerInput.isReadyForMoreMediaData {
+                    if let sampleBuffer = readerOutput.copyNextSampleBuffer() {
+                        writerInput.append(sampleBuffer)
+                    } else {
+                        writerInput.markAsFinished()
+                        writer.finishWriting {
+                            continuation.resume()
+                        }
+                        return
+                    }
                 }
-            }
-        }
-        dispatchGroup.wait()
-
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            writer.finishWriting {
-                continuation.resume()
             }
         }
 
@@ -173,6 +167,8 @@ enum AudioFileImportController {
         let (wavURL, duration) = try await convertToWAV(sourceURL: sourceURL)
         defer { try? FileManager.default.removeItem(at: wavURL) }
 
+        try Task.checkCancellation()
+
         let config = controller.config
         let backend = controller.selectedMeetingTranscriptionBackend
         let transcriptionCoordinator = controller.transcriptionCoordinator
@@ -183,6 +179,8 @@ enum AudioFileImportController {
             enablePostProcessor: false,
             includeMeetingHelpers: true
         )
+
+        try Task.checkCancellation()
 
         // Run VAD to skip silent files (prevents Cohere hallucinations on silence)
         if let vadManager = transcriptionCoordinator.vadManager {
@@ -199,6 +197,8 @@ enum AudioFileImportController {
             }
         }
 
+        try Task.checkCancellation()
+
         progress("Transcribing audio...")
         let transcription = try await transcriptionCoordinator.transcribeMeeting(
             at: wavURL,
@@ -210,6 +210,8 @@ enum AudioFileImportController {
             throw ImportError.readError("No speech was transcribed from the selected audio file.")
         }
 
+        try Task.checkCancellation()
+
         // Run speaker diarization if available
         var diarizedTranscript = rawTranscript
         if let diarizerManager = transcriptionCoordinator.getDiarizerManager(),
@@ -218,6 +220,7 @@ enum AudioFileImportController {
             do {
                 let converter = AudioConverter()
                 let samples = try converter.resampleAudioFile(wavURL)
+                try Task.checkCancellation()
                 let diarizationResult = try diarizerManager.performCompleteDiarization(
                     samples,
                     sampleRate: 16000
@@ -229,10 +232,14 @@ enum AudioFileImportController {
                         duration: duration
                     )
                 }
+            } catch is CancellationError {
+                throw ImportError.readError("Import was cancelled.")
             } catch {
                 fputs("[import] diarization failed, using raw transcript: \(error)\n", stderr)
             }
         }
+
+        try Task.checkCancellation()
 
         let wordCount = DictationStore.countWords(in: diarizedTranscript)
 
@@ -257,6 +264,8 @@ enum AudioFileImportController {
                 manualNotes: ""
             )
         }
+
+        try Task.checkCancellation()
 
         // Persist the converted WAV as a saved recording so retranscription works
         let savedRecordingPath = try persistRecording(wavURL: wavURL, title: title)
