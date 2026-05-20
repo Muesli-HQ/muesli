@@ -584,24 +584,14 @@ enum MeetingSummaryClient {
                 let pid = process.processIdentifier
                 if pid > 0 {
                     kill(pid, SIGKILL)
+                    // Kill child processes spawned by the shell
+                    let pgid = getpgid(pid)
+                    if pgid > 0 && pgid != getpgid(0) {
+                        killpg(pgid, SIGKILL)
+                    }
                 }
             }
             timeoutSource.resume()
-
-            do {
-                try process.run()
-            } catch {
-                timeoutSource.cancel()
-                stdout.fileHandleForReading.readabilityHandler = nil
-                stderr.fileHandleForReading.readabilityHandler = nil
-                continuation.resume(throwing: MeetingSummaryError.requestFailed(backend: "Custom Command", underlying: error))
-                return
-            }
-
-            if let data = input.data(using: .utf8) {
-                stdinPipe.fileHandleForWriting.write(data)
-            }
-            stdinPipe.fileHandleForWriting.closeFile()
 
             process.terminationHandler = { proc in
                 timeoutSource.cancel()
@@ -634,6 +624,23 @@ enum MeetingSummaryClient {
                 }
 
                 continuation.resume(returning: output)
+            }
+
+            do {
+                try process.run()
+            } catch {
+                timeoutSource.cancel()
+                stdout.fileHandleForReading.readabilityHandler = nil
+                stderr.fileHandleForReading.readabilityHandler = nil
+                continuation.resume(throwing: MeetingSummaryError.requestFailed(backend: "Custom Command", underlying: error))
+                return
+            }
+
+            DispatchQueue.global().async {
+                if let data = input.data(using: .utf8) {
+                    stdinPipe.fileHandleForWriting.write(data)
+                }
+                stdinPipe.fileHandleForWriting.closeFile()
             }
         }
     }
@@ -820,7 +827,7 @@ enum MeetingSummaryClient {
         }
 
         if backend == MeetingSummaryBackendOption.customCommand.backend {
-            return await generateTitleWithCustomCommand(transcript: truncated, config: config)
+            return await generateTitleWithCustomCommand(transcript: excerpt, config: config)
         }
 
         let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? config.openAIAPIKey
