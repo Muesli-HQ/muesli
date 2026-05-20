@@ -900,7 +900,10 @@ final class FloatingIndicatorController: NSObject {
                 let attrs: [NSAttributedString.Key: Any] = [
                     .font: NSFont.systemFont(ofSize: 11, weight: .regular)
                 ]
-                let measuredTextW = ceil((transcribingTitle as NSString).size(withAttributes: attrs).width) + 2
+                let measuredTextW = max(
+                    ceil((transcribingTitle as NSString).size(withAttributes: attrs).width),
+                    ceil(textLabel?.intrinsicContentSize.width ?? 0)
+                ) + 8
                 let availableTextW = max(0, frameSize.width - iconSize.width - gap - (horizontalPadding * 2))
                 let textW = min(measuredTextW, availableTextW)
                 let totalW = iconSize.width + gap + textW
@@ -1379,7 +1382,7 @@ final class FloatingIndicatorController: NSObject {
         let iconWidth: CGFloat = 18
         let gap: CGFloat = 6
         let horizontalPadding: CGFloat = 14
-        let textWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width) + 2
+        let textWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width) + 8
         let preferredWidth = horizontalPadding + iconWidth + gap + textWidth + horizontalPadding
         let minWidth = min(CGFloat(190), max(120, screenWidth - 32))
         let maxWidth = max(minWidth, min(420, screenWidth - 32))

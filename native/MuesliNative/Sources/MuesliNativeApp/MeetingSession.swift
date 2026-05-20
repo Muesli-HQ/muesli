@@ -115,6 +115,7 @@ final class MeetingSession {
     var manualNotesProvider: (() async -> String?)?
     var liveTitleProvider: (() async -> String?)?
     private let screenContextCollector = MeetingScreenContextCollector()
+    private var diagnostics: MeetingSessionDiagnostics?
 
     /// Current mic power level for waveform visualization.
     func currentPower() -> Float {
@@ -165,6 +166,7 @@ final class MeetingSession {
     func start() async throws {
         let vadManager = await transcriptionCoordinator.getVadManager()
         let now = Date()
+        diagnostics = MeetingSessionDiagnostics(title: title, startedAt: now)
 
         // AEC must be loaded before audio pipeline starts (streaming mode)
         await neuralAec.preload()
@@ -555,6 +557,21 @@ final class MeetingSession {
             )
         }
 
+        diagnostics?.writeFinalReport(
+            title: generatedTitle,
+            startedAt: meetingStart,
+            endedAt: endTime,
+            rawTranscript: rawTranscript,
+            rawMicURL: fullSessionMicURL,
+            systemAudioURL: systemAudioURL,
+            systemCapture: (systemAudioRecorder as? SystemAudioDiagnosticsProviding)?.diagnosticsSnapshot,
+            aec: neuralAec.diagnosticsSnapshot,
+            micChunks: micChunkHealthTracker.snapshot(),
+            systemChunks: systemChunkHealthTracker.snapshot(),
+            diarizationSegments: protectedTranscriptInputs.diarizationSegments,
+            protectedSystemSegmentCount: protectedTranscriptInputs.systemSegments.count
+        )
+
         return MeetingSessionResult(
             title: generatedTitle,
             originalTitle: title,
@@ -588,11 +605,7 @@ final class MeetingSession {
 
     private func appendFlushedStreamingMicOnQueue() {
         let flushed = neuralAec.flushStreamingMic()
-        guard !flushed.isEmpty else { return }
-        let flushedInt16 = flushed.map { sample -> Int16 in
-            Int16(max(-1.0, min(1.0, sample)) * 32767)
-        }
-        rawMicChunkRecorder?.append(flushedInt16)
+        appendCleanedMicSamplesOnQueue(flushed)
     }
 
     /// Called by VAD on speech boundaries or max-duration fallback.
@@ -765,12 +778,7 @@ final class MeetingSession {
 
             // AEC: clean mic using position-aligned system reference
             let cleanedFloat = self.neuralAec.processStreamingMic(floatSamples)
-            if !cleanedFloat.isEmpty {
-                let cleanedInt16 = cleanedFloat.map { sample -> Int16 in
-                    Int16(max(-1.0, min(1.0, sample)) * 32767)
-                }
-                self.rawMicChunkRecorder?.append(cleanedInt16)
-            }
+            self.appendCleanedMicSamplesOnQueue(cleanedFloat)
 
             // VAD sees raw audio, but only after the cleaned samples for this
             // buffer have been appended so boundary rotation stays ordered.
@@ -791,12 +799,22 @@ final class MeetingSession {
             self.systemChunkTimingTracker.append(sampleCount: samples.count)
 
             let floatSamples = samples.map { Float($0) / 32767.0 }
-            self.neuralAec.feedSystemSamples(floatSamples)
+            let cleanedFloat = self.neuralAec.feedSystemSamples(floatSamples)
+            self.appendCleanedMicSamplesOnQueue(cleanedFloat)
 
             if let systemVadController = self.systemVadController {
                 systemVadController.processAudio(floatSamples)
             }
         }
+    }
+
+    private func appendCleanedMicSamplesOnQueue(_ cleanedFloat: [Float]) {
+        guard !cleanedFloat.isEmpty else { return }
+        let cleanedInt16 = cleanedFloat.map { sample -> Int16 in
+            Int16(max(-1.0, min(1.0, sample)) * 32767)
+        }
+        rawMicChunkRecorder?.append(cleanedInt16)
+        diagnostics?.appendCleanedMicSamples(cleanedInt16)
     }
 
     private func transcribeMicChunk(

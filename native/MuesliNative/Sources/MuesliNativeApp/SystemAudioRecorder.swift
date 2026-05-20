@@ -2,8 +2,9 @@ import AVFoundation
 import Foundation
 import ScreenCaptureKit
 import MuesliCore
+import os
 
-final class SystemAudioRecorder: NSObject, SCStreamOutput, SystemAudioCapturing {
+final class SystemAudioRecorder: NSObject, SCStreamOutput, SystemAudioCapturing, SystemAudioDiagnosticsProviding {
     var onPCMSamples: (([Int16]) -> Void)?
 
     private var stream: SCStream?
@@ -15,6 +16,38 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SystemAudioCapturing 
 
     private static let sampleRate: Double = 16_000
     private static let channels: Int = 1
+    private let diagnosticsLock = OSAllocatedUnfairLock(initialState: DiagnosticsState())
+
+    private struct DiagnosticsState {
+        var callbackCount = 0
+        var bufferCount = 0
+        var emptyBufferCount = 0
+        var unsupportedFormatCount = 0
+        var inputByteCount = 0
+        var bytesWritten = 0
+        var sourceSampleRate: Double = 0
+        var sourceChannels: UInt32 = 0
+        var preConversion = AudioSampleStats()
+        var postConversion = AudioSampleStats()
+    }
+
+    var diagnosticsSnapshot: SystemAudioCaptureDiagnosticsSnapshot {
+        diagnosticsLock.withLock { state in
+            SystemAudioCaptureDiagnosticsSnapshot(
+                backend: "ScreenCaptureKit",
+                callbackCount: state.callbackCount,
+                bufferCount: state.bufferCount,
+                emptyBufferCount: state.emptyBufferCount,
+                unsupportedFormatCount: state.unsupportedFormatCount,
+                inputByteCount: state.inputByteCount,
+                bytesWritten: state.bytesWritten,
+                sourceSampleRate: state.sourceSampleRate,
+                sourceChannels: state.sourceChannels,
+                preConversion: state.preConversion.snapshot(),
+                postConversion: state.postConversion.snapshot()
+            )
+        }
+    }
 
     override init() {
         super.init()
@@ -150,14 +183,27 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SystemAudioCapturing 
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .audio, isRecording, !isPaused else { return }
+        diagnosticsLock.withLock { $0.callbackCount += 1 }
 
-        guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
+        guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else {
+            diagnosticsLock.withLock { $0.emptyBufferCount += 1 }
+            return
+        }
         let length = CMBlockBufferGetDataLength(blockBuffer)
-        guard length > 0 else { return }
+        guard length > 0 else {
+            diagnosticsLock.withLock { $0.emptyBufferCount += 1 }
+            return
+        }
 
         // Get the audio format
         guard let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer) else { return }
         guard let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)?.pointee else { return }
+        diagnosticsLock.withLock { state in
+            state.bufferCount += 1
+            state.inputByteCount += length
+            state.sourceSampleRate = asbd.mSampleRate
+            state.sourceChannels = asbd.mChannelsPerFrame
+        }
 
         // Extract raw audio bytes
         var dataPointer: UnsafeMutablePointer<Int8>?
@@ -179,6 +225,8 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SystemAudioCapturing 
             }
 
             var int16Data = Data(count: outputSamples * 2)
+            var preConversion = [Float]()
+            preConversion.reserveCapacity(outputSamples)
             int16Data.withUnsafeMutableBytes { rawBuffer in
                 let int16Buffer = rawBuffer.bindMemory(to: Int16.self)
                 let channels = Int(asbd.mChannelsPerFrame)
@@ -194,25 +242,40 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SystemAudioCapturing 
                     } else {
                         sample = floatPointer[i]
                     }
+                    preConversion.append(sample)
                     // Clamp and convert to int16
                     let clamped = max(-1.0, min(1.0, sample))
                     int16Buffer[i] = Int16(clamped * 32767.0)
                 }
             }
+            let int16Samples = int16Data.withUnsafeBytes { rawBuffer in
+                Array(rawBuffer.bindMemory(to: Int16.self))
+            }
+            let bytesToWrite = int16Data.count
+            let preConversionSamples = preConversion
 
             outputFile?.write(int16Data)
-            totalBytesWritten += int16Data.count
-            onPCMSamples?(int16Data.withUnsafeBytes { rawBuffer in
-                Array(rawBuffer.bindMemory(to: Int16.self))
-            })
+            totalBytesWritten += bytesToWrite
+            diagnosticsLock.withLock { state in
+                state.bytesWritten += bytesToWrite
+                state.preConversion.addFloats(preConversionSamples)
+                state.postConversion.addInt16(int16Samples)
+            }
+            onPCMSamples?(int16Samples)
         } else {
             // Already PCM int16, write directly
             let rawData = Data(bytes: dataPointer, count: length)
+            let int16Samples = rawData.withUnsafeBytes { rawBuffer in
+                Array(rawBuffer.bindMemory(to: Int16.self))
+            }
             outputFile?.write(rawData)
             totalBytesWritten += length
-            onPCMSamples?(rawData.withUnsafeBytes { rawBuffer in
-                Array(rawBuffer.bindMemory(to: Int16.self))
-            })
+            diagnosticsLock.withLock { state in
+                state.bytesWritten += length
+                state.preConversion.addInt16(int16Samples)
+                state.postConversion.addInt16(int16Samples)
+            }
+            onPCMSamples?(int16Samples)
         }
     }
 
