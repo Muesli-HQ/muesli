@@ -2,6 +2,35 @@ import AVFoundation
 import SwiftUI
 import MuesliCore
 
+private struct OllamaModelInfo: Codable {
+    let name: String
+    let model: String?
+    let size: Int64?
+    let digest: String?
+    let details: OllamaModelDetails?
+}
+
+private struct OllamaModelDetails: Codable {
+    let format: String?
+    let family: String?
+    let families: [String]?
+}
+
+private struct OllamaTagsResponse: Codable {
+    let models: [OllamaModelInfo]
+}
+
+private struct LMStudioModelInfo: Codable {
+    let id: String
+    let object: String?
+    let type: String?
+    let quantization: String?
+}
+
+private struct LMStudioModelsResponse: Codable {
+    let data: [LMStudioModelInfo]
+}
+
 private struct MeetingDetectionAppOption: Identifiable {
     let bundleID: String
     let name: String
@@ -87,6 +116,14 @@ struct SettingsView: View {
     @State private var openRouterFreeModels: [SummaryModelPreset] = []
     @State private var isLoadingOpenRouterFreeModels = false
     @State private var openRouterFreeModelsError: String?
+    @State private var openRouterModelCaps: [String: Int] = [:]
+    @State private var ollamaModels: [String] = []
+    @State private var isLoadingOllamaModels = false
+    @State private var ollamaModelsError: String?
+    @State private var ollamaModelCaps: [String: Int] = [:]
+    @State private var lmStudioModels: [String] = []
+    @State private var isLoadingLMStudioModels = false
+    @State private var lmStudioModelsError: String?
 
     // Uniform width for all right-side controls
     private let controlWidth: CGFloat = 220
@@ -142,6 +179,10 @@ struct SettingsView: View {
             startPermissionPolling()
             if appState.selectedMeetingSummaryBackend == .openRouter {
                 loadOpenRouterFreeModelsIfNeeded()
+            } else if appState.selectedMeetingSummaryBackend == .ollama {
+                loadOllamaModelsIfNeeded()
+            } else if appState.selectedMeetingSummaryBackend == .lmStudio {
+                loadLMStudioModelsIfNeeded()
             }
         }
         .onDisappear {
@@ -164,6 +205,10 @@ struct SettingsView: View {
         .onChange(of: appState.selectedMeetingSummaryBackend) { _, backend in
             if backend == .openRouter {
                 loadOpenRouterFreeModelsIfNeeded()
+            } else if backend == .ollama {
+                loadOllamaModelsIfNeeded()
+            } else if backend == .lmStudio {
+                loadLMStudioModelsIfNeeded()
             }
         }
         .alert(
@@ -552,22 +597,186 @@ struct SettingsView: View {
                             presets: SummaryModelPreset.openAIModels
                         ) { val in controller.updateConfig { $0.openAIModel = val } }
                     }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Thinking budget (tokens)", controlWidth: meetingControlWidth) {
+                        let effectiveMax = effectiveMaxOutputTokens(for: .openAI)
+                        HStack(spacing: 8) {
+                            Slider(
+                                value: Binding(
+                                    get: { Double(min(max(appState.config.openAISummaryMaxTokens, 100), effectiveMax)) },
+                                    set: { newValue in
+                                        controller.updateConfig { $0.openAISummaryMaxTokens = Int(newValue) }
+                                    }
+                                ),
+                                in: 100.0...Double(effectiveMax),
+                                step: 500.0
+                            )
+                            .frame(maxWidth: .infinity)
+
+                            TextField("100", text: Binding(
+                                get: { "\(min(max(appState.config.openAISummaryMaxTokens, 100), effectiveMax))" },
+                                set: { newText in
+                                    if let val = Int(newText.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                                        let clamped = min(max(val, 100), effectiveMax)
+                                        controller.updateConfig { $0.openAISummaryMaxTokens = clamped }
+                                    }
+                                }
+                            ))
+                            .textFieldStyle(.plain)
+                            .frame(width: 60)
+                            .font(MuesliTheme.body())
+                            .foregroundStyle(MuesliTheme.textPrimary)
+                            .multilineTextAlignment(.trailing)
+
+                            Button(action: {
+                                controller.updateConfig { $0.openAISummaryMaxTokens = 2500 }
+                            }) {
+                                Image(systemName: "arrow.counterclockwise.circle")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(MuesliTheme.textSecondary)
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Reset to default (2500)")
+                        }
+                        .onChange(of: appState.config.openAIModel) { _, _ in
+                            let newMax = effectiveMaxOutputTokens(for: .openAI)
+                            if appState.config.openAISummaryMaxTokens > newMax {
+                                controller.updateConfig { $0.openAISummaryMaxTokens = newMax }
+                            }
+                        }
+                    }
                     keyStatusRow(key: appState.config.openAIAPIKey)
                 } else if appState.selectedMeetingSummaryBackend == .ollama {
                     settingsRow("Ollama URL", controlWidth: meetingControlWidth) {
                         PastableTextField(
                             text: appState.config.ollamaURL,
                             placeholder: "http://localhost:11434",
-                            onChange: { val in controller.updateConfig { $0.ollamaURL = val } }
+                            onChange: { val in
+                                controller.updateConfig { $0.ollamaURL = val }
+                                ollamaModels = []
+                                ollamaModelsError = nil
+                                isLoadingOllamaModels = false
+                            }
                         )
                         .frame(height: 22)
                     }
                     Divider().background(MuesliTheme.surfaceBorder)
                     settingsRow("Model", controlWidth: meetingControlWidth) {
-                        settingsModelTextField(
-                            currentModel: appState.config.ollamaModel,
-                            placeholder: "qwen3.5"
-                        ) { val in controller.updateConfig { $0.ollamaModel = val } }
+                        ollamaModelPicker
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Thinking budget (tokens)", controlWidth: meetingControlWidth) {
+                        let effectiveMax = effectiveMaxOutputTokens(for: .ollama)
+                        HStack(spacing: 8) {
+                            Slider(
+                                value: Binding(
+                                    get: { Double(min(max(appState.config.ollamaSummaryMaxTokens, 100), effectiveMax)) },
+                                    set: { newValue in
+                                        controller.updateConfig { $0.ollamaSummaryMaxTokens = Int(newValue) }
+                                    }
+                                ),
+                                in: 100.0...Double(effectiveMax),
+                                step: 500.0
+                            )
+                            .frame(maxWidth: .infinity)
+
+                            TextField("100", text: Binding(
+                                get: { "\(min(max(appState.config.ollamaSummaryMaxTokens, 100), effectiveMax))" },
+                                set: { newText in
+                                    if let val = Int(newText.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                                        let clamped = min(max(val, 100), effectiveMax)
+                                        controller.updateConfig { $0.ollamaSummaryMaxTokens = clamped }
+                                    }
+                                }
+                            ))
+                            .textFieldStyle(.plain)
+                            .frame(width: 60)
+                            .font(MuesliTheme.body())
+                            .foregroundStyle(MuesliTheme.textPrimary)
+                            .multilineTextAlignment(.trailing)
+
+                            Button(action: {
+                                controller.updateConfig { $0.ollamaSummaryMaxTokens = 2500 }
+                            }) {
+                                Image(systemName: "arrow.counterclockwise.circle")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(MuesliTheme.textSecondary)
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Reset to default (2500)")
+                        }
+                        .onChange(of: appState.config.ollamaModel) { _, _ in
+                            let newMax = effectiveMaxOutputTokens(for: .ollama)
+                            if appState.config.ollamaSummaryMaxTokens > newMax {
+                                controller.updateConfig { $0.ollamaSummaryMaxTokens = newMax }
+                            }
+                        }
+                    }
+                } else if appState.selectedMeetingSummaryBackend == .lmStudio {
+                    settingsRow("LM Studio URL", controlWidth: meetingControlWidth) {
+                        PastableTextField(
+                            text: appState.config.lmStudioURL,
+                            placeholder: "http://localhost:1234",
+                            onChange: { val in
+                                controller.updateConfig { $0.lmStudioURL = val }
+                                lmStudioModels = []
+                                lmStudioModelsError = nil
+                                isLoadingLMStudioModels = false
+                            }
+                        )
+                        .frame(height: 22)
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Model", controlWidth: meetingControlWidth) {
+                        lmStudioModelPicker
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Thinking budget (tokens)", controlWidth: meetingControlWidth) {
+                        let effectiveMax = effectiveMaxOutputTokens(for: .lmStudio)
+                        HStack(spacing: 8) {
+                            Slider(
+                                value: Binding(
+                                    get: { Double(min(max(appState.config.lmStudioSummaryMaxTokens, 100), effectiveMax)) },
+                                    set: { newValue in
+                                        controller.updateConfig { $0.lmStudioSummaryMaxTokens = Int(newValue) }
+                                    }
+                                ),
+                                in: 100.0...Double(effectiveMax),
+                                step: 500.0
+                            )
+                            .frame(maxWidth: .infinity)
+
+                            TextField("100", text: Binding(
+                                get: { "\(min(max(appState.config.lmStudioSummaryMaxTokens, 100), effectiveMax))" },
+                                set: { newText in
+                                    if let val = Int(newText.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                                        let clamped = min(max(val, 100), effectiveMax)
+                                        controller.updateConfig { $0.lmStudioSummaryMaxTokens = clamped }
+                                    }
+                                }
+                            ))
+                            .textFieldStyle(.plain)
+                            .frame(width: 60)
+                            .font(MuesliTheme.body())
+                            .foregroundStyle(MuesliTheme.textPrimary)
+                            .multilineTextAlignment(.trailing)
+
+                            Button(action: {
+                                controller.updateConfig { $0.lmStudioSummaryMaxTokens = 2500 }
+                            }) {
+                                Image(systemName: "arrow.counterclockwise.circle")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(MuesliTheme.textSecondary)
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Reset to default (2500)")
+                        }
+                        .onChange(of: appState.config.lmStudioModel) { _, _ in
+                            let newMax = effectiveMaxOutputTokens(for: .lmStudio)
+                            if appState.config.lmStudioSummaryMaxTokens > newMax {
+                                controller.updateConfig { $0.lmStudioSummaryMaxTokens = newMax }
+                            }
+                        }
                     }
                 } else {
                     settingsRow("API Key", controlWidth: meetingControlWidth) {
@@ -588,6 +797,54 @@ struct SettingsView: View {
                             currentModel: appState.config.openRouterModel,
                             placeholder: "provider/model or openrouter/free"
                         ) { val in controller.updateConfig { $0.openRouterModel = val } }
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Thinking budget (tokens)", controlWidth: meetingControlWidth) {
+                        let effectiveMax = effectiveMaxOutputTokens(for: .openRouter)
+                        HStack(spacing: 8) {
+                            Slider(
+                                value: Binding(
+                                    get: { Double(min(max(appState.config.openRouterSummaryMaxTokens, 100), effectiveMax)) },
+                                    set: { newValue in
+                                        controller.updateConfig { $0.openRouterSummaryMaxTokens = Int(newValue) }
+                                    }
+                                ),
+                                in: 100.0...Double(effectiveMax),
+                                step: 500.0
+                            )
+                            .frame(maxWidth: .infinity)
+
+                            TextField("100", text: Binding(
+                                get: { "\(min(max(appState.config.openRouterSummaryMaxTokens, 100), effectiveMax))" },
+                                set: { newText in
+                                    if let val = Int(newText.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                                        let clamped = min(max(val, 100), effectiveMax)
+                                        controller.updateConfig { $0.openRouterSummaryMaxTokens = clamped }
+                                    }
+                                }
+                            ))
+                            .textFieldStyle(.plain)
+                            .frame(width: 60)
+                            .font(MuesliTheme.body())
+                            .foregroundStyle(MuesliTheme.textPrimary)
+                            .multilineTextAlignment(.trailing)
+
+                            Button(action: {
+                                controller.updateConfig { $0.openRouterSummaryMaxTokens = 2500 }
+                            }) {
+                                Image(systemName: "arrow.counterclockwise.circle")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(MuesliTheme.textSecondary)
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Reset to default (2500)")
+                        }
+                        .onChange(of: appState.config.openRouterModel) { _, _ in
+                            let newMax = effectiveMaxOutputTokens(for: .openRouter)
+                            if appState.config.openRouterSummaryMaxTokens > newMax {
+                                controller.updateConfig { $0.openRouterSummaryMaxTokens = newMax }
+                            }
+                        }
                     }
                     keyStatusRow(key: appState.config.openRouterAPIKey)
                 }
@@ -1892,6 +2149,30 @@ struct SettingsView: View {
         .frame(height: 22)
     }
 
+    private func effectiveMaxOutputTokens(for backend: MeetingSummaryBackendOption) -> Int {
+        let fallback = 100_000
+        switch backend {
+        case .openAI:
+            return ModelTokenCap.maxOutputTokens(forModelID: appState.config.openAIModel) ?? fallback
+        case .openRouter:
+            return openRouterModelCaps[appState.config.openRouterModel]
+                ?? ModelTokenCap.maxOutputTokens(forModelID: appState.config.openRouterModel)
+                ?? fallback
+        case .chatGPT:
+            return ModelTokenCap.maxOutputTokens(forModelID: appState.config.chatGPTModel) ?? fallback
+        case .ollama:
+            return ollamaModelCaps[appState.config.ollamaModel]
+                ?? ModelTokenCap.contextLengthHint(forModelID: appState.config.ollamaModel)
+                ?? fallback
+        case .lmStudio:
+            return ModelTokenCap.maxOutputTokens(forModelID: appState.config.lmStudioModel)
+                ?? ModelTokenCap.contextLengthHint(forModelID: appState.config.lmStudioModel)
+                ?? fallback
+        default:
+            return fallback
+        }
+    }
+
     @ViewBuilder
     private var openRouterFreeModelMenu: some View {
         if isLoadingOpenRouterFreeModels {
@@ -1925,6 +2206,107 @@ struct SettingsView: View {
         }
     }
 
+    @ViewBuilder
+    private var ollamaModelPicker: some View {
+        if isLoadingOllamaModels {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Loading models")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(MuesliTheme.textTertiary)
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        } else if !ollamaModels.isEmpty {
+            let allOptions = ["(Default)"] + ollamaModels
+            let currentIndex = appState.config.ollamaModel.isEmpty ? 0 : (ollamaModels.firstIndex(of: appState.config.ollamaModel).map { $0 + 1 } ?? 0)
+            let selectedLabel = currentIndex < allOptions.count ? allOptions[currentIndex] : allOptions[0]
+
+            FixedWidthPopUp(
+                selection: selectedLabel,
+                options: allOptions,
+                onSelectIndex: { index in
+                    let selected = index == 0 ? "" : ollamaModels[index - 1]
+                    controller.updateConfig { $0.ollamaModel = selected }
+                }
+            )
+            .frame(height: 24)
+        } else {
+            HStack(spacing: 8) {
+                TextField("Model name", text: Binding(
+                    get: { appState.config.ollamaModel },
+                    set: { val in controller.updateConfig { $0.ollamaModel = val } }
+                ))
+                .font(MuesliTheme.body())
+                .foregroundStyle(MuesliTheme.textPrimary)
+                .frame(height: 22)
+                .layoutPriority(1)
+
+                if let ollamaModelsError {
+                    Text(ollamaModelsError)
+                        .font(.system(size: 11))
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .lineLimit(1)
+                }
+                Button("Load") {
+                    loadOllamaModels(force: true)
+                }
+                .font(.system(size: 12, weight: .medium))
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+
+    @ViewBuilder
+    private var lmStudioModelPicker: some View {
+        if isLoadingLMStudioModels {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Loading models")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(MuesliTheme.textTertiary)
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        } else if !lmStudioModels.isEmpty {
+            let savedModel = appState.config.lmStudioModel
+            let effectiveModel = lmStudioModels.contains(savedModel) ? savedModel : lmStudioModels[0]
+
+            FixedWidthPopUp(
+                selection: effectiveModel,
+                options: lmStudioModels,
+                onSelectIndex: { index in
+                    guard index >= 0 && index < lmStudioModels.count else { return }
+                    controller.updateConfig { $0.lmStudioModel = lmStudioModels[index] }
+                }
+            )
+            .frame(height: 24)
+        } else {
+            HStack(spacing: 8) {
+                TextField("Model name", text: Binding(
+                    get: { appState.config.lmStudioModel },
+                    set: { val in controller.updateConfig { $0.lmStudioModel = val } }
+                ))
+                .font(MuesliTheme.body())
+                .foregroundStyle(MuesliTheme.textPrimary)
+                .frame(height: 22)
+                .layoutPriority(1)
+
+                if let lmStudioModelsError {
+                    Text(lmStudioModelsError)
+                        .font(.system(size: 11))
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .lineLimit(1)
+                }
+                Button("Load") {
+                    loadLMStudioModels(force: true)
+                }
+                .font(.system(size: 12, weight: .medium))
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+
     private func loadOpenRouterFreeModelsIfNeeded() {
         guard openRouterFreeModels.isEmpty, !isLoadingOpenRouterFreeModels else { return }
         loadOpenRouterFreeModels(force: false)
@@ -1950,12 +2332,184 @@ struct SettingsView: View {
                     openRouterFreeModels = presets
                     openRouterFreeModelsError = presets.isEmpty ? "No free text models found" : nil
                     isLoadingOpenRouterFreeModels = false
+                    openRouterModelCaps = Dictionary(
+                        catalog.data.compactMap { model in
+                            guard let ctx = model.contextLength else { return nil }
+                            return (model.id, ctx)
+                        },
+                        uniquingKeysWith: { first, _ in first }
+                    )
                 }
             } catch {
                 await MainActor.run {
                     openRouterFreeModels = []
                     openRouterFreeModelsError = "Could not load"
                     isLoadingOpenRouterFreeModels = false
+                }
+            }
+        }
+    }
+
+    private func loadOllamaModelsIfNeeded() {
+        guard ollamaModels.isEmpty, !isLoadingOllamaModels else { return }
+        loadOllamaModels(force: false)
+    }
+
+    private func loadOllamaModels(force: Bool) {
+        guard force || ollamaModels.isEmpty else { return }
+        isLoadingOllamaModels = true
+        ollamaModelsError = nil
+
+        let baseURLString = appState.config.ollamaURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseURL: URL
+        if baseURLString.isEmpty {
+            baseURL = URL(string: "http://localhost:11434")!
+        } else {
+            guard let url = URL(string: baseURLString) else {
+                ollamaModelsError = "Invalid URL"
+                isLoadingOllamaModels = false
+                return
+            }
+            baseURL = url
+        }
+
+        let urlAtStart = baseURLString
+
+        Task {
+            do {
+                let tagsURL = baseURL.appendingPathComponent("api/tags")
+                var request = URLRequest(url: tagsURL)
+                request.timeoutInterval = 10
+
+                let (data, response) = try await URLSession.shared.data(for: request)
+                if let httpResponse = response as? HTTPURLResponse,
+                   !(200..<300).contains(httpResponse.statusCode) {
+                    throw URLError(.badServerResponse)
+                }
+
+                let decoder = JSONDecoder()
+                let tagsResponse = try decoder.decode(OllamaTagsResponse.self, from: data)
+                let modelNames = tagsResponse.models
+                    .map { $0.name }
+                    .filter { !$0.lowercased().contains("embed") }
+                    .sorted()
+
+                let caps: [String: Int] = await withTaskGroup(of: (String, Int)?.self) { group in
+                    for name in modelNames {
+                        group.addTask {
+                            do {
+                                let showURL = baseURL.appendingPathComponent("api/show")
+                                var req = URLRequest(url: showURL)
+                                req.httpMethod = "POST"
+                                req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                                req.httpBody = try JSONSerialization.data(withJSONObject: ["name": name])
+                                req.timeoutInterval = 10
+                                let (showData, _) = try await URLSession.shared.data(for: req)
+                                guard let json = try JSONSerialization.jsonObject(with: showData) as? [String: Any],
+                                      let modelInfo = json["model_info"] as? [String: Any] else { return nil }
+                                for (key, value) in modelInfo {
+                                    let k = key.lowercased()
+                                    if k.contains("context_length") || k.contains("max_position_embeddings") || k.contains("sliding_window") {
+                                        if let intVal = value as? Int {
+                                            return (name, intVal)
+                                        } else if let doubleVal = value as? Double {
+                                            return (name, Int(doubleVal))
+                                        }
+                                    }
+                                }
+                                return nil
+                            } catch {
+                                return nil
+                            }
+                        }
+                    }
+                    var result: [String: Int] = [:]
+                    for await pair in group {
+                        if let (name, cap) = pair {
+                            result[name] = cap
+                        }
+                    }
+                    return result
+                }
+
+                await MainActor.run {
+                    guard appState.config.ollamaURL.trimmingCharacters(in: .whitespacesAndNewlines) == urlAtStart else { return }
+                    ollamaModels = modelNames
+                    ollamaModelsError = modelNames.isEmpty ? "No models found" : nil
+                    ollamaModelCaps = caps
+                    isLoadingOllamaModels = false
+                }
+            } catch {
+                await MainActor.run {
+                    guard appState.config.ollamaURL.trimmingCharacters(in: .whitespacesAndNewlines) == urlAtStart else { return }
+                    ollamaModels = []
+                    ollamaModelsError = "Could not load"
+                    ollamaModelCaps = [:]
+                    isLoadingOllamaModels = false
+                }
+            }
+        }
+    }
+
+    private func loadLMStudioModelsIfNeeded() {
+        guard lmStudioModels.isEmpty, !isLoadingLMStudioModels else { return }
+        loadLMStudioModels(force: false)
+    }
+
+    private func loadLMStudioModels(force: Bool) {
+        guard force || lmStudioModels.isEmpty else { return }
+        isLoadingLMStudioModels = true
+        lmStudioModelsError = nil
+
+        let baseURLString = appState.config.lmStudioURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseURL: URL
+        if baseURLString.isEmpty {
+            baseURL = URL(string: "http://localhost:1234")!
+        } else {
+            guard let url = URL(string: baseURLString) else {
+                lmStudioModelsError = "Invalid URL"
+                isLoadingLMStudioModels = false
+                return
+            }
+            baseURL = url
+        }
+
+        let urlAtStart = baseURLString
+
+        Task {
+            do {
+                let modelsURL = baseURL.appendingPathComponent("api/v0/models")
+                var request = URLRequest(url: modelsURL)
+                request.timeoutInterval = 10
+
+                let (data, response) = try await URLSession.shared.data(for: request)
+                if let httpResponse = response as? HTTPURLResponse,
+                   !(200..<300).contains(httpResponse.statusCode) {
+                    throw URLError(.badServerResponse)
+                }
+
+                let decoder = JSONDecoder()
+                let modelsResponse = try decoder.decode(LMStudioModelsResponse.self, from: data)
+                let modelNames = modelsResponse.data
+                    .filter { $0.type != "embeddings" }
+                    .map { $0.id }
+                    .sorted()
+
+                await MainActor.run {
+                    guard appState.config.lmStudioURL.trimmingCharacters(in: .whitespacesAndNewlines) == urlAtStart else { return }
+                    lmStudioModels = modelNames
+                    lmStudioModelsError = modelNames.isEmpty ? "No models found" : nil
+                    isLoadingLMStudioModels = false
+                    if !modelNames.isEmpty && appState.config.lmStudioModel.isEmpty {
+                        controller.updateConfig { $0.lmStudioModel = modelNames[0] }
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    guard appState.config.lmStudioURL.trimmingCharacters(in: .whitespacesAndNewlines) == urlAtStart else { return }
+                    lmStudioModels = []
+                    lmStudioModelsError = "Could not load"
+                    isLoadingLMStudioModels = false
                 }
             }
         }

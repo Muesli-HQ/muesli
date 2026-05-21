@@ -343,7 +343,12 @@ struct MeetingSummaryBackendOption: Equatable {
         label: "Ollama"
     )
 
-    static let all: [MeetingSummaryBackendOption] = [.chatGPT, .openAI, .openRouter, .ollama]
+    static let lmStudio = MeetingSummaryBackendOption(
+        backend: "lmstudio",
+        label: "LM Studio"
+    )
+
+    static let all: [MeetingSummaryBackendOption] = [.chatGPT, .openAI, .openRouter, .ollama, .lmStudio]
 
     static func resolved(_ backend: String?) -> MeetingSummaryBackendOption {
         guard let backend, let option = all.first(where: { $0.backend == backend }) else {
@@ -632,6 +637,12 @@ struct AppConfig: Codable {
     var chatGPTModel: String = ""
     var ollamaURL: String = "http://localhost:11434"
     var ollamaModel: String = "qwen3.5"
+    var lmStudioURL: String = "http://localhost:1234"
+    var lmStudioModel: String = ""
+    var openAISummaryMaxTokens: Int = 2500
+    var openRouterSummaryMaxTokens: Int = 2500
+    var ollamaSummaryMaxTokens: Int = 2500
+    var lmStudioSummaryMaxTokens: Int = 2500
     var summaryModel: String = ""
     var meetingSummaryModel: String = ""
     var hasCompletedOnboarding: Bool = false
@@ -700,6 +711,12 @@ struct AppConfig: Codable {
         case chatGPTModel = "chatgpt_model"
         case ollamaURL = "ollama_url"
         case ollamaModel = "ollama_model"
+        case lmStudioURL = "lmstudio_url"
+        case lmStudioModel = "lmstudio_model"
+        case openAISummaryMaxTokens = "openai_summary_max_tokens"
+        case openRouterSummaryMaxTokens = "openrouter_summary_max_tokens"
+        case ollamaSummaryMaxTokens = "ollama_summary_max_tokens"
+        case lmStudioSummaryMaxTokens = "lmstudio_summary_max_tokens"
         case summaryModel = "summary_model"
         case meetingSummaryModel = "meeting_summary_model"
         case hasCompletedOnboarding = "has_completed_onboarding"
@@ -782,6 +799,12 @@ struct AppConfig: Codable {
         chatGPTModel = (try? c.decode(String.self, forKey: .chatGPTModel)) ?? defaults.chatGPTModel
         ollamaURL = (try? c.decode(String.self, forKey: .ollamaURL)) ?? defaults.ollamaURL
         ollamaModel = (try? c.decode(String.self, forKey: .ollamaModel)) ?? defaults.ollamaModel
+        lmStudioURL = (try? c.decode(String.self, forKey: .lmStudioURL)) ?? defaults.lmStudioURL
+        lmStudioModel = (try? c.decode(String.self, forKey: .lmStudioModel)) ?? defaults.lmStudioModel
+        openAISummaryMaxTokens = min(max((try? c.decode(Int.self, forKey: .openAISummaryMaxTokens)) ?? defaults.openAISummaryMaxTokens, 100), 100000)
+        openRouterSummaryMaxTokens = min(max((try? c.decode(Int.self, forKey: .openRouterSummaryMaxTokens)) ?? defaults.openRouterSummaryMaxTokens, 100), 100000)
+        ollamaSummaryMaxTokens = min(max((try? c.decode(Int.self, forKey: .ollamaSummaryMaxTokens)) ?? defaults.ollamaSummaryMaxTokens, 100), 100000)
+        lmStudioSummaryMaxTokens = min(max((try? c.decode(Int.self, forKey: .lmStudioSummaryMaxTokens)) ?? defaults.lmStudioSummaryMaxTokens, 100), 100000)
         summaryModel = (try? c.decode(String.self, forKey: .summaryModel)) ?? defaults.summaryModel
         meetingSummaryModel = (try? c.decode(String.self, forKey: .meetingSummaryModel)) ?? defaults.meetingSummaryModel
         hasCompletedOnboarding = (try? c.decode(Bool.self, forKey: .hasCompletedOnboarding)) ?? defaults.hasCompletedOnboarding

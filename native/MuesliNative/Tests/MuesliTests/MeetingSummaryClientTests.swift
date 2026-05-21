@@ -385,4 +385,65 @@ struct MeetingSummaryClientTests {
             #expect(summaryError != nil)
         }
     }
+
+    @Test("summarize routes to LM Studio when configured")
+    func routesToLMStudio() async throws {
+        var config = AppConfig()
+        config.meetingSummaryBackend = "lmstudio"
+        config.lmStudioURL = "http://localhost:1" // invalid port to force connection failure
+        config.lmStudioModel = "test-model" // set model to pass validation and reach network
+
+        do {
+            _ = try await MeetingSummaryClient.summarize(
+                transcript: "Test transcript",
+                meetingTitle: "My Meeting",
+                config: config
+            )
+            #expect(Bool(false), "Expected error to be thrown")
+        } catch {
+            let summaryError = error as? MeetingSummaryError
+            #expect(summaryError != nil)
+            if case .requestFailed(let backend, _) = summaryError! {
+                #expect(backend == "LM Studio")
+            } else {
+                #expect(Bool(false), "Expected requestFailed error, got \(String(describing: error))")
+            }
+        }
+    }
+
+    @Test("generateTitle returns nil for LM Studio when unreachable")
+    func titleLMStudioUnreachable() async {
+        var config = AppConfig()
+        config.meetingSummaryBackend = "lmstudio"
+        config.lmStudioURL = "http://localhost:1"
+
+        let title = await MeetingSummaryClient.generateTitle(
+            transcript: "Sprint planning discussion",
+            config: config
+        )
+
+        #expect(title == nil)
+    }
+
+    @Test("generateTitle returns nil for LM Studio with invalid URL")
+    func titleLMStudioInvalidURL() async {
+        var config = AppConfig()
+        config.meetingSummaryBackend = "lmstudio"
+        config.lmStudioURL = "not a valid url"
+
+        let title = await MeetingSummaryClient.generateTitle(
+            transcript: "Sprint planning discussion",
+            config: config
+        )
+
+        #expect(title == nil)
+    }
+
+    @Test("emptyResponse error suggests increasing output token limit")
+    func emptyResponseSuggestsTokenLimit() {
+        let error = MeetingSummaryError.emptyResponse(backend: "LM Studio")
+        let description = error.errorDescription ?? ""
+        #expect(description.contains("output token limit"))
+        #expect(description.contains("Settings"))
+    }
 }

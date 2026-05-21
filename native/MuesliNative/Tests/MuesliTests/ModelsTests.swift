@@ -368,11 +368,12 @@ struct MeetingSummaryBackendTests {
 
     @Test("all options listed")
     func allOptions() {
-        #expect(MeetingSummaryBackendOption.all.count == 4)
+        #expect(MeetingSummaryBackendOption.all.count == 5)
         #expect(MeetingSummaryBackendOption.all.contains(.openAI))
         #expect(MeetingSummaryBackendOption.all.contains(.openRouter))
         #expect(MeetingSummaryBackendOption.all.contains(.chatGPT))
         #expect(MeetingSummaryBackendOption.all.contains(.ollama))
+        #expect(MeetingSummaryBackendOption.all.contains(.lmStudio))
     }
 
     @Test("backend strings are lowercase")
@@ -380,6 +381,7 @@ struct MeetingSummaryBackendTests {
         #expect(MeetingSummaryBackendOption.openAI.backend == "openai")
         #expect(MeetingSummaryBackendOption.openRouter.backend == "openrouter")
         #expect(MeetingSummaryBackendOption.ollama.backend == "ollama")
+        #expect(MeetingSummaryBackendOption.lmStudio.backend == "lmstudio")
     }
 
     @Test("configured values resolve with ChatGPT fallback")
@@ -387,6 +389,7 @@ struct MeetingSummaryBackendTests {
         #expect(MeetingSummaryBackendOption.resolved("chatgpt") == .chatGPT)
         #expect(MeetingSummaryBackendOption.resolved("openrouter") == .openRouter)
         #expect(MeetingSummaryBackendOption.resolved("ollama") == .ollama)
+        #expect(MeetingSummaryBackendOption.resolved("lmstudio") == .lmStudio)
         #expect(MeetingSummaryBackendOption.resolved("unknown") == .chatGPT)
         #expect(MeetingSummaryBackendOption.resolved(nil) == .chatGPT)
     }
@@ -430,6 +433,10 @@ struct AppConfigTests {
         #expect(config.meetingHookEnabled == false)
         #expect(config.meetingHookPath.isEmpty)
         #expect(config.meetingHookTimeoutSeconds == 30)
+        #expect(config.openAISummaryMaxTokens == 2500)
+        #expect(config.openRouterSummaryMaxTokens == 2500)
+        #expect(config.ollamaSummaryMaxTokens == 2500)
+        #expect(config.lmStudioSummaryMaxTokens == 2500)
     }
 
     @Test("JSON encode/decode round-trip")
@@ -462,6 +469,10 @@ struct AppConfigTests {
         config.computerUsePlannerModel = "gpt-5.4"
         config.computerUseTimeoutSeconds = 180
         config.hotkeyTriggerThresholdMS = 125
+        config.openAISummaryMaxTokens = 4000
+        config.openRouterSummaryMaxTokens = 5000
+        config.ollamaSummaryMaxTokens = 6000
+        config.lmStudioSummaryMaxTokens = 12000
 
         let data = try JSONEncoder().encode(config)
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
@@ -490,6 +501,10 @@ struct AppConfigTests {
         #expect(decoded.computerUsePlannerModel == "gpt-5.4")
         #expect(decoded.computerUseTimeoutSeconds == 180)
         #expect(decoded.hotkeyTriggerThresholdMS == 125)
+        #expect(decoded.openAISummaryMaxTokens == 4000)
+        #expect(decoded.openRouterSummaryMaxTokens == 5000)
+        #expect(decoded.ollamaSummaryMaxTokens == 6000)
+        #expect(decoded.lmStudioSummaryMaxTokens == 12000)
     }
 
     @Test("JSON coding keys use snake_case")
@@ -523,6 +538,10 @@ struct AppConfigTests {
         #expect(json["meeting_hook_enabled"] != nil)
         #expect(json["meeting_hook_path"] != nil)
         #expect(json["meeting_hook_timeout_seconds"] != nil)
+        #expect(json["openai_summary_max_tokens"] != nil)
+        #expect(json["openrouter_summary_max_tokens"] != nil)
+        #expect(json["ollama_summary_max_tokens"] != nil)
+        #expect(json["lmstudio_summary_max_tokens"] != nil)
     }
 
     @Test("decodes with missing fields using defaults")
@@ -552,6 +571,10 @@ struct AppConfigTests {
         #expect(config.meetingHookEnabled == false)
         #expect(config.meetingHookPath.isEmpty)
         #expect(config.meetingHookTimeoutSeconds == 30)
+        #expect(config.openAISummaryMaxTokens == 2500)
+        #expect(config.openRouterSummaryMaxTokens == 2500)
+        #expect(config.ollamaSummaryMaxTokens == 2500)
+        #expect(config.lmStudioSummaryMaxTokens == 2500)
     }
 
     @Test("legacy completed onboarding enables meetings when use case is missing")

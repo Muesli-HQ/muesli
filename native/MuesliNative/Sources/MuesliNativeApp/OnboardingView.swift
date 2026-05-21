@@ -1419,6 +1419,10 @@ struct OnboardingView: View {
                     summaryBackend = .ollama
                     apiKey = ""
                 }
+                providerTab("LM Studio", selected: summaryBackend == .lmStudio) {
+                    summaryBackend = .lmStudio
+                    apiKey = ""
+                }
             }
             .background(MuesliTheme.backgroundRaised)
             .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
@@ -1426,7 +1430,7 @@ struct OnboardingView: View {
                 RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
                     .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
             )
-            .frame(width: 320)
+            .frame(width: 400)
 
             if summaryBackend == .chatGPT {
                 Text("Use your ChatGPT Plus or Pro subscription.")
@@ -1506,6 +1510,31 @@ struct OnboardingView: View {
                             .font(.system(size: 11))
                             .foregroundStyle(MuesliTheme.success)
                     }
+                }
+            } else if summaryBackend == .lmStudio {
+                Text("Run AI models locally with LM Studio.\nNo API key needed — just start the LM Studio server.")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                    .multilineTextAlignment(.center)
+
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                    Text("LM Studio is served by default at http://localhost:1234")
+                        .font(.system(size: 11))
+                        .foregroundStyle(MuesliTheme.textTertiary)
+
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(MuesliTheme.success)
+                            .frame(width: 6, height: 6)
+                        Text("No authentication required")
+                            .font(.system(size: 11))
+                            .foregroundStyle(MuesliTheme.success)
+                    }
+
+                    Text("Select a model in Settings after setup.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(MuesliTheme.transcribing)
+                        .padding(.top, 4)
                 }
             } else {
                 if summaryBackend == .openRouter {
