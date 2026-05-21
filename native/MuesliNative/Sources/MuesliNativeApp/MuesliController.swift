@@ -259,6 +259,7 @@ final class MuesliController: NSObject {
     private var meetingStartTask: Task<Void, Never>?
     private var meetingStartMeetingID: Int64?
     private var importTask: Task<Void, Never>?
+    private var importSessionID: UUID?
     private var canceledMeetingStartIDs = Set<Int64>()
     private var hasStarted = false
 
@@ -2791,16 +2792,19 @@ final class MuesliController: NSObject {
         }
 
         isStartingMeetingRecording = true
+        let sessionID = UUID()
+        importSessionID = sessionID
 
         importTask = Task { @MainActor [weak self] in
             guard let self else { return }
             guard let sourceURL = await AudioFileImportController.selectFile() else {
                 self.isStartingMeetingRecording = false
                 self.importTask = nil
+                self.importSessionID = nil
                 self.syncAppState()
                 return
             }
-            await self.importAudioFile(from: sourceURL)
+            await self.importAudioFile(from: sourceURL, sessionID: sessionID)
         }
     }
 
@@ -2823,18 +2827,20 @@ final class MuesliController: NSObject {
         }
 
         isStartingMeetingRecording = true
+        let sessionID = UUID()
+        importSessionID = sessionID
 
         importTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.importAudioFile(from: url)
+            await self.importAudioFile(from: url, sessionID: sessionID)
         }
     }
 
-    private func importAudioFile(from sourceURL: URL) async {
+    private func importAudioFile(from sourceURL: URL, sessionID: UUID) async {
         let filename = sourceURL.deletingPathExtension().lastPathComponent
         let title = filename.isEmpty ? "Imported Recording" : filename
 
-        self.updateImportProgressStatus("Importing audio file...")
+        self.updateImportProgressStatus("Importing audio file...", sessionID: sessionID)
         self.beginMeetingActivity(reason: "Importing audio file for transcription")
 
         do {
@@ -2844,13 +2850,16 @@ final class MuesliController: NSObject {
                 controller: self,
                 progress: { [weak self] status in
                     Task { @MainActor in
-                        self?.updateImportProgressStatus(status)
+                        guard let self,
+                              self.importSessionID == sessionID else { return }
+                        self.updateImportProgressStatus(status, sessionID: sessionID)
                     }
                 }
             )
 
             await MainActor.run {
                 self.importTask = nil
+                self.importSessionID = nil
                 self.isStartingMeetingRecording = false
                 self.updateMeetingStartStatus(nil)
                 self.indicator.hideLoading()
@@ -2865,6 +2874,7 @@ final class MuesliController: NSObject {
         } catch is CancellationError {
             await MainActor.run {
                 self.importTask = nil
+                self.importSessionID = nil
                 self.isStartingMeetingRecording = false
                 self.updateMeetingStartStatus(nil)
                 self.indicator.hideLoading()
@@ -2876,6 +2886,7 @@ final class MuesliController: NSObject {
         } catch {
             await MainActor.run {
                 self.importTask = nil
+                self.importSessionID = nil
                 self.isStartingMeetingRecording = false
                 self.updateMeetingStartStatus(nil)
                 self.indicator.hideLoading()
@@ -2950,6 +2961,7 @@ final class MuesliController: NSObject {
             // Audio import cancellation
             importTask?.cancel()
             importTask = nil
+            importSessionID = nil
             indicator.hideLoading()
         }
 
@@ -3750,7 +3762,10 @@ final class MuesliController: NSObject {
         appState.meetingStartStatus = status
     }
 
-    private func updateImportProgressStatus(_ status: String) {
+    private func updateImportProgressStatus(_ status: String, sessionID: UUID) {
+        guard importTask != nil,
+              importSessionID == sessionID,
+              isStartingMeetingRecording else { return }
         updateMeetingStartStatus(status)
         statusBarController?.setStatus(status)
         statusBarController?.refresh()
