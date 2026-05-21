@@ -66,6 +66,7 @@ case "${shard}" in
       MeetingBrowserLogicTests
       TranscriptFormatterTests
       MeetingSummaryBackendTests
+      DustRegionTests
       MeetingResummarizationPolicyTests
       MeetingTemplateResolutionTests
       DisabledCalendarFilterTests

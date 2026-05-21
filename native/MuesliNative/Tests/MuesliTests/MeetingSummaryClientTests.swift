@@ -385,4 +385,166 @@ struct MeetingSummaryClientTests {
             #expect(summaryError != nil)
         }
     }
+
+    // MARK: - Dust backend
+
+    private func dustJSON(_ string: String) throws -> [String: Any] {
+        try #require(try JSONSerialization.jsonObject(with: Data(string.utf8)) as? [String: Any])
+    }
+
+    @Test("summarize falls back to raw transcript when Dust credentials are missing")
+    func dustFallbackWithoutCredentials() async throws {
+        var config = AppConfig()
+        config.meetingSummaryBackend = "dust"
+
+        let result = try await MeetingSummaryClient.summarize(
+            transcript: "Hello world",
+            meetingTitle: "Test",
+            config: config
+        )
+
+        #expect(result.contains("## Raw Transcript"))
+        #expect(result.contains("Hello world"))
+    }
+
+    @Test("summarize falls back to raw transcript when Dust credentials are incomplete")
+    func dustFallbackWithPartialCredentials() async throws {
+        var config = AppConfig()
+        config.meetingSummaryBackend = "dust"
+        config.dustAPIKey = "sk-test"
+        // workspace ID and agent ID intentionally left empty
+
+        let result = try await MeetingSummaryClient.summarize(
+            transcript: "Hello world",
+            meetingTitle: "Test",
+            config: config
+        )
+
+        #expect(result.contains("## Raw Transcript"))
+    }
+
+    @Test("generateTitle returns nil for Dust without credentials")
+    func dustTitleNilWithoutCredentials() async {
+        var config = AppConfig()
+        config.meetingSummaryBackend = "dust"
+
+        let title = await MeetingSummaryClient.generateTitle(
+            transcript: "Sprint planning discussion",
+            config: config
+        )
+
+        #expect(title == nil)
+    }
+
+    @Test("summarize surfaces a Dust error when the host is unreachable")
+    func dustSummarizeThrowsOnUnreachableHost() async throws {
+        setenv("DUST_BASE_URL", "http://localhost:1", 1)
+        defer { unsetenv("DUST_BASE_URL") }
+
+        var config = AppConfig()
+        config.meetingSummaryBackend = "dust"
+        config.dustAPIKey = "sk-test"
+        config.dustWorkspaceID = "ws-test"
+        config.dustAgentID = "agent-test"
+
+        do {
+            _ = try await MeetingSummaryClient.summarize(
+                transcript: "Test transcript",
+                meetingTitle: "My Meeting",
+                config: config
+            )
+            #expect(Bool(false), "Expected error to be thrown")
+        } catch {
+            let summaryError = error as? MeetingSummaryError
+            #expect(summaryError != nil)
+            if case .requestFailed(let backend, _) = summaryError! {
+                #expect(backend == "Dust")
+            } else {
+                #expect(Bool(false), "Expected requestFailed error, got \(String(describing: error))")
+            }
+        }
+    }
+
+    @Test("DustResponseParser extracts a completed agent answer")
+    func dustParserExtractsAnswer() throws {
+        let json = try dustJSON("""
+        {
+          "conversation": {
+            "sId": "conv_abc",
+            "content": [
+              [{"type": "user_message", "content": "raw transcript"}],
+              [{"type": "agent_message", "status": "succeeded", "content": "# Notes\\n- shipped"}]
+            ]
+          }
+        }
+        """)
+
+        #expect(MeetingSummaryClient.DustResponseParser.agentOutcome(in: json) == .answer("# Notes\n- shipped"))
+    }
+
+    @Test("DustResponseParser reports a still-running agent message")
+    func dustParserReportsRunning() throws {
+        let json = try dustJSON("""
+        {"conversation": {"content": [
+          [{"type": "user_message", "content": "x"}],
+          [{"type": "agent_message", "status": "created"}]
+        ]}}
+        """)
+
+        #expect(MeetingSummaryClient.DustResponseParser.agentOutcome(in: json) == .running)
+    }
+
+    @Test("DustResponseParser reports missing when no agent message exists")
+    func dustParserReportsMissing() throws {
+        let json = try dustJSON("""
+        {"conversation": {"content": [[{"type": "user_message", "content": "x"}]]}}
+        """)
+
+        #expect(MeetingSummaryClient.DustResponseParser.agentOutcome(in: json) == .missing)
+    }
+
+    @Test("DustResponseParser surfaces a failed agent run")
+    func dustParserReportsFailure() throws {
+        let json = try dustJSON("""
+        {"conversation": {"content": [
+          [{"type": "agent_message", "status": "failed", "error": {"message": "tool timeout"}}]
+        ]}}
+        """)
+
+        #expect(MeetingSummaryClient.DustResponseParser.agentOutcome(in: json) == .failed("tool timeout"))
+    }
+
+    @Test("DustResponseParser picks the latest version within a rank")
+    func dustParserPicksLatestVersion() throws {
+        let json = try dustJSON("""
+        {"conversation": {"content": [
+          [{"type": "user_message", "content": "x"}],
+          [
+            {"type": "agent_message", "status": "created"},
+            {"type": "agent_message", "status": "succeeded", "content": "final answer"}
+          ]
+        ]}}
+        """)
+
+        #expect(MeetingSummaryClient.DustResponseParser.agentOutcome(in: json) == .answer("final answer"))
+    }
+
+    @Test("DustResponseParser extracts the conversation ID from sId")
+    func dustParserExtractsConversationID() throws {
+        let json = try dustJSON("""
+        {"conversation": {"sId": "conv_xyz", "content": []}}
+        """)
+
+        #expect(MeetingSummaryClient.DustResponseParser.conversationID(in: json) == "conv_xyz")
+    }
+
+    @Test("DustResponseParser handles a numeric id and an unwrapped conversation")
+    func dustParserHandlesUnwrappedConversation() throws {
+        let json = try dustJSON("""
+        {"id": 4321, "content": [[{"type": "agent_message", "status": "succeeded", "content": "notes"}]]}
+        """)
+
+        #expect(MeetingSummaryClient.DustResponseParser.conversationID(in: json) == "4321")
+        #expect(MeetingSummaryClient.DustResponseParser.agentOutcome(in: json) == .answer("notes"))
+    }
 }
