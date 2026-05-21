@@ -1150,7 +1150,7 @@ enum MeetingSummaryClient {
                 fputs("[summary] Dust title generation: trimmed response is empty\n", stderr)
                 return nil
             }
-            fputs("[summary] Dust generated title: \(title)\n", stderr)
+            fputs("[summary] Dust generated title successfully\n", stderr)
             return title
         } catch {
             fputs("[summary] Dust title generation failed: \(error.localizedDescription)\n", stderr)
