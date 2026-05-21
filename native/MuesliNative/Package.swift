@@ -22,6 +22,7 @@ let package = Package(
         .package(url: "https://github.com/TelemetryDeck/SwiftSDK", from: "2.0.0"),
         .package(url: "https://github.com/MimicScribe/dtln-aec-coreml.git", from: "0.4.0-beta"),
         .package(url: "https://github.com/apple/swift-atomics.git", from: "1.2.0"),
+        .package(path: "Vendor/KittenTTS-swift"),
     ],
     targets: [
         .target(
@@ -44,6 +45,7 @@ let package = Package(
                 .product(name: "Atomics", package: "swift-atomics"),
                 .product(name: "DTLNAecCoreML", package: "dtln-aec-coreml"),
                 .product(name: "DTLNAec512", package: "dtln-aec-coreml"),
+                .product(name: "KittenTTS", package: "KittenTTS-swift"),
             ],
             path: "Sources/MuesliNativeApp",
             swiftSettings: [

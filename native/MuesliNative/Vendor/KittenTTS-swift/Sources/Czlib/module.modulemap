@@ -1,0 +1,4 @@
+module Czlib [system] {
+    header "shim.h"
+    export *
+}

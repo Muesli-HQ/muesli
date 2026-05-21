@@ -462,6 +462,214 @@ struct ComputerUseTraceFormatterTests {
     }
 }
 
+@Suite("Computer Use speech feedback")
+struct ComputerUseSpeechFeedbackTests {
+    private actor SpeechDrainProbe {
+        private var calls: [String] = []
+        private var activeCount = 0
+        private var releaseContinuations: [Int: CheckedContinuation<Void, Never>] = [:]
+        private var callWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+        private var activeWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+
+        func record(_ text: String) async {
+            let index = calls.count
+            calls.append(text)
+            activeCount += 1
+            resumeWaiters()
+
+            if index < 2 {
+                await withCheckedContinuation { continuation in
+                    releaseContinuations[index] = continuation
+                }
+            }
+
+            activeCount -= 1
+            resumeWaiters()
+        }
+
+        func waitForCallCount(_ count: Int) async {
+            guard calls.count < count else { return }
+            await withCheckedContinuation { continuation in
+                callWaiters.append((count, continuation))
+            }
+        }
+
+        func waitForActiveCount(_ count: Int) async {
+            guard activeCount != count else { return }
+            await withCheckedContinuation { continuation in
+                activeWaiters.append((count, continuation))
+            }
+        }
+
+        func releaseCall(at index: Int) {
+            releaseContinuations.removeValue(forKey: index)?.resume()
+        }
+
+        func recordedCalls() -> [String] {
+            calls
+        }
+
+        private func resumeWaiters() {
+            let readyCallWaiters = callWaiters.filter { calls.count >= $0.0 }
+            callWaiters.removeAll { calls.count >= $0.0 }
+            readyCallWaiters.forEach { $0.1.resume() }
+
+            let readyActiveWaiters = activeWaiters.filter { activeCount == $0.0 }
+            activeWaiters.removeAll { activeCount == $0.0 }
+            readyActiveWaiters.forEach { $0.1.resume() }
+        }
+    }
+
+    @Test("older configs decode with CUA TTS defaults")
+    func olderConfigsDecodeWithCUATTSDefaults() throws {
+        let data = #"{"enable_computer_use_planner":true}"#.data(using: .utf8)!
+
+        let config = try JSONDecoder().decode(AppConfig.self, from: data)
+
+        #expect(config.enableComputerUseVoiceFeedback)
+        #expect(config.computerUseTTSModel == ComputerUseTTSModelOption.micro.rawValue)
+        #expect(config.computerUseTTSVoice == ComputerUseTTSVoiceOption.bella.rawValue)
+        #expect(config.computerUseTTSSpeed == 1.75)
+    }
+
+    @Test("CUA TTS settings encode and decode")
+    func cuaTTSSettingsEncodeAndDecode() throws {
+        var config = AppConfig()
+        config.enableComputerUseVoiceFeedback = false
+        config.computerUseTTSModel = ComputerUseTTSModelOption.mini.rawValue
+        config.computerUseTTSVoice = ComputerUseTTSVoiceOption.hugo.rawValue
+        config.computerUseTTSSpeed = 1.25
+
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+
+        #expect(!decoded.enableComputerUseVoiceFeedback)
+        #expect(decoded.computerUseTTSModel == ComputerUseTTSModelOption.mini.rawValue)
+        #expect(decoded.computerUseTTSVoice == ComputerUseTTSVoiceOption.hugo.rawValue)
+        #expect(decoded.computerUseTTSSpeed == 1.25)
+    }
+
+    @Test("status speech suppresses intermediate updates and keeps decision states")
+    func statusSpeechPolicy() {
+        #expect(ComputerUseSpeechPolicy.commandHeardSpeech(for: "Open Chrome") == "Got it.")
+        #expect(ComputerUseSpeechPolicy.commandHeardSpeech(for: "   ") == nil)
+        #expect(ComputerUseSpeechPolicy.speech(forStatus: "Planning step 1") == nil)
+        #expect(ComputerUseSpeechPolicy.speech(forStatus: "Observing screen") == nil)
+        #expect(ComputerUseSpeechPolicy.speech(forStatus: "Screen fallback") == nil)
+        #expect(ComputerUseSpeechPolicy.speech(forStatus: "Opening Google Chrome") == nil)
+        #expect(ComputerUseSpeechPolicy.speech(forStatus: "Typing") == nil)
+        #expect(ComputerUseSpeechPolicy.speech(forStatus: "Confirm") == "I need confirmation before continuing.")
+        #expect(ComputerUseSpeechPolicy.speech(forStatus: "Failed") == "CUA failed.")
+    }
+
+    @Test("final result speech covers all runtime statuses")
+    func finalResultSpeechPolicy() {
+        #expect(ComputerUseSpeechPolicy.finalSpeech(for: .init(status: .done, message: "Done")) == "Done.")
+        #expect(ComputerUseSpeechPolicy.finalSpeech(for: .init(status: .timedOut, message: "CUA timed out")) == "CUA timed out.")
+        #expect(ComputerUseSpeechPolicy.finalSpeech(for: .init(status: .failed, message: "blocked")) == "CUA failed. blocked")
+        #expect(ComputerUseSpeechPolicy.finalSpeech(for: .init(status: .needsConfirmation, message: "Confirm: send tweet")) == "I need confirmation. Confirm: send tweet")
+        #expect(ComputerUseSpeechPolicy.finalSpeech(for: .init(status: .cancelled, message: "CUA cancelled")) == "CUA cancelled.")
+    }
+
+    @Test("speech controller drops duplicate statuses and swallows playback failures")
+    @MainActor
+    func speechControllerDropsDuplicatesAndSwallowsFailures() async throws {
+        var spoken: [String] = []
+        let controller = ComputerUseSpeechController { text, _ in
+            spoken.append(text)
+            throw NSError(domain: "SpeechTest", code: 1)
+        }
+        let config = AppConfig()
+
+        controller.speakStatus("Confirm", config: config)
+        controller.speakStatus("Confirm", config: config)
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        #expect(spoken == ["I need confirmation before continuing."])
+    }
+
+    @Test("speech controller respects sound and CUA voice toggles")
+    @MainActor
+    func speechControllerRespectsConfigToggles() async throws {
+        var spoken: [String] = []
+        let controller = ComputerUseSpeechController { text, _ in
+            spoken.append(text)
+        }
+        var config = AppConfig()
+
+        config.soundEnabled = false
+        controller.speakStatus("Confirm", config: config)
+        config.soundEnabled = true
+        config.enableComputerUseVoiceFeedback = false
+        controller.speakStatus("Failed", config: config)
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        #expect(spoken.isEmpty)
+    }
+
+    @Test("muted idle status clears duplicate state without speaking")
+    @MainActor
+    func mutedIdleStatusClearsDuplicateStateWithoutSpeaking() async throws {
+        var spoken: [String] = []
+        let controller = ComputerUseSpeechController { text, _ in
+            spoken.append(text)
+        }
+        var config = AppConfig()
+
+        controller.speakStatus("Confirm", config: config)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        #expect(spoken == ["I need confirmation before continuing."])
+
+        config.soundEnabled = false
+        controller.speakStatus("Confirm", config: config)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        #expect(spoken == ["I need confirmation before continuing."])
+
+        config.soundEnabled = true
+        controller.speakStatus("Confirm", config: config)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        #expect(spoken == [
+            "I need confirmation before continuing.",
+            "I need confirmation before continuing.",
+        ])
+    }
+
+    @Test("cancelled drain task cannot clear a newer drain task")
+    @MainActor
+    func cancelledDrainTaskDoesNotClearNewerDrainTask() async throws {
+        let probe = SpeechDrainProbe()
+        let controller = ComputerUseSpeechController { text, _ in
+            await probe.record(text)
+        }
+        let config = AppConfig()
+
+        controller.speakStatus("Confirm", config: config)
+        await probe.waitForCallCount(1)
+
+        controller.stop()
+        controller.speakStatus("Failed", config: config)
+        await probe.waitForCallCount(2)
+
+        await probe.releaseCall(at: 0)
+        await probe.waitForActiveCount(1)
+
+        controller.speakFinalResult(.init(status: .done, message: "Done"), config: config)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        #expect(await probe.recordedCalls() == [
+            "I need confirmation before continuing.",
+            "CUA failed.",
+        ])
+
+        await probe.releaseCall(at: 1)
+        await probe.waitForCallCount(3)
+        #expect(await probe.recordedCalls() == [
+            "I need confirmation before continuing.",
+            "CUA failed.",
+            "Done.",
+        ])
+    }
+}
+
 @Suite("Computer Use planner runtime")
 struct ComputerUsePlannerRuntimeTests {
     @Test("finishes after finish tool")

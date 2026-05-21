@@ -602,6 +602,10 @@ struct AppConfig: Codable {
     var enableComputerUsePlanner: Bool = true
     var computerUsePlannerModel: String = ""
     var computerUseTimeoutSeconds: Int = 120
+    var enableComputerUseVoiceFeedback: Bool = true
+    var computerUseTTSModel: String = "micro"
+    var computerUseTTSVoice: String = "bella"
+    var computerUseTTSSpeed: Double = 1.75
     var sttBackend: String = BackendOption.whisper.backend
     var sttModel: String = BackendOption.whisper.model
     var cohereLanguage: String = CohereTranscribeLanguage.defaultLanguage.rawValue
@@ -670,6 +674,10 @@ struct AppConfig: Codable {
         case enableComputerUsePlanner = "enable_computer_use_planner"
         case computerUsePlannerModel = "computer_use_planner_model"
         case computerUseTimeoutSeconds = "computer_use_timeout_seconds"
+        case enableComputerUseVoiceFeedback = "enable_computer_use_voice_feedback"
+        case computerUseTTSModel = "computer_use_tts_model"
+        case computerUseTTSVoice = "computer_use_tts_voice"
+        case computerUseTTSSpeed = "computer_use_tts_speed"
         case sttBackend = "stt_backend"
         case sttModel = "stt_model"
         case cohereLanguage = "cohere_language"
@@ -745,6 +753,17 @@ struct AppConfig: Codable {
         enableComputerUsePlanner = (try? c.decode(Bool.self, forKey: .enableComputerUsePlanner)) ?? defaults.enableComputerUsePlanner
         computerUsePlannerModel = (try? c.decode(String.self, forKey: .computerUsePlannerModel)) ?? defaults.computerUsePlannerModel
         computerUseTimeoutSeconds = (try? c.decode(Int.self, forKey: .computerUseTimeoutSeconds)) ?? defaults.computerUseTimeoutSeconds
+        enableComputerUseVoiceFeedback = (try? c.decode(Bool.self, forKey: .enableComputerUseVoiceFeedback)) ?? defaults.enableComputerUseVoiceFeedback
+        computerUseTTSModel = ComputerUseTTSModelOption.resolveID(
+            try? c.decode(String.self, forKey: .computerUseTTSModel)
+        )
+        computerUseTTSVoice = ComputerUseTTSVoiceOption.resolveID(
+            try? c.decode(String.self, forKey: .computerUseTTSVoice)
+        )
+        computerUseTTSSpeed = min(
+            max((try? c.decode(Double.self, forKey: .computerUseTTSSpeed)) ?? defaults.computerUseTTSSpeed, 0.5),
+            2.0
+        )
         sttBackend = (try? c.decode(String.self, forKey: .sttBackend)) ?? defaults.sttBackend
         sttModel = (try? c.decode(String.self, forKey: .sttModel)) ?? defaults.sttModel
         cohereLanguage = CohereTranscribeLanguage.resolvedCode(try? c.decode(String.self, forKey: .cohereLanguage))
