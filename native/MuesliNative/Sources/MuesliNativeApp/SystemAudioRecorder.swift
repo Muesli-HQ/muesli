@@ -67,7 +67,7 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SystemAudioCapturing,
                 NSLocalizedDescriptionKey: "Could not open output file",
             ])
         }
-        file.write(Self.createWAVHeader(dataSize: 0))
+        file.write(WavWriter.header(dataSize: 0))
         outputFile = file
         outputURL = url
         totalBytesWritten = 0
@@ -120,7 +120,7 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SystemAudioCapturing,
 
         // Finalize WAV
         if let outputFile {
-            let header = Self.createWAVHeader(dataSize: totalBytesWritten)
+            let header = WavWriter.header(dataSize: totalBytesWritten)
             outputFile.seek(toFileOffset: 0)
             outputFile.write(header)
             outputFile.closeFile()
@@ -301,29 +301,6 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SystemAudioCapturing,
             }
             onPCMSamples?(int16Samples)
         }
-    }
-
-    // MARK: - WAV Header
-
-    private static func createWAVHeader(dataSize: Int) -> Data {
-        var header = Data()
-        let byteRate = Int(sampleRate) * channels * 16 / 8
-        let blockAlign = channels * 16 / 8
-
-        header.append(contentsOf: "RIFF".utf8)
-        header.append(contentsOf: withUnsafeBytes(of: UInt32(36 + dataSize).littleEndian) { Array($0) })
-        header.append(contentsOf: "WAVE".utf8)
-        header.append(contentsOf: "fmt ".utf8)
-        header.append(contentsOf: withUnsafeBytes(of: UInt32(16).littleEndian) { Array($0) })
-        header.append(contentsOf: withUnsafeBytes(of: UInt16(1).littleEndian) { Array($0) })
-        header.append(contentsOf: withUnsafeBytes(of: UInt16(channels).littleEndian) { Array($0) })
-        header.append(contentsOf: withUnsafeBytes(of: UInt32(sampleRate).littleEndian) { Array($0) })
-        header.append(contentsOf: withUnsafeBytes(of: UInt32(byteRate).littleEndian) { Array($0) })
-        header.append(contentsOf: withUnsafeBytes(of: UInt16(blockAlign).littleEndian) { Array($0) })
-        header.append(contentsOf: withUnsafeBytes(of: UInt16(16).littleEndian) { Array($0) })
-        header.append(contentsOf: "data".utf8)
-        header.append(contentsOf: withUnsafeBytes(of: UInt32(dataSize).littleEndian) { Array($0) })
-        return header
     }
 
     private func cleanupFailedStart() {

@@ -5,14 +5,18 @@ enum WavWriter {
     static let channels: UInt16 = 1
     static let bitsPerSample: UInt16 = 16
 
+    static func header(dataSize: Int) -> Data {
+        header(dataSize: UInt32(clamping: dataSize))
+    }
+
     static func header(dataSize: UInt32) -> Data {
         let byteRate = sampleRate * UInt32(channels) * UInt32(bitsPerSample / 8)
         let blockAlign = channels * (bitsPerSample / 8)
-        let chunkSize = 36 + dataSize
+        let (chunkSize, overflow) = dataSize.addingReportingOverflow(36)
 
         var header = Data()
         header.append(contentsOf: "RIFF".utf8)
-        header.append(contentsOf: withUnsafeBytes(of: chunkSize.littleEndian) { Array($0) })
+        header.append(contentsOf: withUnsafeBytes(of: (overflow ? UInt32.max : chunkSize).littleEndian) { Array($0) })
         header.append(contentsOf: "WAVE".utf8)
         header.append(contentsOf: "fmt ".utf8)
         header.append(contentsOf: withUnsafeBytes(of: UInt32(16).littleEndian) { Array($0) })

@@ -114,7 +114,7 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
         guard let file = FileHandle(forWritingAtPath: url.path) else {
             throw RecorderError.fileCreationFailed
         }
-        file.write(WAVHeader.create(dataSize: 0))
+        file.write(WavWriter.header(dataSize: 0))
         outputFile = file
         outputURL = url
         totalBytesWritten = 0
@@ -145,7 +145,7 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
         }
 
         if let file = outputFile {
-            let header = WAVHeader.create(dataSize: totalBytesWritten)
+            let header = WavWriter.header(dataSize: totalBytesWritten)
             file.seek(toFileOffset: 0)
             file.write(header)
             file.closeFile()
@@ -354,7 +354,6 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
         else {
             return nil
         }
-        converter.reset()
 
         let inputFrameCount = AVAudioFrameCount(samples.count)
         guard let inputBuffer = AVAudioPCMBuffer(
@@ -831,30 +830,4 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
         totalBytesWritten = 0
     }
 
-    // MARK: - WAV Header
-
-    private enum WAVHeader {
-        static func create(dataSize: Int) -> Data {
-            let sampleRate = Int(CoreAudioSystemRecorder.targetSampleRate)
-            let channels = 1
-            let byteRate = sampleRate * channels * 16 / 8
-            let blockAlign = channels * 16 / 8
-
-            var header = Data()
-            header.append(contentsOf: "RIFF".utf8)
-            header.append(contentsOf: withUnsafeBytes(of: UInt32(36 + dataSize).littleEndian) { Array($0) })
-            header.append(contentsOf: "WAVE".utf8)
-            header.append(contentsOf: "fmt ".utf8)
-            header.append(contentsOf: withUnsafeBytes(of: UInt32(16).littleEndian) { Array($0) })
-            header.append(contentsOf: withUnsafeBytes(of: UInt16(1).littleEndian) { Array($0) })
-            header.append(contentsOf: withUnsafeBytes(of: UInt16(channels).littleEndian) { Array($0) })
-            header.append(contentsOf: withUnsafeBytes(of: UInt32(sampleRate).littleEndian) { Array($0) })
-            header.append(contentsOf: withUnsafeBytes(of: UInt32(byteRate).littleEndian) { Array($0) })
-            header.append(contentsOf: withUnsafeBytes(of: UInt16(blockAlign).littleEndian) { Array($0) })
-            header.append(contentsOf: withUnsafeBytes(of: UInt16(16).littleEndian) { Array($0) })
-            header.append(contentsOf: "data".utf8)
-            header.append(contentsOf: withUnsafeBytes(of: UInt32(dataSize).littleEndian) { Array($0) })
-            return header
-        }
-    }
 }

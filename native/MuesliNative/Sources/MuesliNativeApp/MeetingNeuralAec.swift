@@ -257,8 +257,8 @@ final class MeetingNeuralAec {
         let decision = delayDecision(for: result)
         if decision.shouldApply {
             currentDelaySamples = decision.reason == "acceptedRepeatedSupport"
-                ? result.delaySamples
-                : MeetingAecDelayEstimator.recencyWeightedMedianDelay(from: recentDelayResults)
+                ? MeetingAecDelayEstimator.recencyWeightedMedianDelay(from: recentDelayResults)
+                : result.delaySamples
         }
 
         recordDelayObservation(result, decision: decision.reason)
