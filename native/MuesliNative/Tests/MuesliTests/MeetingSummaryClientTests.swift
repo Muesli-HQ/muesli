@@ -435,18 +435,28 @@ struct MeetingSummaryClientTests {
         #expect(MeetingSummaryClient.extractAnthropicText(from: emptyPayload) == nil)
     }
 
-    @Test("summarize routes to custom LLM backend and falls back if no key")
+    @Test("summarize routes to custom LLM backend and attempts connection without API key")
     func routesToCustomLLM() async throws {
         var config = AppConfig()
         config.meetingSummaryBackend = "custom_llm"
-        config.customLLMAPIKey = "" // no key
+        config.customLLMAPIKey = ""
+        config.customLLMURL = "http://localhost:1" // force connection failure
 
-        let result = try await MeetingSummaryClient.summarize(
-            transcript: "Test transcript",
-            meetingTitle: "My Custom Meeting",
-            config: config
-        )
-
-        #expect(result.contains("## Raw Transcript"))
+        do {
+            _ = try await MeetingSummaryClient.summarize(
+                transcript: "Test transcript",
+                meetingTitle: "My Custom Meeting",
+                config: config
+            )
+            #expect(Bool(false), "Expected error to be thrown")
+        } catch {
+            let summaryError = error as? MeetingSummaryError
+            #expect(summaryError != nil)
+            if case .requestFailed(let backend, _) = summaryError! {
+                #expect(backend == "Custom LLM")
+            } else {
+                #expect(Bool(false), "Expected requestFailed error, got \(String(describing: error))")
+            }
+        }
     }
 }

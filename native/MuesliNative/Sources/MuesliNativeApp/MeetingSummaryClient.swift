@@ -741,7 +741,9 @@ enum MeetingSummaryClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        if !apiKey.isEmpty {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
         for (key, value) in extraHeaders {
             request.setValue(value, forHTTPHeaderField: key)
         }
@@ -902,9 +904,6 @@ enum MeetingSummaryClient {
     ) async throws -> String {
         let format = CustomLLMFormat(rawValue: config.customLLMFormat) ?? .openAI
         let apiKey = config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !apiKey.isEmpty else {
-            return rawTranscriptFallback(transcript: transcript, meetingTitle: meetingTitle)
-        }
 
         guard let requestURL = resolveCustomLLMURL(config: config, format: format) else {
             throw MeetingSummaryError.backendFailed(backend: "Custom LLM", statusCode: nil, message: "Invalid custom URL: \(config.customLLMURL)")
@@ -926,7 +925,9 @@ enum MeetingSummaryClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         if format == .anthropic {
-            request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+            if !apiKey.isEmpty {
+                request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+            }
             request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
             let body: [String: Any] = [
                 "model": model,
@@ -938,15 +939,18 @@ enum MeetingSummaryClient {
             ]
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
         } else {
-            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-            let body: [String: Any] = [
+            if !apiKey.isEmpty {
+                request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            }
+            let isOpenAI = requestURL.host?.contains("openai.com") == true
+            var body: [String: Any] = [
                 "model": model,
                 "messages": [
                     ["role": "system", "content": instructions],
                     ["role": "user", "content": userPrompt]
-                ],
-                "max_tokens": defaultSummaryMaxOutputTokens
+                ]
             ]
+            body[isOpenAI ? "max_completion_tokens" : "max_tokens"] = defaultSummaryMaxOutputTokens
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
         }
 
@@ -972,7 +976,6 @@ enum MeetingSummaryClient {
      private static func generateTitleWithCustomLLM(transcript: String, config: AppConfig) async -> String? {
          let format = CustomLLMFormat(rawValue: config.customLLMFormat) ?? .openAI
          let apiKey = config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-         guard !apiKey.isEmpty else { return nil }
 
          guard let requestURL = resolveCustomLLMURL(config: config, format: format) else { return nil }
          let configuredModel = config.customLLMModel.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -983,7 +986,9 @@ enum MeetingSummaryClient {
                  var request = URLRequest(url: requestURL)
                  request.httpMethod = "POST"
                  request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                 request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+                 if !apiKey.isEmpty {
+                     request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+                 }
                  request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
                  let body: [String: Any] = [
                      "model": model,
