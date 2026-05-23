@@ -833,6 +833,50 @@ enum MeetingSummaryClient {
         }
     }
 
+    static func resolveCustomLLMURL(config: AppConfig, format: CustomLLMFormat) -> URL? {
+        var urlString = config.customLLMURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if format == .anthropic {
+            if urlString.isEmpty {
+                return URL(string: "https://api.anthropic.com/v1/messages")!
+            }
+            if !urlString.hasSuffix("/messages") {
+                if urlString.hasSuffix("/") {
+                    urlString += "v1/messages"
+                } else if urlString.hasSuffix("/v1") {
+                    urlString += "/messages"
+                } else {
+                    urlString += "/v1/messages"
+                }
+            }
+        } else {
+            if urlString.isEmpty {
+                return URL(string: "http://localhost:8080/v1/chat/completions")!
+            }
+            if !urlString.hasSuffix("/chat/completions") {
+                if urlString.hasSuffix("/") {
+                    urlString += "chat/completions"
+                } else if urlString.hasSuffix("/v1") {
+                    urlString += "/chat/completions"
+                } else {
+                    urlString += "/v1/chat/completions"
+                }
+            }
+        }
+        return URL(string: urlString)
+    }
+
+    static func extractAnthropicText(from payload: [String: Any]) -> String? {
+        guard let content = payload["content"] as? [[String: Any]] else { return nil }
+        let parts = content.compactMap { entry -> String? in
+            guard (entry["type"] as? String) == "text",
+                  let text = entry["text"] as? String, !text.isEmpty else {
+                return nil
+            }
+            return text
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private static func rawTranscriptFallback(transcript: String, meetingTitle: String) -> String {
         "## Raw Transcript\n\n\(transcript)"
     }

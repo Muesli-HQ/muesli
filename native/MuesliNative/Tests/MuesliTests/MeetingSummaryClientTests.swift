@@ -385,4 +385,45 @@ struct MeetingSummaryClientTests {
             #expect(summaryError != nil)
         }
     }
+
+    @Test("resolveCustomLLMURL expands paths correctly")
+    func resolveCustomLLMURLTest() {
+        var config = AppConfig()
+        
+        // OpenAI Format defaults and custom overrides
+        config.customLLMURL = ""
+        let openAIDefault = MeetingSummaryClient.resolveCustomLLMURL(config: config, format: .openAI)
+        #expect(openAIDefault?.absoluteString == "http://localhost:8080/v1/chat/completions")
+
+        config.customLLMURL = "https://myapi.com"
+        let openAICustom = MeetingSummaryClient.resolveCustomLLMURL(config: config, format: .openAI)
+        #expect(openAICustom?.absoluteString == "https://myapi.com/v1/chat/completions")
+
+        config.customLLMURL = "https://myapi.com/v1/"
+        let openAICustomSlash = MeetingSummaryClient.resolveCustomLLMURL(config: config, format: .openAI)
+        #expect(openAICustomSlash?.absoluteString == "https://myapi.com/v1/chat/completions")
+
+        // Anthropic Format defaults and custom overrides
+        config.customLLMURL = ""
+        let anthropicDefault = MeetingSummaryClient.resolveCustomLLMURL(config: config, format: .anthropic)
+        #expect(anthropicDefault?.absoluteString == "https://api.anthropic.com/v1/messages")
+
+        config.customLLMURL = "https://myapi.com/anthropic"
+        let anthropicCustom = MeetingSummaryClient.resolveCustomLLMURL(config: config, format: .anthropic)
+        #expect(anthropicCustom?.absoluteString == "https://myapi.com/anthropic/v1/messages")
+    }
+
+    @Test("extractAnthropicText extracts text from response payload")
+    func extractAnthropicTextTest() {
+        let payload: [String: Any] = [
+            "content": [
+                ["type": "text", "text": " Hello world! "]
+            ]
+        ]
+        let extracted = MeetingSummaryClient.extractAnthropicText(from: payload)
+        #expect(extracted == "Hello world!")
+
+        let emptyPayload: [String: Any] = [:]
+        #expect(MeetingSummaryClient.extractAnthropicText(from: emptyPayload) == nil)
+    }
 }
