@@ -368,7 +368,7 @@ struct MeetingSummaryBackendTests {
 
     @Test("all options listed")
     func allOptions() {
-        #expect(MeetingSummaryBackendOption.all.count == 4)
+        #expect(MeetingSummaryBackendOption.all.count == 5)
         #expect(MeetingSummaryBackendOption.all.contains(.openAI))
         #expect(MeetingSummaryBackendOption.all.contains(.openRouter))
         #expect(MeetingSummaryBackendOption.all.contains(.chatGPT))
@@ -389,6 +389,19 @@ struct MeetingSummaryBackendTests {
         #expect(MeetingSummaryBackendOption.resolved("ollama") == .ollama)
         #expect(MeetingSummaryBackendOption.resolved("unknown") == .chatGPT)
         #expect(MeetingSummaryBackendOption.resolved(nil) == .chatGPT)
+    }
+
+    @Test("customLLM option exists and resolves")
+    func customLLMOption() {
+        #expect(MeetingSummaryBackendOption.all.contains(.customLLM))
+        #expect(MeetingSummaryBackendOption.customLLM.backend == "custom_llm")
+        #expect(MeetingSummaryBackendOption.resolved("custom_llm") == .customLLM)
+    }
+
+    @Test("CustomLLMFormat enum labels")
+    func customLLMFormatLabels() {
+        #expect(CustomLLMFormat.openAI.label == "OpenAI-compatible")
+        #expect(CustomLLMFormat.anthropic.label == "Anthropic Messages")
     }
 }
 
@@ -890,6 +903,32 @@ struct AppConfigTests {
 
         #expect(template.icon == MeetingTemplates.customIconFallback)
         #expect(MeetingTemplates.customDefinition(from: template).icon == MeetingTemplates.customIconFallback)
+    }
+
+    @Test("custom LLM default config values")
+    func customLLMDefaults() {
+        let config = AppConfig()
+        #expect(config.customLLMURL == "")
+        #expect(config.customLLMAPIKey == "")
+        #expect(config.customLLMModel == "")
+        #expect(config.customLLMFormat == "openai")
+    }
+
+    @Test("custom LLM serialization round-trip")
+    func customLLMSerialization() throws {
+        var config = AppConfig()
+        config.customLLMURL = "http://localhost:9000"
+        config.customLLMAPIKey = "custom-key-xyz"
+        config.customLLMModel = "my-custom-model"
+        config.customLLMFormat = "anthropic"
+
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+
+        #expect(decoded.customLLMURL == "http://localhost:9000")
+        #expect(decoded.customLLMAPIKey == "custom-key-xyz")
+        #expect(decoded.customLLMModel == "my-custom-model")
+        #expect(decoded.customLLMFormat == "anthropic")
     }
 }
 
