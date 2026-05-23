@@ -403,6 +403,10 @@ struct MeetingSummaryClientTests {
         let openAICustomSlash = MeetingSummaryClient.resolveCustomLLMURL(config: config, format: .openAI)
         #expect(openAICustomSlash?.absoluteString == "https://myapi.com/v1/chat/completions")
 
+        config.customLLMURL = "https://myapi.com/v1/chat/completions/"
+        let openAICustomDoubleSlash = MeetingSummaryClient.resolveCustomLLMURL(config: config, format: .openAI)
+        #expect(openAICustomDoubleSlash?.absoluteString == "https://myapi.com/v1/chat/completions")
+
         // Anthropic Format defaults and custom overrides
         config.customLLMURL = ""
         let anthropicDefault = MeetingSummaryClient.resolveCustomLLMURL(config: config, format: .anthropic)
@@ -411,6 +415,10 @@ struct MeetingSummaryClientTests {
         config.customLLMURL = "https://myapi.com/anthropic"
         let anthropicCustom = MeetingSummaryClient.resolveCustomLLMURL(config: config, format: .anthropic)
         #expect(anthropicCustom?.absoluteString == "https://myapi.com/anthropic/v1/messages")
+
+        config.customLLMURL = "https://myapi.com/v1/messages/"
+        let anthropicCustomSlash = MeetingSummaryClient.resolveCustomLLMURL(config: config, format: .anthropic)
+        #expect(anthropicCustomSlash?.absoluteString == "https://myapi.com/v1/messages")
     }
 
     @Test("extractAnthropicText extracts text from response payload")

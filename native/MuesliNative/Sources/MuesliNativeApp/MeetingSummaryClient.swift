@@ -851,27 +851,25 @@ enum MeetingSummaryClient {
 
     static func resolveCustomLLMURL(config: AppConfig, format: CustomLLMFormat) -> URL? {
         var urlString = config.customLLMURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if urlString.isEmpty {
+            return format == .anthropic
+                ? URL(string: "https://api.anthropic.com/v1/messages")!
+                : URL(string: "http://localhost:8080/v1/chat/completions")!
+        }
+        while urlString.hasSuffix("/") {
+            urlString.removeLast()
+        }
         if format == .anthropic {
-            if urlString.isEmpty {
-                return URL(string: "https://api.anthropic.com/v1/messages")!
-            }
             if !urlString.hasSuffix("/messages") {
-                if urlString.hasSuffix("/") {
-                    urlString += "v1/messages"
-                } else if urlString.hasSuffix("/v1") {
+                if urlString.hasSuffix("/v1") {
                     urlString += "/messages"
                 } else {
                     urlString += "/v1/messages"
                 }
             }
         } else {
-            if urlString.isEmpty {
-                return URL(string: "http://localhost:8080/v1/chat/completions")!
-            }
             if !urlString.hasSuffix("/chat/completions") {
-                if urlString.hasSuffix("/") {
-                    urlString += "chat/completions"
-                } else if urlString.hasSuffix("/v1") {
+                if urlString.hasSuffix("/v1") {
                     urlString += "/chat/completions"
                 } else {
                     urlString += "/v1/chat/completions"
@@ -938,7 +936,7 @@ enum MeetingSummaryClient {
                     ["role": "user", "content": userPrompt]
                 ]
             ]
-            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
         } else {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             let body: [String: Any] = [
@@ -949,7 +947,7 @@ enum MeetingSummaryClient {
                 ],
                 "max_tokens": defaultSummaryMaxOutputTokens
             ]
-            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
         }
 
         do {
@@ -981,22 +979,30 @@ enum MeetingSummaryClient {
          let model = configuredModel.isEmpty ? (format == .anthropic ? "claude-3-5-sonnet-20241022" : "custom-model") : configuredModel
 
          if format == .anthropic {
-             var request = URLRequest(url: requestURL)
-             request.httpMethod = "POST"
-             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-             request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-             request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-             let body: [String: Any] = [
-                 "model": model,
-                 "max_tokens": 100,
-                 "system": titleInstructions,
-                 "messages": [
-                     ["role": "user", "content": transcript]
-                 ]
-             ]
-             request.httpBody = try? JSONSerialization.data(withJSONObject: body)
              do {
-                 let (data, _) = try await URLSession.shared.data(for: request)
+                 var request = URLRequest(url: requestURL)
+                 request.httpMethod = "POST"
+                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                 request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+                 request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+                 let body: [String: Any] = [
+                     "model": model,
+                     "max_tokens": 100,
+                     "system": titleInstructions,
+                     "messages": [
+                         ["role": "user", "content": transcript]
+                     ]
+                 ]
+                 request.httpBody = try JSONSerialization.data(withJSONObject: body)
+                 let (data, response) = try await URLSession.shared.data(for: request)
+                 guard let httpResponse = response as? HTTPURLResponse else { return nil }
+                 guard (200..<300).contains(httpResponse.statusCode) else {
+                     let message = extractErrorMessage(from: data)
+                         ?? String(data: data, encoding: .utf8)
+                         ?? HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode)
+                     fputs("[summary] title generation failed: Status \(httpResponse.statusCode). \(message)\n", stderr)
+                     return nil
+                 }
                  guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
                  if let error = json["error"] as? [String: Any] {
                      fputs("[summary] title generation error: \(error["message"] ?? error)\n", stderr)
