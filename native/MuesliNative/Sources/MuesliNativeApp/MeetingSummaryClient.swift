@@ -95,6 +95,18 @@ enum MeetingSummaryClient {
             )
             return notesByRetainingManualNotes(generatedNotes: generatedNotes, manualNotes: manualNotesToRetain)
         }
+        if backend == MeetingSummaryBackendOption.customLLM.backend {
+            generatedNotes = try await summarizeWithCustomLLM(
+                transcript: transcript,
+                meetingTitle: meetingTitle,
+                existingNotes: existingNotes,
+                manualNotes: manualNotesToRetain,
+                config: config,
+                template: template,
+                visualContext: visualContext
+            )
+            return notesByRetainingManualNotes(generatedNotes: generatedNotes, manualNotes: manualNotesToRetain)
+        }
         generatedNotes = try await summarizeWithOpenAI(
             transcript: transcript,
             meetingTitle: meetingTitle,
@@ -664,6 +676,10 @@ enum MeetingSummaryClient {
             return await generateTitleWithOllama(transcript: excerpt, config: config)
         }
 
+        if backend == MeetingSummaryBackendOption.customLLM.backend {
+            return await generateTitleWithCustomLLM(transcript: excerpt, config: config)
+        }
+
         let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? config.openAIAPIKey
         guard !apiKey.isEmpty else { return nil }
         let model = config.openAIModel.isEmpty ? defaultOpenAIModel : config.openAIModel
@@ -876,6 +892,134 @@ enum MeetingSummaryClient {
         }
         return parts.isEmpty ? nil : parts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    private static func summarizeWithCustomLLM(
+        transcript: String,
+        meetingTitle: String,
+        existingNotes: String?,
+        manualNotes: String?,
+        config: AppConfig,
+        template: MeetingTemplateSnapshot,
+        visualContext: String? = nil
+    ) async throws -> String {
+        let format = CustomLLMFormat(rawValue: config.customLLMFormat) ?? .openAI
+        let apiKey = config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !apiKey.isEmpty else {
+            return rawTranscriptFallback(transcript: transcript, meetingTitle: meetingTitle)
+        }
+
+        guard let requestURL = resolveCustomLLMURL(config: config, format: format) else {
+            throw MeetingSummaryError.backendFailed(backend: "Custom LLM", statusCode: nil, message: "Invalid custom URL: \(config.customLLMURL)")
+        }
+
+        let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes)
+        let userPrompt = summaryUserPrompt(
+            transcript: transcript,
+            meetingTitle: meetingTitle,
+            existingNotes: existingNotes,
+            manualNotes: manualNotes,
+            visualContext: visualContext
+        )
+        let configuredModel = config.customLLMModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let model = configuredModel.isEmpty ? (format == .anthropic ? "claude-3-5-sonnet-20241022" : "custom-model") : configuredModel
+
+        var request = URLRequest(url: requestURL)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        if format == .anthropic {
+            request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+            request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+            let body: [String: Any] = [
+                "model": model,
+                "max_tokens": defaultSummaryMaxOutputTokens,
+                "system": instructions,
+                "messages": [
+                    ["role": "user", "content": userPrompt]
+                ]
+            ]
+            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        } else {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            let body: [String: Any] = [
+                "model": model,
+                "messages": [
+                    ["role": "system", "content": instructions],
+                    ["role": "user", "content": userPrompt]
+                ],
+                "max_tokens": defaultSummaryMaxOutputTokens
+            ]
+            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        }
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            try validateHTTPResponse(response, data: data, backend: "Custom LLM")
+            guard
+                let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let text = (format == .anthropic ? extractAnthropicText(from: json) : extractOpenRouterText(from: json)),
+                !text.isEmpty
+            else {
+                if let message = extractErrorMessage(from: data) {
+                    throw MeetingSummaryError.backendFailed(backend: "Custom LLM", statusCode: nil, message: message)
+                }
+                throw MeetingSummaryError.emptyResponse(backend: "Custom LLM")
+            }
+            return text
+         } catch {
+             throw summaryRequestError(backend: "Custom LLM", error: error)
+         }
+     }
+
+     private static func generateTitleWithCustomLLM(transcript: String, config: AppConfig) async -> String? {
+         let format = CustomLLMFormat(rawValue: config.customLLMFormat) ?? .openAI
+         let apiKey = config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+         guard !apiKey.isEmpty else { return nil }
+
+         guard let requestURL = resolveCustomLLMURL(config: config, format: format) else { return nil }
+         let configuredModel = config.customLLMModel.trimmingCharacters(in: .whitespacesAndNewlines)
+         let model = configuredModel.isEmpty ? (format == .anthropic ? "claude-3-5-sonnet-20241022" : "custom-model") : configuredModel
+
+         if format == .anthropic {
+             var request = URLRequest(url: requestURL)
+             request.httpMethod = "POST"
+             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+             request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+             request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+             let body: [String: Any] = [
+                 "model": model,
+                 "max_tokens": 100,
+                 "system": titleInstructions,
+                 "messages": [
+                     ["role": "user", "content": transcript]
+                 ]
+             ]
+             request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+             do {
+                 let (data, _) = try await URLSession.shared.data(for: request)
+                 guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+                 if let error = json["error"] as? [String: Any] {
+                     fputs("[summary] title generation error: \(error["message"] ?? error)\n", stderr)
+                     return nil
+                 }
+                 return extractAnthropicText(from: json)?
+                     .trimmingCharacters(in: .whitespacesAndNewlines.union(.init(charactersIn: "\"")))
+             } catch {
+                 fputs("[summary] title generation failed: \(error)\n", stderr)
+                 return nil
+             }
+         } else {
+             return await callChatCompletions(
+                 url: requestURL,
+                 apiKey: apiKey,
+                 model: model,
+                 systemPrompt: titleInstructions,
+                 userPrompt: transcript,
+                 maxTokens: 100,
+                 extraHeaders: [:]
+             )
+         }
+     }
 
     private static func rawTranscriptFallback(transcript: String, meetingTitle: String) -> String {
         "## Raw Transcript\n\n\(transcript)"

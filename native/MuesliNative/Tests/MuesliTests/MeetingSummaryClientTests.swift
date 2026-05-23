@@ -426,4 +426,19 @@ struct MeetingSummaryClientTests {
         let emptyPayload: [String: Any] = [:]
         #expect(MeetingSummaryClient.extractAnthropicText(from: emptyPayload) == nil)
     }
+
+    @Test("summarize routes to custom LLM backend and falls back if no key")
+    func routesToCustomLLM() async throws {
+        var config = AppConfig()
+        config.meetingSummaryBackend = "custom_llm"
+        config.customLLMAPIKey = "" // no key
+
+        let result = try await MeetingSummaryClient.summarize(
+            transcript: "Test transcript",
+            meetingTitle: "My Custom Meeting",
+            config: config
+        )
+
+        #expect(result.contains("## Raw Transcript"))
+    }
 }
