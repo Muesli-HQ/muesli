@@ -8,51 +8,81 @@ final class MicrophoneRecorder: NSObject, AVAudioRecorderDelegate, @unchecked Se
     var onFirstCapturedAudioBuffer: ((Date) -> Void)?
     var onFirstSpeechDetected: ((Date) -> Void)?
     var onNoAudioTimeout: ((Date) -> Void)?
+    var onRecordingFailed: ((Error, UUID) -> Void)?
 
     private static let sampleRate: Double = 16_000
     private static let speechThresholdDB: Float = -58
     private static let noAudioTimeout: TimeInterval = 1.5
-    private static let firstBufferDelay: TimeInterval = 0.05
+    private static let captureProgressInterval: TimeInterval = 0.05
     private static let meterInterval: TimeInterval = 0.08
+    private static let requiredFileGrowthObservations = 2
 
     private let lock = NSRecursiveLock()
     private let callbackQueue = DispatchQueue(label: "com.muesli.microphone-recorder-callbacks")
     private var recorder: AVAudioRecorder?
     private var preparedURL: URL?
+    private var preparedInputDeviceID: AudioObjectID?
     private var activeInputOverride: DefaultInputOverride?
-    private var firstBufferWorkItem: DispatchWorkItem?
+    private var captureProgressWorkItem: DispatchWorkItem?
     private var noAudioTimeoutWorkItem: DispatchWorkItem?
     private var meterWorkItem: DispatchWorkItem?
     private var isRecording = false
+    private var activeRecordingID: UUID?
     private var hasReceivedFirstAudioBuffer = false
     private var hasDetectedSpeech = false
     private var hasReportedNoAudioTimeout = false
+    private var lastObservedFileByteCount = 0
+    private var captureFileGrowthObservations = 0
+
+    deinit {
+        cancel()
+    }
 
     func prepare() throws {
         lock.lock()
         defer { lock.unlock() }
 
-        guard recorder == nil else { return }
+        if recorder != nil {
+            guard preparedInputDeviceID != preferredInputDeviceID else { return }
+            guard !isRecording else {
+                throw NSError(domain: "MicrophoneRecorder", code: 4, userInfo: [
+                    NSLocalizedDescriptionKey: "Cannot change microphone input while recording",
+                ])
+            }
+            cleanupPreparedRecording(removeFile: true)
+            restorePreferredInputIfNeeded()
+        }
         try applyPreferredInputIfNeeded()
 
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("muesli-native", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let fileURL = directory.appendingPathComponent(UUID().uuidString).appendingPathExtension("wav")
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: Self.sampleRate,
-            AVNumberOfChannelsKey: 1,
-            AVLinearPCMBitDepthKey: 16,
-            AVLinearPCMIsFloatKey: false,
-            AVLinearPCMIsBigEndianKey: false,
-        ]
-        let nextRecorder = try AVAudioRecorder(url: fileURL, settings: settings)
-        nextRecorder.delegate = self
-        nextRecorder.isMeteringEnabled = true
-        nextRecorder.prepareToRecord()
-        preparedURL = fileURL
-        recorder = nextRecorder
+        do {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("muesli-native", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let fileURL = directory.appendingPathComponent(UUID().uuidString).appendingPathExtension("wav")
+            let settings: [String: Any] = [
+                AVFormatIDKey: kAudioFormatLinearPCM,
+                AVSampleRateKey: Self.sampleRate,
+                AVNumberOfChannelsKey: 1,
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsFloatKey: false,
+                AVLinearPCMIsBigEndianKey: false,
+            ]
+            let nextRecorder = try AVAudioRecorder(url: fileURL, settings: settings)
+            nextRecorder.delegate = self
+            nextRecorder.isMeteringEnabled = true
+            guard nextRecorder.prepareToRecord() else {
+                throw NSError(domain: "MicrophoneRecorder", code: 6, userInfo: [
+                    NSLocalizedDescriptionKey: "Microphone recorder failed to prepare",
+                ])
+            }
+            preparedURL = fileURL
+            recorder = nextRecorder
+            preparedInputDeviceID = preferredInputDeviceID
+        } catch {
+            cleanupPreparedRecording(removeFile: true)
+            restorePreferredInputIfNeeded()
+            throw error
+        }
     }
 
     func warmUp(preferredInputDeviceID: AudioObjectID?) throws {
@@ -60,7 +90,7 @@ final class MicrophoneRecorder: NSObject, AVAudioRecorderDelegate, @unchecked Se
         defer { lock.unlock() }
 
         self.preferredInputDeviceID = preferredInputDeviceID
-        guard recorder == nil, !isRecording else { return }
+        guard !isRecording else { return }
         try prepare()
         fputs("[mic-recorder] avrecorder warmed preferredInput=\(preferredInputDeviceID.map(String.init) ?? "default")\n", stderr)
     }
@@ -70,7 +100,7 @@ final class MicrophoneRecorder: NSObject, AVAudioRecorderDelegate, @unchecked Se
         defer { lock.unlock() }
 
         self.preferredInputDeviceID = preferredInputDeviceID
-        guard recorder == nil, !isRecording else { return }
+        guard !isRecording else { return }
         try prepare()
         fputs("[mic-recorder] avrecorder activated preferredInput=\(preferredInputDeviceID.map(String.init) ?? "default")\n", stderr)
     }
@@ -84,11 +114,12 @@ final class MicrophoneRecorder: NSObject, AVAudioRecorderDelegate, @unchecked Se
         restorePreferredInputIfNeeded()
     }
 
-    func start() throws {
+    @discardableResult
+    func start() throws -> UUID {
         lock.lock()
         defer { lock.unlock() }
 
-        guard !isRecording else { return }
+        if isRecording, let activeRecordingID { return activeRecordingID }
         try prepare()
         guard let recorder else {
             throw NSError(domain: "MicrophoneRecorder", code: 1, userInfo: [
@@ -102,9 +133,13 @@ final class MicrophoneRecorder: NSObject, AVAudioRecorderDelegate, @unchecked Se
             ])
         }
         isRecording = true
-        scheduleFirstBufferNotification()
-        scheduleMeterPoll()
-        scheduleNoAudioTimeout()
+        let recordingID = UUID()
+        activeRecordingID = recordingID
+        lastObservedFileByteCount = recordedFileByteCountLocked()
+        scheduleCaptureProgressPollLocked()
+        scheduleMeterPollLocked()
+        scheduleNoAudioTimeoutLocked()
+        return recordingID
     }
 
     func stop() -> URL? {
@@ -117,10 +152,12 @@ final class MicrophoneRecorder: NSObject, AVAudioRecorderDelegate, @unchecked Se
         }
         cancelTimers()
         isRecording = false
+        activeRecordingID = nil
         recorder.stop()
         let url = preparedURL
         self.recorder = nil
         preparedURL = nil
+        preparedInputDeviceID = nil
         restorePreferredInputIfNeeded()
         return url
     }
@@ -151,6 +188,7 @@ final class MicrophoneRecorder: NSObject, AVAudioRecorderDelegate, @unchecked Se
 
         cancelTimers()
         isRecording = false
+        activeRecordingID = nil
         cleanupPreparedRecording(removeFile: true)
         restorePreferredInputIfNeeded()
     }
@@ -174,26 +212,40 @@ final class MicrophoneRecorder: NSObject, AVAudioRecorderDelegate, @unchecked Se
             try? FileManager.default.removeItem(at: preparedURL)
         }
         preparedURL = nil
+        preparedInputDeviceID = nil
     }
 
     private func resetCaptureState() {
         hasReceivedFirstAudioBuffer = false
         hasDetectedSpeech = false
         hasReportedNoAudioTimeout = false
+        lastObservedFileByteCount = 0
+        captureFileGrowthObservations = 0
     }
 
-    private func scheduleFirstBufferNotification() {
-        firstBufferWorkItem?.cancel()
+    private func scheduleCaptureProgressPollLocked() {
+        captureProgressWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
-            self?.notifyFirstBufferIfNeeded()
+            self?.pollCaptureProgress()
         }
-        firstBufferWorkItem = workItem
-        callbackQueue.asyncAfter(deadline: .now() + Self.firstBufferDelay, execute: workItem)
+        captureProgressWorkItem = workItem
+        callbackQueue.asyncAfter(deadline: .now() + Self.captureProgressInterval, execute: workItem)
     }
 
-    private func notifyFirstBufferIfNeeded() {
+    private func pollCaptureProgress() {
         lock.lock()
         guard isRecording, !hasReceivedFirstAudioBuffer else {
+            lock.unlock()
+            return
+        }
+        let byteCount = recordedFileByteCountLocked()
+        if byteCount > lastObservedFileByteCount {
+            captureFileGrowthObservations += 1
+            lastObservedFileByteCount = byteCount
+        }
+        let hasCaptureProgress = captureFileGrowthObservations >= Self.requiredFileGrowthObservations
+        guard hasCaptureProgress else {
+            scheduleCaptureProgressPollLocked()
             lock.unlock()
             return
         }
@@ -202,7 +254,7 @@ final class MicrophoneRecorder: NSObject, AVAudioRecorderDelegate, @unchecked Se
         onFirstCapturedAudioBuffer?(Date())
     }
 
-    private func scheduleMeterPoll() {
+    private func scheduleMeterPollLocked() {
         meterWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
             self?.pollMeter()
@@ -223,15 +275,15 @@ final class MicrophoneRecorder: NSObject, AVAudioRecorderDelegate, @unchecked Se
         if shouldNotifySpeech {
             hasDetectedSpeech = true
         }
+        scheduleMeterPollLocked()
         lock.unlock()
 
         if shouldNotifySpeech {
             onFirstSpeechDetected?(Date())
         }
-        scheduleMeterPoll()
     }
 
-    private func scheduleNoAudioTimeout() {
+    private func scheduleNoAudioTimeoutLocked() {
         noAudioTimeoutWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
             self?.notifyNoAudioTimeoutIfNeeded()
@@ -252,12 +304,45 @@ final class MicrophoneRecorder: NSObject, AVAudioRecorderDelegate, @unchecked Se
     }
 
     private func cancelTimers() {
-        firstBufferWorkItem?.cancel()
-        firstBufferWorkItem = nil
+        captureProgressWorkItem?.cancel()
+        captureProgressWorkItem = nil
         noAudioTimeoutWorkItem?.cancel()
         noAudioTimeoutWorkItem = nil
         meterWorkItem?.cancel()
         meterWorkItem = nil
+    }
+
+    private func recordedFileByteCountLocked() -> Int {
+        guard let preparedURL,
+              let attributes = try? FileManager.default.attributesOfItem(atPath: preparedURL.path),
+              let size = attributes[.size] as? NSNumber else {
+            return 0
+        }
+        return size.intValue
+    }
+
+    func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
+        notifyRecordingFailed(from: recorder, error: error)
+    }
+
+    func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
+        guard !flag else { return }
+        notifyRecordingFailed(from: recorder, error: nil)
+    }
+
+    private func notifyRecordingFailed(from failedRecorder: AVAudioRecorder, error: Error?) {
+        lock.lock()
+        guard isRecording,
+              recorder === failedRecorder,
+              let activeRecordingID else {
+            lock.unlock()
+            return
+        }
+        let resolvedError = error ?? NSError(domain: "MicrophoneRecorder", code: 5, userInfo: [
+            NSLocalizedDescriptionKey: "Microphone recording stopped unexpectedly",
+        ])
+        lock.unlock()
+        onRecordingFailed?(resolvedError, activeRecordingID)
     }
 }
 
@@ -277,6 +362,10 @@ private final class DefaultInputOverride {
         }
         didApply = true
         fputs("[mic-recorder] selected default input \(preferredDeviceID) previous=\(previousDeviceID.map(String.init) ?? "unknown")\n", stderr)
+    }
+
+    deinit {
+        restore()
     }
 
     func restore() {

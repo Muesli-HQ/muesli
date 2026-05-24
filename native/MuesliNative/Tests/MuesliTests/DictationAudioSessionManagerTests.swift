@@ -364,6 +364,53 @@ struct DictationAudioSessionManagerTests {
         })
     }
 
+    @Test("recorder failure fails active session")
+    func recorderFailureFailsActiveSession() {
+        let harness = Harness(routeKind: .speakerLike)
+        let error = NSError(domain: "DictationAudioSessionManagerTests", code: 42)
+
+        harness.manager.beginRecording(mode: "toggle", duckingEnabled: true, mediaPauseEnabled: true)
+        harness.wait()
+        harness.recorder.onFirstCapturedAudioBuffer?(Date())
+        harness.wait()
+        harness.recorder.onRecordingFailed?(error, harness.recorder.activeRecordingID!)
+        harness.wait()
+
+        #expect(harness.recorder.cancelCalls == 1)
+        #expect(harness.manager.currentState == .idle)
+        #expect(harness.manager.currentSessionID == nil)
+        #expect(harness.ducking.restoreCalls == 1)
+        #expect(harness.media.restoreCalls == 1)
+        #expect(harness.events.contains { if case .failed = $0 { return true }; return false })
+        #expect(harness.events.contains { event in
+            if case .latency(let name, _) = event {
+                return name == "recorder_failed"
+            }
+            return false
+        })
+    }
+
+    @Test("stale recorder failure does not fail newer session")
+    func staleRecorderFailureDoesNotFailNewerSession() {
+        let harness = Harness(routeKind: .speakerLike)
+        let error = NSError(domain: "DictationAudioSessionManagerTests", code: 43)
+
+        harness.manager.beginRecording(mode: "toggle", duckingEnabled: true, mediaPauseEnabled: true)
+        harness.wait()
+        let staleRunID = harness.recorder.activeRecordingID!
+        harness.manager.stop()
+        harness.wait()
+
+        harness.manager.beginRecording(mode: "toggle", duckingEnabled: true, mediaPauseEnabled: true)
+        harness.wait()
+        harness.recorder.onRecordingFailed?(error, staleRunID)
+        harness.wait()
+
+        #expect(harness.manager.currentState == .acquiringAudio(harness.manager.currentSessionID!))
+        #expect(harness.recorder.cancelCalls == 0)
+        #expect(!harness.events.contains { if case .failed = $0 { return true }; return false })
+    }
+
     @Test("media pause is requested with current route after threshold")
     func mediaPauseRequestedWithCurrentRoute() {
         let harness = Harness(routeKind: .speakerLike)
@@ -482,6 +529,7 @@ private final class FakeDictationRecorder: DictationAudioRecording {
     var onFirstCapturedAudioBuffer: ((Date) -> Void)?
     var onFirstSpeechDetected: ((Date) -> Void)?
     var onNoAudioTimeout: ((Date) -> Void)?
+    var onRecordingFailed: ((Error, UUID) -> Void)?
 
     var prepareCalls = 0
     var warmUpCalls = 0
@@ -492,6 +540,7 @@ private final class FakeDictationRecorder: DictationAudioRecording {
     var cancelCalls = 0
     var stopURL: URL?
     var lastWarmInputDeviceID: AudioObjectID?
+    var activeRecordingID: UUID?
     var warmUpDelay: TimeInterval = 0
     var activateError: Error?
 
@@ -519,17 +568,22 @@ private final class FakeDictationRecorder: DictationAudioRecording {
         coolDownCalls += 1
     }
 
-    func start() throws {
+    func start() throws -> UUID {
         startCalls += 1
+        let id = UUID()
+        activeRecordingID = id
+        return id
     }
 
     func stop() -> URL? {
         stopCalls += 1
+        activeRecordingID = nil
         return stopURL
     }
 
     func cancel() {
         cancelCalls += 1
+        activeRecordingID = nil
     }
 
     func currentPower() -> Float {
