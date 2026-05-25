@@ -1,6 +1,5 @@
 import AppKit
 import Foundation
-import Sparkle
 import MuesliCore
 
 @MainActor
@@ -278,10 +277,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private func checkForUpdatesItem() -> NSMenuItem {
         let item = NSMenuItem(
             title: "Check for Updates…",
-            action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
+            action: #selector(MuesliController.checkForUpdates),
             keyEquivalent: ""
         )
-        item.target = controller.updaterController
+        item.target = controller
         item.isEnabled = controller.updaterController != nil
         return item
     }

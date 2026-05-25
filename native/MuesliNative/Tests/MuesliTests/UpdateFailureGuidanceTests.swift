@@ -85,8 +85,10 @@ struct UpdateActionRoutingTests {
                 presentStandardUpdateCheck()
             }
         """))
-        #expect(statusBarSource.contains("#selector(SPUStandardUpdaterController.checkForUpdates(_:))"))
-        #expect(statusBarSource.contains("item.target = controller.updaterController"))
+        #expect(statusBarSource.contains("#selector(MuesliController.checkForUpdates)"))
+        #expect(statusBarSource.contains("item.target = controller"))
+        #expect(statusBarSource.contains("item.isEnabled = controller.updaterController != nil"))
+        #expect(!statusBarSource.contains("#selector(SPUStandardUpdaterController.checkForUpdates(_:))"))
         #expect(!source.contains("func retryUpdateCheck()"))
         #expect(!source.contains("checkForUpdateInformation()"))
     }
