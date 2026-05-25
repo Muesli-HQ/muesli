@@ -286,11 +286,10 @@ final class SparkleUpdateDelegate: NSObject, SPUUpdaterDelegate, SPUStandardUser
 
     @MainActor
     private static func activateApplicationForSparkle() {
-        if #available(macOS 14, *) {
-            NSApplication.shared.activate()
-        } else {
-            NSApplication.shared.activate(ignoringOtherApps: true)
-        }
+        // Sparkle UI is opened from an LSUIElement menu-bar app. This is a
+        // user-initiated update action, so use strong activation even though
+        // AppKit deprecated the argumented API on macOS 14.
+        NSApplication.shared.activate(ignoringOtherApps: true)
     }
 }
 

@@ -2054,6 +2054,17 @@ final class MuesliController: NSObject {
             className.localizedCaseInsensitiveContains("Sparkle") {
             return true
         }
+
+        // Sparkle's standard UI can present through AppKit alert/window
+        // classes. Keep this semantic fallback narrow and only apply it to
+        // windows created after the update action.
+        let title = window.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return false }
+        if title.localizedCaseInsensitiveContains("update") ||
+            title.localizedCaseInsensitiveContains("updater") ||
+            title.localizedCaseInsensitiveContains("new version") {
+            return true
+        }
         return false
     }
 
@@ -2080,11 +2091,10 @@ final class MuesliController: NSObject {
 
     @MainActor
     private func activateApplicationForSparkle() {
-        if #available(macOS 14, *) {
-            NSApplication.shared.activate()
-        } else {
-            NSApplication.shared.activate(ignoringOtherApps: true)
-        }
+        // Sparkle UI is opened from an LSUIElement menu-bar app. This is a
+        // user-initiated update action, so use strong activation even though
+        // AppKit deprecated the argumented API on macOS 14.
+        NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
     @objc func quitApp() {

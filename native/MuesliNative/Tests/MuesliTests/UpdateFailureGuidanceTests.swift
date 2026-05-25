@@ -117,6 +117,8 @@ struct UpdateActionRoutingTests {
         #expect(source.contains("focusUpdaterWindowsCreatedAfterUpdateAction(excluding: existingWindows)"))
         #expect(source.contains("return !existingWindows.contains(ObjectIdentifier(window)) && isLikelyUpdaterWindow(window)"))
         #expect(source.contains("isLikelyUpdaterWindow(window)"))
+        #expect(source.contains("title.localizedCaseInsensitiveContains(\"update\")"))
+        #expect(source.contains("title.localizedCaseInsensitiveContains(\"new version\")"))
         #expect(source.contains("return false"))
         #expect(!source.contains("window.collectionBehavior ="))
         #expect(!source.contains("return window.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty"))
@@ -144,7 +146,7 @@ struct UpdateActionRoutingTests {
         let source = try appDelegateSource()
 
         #expect(source.contains("activateSynchronouslyBeforeSparklePresentsUI()"))
-        #expect(source.contains("NSApplication.shared.activate()"))
+        #expect(source.contains("NSApplication.shared.activate(ignoringOtherApps: true)"))
         #expect(!source.contains("orderFrontRegardless()"))
     }
 
