@@ -79,21 +79,24 @@ struct UpdateActionRoutingTests {
     func statusBarUpdateActionUsesStandardSparkleFlow() throws {
         let source = try muesliControllerSource()
 
-        let body = try methodBody(named: "checkForUpdates", in: source)
-        #expect(body.contains("presentStandardUpdateCheck()"))
-        #expect(!body.contains("checkForUpdateInformation()"))
+        #expect(source.contains("""
+            @objc func checkForUpdates() {
+                presentStandardUpdateCheck()
+            }
+        """))
         #expect(!source.contains("func retryUpdateCheck()"))
+        #expect(!source.contains("checkForUpdateInformation()"))
     }
 
     @Test("standard update presentation does not preflight canCheckForUpdates")
     func standardUpdatePresentationLetsSparkleRefocusExistingUI() throws {
         let source = try muesliControllerSource()
-        let body = try methodBody(named: "presentStandardUpdateCheck", in: source)
 
-        #expect(body.contains("checkForUpdates(nil)"))
-        #expect(body.contains("restoreStaleUpdateCheck(generation: generation, to: restoreStatus)"))
-        #expect(!body.contains("canCheckForUpdates"))
+        #expect(source.contains("updaterController.checkForUpdates(nil)"))
+        #expect(source.contains("activateApplicationForSparkle()"))
+        #expect(!source.contains("canCheckForUpdates"))
         #expect(!source.contains("func installAvailableUpdate()"))
+        #expect(!source.contains("restoreStaleUpdateCheck(generation: generation, to: restoreStatus)"))
     }
 
     @Test("About page does not launch Sparkle directly")
@@ -114,24 +117,26 @@ struct UpdateActionRoutingTests {
         #expect(source.contains("focusUpdaterWindowsCreatedAfterUpdateAction(excluding: existingWindows)"))
         #expect(source.contains("!existingWindows.contains(ObjectIdentifier(window))"))
         #expect(source.contains("isLikelyUpdaterWindow(window)"))
+        #expect(source.contains("return false"))
         #expect(!source.contains("window.collectionBehavior ="))
+        #expect(!source.contains("return window.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty"))
         #expect(!source.contains(".moveToActiveSpace"))
         #expect(!source.contains(".fullScreenAuxiliary"))
         #expect(!source.contains(".canJoinAllSpaces"))
+        #expect(!source.contains("orderFrontRegardless()"))
     }
 
     @Test("Sparkle delegate cannot leave the About UI checking forever")
     func sparkleDelegateRestoresStaleCheckingState() throws {
         let source = try appDelegateSource()
-        let body = try methodBody(named: "restoreStaleUpdateCheck", in: source)
 
         #expect(source.contains("private var updateCycleGeneration = 0"))
         #expect(source.contains("let restoreStatus = recoverableUpdateStatus(appState?.sparkleUpdateStatus ?? .idle)"))
         #expect(source.contains("finishUpdateCheck(with:"))
-        #expect(body.contains("30_000_000_000"))
-        #expect(body.contains("self.updateCycleGeneration == generation"))
-        #expect(body.contains("guard case .checking = self.appState?.sparkleUpdateStatus else { return }"))
-        #expect(body.contains("self.finishUpdateCheck(with: restoreStatus)"))
+        #expect(source.contains("30_000_000_000"))
+        #expect(source.contains("self.updateCycleGeneration == generation"))
+        #expect(source.contains("guard case .checking = self.appState?.sparkleUpdateStatus else { return }"))
+        #expect(source.contains("self.finishUpdateCheck(with: restoreStatus)"))
     }
 
     @Test("Sparkle focus handling activates without manually ordering app windows")
@@ -180,17 +185,6 @@ struct UpdateActionRoutingTests {
             .appendingPathComponent("MuesliNativeApp")
             .appendingPathComponent("AboutView.swift")
         return try String(contentsOf: aboutViewURL, encoding: .utf8)
-    }
-
-    private func methodBody(named name: String, in source: String) throws -> String {
-        let pattern = #"(?s)func \#(name)\([^)]*\) \{\s*(.*?)\n    \}"#
-        let regex = try NSRegularExpression(pattern: pattern)
-        let range = NSRange(source.startIndex..<source.endIndex, in: source)
-        guard let match = regex.firstMatch(in: source, range: range),
-              let bodyRange = Range(match.range(at: 1), in: source) else {
-            throw TestFailure("Could not find \(name) body")
-        }
-        return String(source[bodyRange])
     }
 }
 
