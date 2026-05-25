@@ -123,14 +123,16 @@ struct UpdateActionRoutingTests {
         #expect(!source.contains("performUpdateAction"))
     }
 
-    @Test("Sidebar does not expose an unreliable update call-to-action")
-    func sidebarDoesNotExposeUpdateCTA() throws {
+    @Test("Sidebar update badge is status-only and does not start updates")
+    func sidebarUpdateBadgeIsStatusOnly() throws {
         let source = try sidebarViewSource()
 
         #expect(source.contains("private var pendingUpdateCTA: UpdateCTA?"))
-        #expect(source.contains("nil"))
+        #expect(source.contains("label: \"Update\""))
+        #expect(source.contains("Open About for update instructions"))
         #expect(!source.contains("if updateCTA != nil"))
         #expect(!source.contains("Update Now"))
+        #expect(!source.contains("controller.checkForUpdates()"))
         #expect(!source.contains("Open About to install the update"))
         #expect(!source.contains("Open About to finish installing the update"))
     }

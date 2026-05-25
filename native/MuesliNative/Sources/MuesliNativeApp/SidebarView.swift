@@ -39,7 +39,26 @@ struct SidebarView: View {
     }
 
     private var pendingUpdateCTA: UpdateCTA? {
-        nil
+        switch appState.sparkleUpdateStatus {
+        case .available:
+            return UpdateCTA(
+                label: "Update",
+                icon: "arrow.down",
+                foreground: updateCTAForeground,
+                accessibilityLabel: "Update available",
+                tooltip: "Open About for update instructions"
+            )
+        case .downloaded:
+            return UpdateCTA(
+                label: "Ready",
+                icon: "arrow.clockwise",
+                foreground: updateCTAForeground,
+                accessibilityLabel: "Update ready to install",
+                tooltip: "Open About for update instructions"
+            )
+        case .idle, .checking, .busy, .installing, .upToDate, .disabled, .failed:
+            return nil
+        }
     }
 
     private var updateCTAForeground: Color {
