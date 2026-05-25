@@ -93,10 +93,17 @@ struct UpdateActionRoutingTests {
         let source = try muesliControllerSource()
 
         #expect(source.contains("updaterController.checkForUpdates(nil)"))
+        #expect(source.contains("focusUpdaterWindowsCreatedAfterUpdateAction(excluding: existingWindows)"))
+        #expect(try index(of: "updaterController.checkForUpdates(nil)", in: source) <
+            index(of: "focusUpdaterWindowsCreatedAfterUpdateAction(excluding: existingWindows)", in: source))
         #expect(source.contains("activateApplicationForSparkle()"))
         #expect(!source.contains("canCheckForUpdates"))
         #expect(!source.contains("func installAvailableUpdate()"))
         #expect(!source.contains("restoreStaleUpdateCheck(generation: generation, to: restoreStatus)"))
+        #expect(!source.contains("""
+        DispatchQueue.main.async { [weak self] in
+            updaterController.checkForUpdates(nil)
+        """))
     }
 
     @Test("About page does not launch Sparkle directly")
@@ -117,8 +124,10 @@ struct UpdateActionRoutingTests {
         #expect(source.contains("focusUpdaterWindowsCreatedAfterUpdateAction(excluding: existingWindows)"))
         #expect(source.contains("return !existingWindows.contains(ObjectIdentifier(window)) && isLikelyUpdaterWindow(window)"))
         #expect(source.contains("isLikelyUpdaterWindow(window)"))
+        #expect(source.contains("className.localizedCaseInsensitiveContains(\"SPU\")"))
         #expect(source.contains("title.localizedCaseInsensitiveContains(\"update\")"))
         #expect(source.contains("title.localizedCaseInsensitiveContains(\"new version\")"))
+        #expect(source.contains("title.localizedCaseInsensitiveContains(\"available\")"))
         #expect(source.contains("return false"))
         #expect(!source.contains("window.collectionBehavior ="))
         #expect(!source.contains("return window.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty"))
@@ -187,6 +196,13 @@ struct UpdateActionRoutingTests {
             .appendingPathComponent("MuesliNativeApp")
             .appendingPathComponent("AboutView.swift")
         return try String(contentsOf: aboutViewURL, encoding: .utf8)
+    }
+
+    private func index(of needle: String, in haystack: String) throws -> String.Index {
+        guard let range = haystack.range(of: needle) else {
+            throw TestFailure("Could not find \(needle)")
+        }
+        return range.lowerBound
     }
 }
 

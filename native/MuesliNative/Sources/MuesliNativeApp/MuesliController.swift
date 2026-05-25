@@ -2020,10 +2020,8 @@ final class MuesliController: NSObject {
         // Always enter Sparkle's standard path. Sparkle uses this same call to
         // refocus existing updater UI, so local availability gates would make
         // in-app buttons less reliable than the status-bar action.
-        DispatchQueue.main.async { [weak self] in
-            updaterController.checkForUpdates(nil)
-            self?.focusUpdaterWindowsCreatedAfterUpdateAction(excluding: existingWindows)
-        }
+        updaterController.checkForUpdates(nil)
+        focusUpdaterWindowsCreatedAfterUpdateAction(excluding: existingWindows)
     }
 
     private func focusUpdaterWindowsCreatedAfterUpdateAction(excluding existingWindows: Set<ObjectIdentifier>) {
@@ -2050,7 +2048,8 @@ final class MuesliController: NSObject {
 
     private func isLikelyUpdaterWindow(_ window: NSWindow) -> Bool {
         let className = String(describing: type(of: window))
-        if className.localizedCaseInsensitiveContains("SU") ||
+        if className.localizedCaseInsensitiveContains("SPU") ||
+            className.localizedCaseInsensitiveContains("SU") ||
             className.localizedCaseInsensitiveContains("Sparkle") {
             return true
         }
@@ -2062,7 +2061,8 @@ final class MuesliController: NSObject {
         guard !title.isEmpty else { return false }
         if title.localizedCaseInsensitiveContains("update") ||
             title.localizedCaseInsensitiveContains("updater") ||
-            title.localizedCaseInsensitiveContains("new version") {
+            title.localizedCaseInsensitiveContains("new version") ||
+            title.localizedCaseInsensitiveContains("available") {
             return true
         }
         return false
