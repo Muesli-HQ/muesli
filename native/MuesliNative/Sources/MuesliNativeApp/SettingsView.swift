@@ -561,6 +561,49 @@ struct SettingsView: View {
                             placeholder: "qwen3.5"
                         ) { val in controller.updateConfig { $0.ollamaModel = val } }
                     }
+                } else if appState.selectedMeetingSummaryBackend == .dust {
+                    settingsRow("Region", controlWidth: meetingControlWidth) {
+                        settingsMenu(
+                            selection: DustRegionOption.resolved(appState.config.dustRegion).label,
+                            options: DustRegionOption.all.map(\.label)
+                        ) { label in
+                            if let option = DustRegionOption.all.first(where: { $0.label == label }) {
+                                controller.updateConfig { $0.dustRegion = option.region }
+                            }
+                        }
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("API Key", controlWidth: meetingControlWidth) {
+                        PastableSecureField(
+                            text: appState.config.dustAPIKey,
+                            placeholder: "sk-...",
+                            onChange: { val in controller.updateConfig { $0.dustAPIKey = val } }
+                        )
+                        .frame(height: 22)
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Workspace ID", controlWidth: meetingControlWidth) {
+                        PastableTextField(
+                            text: appState.config.dustWorkspaceID,
+                            placeholder: "Dust workspace ID",
+                            onChange: { val in controller.updateConfig { $0.dustWorkspaceID = val } }
+                        )
+                        .frame(height: 22)
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Agent ID", controlWidth: meetingControlWidth) {
+                        PastableTextField(
+                            text: appState.config.dustAgentID,
+                            placeholder: "Dust agent configurationId",
+                            onChange: { val in controller.updateConfig { $0.dustAgentID = val } }
+                        )
+                        .frame(height: 22)
+                    }
+                    dustStatusRow(
+                        apiKey: appState.config.dustAPIKey,
+                        workspaceID: appState.config.dustWorkspaceID,
+                        agentID: appState.config.dustAgentID
+                    )
                 } else {
                     settingsRow("API Key", controlWidth: meetingControlWidth) {
                         PastableSecureField(
@@ -1907,6 +1950,26 @@ struct SettingsView: View {
             Text(key.isEmpty ? "No API key configured" : "Key configured")
                 .font(.system(size: 11))
                 .foregroundStyle(key.isEmpty ? MuesliTheme.textTertiary : MuesliTheme.success)
+        }
+        .frame(minHeight: 20)
+    }
+
+    @ViewBuilder
+    private func dustStatusRow(apiKey: String, workspaceID: String, agentID: String) -> some View {
+        let missing: [String] = [
+            apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "API key" : nil,
+            workspaceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "workspace ID" : nil,
+            agentID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "agent ID" : nil,
+        ].compactMap { $0 }
+        let configured = missing.isEmpty
+        HStack(spacing: 6) {
+            Spacer()
+            Circle()
+                .fill(configured ? MuesliTheme.success : MuesliTheme.textTertiary)
+                .frame(width: 6, height: 6)
+            Text(configured ? "Dust agent configured" : "Missing: \(missing.joined(separator: ", "))")
+                .font(.system(size: 11))
+                .foregroundStyle(configured ? MuesliTheme.success : MuesliTheme.textTertiary)
         }
         .frame(minHeight: 20)
     }

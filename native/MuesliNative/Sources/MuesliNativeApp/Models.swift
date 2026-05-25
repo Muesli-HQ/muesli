@@ -344,11 +344,44 @@ struct MeetingSummaryBackendOption: Equatable {
         label: "Ollama"
     )
 
-    static let all: [MeetingSummaryBackendOption] = [.chatGPT, .openAI, .openRouter, .ollama]
+    static let dust = MeetingSummaryBackendOption(
+        backend: "dust",
+        label: "Dust"
+    )
+
+    static let all: [MeetingSummaryBackendOption] = [.chatGPT, .openAI, .openRouter, .ollama, .dust]
 
     static func resolved(_ backend: String?) -> MeetingSummaryBackendOption {
         guard let backend, let option = all.first(where: { $0.backend == backend }) else {
             return .chatGPT
+        }
+        return option
+    }
+}
+
+/// Dust API region. EU customers use eu.dust.tt; Worldwide customers use dust.tt.
+struct DustRegionOption: Equatable {
+    let region: String   // persisted in config.json
+    let label: String    // shown in Settings
+    let host: String      // API base URL for this region
+
+    static let europe = DustRegionOption(
+        region: "eu",
+        label: "EU (eu.dust.tt)",
+        host: "https://eu.dust.tt"
+    )
+
+    static let worldwide = DustRegionOption(
+        region: "worldwide",
+        label: "Worldwide (dust.tt)",
+        host: "https://dust.tt"
+    )
+
+    static let all: [DustRegionOption] = [.europe, .worldwide]
+
+    static func resolved(_ region: String?) -> DustRegionOption {
+        guard let region, let option = all.first(where: { $0.region == region }) else {
+            return .europe
         }
         return option
     }
@@ -714,6 +747,10 @@ struct AppConfig: Codable {
     var chatGPTModel: String = ""
     var ollamaURL: String = "http://localhost:11434"
     var ollamaModel: String = "qwen3.5"
+    var dustAPIKey: String = ""
+    var dustWorkspaceID: String = ""
+    var dustAgentID: String = ""
+    var dustRegion: String = DustRegionOption.europe.region
     var summaryModel: String = ""
     var meetingSummaryModel: String = ""
     var hasCompletedOnboarding: Bool = false
@@ -786,6 +823,10 @@ struct AppConfig: Codable {
         case chatGPTModel = "chatgpt_model"
         case ollamaURL = "ollama_url"
         case ollamaModel = "ollama_model"
+        case dustAPIKey = "dust_api_key"
+        case dustWorkspaceID = "dust_workspace_id"
+        case dustAgentID = "dust_agent_id"
+        case dustRegion = "dust_region"
         case summaryModel = "summary_model"
         case meetingSummaryModel = "meeting_summary_model"
         case hasCompletedOnboarding = "has_completed_onboarding"
@@ -877,6 +918,10 @@ struct AppConfig: Codable {
         chatGPTModel = (try? c.decode(String.self, forKey: .chatGPTModel)) ?? defaults.chatGPTModel
         ollamaURL = (try? c.decode(String.self, forKey: .ollamaURL)) ?? defaults.ollamaURL
         ollamaModel = (try? c.decode(String.self, forKey: .ollamaModel)) ?? defaults.ollamaModel
+        dustAPIKey = (try? c.decode(String.self, forKey: .dustAPIKey)) ?? defaults.dustAPIKey
+        dustWorkspaceID = (try? c.decode(String.self, forKey: .dustWorkspaceID)) ?? defaults.dustWorkspaceID
+        dustAgentID = (try? c.decode(String.self, forKey: .dustAgentID)) ?? defaults.dustAgentID
+        dustRegion = (try? c.decode(String.self, forKey: .dustRegion)) ?? defaults.dustRegion
         summaryModel = (try? c.decode(String.self, forKey: .summaryModel)) ?? defaults.summaryModel
         meetingSummaryModel = (try? c.decode(String.self, forKey: .meetingSummaryModel)) ?? defaults.meetingSummaryModel
         hasCompletedOnboarding = (try? c.decode(Bool.self, forKey: .hasCompletedOnboarding)) ?? defaults.hasCompletedOnboarding

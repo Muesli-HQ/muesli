@@ -34,6 +34,23 @@ enum MeetingSummaryClient {
     private static let ollamaSummaryTimeout: TimeInterval = 300
     private static let ollamaTitleTimeout: TimeInterval = 120
 
+    // Dust backend. The base URL is region-selectable (EU vs Worldwide) and overridable
+    // via the DUST_BASE_URL environment variable for QA and tests.
+    private static let dustDefaultBaseURL = URL(string: "https://eu.dust.tt")!
+    private static func dustBaseURL(for config: AppConfig) -> URL {
+        if let override = ProcessInfo.processInfo.environment["DUST_BASE_URL"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !override.isEmpty,
+           let url = URL(string: override) {
+            return url
+        }
+        return URL(string: DustRegionOption.resolved(config.dustRegion).host) ?? dustDefaultBaseURL
+    }
+    private static let dustSummaryTimeout: TimeInterval = 300
+    private static let dustTitleTimeout: TimeInterval = 120
+    private static let dustPollInterval: TimeInterval = 2
+    private static let dustPollBudget: TimeInterval = 60
+    private static let dustRegionHint = "Verify the selected Dust region (EU uses eu.dust.tt, Worldwide uses dust.tt) matches your workspace."
+
     private static let titleInstructions = """
     Generate a short, descriptive meeting title (3-7 words) from these transcript excerpts. \
     Prefer the main topic and outcome across the whole meeting over opening small talk or setup. \
@@ -85,6 +102,18 @@ enum MeetingSummaryClient {
         }
         if backend == MeetingSummaryBackendOption.ollama.backend {
             generatedNotes = try await summarizeWithOllama(
+                transcript: transcript,
+                meetingTitle: meetingTitle,
+                existingNotes: existingNotes,
+                manualNotes: manualNotesToRetain,
+                config: config,
+                template: template,
+                visualContext: visualContext
+            )
+            return notesByRetainingManualNotes(generatedNotes: generatedNotes, manualNotes: manualNotesToRetain)
+        }
+        if backend == MeetingSummaryBackendOption.dust.backend {
+            generatedNotes = try await summarizeWithDust(
                 transcript: transcript,
                 meetingTitle: meetingTitle,
                 existingNotes: existingNotes,
@@ -664,6 +693,10 @@ enum MeetingSummaryClient {
             return await generateTitleWithOllama(transcript: excerpt, config: config)
         }
 
+        if backend == MeetingSummaryBackendOption.dust.backend {
+            return await generateTitleWithDust(transcript: excerpt, config: config)
+        }
+
         let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? config.openAIAPIKey
         guard !apiKey.isEmpty else { return nil }
         let model = config.openAIModel.isEmpty ? defaultOpenAIModel : config.openAIModel
@@ -835,5 +868,293 @@ enum MeetingSummaryClient {
 
     private static func rawTranscriptFallback(transcript: String, meetingTitle: String) -> String {
         "## Raw Transcript\n\n\(transcript)"
+    }
+
+    // MARK: - Dust backend
+
+    /// Dust agent credentials. Resolved from env-var overrides over config.json.
+    private struct DustCredentials {
+        let apiKey: String
+        let workspaceID: String
+        let agentID: String
+        let baseURL: URL
+
+        /// Returns resolved credentials, or nil if any of the three values is empty.
+        static func resolve(from config: AppConfig) -> DustCredentials? {
+            let env = ProcessInfo.processInfo.environment
+            let apiKey = (env["DUST_API_KEY"] ?? config.dustAPIKey)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let workspaceID = (env["DUST_WORKSPACE_ID"] ?? config.dustWorkspaceID)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let agentID = (env["DUST_AGENT_ID"] ?? config.dustAgentID)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !apiKey.isEmpty, !workspaceID.isEmpty, !agentID.isEmpty else { return nil }
+            return DustCredentials(
+                apiKey: apiKey,
+                workspaceID: workspaceID,
+                agentID: agentID,
+                baseURL: dustBaseURL(for: config)
+            )
+        }
+    }
+
+    /// State of the most recent agent message in a Dust conversation.
+    enum DustAgentOutcome: Equatable {
+        case answer(String)   // a finished agent message with non-empty text
+        case running          // an agent message exists but is still generating
+        case failed(String)   // the agent reported a terminal failure
+        case missing          // no agent message present yet
+    }
+
+    /// Pure parsing of Dust conversation JSON. No network — unit-testable with fixtures.
+    ///
+    /// Dust's conversation `content` is an array of ranks; each rank is an array of message
+    /// versions (newest last). The agent's answer is the latest `agent_message`.
+    enum DustResponseParser {
+        /// Extracts the conversation's string ID from a create- or get-conversation response.
+        static func conversationID(in json: [String: Any]) -> String? {
+            let conversation = (json["conversation"] as? [String: Any]) ?? json
+            if let sId = conversation["sId"] as? String, !sId.isEmpty { return sId }
+            if let id = conversation["id"] as? String, !id.isEmpty { return id }
+            if let id = conversation["id"] as? Int { return String(id) }
+            return nil
+        }
+
+        /// Reports the state of the most recent agent message in the conversation.
+        static func agentOutcome(in json: [String: Any]) -> DustAgentOutcome {
+            let conversation = (json["conversation"] as? [String: Any]) ?? json
+            guard let content = conversation["content"] as? [[Any]] else { return .missing }
+            for rank in content.reversed() {
+                guard let latest = rank.last as? [String: Any] else { continue }
+                guard (latest["type"] as? String) == "agent_message" else { continue }
+                return outcome(for: latest)
+            }
+            return .missing
+        }
+
+        private static func outcome(for message: [String: Any]) -> DustAgentOutcome {
+            let status = (message["status"] as? String)?.lowercased()
+            let text = answerText(from: message)
+            switch status {
+            case "succeeded", "completed":
+                if let text { return .answer(text) }
+                return .failed("The Dust agent finished without returning any text.")
+            case "failed", "errored", "error":
+                return .failed(errorMessage(from: message) ?? "The Dust agent failed to generate a response.")
+            case "cancelled", "canceled":
+                return .failed("The Dust agent run was cancelled.")
+            case nil:
+                // No status field — treat non-empty content as a finished answer.
+                if let text { return .answer(text) }
+                return .running
+            default:
+                // Any other (in-progress) status, e.g. "created" / "running" / "pending".
+                return .running
+            }
+        }
+
+        private static func answerText(from message: [String: Any]) -> String? {
+            guard let content = message["content"] as? String else { return nil }
+            let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+
+        private static func errorMessage(from message: [String: Any]) -> String? {
+            if let error = message["error"] as? [String: Any],
+               let msg = error["message"] as? String, !msg.isEmpty {
+                return msg
+            }
+            if let error = message["error"] as? String, !error.isEmpty {
+                return error
+            }
+            return nil
+        }
+    }
+
+    /// Like `validateHTTPResponse` but surfaces the EU-region limitation on the status
+    /// codes a region/credential mismatch most likely produces.
+    private static func validateDustHTTPResponse(_ response: URLResponse, data: Data) throws {
+        guard let httpResponse = response as? HTTPURLResponse else { return }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let serverMessage = extractErrorMessage(from: data)
+                ?? String(data: data, encoding: .utf8)
+                ?? HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode)
+            var message = String(serverMessage.prefix(800))
+            if [401, 403, 404].contains(httpResponse.statusCode) {
+                message += " \(dustRegionHint) Also verify the workspace ID, agent ID, and API key."
+            }
+            throw MeetingSummaryError.backendFailed(
+                backend: "Dust",
+                statusCode: httpResponse.statusCode,
+                message: message
+            )
+        }
+    }
+
+    /// Posts `prompt` to the configured Dust agent and returns the agent's answer text.
+    /// Throws `MeetingSummaryError` on any failure (network, region, timeout, empty).
+    private static func runDustAgent(
+        prompt: String,
+        credentials: DustCredentials,
+        timeout: TimeInterval
+    ) async throws -> String {
+        let createURL = credentials.baseURL
+            .appendingPathComponent("api/v1/w")
+            .appendingPathComponent(credentials.workspaceID)
+            .appendingPathComponent("assistant/conversations")
+
+        // One user message that @-mentions the configured agent. `blocking: true` waits
+        // for the agent's initial reply so the response usually already carries the answer.
+        let body: [String: Any] = [
+            "blocking": true,
+            "title": "Muesli meeting summary",
+            "visibility": "unlisted",
+            "message": [
+                "content": prompt,
+                "mentions": [["configurationId": credentials.agentID]],
+                "context": [
+                    "username": "muesli",
+                    "timezone": TimeZone.current.identifier,
+                    "origin": "api",
+                ],
+            ] as [String: Any],
+        ]
+
+        var request = URLRequest(url: createURL)
+        request.httpMethod = "POST"
+        request.timeoutInterval = timeout
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(credentials.apiKey)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            try validateDustHTTPResponse(response, data: data)
+
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw MeetingSummaryError.emptyResponse(backend: "Dust")
+            }
+
+            switch DustResponseParser.agentOutcome(in: json) {
+            case let .answer(text):
+                return text
+            case let .failed(message):
+                throw MeetingSummaryError.backendFailed(backend: "Dust", statusCode: nil, message: message)
+            case .running, .missing:
+                // Blocking response carried no finished answer — poll the conversation.
+                fputs("[summary] Dust blocking response without answer; keys=\(Array(json.keys)). Polling conversation.\n", stderr)
+                guard let conversationID = DustResponseParser.conversationID(in: json) else {
+                    throw MeetingSummaryError.emptyResponse(backend: "Dust")
+                }
+                return try await pollDustConversation(conversationID: conversationID, credentials: credentials)
+            }
+        } catch {
+            throw summaryRequestError(backend: "Dust", error: error)
+        }
+    }
+
+    /// Polls a Dust conversation until the agent message completes or the budget expires.
+    private static func pollDustConversation(
+        conversationID: String,
+        credentials: DustCredentials
+    ) async throws -> String {
+        let getURL = credentials.baseURL
+            .appendingPathComponent("api/v1/w")
+            .appendingPathComponent(credentials.workspaceID)
+            .appendingPathComponent("assistant/conversations")
+            .appendingPathComponent(conversationID)
+
+        let deadline = Date().addingTimeInterval(dustPollBudget)
+        while Date() < deadline {
+            try await Task.sleep(nanoseconds: UInt64(dustPollInterval * 1_000_000_000))
+
+            var request = URLRequest(url: getURL)
+            request.httpMethod = "GET"
+            request.timeoutInterval = 30
+            request.setValue("Bearer \(credentials.apiKey)", forHTTPHeaderField: "Authorization")
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            try validateDustHTTPResponse(response, data: data)
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                continue
+            }
+            switch DustResponseParser.agentOutcome(in: json) {
+            case let .answer(text):
+                return text
+            case let .failed(message):
+                throw MeetingSummaryError.backendFailed(backend: "Dust", statusCode: nil, message: message)
+            case .running, .missing:
+                continue
+            }
+        }
+        throw MeetingSummaryError.backendFailed(
+            backend: "Dust",
+            statusCode: nil,
+            message: "The Dust agent did not return an answer within \(Int(dustPollBudget))s. The agent may be running long tool calls or may be misconfigured."
+        )
+    }
+
+    private static func summarizeWithDust(
+        transcript: String,
+        meetingTitle: String,
+        existingNotes: String?,
+        manualNotes: String?,
+        config: AppConfig,
+        template: MeetingTemplateSnapshot,
+        visualContext: String? = nil
+    ) async throws -> String {
+        // FR8: incomplete credentials -> raw-transcript fallback, never crash or throw.
+        guard let credentials = DustCredentials.resolve(from: config) else {
+            return rawTranscriptFallback(transcript: transcript, meetingTitle: meetingTitle)
+        }
+
+        // A Dust agent has no separate system-prompt channel, so Muesli's instructions
+        // and the transcript are delivered together in one user message.
+        let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes)
+        let userPrompt = summaryUserPrompt(
+            transcript: transcript,
+            meetingTitle: meetingTitle,
+            existingNotes: existingNotes,
+            manualNotes: manualNotes,
+            visualContext: visualContext
+        )
+        let prompt = instructions + "\n\n---\n\n" + userPrompt
+
+        let answer = try await runDustAgent(
+            prompt: prompt,
+            credentials: credentials,
+            timeout: dustSummaryTimeout
+        )
+        guard !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw MeetingSummaryError.emptyResponse(backend: "Dust")
+        }
+        return answer
+    }
+
+    /// Routes title generation through the configured Dust agent. Note: this is a second
+    /// agent invocation per meeting, in addition to the summary call.
+    private static func generateTitleWithDust(transcript: String, config: AppConfig) async -> String? {
+        guard let credentials = DustCredentials.resolve(from: config) else {
+            fputs("[summary] Dust title generation skipped: incomplete credentials\n", stderr)
+            return nil
+        }
+        let prompt = titleInstructions + "\n\n---\n\n" + transcript
+        do {
+            let answer = try await runDustAgent(
+                prompt: prompt,
+                credentials: credentials,
+                timeout: dustTitleTimeout
+            )
+            let title = answer.trimmingCharacters(in: .whitespacesAndNewlines.union(.init(charactersIn: "\"")))
+            guard !title.isEmpty else {
+                fputs("[summary] Dust title generation: trimmed response is empty\n", stderr)
+                return nil
+            }
+            fputs("[summary] Dust generated title successfully\n", stderr)
+            return title
+        } catch {
+            fputs("[summary] Dust title generation failed\n", stderr)
+            return nil
+        }
     }
 }

@@ -368,11 +368,12 @@ struct MeetingSummaryBackendTests {
 
     @Test("all options listed")
     func allOptions() {
-        #expect(MeetingSummaryBackendOption.all.count == 4)
+        #expect(MeetingSummaryBackendOption.all.count == 5)
         #expect(MeetingSummaryBackendOption.all.contains(.openAI))
         #expect(MeetingSummaryBackendOption.all.contains(.openRouter))
         #expect(MeetingSummaryBackendOption.all.contains(.chatGPT))
         #expect(MeetingSummaryBackendOption.all.contains(.ollama))
+        #expect(MeetingSummaryBackendOption.all.contains(.dust))
     }
 
     @Test("backend strings are lowercase")
@@ -380,6 +381,7 @@ struct MeetingSummaryBackendTests {
         #expect(MeetingSummaryBackendOption.openAI.backend == "openai")
         #expect(MeetingSummaryBackendOption.openRouter.backend == "openrouter")
         #expect(MeetingSummaryBackendOption.ollama.backend == "ollama")
+        #expect(MeetingSummaryBackendOption.dust.backend == "dust")
     }
 
     @Test("configured values resolve with ChatGPT fallback")
@@ -389,6 +391,38 @@ struct MeetingSummaryBackendTests {
         #expect(MeetingSummaryBackendOption.resolved("ollama") == .ollama)
         #expect(MeetingSummaryBackendOption.resolved("unknown") == .chatGPT)
         #expect(MeetingSummaryBackendOption.resolved(nil) == .chatGPT)
+    }
+}
+
+@Suite("DustRegionOption")
+struct DustRegionTests {
+
+    @Test("both regions listed")
+    func allRegions() {
+        #expect(DustRegionOption.all.count == 2)
+        #expect(DustRegionOption.all.contains(.europe))
+        #expect(DustRegionOption.all.contains(.worldwide))
+    }
+
+    @Test("region hosts map to the correct Dust endpoints")
+    func regionHosts() {
+        #expect(DustRegionOption.europe.region == "eu")
+        #expect(DustRegionOption.europe.host == "https://eu.dust.tt")
+        #expect(DustRegionOption.worldwide.region == "worldwide")
+        #expect(DustRegionOption.worldwide.host == "https://dust.tt")
+    }
+
+    @Test("configured region resolves with EU fallback")
+    func resolvedRegions() {
+        #expect(DustRegionOption.resolved("eu") == .europe)
+        #expect(DustRegionOption.resolved("worldwide") == .worldwide)
+        #expect(DustRegionOption.resolved("unknown") == .europe)
+        #expect(DustRegionOption.resolved(nil) == .europe)
+    }
+
+    @Test("AppConfig defaults the Dust region to EU")
+    func configDefault() {
+        #expect(AppConfig().dustRegion == "eu")
     }
 }
 
