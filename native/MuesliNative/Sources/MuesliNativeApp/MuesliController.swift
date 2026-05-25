@@ -2038,10 +2038,7 @@ final class MuesliController: NSObject {
     private func focusUpdaterWindows(excluding existingWindows: Set<ObjectIdentifier>) {
         let updaterWindows = NSApplication.shared.windows.filter { window in
             guard window.isVisible else { return false }
-            if !existingWindows.contains(ObjectIdentifier(window)) {
-                return true
-            }
-            return isLikelyUpdaterWindow(window)
+            return !existingWindows.contains(ObjectIdentifier(window)) && isLikelyUpdaterWindow(window)
         }
         guard !updaterWindows.isEmpty else { return }
 

@@ -115,7 +115,7 @@ struct UpdateActionRoutingTests {
         let source = try muesliControllerSource()
 
         #expect(source.contains("focusUpdaterWindowsCreatedAfterUpdateAction(excluding: existingWindows)"))
-        #expect(source.contains("!existingWindows.contains(ObjectIdentifier(window))"))
+        #expect(source.contains("return !existingWindows.contains(ObjectIdentifier(window)) && isLikelyUpdaterWindow(window)"))
         #expect(source.contains("isLikelyUpdaterWindow(window)"))
         #expect(source.contains("return false"))
         #expect(!source.contains("window.collectionBehavior ="))
@@ -185,6 +185,69 @@ struct UpdateActionRoutingTests {
             .appendingPathComponent("MuesliNativeApp")
             .appendingPathComponent("AboutView.swift")
         return try String(contentsOf: aboutViewURL, encoding: .utf8)
+    }
+}
+
+@Suite("Sidebar hit areas")
+struct SidebarHitAreaTests {
+    @Test("primary sidebar rows use their full highlighted surface as the hit target")
+    func primarySidebarRowsExpandBeforeApplyingHitShape() throws {
+        let source = try sidebarViewSource()
+        let sidebarItem = try sourceSection(
+            in: source,
+            from: "private func sidebarItem",
+            to: "private var darkModeToggle"
+        )
+
+        #expect(sidebarItem.contains(".frame(maxWidth: .infinity, alignment: .leading)"))
+        #expect(sidebarItem.contains(".background("))
+        #expect(sidebarItem.contains(".contentShape(Rectangle())"))
+        #expect(try index(of: ".frame(maxWidth: .infinity, alignment: .leading)", in: sidebarItem) <
+            index(of: ".contentShape(Rectangle())", in: sidebarItem))
+    }
+
+    @Test("meeting filter rows use the full row width as the hit target")
+    func meetingFilterRowsExpandBeforeApplyingHitShape() throws {
+        let source = try sidebarViewSource()
+        let meetingFilterRow = try sourceSection(
+            in: source,
+            from: "private func meetingFilterRow",
+            to: "private func folderRenameField"
+        )
+
+        #expect(meetingFilterRow.contains(".frame(maxWidth: .infinity, alignment: .leading)"))
+        #expect(meetingFilterRow.contains(".background("))
+        #expect(meetingFilterRow.contains(".contentShape(Rectangle())"))
+        #expect(try index(of: ".frame(maxWidth: .infinity, alignment: .leading)", in: meetingFilterRow) <
+            index(of: ".contentShape(Rectangle())", in: meetingFilterRow))
+    }
+
+    private func sidebarViewSource() throws -> String {
+        let testFileURL = URL(fileURLWithPath: #filePath)
+        let packageRoot = testFileURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sidebarViewURL = packageRoot
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("MuesliNativeApp")
+            .appendingPathComponent("SidebarView.swift")
+        return try String(contentsOf: sidebarViewURL, encoding: .utf8)
+    }
+
+    private func sourceSection(in source: String, from start: String, to end: String) throws -> String {
+        guard let startRange = source.range(of: start),
+              let endRange = source[startRange.upperBound...].range(of: end) else {
+            throw TestFailure("Could not find source section from \(start) to \(end)")
+        }
+        return String(source[startRange.lowerBound..<endRange.lowerBound])
+    }
+
+    private func index(of needle: String, in haystack: String) throws -> String.Index {
+        guard let range = haystack.range(of: needle) else {
+            throw TestFailure("Could not find \(needle)")
+        }
+        return range.lowerBound
     }
 }
 
