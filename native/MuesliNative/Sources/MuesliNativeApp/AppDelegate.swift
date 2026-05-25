@@ -138,55 +138,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 final class SparkleUpdateDelegate: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDelegate {
     weak var appState: AppState?
     private var lastPresentedAt: Date?
+    private var updateCycleGeneration = 0
 
     func updater(_ updater: SPUUpdater, mayPerform updateCheck: SPUUpdateCheck) throws {
+        updateCycleGeneration += 1
+        let generation = updateCycleGeneration
+        let restoreStatus = recoverableUpdateStatus(appState?.sparkleUpdateStatus ?? .idle)
         appState?.sparkleUpdateStatus = .checking
+        restoreStaleUpdateCheck(generation: generation, to: restoreStatus)
     }
 
     func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
-        appState?.sparkleUpdateStatus = .available(version: item.displayVersionString)
+        finishUpdateCheck(with: .available(version: item.displayVersionString))
     }
 
     func updaterDidNotFindUpdate(_ updater: SPUUpdater, error: Error) {
         let nsError = error as NSError
         if UpdateFailureGuidance.isNoUpdateError(nsError) {
-            appState?.sparkleUpdateStatus = .upToDate
+            finishUpdateCheck(with: .upToDate)
         } else {
-            appState?.sparkleUpdateStatus = .failed(message: nsError.localizedDescription)
+            finishUpdateCheck(with: .failed(message: nsError.localizedDescription))
         }
     }
 
     func updater(_ updater: SPUUpdater, didDownloadUpdate item: SUAppcastItem) {
-        appState?.sparkleUpdateStatus = .downloaded(version: item.displayVersionString)
+        finishUpdateCheck(with: .downloaded(version: item.displayVersionString))
     }
 
     func updater(_ updater: SPUUpdater, willInstallUpdate item: SUAppcastItem) {
-        appState?.sparkleUpdateStatus = .installing(version: item.displayVersionString)
+        finishUpdateCheck(with: .installing(version: item.displayVersionString))
     }
 
     func updater(_ updater: SPUUpdater, userDidMake choice: SPUUserUpdateChoice, forUpdate item: SUAppcastItem, state: SPUUserUpdateState) {
         switch choice {
         case .install:
-            appState?.sparkleUpdateStatus = .installing(version: item.displayVersionString)
+            finishUpdateCheck(with: .installing(version: item.displayVersionString))
         case .dismiss where state.stage == .downloaded:
-            appState?.sparkleUpdateStatus = .downloaded(version: item.displayVersionString)
+            finishUpdateCheck(with: .downloaded(version: item.displayVersionString))
         case .dismiss:
-            appState?.sparkleUpdateStatus = .available(version: item.displayVersionString)
+            finishUpdateCheck(with: .available(version: item.displayVersionString))
         case .skip:
-            appState?.sparkleUpdateStatus = .idle
+            finishUpdateCheck(with: .idle)
         @unknown default:
-            appState?.sparkleUpdateStatus = .available(version: item.displayVersionString)
+            finishUpdateCheck(with: .available(version: item.displayVersionString))
         }
     }
 
     func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
         let nsError = error as NSError
         if UpdateFailureGuidance.isNoUpdateError(nsError) {
-            appState?.sparkleUpdateStatus = .upToDate
+            finishUpdateCheck(with: .upToDate)
             return
         }
 
-        appState?.sparkleUpdateStatus = .failed(message: nsError.localizedDescription)
+        finishUpdateCheck(with: .failed(message: nsError.localizedDescription))
         guard UpdateFailureGuidance.shouldShowFallback(for: nsError) else { return }
 
         // Sparkle shows its own error alert first. Delay briefly so this
@@ -204,9 +209,32 @@ final class SparkleUpdateDelegate: NSObject, SPUUpdaterDelegate, SPUStandardUser
         // didAbortWithError is the primary error callback; this keeps the
         // final-cycle handler self-contained for any Sparkle path that ends here.
         if UpdateFailureGuidance.isNoUpdateError(nsError) {
-            appState?.sparkleUpdateStatus = .upToDate
+            finishUpdateCheck(with: .upToDate)
         } else {
-            appState?.sparkleUpdateStatus = .failed(message: nsError.localizedDescription)
+            finishUpdateCheck(with: .failed(message: nsError.localizedDescription))
+        }
+    }
+
+    private func finishUpdateCheck(with status: SparkleUpdateStatus) {
+        updateCycleGeneration += 1
+        appState?.sparkleUpdateStatus = status
+    }
+
+    private func restoreStaleUpdateCheck(generation: Int, to restoreStatus: SparkleUpdateStatus) {
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            guard let self, self.updateCycleGeneration == generation else { return }
+            guard case .checking = self.appState?.sparkleUpdateStatus else { return }
+            self.finishUpdateCheck(with: restoreStatus)
+        }
+    }
+
+    private func recoverableUpdateStatus(_ status: SparkleUpdateStatus) -> SparkleUpdateStatus {
+        switch status {
+        case .checking, .busy:
+            return .idle
+        default:
+            return status
         }
     }
 
@@ -216,15 +244,11 @@ final class SparkleUpdateDelegate: NSObject, SPUUpdaterDelegate, SPUStandardUser
         state: SPUUserUpdateState
     ) {
         guard handleShowingUpdate else { return }
-        Task { @MainActor [weak self] in
-            self?.activateBeforeSparklePresentsUI()
-        }
+        activateSynchronouslyBeforeSparklePresentsUI()
     }
 
     nonisolated func standardUserDriverWillShowModalAlert() {
-        Task { @MainActor [weak self] in
-            self?.activateBeforeSparklePresentsUI()
-        }
+        activateSynchronouslyBeforeSparklePresentsUI()
     }
 
     private func showManualInstallGuidance() {
@@ -246,8 +270,27 @@ final class SparkleUpdateDelegate: NSObject, SPUUpdaterDelegate, SPUStandardUser
         }
     }
 
-    private func activateBeforeSparklePresentsUI() {
-        NSApplication.shared.activate(ignoringOtherApps: true)
+    private nonisolated func activateSynchronouslyBeforeSparklePresentsUI() {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated {
+                Self.activateApplicationForSparkle()
+            }
+        } else {
+            DispatchQueue.main.sync {
+                MainActor.assumeIsolated {
+                    Self.activateApplicationForSparkle()
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private static func activateApplicationForSparkle() {
+        if #available(macOS 14, *) {
+            NSApplication.shared.activate()
+        } else {
+            NSApplication.shared.activate(ignoringOtherApps: true)
+        }
     }
 }
 

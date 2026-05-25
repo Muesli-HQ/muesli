@@ -75,22 +75,71 @@ struct UpdateFailureGuidanceTests {
 
 @Suite("Update action routing")
 struct UpdateActionRoutingTests {
-    @Test("all user-initiated update actions enter the standard Sparkle UI")
-    func userUpdateActionsUseStandardSparkleFlow() throws {
+    @Test("status-bar update action enters the standard Sparkle UI")
+    func statusBarUpdateActionUsesStandardSparkleFlow() throws {
         let source = try muesliControllerSource()
 
-        for method in ["checkForUpdates", "retryUpdateCheck", "installAvailableUpdate"] {
-            let body = try methodBody(named: method, in: source)
-            #expect(body.contains("presentStandardUpdateCheck()"))
-            #expect(!body.contains("checkForUpdateInformation()"))
-        }
+        let body = try methodBody(named: "checkForUpdates", in: source)
+        #expect(body.contains("presentStandardUpdateCheck()"))
+        #expect(!body.contains("checkForUpdateInformation()"))
+        #expect(!source.contains("func retryUpdateCheck()"))
+    }
+
+    @Test("standard update presentation does not preflight canCheckForUpdates")
+    func standardUpdatePresentationLetsSparkleRefocusExistingUI() throws {
+        let source = try muesliControllerSource()
+        let body = try methodBody(named: "presentStandardUpdateCheck", in: source)
+
+        #expect(body.contains("checkForUpdates(nil)"))
+        #expect(body.contains("restoreStaleUpdateCheck(generation: generation, to: restoreStatus)"))
+        #expect(!body.contains("canCheckForUpdates"))
+        #expect(!source.contains("func installAvailableUpdate()"))
+    }
+
+    @Test("About page does not launch Sparkle directly")
+    func aboutPageIsPassiveUpdateGuidance() throws {
+        let source = try aboutViewSource()
+
+        #expect(source.contains("Use the Muesli menu bar icon > Check for Updates..."))
+        #expect(!source.contains("retryUpdateCheck()"))
+        #expect(!source.contains("Install Update"))
+        #expect(!source.contains("Finish Update"))
+        #expect(!source.contains("performUpdateAction"))
+    }
+
+    @Test("updater focus only targets windows created by the update action")
+    func updaterFocusTargetsNewUpdaterWindowsOnly() throws {
+        let source = try muesliControllerSource()
+
+        #expect(source.contains("focusUpdaterWindowsCreatedAfterUpdateAction(excluding: existingWindows)"))
+        #expect(source.contains("!existingWindows.contains(ObjectIdentifier(window))"))
+        #expect(source.contains("isLikelyUpdaterWindow(window)"))
+        #expect(!source.contains("window.collectionBehavior ="))
+        #expect(!source.contains(".moveToActiveSpace"))
+        #expect(!source.contains(".fullScreenAuxiliary"))
+        #expect(!source.contains(".canJoinAllSpaces"))
+    }
+
+    @Test("Sparkle delegate cannot leave the About UI checking forever")
+    func sparkleDelegateRestoresStaleCheckingState() throws {
+        let source = try appDelegateSource()
+        let body = try methodBody(named: "restoreStaleUpdateCheck", in: source)
+
+        #expect(source.contains("private var updateCycleGeneration = 0"))
+        #expect(source.contains("let restoreStatus = recoverableUpdateStatus(appState?.sparkleUpdateStatus ?? .idle)"))
+        #expect(source.contains("finishUpdateCheck(with:"))
+        #expect(body.contains("30_000_000_000"))
+        #expect(body.contains("self.updateCycleGeneration == generation"))
+        #expect(body.contains("guard case .checking = self.appState?.sparkleUpdateStatus else { return }"))
+        #expect(body.contains("self.finishUpdateCheck(with: restoreStatus)"))
     }
 
     @Test("Sparkle focus handling activates without manually ordering app windows")
     func sparkleFocusHandlingDoesNotOrderApplicationWindows() throws {
         let source = try appDelegateSource()
 
-        #expect(source.contains("activateBeforeSparklePresentsUI()"))
+        #expect(source.contains("activateSynchronouslyBeforeSparklePresentsUI()"))
+        #expect(source.contains("NSApplication.shared.activate()"))
         #expect(!source.contains("orderFrontRegardless()"))
     }
 
@@ -118,6 +167,19 @@ struct UpdateActionRoutingTests {
             .appendingPathComponent("MuesliNativeApp")
             .appendingPathComponent("AppDelegate.swift")
         return try String(contentsOf: appDelegateURL, encoding: .utf8)
+    }
+
+    private func aboutViewSource() throws -> String {
+        let testFileURL = URL(fileURLWithPath: #filePath)
+        let packageRoot = testFileURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let aboutViewURL = packageRoot
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("MuesliNativeApp")
+            .appendingPathComponent("AboutView.swift")
+        return try String(contentsOf: aboutViewURL, encoding: .utf8)
     }
 
     private func methodBody(named name: String, in source: String) throws -> String {

@@ -209,6 +209,7 @@ final class MuesliController: NSObject {
     private var onboardingWindowController: OnboardingWindowController?
     var updaterController: SPUStandardUpdaterController?
     private var busyStatusGeneration = 0
+    private var updateCheckGeneration = 0
 
     let appState = AppState()
 
@@ -2010,31 +2011,72 @@ final class MuesliController: NSObject {
         presentStandardUpdateCheck()
     }
 
-    func retryUpdateCheck() {
-        presentStandardUpdateCheck()
-    }
-
-    func installAvailableUpdate() {
-        presentStandardUpdateCheck()
-    }
-
     private func presentStandardUpdateCheck() {
         guard let updaterController else {
             appState.sparkleUpdateStatus = .disabled(message: "Update checks are disabled for this build.")
             return
         }
+        updateCheckGeneration += 1
+        let generation = updateCheckGeneration
+        let restoreStatus = recoverableUpdateStatus(appState.sparkleUpdateStatus)
+        let existingWindows = Set(NSApplication.shared.windows.map(ObjectIdentifier.init))
         NSApplication.shared.activate(ignoringOtherApps: true)
-        guard updaterController.updater.canCheckForUpdates else {
-            showBusyStatus(
-                "Sparkle cannot start a new update check yet. Try again in a moment.",
-                restoring: appState.sparkleUpdateStatus
-            )
-            return
-        }
-        // Defer one run loop so app activation takes effect before Sparkle presents its UI.
-        DispatchQueue.main.async {
+        // Always enter Sparkle's standard path. Sparkle uses this same call to
+        // refocus existing updater UI, so local availability gates would make
+        // in-app buttons less reliable than the status-bar action.
+        DispatchQueue.main.async { [weak self] in
             updaterController.checkForUpdates(nil)
+            self?.focusUpdaterWindowsCreatedAfterUpdateAction(excluding: existingWindows)
+            self?.restoreStaleUpdateCheck(generation: generation, to: restoreStatus)
         }
+    }
+
+    private func restoreStaleUpdateCheck(generation: Int, to restoreStatus: SparkleUpdateStatus) {
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            guard let self, self.updateCheckGeneration == generation else { return }
+            switch self.appState.sparkleUpdateStatus {
+            case .checking, .busy:
+                self.appState.sparkleUpdateStatus = restoreStatus
+            default:
+                break
+            }
+        }
+    }
+
+    private func focusUpdaterWindowsCreatedAfterUpdateAction(excluding existingWindows: Set<ObjectIdentifier>) {
+        for delay in [80_000_000, 240_000_000, 600_000_000, 1_200_000_000, 2_500_000_000] {
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(delay))
+                self?.focusUpdaterWindows(excluding: existingWindows)
+            }
+        }
+    }
+
+    private func focusUpdaterWindows(excluding existingWindows: Set<ObjectIdentifier>) {
+        let updaterWindows = NSApplication.shared.windows.filter { window in
+            guard window.isVisible else { return false }
+            if !existingWindows.contains(ObjectIdentifier(window)) {
+                return true
+            }
+            return isLikelyUpdaterWindow(window)
+        }
+        guard !updaterWindows.isEmpty else { return }
+
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        for window in updaterWindows {
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+        }
+    }
+
+    private func isLikelyUpdaterWindow(_ window: NSWindow) -> Bool {
+        let className = String(describing: type(of: window))
+        if className.localizedCaseInsensitiveContains("SU") ||
+            className.localizedCaseInsensitiveContains("Sparkle") {
+            return true
+        }
+        return window.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func showBusyStatus(_ message: String, restoring previousStatus: SparkleUpdateStatus) {
@@ -2056,6 +2098,15 @@ final class MuesliController: NSObject {
             return .idle
         }
         return status
+    }
+
+    private func recoverableUpdateStatus(_ status: SparkleUpdateStatus) -> SparkleUpdateStatus {
+        switch status {
+        case .checking, .busy:
+            return .idle
+        default:
+            return status
+        }
     }
 
     @objc func quitApp() {
