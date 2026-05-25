@@ -73,35 +73,48 @@ struct UpdateFailureGuidanceTests {
     }
 }
 
-@Suite("Update interaction policy")
-struct UpdateInteractionPolicyTests {
-    @Test(
-        "user install action opens standard Sparkle UI for actionable states",
-        arguments: [
-            SparkleUpdateStatus.idle,
-            .available(version: "0.6.7"),
-            .downloaded(version: "0.6.7"),
-            .upToDate,
-            .disabled(message: "disabled"),
-            .failed(message: "network"),
-        ]
-    )
-    func installActionUsesStandardUpdater(status: SparkleUpdateStatus) {
-        #expect(UpdateInteractionPolicy.installAction(for: status) == .presentStandardUpdater)
+@Suite("Update action routing")
+struct UpdateActionRoutingTests {
+    @Test("all user-initiated update actions enter the standard Sparkle UI")
+    func userUpdateActionsUseStandardSparkleFlow() throws {
+        let source = try muesliControllerSource()
+
+        for method in ["checkForUpdates", "retryUpdateCheck", "installAvailableUpdate"] {
+            let body = try methodBody(named: method, in: source)
+            #expect(body.contains("presentStandardUpdateCheck()"))
+            #expect(!body.contains("checkForUpdateInformation()"))
+        }
     }
 
-    @Test(
-        "user install action stays busy while Sparkle is already in a session",
-        arguments: [
-            SparkleUpdateStatus.checking,
-            .busy(message: "busy"),
-            .installing(version: "0.6.7"),
-        ]
-    )
-    func installActionStaysBusy(status: SparkleUpdateStatus) {
-        #expect(
-            UpdateInteractionPolicy.installAction(for: status)
-                == .showBusy(message: UpdateInteractionPolicy.busyMessage)
-        )
+    private func muesliControllerSource() throws -> String {
+        let testFileURL = URL(fileURLWithPath: #filePath)
+        let packageRoot = testFileURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let controllerURL = packageRoot
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("MuesliNativeApp")
+            .appendingPathComponent("MuesliController.swift")
+        return try String(contentsOf: controllerURL, encoding: .utf8)
+    }
+
+    private func methodBody(named name: String, in source: String) throws -> String {
+        let pattern = #"(?s)func \#(name)\([^)]*\) \{\s*(.*?)\n    \}"#
+        let regex = try NSRegularExpression(pattern: pattern)
+        let range = NSRange(source.startIndex..<source.endIndex, in: source)
+        guard let match = regex.firstMatch(in: source, range: range),
+              let bodyRange = Range(match.range(at: 1), in: source) else {
+            throw TestFailure("Could not find \(name) body")
+        }
+        return String(source[bodyRange])
+    }
+}
+
+private struct TestFailure: Error, CustomStringConvertible {
+    let description: String
+
+    init(_ description: String) {
+        self.description = description
     }
 }

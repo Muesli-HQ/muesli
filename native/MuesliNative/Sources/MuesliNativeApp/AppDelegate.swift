@@ -29,7 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let updaterController = SPUStandardUpdaterController(
                     startingUpdater: true,
                     updaterDelegate: sparkleUpdateDelegate,
-                    userDriverDelegate: nil
+                    userDriverDelegate: sparkleUpdateDelegate
                 )
                 controller.updaterController = updaterController
                 self.updaterController = updaterController
@@ -135,7 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 @MainActor
-final class SparkleUpdateDelegate: NSObject, SPUUpdaterDelegate {
+final class SparkleUpdateDelegate: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDelegate {
     weak var appState: AppState?
     private var lastPresentedAt: Date?
 
@@ -210,6 +210,23 @@ final class SparkleUpdateDelegate: NSObject, SPUUpdaterDelegate {
         }
     }
 
+    nonisolated func standardUserDriverWillHandleShowingUpdate(
+        _ handleShowingUpdate: Bool,
+        forUpdate update: SUAppcastItem,
+        state: SPUUserUpdateState
+    ) {
+        guard handleShowingUpdate else { return }
+        Task { @MainActor [weak self] in
+            self?.focusUpdaterUI()
+        }
+    }
+
+    nonisolated func standardUserDriverWillShowModalAlert() {
+        Task { @MainActor [weak self] in
+            self?.focusUpdaterUI()
+        }
+    }
+
     private func showManualInstallGuidance() {
         if let lastPresentedAt, Date().timeIntervalSince(lastPresentedAt) < 60 {
             return
@@ -226,6 +243,13 @@ final class SparkleUpdateDelegate: NSObject, SPUUpdaterDelegate {
         if alert.runModal() == .alertFirstButtonReturn,
            let url = URL(string: UpdateFailureGuidance.downloadPageURLString) {
             NSWorkspace.shared.open(url)
+        }
+    }
+
+    private func focusUpdaterUI() {
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        for window in NSApplication.shared.windows where window.isVisible {
+            window.orderFrontRegardless()
         }
     }
 }

@@ -112,6 +112,11 @@ struct AboutView: View {
                     )
                     Divider().background(MuesliTheme.surfaceBorder)
                     acknowledgement(
+                        name: "LocalVQE by localai-org",
+                        description: "On-device acoustic echo cancellation powering cleaner meeting transcription."
+                    )
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    acknowledgement(
                         name: "WhisperKit by Argmax",
                         description: "Swift Whisper inference on CoreML/ANE powering the app's Whisper Small, Medium, and Large Turbo backends."
                     )

@@ -2007,34 +2007,15 @@ final class MuesliController: NSObject {
     }
 
     @objc func checkForUpdates() {
-        switch appState.sparkleUpdateStatus {
-        case .available, .downloaded:
-            installAvailableUpdate()
-        case .checking, .busy, .installing:
-            showBusyStatus(
-                UpdateInteractionPolicy.busyMessage,
-                restoring: appState.sparkleUpdateStatus
-            )
-        case .idle, .upToDate, .disabled, .failed:
-            openHistoryWindow(tab: .about)
-            probeForUpdateInformation()
-        }
+        presentStandardUpdateCheck()
     }
 
     func retryUpdateCheck() {
-        probeForUpdateInformation()
+        presentStandardUpdateCheck()
     }
 
     func installAvailableUpdate() {
-        switch UpdateInteractionPolicy.installAction(for: appState.sparkleUpdateStatus) {
-        case .presentStandardUpdater:
-            presentStandardUpdateCheck()
-        case .showBusy(let message):
-            showBusyStatus(
-                message,
-                restoring: appState.sparkleUpdateStatus
-            )
-        }
+        presentStandardUpdateCheck()
     }
 
     private func presentStandardUpdateCheck() {
@@ -2042,6 +2023,7 @@ final class MuesliController: NSObject {
             appState.sparkleUpdateStatus = .disabled(message: "Update checks are disabled for this build.")
             return
         }
+        NSApplication.shared.activate(ignoringOtherApps: true)
         guard updaterController.updater.canCheckForUpdates else {
             showBusyStatus(
                 "Sparkle cannot start a new update check yet. Try again in a moment.",
@@ -2049,23 +2031,9 @@ final class MuesliController: NSObject {
             )
             return
         }
-        updaterController.checkForUpdates(nil)
-    }
-
-    private func probeForUpdateInformation() {
-        guard let updaterController else {
-            appState.sparkleUpdateStatus = .disabled(message: "Update checks are disabled for this build.")
-            return
+        DispatchQueue.main.async {
+            updaterController.checkForUpdates(nil)
         }
-        guard !updaterController.updater.sessionInProgress else {
-            showBusyStatus(
-                UpdateInteractionPolicy.busyMessage,
-                restoring: appState.sparkleUpdateStatus
-            )
-            return
-        }
-        appState.sparkleUpdateStatus = .checking
-        updaterController.updater.checkForUpdateInformation()
     }
 
     private func showBusyStatus(_ message: String, restoring previousStatus: SparkleUpdateStatus) {
