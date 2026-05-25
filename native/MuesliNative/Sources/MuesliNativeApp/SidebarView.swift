@@ -39,26 +39,7 @@ struct SidebarView: View {
     }
 
     private var pendingUpdateCTA: UpdateCTA? {
-        switch appState.sparkleUpdateStatus {
-        case .available:
-            return UpdateCTA(
-                label: "Update Now",
-                icon: "arrow.down",
-                foreground: updateCTAForeground,
-                accessibilityLabel: "Update available",
-                tooltip: "Install update"
-            )
-        case .downloaded:
-            return UpdateCTA(
-                label: "Restart",
-                icon: "arrow.clockwise",
-                foreground: updateCTAForeground,
-                accessibilityLabel: "Update ready to install",
-                tooltip: "Finish update"
-            )
-        case .idle, .checking, .busy, .installing, .upToDate, .disabled, .failed:
-            return nil
-        }
+        nil
     }
 
     private var updateCTAForeground: Color {
@@ -394,9 +375,6 @@ struct SidebarView: View {
         Button {
             withAnimation(.easeInOut(duration: 0.15)) {
                 appState.selectedTab = tab
-            }
-            if updateCTA != nil {
-                controller.checkForUpdates()
             }
         } label: {
             HStack(spacing: MuesliTheme.spacing12) {

@@ -78,12 +78,15 @@ struct UpdateActionRoutingTests {
     @Test("status-bar update action enters the standard Sparkle UI")
     func statusBarUpdateActionUsesStandardSparkleFlow() throws {
         let source = try muesliControllerSource()
+        let statusBarSource = try statusBarControllerSource()
 
         #expect(source.contains("""
             @objc func checkForUpdates() {
                 presentStandardUpdateCheck()
             }
         """))
+        #expect(statusBarSource.contains("#selector(SPUStandardUpdaterController.checkForUpdates(_:))"))
+        #expect(statusBarSource.contains("item.target = controller.updaterController"))
         #expect(!source.contains("func retryUpdateCheck()"))
         #expect(!source.contains("checkForUpdateInformation()"))
     }
@@ -106,25 +109,28 @@ struct UpdateActionRoutingTests {
         """))
     }
 
-    @Test("About page update controls route to the standard updater action")
-    func aboutPageUpdateControlsUseStandardUpdaterAction() throws {
+    @Test("About page does not expose unreliable in-app install controls")
+    func aboutPageUsesMenuBarGuidanceOnly() throws {
         let source = try aboutViewSource()
 
-        #expect(source.contains("let controller: MuesliController"))
-        #expect(source.contains("controller.checkForUpdates()"))
-        #expect(source.contains("Install Update"))
-        #expect(source.contains("Finish Update"))
+        #expect(source.contains("Use the menu bar icon > Check for Updates..."))
+        #expect(!source.contains("let controller: MuesliController"))
+        #expect(!source.contains("controller.checkForUpdates()"))
+        #expect(!source.contains("Install Update"))
+        #expect(!source.contains("Finish Update"))
         #expect(!source.contains("retryUpdateCheck()"))
         #expect(!source.contains("installAvailableUpdate()"))
         #expect(!source.contains("performUpdateAction"))
     }
 
-    @Test("Sidebar update call-to-action routes to the standard updater action")
-    func sidebarUpdateCTAUsesStandardUpdaterAction() throws {
+    @Test("Sidebar does not expose an unreliable update call-to-action")
+    func sidebarDoesNotExposeUpdateCTA() throws {
         let source = try sidebarViewSource()
 
-        #expect(source.contains("if updateCTA != nil"))
-        #expect(source.contains("controller.checkForUpdates()"))
+        #expect(source.contains("private var pendingUpdateCTA: UpdateCTA?"))
+        #expect(source.contains("nil"))
+        #expect(!source.contains("if updateCTA != nil"))
+        #expect(!source.contains("Update Now"))
         #expect(!source.contains("Open About to install the update"))
         #expect(!source.contains("Open About to finish installing the update"))
     }
@@ -208,6 +214,19 @@ struct UpdateActionRoutingTests {
             .appendingPathComponent("MuesliNativeApp")
             .appendingPathComponent("AboutView.swift")
         return try String(contentsOf: aboutViewURL, encoding: .utf8)
+    }
+
+    private func statusBarControllerSource() throws -> String {
+        let testFileURL = URL(fileURLWithPath: #filePath)
+        let packageRoot = testFileURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let statusBarControllerURL = packageRoot
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("MuesliNativeApp")
+            .appendingPathComponent("StatusBarController.swift")
+        return try String(contentsOf: statusBarControllerURL, encoding: .utf8)
     }
 
     private func sidebarViewSource() throws -> String {

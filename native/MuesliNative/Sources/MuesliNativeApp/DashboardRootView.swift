@@ -52,7 +52,7 @@ struct DashboardRootView: View {
             case .settings:
                 SettingsView(appState: appState, controller: controller)
             case .about:
-                AboutView(appState: appState, controller: controller)
+                AboutView(appState: appState)
             }
         }
     }
