@@ -46,7 +46,7 @@ struct SidebarView: View {
                 icon: "arrow.down",
                 foreground: updateCTAForeground,
                 accessibilityLabel: "Update available",
-                tooltip: "Open About to install the update"
+                tooltip: "Install update"
             )
         case .downloaded:
             return UpdateCTA(
@@ -54,7 +54,7 @@ struct SidebarView: View {
                 icon: "arrow.clockwise",
                 foreground: updateCTAForeground,
                 accessibilityLabel: "Update ready to install",
-                tooltip: "Open About to finish installing the update"
+                tooltip: "Finish update"
             )
         case .idle, .checking, .busy, .installing, .upToDate, .disabled, .failed:
             return nil
@@ -394,6 +394,9 @@ struct SidebarView: View {
         Button {
             withAnimation(.easeInOut(duration: 0.15)) {
                 appState.selectedTab = tab
+            }
+            if updateCTA != nil {
+                controller.checkForUpdates()
             }
         } label: {
             HStack(spacing: MuesliTheme.spacing12) {

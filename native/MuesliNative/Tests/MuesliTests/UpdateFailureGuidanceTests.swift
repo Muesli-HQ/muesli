@@ -106,15 +106,27 @@ struct UpdateActionRoutingTests {
         """))
     }
 
-    @Test("About page does not launch Sparkle directly")
-    func aboutPageIsPassiveUpdateGuidance() throws {
+    @Test("About page update controls route to the standard updater action")
+    func aboutPageUpdateControlsUseStandardUpdaterAction() throws {
         let source = try aboutViewSource()
 
-        #expect(source.contains("Use the Muesli menu bar icon > Check for Updates..."))
+        #expect(source.contains("let controller: MuesliController"))
+        #expect(source.contains("controller.checkForUpdates()"))
+        #expect(source.contains("Install Update"))
+        #expect(source.contains("Finish Update"))
         #expect(!source.contains("retryUpdateCheck()"))
-        #expect(!source.contains("Install Update"))
-        #expect(!source.contains("Finish Update"))
+        #expect(!source.contains("installAvailableUpdate()"))
         #expect(!source.contains("performUpdateAction"))
+    }
+
+    @Test("Sidebar update call-to-action routes to the standard updater action")
+    func sidebarUpdateCTAUsesStandardUpdaterAction() throws {
+        let source = try sidebarViewSource()
+
+        #expect(source.contains("if updateCTA != nil"))
+        #expect(source.contains("controller.checkForUpdates()"))
+        #expect(!source.contains("Open About to install the update"))
+        #expect(!source.contains("Open About to finish installing the update"))
     }
 
     @Test("updater focus only targets windows created by the update action")
@@ -196,6 +208,19 @@ struct UpdateActionRoutingTests {
             .appendingPathComponent("MuesliNativeApp")
             .appendingPathComponent("AboutView.swift")
         return try String(contentsOf: aboutViewURL, encoding: .utf8)
+    }
+
+    private func sidebarViewSource() throws -> String {
+        let testFileURL = URL(fileURLWithPath: #filePath)
+        let packageRoot = testFileURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sidebarViewURL = packageRoot
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("MuesliNativeApp")
+            .appendingPathComponent("SidebarView.swift")
+        return try String(contentsOf: sidebarViewURL, encoding: .utf8)
     }
 
     private func index(of needle: String, in haystack: String) throws -> String.Index {
