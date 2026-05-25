@@ -95,6 +95,18 @@ enum MeetingSummaryClient {
             )
             return notesByRetainingManualNotes(generatedNotes: generatedNotes, manualNotes: manualNotesToRetain)
         }
+        if backend == MeetingSummaryBackendOption.customCommand.backend {
+            generatedNotes = try await summarizeWithCustomCommand(
+                transcript: transcript,
+                meetingTitle: meetingTitle,
+                existingNotes: existingNotes,
+                manualNotes: manualNotesToRetain,
+                config: config,
+                template: template,
+                visualContext: visualContext
+            )
+            return notesByRetainingManualNotes(generatedNotes: generatedNotes, manualNotes: manualNotesToRetain)
+        }
         generatedNotes = try await summarizeWithOpenAI(
             transcript: transcript,
             meetingTitle: meetingTitle,
@@ -482,6 +494,156 @@ enum MeetingSummaryClient {
         }
     }
 
+    private static let customCommandTimeout: TimeInterval = 300
+
+    private static func summarizeWithCustomCommand(
+        transcript: String,
+        meetingTitle: String,
+        existingNotes: String?,
+        manualNotes: String?,
+        config: AppConfig,
+        template: MeetingTemplateSnapshot,
+        visualContext: String? = nil
+    ) async throws -> String {
+        let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes)
+        let userPrompt = summaryUserPrompt(
+            transcript: transcript,
+            meetingTitle: meetingTitle,
+            existingNotes: existingNotes,
+            manualNotes: manualNotes,
+            visualContext: visualContext
+        )
+        let combinedPrompt = instructions + "\n\n" + userPrompt
+        return try await runCustomCommand(
+            command: config.customSummaryCommand,
+            input: combinedPrompt,
+            timeout: customCommandTimeout
+        )
+    }
+
+    private static func generateTitleWithCustomCommand(transcript: String, config: AppConfig) async -> String? {
+        let prompt = titleInstructions + "\n\n" + transcript
+        guard let result = try? await runCustomCommand(
+            command: config.customSummaryCommand,
+            input: prompt,
+            timeout: 60
+        ) else {
+            return nil
+        }
+        let title = result.trimmingCharacters(in: .whitespacesAndNewlines.union(.init(charactersIn: "\"")))
+        return title.isEmpty ? nil : title
+    }
+
+    private static func runCustomCommand(command: String, input: String, timeout: TimeInterval) async throws -> String {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw MeetingSummaryError.backendFailed(
+                backend: "Custom Command", statusCode: nil,
+                message: "No command configured. Set a command in Settings → Meetings."
+            )
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", trimmed]
+
+        let stdinPipe = Pipe()
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardInput = stdinPipe
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        process.environment = ProcessInfo.processInfo.environment
+        if let path = process.environment?["PATH"] {
+            process.environment?["PATH"] = "\(NSHomeDirectory())/.local/bin:\(NSHomeDirectory())/.claude/local:/usr/local/bin:" + path
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            var stdoutData = Data()
+            var stderrData = Data()
+            let dataQueue = DispatchQueue(label: "com.muesli.custom-command-pipe")
+
+            stdout.fileHandleForReading.readabilityHandler = { handle in
+                let chunk = handle.availableData
+                if !chunk.isEmpty {
+                    dataQueue.sync { stdoutData.append(chunk) }
+                }
+            }
+            stderr.fileHandleForReading.readabilityHandler = { handle in
+                let chunk = handle.availableData
+                if !chunk.isEmpty {
+                    dataQueue.sync { stderrData.append(chunk) }
+                }
+            }
+
+            let timeoutSource = DispatchSource.makeTimerSource(queue: .global())
+            timeoutSource.schedule(deadline: .now() + timeout)
+            timeoutSource.setEventHandler {
+                process.terminate()
+                let pid = process.processIdentifier
+                if pid > 0 {
+                    kill(pid, SIGKILL)
+                    // Kill child processes spawned by the shell
+                    let pgid = getpgid(pid)
+                    if pgid > 0 && pgid != getpgid(0) {
+                        killpg(pgid, SIGKILL)
+                    }
+                }
+            }
+            timeoutSource.resume()
+
+            process.terminationHandler = { proc in
+                timeoutSource.cancel()
+                stdout.fileHandleForReading.readabilityHandler = nil
+                stderr.fileHandleForReading.readabilityHandler = nil
+
+                let remainingOut = stdout.fileHandleForReading.readDataToEndOfFile()
+                let remainingErr = stderr.fileHandleForReading.readDataToEndOfFile()
+
+                var output = ""
+                var errOutput = ""
+                dataQueue.sync {
+                    if !remainingOut.isEmpty { stdoutData.append(remainingOut) }
+                    if !remainingErr.isEmpty { stderrData.append(remainingErr) }
+                    output = String(data: stdoutData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    errOutput = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                }
+
+                if proc.terminationStatus != 0 {
+                    let message = errOutput.isEmpty ? "Process exited with code \(proc.terminationStatus)" : errOutput
+                    continuation.resume(throwing: MeetingSummaryError.backendFailed(
+                        backend: "Custom Command", statusCode: Int(proc.terminationStatus), message: message
+                    ))
+                    return
+                }
+
+                if output.isEmpty {
+                    continuation.resume(throwing: MeetingSummaryError.emptyResponse(backend: "Custom Command"))
+                    return
+                }
+
+                continuation.resume(returning: output)
+            }
+
+            do {
+                try process.run()
+            } catch {
+                timeoutSource.cancel()
+                stdout.fileHandleForReading.readabilityHandler = nil
+                stderr.fileHandleForReading.readabilityHandler = nil
+                continuation.resume(throwing: MeetingSummaryError.requestFailed(backend: "Custom Command", underlying: error))
+                return
+            }
+
+            DispatchQueue.global().async {
+                if let data = input.data(using: .utf8) {
+                    stdinPipe.fileHandleForWriting.write(data)
+                }
+                stdinPipe.fileHandleForWriting.closeFile()
+            }
+        }
+    }
     /// Call the WHAM streaming API and collect the full response text.
     private static func callWHAM(systemPrompt: String, userPrompt: String, model: String) async throws -> String? {
         let (token, accountId) = try await ChatGPTAuthManager.shared.validAccessToken()
@@ -662,6 +824,10 @@ enum MeetingSummaryClient {
 
         if backend == MeetingSummaryBackendOption.ollama.backend {
             return await generateTitleWithOllama(transcript: excerpt, config: config)
+        }
+
+        if backend == MeetingSummaryBackendOption.customCommand.backend {
+            return await generateTitleWithCustomCommand(transcript: excerpt, config: config)
         }
 
         let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? config.openAIAPIKey
