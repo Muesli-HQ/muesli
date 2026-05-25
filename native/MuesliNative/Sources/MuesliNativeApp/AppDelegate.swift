@@ -217,13 +217,13 @@ final class SparkleUpdateDelegate: NSObject, SPUUpdaterDelegate, SPUStandardUser
     ) {
         guard handleShowingUpdate else { return }
         Task { @MainActor [weak self] in
-            self?.focusUpdaterUI()
+            self?.activateBeforeSparklePresentsUI()
         }
     }
 
     nonisolated func standardUserDriverWillShowModalAlert() {
         Task { @MainActor [weak self] in
-            self?.focusUpdaterUI()
+            self?.activateBeforeSparklePresentsUI()
         }
     }
 
@@ -246,11 +246,8 @@ final class SparkleUpdateDelegate: NSObject, SPUUpdaterDelegate, SPUStandardUser
         }
     }
 
-    private func focusUpdaterUI() {
+    private func activateBeforeSparklePresentsUI() {
         NSApplication.shared.activate(ignoringOtherApps: true)
-        for window in NSApplication.shared.windows where window.isVisible {
-            window.orderFrontRegardless()
-        }
     }
 }
 

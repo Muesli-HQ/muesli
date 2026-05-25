@@ -86,6 +86,14 @@ struct UpdateActionRoutingTests {
         }
     }
 
+    @Test("Sparkle focus handling activates without manually ordering app windows")
+    func sparkleFocusHandlingDoesNotOrderApplicationWindows() throws {
+        let source = try appDelegateSource()
+
+        #expect(source.contains("activateBeforeSparklePresentsUI()"))
+        #expect(!source.contains("orderFrontRegardless()"))
+    }
+
     private func muesliControllerSource() throws -> String {
         let testFileURL = URL(fileURLWithPath: #filePath)
         let packageRoot = testFileURL
@@ -97,6 +105,19 @@ struct UpdateActionRoutingTests {
             .appendingPathComponent("MuesliNativeApp")
             .appendingPathComponent("MuesliController.swift")
         return try String(contentsOf: controllerURL, encoding: .utf8)
+    }
+
+    private func appDelegateSource() throws -> String {
+        let testFileURL = URL(fileURLWithPath: #filePath)
+        let packageRoot = testFileURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let appDelegateURL = packageRoot
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("MuesliNativeApp")
+            .appendingPathComponent("AppDelegate.swift")
+        return try String(contentsOf: appDelegateURL, encoding: .utf8)
     }
 
     private func methodBody(named name: String, in source: String) throws -> String {

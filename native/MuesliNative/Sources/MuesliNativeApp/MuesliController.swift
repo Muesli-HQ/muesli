@@ -2031,6 +2031,7 @@ final class MuesliController: NSObject {
             )
             return
         }
+        // Defer one run loop so app activation takes effect before Sparkle presents its UI.
         DispatchQueue.main.async {
             updaterController.checkForUpdates(nil)
         }
