@@ -276,16 +276,15 @@ final class SparkleUpdateDelegate: NSObject, SPUUpdaterDelegate, SPUStandardUser
                 Self.activateApplicationForSparkle()
             }
         } else {
-            let activationCompleted = DispatchSemaphore(value: 0)
-            DispatchQueue.main.async {
+            // Sparkle calls this immediately before presenting update UI.
+            // Complete activation before returning so LSUIElement update
+            // prompts are ordered in front of the current app. This block only
+            // performs AppKit activation and does not wait on Sparkle work.
+            DispatchQueue.main.sync {
                 MainActor.assumeIsolated {
                     Self.activateApplicationForSparkle()
                 }
-                activationCompleted.signal()
             }
-            // Sparkle calls this immediately before presenting update UI. Wait
-            // briefly so the app is active first, but never block permanently.
-            _ = activationCompleted.wait(timeout: .now() + .milliseconds(250))
         }
     }
 

@@ -177,10 +177,10 @@ struct UpdateActionRoutingTests {
         let source = try appDelegateSource()
 
         #expect(source.contains("activateBeforeSparklePresentsUI()"))
-        #expect(source.contains("DispatchQueue.main.async"))
-        #expect(source.contains("DispatchSemaphore(value: 0)"))
-        #expect(source.contains("activationCompleted.wait(timeout: .now() + .milliseconds(250))"))
-        #expect(!source.contains("DispatchQueue.main.sync"))
+        #expect(source.contains("DispatchQueue.main.sync"))
+        #expect(source.contains("Complete activation before returning"))
+        #expect(!source.contains("DispatchSemaphore(value: 0)"))
+        #expect(!source.contains("activationCompleted.wait(timeout:"))
         #expect(source.contains("NSApplication.shared.activate(ignoringOtherApps: true)"))
         #expect(!source.contains("orderFrontRegardless()"))
     }
