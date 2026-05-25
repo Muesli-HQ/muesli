@@ -244,11 +244,11 @@ final class SparkleUpdateDelegate: NSObject, SPUUpdaterDelegate, SPUStandardUser
         state: SPUUserUpdateState
     ) {
         guard handleShowingUpdate else { return }
-        activateSynchronouslyBeforeSparklePresentsUI()
+        activateBeforeSparklePresentsUI()
     }
 
     nonisolated func standardUserDriverWillShowModalAlert() {
-        activateSynchronouslyBeforeSparklePresentsUI()
+        activateBeforeSparklePresentsUI()
     }
 
     private func showManualInstallGuidance() {
@@ -270,13 +270,13 @@ final class SparkleUpdateDelegate: NSObject, SPUUpdaterDelegate, SPUStandardUser
         }
     }
 
-    private nonisolated func activateSynchronouslyBeforeSparklePresentsUI() {
+    private nonisolated func activateBeforeSparklePresentsUI() {
         if Thread.isMainThread {
             MainActor.assumeIsolated {
                 Self.activateApplicationForSparkle()
             }
         } else {
-            DispatchQueue.main.sync {
+            DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     Self.activateApplicationForSparkle()
                 }

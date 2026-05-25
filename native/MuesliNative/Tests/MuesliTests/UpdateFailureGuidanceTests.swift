@@ -176,7 +176,9 @@ struct UpdateActionRoutingTests {
     func sparkleFocusHandlingDoesNotOrderApplicationWindows() throws {
         let source = try appDelegateSource()
 
-        #expect(source.contains("activateSynchronouslyBeforeSparklePresentsUI()"))
+        #expect(source.contains("activateBeforeSparklePresentsUI()"))
+        #expect(source.contains("DispatchQueue.main.async"))
+        #expect(!source.contains("DispatchQueue.main.sync"))
         #expect(source.contains("NSApplication.shared.activate(ignoringOtherApps: true)"))
         #expect(!source.contains("orderFrontRegardless()"))
     }
