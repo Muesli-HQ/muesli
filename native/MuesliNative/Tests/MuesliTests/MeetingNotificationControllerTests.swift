@@ -34,27 +34,21 @@ struct MeetingNotificationControllerTests {
         #expect(!MeetingNotificationController.firesAutoDismissCallbackAfterFade(wasDismissPaused: true))
     }
 
-    @Test("Completion notification shows only when no prompt is active")
-    func completionNotificationRequiresIdleNotificationSurface() {
+    @Test("Completion notification can show during recording but not over prompts")
+    func completionNotificationAllowsRecordingButRequiresFreeNotificationSurface() {
         #expect(MeetingCompletionNotificationPolicy.shouldShow(
-            isMeetingRecording: false,
-            isStartingMeetingRecording: false,
             hasPresentedMeetingCandidate: false,
             isShowingCalendarNotification: false,
             isMeetingNotificationVisible: false
         ))
 
         #expect(!MeetingCompletionNotificationPolicy.shouldShow(
-            isMeetingRecording: false,
-            isStartingMeetingRecording: false,
             hasPresentedMeetingCandidate: true,
             isShowingCalendarNotification: false,
             isMeetingNotificationVisible: true
         ))
 
         #expect(!MeetingCompletionNotificationPolicy.shouldShow(
-            isMeetingRecording: false,
-            isStartingMeetingRecording: false,
             hasPresentedMeetingCandidate: false,
             isShowingCalendarNotification: true,
             isMeetingNotificationVisible: true
