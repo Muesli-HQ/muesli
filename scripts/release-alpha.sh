@@ -24,6 +24,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+PACKAGE_DIR="$ROOT/native/MuesliNative"
+SWIFTPM_SCRATCH_PATH="${MUESLI_SWIFTPM_SCRATCH_PATH:-$HOME/Library/Caches/muesli-spm/alpha}"
 PROFILE_NAME="${MUESLI_NOTARY_PROFILE:-MuesliNotary}"
 SIGN_IDENTITY="${MUESLI_SIGN_IDENTITY:-Developer ID Application: Pranav Hari Guruvayurappan (58W55QJ567)}"
 APP_DIR="/Applications/MuesliCanary.app"
@@ -115,12 +117,15 @@ mkdir -p "$OUTPUT_DIR"
 
 # --- Step 1: Run tests ---
 echo "[1/10] Running tests..."
-swift test --package-path "$ROOT/native/MuesliNative"
+mkdir -p "$SWIFTPM_SCRATCH_PATH"
+echo "  SwiftPM scratch path: $SWIFTPM_SCRATCH_PATH"
+swift test --package-path "$PACKAGE_DIR" --scratch-path "$SWIFTPM_SCRATCH_PATH"
 echo "  Tests passed."
 
 # --- Step 2: Build and sign ---
 echo "[2/10] Building and signing (version: ${VERSION})..."
 echo "y" | MUESLI_BUILD_VERSION="$VERSION" \
+  MUESLI_SWIFTPM_SCRATCH_PATH="$SWIFTPM_SCRATCH_PATH" \
   MUESLI_APP_NAME=MuesliCanary \
   MUESLI_BUNDLE_ID=com.muesli.canary \
   MUESLI_DISPLAY_NAME=MuesliCanary \

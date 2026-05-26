@@ -91,7 +91,6 @@ final class MeetingSession {
     private let config: AppConfig
     private let transcriptionCoordinator: TranscriptionCoordinator
     private let systemAudioRecorder: SystemAudioCapturing
-    private let fullSessionMicRecorder = MicrophoneRecorder()
     private let neuralAec = MeetingNeuralAec()
 
     /// Streaming mic recorder with real-time buffer access (AVAudioEngine)
@@ -115,6 +114,7 @@ final class MeetingSession {
     var manualNotesProvider: (() async -> String?)?
     var liveTitleProvider: (() async -> String?)?
     private let screenContextCollector = MeetingScreenContextCollector()
+    private var diagnostics: MeetingSessionDiagnostics?
 
     /// Current mic power level for waveform visualization.
     func currentPower() -> Float {
@@ -165,6 +165,7 @@ final class MeetingSession {
     func start() async throws {
         let vadManager = await transcriptionCoordinator.getVadManager()
         let now = Date()
+        diagnostics = MeetingSessionDiagnostics(title: title, startedAt: now)
 
         // AEC must be loaded before audio pipeline starts (streaming mode)
         await neuralAec.preload()
@@ -179,12 +180,10 @@ final class MeetingSession {
 
         do {
             try prepareRealtimeAudioPipeline(vadManager: vadManager)
-            try fullSessionMicRecorder.prepare()
             try streamingMicRecorder.prepare()
             setupRetainedRecordingWriterIfNeeded()
-            try fullSessionMicRecorder.start()
-            try streamingMicRecorder.start()
             try await systemAudioRecorder.start()
+            try streamingMicRecorder.start()
         } catch {
             vadController?.stop()
             vadController = nil
@@ -193,7 +192,6 @@ final class MeetingSession {
             streamingMicRecorder.onAudioBuffer = nil
             streamingMicRecorder.onPCMSamples = nil
             systemAudioRecorder.onPCMSamples = nil
-            fullSessionMicRecorder.cancel()
             retainedRecordingWriter?.cancel()
             retainedRecordingWriter = nil
             rawMicChunkRecorder?.cancel()
@@ -238,7 +236,6 @@ final class MeetingSession {
         }
         guard shouldPause else { return }
 
-        fullSessionMicRecorder.pause()
         streamingMicRecorder.pause()
         systemAudioRecorder.pause()
         Task { await screenContextCollector.setPaused(true) }
@@ -253,7 +250,6 @@ final class MeetingSession {
         }
         guard shouldResume else { return }
 
-        fullSessionMicRecorder.resume()
         streamingMicRecorder.resume()
         systemAudioRecorder.resume()
         Task { await screenContextCollector.setPaused(false) }
@@ -283,7 +279,6 @@ final class MeetingSession {
         retainedRecordingWriterError = nil
         rawRecorder?.cancel()
         systemRecorder?.cancel()
-        fullSessionMicRecorder.cancel()
         streamingMicRecorder.onAudioBuffer = nil
         streamingMicRecorder.onPCMSamples = nil
         streamingMicRecorder.cancel()
@@ -327,15 +322,11 @@ final class MeetingSession {
             return (meetingStart, lastChunkTiming, lastRawMicURL, lastSystemChunkTiming, lastSystemChunkURL)
         }
         let rawStreamingMicURL = streamingMicRecorder.stop()
-        let fullSessionMicURL = fullSessionMicRecorder.stop()
         let retainedRecordingURL = retainedRecordingWriter?.stop()
         retainedRecordingWriter = nil
         defer {
             if let rawStreamingMicURL {
                 try? FileManager.default.removeItem(at: rawStreamingMicURL)
-            }
-            if let fullSessionMicURL {
-                try? FileManager.default.removeItem(at: fullSessionMicURL)
             }
         }
 
@@ -402,34 +393,6 @@ final class MeetingSession {
             return lhs.start < rhs.start
         }
 
-        if let fullSessionMicURL {
-            let micRecovery = await repairMicSegmentsIfNeeded(
-                existingMicSegments: micSegments,
-                fullSessionMicURL: fullSessionMicURL,
-                meetingStart: meetingStart,
-                endTime: endTime
-            )
-            switch micRecovery {
-            case .none:
-                break
-            case .append(let repairedMicSegments):
-                micSegments.append(contentsOf: repairedMicSegments)
-                micSegments.sort { lhs, rhs in
-                    if lhs.start == rhs.start {
-                        return lhs.text < rhs.text
-                    }
-                    return lhs.start < rhs.start
-                }
-            case .replace(let fallbackMicSegments):
-                micSegments = fallbackMicSegments.sorted { lhs, rhs in
-                    if lhs.start == rhs.start {
-                        return lhs.text < rhs.text
-                    }
-                    return lhs.start < rhs.start
-                }
-            }
-        }
-
         if let systemAudioURL {
             let systemRecovery = await repairSystemSegmentsIfNeeded(
                 existingSystemSegments: systemSegments,
@@ -461,45 +424,12 @@ final class MeetingSession {
         fputs("[meeting] \(micSegments.count) mic chunks transcribed during meeting\n", stderr)
         fputs("[meeting] \(systemSegments.count) system chunks transcribed during meeting\n", stderr)
 
-        // Speaker-embedding bleed detection: compare mic chunk embeddings against
-        // system speaker embeddings from diarization. Drop mic segments that match
-        // a system speaker (bleed) and keep segments that don't match (user speech).
-        if let diarizationSegments, !diarizationSegments.isEmpty, let fullSessionMicURL {
-            if let diarizerManager = await transcriptionCoordinator.getDiarizerManager() {
-                do {
-                    let micSamples = try AudioConverter().resampleAudioFile(fullSessionMicURL)
-                    let centroids = MeetingBleedDetector.systemSpeakerCentroids(from: diarizationSegments)
-                    if !centroids.isEmpty {
-                        let bleedResult = MeetingBleedDetector.filterBleed(
-                            micSegments: micSegments,
-                            fullMicSamples: micSamples,
-                            systemSpeakerCentroids: centroids,
-                            diarizerManager: diarizerManager
-                        )
-                        fputs("[meeting] bleed detection: kept \(bleedResult.keptSegments.count), dropped \(bleedResult.droppedCount) mic segments\n", stderr)
-                        micSegments = bleedResult.keptSegments
-                    }
-                } catch {
-                    fputs("[meeting] bleed detection failed, keeping all mic segments: \(error)\n", stderr)
-                }
-            }
-        }
-
         let reconciledTranscriptInputs = TranscriptReconciler.reconcile(
             micTurns: micSegments,
             systemSegments: systemSegments,
             diarizationSegments: diarizationSegments
         )
-        let protectedTranscriptInputs: ReconciledTranscriptInputs
-        if let fullSessionMicURL {
-            protectedTranscriptInputs = await protectLocalMicSpeechAfterReconciliation(
-                originalMicSegments: micSegments,
-                reconciledTranscriptInputs: reconciledTranscriptInputs,
-                fullSessionMicURL: fullSessionMicURL
-            )
-        } else {
-            protectedTranscriptInputs = reconciledTranscriptInputs
-        }
+        let protectedTranscriptInputs = reconciledTranscriptInputs
 
         let rawTranscript = TranscriptFormatter.merge(
             micSegments: protectedTranscriptInputs.micSegments,
@@ -555,6 +485,21 @@ final class MeetingSession {
             )
         }
 
+        diagnostics?.writeFinalReport(
+            title: generatedTitle,
+            startedAt: meetingStart,
+            endedAt: endTime,
+            rawTranscript: rawTranscript,
+            rawMicURL: rawStreamingMicURL,
+            systemAudioURL: systemAudioURL,
+            systemCapture: (systemAudioRecorder as? SystemAudioDiagnosticsProviding)?.diagnosticsSnapshot,
+            aec: neuralAec.diagnosticsSnapshot,
+            micChunks: micChunkHealthTracker.snapshot(),
+            systemChunks: systemChunkHealthTracker.snapshot(),
+            diarizationSegments: protectedTranscriptInputs.diarizationSegments,
+            protectedSystemSegmentCount: protectedTranscriptInputs.systemSegments.count
+        )
+
         return MeetingSessionResult(
             title: generatedTitle,
             originalTitle: title,
@@ -588,11 +533,7 @@ final class MeetingSession {
 
     private func appendFlushedStreamingMicOnQueue() {
         let flushed = neuralAec.flushStreamingMic()
-        guard !flushed.isEmpty else { return }
-        let flushedInt16 = flushed.map { sample -> Int16 in
-            Int16(max(-1.0, min(1.0, sample)) * 32767)
-        }
-        rawMicChunkRecorder?.append(flushedInt16)
+        appendCleanedMicSamplesOnQueue(flushed)
     }
 
     /// Called by VAD on speech boundaries or max-duration fallback.
@@ -605,6 +546,7 @@ final class MeetingSession {
 
     private func rotateChunkOnQueue() {
         guard isRecording, !isPaused else { return }
+        appendFlushedStreamingMicOnQueue()
         guard let chunkTiming = chunkTimingTracker.rotate() else {
             return
         }
@@ -720,14 +662,20 @@ final class MeetingSession {
         if let vadManager {
             let controller = StreamingVadController(vadManager: vadManager)
             controller.onChunkBoundary = { [weak self] in
-                self?.rotateChunk()
+                // Streaming VAD callbacks can arrive off-main; serialize chunk rotation explicitly.
+                self?.chunkRotationQueue.async { [weak self] in
+                    self?.rotateChunkOnQueue()
+                }
             }
             controller.start()
             vadController = controller
 
             let systemController = StreamingVadController(vadManager: vadManager)
             systemController.onChunkBoundary = { [weak self] in
-                self?.rotateSystemChunk()
+                // Streaming VAD callbacks can arrive off-main; serialize chunk rotation explicitly.
+                self?.chunkRotationQueue.async { [weak self] in
+                    self?.rotateSystemChunkOnQueue()
+                }
             }
             systemController.start()
             systemVadController = systemController
@@ -753,22 +701,18 @@ final class MeetingSession {
             guard let self, self.isRecording, !self.isPaused else { return }
 
             self.retainedRecordingWriter?.appendMic(rawSamples)
-            self.chunkTimingTracker.append(sampleCount: rawSamples.count)
 
             let floatSamples = rawSamples.map { Float($0) / 32767.0 }
 
-            // VAD always sees raw audio for reliable speech boundary detection
-            if let vadController = self.vadController {
-                vadController.processAudio(floatSamples)
-            }
-
             // AEC: clean mic using position-aligned system reference
             let cleanedFloat = self.neuralAec.processStreamingMic(floatSamples)
-            if !cleanedFloat.isEmpty {
-                let cleanedInt16 = cleanedFloat.map { sample -> Int16 in
-                    Int16(max(-1.0, min(1.0, sample)) * 32767)
-                }
-                self.rawMicChunkRecorder?.append(cleanedInt16)
+            self.appendCleanedMicSamplesOnQueue(cleanedFloat)
+
+            // Meeting mic chunks must be driven by the cleaned mic stream. Raw
+            // mic VAD sees speaker playback bleed and can create false `You`
+            // chunks even when AEC removed that speech from the final mic audio.
+            if let vadController = self.vadController, !cleanedFloat.isEmpty {
+                vadController.processAudio(cleanedFloat)
             }
         }
     }
@@ -785,11 +729,27 @@ final class MeetingSession {
 
             let floatSamples = samples.map { Float($0) / 32767.0 }
             self.neuralAec.feedSystemSamples(floatSamples)
+            let cleanedFloat = self.neuralAec.processStreamingMic([])
+            self.appendCleanedMicSamplesOnQueue(cleanedFloat)
+
+            if let vadController = self.vadController, !cleanedFloat.isEmpty {
+                vadController.processAudio(cleanedFloat)
+            }
 
             if let systemVadController = self.systemVadController {
                 systemVadController.processAudio(floatSamples)
             }
         }
+    }
+
+    private func appendCleanedMicSamplesOnQueue(_ cleanedFloat: [Float]) {
+        guard !cleanedFloat.isEmpty else { return }
+        let cleanedInt16 = cleanedFloat.map { sample -> Int16 in
+            Int16(max(-1.0, min(1.0, sample)) * 32767)
+        }
+        rawMicChunkRecorder?.append(cleanedInt16)
+        chunkTimingTracker.append(sampleCount: cleanedInt16.count)
+        diagnostics?.appendCleanedMicSamples(cleanedInt16)
     }
 
     private func transcribeMicChunk(
@@ -873,131 +833,6 @@ final class MeetingSession {
         max(end.timeIntervalSince(start), 0)
     }
 
-    private func protectLocalMicSpeechAfterReconciliation(
-        originalMicSegments: [SpeechSegment],
-        reconciledTranscriptInputs: ReconciledTranscriptInputs,
-        fullSessionMicURL: URL
-    ) async -> ReconciledTranscriptInputs {
-        guard !originalMicSegments.isEmpty else { return reconciledTranscriptInputs }
-        guard let vadManager = await transcriptionCoordinator.getVadManager() else {
-            return reconciledTranscriptInputs
-        }
-
-        do {
-            let samples = try AudioConverter().resampleAudioFile(fullSessionMicURL)
-            let offlineSpeechSegments = try await vadManager.segmentSpeech(
-                samples,
-                config: VadSegmentationConfig(maxSpeechDuration: 10.0, speechPadding: 0.15)
-            )
-            let decision = MeetingLocalSpeechGuard.decide(
-                originalMicSegments: originalMicSegments,
-                reconciledMicSegments: reconciledTranscriptInputs.micSegments,
-                offlineSpeechSegments: offlineSpeechSegments,
-                chunkHealth: micChunkHealthTracker.snapshot()
-            )
-
-            if decision.revertedToOriginal {
-                fputs(
-                    "[meeting] restored original mic turns after reconciliation " +
-                    "(coverage \(String(format: "%.2f", decision.reconciledCoverageRatio)) -> " +
-                    "\(String(format: "%.2f", decision.originalCoverageRatio)); " +
-                    "\(decision.reason))\n",
-                    stderr
-                )
-            }
-
-            return ReconciledTranscriptInputs(
-                micSegments: decision.preferredMicSegments,
-                systemSegments: reconciledTranscriptInputs.systemSegments,
-                diarizationSegments: reconciledTranscriptInputs.diarizationSegments
-            )
-        } catch {
-            fputs("[meeting] failed to validate reconciled mic coverage: \(error)\n", stderr)
-            return reconciledTranscriptInputs
-        }
-    }
-
-    private func repairMicSegmentsIfNeeded(
-        existingMicSegments: [SpeechSegment],
-        fullSessionMicURL: URL,
-        meetingStart: Date,
-        endTime: Date
-    ) async -> MeetingTranscriptRecoveryResult {
-        let totalDuration = durationSeconds(from: meetingStart, to: endTime)
-
-        guard let vadManager = await transcriptionCoordinator.getVadManager() else {
-            if existingMicSegments.isEmpty {
-                return .replace(await fallbackToFullSessionMicTranscription(
-                    fullSessionMicURL: fullSessionMicURL,
-                    meetingDuration: totalDuration
-                ))
-            }
-            return .none
-        }
-
-        do {
-            let samples = try AudioConverter().resampleAudioFile(fullSessionMicURL)
-            let speechSegments = try await vadManager.segmentSpeech(
-                samples,
-                config: VadSegmentationConfig(maxSpeechDuration: 10.0, speechPadding: 0.15)
-            )
-            let health = MeetingTranscriptHealthMonitor.evaluate(
-                existingSegments: existingMicSegments,
-                offlineSpeechSegments: speechSegments,
-                chunkHealth: micChunkHealthTracker.snapshot()
-            )
-            fputs("\(health.summaryLine)\n", stderr)
-
-            switch health.action {
-            case .accept:
-                return .none
-            case .fullFallback(let reason):
-                fputs("[meeting] transcript health triggered full mic fallback: \(reason)\n", stderr)
-                return .replace(await fallbackToFullSessionMicTranscription(
-                    fullSessionMicURL: fullSessionMicURL,
-                    meetingDuration: totalDuration
-                ))
-            case .selectiveRepair(let repairSegments):
-                guard !repairSegments.isEmpty else { return .none }
-
-                fputs("[meeting] repairing \(repairSegments.count) uncovered mic speech regions\n", stderr)
-
-                var repairedSegments: [SpeechSegment] = []
-                for speechSegment in repairSegments {
-                    let startSample = max(0, speechSegment.startSample(sampleRate: VadManager.sampleRate))
-                    let endSample = min(samples.count, speechSegment.endSample(sampleRate: VadManager.sampleRate))
-                    guard endSample > startSample else { continue }
-
-                    let segmentURL = try MeetingMicRepairPlanner.writeTemporaryWAV(
-                        samples: Array(samples[startSample..<endSample])
-                    )
-                    defer { try? FileManager.default.removeItem(at: segmentURL) }
-
-                    let result = try await transcriptionCoordinator.transcribeMeeting(
-                        at: segmentURL,
-                        backend: currentBackend(),
-                        cohereLanguage: config.resolvedCohereLanguage
-                    )
-                    repairedSegments.append(contentsOf: MicTurnNormalizer.normalize(
-                        result: result,
-                        startTime: speechSegment.startTime,
-                        endTime: speechSegment.endTime
-                    ))
-                }
-                return repairedSegments.isEmpty ? .none : .append(repairedSegments)
-            }
-        } catch {
-            fputs("[meeting] mic repair pass failed: \(error)\n", stderr)
-            if existingMicSegments.isEmpty {
-                return .replace(await fallbackToFullSessionMicTranscription(
-                    fullSessionMicURL: fullSessionMicURL,
-                    meetingDuration: totalDuration
-                ))
-            }
-            return .none
-        }
-    }
-
     private func repairSystemSegmentsIfNeeded(
         existingSystemSegments: [SpeechSegment],
         systemAudioURL: URL,
@@ -1076,28 +911,6 @@ final class MeetingSession {
                 ))
             }
             return .none
-        }
-    }
-
-    private func fallbackToFullSessionMicTranscription(
-        fullSessionMicURL: URL,
-        meetingDuration: Double
-    ) async -> [SpeechSegment] {
-        fputs("[meeting] no mic chunks survived, falling back to full-session mic transcription\n", stderr)
-        do {
-            let result = try await transcriptionCoordinator.transcribeMeeting(
-                at: fullSessionMicURL,
-                backend: currentBackend(),
-                cohereLanguage: config.resolvedCohereLanguage
-            )
-            return MicTurnNormalizer.normalize(
-                result: result,
-                startTime: 0,
-                endTime: meetingDuration
-            )
-        } catch {
-            fputs("[meeting] full-session mic fallback transcription failed: \(error)\n", stderr)
-            return []
         }
     }
 

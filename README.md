@@ -224,6 +224,8 @@ Important meeting fields:
 
 Cohere Transcribe is a 2B parameter model (#1 on Open ASR Leaderboard) running in mixed precision — FP16 FastConformer encoder on the Neural Engine with INT8 quantized decoders. Includes VAD-gated silence detection to prevent hallucination. Best for high-accuracy English dictation.
 
+Meeting echo cancellation uses the bundled LocalVQE `localvqe-v1.2-1.3M-f32.gguf` model by default, so users do not need to download an AEC model before their first meeting transcription. DTLN remains available as the fallback AEC path.
+
 Models download on demand from HuggingFace. Manage them from the **Models** tab in the dashboard.
 
 ---
@@ -299,6 +301,7 @@ If Muesli saves you time, consider supporting development:
 ## Acknowledgements
 
 - [FluidAudio](https://github.com/FluidInference/FluidAudio) — CoreML speech models for Apple devices (Parakeet TDT, Qwen3 ASR, Silero VAD, speaker diarization)
+- [localai-org/LocalVQE](https://github.com/localai-org/LocalVQE) — on-device acoustic echo cancellation for meeting transcription
 - [WhisperKit](https://github.com/argmaxinc/WhisperKit) — Swift Whisper inference on CoreML/ANE
 - [Core Audio](https://developer.apple.com/documentation/coreaudio) by Apple — system audio process taps
 - [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit) by Apple — system audio fallback capture
