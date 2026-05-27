@@ -26,7 +26,7 @@ final class MediaPlaybackController: MediaPlaybackManaging {
     }
 
     func beginDictationMediaPause(enabled: Bool, routeKind: AudioOutputRouteKind) {
-        queue.async { [self] in
+        queue.sync { [self] in
             guard enabled else { return }
             guard !pausedForSession else { return }
             guard routeKind == .speakerLike else { return }

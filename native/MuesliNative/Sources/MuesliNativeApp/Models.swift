@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import MuesliCore
 
@@ -343,13 +344,37 @@ struct MeetingSummaryBackendOption: Equatable {
         label: "Ollama"
     )
 
-    static let all: [MeetingSummaryBackendOption] = [.chatGPT, .openAI, .openRouter, .ollama]
+    static let lmStudio = MeetingSummaryBackendOption(
+        backend: "lmstudio",
+        label: "LM Studio"
+    )
+
+    static let customLLM = MeetingSummaryBackendOption(
+        backend: "custom_llm",
+        label: "Custom LLM"
+    )
+
+    static let all: [MeetingSummaryBackendOption] = [.chatGPT, .openAI, .openRouter, .ollama, .lmStudio, .customLLM]
 
     static func resolved(_ backend: String?) -> MeetingSummaryBackendOption {
         guard let backend, let option = all.first(where: { $0.backend == backend }) else {
             return .chatGPT
         }
         return option
+    }
+}
+
+enum CustomLLMFormat: String, Codable, CaseIterable {
+    case openAI = "openai"
+    case anthropic = "anthropic"
+
+    var label: String {
+        switch self {
+        case .openAI:
+            return "OpenAI-compatible"
+        case .anthropic:
+            return "Anthropic Messages"
+        }
     }
 }
 
@@ -537,6 +562,21 @@ struct HotkeyConfig: Codable, Equatable {
     var keyCode: UInt16 = 61
     var label: String = "Right Option"
 
+    // Key combination support (e.g. Cmd+Shift+R).
+    // When set, the hotkey fires on keyDown with these modifiers held.
+    // When nil, the hotkey is a single modifier key (existing behavior).
+    var combinationModifiers: UInt? = nil
+    var combinationKeyCode: UInt16? = nil
+
+    var isCombination: Bool {
+        combinationModifiers != nil && combinationKeyCode != nil
+    }
+
+    var displayLabel: String {
+        if isCombination { return label }
+        return Self.symbolLabel(for: keyCode) ?? label
+    }
+
     static func label(for keyCode: UInt16) -> String? {
         switch keyCode {
         case 55: return "Left Cmd"
@@ -552,8 +592,70 @@ struct HotkeyConfig: Codable, Equatable {
         }
     }
 
+    static func symbolLabel(for keyCode: UInt16) -> String? {
+        switch keyCode {
+        case 55: return "Left ⌘"
+        case 54: return "Right ⌘"
+        case 63: return "fn"
+        case 59: return "Left ⌃"
+        case 62: return "Right ⌃"
+        case 58: return "Left ⌥"
+        case 61: return "Right ⌥"
+        case 56: return "Left ⇧"
+        case 60: return "Right ⇧"
+        default: return nil
+        }
+    }
+
+    static func letterLabel(for keyCode: UInt16) -> String? {
+        let letters: [UInt16: String] = [
+            0: "A", 1: "S", 2: "D", 3: "F", 4: "H", 5: "G", 6: "Z", 7: "X",
+            8: "C", 9: "V", 11: "B", 12: "Q", 13: "W", 14: "E", 15: "R",
+            16: "Y", 17: "T", 31: "O", 32: "U", 34: "I", 35: "P", 37: "L",
+            38: "J", 40: "K", 45: "N", 46: "M",
+        ]
+        return letters[keyCode]
+    }
+
+    static func combinationLabel(modifiers: NSEvent.ModifierFlags, keyCode: UInt16) -> String {
+        let modifiers = supportedCombinationModifiers(from: modifiers)
+        var parts: [String] = []
+        if modifiers.contains(.command) { parts.append("⌘") }
+        if modifiers.contains(.control) { parts.append("⌃") }
+        if modifiers.contains(.option) { parts.append("⌥") }
+        if modifiers.contains(.shift) { parts.append("⇧") }
+        parts.append(letterLabel(for: keyCode) ?? "?")
+        return parts.joined()
+    }
+
+    static func combination(modifiers: NSEvent.ModifierFlags, keyCode: UInt16) -> HotkeyConfig {
+        let supportedModifiers = supportedCombinationModifiers(from: modifiers)
+        let lbl = combinationLabel(modifiers: supportedModifiers, keyCode: keyCode)
+        return HotkeyConfig(
+            keyCode: UInt16.max,
+            label: lbl,
+            combinationModifiers: UInt(supportedModifiers.rawValue),
+            combinationKeyCode: keyCode
+        )
+    }
+
+    static func supportedCombinationModifiers(from modifiers: NSEvent.ModifierFlags) -> NSEvent.ModifierFlags {
+        modifiers.intersection([.command, .control, .option, .shift])
+    }
+
+    var resolvedCombinationModifiers: NSEvent.ModifierFlags? {
+        guard let raw = combinationModifiers else { return nil }
+        return Self.supportedCombinationModifiers(from: NSEvent.ModifierFlags(rawValue: raw))
+    }
+
     static let `default` = HotkeyConfig()
     static let computerUseDefault = HotkeyConfig(keyCode: 54, label: "Right Cmd")
+    static let meetingRecordingDefault = HotkeyConfig(
+        keyCode: UInt16.max,
+        label: "⌘⇧R",
+        combinationModifiers: UInt(NSEvent.ModifierFlags([.command, .shift]).rawValue),
+        combinationKeyCode: 15
+    )
 
     static func computerUseDefault(avoiding dictationHotkey: HotkeyConfig) -> HotkeyConfig {
         dictationHotkey.keyCode == computerUseDefault.keyCode ? .default : .computerUseDefault
@@ -598,6 +700,8 @@ struct AppConfig: Codable {
     var dictationHotkey: HotkeyConfig = .default
     var computerUseHotkey: HotkeyConfig = .computerUseDefault
     var enableComputerUseHotkey: Bool = false
+    var meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault
+    var enableMeetingRecordingHotkey: Bool = false
     var computerUseHotkeyDefaultDisabledMigrationApplied: Bool = true
     var enableComputerUsePlanner: Bool = true
     var computerUsePlannerModel: String = ""
@@ -620,6 +724,8 @@ struct AppConfig: Codable {
     var darkMode: Bool = true
     var enableDoubleTapDictation: Bool = true
     var hotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
+    var computerUseHotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
+    var meetingRecordingHotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultMeetingThresholdMilliseconds
     var launchAtLogin: Bool = false
     var openDashboardOnLaunch: Bool = true
     var showFloatingIndicator: Bool = true
@@ -633,6 +739,12 @@ struct AppConfig: Codable {
     var chatGPTModel: String = ""
     var ollamaURL: String = "http://localhost:11434"
     var ollamaModel: String = "qwen3.5"
+    var lmStudioURL: String = "http://localhost:1234"
+    var lmStudioModel: String = ""
+    var customLLMURL: String = ""
+    var customLLMAPIKey: String = ""
+    var customLLMModel: String = ""
+    var customLLMFormat: String = CustomLLMFormat.openAI.rawValue
     var summaryModel: String = ""
     var meetingSummaryModel: String = ""
     var hasCompletedOnboarding: Bool = false
@@ -667,6 +779,8 @@ struct AppConfig: Codable {
         case dictationHotkey = "dictation_hotkey"
         case computerUseHotkey = "computer_use_hotkey"
         case enableComputerUseHotkey = "enable_computer_use_hotkey"
+        case meetingRecordingHotkey = "meeting_recording_hotkey"
+        case enableMeetingRecordingHotkey = "enable_meeting_recording_hotkey"
         case computerUseHotkeyDefaultDisabledMigrationApplied = "computer_use_hotkey_default_disabled_migration_applied"
         case enableComputerUsePlanner = "enable_computer_use_planner"
         case computerUsePlannerModel = "computer_use_planner_model"
@@ -689,6 +803,8 @@ struct AppConfig: Codable {
         case darkMode = "dark_mode"
         case enableDoubleTapDictation = "enable_double_tap_dictation"
         case hotkeyTriggerThresholdMS = "hotkey_trigger_threshold_ms"
+        case computerUseHotkeyTriggerThresholdMS = "computer_use_hotkey_trigger_threshold_ms"
+        case meetingRecordingHotkeyTriggerThresholdMS = "meeting_recording_hotkey_trigger_threshold_ms"
         case launchAtLogin = "launch_at_login"
         case openDashboardOnLaunch = "open_dashboard_on_launch"
         case showFloatingIndicator = "show_floating_indicator"
@@ -702,6 +818,12 @@ struct AppConfig: Codable {
         case chatGPTModel = "chatgpt_model"
         case ollamaURL = "ollama_url"
         case ollamaModel = "ollama_model"
+        case lmStudioURL = "lmstudio_url"
+        case lmStudioModel = "lmstudio_model"
+        case customLLMURL = "custom_llm_url"
+        case customLLMAPIKey = "custom_llm_api_key"
+        case customLLMModel = "custom_llm_model"
+        case customLLMFormat = "custom_llm_format"
         case summaryModel = "summary_model"
         case meetingSummaryModel = "meeting_summary_model"
         case hasCompletedOnboarding = "has_completed_onboarding"
@@ -744,6 +866,8 @@ struct AppConfig: Codable {
             ? ((try? c.decode(Bool.self, forKey: .enableComputerUseHotkey)) ?? defaults.enableComputerUseHotkey)
             : false
         computerUseHotkeyDefaultDisabledMigrationApplied = true
+        meetingRecordingHotkey = (try? c.decode(HotkeyConfig.self, forKey: .meetingRecordingHotkey)) ?? defaults.meetingRecordingHotkey
+        enableMeetingRecordingHotkey = (try? c.decode(Bool.self, forKey: .enableMeetingRecordingHotkey)) ?? defaults.enableMeetingRecordingHotkey
         enableComputerUsePlanner = (try? c.decode(Bool.self, forKey: .enableComputerUsePlanner)) ?? defaults.enableComputerUsePlanner
         computerUsePlannerModel = (try? c.decode(String.self, forKey: .computerUsePlannerModel)) ?? defaults.computerUsePlannerModel
         computerUseTimeoutSeconds = (try? c.decode(Int.self, forKey: .computerUseTimeoutSeconds)) ?? defaults.computerUseTimeoutSeconds
@@ -773,6 +897,13 @@ struct AppConfig: Codable {
         hotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(
             (try? c.decode(Int.self, forKey: .hotkeyTriggerThresholdMS)) ?? defaults.hotkeyTriggerThresholdMS
         )
+        computerUseHotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(
+            (try? c.decode(Int.self, forKey: .computerUseHotkeyTriggerThresholdMS)) ?? hotkeyTriggerThresholdMS
+        )
+        meetingRecordingHotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(
+            (try? c.decode(Int.self, forKey: .meetingRecordingHotkeyTriggerThresholdMS))
+                ?? defaults.meetingRecordingHotkeyTriggerThresholdMS
+        )
         launchAtLogin = (try? c.decode(Bool.self, forKey: .launchAtLogin)) ?? defaults.launchAtLogin
         openDashboardOnLaunch = (try? c.decode(Bool.self, forKey: .openDashboardOnLaunch)) ?? defaults.openDashboardOnLaunch
         showFloatingIndicator = (try? c.decode(Bool.self, forKey: .showFloatingIndicator)) ?? defaults.showFloatingIndicator
@@ -787,6 +918,13 @@ struct AppConfig: Codable {
         chatGPTModel = (try? c.decode(String.self, forKey: .chatGPTModel)) ?? defaults.chatGPTModel
         ollamaURL = (try? c.decode(String.self, forKey: .ollamaURL)) ?? defaults.ollamaURL
         ollamaModel = (try? c.decode(String.self, forKey: .ollamaModel)) ?? defaults.ollamaModel
+        lmStudioURL = (try? c.decode(String.self, forKey: .lmStudioURL)) ?? defaults.lmStudioURL
+        lmStudioModel = (try? c.decode(String.self, forKey: .lmStudioModel)) ?? defaults.lmStudioModel
+        customLLMURL = (try? c.decode(String.self, forKey: .customLLMURL)) ?? defaults.customLLMURL
+        customLLMAPIKey = (try? c.decode(String.self, forKey: .customLLMAPIKey)) ?? defaults.customLLMAPIKey
+        customLLMModel = (try? c.decode(String.self, forKey: .customLLMModel)) ?? defaults.customLLMModel
+        let decodedCustomLLMFormat = (try? c.decode(String.self, forKey: .customLLMFormat)) ?? defaults.customLLMFormat
+        customLLMFormat = CustomLLMFormat(rawValue: decodedCustomLLMFormat)?.rawValue ?? defaults.customLLMFormat
         summaryModel = (try? c.decode(String.self, forKey: .summaryModel)) ?? defaults.summaryModel
         meetingSummaryModel = (try? c.decode(String.self, forKey: .meetingSummaryModel)) ?? defaults.meetingSummaryModel
         hasCompletedOnboarding = (try? c.decode(Bool.self, forKey: .hasCompletedOnboarding)) ?? defaults.hasCompletedOnboarding

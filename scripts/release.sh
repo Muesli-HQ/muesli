@@ -30,12 +30,14 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+PACKAGE_DIR="$ROOT/native/MuesliNative"
+SWIFTPM_SCRATCH_PATH="${MUESLI_SWIFTPM_SCRATCH_PATH:-$HOME/Library/Caches/muesli-spm/release}"
 PROFILE_NAME="${MUESLI_NOTARY_PROFILE:-MuesliNotary}"
 SIGN_IDENTITY="${MUESLI_SIGN_IDENTITY:-Developer ID Application: Pranav Hari Guruvayurappan (58W55QJ567)}"
 OUTPUT_DIR="$ROOT/dist-release"
 INSTALL_DIR="${MUESLI_RELEASE_INSTALL_DIR:-$OUTPUT_DIR/install-root}"
 APP_DIR="${MUESLI_RELEASE_APP_DIR:-$INSTALL_DIR/Muesli.app}"
-GENERATE_APPCAST="$ROOT/native/MuesliNative/.build/artifacts/sparkle/Sparkle/bin/generate_appcast"
+GENERATE_APPCAST="$SWIFTPM_SCRATCH_PATH/artifacts/sparkle/Sparkle/bin/generate_appcast"
 UPDATE_APPCAST_RELEASE_NOTES="$ROOT/scripts/update_appcast_release_notes.py"
 TAP_REPO="${MUESLI_TAP_REPO:-pHequals7/homebrew-muesli}"
 TAP_CASK_REL_PATH="${MUESLI_TAP_CASK_REL_PATH:-Casks/m/muesli.rb}"
@@ -83,11 +85,6 @@ fi
 
 if [[ -n "$(git status --porcelain)" ]]; then
   echo "ERROR: Working tree must be clean before running the release pipeline." >&2
-  exit 1
-fi
-
-if [[ ! -x "$GENERATE_APPCAST" ]]; then
-  echo "ERROR: generate_appcast not found at $GENERATE_APPCAST" >&2
   exit 1
 fi
 
@@ -151,15 +148,23 @@ sed -i '' "s/^DEFAULT_APP_VERSION=.*/DEFAULT_APP_VERSION=\"${VERSION}\"/" "$ROOT
 
 # --- Step 1: Run tests ---
 echo "[1/13] Running tests..."
-swift test --package-path "$ROOT/native/MuesliNative"
+mkdir -p "$SWIFTPM_SCRATCH_PATH"
+echo "  SwiftPM scratch path: $SWIFTPM_SCRATCH_PATH"
+swift test --package-path "$PACKAGE_DIR" --scratch-path "$SWIFTPM_SCRATCH_PATH"
 echo "  Tests passed."
 
 # --- Step 2: Build and sign ---
 echo "[2/13] Building and signing..."
 rm -rf "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
-echo "y" | MUESLI_INSTALL_DIR="$INSTALL_DIR" "$ROOT/scripts/build_native_app.sh" > /dev/null 2>&1
+echo "y" | MUESLI_INSTALL_DIR="$INSTALL_DIR" \
+  MUESLI_SWIFTPM_SCRATCH_PATH="$SWIFTPM_SCRATCH_PATH" \
+  "$ROOT/scripts/build_native_app.sh" > /dev/null 2>&1
 echo "  Installed to $APP_DIR"
+if [[ ! -x "$GENERATE_APPCAST" ]]; then
+  echo "ERROR: generate_appcast not found at $GENERATE_APPCAST" >&2
+  exit 1
+fi
 
 # Verify signature
 FLAGS=$(codesign -dvvv "$APP_DIR" 2>&1 | grep -o 'flags=0x[0-9a-f]*([^)]*)')

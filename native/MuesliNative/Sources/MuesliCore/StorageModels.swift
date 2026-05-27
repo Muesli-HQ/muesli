@@ -26,6 +26,11 @@ public enum MeetingRecordingSavePolicy: String, Codable, CaseIterable, Sendable 
     case always
 }
 
+public enum MeetingSource: String, Codable, Sendable {
+    case meeting
+    case audioImport = "audio_import"
+}
+
 public struct DictationRecord: Identifiable, Codable, Sendable {
     public let id: Int64
     public let timestamp: String
@@ -129,6 +134,7 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
     public let selectedTemplateName: String?
     public let selectedTemplateKind: MeetingTemplateKind?
     public let selectedTemplatePrompt: String?
+    public let source: MeetingSource
 
     public init(
         id: Int64,
@@ -148,7 +154,8 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
         selectedTemplateID: String? = nil,
         selectedTemplateName: String? = nil,
         selectedTemplateKind: MeetingTemplateKind? = nil,
-        selectedTemplatePrompt: String? = nil
+        selectedTemplatePrompt: String? = nil,
+        source: MeetingSource = .meeting
     ) {
         self.id = id
         self.title = title
@@ -168,6 +175,7 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
         self.selectedTemplateName = selectedTemplateName
         self.selectedTemplateKind = selectedTemplateKind
         self.selectedTemplatePrompt = selectedTemplatePrompt
+        self.source = source
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -189,6 +197,7 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
         case selectedTemplateName
         case selectedTemplateKind
         case selectedTemplatePrompt
+        case source
     }
 
     public init(from decoder: Decoder) throws {
@@ -211,7 +220,8 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
             selectedTemplateID: try c.decodeIfPresent(String.self, forKey: .selectedTemplateID),
             selectedTemplateName: try c.decodeIfPresent(String.self, forKey: .selectedTemplateName),
             selectedTemplateKind: try c.decodeIfPresent(MeetingTemplateKind.self, forKey: .selectedTemplateKind),
-            selectedTemplatePrompt: try c.decodeIfPresent(String.self, forKey: .selectedTemplatePrompt)
+            selectedTemplatePrompt: try c.decodeIfPresent(String.self, forKey: .selectedTemplatePrompt),
+            source: (try? c.decode(MeetingSource.self, forKey: .source)) ?? .meeting
         )
     }
 

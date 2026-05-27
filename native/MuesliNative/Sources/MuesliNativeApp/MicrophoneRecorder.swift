@@ -1,461 +1,417 @@
 @preconcurrency import AVFoundation
 import CoreAudio
 import Foundation
-import os
 
-final class MicrophoneRecorder: @unchecked Sendable {
+final class MicrophoneRecorder: NSObject, AVAudioRecorderDelegate, @unchecked Sendable {
     var preferredInputDeviceID: AudioObjectID?
     var keepsAudioGraphWarm = false
     var onFirstCapturedAudioBuffer: ((Date) -> Void)?
     var onFirstSpeechDetected: ((Date) -> Void)?
     var onNoAudioTimeout: ((Date) -> Void)?
-
-    private struct FileState {
-        var fileHandle: FileHandle?
-        var fileURL: URL?
-        var bytesWritten: Int = 0
-        var latestPowerDB: Float = -160
-        var isPaused = false
-        var isCapturing = false
-        var hasReceivedFirstAudioBuffer = false
-        var hasDetectedSpeech = false
-        var hasReportedNoAudioTimeout = false
-    }
+    var onRecordingFailed: ((Error, UUID) -> Void)?
 
     private static let sampleRate: Double = 16_000
-    private static let bufferSize: AVAudioFrameCount = 640
     private static let speechThresholdDB: Float = -58
     private static let noAudioTimeout: TimeInterval = 1.5
+    private static let captureProgressInterval: TimeInterval = 0.05
+    private static let meterInterval: TimeInterval = 0.08
+    private static let requiredFileGrowthObservations = 2
 
-    private let engine = AVAudioEngine()
-    private let lock = OSAllocatedUnfairLock(initialState: FileState())
-    private let lifecycleLock = NSRecursiveLock()
-    private let writerQueue = DispatchQueue(label: "com.muesli.microphone-recorder-writer")
-    private let timeoutQueue = DispatchQueue(label: "com.muesli.microphone-recorder-timeout")
-    private let tapCallbackGroup = DispatchGroup()
-    private var isPrepared = false
-    private var isRunning = false
-    private var isGraphPrepared = false
-    private var tapInstalled = false
+    private let lock = NSRecursiveLock()
+    private let callbackQueue = DispatchQueue(label: "com.muesli.microphone-recorder-callbacks")
+    private var recorder: AVAudioRecorder?
+    private var preparedURL: URL?
     private var preparedInputDeviceID: AudioObjectID?
+    private var activeInputOverride: DefaultInputOverride?
+    private var captureProgressWorkItem: DispatchWorkItem?
     private var noAudioTimeoutWorkItem: DispatchWorkItem?
+    private var meterWorkItem: DispatchWorkItem?
+    private var isRecording = false
+    private var activeRecordingID: UUID?
+    private var hasReceivedFirstAudioBuffer = false
+    private var hasDetectedSpeech = false
+    private var hasReportedNoAudioTimeout = false
+    private var lastObservedFileByteCount = 0
+    private var captureFileGrowthObservations = 0
+
+    deinit {
+        cancel()
+    }
 
     func prepare() throws {
-        lifecycleLock.lock()
-        defer { lifecycleLock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
 
-        guard !isPrepared else { return }
-        try ensurePreparedGraphLocked(preferredInputDeviceID: preferredInputDeviceID)
+        if recorder != nil {
+            guard preparedInputDeviceID != preferredInputDeviceID else { return }
+            guard !isRecording else {
+                throw NSError(domain: "MicrophoneRecorder", code: 4, userInfo: [
+                    NSLocalizedDescriptionKey: "Cannot change microphone input while recording",
+                ])
+            }
+            cleanupPreparedRecording(removeFile: true)
+            restorePreferredInputIfNeeded()
+        }
+        try applyPreferredInputIfNeeded()
 
-        let fileState = try createNewFile()
-        lock.withLock { $0 = fileState }
-        isPrepared = true
+        do {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("muesli-native", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let fileURL = directory.appendingPathComponent(UUID().uuidString).appendingPathExtension("wav")
+            let settings: [String: Any] = [
+                AVFormatIDKey: kAudioFormatLinearPCM,
+                AVSampleRateKey: Self.sampleRate,
+                AVNumberOfChannelsKey: 1,
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsFloatKey: false,
+                AVLinearPCMIsBigEndianKey: false,
+            ]
+            let nextRecorder = try AVAudioRecorder(url: fileURL, settings: settings)
+            nextRecorder.delegate = self
+            nextRecorder.isMeteringEnabled = true
+            guard nextRecorder.prepareToRecord() else {
+                throw NSError(domain: "MicrophoneRecorder", code: 6, userInfo: [
+                    NSLocalizedDescriptionKey: "Microphone recorder failed to prepare",
+                ])
+            }
+            preparedURL = fileURL
+            recorder = nextRecorder
+            preparedInputDeviceID = preferredInputDeviceID
+        } catch {
+            cleanupPreparedRecording(removeFile: true)
+            restorePreferredInputIfNeeded()
+            throw error
+        }
     }
 
     func warmUp(preferredInputDeviceID: AudioObjectID?) throws {
-        lifecycleLock.lock()
-        defer { lifecycleLock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
 
         self.preferredInputDeviceID = preferredInputDeviceID
-        guard !isPrepared && !isRunning else {
-            fputs("[mic-recorder] warmup deferred while capture is active\n", stderr)
-            return
-        }
-        try ensurePreparedGraphLocked(preferredInputDeviceID: preferredInputDeviceID)
+        guard !isRecording else { return }
+        try prepare()
+        fputs("[mic-recorder] avrecorder warmed preferredInput=\(preferredInputDeviceID.map(String.init) ?? "default")\n", stderr)
     }
 
     func activateWarmEngine(preferredInputDeviceID: AudioObjectID?) throws {
-        lifecycleLock.lock()
-        defer { lifecycleLock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
 
         self.preferredInputDeviceID = preferredInputDeviceID
-        guard !isPrepared && !isRunning else {
-            fputs("[mic-recorder] activation deferred while capture is active\n", stderr)
-            return
-        }
-        if engine.isRunning, preparedInputDeviceID != preferredInputDeviceID {
-            fputs(
-                "[mic-recorder] rebuilding warm engine for preferredInput=\(preferredInputDeviceID.map(String.init) ?? "default")\n",
-                stderr
-            )
-            stopWarmGraphLocked()
-        }
-        try ensurePreparedGraphLocked(preferredInputDeviceID: preferredInputDeviceID)
-        guard !engine.isRunning else { return }
-        lock.withLock { state in
-            state.isCapturing = false
-            state.isPaused = false
-            state.latestPowerDB = -160
-            state.hasReceivedFirstAudioBuffer = false
-        }
-        do {
-            try engine.start()
-        } catch {
-            stopWarmGraphLocked()
-            throw error
-        }
-        fputs(
-            "[mic-recorder] warm engine activated preferredInput=\(preferredInputDeviceID.map(String.init) ?? "default")\n",
-            stderr
-        )
+        guard !isRecording else { return }
+        try prepare()
+        fputs("[mic-recorder] avrecorder activated preferredInput=\(preferredInputDeviceID.map(String.init) ?? "default")\n", stderr)
     }
 
     func coolDown() {
-        lifecycleLock.lock()
-        defer { lifecycleLock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
 
-        guard !isPrepared && !isRunning else { return }
-        stopWarmGraphLocked()
+        guard !isRecording else { return }
+        cleanupPreparedRecording(removeFile: true)
+        restorePreferredInputIfNeeded()
     }
 
-    private func ensurePreparedGraphLocked(preferredInputDeviceID: AudioObjectID?) throws {
-        if isGraphPrepared, preparedInputDeviceID == preferredInputDeviceID {
-            return
-        }
-        if isRunning {
-            return
-        }
+    @discardableResult
+    func start() throws -> UUID {
+        lock.lock()
+        defer { lock.unlock() }
 
-        stopWarmGraphLocked()
-
-        AudioInputDeviceSelection.applyPreferredInputDeviceID(
-            preferredInputDeviceID,
-            to: engine,
-            logPrefix: "mic-recorder"
-        )
-
-        let inputNode = engine.inputNode
-        let hwFormat = inputNode.outputFormat(forBus: 0)
-        guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else {
-            throw NSError(domain: "MicrophoneRecorder", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "No audio input available",
-            ])
-        }
-
-        guard let targetFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: Self.sampleRate,
-            channels: 1,
-            interleaved: false
-        ) else {
-            throw NSError(domain: "MicrophoneRecorder", code: 2, userInfo: [
-                NSLocalizedDescriptionKey: "Could not create target audio format",
-            ])
-        }
-
-        let needsConversion = hwFormat.sampleRate != Self.sampleRate || hwFormat.channelCount != 1
-        let converter = needsConversion ? AVAudioConverter(from: hwFormat, to: targetFormat) : nil
-
-        fputs(
-            "[mic-recorder] preparing graph preferredInput=\(preferredInputDeviceID.map(String.init) ?? "default") hwRate=\(Int(hwFormat.sampleRate)) channels=\(hwFormat.channelCount)\n",
-            stderr
-        )
-        inputNode.installTap(onBus: 0, bufferSize: Self.bufferSize, format: nil) { [weak self] buffer, _ in
-            self?.handleAudioBuffer(buffer, converter: converter, targetFormat: targetFormat)
-        }
-        tapInstalled = true
-        engine.prepare()
-        isGraphPrepared = true
-        preparedInputDeviceID = preferredInputDeviceID
-    }
-
-    func start() throws {
-        lifecycleLock.lock()
-        defer { lifecycleLock.unlock() }
-
-        guard !isRunning else { return }
+        if isRecording, let activeRecordingID { return activeRecordingID }
         try prepare()
-
-        do {
-            // The preferred input can refresh between prepare/warmup and start
-            // after a route change, so keep this re-check on the start path.
-            try ensurePreparedGraphLocked(preferredInputDeviceID: preferredInputDeviceID)
-            if !engine.isRunning {
-                lock.withLock { state in
-                    state.isCapturing = true
-                    state.isPaused = false
-                    state.latestPowerDB = -160
-                    state.hasReceivedFirstAudioBuffer = false
-                    state.hasDetectedSpeech = false
-                    state.hasReportedNoAudioTimeout = false
-                }
-                try engine.start()
-            } else {
-                lock.withLock { state in
-                    state.isCapturing = true
-                    state.isPaused = false
-                    state.latestPowerDB = -160
-                    state.hasReceivedFirstAudioBuffer = false
-                    state.hasDetectedSpeech = false
-                    state.hasReportedNoAudioTimeout = false
-                }
-            }
-            isRunning = true
-            scheduleNoAudioTimeout()
-        } catch {
-            isRunning = false
-            lock.withLock { state in
-                state.isCapturing = false
-                state.latestPowerDB = -160
-            }
-            cancelNoAudioTimeout()
-            stopWarmGraphLocked()
-            throw error
+        guard let recorder else {
+            throw NSError(domain: "MicrophoneRecorder", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "No audio recorder available",
+            ])
         }
+        resetCaptureState()
+        guard recorder.record() else {
+            throw NSError(domain: "MicrophoneRecorder", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "Microphone recorder failed to start",
+            ])
+        }
+        isRecording = true
+        let recordingID = UUID()
+        activeRecordingID = recordingID
+        lastObservedFileByteCount = recordedFileByteCountLocked()
+        scheduleCaptureProgressPollLocked()
+        scheduleMeterPollLocked()
+        scheduleNoAudioTimeoutLocked()
+        return recordingID
     }
 
     func stop() -> URL? {
-        lifecycleLock.lock()
-        defer { lifecycleLock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
 
-        guard isPrepared else { return nil }
-        isRunning = false
-        cancelNoAudioTimeout()
-
-        let finalState = lock.withLock { state -> FileState in
-            let old = state
-            state = FileState()
-            return old
-        }
-        isPrepared = false
-        engine.stop()
-        // AVAudioEngine.stop() must happen before waiting here: after it returns,
-        // CoreAudio will not enter new tap callbacks, so this wait only drains
-        // callbacks that already reached the dispatch group.
-        if tapCallbackGroup.wait(timeout: .now() + 2.0) == .timedOut {
-            fputs("[audio-recorder] timed out waiting for tap callbacks during stop\n", stderr)
-        }
-        waitForPendingWrites()
-        if keepsAudioGraphWarm {
-            lock.withLock { $0.latestPowerDB = -160 }
-        } else {
-            stopWarmGraphLocked()
-        }
-
-        return finalizeFile(finalState)
-    }
-
-    func pause() {
-        lifecycleLock.lock()
-        defer { lifecycleLock.unlock() }
-
-        guard isPrepared else { return }
-        lock.withLock { state in
-            state.isPaused = true
-            state.latestPowerDB = -160
-        }
-    }
-
-    func resume() {
-        lifecycleLock.lock()
-        defer { lifecycleLock.unlock() }
-
-        guard isPrepared else { return }
-        lock.withLock { state in
-            state.isPaused = false
-        }
-    }
-
-    func currentPower() -> Float {
-        lock.withLock { $0.latestPowerDB }
-    }
-
-    func cancel() {
-        lifecycleLock.lock()
-        defer { lifecycleLock.unlock() }
-
-        isRunning = false
-        isPrepared = false
-        cancelNoAudioTimeout()
-
-        let state = lock.withLock { state -> FileState in
-            let old = state
-            state = FileState()
-            return old
-        }
-        engine.stop()
-        // See stop(): engine.stop() closes the door on new tap callbacks before
-        // we wait for callbacks that were already in flight.
-        if tapCallbackGroup.wait(timeout: .now() + 2.0) == .timedOut {
-            fputs("[audio-recorder] timed out waiting for tap callbacks during cancel\n", stderr)
-        }
-        waitForPendingWrites()
-        state.fileHandle?.closeFile()
-        if let url = state.fileURL {
-            try? FileManager.default.removeItem(at: url)
-        }
-        if keepsAudioGraphWarm {
-            lock.withLock { $0.latestPowerDB = -160 }
-        } else {
-            stopWarmGraphLocked()
-        }
-    }
-
-    private func handleAudioBuffer(
-        _ buffer: AVAudioPCMBuffer,
-        converter: AVAudioConverter?,
-        targetFormat: AVAudioFormat
-    ) {
-        let capturedAt = Date()
-        tapCallbackGroup.enter()
-        defer { tapCallbackGroup.leave() }
-
-        let shouldCapture = lock.withLock { state -> Bool in
-            guard state.isCapturing, !state.isPaused else {
-                state.latestPowerDB = -160
-                return false
-            }
-            return true
-        }
-        guard shouldCapture else { return }
-
-        let monoBuffer: AVAudioPCMBuffer
-        if let converter {
-            let frameCapacity = max(
-                1,
-                AVAudioFrameCount(Double(buffer.frameLength) * Self.sampleRate / buffer.format.sampleRate)
-            )
-            guard let converted = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: frameCapacity) else {
-                return
-            }
-            var error: NSError?
-            var didProvideInput = false
-            let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
-                guard !didProvideInput else {
-                    outStatus.pointee = .noDataNow
-                    return nil
-                }
-                didProvideInput = true
-                outStatus.pointee = .haveData
-                return buffer
-            }
-            converter.convert(to: converted, error: &error, withInputFrom: inputBlock)
-            guard error == nil else { return }
-            monoBuffer = converted
-        } else {
-            monoBuffer = buffer
-        }
-
-        guard let floatData = monoBuffer.floatChannelData?[0] else { return }
-        let frameCount = Int(monoBuffer.frameLength)
-        guard frameCount > 0 else { return }
-
-        var sumSquares: Float = 0
-        var pcmData = Data(count: frameCount * MemoryLayout<Int16>.size)
-        pcmData.withUnsafeMutableBytes { rawBuffer in
-            guard let output = rawBuffer.bindMemory(to: Int16.self).baseAddress else { return }
-            for i in 0..<frameCount {
-                let sample = floatData[i]
-                let clamped = max(-1.0, min(1.0, sample))
-                output[i] = Int16(clamped * 32767)
-                sumSquares += sample * sample
-            }
-        }
-
-        let rms = sqrt(sumSquares / Float(frameCount))
-        let rawDB = rms > 0.000_001 ? 20 * log10(rms) : -160
-        let powerDB = max(-160, min(0, rawDB))
-        let pcmByteCount = pcmData.count
-        let dataToWrite = pcmData
-
-        let writeTarget = lock.withLock { state -> (FileHandle?, Bool, Bool) in
-            guard state.isCapturing, !state.isPaused else {
-                state.latestPowerDB = -160
-                return (nil, false, false)
-            }
-            let shouldNotifyFirstBuffer = !state.hasReceivedFirstAudioBuffer
-            if !state.hasReceivedFirstAudioBuffer {
-                state.hasReceivedFirstAudioBuffer = true
-            }
-            let shouldNotifySpeech = !state.hasDetectedSpeech && powerDB >= Self.speechThresholdDB
-            if shouldNotifySpeech {
-                state.hasDetectedSpeech = true
-            }
-            state.bytesWritten += pcmByteCount
-            state.latestPowerDB = powerDB
-            return (state.fileHandle, shouldNotifyFirstBuffer, shouldNotifySpeech)
-        }
-        if let handle = writeTarget.0 {
-            writerQueue.async { [dataToWrite] in
-                handle.write(dataToWrite)
-            }
-        }
-        if writeTarget.1 {
-            onFirstCapturedAudioBuffer?(capturedAt)
-        }
-        if writeTarget.2 {
-            onFirstSpeechDetected?(capturedAt)
-        }
-    }
-
-    private func createNewFile() throws -> FileState {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("muesli-native", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let url = directory.appendingPathComponent(UUID().uuidString).appendingPathExtension("wav")
-        FileManager.default.createFile(atPath: url.path, contents: nil)
-        guard let handle = FileHandle(forWritingAtPath: url.path) else {
-            throw NSError(domain: "MicrophoneRecorder", code: 3, userInfo: [
-                NSLocalizedDescriptionKey: "Could not open file for writing",
-            ])
-        }
-        handle.write(WavWriter.header(dataSize: 0))
-        return FileState(fileHandle: handle, fileURL: url)
-    }
-
-    private func finalizeFile(_ state: FileState) -> URL? {
-        guard let handle = state.fileHandle, let url = state.fileURL else { return nil }
-        handle.seek(toFileOffset: 0)
-        handle.write(WavWriter.header(dataSize: UInt32(state.bytesWritten)))
-        handle.closeFile()
-
-        if state.bytesWritten == 0 {
-            try? FileManager.default.removeItem(at: url)
+        guard let recorder else {
+            restorePreferredInputIfNeeded()
             return nil
         }
+        cancelTimers()
+        isRecording = false
+        activeRecordingID = nil
+        recorder.stop()
+        let url = preparedURL
+        self.recorder = nil
+        preparedURL = nil
+        preparedInputDeviceID = nil
+        restorePreferredInputIfNeeded()
         return url
     }
 
-    private func waitForPendingWrites() {
-        writerQueue.sync {}
+    func pause() {
+        lock.lock()
+        defer { lock.unlock() }
+        recorder?.pause()
     }
 
-    private func scheduleNoAudioTimeout() {
-        cancelNoAudioTimeout()
+    func resume() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isRecording else { return }
+        recorder?.record()
+    }
+
+    func currentPower() -> Float {
+        lock.lock()
+        defer { lock.unlock() }
+        recorder?.updateMeters()
+        return recorder?.averagePower(forChannel: 0) ?? -160
+    }
+
+    func cancel() {
+        lock.lock()
+        defer { lock.unlock() }
+
+        cancelTimers()
+        isRecording = false
+        activeRecordingID = nil
+        cleanupPreparedRecording(removeFile: true)
+        restorePreferredInputIfNeeded()
+    }
+
+    private func applyPreferredInputIfNeeded() throws {
+        guard let preferredInputDeviceID else { return }
+        if activeInputOverride?.preferredDeviceID == preferredInputDeviceID { return }
+        restorePreferredInputIfNeeded()
+        activeInputOverride = try DefaultInputOverride(preferredDeviceID: preferredInputDeviceID)
+    }
+
+    private func restorePreferredInputIfNeeded() {
+        activeInputOverride?.restore()
+        activeInputOverride = nil
+    }
+
+    private func cleanupPreparedRecording(removeFile: Bool) {
+        recorder?.stop()
+        recorder = nil
+        if removeFile, let preparedURL {
+            try? FileManager.default.removeItem(at: preparedURL)
+        }
+        preparedURL = nil
+        preparedInputDeviceID = nil
+    }
+
+    private func resetCaptureState() {
+        hasReceivedFirstAudioBuffer = false
+        hasDetectedSpeech = false
+        hasReportedNoAudioTimeout = false
+        lastObservedFileByteCount = 0
+        captureFileGrowthObservations = 0
+    }
+
+    private func scheduleCaptureProgressPollLocked() {
+        captureProgressWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            let shouldNotify = self.lock.withLock { state -> Bool in
-                guard state.isCapturing,
-                      !state.hasDetectedSpeech,
-                      !state.hasReportedNoAudioTimeout else {
-                    return false
-                }
-                state.hasReportedNoAudioTimeout = true
-                return true
-            }
-            if shouldNotify {
-                self.onNoAudioTimeout?(Date())
-            }
+            self?.pollCaptureProgress()
+        }
+        captureProgressWorkItem = workItem
+        callbackQueue.asyncAfter(deadline: .now() + Self.captureProgressInterval, execute: workItem)
+    }
+
+    private func pollCaptureProgress() {
+        lock.lock()
+        guard isRecording, !hasReceivedFirstAudioBuffer else {
+            lock.unlock()
+            return
+        }
+        let byteCount = recordedFileByteCountLocked()
+        if byteCount > lastObservedFileByteCount {
+            captureFileGrowthObservations += 1
+            lastObservedFileByteCount = byteCount
+        }
+        let hasCaptureProgress = captureFileGrowthObservations >= Self.requiredFileGrowthObservations
+        guard hasCaptureProgress else {
+            scheduleCaptureProgressPollLocked()
+            lock.unlock()
+            return
+        }
+        hasReceivedFirstAudioBuffer = true
+        lock.unlock()
+        onFirstCapturedAudioBuffer?(Date())
+    }
+
+    private func scheduleMeterPollLocked() {
+        meterWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.pollMeter()
+        }
+        meterWorkItem = workItem
+        callbackQueue.asyncAfter(deadline: .now() + Self.meterInterval, execute: workItem)
+    }
+
+    private func pollMeter() {
+        lock.lock()
+        guard isRecording, let recorder else {
+            lock.unlock()
+            return
+        }
+        recorder.updateMeters()
+        let power = recorder.averagePower(forChannel: 0)
+        let shouldNotifySpeech = !hasDetectedSpeech && power >= Self.speechThresholdDB
+        if shouldNotifySpeech {
+            hasDetectedSpeech = true
+        }
+        scheduleMeterPollLocked()
+        lock.unlock()
+
+        if shouldNotifySpeech {
+            onFirstSpeechDetected?(Date())
+        }
+    }
+
+    private func scheduleNoAudioTimeoutLocked() {
+        noAudioTimeoutWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.notifyNoAudioTimeoutIfNeeded()
         }
         noAudioTimeoutWorkItem = workItem
-        timeoutQueue.asyncAfter(deadline: .now() + Self.noAudioTimeout, execute: workItem)
+        callbackQueue.asyncAfter(deadline: .now() + Self.noAudioTimeout, execute: workItem)
     }
 
-    private func cancelNoAudioTimeout() {
+    private func notifyNoAudioTimeoutIfNeeded() {
+        lock.lock()
+        guard isRecording, !hasDetectedSpeech, !hasReportedNoAudioTimeout else {
+            lock.unlock()
+            return
+        }
+        hasReportedNoAudioTimeout = true
+        lock.unlock()
+        onNoAudioTimeout?(Date())
+    }
+
+    private func cancelTimers() {
+        captureProgressWorkItem?.cancel()
+        captureProgressWorkItem = nil
         noAudioTimeoutWorkItem?.cancel()
         noAudioTimeoutWorkItem = nil
+        meterWorkItem?.cancel()
+        meterWorkItem = nil
     }
 
-    private func removeTapIfNeeded() {
-        guard tapInstalled else { return }
-        engine.inputNode.removeTap(onBus: 0)
-        tapInstalled = false
+    private func recordedFileByteCountLocked() -> Int {
+        guard let preparedURL,
+              let attributes = try? FileManager.default.attributesOfItem(atPath: preparedURL.path),
+              let size = attributes[.size] as? NSNumber else {
+            return 0
+        }
+        return size.intValue
     }
 
-    private func stopWarmGraphLocked() {
-        removeTapIfNeeded()
-        engine.stop()
-        isGraphPrepared = false
-        preparedInputDeviceID = nil
+    func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
+        notifyRecordingFailed(from: recorder, error: error)
+    }
+
+    func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
+        guard !flag else { return }
+        notifyRecordingFailed(from: recorder, error: nil)
+    }
+
+    private func notifyRecordingFailed(from failedRecorder: AVAudioRecorder, error: Error?) {
+        lock.lock()
+        guard isRecording,
+              recorder === failedRecorder,
+              let activeRecordingID else {
+            lock.unlock()
+            return
+        }
+        let resolvedError = error ?? NSError(domain: "MicrophoneRecorder", code: 5, userInfo: [
+            NSLocalizedDescriptionKey: "Microphone recording stopped unexpectedly",
+        ])
+        lock.unlock()
+        onRecordingFailed?(resolvedError, activeRecordingID)
+    }
+}
+
+private final class DefaultInputOverride {
+    let preferredDeviceID: AudioObjectID
+    private let previousDeviceID: AudioObjectID?
+    private var didApply = false
+
+    init(preferredDeviceID: AudioObjectID) throws {
+        self.preferredDeviceID = preferredDeviceID
+        self.previousDeviceID = Self.defaultInputDeviceID()
+        guard previousDeviceID != preferredDeviceID else { return }
+        guard Self.setDefaultInputDeviceID(preferredDeviceID) else {
+            throw NSError(domain: "MicrophoneRecorder", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "Could not select preferred microphone",
+            ])
+        }
+        didApply = true
+        fputs("[mic-recorder] selected default input \(preferredDeviceID) previous=\(previousDeviceID.map(String.init) ?? "unknown")\n", stderr)
+    }
+
+    deinit {
+        restore()
+    }
+
+    func restore() {
+        guard didApply, let previousDeviceID else { return }
+        if Self.setDefaultInputDeviceID(previousDeviceID) {
+            fputs("[mic-recorder] restored default input \(previousDeviceID)\n", stderr)
+        }
+        didApply = false
+    }
+
+    private static func defaultInputDeviceID() -> AudioObjectID? {
+        var address = defaultInputAddress()
+        var deviceID = AudioObjectID(kAudioObjectUnknown)
+        var dataSize = UInt32(MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            0,
+            nil,
+            &dataSize,
+            &deviceID
+        ) == noErr, deviceID != AudioObjectID(kAudioObjectUnknown) else {
+            return nil
+        }
+        return deviceID
+    }
+
+    private static func setDefaultInputDeviceID(_ deviceID: AudioObjectID) -> Bool {
+        var address = defaultInputAddress()
+        var mutableDeviceID = deviceID
+        let dataSize = UInt32(MemoryLayout<AudioObjectID>.size)
+        return AudioObjectSetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            0,
+            nil,
+            dataSize,
+            &mutableDeviceID
+        ) == noErr
+    }
+
+    private static func defaultInputAddress() -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
     }
 }

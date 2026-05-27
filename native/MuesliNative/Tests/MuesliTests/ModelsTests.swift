@@ -368,11 +368,13 @@ struct MeetingSummaryBackendTests {
 
     @Test("all options listed")
     func allOptions() {
-        #expect(MeetingSummaryBackendOption.all.count == 4)
+        #expect(MeetingSummaryBackendOption.all.count == 6)
         #expect(MeetingSummaryBackendOption.all.contains(.openAI))
         #expect(MeetingSummaryBackendOption.all.contains(.openRouter))
         #expect(MeetingSummaryBackendOption.all.contains(.chatGPT))
         #expect(MeetingSummaryBackendOption.all.contains(.ollama))
+        #expect(MeetingSummaryBackendOption.all.contains(.lmStudio))
+        #expect(MeetingSummaryBackendOption.all.contains(.customLLM))
     }
 
     @Test("backend strings are lowercase")
@@ -380,6 +382,8 @@ struct MeetingSummaryBackendTests {
         #expect(MeetingSummaryBackendOption.openAI.backend == "openai")
         #expect(MeetingSummaryBackendOption.openRouter.backend == "openrouter")
         #expect(MeetingSummaryBackendOption.ollama.backend == "ollama")
+        #expect(MeetingSummaryBackendOption.lmStudio.backend == "lmstudio")
+        #expect(MeetingSummaryBackendOption.customLLM.backend == "custom_llm")
     }
 
     @Test("configured values resolve with ChatGPT fallback")
@@ -387,8 +391,16 @@ struct MeetingSummaryBackendTests {
         #expect(MeetingSummaryBackendOption.resolved("chatgpt") == .chatGPT)
         #expect(MeetingSummaryBackendOption.resolved("openrouter") == .openRouter)
         #expect(MeetingSummaryBackendOption.resolved("ollama") == .ollama)
+        #expect(MeetingSummaryBackendOption.resolved("lmstudio") == .lmStudio)
+        #expect(MeetingSummaryBackendOption.resolved("custom_llm") == .customLLM)
         #expect(MeetingSummaryBackendOption.resolved("unknown") == .chatGPT)
         #expect(MeetingSummaryBackendOption.resolved(nil) == .chatGPT)
+    }
+
+    @Test("Custom LLM format labels")
+    func customLLMFormatLabels() {
+        #expect(CustomLLMFormat.openAI.label == "OpenAI-compatible")
+        #expect(CustomLLMFormat.anthropic.label == "Anthropic Messages")
     }
 }
 
@@ -413,6 +425,12 @@ struct AppConfigTests {
         #expect(config.openRouterAPIKey.isEmpty)
         #expect(config.ollamaURL == "http://localhost:11434")
         #expect(config.ollamaModel == "qwen3.5")
+        #expect(config.lmStudioURL == "http://localhost:1234")
+        #expect(config.lmStudioModel.isEmpty)
+        #expect(config.customLLMURL.isEmpty)
+        #expect(config.customLLMAPIKey.isEmpty)
+        #expect(config.customLLMModel.isEmpty)
+        #expect(config.customLLMFormat == "openai")
         #expect(config.dictationHotkey == .default)
         #expect(config.computerUseHotkey == .computerUseDefault)
         #expect(config.enableComputerUseHotkey == false)
@@ -421,6 +439,8 @@ struct AppConfigTests {
         #expect(config.computerUsePlannerModel.isEmpty)
         #expect(config.computerUseTimeoutSeconds == 120)
         #expect(config.hotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds)
+        #expect(config.computerUseHotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds)
+        #expect(config.meetingRecordingHotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultMeetingThresholdMilliseconds)
         #expect(config.showFloatingIndicator == true)
         #expect(config.indicatorAnchor == .midTrailing)
         #expect(config.hasCompletedOnboarding == false)
@@ -462,6 +482,14 @@ struct AppConfigTests {
         config.computerUsePlannerModel = "gpt-5.4"
         config.computerUseTimeoutSeconds = 180
         config.hotkeyTriggerThresholdMS = 125
+        config.computerUseHotkeyTriggerThresholdMS = 350
+        config.meetingRecordingHotkeyTriggerThresholdMS = 900
+        config.lmStudioURL = "http://localhost:1234"
+        config.lmStudioModel = "local-model"
+        config.customLLMURL = "https://example.com"
+        config.customLLMAPIKey = "custom-key"
+        config.customLLMModel = "custom-model"
+        config.customLLMFormat = "anthropic"
 
         let data = try JSONEncoder().encode(config)
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
@@ -490,6 +518,14 @@ struct AppConfigTests {
         #expect(decoded.computerUsePlannerModel == "gpt-5.4")
         #expect(decoded.computerUseTimeoutSeconds == 180)
         #expect(decoded.hotkeyTriggerThresholdMS == 125)
+        #expect(decoded.computerUseHotkeyTriggerThresholdMS == 350)
+        #expect(decoded.meetingRecordingHotkeyTriggerThresholdMS == 900)
+        #expect(decoded.lmStudioURL == "http://localhost:1234")
+        #expect(decoded.lmStudioModel == "local-model")
+        #expect(decoded.customLLMURL == "https://example.com")
+        #expect(decoded.customLLMAPIKey == "custom-key")
+        #expect(decoded.customLLMModel == "custom-model")
+        #expect(decoded.customLLMFormat == "anthropic")
     }
 
     @Test("JSON coding keys use snake_case")
@@ -507,6 +543,8 @@ struct AppConfigTests {
         #expect(json["computer_use_planner_model"] != nil)
         #expect(json["computer_use_timeout_seconds"] != nil)
         #expect(json["hotkey_trigger_threshold_ms"] != nil)
+        #expect(json["computer_use_hotkey_trigger_threshold_ms"] != nil)
+        #expect(json["meeting_recording_hotkey_trigger_threshold_ms"] != nil)
         #expect(json["cohere_language"] != nil)
         #expect(json["meeting_transcription_backend"] != nil)
         #expect(json["meeting_transcription_model"] != nil)
@@ -523,6 +561,12 @@ struct AppConfigTests {
         #expect(json["meeting_hook_enabled"] != nil)
         #expect(json["meeting_hook_path"] != nil)
         #expect(json["meeting_hook_timeout_seconds"] != nil)
+        #expect(json["lmstudio_url"] != nil)
+        #expect(json["lmstudio_model"] != nil)
+        #expect(json["custom_llm_url"] != nil)
+        #expect(json["custom_llm_api_key"] != nil)
+        #expect(json["custom_llm_model"] != nil)
+        #expect(json["custom_llm_format"] != nil)
     }
 
     @Test("decodes with missing fields using defaults")
@@ -549,9 +593,17 @@ struct AppConfigTests {
         #expect(config.computerUsePlannerModel.isEmpty)
         #expect(config.computerUseTimeoutSeconds == 120)
         #expect(config.hotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds)
+        #expect(config.computerUseHotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds)
+        #expect(config.meetingRecordingHotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultMeetingThresholdMilliseconds)
         #expect(config.meetingHookEnabled == false)
         #expect(config.meetingHookPath.isEmpty)
         #expect(config.meetingHookTimeoutSeconds == 30)
+        #expect(config.lmStudioURL == "http://localhost:1234")
+        #expect(config.lmStudioModel.isEmpty)
+        #expect(config.customLLMURL.isEmpty)
+        #expect(config.customLLMAPIKey.isEmpty)
+        #expect(config.customLLMModel.isEmpty)
+        #expect(config.customLLMFormat == "openai")
     }
 
     @Test("legacy completed onboarding enables meetings when use case is missing")
@@ -965,6 +1017,7 @@ struct HotkeyMonitorTests {
     func triggerThresholdTiming() {
         #expect(HotkeyTriggerTiming.clampedMilliseconds(10) == HotkeyTriggerTiming.minThresholdMilliseconds)
         #expect(HotkeyTriggerTiming.clampedMilliseconds(2_000) == HotkeyTriggerTiming.maxThresholdMilliseconds)
+        #expect(HotkeyTriggerTiming.clampedMilliseconds(2_500) == HotkeyTriggerTiming.maxThresholdMilliseconds)
         #expect(HotkeyTriggerTiming.startDelay(forThresholdMilliseconds: 250) == 0.25)
         #expect(HotkeyTriggerTiming.prepareDelay(forThresholdMilliseconds: 250) == 0.15)
         #expect(HotkeyTriggerTiming.prepareDelay(forThresholdMilliseconds: 100) == 0)
@@ -1113,6 +1166,83 @@ struct HotkeyMonitorTests {
         try await Task.sleep(for: .milliseconds(80))
 
         #expect(cancelCount == 1)
+    }
+
+    @Test("combination shortcut requires hold threshold before toggling")
+    @MainActor
+    func combinationShortcutRequiresHoldThresholdBeforeToggling() async throws {
+        let monitor = HotkeyMonitor(startDelay: 0.05)
+        monitor.configure(HotkeyConfig.combination(modifiers: [.command, .shift], keyCode: 15))
+        var toggleStartCount = 0
+        monitor.onToggleStart = {
+            toggleStartCount += 1
+        }
+
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        try await Task.sleep(for: .milliseconds(20))
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 15, flags: [.command, .shift])
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(toggleStartCount == 0)
+    }
+
+    @Test("combination shortcut toggles after hold threshold")
+    @MainActor
+    func combinationShortcutTogglesAfterHoldThreshold() async throws {
+        let monitor = HotkeyMonitor(startDelay: 0.03)
+        monitor.configure(HotkeyConfig.combination(modifiers: [.command, .shift], keyCode: 15))
+        var toggleStartCount = 0
+        monitor.onToggleStart = {
+            toggleStartCount += 1
+        }
+
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(toggleStartCount == 1)
+    }
+
+    @Test("combination toggle cancellation resets without firing stop")
+    @MainActor
+    func combinationToggleCancellationResetsWithoutFiringStop() async throws {
+        let monitor = HotkeyMonitor(startDelay: 0.03)
+        monitor.configure(HotkeyConfig.combination(modifiers: [.command, .shift], keyCode: 15))
+        var toggleStartCount = 0
+        var toggleStopCount = 0
+        monitor.onToggleStart = {
+            toggleStartCount += 1
+        }
+        monitor.onToggleStop = {
+            toggleStopCount += 1
+        }
+
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(monitor.isToggleRecording)
+
+        monitor.cancelToggleMode()
+
+        #expect(!monitor.isToggleRecording)
+        #expect(toggleStartCount == 1)
+        #expect(toggleStopCount == 0)
+    }
+
+    @Test("combination shortcut cancels when modifiers release before threshold")
+    @MainActor
+    func combinationShortcutCancelsWhenModifiersReleaseBeforeThreshold() async throws {
+        let monitor = HotkeyMonitor(startDelay: 0.05)
+        monitor.configure(HotkeyConfig.combination(modifiers: [.command, .shift], keyCode: 15))
+        var toggleStartCount = 0
+        monitor.onToggleStart = {
+            toggleStartCount += 1
+        }
+
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+        try await Task.sleep(for: .milliseconds(20))
+        monitor.handleCombinationForTests(type: .flagsChanged, keyCode: 56, flags: .command)
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(toggleStartCount == 0)
     }
 }
 
@@ -1331,6 +1461,69 @@ struct HotkeyConfigTests {
         #expect(resolution.result.message == "Computer Use Command moved to Right Cmd to avoid matching Push to Talk.")
     }
 
+    @Test("hotkey policy rejects computer use enable when fallback conflicts with meeting recording")
+    func hotkeyPolicyRejectsComputerUseEnableWhenFallbackConflictsWithMeetingRecording() {
+        let resolution = ShortcutHotkeyPolicy.resolvedComputerUseHotkeyWhenEnabling(
+            currentHotkey: .default,
+            dictationHotkey: .default,
+            meetingRecordingHotkey: .computerUseDefault,
+            isMeetingRecordingEnabled: true
+        )
+
+        #expect(resolution.hotkey == .default)
+        #expect(resolution.result == .conflict(message: ShortcutHotkeyPolicy.conflictMessage))
+    }
+
+    @Test("hotkey policy rejects computer use enable when current shortcut conflicts with meeting recording")
+    func hotkeyPolicyRejectsComputerUseEnableWhenCurrentShortcutConflictsWithMeetingRecording() {
+        let resolution = ShortcutHotkeyPolicy.resolvedComputerUseHotkeyWhenEnabling(
+            currentHotkey: .computerUseDefault,
+            dictationHotkey: .default,
+            meetingRecordingHotkey: .computerUseDefault,
+            isMeetingRecordingEnabled: true
+        )
+
+        #expect(resolution.hotkey == .computerUseDefault)
+        #expect(resolution.result == .conflict(message: ShortcutHotkeyPolicy.conflictMessage))
+    }
+
+    @Test("combination conflicts ignore unsupported modifier flags")
+    func combinationConflictsIgnoreUnsupportedModifierFlags() {
+        let visible = HotkeyConfig.combination(modifiers: [.command, .shift], keyCode: 15)
+        let withCapsLock = HotkeyConfig.combination(modifiers: [.command, .shift, .capsLock], keyCode: 15)
+
+        #expect(visible.label == "⌘⇧R")
+        #expect(withCapsLock.label == "⌘⇧R")
+        #expect(visible.combinationModifiers == withCapsLock.combinationModifiers)
+        #expect(ShortcutHotkeyPolicy.hotkeysConflict(visible, withCapsLock))
+    }
+
+    @Test("meeting recording warns for common global app shortcuts")
+    func meetingRecordingWarnsForCommonGlobalAppShortcuts() {
+        let result = ShortcutHotkeyPolicy.validateMeetingRecordingHotkey(
+            .meetingRecordingDefault,
+            dictationHotkey: .default,
+            computerUseHotkey: .computerUseDefault,
+            isComputerUseEnabled: false
+        )
+
+        #expect(result.didUpdate)
+        #expect(result.message == ShortcutHotkeyPolicy.commonGlobalShortcutWarning)
+    }
+
+    @Test("meeting recording does not warn for uncommon global combinations")
+    func meetingRecordingDoesNotWarnForUncommonGlobalCombinations() {
+        let uncommon = HotkeyConfig.combination(modifiers: [.command, .option, .control], keyCode: 46)
+        let result = ShortcutHotkeyPolicy.validateMeetingRecordingHotkey(
+            uncommon,
+            dictationHotkey: .default,
+            computerUseHotkey: .computerUseDefault,
+            isComputerUseEnabled: false
+        )
+
+        #expect(result == .updated)
+    }
+
     @Test("label for known key codes")
     func knownKeyCodes() {
         #expect(HotkeyConfig.label(for: 55) == "Left Cmd")
@@ -1342,6 +1535,15 @@ struct HotkeyConfigTests {
         #expect(HotkeyConfig.label(for: 61) == "Right Option")
         #expect(HotkeyConfig.label(for: 56) == "Left Shift")
         #expect(HotkeyConfig.label(for: 60) == "Right Shift")
+    }
+
+    @Test("display label uses keyboard symbols")
+    func displayLabelUsesKeyboardSymbols() {
+        #expect(HotkeyConfig.default.displayLabel == "Right ⌥")
+        #expect(HotkeyConfig.computerUseDefault.displayLabel == "Right ⌘")
+        #expect(HotkeyConfig.meetingRecordingDefault.displayLabel == "⌘⇧R")
+        #expect(HotkeyConfig(keyCode: 62, label: "Right Ctrl").displayLabel == "Right ⌃")
+        #expect(HotkeyConfig(keyCode: 63, label: "Fn").displayLabel == "fn")
     }
 
     @Test("unknown key code returns nil")

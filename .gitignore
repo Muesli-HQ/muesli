@@ -14,6 +14,7 @@ dist-native/
 native/MuesliNative/.build/
 native/MuesliNative/.build-direct/
 native/MuesliNative/.xcodebuild/
+native/MuesliNative/LocalVQE/lib/
 build/
 dist/
 output/

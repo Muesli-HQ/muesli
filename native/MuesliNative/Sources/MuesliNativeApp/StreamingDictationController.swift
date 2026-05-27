@@ -150,6 +150,9 @@ final class StreamingDictationController {
         recorder.onAudioBuffer = { [weak self] samples in
             self?.handleAudioBuffer(samples)
         }
+        recorder.onRecordingFailed = { [weak self] error in
+            self?.failActiveSession(sessionID: sessionID, error: error)
+        }
         do {
             try recorder.prepare()
             try recorder.start()
@@ -229,6 +232,8 @@ final class StreamingDictationController {
         if let wavURL = recorder.stop() {
             try? FileManager.default.removeItem(at: wavURL)
         }
+        recorder.onAudioBuffer = nil
+        recorder.onRecordingFailed = nil
 
         // Collect remaining buffered samples
         let remaining: [Float] = bufferLock.withLock {
@@ -277,7 +282,7 @@ final class StreamingDictationController {
     }
 
     private func failActiveSession(sessionID: UUID, error: Error) {
-        guard isCurrentSession(sessionID) else { return }
+        guard isActiveSession(sessionID) else { return }
         resetActiveSession(cancelRecorder: true, sessionID: sessionID)
         onFailure?(error)
     }
@@ -299,6 +304,8 @@ final class StreamingDictationController {
         if cancelRecorder {
             recorder.cancel()
         }
+        recorder.onAudioBuffer = nil
+        recorder.onRecordingFailed = nil
         queueLock.withLock {
             chunkQueue.removeAll()
         }
@@ -395,6 +402,12 @@ final class StreamingDictationController {
     private func isCurrentSession(_ sessionID: UUID) -> Bool {
         bufferLock.withLock {
             activeSessionID == sessionID || stoppingSessionID == sessionID
+        }
+    }
+
+    private func isActiveSession(_ sessionID: UUID) -> Bool {
+        bufferLock.withLock {
+            activeSessionID == sessionID
         }
     }
 

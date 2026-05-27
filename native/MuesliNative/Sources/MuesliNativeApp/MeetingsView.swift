@@ -245,6 +245,19 @@ struct MeetingsView: View {
             .padding(.vertical, 32)
             .frame(maxWidth: .infinity, alignment: .center)
         }
+        .onDrop(of: ["public.file-url"], isTargeted: nil) { providers in
+            guard let provider = providers.first else { return false }
+            provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { item, _ in
+                guard let data = item as? Data,
+                      let urlString = String(data: data, encoding: .utf8),
+                      let url = URL(string: urlString) else { return }
+                guard AudioFileImportController.isSupportedFileURL(url) else { return }
+                DispatchQueue.main.async {
+                    controller.importAudioFileFromURL(url)
+                }
+            }
+            return true
+        }
     }
 
     // MARK: - Coming Up
@@ -547,6 +560,31 @@ struct MeetingsView: View {
             .buttonStyle(.plain)
             .disabled(appState.isMeetingRecording || appState.isMeetingStarting)
             .help("Start a quick meeting note")
+            .fixedSize()
+
+            Button {
+                controller.importAudioFile()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "square.and.arrow.down")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("Import Audio")
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(MuesliTheme.textPrimary)
+                .padding(.horizontal, MuesliTheme.spacing12)
+                .padding(.vertical, 8)
+                .background(MuesliTheme.surfacePrimary)
+                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                .overlay(
+                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                        .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(appState.isMeetingRecording || appState.isMeetingStarting)
+            .help("Import an audio file for offline transcription")
             .fixedSize()
 
             sortButton

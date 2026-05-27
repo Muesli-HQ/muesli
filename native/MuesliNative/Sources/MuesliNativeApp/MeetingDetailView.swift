@@ -193,6 +193,11 @@ struct MeetingDetailView: View {
                 }
             }
 
+            if let savedRecordingPath = meeting.savedRecordingPath,
+               FileManager.default.fileExists(atPath: savedRecordingPath) {
+                MeetingRecordingPlayerView(recordingPath: savedRecordingPath)
+            }
+
             if !showsManualNotesEditor(for: meeting), isRawTranscript(meeting), documentMode == .notes {
                 transcriptCTA
             }
@@ -275,7 +280,7 @@ struct MeetingDetailView: View {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
                 contentToolbar(for: meeting)
 
-                ZStack {
+                ZStack(alignment: .topLeading) {
                     MeetingNotesView(markdown: Self.notesContent(for: meeting))
                         .opacity(documentMode == .notes ? 1 : 0)
                         .allowsHitTesting(documentMode == .notes)
@@ -286,7 +291,9 @@ struct MeetingDetailView: View {
                         .allowsHitTesting(documentMode == .transcript)
                         .accessibilityHidden(documentMode != .transcript)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
+            .frame(maxWidth: 1080, maxHeight: .infinity, alignment: .topLeading)
             .padding(.horizontal, 40)
             .padding(.top, 12)
             .padding(.bottom, 24)
@@ -318,30 +325,32 @@ struct MeetingDetailView: View {
         meeting.status == .recording || meeting.status == .noteOnly || meeting.status == .failed
     }
 
+    private func isPreparingThisMeeting(_ meeting: MeetingRecord) -> Bool {
+        meeting.status == .recording
+            && appState.isMeetingStarting
+            && !appState.isMeetingRecording
+    }
+
     @ViewBuilder
     private func headerActions(for meeting: MeetingRecord, appliedTemplate: MeetingTemplateSnapshot) -> some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: MuesliTheme.spacing8) {
                 templateMenu(for: meeting, appliedTemplate: appliedTemplate)
-                recordingAction(for: meeting)
+                exportMenu(for: meeting)
                 summaryAction(for: meeting)
                 editButton(for: meeting)
-                if controller.canDeleteMeeting(meeting) {
-                    deleteButton
-                }
+                moreActionsMenu(for: meeting)
             }
 
             VStack(alignment: .trailing, spacing: MuesliTheme.spacing8) {
                 HStack(spacing: MuesliTheme.spacing8) {
                     templateMenu(for: meeting, appliedTemplate: appliedTemplate)
-                    recordingAction(for: meeting)
+                    exportMenu(for: meeting)
                     summaryAction(for: meeting)
                 }
                 HStack(spacing: MuesliTheme.spacing8) {
                     editButton(for: meeting)
-                    if controller.canDeleteMeeting(meeting) {
-                        deleteButton
-                    }
+                    moreActionsMenu(for: meeting)
                 }
             }
         }
@@ -423,15 +432,6 @@ struct MeetingDetailView: View {
             }
         }
         .disabled(isRetranscribing && !isEditingNotes && !isEditingTranscript)
-    }
-
-    @ViewBuilder
-    private func recordingAction(for meeting: MeetingRecord) -> some View {
-        if let savedRecordingPath = meeting.savedRecordingPath {
-            iconButton("folder", label: "Show Recording") {
-                controller.revealMeetingRecordingInFinder(path: savedRecordingPath)
-            }
-        }
     }
 
     @ViewBuilder
@@ -544,7 +544,6 @@ struct MeetingDetailView: View {
             Spacer()
 
             retranscribeAction(for: meeting)
-            exportMenu(for: meeting)
 
             Button(action: {
                 controller.copyToClipboard(activeCopyText(for: meeting))
@@ -601,9 +600,10 @@ struct MeetingDetailView: View {
 
     @ViewBuilder
     private func statusChip(for meeting: MeetingRecord) -> some View {
+        let isPreparing = isPreparingThisMeeting(meeting)
         let isPaused = meeting.status == .recording && appState.isMeetingRecordingPaused
-        let label = isPaused ? "Paused" : meeting.status.displayLabel
-        let color = isPaused ? MuesliTheme.transcribing : meeting.status.displayColor
+        let label = isPreparing ? "Preparing" : isPaused ? "Paused" : meeting.status.displayLabel
+        let color = isPreparing || isPaused ? MuesliTheme.transcribing : meeting.status.displayColor
         HStack(spacing: 6) {
             Circle()
                 .fill(color)
@@ -625,23 +625,27 @@ struct MeetingDetailView: View {
     @ViewBuilder
     private func recordingControlGroup(for meeting: MeetingRecord) -> some View {
         if meeting.status == .recording {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: MuesliTheme.spacing8) {
-                    statusChip(for: meeting)
-                    pauseResumeRecordingButton
-                    stopRecordingButton
-                    discardRecordingButton
-                }
-                .recordingControlsBackground()
-
-                VStack(alignment: .trailing, spacing: MuesliTheme.spacing8) {
-                    statusChip(for: meeting)
+            if isPreparingThisMeeting(meeting) {
+                meetingPreparationControlGroup(for: meeting)
+            } else {
+                ViewThatFits(in: .horizontal) {
                     HStack(spacing: MuesliTheme.spacing8) {
+                        statusChip(for: meeting)
                         pauseResumeRecordingButton
                         stopRecordingButton
                         discardRecordingButton
                     }
                     .recordingControlsBackground()
+
+                    VStack(alignment: .trailing, spacing: MuesliTheme.spacing8) {
+                        statusChip(for: meeting)
+                        HStack(spacing: MuesliTheme.spacing8) {
+                            pauseResumeRecordingButton
+                            stopRecordingButton
+                            discardRecordingButton
+                        }
+                        .recordingControlsBackground()
+                    }
                 }
             }
         } else if controller.canDeleteMeeting(meeting), meeting.status == .noteOnly || meeting.status == .failed {
@@ -651,6 +655,27 @@ struct MeetingDetailView: View {
             }
         } else {
             statusChip(for: meeting)
+        }
+    }
+
+    @ViewBuilder
+    private func meetingPreparationControlGroup(for meeting: MeetingRecord) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: MuesliTheme.spacing8) {
+                statusChip(for: meeting)
+                meetingPreparationStatus
+                cancelMeetingPreparationButton
+            }
+            .recordingControlsBackground()
+
+            VStack(alignment: .trailing, spacing: MuesliTheme.spacing8) {
+                statusChip(for: meeting)
+                HStack(spacing: MuesliTheme.spacing8) {
+                    meetingPreparationStatus
+                    cancelMeetingPreparationButton
+                }
+                .recordingControlsBackground()
+            }
         }
     }
 
@@ -711,6 +736,48 @@ struct MeetingDetailView: View {
         .disabled(isEditingNotes || isEditingTranscript)
     }
 
+    @ViewBuilder
+    private func moreActionsMenu(for meeting: MeetingRecord) -> some View {
+        if meeting.savedRecordingPath != nil || controller.canDeleteMeeting(meeting) {
+            Menu {
+                if let savedRecordingPath = meeting.savedRecordingPath {
+                    Button {
+                        controller.revealMeetingRecordingInFinder(path: savedRecordingPath)
+                    } label: {
+                        Label("Show Recording", systemImage: "folder")
+                    }
+                }
+
+                if controller.canDeleteMeeting(meeting) {
+                    if meeting.savedRecordingPath != nil {
+                        Divider()
+                    }
+                    Button(role: .destructive) {
+                        showDeleteConfirmation = true
+                    } label: {
+                        Label("Delete Meeting", systemImage: "trash")
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundStyle(MuesliTheme.textSecondary)
+                .frame(width: 30, height: 28)
+                .background(MuesliTheme.surfacePrimary)
+                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                .overlay(
+                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                        .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("More actions")
+        }
+    }
+
     private func templateMenuItem(title: String, systemImage: String, isSelected: Bool) -> some View {
         HStack(spacing: 8) {
             Image(systemName: isSelected ? "checkmark" : systemImage)
@@ -727,7 +794,10 @@ struct MeetingDetailView: View {
                     .font(.system(size: 10))
                 Text(label)
                     .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
+            .fixedSize(horizontal: true, vertical: false)
             .foregroundStyle(MuesliTheme.textSecondary)
             .padding(.horizontal, MuesliTheme.spacing8)
             .padding(.vertical, 5)
@@ -745,6 +815,34 @@ struct MeetingDetailView: View {
         iconButton("trash", label: "Delete") {
             showDeleteConfirmation = true
         }
+    }
+
+    private var meetingPreparationStatus: some View {
+        HStack(spacing: 6) {
+            ProgressView()
+                .controlSize(.small)
+                .frame(width: 14, height: 14)
+                .accessibilityLabel("Preparing transcription")
+            Text(appState.meetingStartStatus ?? "Meeting transcription will start shortly.")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(MuesliTheme.textSecondary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, MuesliTheme.spacing12)
+        .padding(.vertical, 7)
+        .background(MuesliTheme.surfacePrimary)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        .overlay(
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+        )
+    }
+
+    private var cancelMeetingPreparationButton: some View {
+        iconButton("xmark", label: "Cancel") {
+            controller.cancelMeetingPreparation()
+        }
+        .help("Cancel meeting preparation")
     }
 
     private var pauseResumeRecordingButton: some View {
@@ -852,6 +950,12 @@ struct MeetingDetailView: View {
             return appState.isChatGPTAuthenticated
         } else if appState.selectedMeetingSummaryBackend == .openAI {
             return !config.openAIAPIKey.isEmpty || ProcessInfo.processInfo.environment["OPENAI_API_KEY"] != nil
+        } else if appState.selectedMeetingSummaryBackend == .ollama {
+            return true
+        } else if appState.selectedMeetingSummaryBackend == .lmStudio {
+            return MeetingSummaryClient.lmStudioHasRequiredSettings(config: config)
+        } else if appState.selectedMeetingSummaryBackend == .customLLM {
+            return MeetingSummaryClient.customLLMHasRequiredSettings(config: config)
         } else {
             return !config.openRouterAPIKey.isEmpty || ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"] != nil
         }
@@ -1215,12 +1319,18 @@ private struct MarqueeTitleTextField: View {
                         Color.clear.preference(key: TitleContentWidthPreferenceKey.self, value: proxy.size.width)
                     }
                 )
+                .allowsHitTesting(false)
         )
+        .onTapGesture {
+            isTitleFocused = true
+        }
         .onPreferenceChange(TitleContainerWidthPreferenceKey.self) { width in
+            guard abs(containerWidth - width) > 0.5 else { return }
             containerWidth = width
             restartMarqueeIfNeeded()
         }
         .onPreferenceChange(TitleContentWidthPreferenceKey.self) { width in
+            guard abs(contentWidth - width) > 0.5 else { return }
             contentWidth = width
             restartMarqueeIfNeeded()
         }
@@ -1235,18 +1345,23 @@ private struct MarqueeTitleTextField: View {
     }
 
     private var shouldShowMarquee: Bool {
-        isHovering && !isTitleFocused && overflowDistance > 8
+        containerWidth > 0 && isHovering && !isTitleFocused && overflowDistance > 24
     }
 
     private func restartMarqueeIfNeeded() {
-        let runID = UUID()
-        marqueeRunID = runID
         guard shouldShowMarquee else {
-            withAnimation(.easeOut(duration: 0.18)) {
-                marqueeOffset = 0
+            if marqueeOffset != 0 {
+                let runID = UUID()
+                marqueeRunID = runID
+                withAnimation(.easeOut(duration: 0.18)) {
+                    marqueeOffset = 0
+                }
             }
             return
         }
+
+        let runID = UUID()
+        marqueeRunID = runID
 
         marqueeOffset = 0
         let distance = overflowDistance + 28
@@ -1264,7 +1379,7 @@ private struct TitleContainerWidthPreferenceKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
+        value = max(value, nextValue())
     }
 }
 

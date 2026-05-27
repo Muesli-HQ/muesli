@@ -426,14 +426,6 @@ struct SettingsView: View {
                         controller.updateConfig { $0.muteSystemAudioDuringDictation = newValue }
                     }
                 }
-                Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow(
-                    "Hotkey trigger threshold",
-                    description: "Lower values show the indicator sooner; double-tap keeps a short quick-tap guard."
-                ) {
-                    hotkeyTriggerThresholdControl
-                }
-                Divider().background(MuesliTheme.surfaceBorder)
                 screenContextRow("App context")
             }
         }
@@ -571,6 +563,63 @@ struct SettingsView: View {
                             currentModel: appState.config.ollamaModel,
                             placeholder: "qwen3.5"
                         ) { val in controller.updateConfig { $0.ollamaModel = val } }
+                    }
+                } else if appState.selectedMeetingSummaryBackend == .lmStudio {
+                    settingsRow("LM Studio URL", controlWidth: meetingControlWidth) {
+                        PastableTextField(
+                            text: appState.config.lmStudioURL,
+                            placeholder: "http://localhost:1234",
+                            onChange: { val in controller.updateConfig { $0.lmStudioURL = val } }
+                        )
+                        .frame(height: 22)
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Model", controlWidth: meetingControlWidth) {
+                        settingsModelTextField(
+                            currentModel: appState.config.lmStudioModel,
+                            placeholder: "Select a loaded LM Studio model"
+                        ) { val in controller.updateConfig { $0.lmStudioModel = val } }
+                    }
+                } else if appState.selectedMeetingSummaryBackend == .customLLM {
+                    settingsRow("API Format", controlWidth: meetingControlWidth) {
+                        settingsMenu(
+                            selection: CustomLLMFormat(rawValue: appState.config.customLLMFormat)?.label ?? CustomLLMFormat.openAI.label,
+                            options: CustomLLMFormat.allCases.map(\.label)
+                        ) { label in
+                            guard let format = CustomLLMFormat.allCases.first(where: { $0.label == label }) else { return }
+                            controller.updateConfig { $0.customLLMFormat = format.rawValue }
+                        }
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Endpoint", controlWidth: meetingControlWidth) {
+                        PastableTextField(
+                            text: appState.config.customLLMURL,
+                            placeholder: appState.config.customLLMFormat == CustomLLMFormat.anthropic.rawValue
+                                ? "https://api.anthropic.com"
+                                : "http://localhost:8080/v1",
+                            onChange: { val in controller.updateConfig { $0.customLLMURL = val } }
+                        )
+                        .frame(height: 22)
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("API Key", controlWidth: meetingControlWidth) {
+                        PastableSecureField(
+                            text: appState.config.customLLMAPIKey,
+                            placeholder: appState.config.customLLMFormat == CustomLLMFormat.anthropic.rawValue
+                                ? "Required for Anthropic API"
+                                : "Optional for local servers",
+                            onChange: { val in controller.updateConfig { $0.customLLMAPIKey = val } }
+                        )
+                        .frame(height: 22)
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Model", controlWidth: meetingControlWidth) {
+                        settingsModelTextField(
+                            currentModel: appState.config.customLLMModel,
+                            placeholder: appState.config.customLLMFormat == CustomLLMFormat.anthropic.rawValue
+                                ? "claude-3-5-sonnet-20241022"
+                                : "custom-model-id"
+                        ) { val in controller.updateConfig { $0.customLLMModel = val } }
                     }
                 } else {
                     settingsRow("API Key", controlWidth: meetingControlWidth) {
@@ -1423,62 +1472,6 @@ struct SettingsView: View {
     private func settingsMenu(selection: String, options: [String], onChange: @escaping (String) -> Void) -> some View {
         FixedWidthPopUp(selection: selection, options: options, onChange: onChange)
             .frame(height: 24)
-    }
-
-    private var hotkeyTriggerThresholdControl: some View {
-        let threshold = HotkeyTriggerTiming.clampedMilliseconds(appState.config.hotkeyTriggerThresholdMS)
-        return HStack(spacing: 6) {
-            thresholdStepButton(
-                systemName: "minus",
-                disabled: threshold <= HotkeyTriggerTiming.minThresholdMilliseconds
-            ) {
-                updateHotkeyTriggerThreshold(threshold - 25)
-            }
-
-            Text("\(threshold) ms")
-                .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                .foregroundStyle(MuesliTheme.textPrimary)
-                .frame(width: 72, alignment: .center)
-
-            thresholdStepButton(
-                systemName: "plus",
-                disabled: threshold >= HotkeyTriggerTiming.maxThresholdMilliseconds
-            ) {
-                updateHotkeyTriggerThreshold(threshold + 25)
-            }
-        }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 4)
-        .background(MuesliTheme.surfacePrimary)
-        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-        .overlay(
-            RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-        )
-        .frame(maxWidth: .infinity, alignment: .trailing)
-    }
-
-    private func thresholdStepButton(
-        systemName: String,
-        disabled: Bool,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(disabled ? MuesliTheme.textTertiary.opacity(0.45) : MuesliTheme.textSecondary)
-                .frame(width: 24, height: 22)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(disabled)
-        .help(systemName == "minus" ? "Decrease threshold" : "Increase threshold")
-    }
-
-    private func updateHotkeyTriggerThreshold(_ value: Int) {
-        controller.updateConfig {
-            $0.hotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(value)
-        }
     }
 
     private var mutedMeetingDetectionAppsControl: some View {

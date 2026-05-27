@@ -10,6 +10,10 @@ final class RecentHistoryWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var keyMonitor: Any?
 
+    var presentationWindow: NSWindow? {
+        window
+    }
+
     init(store: DictationStore, controller: MuesliController) {
         self.store = store
         self.controller = controller

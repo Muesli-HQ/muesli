@@ -156,7 +156,12 @@ final class FloatingIndicatorController: NSObject {
     func collapseForDrag() {
         isDragging = true
         hoverExitWorkItem?.cancel()
-        guard state == .idle, let panel, let contentView, let iconLabel, let textLabel else { return }
+        guard state == .idle,
+              !isShowingLoading,
+              let panel,
+              let contentView,
+              let iconLabel,
+              let textLabel else { return }
         isHovered = false
 
         let config = configStore.load()
@@ -552,11 +557,11 @@ final class FloatingIndicatorController: NSObject {
         let config = configStore.load()
         if panel == nil { createPanel(config: config) }
         guard let panel, let contentView, let textLabel else { return }
+        guard let screen = NSScreen.main?.visibleFrame else { return }
 
         isShowingLoading = true
-        let loadingSize = NSSize(width: 180, height: 36)
+        let loadingSize = loadingPillSize(message: message, screen: screen)
         let center = CGPoint(x: panel.frame.midX, y: panel.frame.midY)
-        guard let screen = NSScreen.main?.visibleFrame else { return }
         let x = min(max(center.x - loadingSize.width / 2, screen.minX), screen.maxX - loadingSize.width)
         let y = min(max(center.y - loadingSize.height / 2, screen.minY), screen.maxY - loadingSize.height)
         let targetFrame = NSRect(x: x, y: y, width: loadingSize.width, height: loadingSize.height)
@@ -574,10 +579,13 @@ final class FloatingIndicatorController: NSObject {
 
         let spinnerSize: CGFloat = 16
         let gap: CGFloat = 8
+        let horizontalPadding: CGFloat = 16
         let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11, weight: .medium)]
-        let textW = ceil((message as NSString).size(withAttributes: attrs).width) + 2
+        let measuredTextW = ceil((message as NSString).size(withAttributes: attrs).width) + 2
+        let availableTextW = max(40, loadingSize.width - (horizontalPadding * 2) - spinnerSize - gap)
+        let textW = min(measuredTextW, availableTextW)
         let totalW = spinnerSize + gap + textW
-        let startX = (loadingSize.width - totalW) / 2
+        let startX = max(horizontalPadding, (loadingSize.width - totalW) / 2)
 
         micIconView?.isHidden = true
         wandIconView?.isHidden = true
@@ -609,6 +617,11 @@ final class FloatingIndicatorController: NSObject {
 
             textLabel.stringValue = message
             textLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+            textLabel.lineBreakMode = .byTruncatingTail
+            textLabel.maximumNumberOfLines = 1
+            textLabel.usesSingleLineMode = true
+            textLabel.cell?.wraps = false
+            textLabel.cell?.isScrollable = false
             textLabel.textColor = NSColor.colorWith(hex: 0xFFFFFF, alpha: 0.82)
             textLabel.frame = NSRect(
                 x: startX + spinnerSize + gap,
@@ -619,6 +632,18 @@ final class FloatingIndicatorController: NSObject {
             textLabel.animator().alphaValue = 1
         }
         panel.orderFrontRegardless()
+    }
+
+    private func loadingPillSize(message: String, screen: NSRect) -> NSSize {
+        let font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        let spinnerSize: CGFloat = 16
+        let gap: CGFloat = 8
+        let horizontalPadding: CGFloat = 16
+        let textWidth = ceil((message as NSString).size(withAttributes: [.font: font]).width) + 2
+        let preferredWidth = horizontalPadding + spinnerSize + gap + textWidth + horizontalPadding
+        let minWidth = min(CGFloat(180), max(120, screen.width - 32))
+        let maxWidth = max(minWidth, min(360, screen.width - 32))
+        return NSSize(width: min(max(preferredWidth, minWidth), maxWidth), height: 36)
     }
 
     func hideLoading() {
@@ -633,7 +658,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func setHovered(_ hovered: Bool) {
-        guard state == .idle, !isDragging, isHovered != hovered else { return }
+        guard state == .idle, !isShowingLoading, !isDragging, isHovered != hovered else { return }
         hoverExitWorkItem?.cancel()
         isHovered = hovered
         let config = configStore.load()
@@ -641,7 +666,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func scheduleHoverExit() {
-        guard state == .idle, isHovered else { return }
+        guard state == .idle, !isShowingLoading, isHovered else { return }
         hoverExitWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
@@ -653,7 +678,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func closeIfIdle() {
-        if state == .idle { close() }
+        if state == .idle, !isShowingLoading { close() }
     }
 
     func close() {
@@ -900,7 +925,10 @@ final class FloatingIndicatorController: NSObject {
                 let attrs: [NSAttributedString.Key: Any] = [
                     .font: NSFont.systemFont(ofSize: 11, weight: .regular)
                 ]
-                let measuredTextW = ceil((transcribingTitle as NSString).size(withAttributes: attrs).width) + 2
+                let measuredTextW = max(
+                    ceil((transcribingTitle as NSString).size(withAttributes: attrs).width),
+                    ceil(textLabel?.intrinsicContentSize.width ?? 0)
+                ) + 8
                 let availableTextW = max(0, frameSize.width - iconSize.width - gap - (horizontalPadding * 2))
                 let textW = min(measuredTextW, availableTextW)
                 let totalW = iconSize.width + gap + textW
@@ -1379,7 +1407,7 @@ final class FloatingIndicatorController: NSObject {
         let iconWidth: CGFloat = 18
         let gap: CGFloat = 6
         let horizontalPadding: CGFloat = 14
-        let textWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width) + 2
+        let textWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width) + 8
         let preferredWidth = horizontalPadding + iconWidth + gap + textWidth + horizontalPadding
         let minWidth = min(CGFloat(190), max(120, screenWidth - 32))
         let maxWidth = max(minWidth, min(420, screenWidth - 32))

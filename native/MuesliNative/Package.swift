@@ -44,6 +44,7 @@ let package = Package(
                 .product(name: "Atomics", package: "swift-atomics"),
                 .product(name: "DTLNAecCoreML", package: "dtln-aec-coreml"),
                 .product(name: "DTLNAec512", package: "dtln-aec-coreml"),
+                "LocalVQEBridge",
             ],
             path: "Sources/MuesliNativeApp",
             swiftSettings: [
@@ -58,12 +59,18 @@ let package = Package(
             dependencies: [
                 "MuesliCore",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "FluidAudio", package: "FluidAudio"),
             ],
             path: "Sources/MuesliCLI"
         ),
+        .target(
+            name: "LocalVQEBridge",
+            path: "Sources/LocalVQEBridge",
+            publicHeadersPath: "include"
+        ),
         .testTarget(
             name: "MuesliTests",
-            dependencies: ["MuesliNativeApp", "MuesliCore", "MuesliCLI"],
+            dependencies: ["MuesliNativeApp", "MuesliCore", "MuesliCLI", "LocalVQEBridge"],
             path: "Tests/MuesliTests",
             linkerSettings: [
                 .linkedLibrary("sqlite3"),

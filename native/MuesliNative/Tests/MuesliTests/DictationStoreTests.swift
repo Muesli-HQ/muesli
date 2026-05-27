@@ -78,6 +78,7 @@ struct DictationStoreTests {
         #expect(inserted?.savedRecordingPath == nil)
         #expect(inserted?.status == .completed)
         #expect(inserted?.manualNotes == "")
+        #expect(inserted?.source == .meeting)
     }
 
     @Test("migration adds saved recording path column to legacy meeting schema")
@@ -103,6 +104,28 @@ struct DictationStoreTests {
         #expect(inserted?.savedRecordingPath == "/tmp/meeting.wav")
     }
 
+    @Test("meeting source is persisted")
+    func meetingSourcePersists() throws {
+        let store = try makeStore()
+        let start = Date()
+
+        try store.insertMeeting(
+            title: "Imported Audio",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(60),
+            rawTranscript: "Transcript",
+            formattedNotes: "Notes",
+            micAudioPath: nil,
+            systemAudioPath: nil,
+            savedRecordingPath: "/tmp/import.wav",
+            source: .audioImport
+        )
+
+        let inserted = try #require(try store.recentMeetings(limit: 1).first)
+        #expect(inserted.source == .audioImport)
+    }
+
     @Test("live meeting starts as recording with empty manual notes")
     func createLiveMeeting() throws {
         let store = try makeStore()
@@ -125,6 +148,7 @@ struct DictationStoreTests {
         #expect(meeting.rawTranscript == "")
         #expect(meeting.formattedNotes == "")
         #expect(meeting.selectedTemplateID == "auto")
+        #expect(meeting.source == .meeting)
     }
 
     @Test("manual notes update independently from final notes")

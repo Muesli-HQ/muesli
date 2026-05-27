@@ -37,12 +37,13 @@ protocol DictationAudioRecording: AnyObject {
     var onFirstCapturedAudioBuffer: ((Date) -> Void)? { get set }
     var onFirstSpeechDetected: ((Date) -> Void)? { get set }
     var onNoAudioTimeout: ((Date) -> Void)? { get set }
+    var onRecordingFailed: ((Error, UUID) -> Void)? { get set }
 
     func prepare() throws
     func warmUp(preferredInputDeviceID: AudioObjectID?) throws
     func activateWarmEngine(preferredInputDeviceID: AudioObjectID?) throws
     func coolDown()
-    func start() throws
+    func start() throws -> UUID
     func stop() -> URL?
     func cancel()
     func currentPower() -> Float
@@ -51,6 +52,17 @@ protocol DictationAudioRecording: AnyObject {
 extension MicrophoneRecorder: DictationAudioRecording {}
 
 final class DictationAudioSessionManager: @unchecked Sendable {
+    private enum StartupError: LocalizedError {
+        case noAudioBuffer
+
+        var errorDescription: String? {
+            switch self {
+            case .noAudioBuffer:
+                return "Microphone capture did not deliver audio."
+            }
+        }
+    }
+
     private struct RouteSnapshot {
         let routeKind: AudioOutputRouteKind
         let preferredInputDeviceID: AudioObjectID?
@@ -75,6 +87,7 @@ final class DictationAudioSessionManager: @unchecked Sendable {
     private var duckingEnabledForSession = false
     private var externalSessionActive = false
     private var routeRefreshGeneration = 0
+    private var activeRecorderRunID: UUID?
     private let sessionHintLock = NSLock()
     private var sessionHint: UUID?
     private var externalSessionHint = false
@@ -110,6 +123,9 @@ final class DictationAudioSessionManager: @unchecked Sendable {
         recorder.onNoAudioTimeout = { [weak self] at in
             self?.handleNoAudioTimeout(at: at)
         }
+        recorder.onRecordingFailed = { [weak self] error, recorderRunID in
+            self?.handleRecordingFailure(error: error, recorderRunID: recorderRunID)
+        }
     }
 
     var currentState: DictationAudioSessionState {
@@ -144,6 +160,11 @@ final class DictationAudioSessionManager: @unchecked Sendable {
             self.routeSnapshot = self.makeRouteSnapshot(refreshInput: true)
             self.emitLatency("route_snapshot \(self.routeSnapshot.debugDescription)")
             self.recorder.keepsAudioGraphWarm = true
+            guard self.routeSnapshot.routeKind != .headphoneLike else {
+                self.emitLatency("activation_deferred:\(source)")
+                fputs("[dictation-session] armed without warm activation source=\(source) \(self.routeSnapshot.debugDescription)\n", stderr)
+                return
+            }
             do {
                 self.emitLatency("activation_begin:\(source)")
                 try self.recorder.activateWarmEngine(preferredInputDeviceID: self.routeSnapshot.preferredInputDeviceID)
@@ -195,7 +216,7 @@ final class DictationAudioSessionManager: @unchecked Sendable {
                 self.emitLatency("engine_prepare_begin")
                 try self.recorder.prepare()
                 self.emitLatency("engine_prepare_end")
-                try self.recorder.start()
+                self.activeRecorderRunID = try self.recorder.start()
                 self.emitLatency("activation_end:\(mode)")
                 fputs("[dictation-session] recording mode=\(mode) \(self.routeSnapshot.debugDescription)\n", stderr)
             } catch {
@@ -237,6 +258,7 @@ final class DictationAudioSessionManager: @unchecked Sendable {
             }
             self.emitLatency("stop")
             let wavURL = self.recorder.stop()
+            self.activeRecorderRunID = nil
             self.recorder.preferredInputDeviceID = nil
             self.stateStorage = .idle
             self.clearSessionHint(sessionID)
@@ -252,6 +274,7 @@ final class DictationAudioSessionManager: @unchecked Sendable {
             let sessionID = self.stateStorage.sessionID
             self.recorder.keepsAudioGraphWarm = false
             self.recorder.cancel()
+            self.activeRecorderRunID = nil
             self.recorder.preferredInputDeviceID = nil
             self.stateStorage = .idle
             self.externalSessionActive = false
@@ -395,6 +418,7 @@ final class DictationAudioSessionManager: @unchecked Sendable {
     private func failCurrentSession(error: Error) {
         let sessionID = stateStorage.sessionID
         stateStorage = .idle
+        activeRecorderRunID = nil
         recorder.preferredInputDeviceID = nil
         clearSessionHint(sessionID)
         restoreSessionAudioState()
@@ -429,7 +453,28 @@ final class DictationAudioSessionManager: @unchecked Sendable {
         queue.async { [self] in
             guard let sessionID = self.stateStorage.sessionID else { return }
             self.emitLatency("no_audio_timeout", at: at)
+            switch self.stateStorage {
+            case .armed(let id) where id == sessionID,
+                 .acquiringAudio(let id) where id == sessionID:
+                self.recorder.keepsAudioGraphWarm = false
+                self.recorder.cancel()
+                self.failCurrentSession(error: StartupError.noAudioBuffer)
+                return
+            default:
+                break
+            }
             self.emit(.noAudioTimeout(sessionID, at: at))
+        }
+    }
+
+    private func handleRecordingFailure(error: Error, recorderRunID: UUID) {
+        queue.async { [self] in
+            guard self.stateStorage.sessionID != nil,
+                  self.activeRecorderRunID == recorderRunID else { return }
+            self.emitLatency("recorder_failed")
+            self.recorder.keepsAudioGraphWarm = false
+            self.recorder.cancel()
+            self.failCurrentSession(error: error)
         }
     }
 

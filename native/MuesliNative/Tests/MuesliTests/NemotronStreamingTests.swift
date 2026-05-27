@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import CoreAudio
+import CoreML
 @testable import MuesliNativeApp
 
 @Suite("NemotronStreamState")
@@ -264,6 +265,61 @@ struct StreamingDictationControllerTests {
     }
 
     @available(macOS 15, *)
+    @Test("recorder failure cancels streaming session and permits retry")
+    func recorderFailureCancelsStreamingSessionAndPermitsRetry() async {
+        let transcriber = ImmediateNemotronStreamingTranscriber()
+        let recorder = InspectableStreamingDictationRecorder()
+        let failures = FailureCounter()
+        let controller = StreamingDictationController(
+            transcriber: transcriber,
+            recorder: recorder
+        )
+        controller.onFailure = { _ in
+            failures.increment()
+        }
+
+        #expect(controller.start() == true)
+        recorder.onRecordingFailed?(NSError(domain: "StreamingDictationControllerTests", code: 1))
+        try? await Task.sleep(for: .milliseconds(25))
+
+        #expect(recorder.cancelCalls == 1)
+        #expect(failures.value == 1)
+        #expect(recorder.onAudioBuffer == nil)
+        #expect(recorder.onRecordingFailed == nil)
+        #expect(controller.start() == true)
+        controller.cancel()
+    }
+
+    @available(macOS 15, *)
+    @Test("recorder failure after stop begins does not fail stopping session")
+    func recorderFailureAfterStopBeginsDoesNotFailStoppingSession() async {
+        let transcriber = DelayedNemotronStreamingTranscriber()
+        let recorder = InspectableStreamingDictationRecorder()
+        let failures = FailureCounter()
+        let controller = StreamingDictationController(
+            transcriber: transcriber,
+            recorder: recorder
+        )
+        controller.onFailure = { _ in
+            failures.increment()
+        }
+
+        #expect(controller.start() == true)
+        recorder.emit(samples: [Float](repeating: 0.2, count: 8960))
+        let capturedFailure = recorder.onRecordingFailed
+
+        async let stoppedText = stop(controller)
+        try? await Task.sleep(for: .milliseconds(25))
+        capturedFailure?(NSError(domain: "StreamingDictationControllerTests", code: 2))
+
+        await transcriber.releaseState()
+        let text = await stoppedText
+        #expect(text == " hello")
+        #expect(recorder.cancelCalls == 0)
+        #expect(failures.value == 0)
+    }
+
+    @available(macOS 15, *)
     @Test("stop completes when stream state initialization stalls")
     func stopCompletesWhenStreamStateInitializationStalls() async {
         let transcriber = HangingNemotronStreamingTranscriber()
@@ -334,6 +390,7 @@ struct StreamingDictationControllerTests {
 
 private final class FailingStreamingDictationRecorder: StreamingDictationRecording {
     var onAudioBuffer: (([Float]) -> Void)?
+    var onRecordingFailed: ((Error) -> Void)?
     var preferredInputDeviceID: AudioObjectID?
     var prepareCalls = 0
     var startCalls = 0
@@ -376,6 +433,7 @@ private final class FailingNemotronStreamingTranscriber: NemotronStreamingTransc
 
 private final class InspectableStreamingDictationRecorder: StreamingDictationRecording {
     var onAudioBuffer: (([Float]) -> Void)?
+    var onRecordingFailed: ((Error) -> Void)?
     var preferredInputDeviceID: AudioObjectID?
     var prepareCalls = 0
     var startCalls = 0
@@ -438,6 +496,33 @@ private actor DelayedNemotronStreamingTranscriber: NemotronStreamingTranscribing
     ) async throws -> String {
         transcribeCalls += 1
         return " hello"
+    }
+}
+
+@available(macOS 15, *)
+private actor ImmediateNemotronStreamingTranscriber: NemotronStreamingTranscribing {
+    func makeStreamState() async throws -> NemotronStreamingTranscriber.StreamState {
+        let cacheChannel = try MLMultiArray(shape: [1, 24, 70, 1024], dataType: .float32)
+        let cacheTime = try MLMultiArray(shape: [1, 24, 1024, 8], dataType: .float32)
+        let cacheLen = try MLMultiArray(shape: [1], dataType: .int32)
+        let hState = try MLMultiArray(shape: [2, 1, 640], dataType: .float32)
+        let cState = try MLMultiArray(shape: [2, 1, 640], dataType: .float32)
+        return NemotronStreamingTranscriber.StreamState(
+            cacheChannel: cacheChannel,
+            cacheTime: cacheTime,
+            cacheLen: cacheLen,
+            hState: hState,
+            cState: cState,
+            lastToken: 0,
+            allTokens: []
+        )
+    }
+
+    func transcribeChunk(
+        samples: [Float],
+        state: inout NemotronStreamingTranscriber.StreamState
+    ) async throws -> String {
+        ""
     }
 }
 
