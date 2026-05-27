@@ -192,10 +192,10 @@ struct BrowserMeetingActivityCollectorTests {
         #expect(cachedAfterMissingURL.isEmpty)
     }
 
-    @Test("refresh skips active-tab fallback when provider is disabled")
-    func refreshSkipsActiveTabFallbackWhenProviderIsDisabled() async {
+    @Test("refresh skips active-tab fallback when fallback is disabled")
+    func refreshSkipsActiveTabFallbackWhenFallbackIsDisabled() async {
         var didAttemptActiveTabFallbackProbe = false
-        let collector = BrowserMeetingActivityCollector(activeTabURLProvider: nil)
+        let collector = BrowserMeetingActivityCollector(activeTabFallbackEnabled: false)
 
         let meetings = await collector.collect(
             runningApps: [brave(isActive: false)],

@@ -15,17 +15,20 @@ final class BrowserMeetingActivityCollector {
     private let browserBundleIDs = Set(MeetingCandidateResolver.browserApps.keys)
     private let cachedMeetingTTL: TimeInterval
     private let focusedDocumentURLProvider: ((RunningAppSnapshot) -> String?)?
-    private let activeTabURLProvider: ((RunningAppSnapshot) -> String?)?
+    private let activeTabURLProviderOverride: ((RunningAppSnapshot) -> String?)?
+    private let activeTabFallbackEnabled: Bool
     private var cachedMeetings: [String: CachedBrowserMeeting] = [:]
 
     init(
         cachedMeetingTTL: TimeInterval = 30,
         focusedDocumentURLProvider: ((RunningAppSnapshot) -> String?)? = nil,
-        activeTabURLProvider: ((RunningAppSnapshot) -> String?)? = BrowserMeetingActivityCollector.activeTabURLViaScriptingBridge
+        activeTabURLProvider: ((RunningAppSnapshot) -> String?)? = nil,
+        activeTabFallbackEnabled: Bool = true
     ) {
         self.cachedMeetingTTL = cachedMeetingTTL
         self.focusedDocumentURLProvider = focusedDocumentURLProvider
-        self.activeTabURLProvider = activeTabURLProvider
+        self.activeTabURLProviderOverride = activeTabURLProvider
+        self.activeTabFallbackEnabled = activeTabFallbackEnabled
     }
 
     func collect(
@@ -91,13 +94,13 @@ final class BrowserMeetingActivityCollector {
             return .meeting(normalized)
         }
 
-        guard activeTabURLProvider != nil else {
+        guard activeTabFallbackEnabled || activeTabURLProviderOverride != nil else {
             return .noMeeting
         }
         guard shouldAttemptActiveTabFallback(app.bundleID) else {
             return .skipped
         }
-        guard let url = activeTabURLProvider?(app) else {
+        guard let url = await activeTabURL(for: app) else {
             return .noMeeting
         }
         return MeetingURLNormalizer.normalize(url).map(BrowserMeetingURLProbeResult.meeting) ?? .noMeeting
@@ -141,13 +144,7 @@ final class BrowserMeetingActivityCollector {
             }
         }
 
-        var windowsRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsRef) == .success,
-              let windows = windowsRef as? [AXUIElement] else {
-            return nil
-        }
-
-        return windows.lazy.compactMap(normalizedMeetingURL(from:)).first
+        return nil
     }
 
     private func axWindowAttribute(_ attribute: String, from app: AXUIElement) -> AXUIElement? {
@@ -168,6 +165,18 @@ final class BrowserMeetingActivityCollector {
         }
 
         return MeetingURLNormalizer.normalize(rawURL)
+    }
+
+    private func activeTabURL(for app: RunningAppSnapshot) async -> String? {
+        if let activeTabURLProviderOverride {
+            return activeTabURLProviderOverride(app)
+        }
+        guard activeTabFallbackEnabled else {
+            return nil
+        }
+        return await Task.detached(priority: .utility) {
+            Self.activeTabURLViaScriptingBridge(for: app)
+        }.value
     }
 
     private static func activeTabURLViaScriptingBridge(for app: RunningAppSnapshot) -> String? {
