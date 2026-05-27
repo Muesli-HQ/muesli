@@ -311,6 +311,41 @@ struct GoogleCalendarTests {
         #expect(event?.calendarID == "team@dockstreet.com")
     }
 
+    @Test("event sync cache resets when upcoming window changes")
+    func eventSyncCacheResetsWhenWindowChanges() {
+        let client = GoogleCalendarClient()
+
+        #expect(client.resetEventSyncIfNeededForWindow(daysAhead: 1))
+        #expect(!client.resetEventSyncIfNeededForWindow(daysAhead: 1))
+        #expect(client.resetEventSyncIfNeededForWindow(daysAhead: 3))
+
+        client.resetSync()
+        #expect(client.resetEventSyncIfNeededForWindow(daysAhead: 3))
+    }
+
+    @Test("event sync cache resets when upcoming window advances to a new local day")
+    func eventSyncCacheResetsWhenWindowDayChanges() {
+        let client = GoogleCalendarClient()
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+
+        #expect(client.resetEventSyncIfNeededForWindow(
+            daysAhead: 3,
+            now: date("2026-04-10T21:00:00Z"),
+            calendar: calendar
+        ))
+        #expect(!client.resetEventSyncIfNeededForWindow(
+            daysAhead: 3,
+            now: date("2026-04-10T23:00:00Z"),
+            calendar: calendar
+        ))
+        #expect(client.resetEventSyncIfNeededForWindow(
+            daysAhead: 3,
+            now: date("2026-04-11T00:01:00Z"),
+            calendar: calendar
+        ))
+    }
+
     // MARK: - Helpers
 
     private func date(_ iso: String) -> Date {

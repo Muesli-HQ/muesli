@@ -885,6 +885,19 @@ final class MuesliController: NSObject {
         syncDictationRecorderWarmup(reason: "config")
     }
 
+    func updateUpcomingMeetingsWindow(dayCount: Int) {
+        let resolvedDayCount = UpcomingMeetingsWindow.resolve(dayCount: dayCount).dayCount
+        guard config.upcomingMeetingsDayCount != resolvedDayCount else { return }
+
+        updateConfig { $0.upcomingMeetingsDayCount = resolvedDayCount }
+        googleCalClient.resetSync()
+        Task {
+            await refreshUpcomingCalendarEvents()
+            checkUpcomingCalendarNotifications()
+            meetingMonitor.refreshState(trigger: .calendarChanged)
+        }
+    }
+
     func setLaunchAtLogin(_ enabled: Bool) {
         let result = launchAtLoginCoordinator.setEnabled(enabled, config: config)
         if let error = result.error {
@@ -1227,30 +1240,41 @@ final class MuesliController: NSObject {
 
     func refreshUpcomingCalendarEvents() async {
         let disabledIDs = Set(config.disabledCalendarIDs)
-        var ekEvents = calendarMonitor.upcomingEvents(daysAhead: 7, disabledCalendarIDs: disabledIDs)
+        let dayCount = UpcomingMeetingsWindow.resolve(dayCount: config.upcomingMeetingsDayCount).dayCount
+        var ekEvents = calendarMonitor.upcomingEvents(daysAhead: dayCount, disabledCalendarIDs: disabledIDs)
+        var canConfirmMissingCalendarEvents = true
 
         if googleCalAuth.isAuthenticated {
             do {
                 let googleEvents = try await googleCalClient.fetchUpcomingEvents(
-                    daysAhead: 7,
+                    daysAhead: dayCount,
                     disabledCalendarIDs: disabledIDs
                 )
+                canConfirmMissingCalendarEvents = googleCalClient.lastUpcomingEventsFetchWasComplete
                 ekEvents = GoogleCalendarClient.mergeEvents(eventKit: ekEvents, google: googleEvents)
             } catch GoogleCalendarAuthError.notAuthenticated {
+                canConfirmMissingCalendarEvents = false
                 invalidateGoogleCalendarAuth()
                 fputs("[muesli-native] Google Calendar token invalid, signed out\n", stderr)
             } catch GoogleCalendarAuthError.refreshFailed(let message) {
+                canConfirmMissingCalendarEvents = false
                 fputs("[muesli-native] Google Calendar token refresh failed: \(message)\n", stderr)
             } catch {
+                canConfirmMissingCalendarEvents = false
                 fputs("[muesli-native] Google Calendar fetch failed: \(error)\n", stderr)
             }
         }
 
         appState.upcomingCalendarEvents = ekEvents
 
-        // Prune hidden IDs for events that no longer exist in the calendar
+        // Prune hidden IDs only when the widest supported window still cannot see the event.
         let currentEventIDs = Set(ekEvents.map(\.id))
-        let staleIDs = appState.hiddenCalendarEventIDs.subtracting(currentEventIDs)
+        let staleIDs = UpcomingMeetingsWindow.staleHiddenEventIDs(
+            hiddenIDs: appState.hiddenCalendarEventIDs,
+            visibleEventIDs: currentEventIDs,
+            dayCount: dayCount,
+            canConfirmMissingEvents: canConfirmMissingCalendarEvents
+        )
         if !staleIDs.isEmpty {
             appState.hiddenCalendarEventIDs.subtract(staleIDs)
             updateConfig { $0.hiddenCalendarEventIDs = self.appState.hiddenCalendarEventIDs.sorted() }

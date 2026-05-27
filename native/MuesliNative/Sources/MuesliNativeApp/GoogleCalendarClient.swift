@@ -69,18 +69,38 @@ final class GoogleCalendarClient {
     /// Cached events keyed by calendar ID, then by event ID. A 410 (sync token
     /// expired) for one calendar invalidates only that calendar's cache.
     private var cachedEventsByCalendar: [String: [String: UnifiedCalendarEvent]] = [:]
+    /// The event window used for the current sync tokens. Google incremental
+    /// sync does not include a new time range, so changing the selected window
+    /// requires a full re-fetch.
+    private var cachedEventWindowDayCount: Int?
+    /// The local day that anchored the current event window. The selected
+    /// window may stay at the same day count while the query range advances at
+    /// midnight, which also requires a full re-fetch.
+    private var cachedEventWindowStartOfDay: Date?
     /// Last fetched calendar list. Refreshed each time `fetchUpcomingEvents` runs
     /// so calendars added in the Google web UI get picked up automatically.
     private var cachedCalendarList: [GoogleCalendarSummary] = []
+    /// False when the latest fetch returned cached or partial Google Calendar
+    /// results because a list or event request failed.
+    private(set) var lastUpcomingEventsFetchWasComplete = true
 
     /// Fetch upcoming events from every Google calendar the user can read,
     /// minus any in `disabledCalendarIDs`. Refreshes the calendar list on each
     /// call so newly-added calendars show up; per-calendar sync tokens keep
     /// each event fetch incremental.
     func fetchUpcomingEvents(
-        daysAhead: Int = 7,
+        daysAhead: Int = UpcomingMeetingsWindow.defaultDayCount,
         disabledCalendarIDs: Set<String> = []
     ) async throws -> [UnifiedCalendarEvent] {
+        var completedAllFetches = true
+        defer { lastUpcomingEventsFetchWasComplete = completedAllFetches }
+
+        let resolvedDayCount = UpcomingMeetingsWindow.resolve(dayCount: daysAhead).dayCount
+        let now = Date()
+        resetEventSyncIfNeededForWindow(daysAhead: resolvedDayCount, now: now)
+
+        guard let future = UpcomingMeetingsWindow.endDate(from: now, dayCount: resolvedDayCount) else { return [] }
+
         // Refresh the calendar list. If this fails, fall back to whatever we
         // last saw — better to return something than nothing.
         do {
@@ -97,6 +117,7 @@ final class GoogleCalendarClient {
                 )]
             }
             fputs("[google-cal] calendarList fetch failed, using cached list: \(error)\n", stderr)
+            completedAllFetches = false
         }
 
         let enabled = cachedCalendarList.filter { !disabledCalendarIDs.contains($0.id) }
@@ -111,18 +132,18 @@ final class GoogleCalendarClient {
 
         for calendar in enabled {
             do {
-                try await fetchEvents(forCalendarID: calendar.id, daysAhead: daysAhead)
+                try await fetchEvents(forCalendarID: calendar.id, daysAhead: resolvedDayCount)
             } catch let authError as GoogleCalendarAuthError {
                 throw authError
             } catch {
                 fputs("[google-cal] events fetch failed for \(calendar.id), keeping cached events: \(error)\n", stderr)
+                completedAllFetches = false
             }
         }
 
-        let now = Date()
         let merged = cachedEventsByCalendar.values
             .flatMap { $0.values }
-            .filter { $0.endDate > now }
+            .filter { $0.endDate > now && $0.startDate < future }
         return merged.sorted { $0.startDate < $1.startDate }
     }
 
@@ -147,7 +168,7 @@ final class GoogleCalendarClient {
                 components.queryItems = [URLQueryItem(name: "syncToken", value: syncToken)]
             } else {
                 let now = Date()
-                guard let future = Calendar.current.date(byAdding: .day, value: daysAhead, to: now) else { return }
+                guard let future = UpcomingMeetingsWindow.endDate(from: now, dayCount: daysAhead) else { return }
                 components.queryItems = [
                     URLQueryItem(name: "timeMin", value: isoFormatter.string(from: now)),
                     URLQueryItem(name: "timeMax", value: isoFormatter.string(from: future)),
@@ -299,7 +320,27 @@ final class GoogleCalendarClient {
     func resetSync() {
         syncTokens.removeAll()
         cachedEventsByCalendar.removeAll()
+        cachedEventWindowDayCount = nil
+        cachedEventWindowStartOfDay = nil
         cachedCalendarList.removeAll()
+        lastUpcomingEventsFetchWasComplete = true
+    }
+
+    @discardableResult
+    func resetEventSyncIfNeededForWindow(
+        daysAhead: Int,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> Bool {
+        let resolvedDayCount = UpcomingMeetingsWindow.resolve(dayCount: daysAhead).dayCount
+        let windowStartOfDay = calendar.startOfDay(for: now)
+        guard cachedEventWindowDayCount != resolvedDayCount ||
+            cachedEventWindowStartOfDay != windowStartOfDay else { return false }
+        syncTokens.removeAll()
+        cachedEventsByCalendar.removeAll()
+        cachedEventWindowDayCount = resolvedDayCount
+        cachedEventWindowStartOfDay = windowStartOfDay
+        return true
     }
 
     private static let isoFormatter: ISO8601DateFormatter = {

@@ -140,17 +140,20 @@ final class CalendarMonitor {
         return nearby
     }
 
-    /// Returns upcoming timed events from the local macOS calendar (EventKit) for the next N days.
+    /// Returns upcoming timed events from the local macOS calendar (EventKit) for the selected calendar-day window.
     /// All-day events are excluded — they're not useful for meeting recording.
     /// Events from calendars listed in `disabledCalendarIDs` are filtered out.
-    func upcomingEvents(daysAhead: Int = 7, disabledCalendarIDs: Set<String> = []) -> [UnifiedCalendarEvent] {
+    func upcomingEvents(
+        daysAhead: Int = UpcomingMeetingsWindow.defaultDayCount,
+        disabledCalendarIDs: Set<String> = []
+    ) -> [UnifiedCalendarEvent] {
         // Create a fresh EKEventStore each time to avoid stale cache.
         // EKEventStore instances cache calendar data and don't automatically
         // reflect external changes (e.g., events moved in Google Calendar).
         // Uses a local instance to avoid racing with currentEvent()/currentOrNearbyEvent().
         let freshStore = EKEventStore()
         let now = Date()
-        guard let future = Calendar.current.date(byAdding: .day, value: daysAhead, to: now) else { return [] }
+        guard let future = UpcomingMeetingsWindow.endDate(from: now, dayCount: daysAhead) else { return [] }
         let predicate = freshStore.predicateForEvents(withStart: now, end: future, calendars: nil)
         let events = freshStore.events(matching: predicate)
         let unified: [UnifiedCalendarEvent] = events.compactMap { event in
@@ -169,6 +172,7 @@ final class CalendarMonitor {
         }
         return UnifiedCalendarEvent
             .filter(unified, disabledCalendarIDs: disabledCalendarIDs)
+            .filter { $0.endDate > now && $0.startDate < future }
             .sorted { $0.startDate < $1.startDate }
     }
 

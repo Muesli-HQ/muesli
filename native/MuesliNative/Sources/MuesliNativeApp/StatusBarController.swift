@@ -56,9 +56,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         let now = Date()
         let hidden = controller.appState.hiddenCalendarEventIDs
-        let endOfToday = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: now)) ?? now
         let nextEvent = controller.appState.upcomingCalendarEvents
-            .filter { !$0.isAllDay && $0.startDate > now && $0.startDate < endOfToday && !hidden.contains($0.id) }
+            .filter { !$0.isAllDay && $0.startDate > now && !hidden.contains($0.id) }
+            .sorted { $0.startDate < $1.startDate }
             .first
 
         if let event = nextEvent {
@@ -168,92 +168,87 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         let timeFormatter = DateFormatter()
         timeFormatter.dateFormat = "HH:mm"
 
-        // Group: next up (within 1 hour) vs today (rest of day)
-        var nextUpEvents: [UnifiedCalendarEvent] = []
-        var todayEvents: [UnifiedCalendarEvent] = []
-
-        for event in events {
-            guard event.startDate > now else { continue }
-            if calendar.isDateInToday(event.startDate) {
-                if event.startDate.timeIntervalSince(now) <= 3600 {
-                    nextUpEvents.append(event)
-                } else {
-                    todayEvents.append(event)
-                }
-            }
-        }
+        let futureEvents = events
+            .filter { $0.startDate > now }
+            .sorted { $0.startDate < $1.startDate }
+        let nextUpEvents = futureEvents.filter { $0.startDate.timeIntervalSince(now) <= 3600 }
+        let laterEvents = futureEvents.filter { $0.startDate.timeIntervalSince(now) > 3600 }
 
         if !nextUpEvents.isEmpty {
             let firstEvent = nextUpEvents[0]
             let minutesUntil = Int(ceil(firstEvent.startDate.timeIntervalSince(now) / 60))
-            let header = NSMenuItem(title: "Starts in \(formatTimeUntil(minutesUntil))", action: nil, keyEquivalent: "")
-            header.isEnabled = false
-            let headerAttrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
-                .foregroundColor: NSColor.secondaryLabelColor,
-            ]
-            header.attributedTitle = NSAttributedString(string: "Starts in \(formatTimeUntil(minutesUntil))", attributes: headerAttrs)
-            menu.addItem(header)
-
-            for event in nextUpEvents {
-                let timeStr = "\(timeFormatter.string(from: event.startDate)) – \(timeFormatter.string(from: event.endDate))"
-                let item = NSMenuItem(
-                    title: "\(event.title)\n\(timeStr)",
-                    action: #selector(MuesliController.startMeetingFromCalendarMenuItem(_:)),
-                    keyEquivalent: ""
-                )
-                item.target = controller
-                item.representedObject = event.title
-
-                let titleAttrs: [NSAttributedString.Key: Any] = [
-                    .font: NSFont.systemFont(ofSize: 13, weight: .medium),
-                    .foregroundColor: NSColor.labelColor,
-                ]
-                let timeAttrs: [NSAttributedString.Key: Any] = [
-                    .font: NSFont.systemFont(ofSize: 11),
-                    .foregroundColor: NSColor.secondaryLabelColor,
-                ]
-                let attributed = NSMutableAttributedString(string: event.title, attributes: titleAttrs)
-                attributed.append(NSAttributedString(string: "\n\(timeStr)", attributes: timeAttrs))
-                item.attributedTitle = attributed
-                menu.addItem(item)
-            }
+            addUpcomingEventGroup(
+                title: "Starts in \(formatTimeUntil(minutesUntil))",
+                events: nextUpEvents,
+                timeFormatter: timeFormatter
+            )
         }
 
-        if !todayEvents.isEmpty {
-            let header = NSMenuItem(title: "Today", action: nil, keyEquivalent: "")
-            header.isEnabled = false
-            let headerAttrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+        let groupedEvents = Dictionary(grouping: laterEvents) { event in
+            calendar.startOfDay(for: event.startDate)
+        }
+        for day in groupedEvents.keys.sorted() {
+            let dayEvents = (groupedEvents[day] ?? []).sorted { $0.startDate < $1.startDate }
+            addUpcomingEventGroup(
+                title: upcomingMenuHeader(for: day, calendar: calendar),
+                events: dayEvents,
+                timeFormatter: timeFormatter,
+                limit: 5
+            )
+        }
+    }
+
+    private func addUpcomingEventGroup(
+        title: String,
+        events: [UnifiedCalendarEvent],
+        timeFormatter: DateFormatter,
+        limit: Int? = nil
+    ) {
+        let header = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        header.isEnabled = false
+        let headerAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ]
+        header.attributedTitle = NSAttributedString(string: title, attributes: headerAttrs)
+        menu.addItem(header)
+
+        let displayedEvents = limit.map { Array(events.prefix($0)) } ?? events
+        for event in displayedEvents {
+            let timeStr = "\(timeFormatter.string(from: event.startDate)) – \(timeFormatter.string(from: event.endDate))"
+            let item = NSMenuItem(
+                title: "\(event.title)\n\(timeStr)",
+                action: #selector(MuesliController.startMeetingFromCalendarMenuItem(_:)),
+                keyEquivalent: ""
+            )
+            item.target = controller
+            item.representedObject = event.title
+
+            let titleAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 13, weight: .medium),
+                .foregroundColor: NSColor.labelColor,
+            ]
+            let timeAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 11),
                 .foregroundColor: NSColor.secondaryLabelColor,
             ]
-            header.attributedTitle = NSAttributedString(string: "Today", attributes: headerAttrs)
-            menu.addItem(header)
-
-            for event in todayEvents.prefix(5) {
-                let timeStr = "\(timeFormatter.string(from: event.startDate)) – \(timeFormatter.string(from: event.endDate))"
-                let item = NSMenuItem(
-                    title: "\(event.title)\n\(timeStr)",
-                    action: #selector(MuesliController.startMeetingFromCalendarMenuItem(_:)),
-                    keyEquivalent: ""
-                )
-                item.target = controller
-                item.representedObject = event.title
-
-                let titleAttrs: [NSAttributedString.Key: Any] = [
-                    .font: NSFont.systemFont(ofSize: 13, weight: .medium),
-                    .foregroundColor: NSColor.labelColor,
-                ]
-                let timeAttrs: [NSAttributedString.Key: Any] = [
-                    .font: NSFont.systemFont(ofSize: 11),
-                    .foregroundColor: NSColor.secondaryLabelColor,
-                ]
-                let attributed = NSMutableAttributedString(string: event.title, attributes: titleAttrs)
-                attributed.append(NSAttributedString(string: "\n\(timeStr)", attributes: timeAttrs))
-                item.attributedTitle = attributed
-                menu.addItem(item)
-            }
+            let attributed = NSMutableAttributedString(string: event.title, attributes: titleAttrs)
+            attributed.append(NSAttributedString(string: "\n\(timeStr)", attributes: timeAttrs))
+            item.attributedTitle = attributed
+            menu.addItem(item)
         }
+    }
+
+    private func upcomingMenuHeader(for day: Date, calendar: Calendar) -> String {
+        if calendar.isDateInToday(day) {
+            return "Today"
+        }
+        if calendar.isDateInTomorrow(day) {
+            return "Tomorrow"
+        }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEE, MMM d"
+        return formatter.string(from: day)
     }
 
     private func formatTimeUntil(_ minutes: Int) -> String {
