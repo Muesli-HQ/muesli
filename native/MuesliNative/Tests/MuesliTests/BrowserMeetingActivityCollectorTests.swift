@@ -43,8 +43,8 @@ struct BrowserMeetingActivityCollectorTests {
         #expect(meetings.first?.isFocused == false)
     }
 
-    @Test("refresh clears stale cached room when browser no longer reports a meeting URL")
-    func refreshClearsStaleCachedRoom() async {
+    @Test("refresh clears stale cached room when focused document is not a meeting URL")
+    func refreshClearsStaleCachedRoomWhenFocusedDocumentIsNotMeetingURL() async {
         var focusedURL: String? = "https://meet.google.com/pwm-txwq-txy"
         let collector = BrowserMeetingActivityCollector(
             focusedDocumentURLProvider: { _ in focusedURL }
@@ -57,7 +57,7 @@ struct BrowserMeetingActivityCollectorTests {
             shouldAttemptActiveTabFallback: { _ in false }
         )
 
-        focusedURL = nil
+        focusedURL = "https://example.com"
         let second = await collector.collect(
             runningApps: [chrome(isActive: false)],
             refresh: true,
@@ -299,6 +299,40 @@ struct BrowserMeetingActivityCollectorTests {
 
         #expect(meetings.isEmpty)
         #expect(didAttemptActiveTabFallbackProbe == false)
+    }
+
+    @Test("refresh preserves cache when fallback is disabled and document URL is unavailable")
+    func refreshPreservesCacheWhenFallbackIsDisabledAndDocumentURLIsUnavailable() async {
+        var focusedURL: String? = "https://meet.google.com/pwm-txwq-txy"
+        let collector = BrowserMeetingActivityCollector(
+            focusedDocumentURLProvider: { _ in focusedURL },
+            activeTabFallbackEnabled: false
+        )
+
+        let first = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: true,
+            now: now,
+            shouldAttemptActiveTabFallback: { _ in true }
+        )
+
+        focusedURL = nil
+        let second = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: true,
+            now: now.addingTimeInterval(1),
+            shouldAttemptActiveTabFallback: { _ in true }
+        )
+        let cachedAfterUnavailableDocument = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: false,
+            now: now.addingTimeInterval(2),
+            shouldAttemptActiveTabFallback: { _ in false }
+        )
+
+        #expect(first.count == 1)
+        #expect(second.isEmpty)
+        #expect(cachedAfterUnavailableDocument.map(\.normalizedID) == ["googleMeet:meet.google.com/pwm-txwq-txy"])
     }
 
     @Test("non-refresh pass can reuse recent cached browser room")

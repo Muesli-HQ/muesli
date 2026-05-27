@@ -102,13 +102,12 @@ final class BrowserMeetingActivityCollector {
     ) async -> BrowserMeetingURLProbeResult {
         var observedFocusedNonMeetingDocumentURL = false
         if let focusedDocumentURLProvider {
-            guard let rawURL = focusedDocumentURLProvider(app) else {
-                return .noMeeting
+            if let rawURL = focusedDocumentURLProvider(app) {
+                if let normalized = MeetingURLNormalizer.normalize(rawURL) {
+                    return .meeting(normalized, isFocused: app.isActive)
+                }
+                observedFocusedNonMeetingDocumentURL = true
             }
-            if let normalized = MeetingURLNormalizer.normalize(rawURL) {
-                return .meeting(normalized, isFocused: app.isActive)
-            }
-            observedFocusedNonMeetingDocumentURL = true
         }
 
         let documentURLProbe = documentURLProbeProvider?(app) ?? axDocumentURLProbe(for: app)
@@ -124,7 +123,7 @@ final class BrowserMeetingActivityCollector {
         }
 
         guard activeTabFallbackEnabled || activeTabURLProviderOverride != nil || activeTabProbeResultProvider != nil else {
-            return .noMeeting
+            return observedFocusedNonMeetingDocumentURL ? .noMeeting : .skipped
         }
         guard shouldAttemptActiveTabFallback(app.bundleID) else {
             return observedFocusedNonMeetingDocumentURL ? .noMeeting : .skipped
@@ -258,7 +257,11 @@ final class BrowserMeetingActivityCollector {
     }
 
     private static let activeTabFallbackDeadline: TimeInterval = 1.8
-    private static let scriptingBridgeTimeoutTicks = 120
+    private static let appleEventTicksPerSecond = 60
+    private static let scriptingBridgeTimeoutSlackTicks = 12
+    private static let scriptingBridgeTimeoutTicks = Int(
+        (activeTabFallbackDeadline * Double(appleEventTicksPerSecond)).rounded(.up)
+    ) + scriptingBridgeTimeoutSlackTicks
 
     private static func activeTabURLViaScriptingBridge(
         for app: RunningAppSnapshot,
@@ -287,7 +290,10 @@ final class BrowserMeetingActivityCollector {
 
         let errorDelegate = BrowserScriptingBridgeErrorDelegate()
         browser.delegate = errorDelegate
-        // ScriptingBridge uses Apple Event ticks: 120 ticks is 2 seconds.
+        // SBApplication.timeout is in Apple Event ticks (1/60 s). Keep the
+        // ScriptingBridge timeout slightly above the 1.8 s outer deadline so
+        // the async fallback reports .timedOut before a stalled Apple Event
+        // can return nil and clear cache state.
         browser.timeout = Self.scriptingBridgeTimeoutTicks
 
         guard let windows = browser.value(forKey: "windows") as? SBElementArray,
