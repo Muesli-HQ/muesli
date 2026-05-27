@@ -784,6 +784,12 @@ struct SettingsView: View {
                     menuBarIconPicker
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Show recording indicator") {
+                    settingsSwitch(isOn: appState.config.showMenuBarRecordingIndicator) { newValue in
+                        controller.updateConfig { $0.showMenuBarRecordingIndicator = newValue }
+                    }
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Accent color") {
                     glassTintPicker
                 }

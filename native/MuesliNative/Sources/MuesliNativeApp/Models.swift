@@ -759,6 +759,7 @@ struct AppConfig: Codable {
     var muteSystemAudioDuringDictation: Bool = false
     var recordingColorHex: String = "1e1e2e"   // Catppuccin Mocha base, without #
     var menuBarIcon: String = "muesli"
+    var showMenuBarRecordingIndicator: Bool = false
     var showNextMeetingInMenuBar: Bool = true
     var maraudersMapUnlocked: Bool = false
     var maraudersMapAudioClip: String = "bbc_world_news"
@@ -835,6 +836,7 @@ struct AppConfig: Codable {
         case muteSystemAudioDuringDictation = "mute_system_audio_during_dictation"
         case recordingColorHex = "recording_color_hex"
         case menuBarIcon = "menu_bar_icon"
+        case showMenuBarRecordingIndicator = "show_menu_bar_recording_indicator"
         case showNextMeetingInMenuBar = "show_next_meeting_in_menu_bar"
         case maraudersMapUnlocked = "marauders_map_unlocked"
         case maraudersMapAudioClip = "marauders_map_audio_clip"
@@ -941,6 +943,7 @@ struct AppConfig: Codable {
         muteSystemAudioDuringDictation = (try? c.decode(Bool.self, forKey: .muteSystemAudioDuringDictation)) ?? defaults.muteSystemAudioDuringDictation
         recordingColorHex = (try? c.decode(String.self, forKey: .recordingColorHex)) ?? defaults.recordingColorHex
         menuBarIcon = (try? c.decode(String.self, forKey: .menuBarIcon)) ?? defaults.menuBarIcon
+        showMenuBarRecordingIndicator = (try? c.decode(Bool.self, forKey: .showMenuBarRecordingIndicator)) ?? defaults.showMenuBarRecordingIndicator
         showNextMeetingInMenuBar = (try? c.decode(Bool.self, forKey: .showNextMeetingInMenuBar)) ?? defaults.showNextMeetingInMenuBar
         maraudersMapUnlocked = (try? c.decode(Bool.self, forKey: .maraudersMapUnlocked)) ?? defaults.maraudersMapUnlocked
         maraudersMapAudioClip = (try? c.decode(String.self, forKey: .maraudersMapAudioClip)) ?? defaults.maraudersMapAudioClip
