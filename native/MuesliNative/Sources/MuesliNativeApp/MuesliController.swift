@@ -162,6 +162,49 @@ private final class DictationLatencyLogWriter: @unchecked Sendable {
 }
 
 @MainActor
+private enum VoiceCommandDestination: Equatable {
+    case computerUse
+    case jessica
+
+    var logPrefix: String {
+        switch self {
+        case .computerUse: return "cua"
+        case .jessica: return "jessica"
+        }
+    }
+
+    var dictationSource: String {
+        switch self {
+        case .computerUse: return "cua"
+        case .jessica: return "jessica"
+        }
+    }
+
+    var parsingTitle: String {
+        switch self {
+        case .computerUse: return "Parsing command"
+        case .jessica: return "Asking Jessica"
+        }
+    }
+
+    var telemetryName: String {
+        switch self {
+        case .computerUse: return "computer_use"
+        case .jessica: return "jessica"
+        }
+    }
+
+    func plannerCommand(from transcript: String) -> String {
+        switch self {
+        case .computerUse:
+            return transcript
+        case .jessica:
+            return SalesAgentProvider.jessicaPlannerCommand(from: transcript)
+        }
+    }
+}
+
+@MainActor
 final class MuesliController: NSObject {
     private let runtime: RuntimePaths
     private let configStore = ConfigStore()
@@ -171,6 +214,7 @@ final class MuesliController: NSObject {
     let transcriptionCoordinator = TranscriptionCoordinator()
     private let hotkeyMonitor = HotkeyMonitor()
     private let computerUseHotkeyMonitor = HotkeyMonitor()
+    private let jessicaHotkeyMonitor = HotkeyMonitor()
     private let meetingRecordingHotkeyMonitor = HotkeyMonitor()
     private let recorder = MicrophoneRecorder()
     private let audioDuckingController: AudioDuckingManaging
@@ -185,10 +229,22 @@ final class MuesliController: NSObject {
     )
     private let dictationLatencyTimestampFormatter = ISO8601DateFormatter()
     private let indicator: FloatingIndicatorController
+    private lazy var salesAssistController = SalesAssistController(
+        configProvider: { [weak self] in
+            self?.config ?? AppConfig()
+        },
+        alertHandler: { [weak self] alert in
+            self?.syncSalesAssistInsightIfNeeded(alert)
+        },
+        feedbackHandler: { [weak self] alert, action in
+            self?.handleSalesAssistFeedback(alert, action: action)
+        }
+    )
     private let calendarMonitor = CalendarMonitor()
     private let meetingMonitor = MeetingMonitor()
     private let meetingNotification = MeetingNotificationController()
     private let meetingSourceWindowLocator = MeetingSourceWindowLocator()
+    private let cloudAutoSyncInterval: TimeInterval = 300
 
     private let chatGPTAuth = ChatGPTAuthManager.shared
     private let googleCalAuth = GoogleCalendarAuthManager.shared
@@ -235,6 +291,7 @@ final class MuesliController: NSObject {
     private var pendingReleaseSoundSessionID: UUID?
     private var computerUseCommandStartedAt: Date?
     private var computerUseCommandTask: Task<Void, Never>?
+    private var activeVoiceCommandDestination: VoiceCommandDestination?
     private var computerUseFloatingStatusWorkItem: DispatchWorkItem?
     private var computerUseLastFloatingStatusAt = Date.distantPast
     private var computerUseLastFloatingStatus = ""
@@ -266,6 +323,12 @@ final class MuesliController: NSObject {
     private var meetingStartTask: Task<Void, Never>?
     private var meetingStartMeetingID: Int64?
     private var importTask: Task<Void, Never>?
+    private var salesLibrarySyncTask: Task<Void, Never>?
+    private var meetingsSyncTask: Task<Void, Never>?
+    private var salesAgentHistorySyncTask: Task<Void, Never>?
+    private var cloudIdentitySyncTask: Task<Void, Never>?
+    private var cloudAutoSyncTimer: Timer?
+    private var syncedSalesInsightFingerprints = Set<String>()
     private var importSessionID: UUID?
     private var canceledMeetingStartIDs = Set<Int64>()
     private var hasStarted = false
@@ -367,6 +430,13 @@ final class MuesliController: NSObject {
         computerUseHotkeyMonitor.onToggleStart = { [weak self] in self?.handleComputerUseToggleStart() }
         computerUseHotkeyMonitor.onToggleStop = { [weak self] in self?.handleComputerUseToggleStop() }
         computerUseHotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
+        jessicaHotkeyMonitor.onPrepare = { [weak self] in self?.handleJessicaPrepare() }
+        jessicaHotkeyMonitor.onStart = { [weak self] in self?.handleJessicaStart() }
+        jessicaHotkeyMonitor.onStop = { [weak self] in self?.handleJessicaStop() }
+        jessicaHotkeyMonitor.onCancel = { [weak self] in self?.handleJessicaCancel() }
+        jessicaHotkeyMonitor.onToggleStart = { [weak self] in self?.handleJessicaToggleStart() }
+        jessicaHotkeyMonitor.onToggleStop = { [weak self] in self?.handleJessicaToggleStop() }
+        jessicaHotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
 
         meetingRecordingHotkeyMonitor.onStart = { [weak self] in
             DispatchQueue.main.async { self?.toggleMeetingRecording() }
@@ -383,13 +453,18 @@ final class MuesliController: NSObject {
 
         let canRunMainApp = config.hasCompletedOnboarding
             && hasRequiredStartupPermissions(for: config.resolvedOnboardingUseCase)
+        let canRunCommandShortcuts = config.hasCompletedOnboarding
+            && hasRequiredCommandShortcutPermissions()
         meetingFeatureMonitorsAllowed = canRunMainApp
 
         // Defer permission-triggering monitors until after onboarding
         if canRunMainApp && config.resolvedOnboardingUseCase.includesPushToTalk {
             hotkeyMonitor.configure(config.dictationHotkey)
             hotkeyMonitor.start()
+        }
+        if canRunCommandShortcuts {
             startComputerUseHotkeyMonitorIfNeeded()
+            startJessicaHotkeyMonitorIfNeeded()
         }
         if canRunMainApp {
             startMeetingRecordingHotkeyMonitorIfNeeded()
@@ -404,17 +479,22 @@ final class MuesliController: NSObject {
                 self.hotkeyMonitor.stopToggleMode()
             } else if self.computerUseHotkeyMonitor.isToggleRecording {
                 self.computerUseHotkeyMonitor.stopToggleMode()
+            } else if self.jessicaHotkeyMonitor.isToggleRecording {
+                self.jessicaHotkeyMonitor.stopToggleMode()
             } else if self.computerUseCommandStartedAt != nil {
-                self.handleComputerUseStop()
+                self.stopActiveVoiceCommand()
             } else {
                 self.handleStop()
             }
         }
         indicator.onCancelToggleDictation = { [weak self] in
             guard let self else { return }
-            if self.computerUseHotkeyMonitor.isToggleRecording || self.computerUseCommandStartedAt != nil {
-                self.handleComputerUseCancel()
+            if self.computerUseHotkeyMonitor.isToggleRecording
+                || self.jessicaHotkeyMonitor.isToggleRecording
+                || self.computerUseCommandStartedAt != nil {
+                self.cancelActiveVoiceCommand()
                 self.computerUseHotkeyMonitor.cancelToggleMode()
+                self.jessicaHotkeyMonitor.cancelToggleMode()
             } else {
                 self.handleCancel()
                 self.hotkeyMonitor.cancelToggleMode()
@@ -456,7 +536,13 @@ final class MuesliController: NSObject {
         statusBarController = StatusBarController(controller: self, runtime: runtime)
         preferencesWindowController = PreferencesWindowController(controller: self)
         historyWindowController = RecentHistoryWindowController(store: dictationStore, controller: self)
+        salesAssistController.start()
         refreshUI()
+        refreshCloudIdentityIfNeeded(reason: "startup")
+        syncSalesLibraryIfNeeded(reason: "startup")
+        syncRecentMeetingsIfNeeded(reason: "startup")
+        syncSalesAgentHistoryBacklogIfNeeded(reason: "startup")
+        configureCloudAutoSyncTimer()
 
         meetingMonitor.calendarEventProvider = { [weak self] in
             self?.currentOrNearbyCachedCalendarEvent()
@@ -565,9 +651,20 @@ final class MuesliController: NSObject {
         }
         hotkeyMonitor.stop()
         computerUseHotkeyMonitor.stop()
+        jessicaHotkeyMonitor.stop()
         meetingRecordingHotkeyMonitor.stop()
         computerUseCommandTask?.cancel()
         computerUseCommandTask = nil
+        salesLibrarySyncTask?.cancel()
+        salesLibrarySyncTask = nil
+        meetingsSyncTask?.cancel()
+        meetingsSyncTask = nil
+        salesAgentHistorySyncTask?.cancel()
+        salesAgentHistorySyncTask = nil
+        cloudIdentitySyncTask?.cancel()
+        cloudIdentitySyncTask = nil
+        cloudAutoSyncTimer?.invalidate()
+        cloudAutoSyncTimer = nil
         calendarMonitor.stop()
         meetingStartingNowTimers.values.forEach { $0.invalidate() }
         meetingStartingNowTimers.removeAll()
@@ -589,6 +686,7 @@ final class MuesliController: NSObject {
             await transcriptionCoordinator.shutdown()
         }
         indicator.close()
+        salesAssistController.stop()
         CoreAudioSystemRecorder.cleanupStaleDevices()
     }
 
@@ -691,6 +789,7 @@ final class MuesliController: NSObject {
         appState.isGoogleCalendarAvailable = googleCalAuth.isAvailable
         appState.isGoogleCalendarVerified = googleCalAuth.isVerified
         appState.isGoogleCalendarAuthenticated = googleCalAuth.isAuthenticated
+        appState.isGoogleDriveDocsAuthorized = googleCalAuth.hasGrantedScopes(GoogleIntegrationScope.driveDocs)
         // Keep appState in sync with persisted hidden event IDs
         let persisted = Set(config.hiddenCalendarEventIDs)
         if appState.hiddenCalendarEventIDs != persisted {
@@ -711,7 +810,21 @@ final class MuesliController: NSObject {
 
         for meeting in meetings {
             do {
-                try dictationStore.updateMeetingStatus(id: meeting.id, status: .failed)
+                if Self.isEmptyStaleLiveMeeting(meeting) {
+                    try dictationStore.deleteMeeting(id: meeting.id)
+                    clearCachedMeetingManualNotes(id: meeting.id)
+                    clearCachedMeetingTitle(id: meeting.id)
+                    if appState.selectedMeetingID == meeting.id {
+                        appState.selectedMeetingID = nil
+                        appState.selectedMeetingRecord = nil
+                        appState.meetingsNavigationState = .browser
+                    }
+                } else if meeting.rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                          meeting.formattedNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    try dictationStore.updateMeetingStatus(id: meeting.id, status: .noteOnly)
+                } else {
+                    try dictationStore.updateMeetingStatus(id: meeting.id, status: .failed)
+                }
                 staleLiveMeetingRecoveryFailures.remove(meeting.id)
             } catch {
                 staleLiveMeetingRecoveryFailures.insert(meeting.id)
@@ -722,6 +835,12 @@ final class MuesliController: NSObject {
         if !meetings.isEmpty {
             syncAppState()
         }
+    }
+
+    private static func isEmptyStaleLiveMeeting(_ meeting: MeetingRecord) -> Bool {
+        meeting.rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && meeting.formattedNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && meeting.manualNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     func performSearch(query: String) {
@@ -812,13 +931,30 @@ final class MuesliController: NSObject {
     func updateConfig(_ mutate: (inout AppConfig) -> Void) {
         let previousHotkeyTriggerThresholdMS = config.hotkeyTriggerThresholdMS
         let previousComputerUseHotkeyTriggerThresholdMS = config.computerUseHotkeyTriggerThresholdMS
+        let previousJessicaHotkeyTriggerThresholdMS = config.jessicaHotkeyTriggerThresholdMS
         let previousMeetingRecordingHotkeyTriggerThresholdMS = config.meetingRecordingHotkeyTriggerThresholdMS
+        let previousSupabaseSyncEnabled = config.supabaseSyncEnabled
+        let previousSupabaseSyncSalesLibrary = config.supabaseSyncSalesLibrary
+        let previousSupabaseSyncTranscripts = config.supabaseSyncTranscripts
+        let previousSupabaseURL = config.supabaseURL
+        let previousSupabaseAnonKey = config.supabaseAnonKey
+        let previousSupabaseWorkspaceID = config.supabaseWorkspaceID
+        let previousCloudSyncEnabled = config.salesCaddieCloudSyncEnabled
+        let previousCloudAPIURL = config.salesCaddieCloudAPIURL
+        let previousCloudAPIToken = config.salesCaddieCloudAPIToken
+        let previousCloudWorkspaceSlug = config.salesCaddieCloudWorkspaceSlug
+        let previousComputerUseHotkeyEnabled = config.enableComputerUseHotkey
+        let previousJessicaHotkeyEnabled = config.enableJessicaHotkey
+        let previousMeetingRecordingHotkeyEnabled = config.enableMeetingRecordingHotkey
         mutate(&config)
+        enforceSalesCaddiePermissions(&config)
         config.hotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(config.hotkeyTriggerThresholdMS)
         config.computerUseHotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(config.computerUseHotkeyTriggerThresholdMS)
+        config.jessicaHotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(config.jessicaHotkeyTriggerThresholdMS)
         config.meetingRecordingHotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(config.meetingRecordingHotkeyTriggerThresholdMS)
         let hotkeyTriggerThresholdChanged = config.hotkeyTriggerThresholdMS != previousHotkeyTriggerThresholdMS
             || config.computerUseHotkeyTriggerThresholdMS != previousComputerUseHotkeyTriggerThresholdMS
+            || config.jessicaHotkeyTriggerThresholdMS != previousJessicaHotkeyTriggerThresholdMS
             || config.meetingRecordingHotkeyTriggerThresholdMS != previousMeetingRecordingHotkeyTriggerThresholdMS
         configStore.save(config)
         MuesliTheme.accentOverrideHex = config.recordingColorHex == "1e1e2e" ? nil : config.recordingColorHex
@@ -836,6 +972,7 @@ final class MuesliController: NSObject {
         indicator.refreshIcon()
         hotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
         computerUseHotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
+        jessicaHotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
         if hotkeyTriggerThresholdChanged {
             configureHotkeyMonitorTiming()
         }
@@ -853,6 +990,71 @@ final class MuesliController: NSObject {
         syncMeetingDetectionMonitor()
         updateMeetingNotificationVisibility()
         syncDictationRecorderWarmup(reason: "config")
+        let salesLibrarySyncSettingsChanged = previousSupabaseSyncEnabled != config.supabaseSyncEnabled
+            || previousSupabaseSyncSalesLibrary != config.supabaseSyncSalesLibrary
+            || previousSupabaseSyncTranscripts != config.supabaseSyncTranscripts
+            || previousSupabaseURL != config.supabaseURL
+            || previousSupabaseAnonKey != config.supabaseAnonKey
+            || previousSupabaseWorkspaceID != config.supabaseWorkspaceID
+            || previousCloudSyncEnabled != config.salesCaddieCloudSyncEnabled
+            || previousCloudAPIURL != config.salesCaddieCloudAPIURL
+            || previousCloudAPIToken != config.salesCaddieCloudAPIToken
+            || previousCloudWorkspaceSlug != config.salesCaddieCloudWorkspaceSlug
+        if salesLibrarySyncSettingsChanged {
+            refreshCloudIdentityIfNeeded(reason: "config")
+            syncSalesLibraryIfNeeded(reason: "config")
+            syncRecentMeetingsIfNeeded(reason: "config")
+            syncSalesAgentHistoryBacklogIfNeeded(reason: "config")
+            configureCloudAutoSyncTimer()
+        }
+        if previousComputerUseHotkeyEnabled != config.enableComputerUseHotkey {
+            configureComputerUseHotkeyMonitor()
+        }
+        if previousJessicaHotkeyEnabled != config.enableJessicaHotkey {
+            configureJessicaHotkeyMonitor()
+        }
+        if previousMeetingRecordingHotkeyEnabled != config.enableMeetingRecordingHotkey {
+            startMeetingRecordingHotkeyMonitorIfNeeded()
+        }
+    }
+
+    private func enforceSalesCaddiePermissions(_ config: inout AppConfig) {
+        guard config.salesCaddieCloudPermissions != nil else { return }
+        if !config.salesCaddieAllowsComputerControl {
+            config.enableComputerUseHotkey = false
+            config.enableComputerUsePlanner = false
+        }
+        if !config.salesCaddieAllowsSalesAgent {
+            config.enableJessicaHotkey = false
+        }
+        if !config.salesCaddieAllowsMeetingRecording {
+            config.enableMeetingRecordingHotkey = false
+        }
+        if !config.salesCaddieAllowsTranscriptSync {
+            config.supabaseSyncTranscripts = false
+        }
+        if !config.salesCaddieAllowsAIAssist {
+            config.salesAssistAIEnabled = false
+        }
+    }
+
+    func applySalesCaddieIdentity(_ identity: SalesCaddieIdentityResponse) {
+        updateConfig { config in
+            config.salesCaddieCloudPermissions = identity.permissions
+        }
+    }
+
+    func applySalesCaddieInviteConfig(_ inviteConfig: SalesCaddieInviteConfig) {
+        updateConfig { config in
+            config.salesCaddieCloudSyncEnabled = inviteConfig.salesCaddieCloudSyncEnabled
+            config.salesCaddieCloudAPIURL = inviteConfig.salesCaddieCloudAPIURL
+            config.salesCaddieCloudAPIToken = inviteConfig.salesCaddieCloudAPIToken
+            config.salesCaddieCloudWorkspaceSlug = inviteConfig.salesCaddieCloudWorkspaceSlug
+            config.supabaseUserID = inviteConfig.supabaseUserID
+            config.userName = inviteConfig.userName
+            config.supabaseSyncJessicaHistory = true
+            config.supabaseSyncSalesLibrary = true
+        }
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {
@@ -985,7 +1187,8 @@ final class MuesliController: NSObject {
         if enabled {
             guard normalizePostProcessorSelectionForAvailability() != nil else {
                 updateConfig { $0.enablePostProcessor = false }
-                appState.selectedTab = .models
+                appState.preferredSettingsPane = "tools"
+                appState.selectedTab = .settings
                 return
             }
         }
@@ -1137,15 +1340,30 @@ final class MuesliController: NSObject {
 
     func signInWithGoogleCalendar() async -> String? {
         do {
-            try await googleCalAuth.signIn()
+            try await googleCalAuth.signIn(scopes: GoogleIntegrationScope.calendar)
             syncAppState()
             Task {
-                await refreshUpcomingCalendarEvents()
                 await refreshGoogleCalendarList()
+                await refreshUpcomingCalendarEvents()
             }
             return nil
         } catch {
             fputs("[muesli-native] Google Calendar sign-in failed: \(error)\n", stderr)
+            return error.localizedDescription
+        }
+    }
+
+    func authorizeGoogleDriveDocs() async -> String? {
+        do {
+            try await googleCalAuth.signIn(scopes: GoogleIntegrationScope.calendar.union(GoogleIntegrationScope.driveDocs))
+            syncAppState()
+            Task {
+                await refreshGoogleCalendarList()
+                await refreshUpcomingCalendarEvents()
+            }
+            return nil
+        } catch {
+            fputs("[muesli-native] Google Drive/Docs authorization failed: \(error)\n", stderr)
             return error.localizedDescription
         }
     }
@@ -1167,7 +1385,9 @@ final class MuesliController: NSObject {
     /// to call frequently — driven by Settings panel onAppear and by the
     /// EKEventStoreChangedNotification handler.
     func refreshAvailableEventKitCalendars() {
-        appState.availableEventKitCalendars = calendarMonitor.availableCalendars()
+        let calendars = calendarMonitor.availableCalendars()
+        appState.availableEventKitCalendars = calendars
+        applyEventKitSubscriptionCalendarDefaultIfNeeded(calendars)
     }
 
     /// Refresh the Google calendar list via the Calendar API. No-op when OAuth
@@ -1182,6 +1402,7 @@ final class MuesliController: NSObject {
         do {
             let list = try await googleCalClient.fetchCalendarList()
             appState.availableGoogleCalendars = list
+            applyGoogleCalendarPrimaryOnlyDefaultIfNeeded(list)
             appState.googleCalendarListLoadState = .loaded
         } catch GoogleCalendarAuthError.notAuthenticated {
             invalidateGoogleCalendarAuth()
@@ -1189,6 +1410,9 @@ final class MuesliController: NSObject {
         } catch GoogleCalendarAuthError.refreshFailed(let message) {
             fputs("[muesli-native] Google Calendar token refresh failed while loading calendar list: \(message)\n", stderr)
             appState.googleCalendarListLoadState = .failed("Token refresh failed: \(message)")
+        } catch GoogleCalendarClientError.permissionDenied(let message) {
+            fputs("[muesli-native] Google Calendar calendarList permission denied: \(message)\n", stderr)
+            appState.googleCalendarListLoadState = .failed("Permission denied. Reconnect Google Calendar to approve calendar read access.")
         } catch {
             fputs("[muesli-native] Google calendarList fetch failed: \(error)\n", stderr)
             appState.googleCalendarListLoadState = .failed(error.localizedDescription)
@@ -1196,11 +1420,22 @@ final class MuesliController: NSObject {
     }
 
     func refreshUpcomingCalendarEvents() async {
-        let disabledIDs = Set(config.disabledCalendarIDs)
+        let eventKitCalendars = calendarMonitor.availableCalendars()
+        appState.availableEventKitCalendars = eventKitCalendars
+        applyEventKitSubscriptionCalendarDefaultIfNeeded(eventKitCalendars)
+
+        var disabledIDs = Set(config.disabledCalendarIDs)
         var ekEvents = calendarMonitor.upcomingEvents(daysAhead: 7, disabledCalendarIDs: disabledIDs)
 
         if googleCalAuth.isAuthenticated {
             do {
+                if !config.googleCalendarPrimaryOnlyDefaultApplied || appState.availableGoogleCalendars.isEmpty {
+                    let list = try await googleCalClient.fetchCalendarList()
+                    appState.availableGoogleCalendars = list
+                    applyGoogleCalendarPrimaryOnlyDefaultIfNeeded(list)
+                    disabledIDs = Set(config.disabledCalendarIDs)
+                    ekEvents = calendarMonitor.upcomingEvents(daysAhead: 7, disabledCalendarIDs: disabledIDs)
+                }
                 let googleEvents = try await googleCalClient.fetchUpcomingEvents(
                     daysAhead: 7,
                     disabledCalendarIDs: disabledIDs
@@ -1211,6 +1446,8 @@ final class MuesliController: NSObject {
                 fputs("[muesli-native] Google Calendar token invalid, signed out\n", stderr)
             } catch GoogleCalendarAuthError.refreshFailed(let message) {
                 fputs("[muesli-native] Google Calendar token refresh failed: \(message)\n", stderr)
+            } catch GoogleCalendarClientError.permissionDenied(let message) {
+                fputs("[muesli-native] Google Calendar permission denied: \(message)\n", stderr)
             } catch {
                 fputs("[muesli-native] Google Calendar fetch failed: \(error)\n", stderr)
             }
@@ -1227,6 +1464,36 @@ final class MuesliController: NSObject {
         }
 
         statusBarController?.updateMenuBarTitle()
+    }
+
+    private func applyGoogleCalendarPrimaryOnlyDefaultIfNeeded(_ calendars: [GoogleCalendarSummary]) {
+        guard !config.googleCalendarPrimaryOnlyDefaultApplied,
+              calendars.contains(where: \.isPrimary) else {
+            return
+        }
+        updateConfig { config in
+            var disabled = Set(config.disabledCalendarIDs)
+            for calendar in calendars where !calendar.isPrimary {
+                disabled.insert(calendar.id)
+            }
+            config.disabledCalendarIDs = disabled.sorted()
+            config.googleCalendarPrimaryOnlyDefaultApplied = true
+        }
+    }
+
+    private func applyEventKitSubscriptionCalendarDefaultIfNeeded(_ calendars: [AvailableCalendar]) {
+        guard !config.eventKitSubscriptionCalendarDefaultApplied else { return }
+        let subscriptionCalendarIDs = calendars
+            .filter { $0.typeLabel == "Subscription" }
+            .map(\.id)
+        guard !subscriptionCalendarIDs.isEmpty else { return }
+
+        updateConfig { config in
+            var disabled = Set(config.disabledCalendarIDs)
+            disabled.formUnion(subscriptionCalendarIDs)
+            config.disabledCalendarIDs = disabled.sorted()
+            config.eventKitSubscriptionCalendarDefaultApplied = true
+        }
     }
 
     func startCalendarMonitoring() {
@@ -1354,7 +1621,7 @@ final class MuesliController: NSObject {
                     DispatchQueue.main.async { [weak self] in
                         guard let self, !self.isMeetingRecording() else { return }
                         self.meetingStartingNowTimers.removeValue(forKey: key)
-                        self.showMeetingStartingNowNotification(title: title, calendarEventID: key, meetingURL: meetingURL, endDate: endDate)
+                        self.showMeetingStartingNowNotification(title: title, calendarEventID: event.id, meetingURL: meetingURL, endDate: endDate)
                     }
                 }
             }
@@ -1370,11 +1637,20 @@ final class MuesliController: NSObject {
               !isStartingMeetingRecording else { return }
         isShowingCalendarNotification = true
         let autoStopSource = meetingURL.flatMap { MeetingAutoStopSource(meetingURL: $0) }
+        let briefingEvent = preCallBriefingEvent(
+            calendarEventID: calendarEventID,
+            title: title,
+            startDate: Date(),
+            meetingURL: meetingURL,
+            endDate: endDate
+        )
+        let preCallBriefing = preCallBriefingDigest(for: briefingEvent)
 
         meetingNotification.show(
             title: "Meeting starting now",
             subtitle: title,
             meetingURL: meetingURL,
+            preCallBriefing: preCallBriefing,
             dismissAfter: 30,
             onStartRecording: { [weak self] in
                 guard let self else { return }
@@ -1411,6 +1687,42 @@ final class MuesliController: NSObject {
         updateConfig { $0.customWords.append(word) }
     }
 
+    @discardableResult
+    func importCustomWords(_ words: [CustomWord]) -> Int {
+        let normalizedWords = words
+            .map { word in
+                CustomWord(
+                    word: word.word.trimmingCharacters(in: .whitespacesAndNewlines),
+                    replacement: word.replacement?.trimmingCharacters(in: .whitespacesAndNewlines),
+                    matchingThreshold: word.matchingThreshold
+                )
+            }
+            .filter { !$0.word.isEmpty }
+        guard !normalizedWords.isEmpty else { return 0 }
+
+        var importedCount = 0
+        updateConfig { config in
+            var existingByKey = Dictionary(uniqueKeysWithValues: config.customWords.map { (customWordKey($0), $0.id) })
+            for word in normalizedWords {
+                let key = customWordKey(word)
+                if let existingID = existingByKey[key],
+                   let index = config.customWords.firstIndex(where: { $0.id == existingID }) {
+                    config.customWords[index] = CustomWord(
+                        id: existingID,
+                        word: word.word,
+                        replacement: word.replacement?.isEmpty == false ? word.replacement : nil,
+                        matchingThreshold: word.matchingThreshold
+                    )
+                } else {
+                    config.customWords.append(word)
+                    existingByKey[key] = word.id
+                }
+                importedCount += 1
+            }
+        }
+        return importedCount
+    }
+
     func updateCustomWord(_ word: CustomWord) {
         updateConfig { config in
             guard let index = config.customWords.firstIndex(where: { $0.id == word.id }) else { return }
@@ -1422,12 +1734,21 @@ final class MuesliController: NSObject {
         updateConfig { $0.customWords.removeAll { $0.id == id } }
     }
 
+    private func customWordKey(_ word: CustomWord) -> String {
+        let replacement = (word.replacement ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return "\(word.word.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())|\(replacement)"
+    }
+
     @discardableResult
     func updateDictationHotkey(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
         let result = ShortcutHotkeyPolicy.validateDictationHotkey(
             hotkey,
             computerUseHotkey: config.computerUseHotkey,
             isComputerUseEnabled: config.enableComputerUseHotkey,
+            jessicaHotkey: config.jessicaHotkey,
+            isJessicaEnabled: config.enableJessicaHotkey,
             meetingRecordingHotkey: config.meetingRecordingHotkey,
             isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
         )
@@ -1438,6 +1759,7 @@ final class MuesliController: NSObject {
         updateConfig { $0.dictationHotkey = hotkey }
         hotkeyMonitor.configure(hotkey)
         configureComputerUseHotkeyMonitor()
+        configureJessicaHotkeyMonitor()
         return result
     }
 
@@ -1447,6 +1769,8 @@ final class MuesliController: NSObject {
             hotkey,
             dictationHotkey: config.dictationHotkey,
             isComputerUseEnabled: config.enableComputerUseHotkey,
+            jessicaHotkey: config.jessicaHotkey,
+            isJessicaEnabled: config.enableJessicaHotkey,
             meetingRecordingHotkey: config.meetingRecordingHotkey,
             isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
         )
@@ -1465,6 +1789,8 @@ final class MuesliController: NSObject {
             let resolution = ShortcutHotkeyPolicy.resolvedComputerUseHotkeyWhenEnabling(
                 currentHotkey: config.computerUseHotkey,
                 dictationHotkey: config.dictationHotkey,
+                jessicaHotkey: config.jessicaHotkey,
+                isJessicaEnabled: config.enableJessicaHotkey,
                 meetingRecordingHotkey: config.meetingRecordingHotkey,
                 isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
             )
@@ -1486,12 +1812,54 @@ final class MuesliController: NSObject {
     }
 
     @discardableResult
+    func updateJessicaHotkey(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
+        let result = ShortcutHotkeyPolicy.validateJessicaHotkey(
+            hotkey,
+            dictationHotkey: config.dictationHotkey,
+            computerUseHotkey: config.computerUseHotkey,
+            isComputerUseEnabled: config.enableComputerUseHotkey,
+            meetingRecordingHotkey: config.meetingRecordingHotkey,
+            isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
+        )
+        guard result.didUpdate else {
+            fputs("[hotkeys] rejected jessica hotkey due to conflict\n", stderr)
+            return result
+        }
+        updateConfig { $0.jessicaHotkey = hotkey }
+        configureJessicaHotkeyMonitor()
+        return result
+    }
+
+    @discardableResult
+    func updateJessicaHotkeyEnabled(_ enabled: Bool) -> ShortcutHotkeyUpdateResult {
+        if enabled {
+            let result = ShortcutHotkeyPolicy.validateJessicaHotkey(
+                config.jessicaHotkey,
+                dictationHotkey: config.dictationHotkey,
+                computerUseHotkey: config.computerUseHotkey,
+                isComputerUseEnabled: config.enableComputerUseHotkey,
+                meetingRecordingHotkey: config.meetingRecordingHotkey,
+                isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
+            )
+            guard result.didUpdate else { return result }
+            updateConfig { $0.enableJessicaHotkey = true }
+            startJessicaHotkeyMonitorIfNeeded()
+            return result
+        }
+        updateConfig { $0.enableJessicaHotkey = false }
+        jessicaHotkeyMonitor.stop()
+        return .updated
+    }
+
+    @discardableResult
     func updateMeetingRecordingHotkey(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
         let result = ShortcutHotkeyPolicy.validateMeetingRecordingHotkey(
             hotkey,
             dictationHotkey: config.dictationHotkey,
             computerUseHotkey: config.computerUseHotkey,
-            isComputerUseEnabled: config.enableComputerUseHotkey
+            isComputerUseEnabled: config.enableComputerUseHotkey,
+            jessicaHotkey: config.jessicaHotkey,
+            isJessicaEnabled: config.enableJessicaHotkey
         )
         guard result.didUpdate else {
             fputs("[hotkeys] rejected meeting recording hotkey due to conflict\n", stderr)
@@ -1509,7 +1877,9 @@ final class MuesliController: NSObject {
                 config.meetingRecordingHotkey,
                 dictationHotkey: config.dictationHotkey,
                 computerUseHotkey: config.computerUseHotkey,
-                isComputerUseEnabled: config.enableComputerUseHotkey
+                isComputerUseEnabled: config.enableComputerUseHotkey,
+                jessicaHotkey: config.jessicaHotkey,
+                isJessicaEnabled: config.enableJessicaHotkey
             )
             guard result.didUpdate else { return result }
             updateConfig { $0.enableMeetingRecordingHotkey = true }
@@ -1527,15 +1897,393 @@ final class MuesliController: NSObject {
             config.dictationHotkey = .default
             config.computerUseHotkey = .computerUseDefault
             config.enableComputerUseHotkey = false
+            config.jessicaHotkey = .jessicaDefault
+            config.enableJessicaHotkey = false
             config.meetingRecordingHotkey = .meetingRecordingDefault
             config.enableMeetingRecordingHotkey = false
             config.hotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultThresholdMilliseconds
             config.computerUseHotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultThresholdMilliseconds
+            config.jessicaHotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultThresholdMilliseconds
             config.meetingRecordingHotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultMeetingThresholdMilliseconds
         }
         hotkeyMonitor.configure(.default)
         configureComputerUseHotkeyMonitor()
+        jessicaHotkeyMonitor.stop()
         meetingRecordingHotkeyMonitor.stop()
+    }
+
+    func clearSalesAgentHistory() {
+        updateConfig { $0.salesAgentHistory = [] }
+    }
+
+    func salesCaddieHealthSnapshot() -> SalesCaddieHealthSnapshot {
+        SalesCaddieHealthSnapshot(
+            microphoneGranted: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
+            inputMonitoringGranted: CGPreflightListenEventAccess(),
+            accessibilityGranted: AXIsProcessTrusted(),
+            screenRecordingGranted: CGPreflightScreenCaptureAccess(),
+            dictationShortcutEnabled: config.resolvedOnboardingUseCase.includesPushToTalk,
+            dictationMonitorRunning: hotkeyMonitor.isRunning,
+            computerUseShortcutEnabled: config.enableComputerUseHotkey,
+            computerUseMonitorRunning: computerUseHotkeyMonitor.isRunning,
+            jessicaShortcutEnabled: config.enableJessicaHotkey,
+            jessicaMonitorRunning: jessicaHotkeyMonitor.isRunning,
+            meetingShortcutEnabled: config.enableMeetingRecordingHotkey,
+            meetingMonitorRunning: meetingRecordingHotkeyMonitor.isRunning,
+            salesAssistEnabled: config.salesAssistEnabled,
+            salesAssistAIEnabled: config.salesAssistAIEnabled,
+            salesAgentProvider: SalesAgentBackendOption.resolved(config.salesAgentBackend).label,
+            supabaseSyncEnabled: config.supabaseSyncEnabled
+        )
+    }
+
+    func restartShortcutListeners() {
+        configureHotkeyMonitorTiming()
+        if config.resolvedOnboardingUseCase.includesPushToTalk {
+            hotkeyMonitor.configure(config.dictationHotkey)
+            hotkeyMonitor.start()
+        }
+        startComputerUseHotkeyMonitorIfNeeded()
+        startJessicaHotkeyMonitorIfNeeded()
+        startMeetingRecordingHotkeyMonitorIfNeeded()
+        indicator.showAgentResponseCard(
+            title: "Shortcut listeners restarted",
+            message: "Sales Caddie checked the active shortcuts and restarted any listeners that should be running."
+        )
+    }
+
+    func testJessicaResponseCard() {
+        indicator.showAgentResponseCard(
+            title: "Jessica test response",
+            message: "Jessica responses will appear here after a voice command. This test confirms the response card is available."
+        )
+    }
+
+    func testMeetingRecordingPrompt() {
+        indicator.showAgentResponseCard(
+            title: "Meeting recording test",
+            message: "The meeting recording shortcut is configured. Use the shortcut to start or stop recording; this test avoids creating a real recording."
+        )
+    }
+
+    private func appendSalesAgentHistory(
+        transcript: String,
+        response: String,
+        status: ComputerUsePlannerRuntimeResult.Status,
+        plannerCommand: String? = nil
+    ) {
+        let item = SalesAgentHistoryItem(
+            provider: config.salesAgentBackend,
+            transcript: transcript,
+            response: response,
+            plannerCommand: plannerCommand,
+            status: computerUseTraceStatus(status)
+        )
+        updateConfig { config in
+            config.salesAgentHistory.insert(item, at: 0)
+            if config.salesAgentHistory.count > 100 {
+                config.salesAgentHistory = Array(config.salesAgentHistory.prefix(100))
+            }
+        }
+        syncSalesAgentHistoryItemIfNeeded(item)
+    }
+
+    private func syncSalesAgentHistoryItemIfNeeded(_ item: SalesAgentHistoryItem) {
+        let configSnapshot = config
+        guard configSnapshot.salesCaddieAllowsSalesAgent else { return }
+        guard configSnapshot.salesCaddieCloudSyncEnabled || (configSnapshot.supabaseSyncEnabled && configSnapshot.supabaseSyncJessicaHistory) else { return }
+        Task.detached(priority: .utility) {
+            do {
+                if configSnapshot.salesCaddieCloudSyncEnabled {
+                    try await SalesCaddieCloudAPIClient.syncSalesAgentHistoryItem(item, config: configSnapshot)
+                } else {
+                    try await SupabaseSyncClient.syncSalesAgentHistoryItem(item, config: configSnapshot)
+                }
+            } catch {
+                fputs("[sync] sales agent history sync failed: \(error.localizedDescription)\n", stderr)
+            }
+        }
+    }
+
+    func syncAllCloudArtifactsNow() {
+        refreshCloudIdentityIfNeeded(reason: "manual")
+        syncSalesLibraryIfNeeded(reason: "manual")
+        syncRecentMeetingsIfNeeded(reason: "manual")
+        syncSalesAgentHistoryBacklogIfNeeded(reason: "manual")
+    }
+
+    private func configureCloudAutoSyncTimer() {
+        cloudAutoSyncTimer?.invalidate()
+        cloudAutoSyncTimer = nil
+
+        guard config.salesCaddieCloudSyncEnabled || config.supabaseSyncEnabled else { return }
+
+        cloudAutoSyncTimer = Timer.scheduledTimer(withTimeInterval: cloudAutoSyncInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.runAutomaticCloudSync()
+            }
+        }
+        cloudAutoSyncTimer?.tolerance = 60
+    }
+
+    private func runAutomaticCloudSync() {
+        guard config.salesCaddieCloudSyncEnabled || config.supabaseSyncEnabled else {
+            configureCloudAutoSyncTimer()
+            return
+        }
+        refreshCloudIdentityIfNeeded(reason: "auto")
+        syncSalesLibraryIfNeeded(reason: "auto")
+        syncRecentMeetingsIfNeeded(reason: "auto")
+        syncSalesAgentHistoryBacklogIfNeeded(reason: "auto")
+    }
+
+    private func refreshCloudIdentityIfNeeded(reason: String) {
+        let configSnapshot = config
+        guard configSnapshot.salesCaddieCloudSyncEnabled else { return }
+
+        cloudIdentitySyncTask?.cancel()
+        cloudIdentitySyncTask = Task(priority: .utility) { [weak self] in
+            do {
+                try await SalesCaddieCloudAPIClient.heartbeat(config: configSnapshot)
+                let identity = try await SalesCaddieCloudAPIClient.fetchIdentity(config: configSnapshot)
+                await MainActor.run {
+                    guard let self else { return }
+                    self.applySalesCaddieIdentity(identity)
+                    fputs("[sync] cloud identity refreshed (\(reason))\n", stderr)
+                }
+            } catch {
+                fputs("[sync] cloud identity refresh failed: \(error.localizedDescription)\n", stderr)
+            }
+        }
+    }
+
+    private func syncSalesAgentHistoryBacklogIfNeeded(reason: String) {
+        let configSnapshot = config
+        guard configSnapshot.salesCaddieAllowsSalesAgent else { return }
+        guard configSnapshot.salesCaddieCloudSyncEnabled || (configSnapshot.supabaseSyncEnabled && configSnapshot.supabaseSyncJessicaHistory) else { return }
+        let items = Array(configSnapshot.salesAgentHistory.prefix(100))
+        guard !items.isEmpty else { return }
+
+        salesAgentHistorySyncTask?.cancel()
+        salesAgentHistorySyncTask = Task.detached(priority: .utility) {
+            var count = 0
+            for item in items.reversed() {
+                do {
+                    if configSnapshot.salesCaddieCloudSyncEnabled {
+                        try await SalesCaddieCloudAPIClient.syncSalesAgentHistoryItem(item, config: configSnapshot)
+                    } else {
+                        try await SupabaseSyncClient.syncSalesAgentHistoryItem(item, config: configSnapshot)
+                    }
+                    count += 1
+                } catch {
+                    fputs("[sync] sales agent history backlog sync failed: \(error.localizedDescription)\n", stderr)
+                    return
+                }
+            }
+            fputs("[sync] synced \(count) sales agent history event(s) (\(reason))\n", stderr)
+        }
+    }
+
+    func syncSalesLibraryNow() {
+        syncSalesLibraryIfNeeded(reason: "manual")
+    }
+
+    private func syncSalesLibraryIfNeeded(reason: String) {
+        let configSnapshot = config
+        guard configSnapshot.salesCaddieCloudSyncEnabled || (configSnapshot.supabaseSyncEnabled && configSnapshot.supabaseSyncSalesLibrary) else { return }
+
+        salesLibrarySyncTask?.cancel()
+        salesLibrarySyncTask = Task(priority: .utility) { [weak self] in
+            do {
+                let remoteSnapshot = configSnapshot.salesCaddieCloudSyncEnabled
+                    ? try await SalesCaddieCloudAPIClient.fetchSalesLibrarySnapshot(config: configSnapshot)
+                    : try await SupabaseSyncClient.fetchSalesLibrarySnapshot(config: configSnapshot)
+                if remoteSnapshot.isEmpty {
+                    if configSnapshot.salesCaddieCloudSyncEnabled {
+                        try await SalesCaddieCloudAPIClient.syncSalesLibrarySnapshot(config: configSnapshot)
+                    } else {
+                        try await SupabaseSyncClient.syncSalesLibrarySnapshot(config: configSnapshot)
+                    }
+                    return
+                }
+
+                await MainActor.run {
+                    guard let self else { return }
+                    self.applySalesLibrarySnapshot(remoteSnapshot, reason: reason)
+                }
+            } catch {
+                fputs("[supabase] sales library sync failed: \(error.localizedDescription)\n", stderr)
+            }
+        }
+    }
+
+    private func applySalesLibrarySnapshot(_ snapshot: SalesAssistLibrarySnapshot, reason: String) {
+        guard !snapshot.isEmpty else { return }
+        updateConfig { config in
+            if !snapshot.knowledgeBase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                config.salesAssistKnowledgeBase = snapshot.knowledgeBase
+            }
+            if !snapshot.objections.isEmpty {
+                config.salesAssistObjections = snapshot.objections
+            }
+            if !snapshot.liveCues.isEmpty {
+                config.salesAssistLiveCues = SalesAssistLiveCue.appendingMissingSeedCues(to: snapshot.liveCues)
+            }
+            config.salesAssistAdminManagedLibraryEnabled = true
+            config.salesAssistAdminLibraryURL = "supabase://sales_app.sales_caddie_library_items"
+            config.salesAssistAdminLibraryUpdatedAt = snapshot.updatedAt ?? ISO8601DateFormatter.supabase.string(from: Date())
+        }
+        fputs("[supabase] sales library sync applied (\(reason))\n", stderr)
+    }
+
+    func syncMeetingsNow() {
+        syncRecentMeetingsIfNeeded(reason: "manual")
+    }
+
+    private func syncRecentMeetingsIfNeeded(reason: String) {
+        let configSnapshot = config
+        guard configSnapshot.salesCaddieAllowsTranscriptSync else { return }
+        guard configSnapshot.salesCaddieCloudSyncEnabled || (configSnapshot.supabaseSyncEnabled && configSnapshot.supabaseSyncTranscripts) else { return }
+
+        let meetings: [MeetingRecord]
+        do {
+            meetings = try dictationStore.recentMeetings(limit: 200)
+        } catch {
+            fputs("[supabase] failed to load meetings for sync: \(error.localizedDescription)\n", stderr)
+            return
+        }
+
+        meetingsSyncTask?.cancel()
+        meetingsSyncTask = Task(priority: .utility) {
+            do {
+                if configSnapshot.salesCaddieCloudSyncEnabled {
+                    try await SalesCaddieCloudAPIClient.syncMeetings(meetings, config: configSnapshot)
+                } else {
+                    try await SupabaseSyncClient.syncMeetings(meetings, config: configSnapshot)
+                }
+                fputs("[sync] synced \(meetings.count) meeting(s) (\(reason))\n", stderr)
+            } catch {
+                fputs("[sync] meetings sync failed: \(error.localizedDescription)\n", stderr)
+            }
+        }
+    }
+
+    private func syncMeetingIfNeeded(id: Int64) {
+        let configSnapshot = config
+        guard configSnapshot.salesCaddieAllowsTranscriptSync else { return }
+        guard configSnapshot.salesCaddieCloudSyncEnabled || (configSnapshot.supabaseSyncEnabled && configSnapshot.supabaseSyncTranscripts) else { return }
+        guard let meeting = try? dictationStore.meeting(id: id) else { return }
+        syncPostCallReviewInsightsIfNeeded(meeting, configSnapshot: configSnapshot)
+
+        Task.detached(priority: .utility) {
+            do {
+                if configSnapshot.salesCaddieCloudSyncEnabled {
+                    try await SalesCaddieCloudAPIClient.syncMeeting(meeting, config: configSnapshot)
+                } else {
+                    try await SupabaseSyncClient.syncMeeting(meeting, config: configSnapshot)
+                }
+            } catch {
+                fputs("[sync] meeting sync failed: \(error.localizedDescription)\n", stderr)
+            }
+        }
+    }
+
+    private func syncPostCallReviewInsightsIfNeeded(_ meeting: MeetingRecord, configSnapshot: AppConfig) {
+        guard configSnapshot.salesCaddieCloudSyncEnabled || configSnapshot.supabaseSyncEnabled else { return }
+        let insights = SalesCallReviewAnalyzer.callInsights(for: meeting)
+        guard !insights.isEmpty else { return }
+
+        let alerts = insights.compactMap { insight -> SalesAssistAlert? in
+            let alert = SalesAssistAlert(
+                kind: insight.kind,
+                objection: insight.name,
+                quote: insight.evidence,
+                talkTrack: insight.guidance,
+                priority: insight.priority,
+                updatedAt: Date()
+            )
+            let fingerprint = salesAssistInsightFingerprint(alert, meetingID: meeting.id)
+            guard !syncedSalesInsightFingerprints.contains(fingerprint) else { return nil }
+            syncedSalesInsightFingerprints.insert(fingerprint)
+            return alert
+        }
+        guard !alerts.isEmpty else { return }
+        if syncedSalesInsightFingerprints.count > 250 {
+            syncedSalesInsightFingerprints.removeAll(keepingCapacity: true)
+        }
+
+        Task.detached(priority: .utility) {
+            for alert in alerts {
+                do {
+                    if configSnapshot.salesCaddieCloudSyncEnabled {
+                        try await SalesCaddieCloudAPIClient.syncCallInsight(alert: alert, localMeetingID: meeting.id, config: configSnapshot)
+                    } else {
+                        try await SupabaseSyncClient.syncCallInsight(alert: alert, localMeetingID: meeting.id, config: configSnapshot)
+                    }
+                } catch {
+                    fputs("[sync] post-call insight sync failed: \(error.localizedDescription)\n", stderr)
+                }
+            }
+        }
+    }
+
+    private func syncSalesAssistInsightIfNeeded(_ alert: SalesAssistAlert) {
+        let configSnapshot = config
+        guard configSnapshot.salesCaddieCloudSyncEnabled || configSnapshot.supabaseSyncEnabled else { return }
+        let localMeetingID = activeMeetingID
+        let fingerprint = salesAssistInsightFingerprint(alert, meetingID: localMeetingID)
+        guard !syncedSalesInsightFingerprints.contains(fingerprint) else { return }
+        syncedSalesInsightFingerprints.insert(fingerprint)
+        if syncedSalesInsightFingerprints.count > 100 {
+            syncedSalesInsightFingerprints.removeAll(keepingCapacity: true)
+        }
+
+        Task.detached(priority: .utility) {
+            do {
+                if configSnapshot.salesCaddieCloudSyncEnabled {
+                    try await SalesCaddieCloudAPIClient.syncCallInsight(alert: alert, localMeetingID: localMeetingID, config: configSnapshot)
+                } else {
+                    try await SupabaseSyncClient.syncCallInsight(alert: alert, localMeetingID: localMeetingID, config: configSnapshot)
+                }
+            } catch {
+                fputs("[sync] sales insight sync failed: \(error.localizedDescription)\n", stderr)
+            }
+        }
+    }
+
+    private func handleSalesAssistFeedback(_ alert: SalesAssistAlert, action: SalesAssistOverlayAction) {
+        guard action == .notUseful else { return }
+        let suggestion = SalesAssistLearningSuggestion(
+            kind: .knowledgeBase,
+            title: "Review live cue: \(alert.objection)",
+            content: """
+            A rep marked this Sales Assist card as not useful.
+
+            Type: \(alert.kind)
+            Priority: \(alert.priority)
+            Quote: \(alert.quote)
+            Current guidance: \(alert.talkTrack)
+            """,
+            reason: "Use this to tighten the trigger phrases, priority, or talk track for this cue.",
+            sourceTitle: "Sales Assist feedback"
+        )
+        updateConfig { config in
+            guard !config.salesAssistLearningSuggestions.contains(where: {
+                $0.title == suggestion.title && $0.sourceTitle == suggestion.sourceTitle
+            }) else { return }
+            config.salesAssistLearningSuggestions.insert(suggestion, at: 0)
+        }
+    }
+
+    private func salesAssistInsightFingerprint(_ alert: SalesAssistAlert, meetingID: Int64?) -> String {
+        [
+            meetingID.map(String.init) ?? "no-meeting",
+            alert.kind,
+            alert.objection,
+            alert.quote,
+        ]
+        .joined(separator: "|")
+        .lowercased()
     }
 
     // MARK: - Onboarding
@@ -1683,11 +2431,13 @@ final class MuesliController: NSObject {
         }
         hotkeyMonitor.start()
         startComputerUseHotkeyMonitorIfNeeded()
+        startJessicaHotkeyMonitorIfNeeded()
     }
 
     func stopHotkeyMonitor() {
         hotkeyMonitor.stop()
         computerUseHotkeyMonitor.stop()
+        jessicaHotkeyMonitor.stop()
         meetingRecordingHotkeyMonitor.stop()
     }
 
@@ -1819,6 +2569,8 @@ final class MuesliController: NSObject {
             config.dictationHotkey = hotkey
             config.computerUseHotkey = HotkeyConfig.computerUseDefault(avoiding: hotkey)
             config.enableComputerUseHotkey = false
+            config.jessicaHotkey = .jessicaDefault
+            config.enableJessicaHotkey = false
             config.enableComputerUsePlanner = true
             config.onboardingUseCase = onboardingUseCase.rawValue
             if let summaryBackend {
@@ -1836,6 +2588,7 @@ final class MuesliController: NSObject {
         selectBackend(backend)
         hotkeyMonitor.configure(keyCode: hotkey.keyCode)
         configureComputerUseHotkeyMonitor()
+        configureJessicaHotkeyMonitor()
         dictationTestCallback = nil
         dictationTestFailureCallback = nil
         dictationTestRecordingStarted = nil
@@ -1849,6 +2602,7 @@ final class MuesliController: NSObject {
             if onboardingUseCase.includesPushToTalk {
                 hotkeyMonitor.start()
                 startComputerUseHotkeyMonitorIfNeeded()
+                startJessicaHotkeyMonitorIfNeeded()
             }
             // Start monitors that were deferred during onboarding
             if shouldRunMeetingFeatureMonitors {
@@ -1908,6 +2662,11 @@ final class MuesliController: NSObject {
         )
     }
 
+    private func hasRequiredCommandShortcutPermissions() -> Bool {
+        AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+            && CGPreflightListenEventAccess()
+    }
+
     func reclassifyVoiceNotesAsDictationIfReady(
         microphoneGranted: Bool,
         accessibilityGranted: Bool,
@@ -1928,6 +2687,7 @@ final class MuesliController: NSObject {
         hotkeyMonitor.configure(keyCode: config.dictationHotkey.keyCode)
         hotkeyMonitor.start()
         startComputerUseHotkeyMonitorIfNeeded()
+        startJessicaHotkeyMonitorIfNeeded()
         syncDictationRecorderWarmup(reason: "permissions-ready")
         TelemetryDeck.signal("onboarding.use_case_reclassified", parameters: [
             "from_use_case": OnboardingUseCase.voiceNotes.rawValue,
@@ -2004,6 +2764,14 @@ final class MuesliController: NSObject {
         DispatchQueue.main.async { [weak self] in
             self?.appState.focusSearchField = true
         }
+    }
+
+    func testSalesAssistOverlay() {
+        salesAssistController.showTestAlert()
+    }
+
+    func testSalesAssistOverlay(kind: String) {
+        salesAssistController.showSampleAlert(kind: kind)
     }
 
     @objc func checkForUpdates() {
@@ -2173,6 +2941,7 @@ final class MuesliController: NSObject {
                 )
                 await MainActor.run {
                     self.syncAppState()
+                    self.syncMeetingIfNeeded(id: meeting.id)
                     self.historyWindowController?.reload()
                     completion(.success(()))
                 }
@@ -2268,6 +3037,7 @@ final class MuesliController: NSObject {
                 }
 
                 self.syncAppState()
+                self.syncMeetingIfNeeded(id: meeting.id)
                 self.historyWindowController?.reload()
                 completion(.success(()))
             } catch {
@@ -2342,6 +3112,7 @@ final class MuesliController: NSObject {
             fputs("[muesli-native] failed to update meeting title \(id): \(error)\n", stderr)
         }
         syncAppState()
+        syncMeetingIfNeeded(id: id)
     }
 
     func cacheMeetingTitle(id: Int64, title: String) {
@@ -2351,6 +3122,7 @@ final class MuesliController: NSObject {
     func updateMeetingNotes(id: Int64, notes: String) {
         try? dictationStore.updateMeetingNotes(id: id, formattedNotes: notes)
         syncAppState()
+        syncMeetingIfNeeded(id: id)
     }
 
     func updateMeetingTranscript(id: Int64, transcript: String) {
@@ -2360,6 +3132,7 @@ final class MuesliController: NSObject {
             fputs("[muesli-native] failed to update meeting transcript \(id): \(error)\n", stderr)
         }
         syncAppState()
+        syncMeetingIfNeeded(id: id)
     }
 
     func updateMeetingManualNotes(id: Int64, notes: String) {
@@ -2373,6 +3146,7 @@ final class MuesliController: NSObject {
             fputs("[muesli-native] failed to update manual notes for \(id): \(error)\n", stderr)
         }
         syncAppState()
+        syncMeetingIfNeeded(id: id)
     }
 
     func cacheMeetingManualNotes(id: Int64, notes: String) {
@@ -2777,6 +3551,13 @@ final class MuesliController: NSObject {
     }
 
     @objc func toggleMeetingRecording() {
+        guard config.salesCaddieAllowsMeetingRecording else {
+            indicator.showAgentResponseCard(
+                title: "Meeting recording disabled",
+                message: "Your workspace admin has disabled meeting recording for this Sales Caddie account."
+            )
+            return
+        }
         if isMeetingRecording() {
             stopMeetingRecording()
         } else {
@@ -3740,6 +4521,7 @@ final class MuesliController: NSObject {
                 selectedTemplatePrompt: result.templateSnapshot.prompt
             )
         }
+        syncMeetingIfNeeded(id: meetingID)
         return CompletedMeetingPersistenceResult(meetingID: meetingID, recordingSaveError: recordingSaveError)
     }
 
@@ -4032,18 +4814,28 @@ final class MuesliController: NSObject {
         startComputerUseHotkeyMonitorIfNeeded()
     }
 
+    private func configureJessicaHotkeyMonitor() {
+        guard config.enableJessicaHotkey else {
+            jessicaHotkeyMonitor.stop()
+            return
+        }
+        jessicaHotkeyMonitor.configure(config.jessicaHotkey)
+        startJessicaHotkeyMonitorIfNeeded()
+    }
+
     private func configureHotkeyMonitorTiming() {
         hotkeyMonitor.configureTriggerThreshold(milliseconds: config.hotkeyTriggerThresholdMS)
         computerUseHotkeyMonitor.configureTriggerThreshold(milliseconds: config.computerUseHotkeyTriggerThresholdMS)
+        jessicaHotkeyMonitor.configureTriggerThreshold(milliseconds: config.jessicaHotkeyTriggerThresholdMS)
         meetingRecordingHotkeyMonitor.configureTriggerThreshold(milliseconds: config.meetingRecordingHotkeyTriggerThresholdMS)
     }
 
     private func startComputerUseHotkeyMonitorIfNeeded() {
-        guard config.enableComputerUseHotkey else {
+        guard config.salesCaddieAllowsComputerControl else {
             computerUseHotkeyMonitor.stop()
             return
         }
-        guard config.resolvedOnboardingUseCase.includesDictation else {
+        guard config.enableComputerUseHotkey else {
             computerUseHotkeyMonitor.stop()
             return
         }
@@ -4058,12 +4850,49 @@ final class MuesliController: NSObject {
             fputs("[cua] computer use hotkey disabled because it matches meeting recording hotkey\n", stderr)
             return
         }
+        guard !config.enableJessicaHotkey
+            || !ShortcutHotkeyPolicy.hotkeysConflict(config.computerUseHotkey, config.jessicaHotkey) else {
+            computerUseHotkeyMonitor.stop()
+            fputs("[cua] computer use hotkey disabled because it matches jessica hotkey\n", stderr)
+            return
+        }
         computerUseHotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
         computerUseHotkeyMonitor.configure(config.computerUseHotkey)
         computerUseHotkeyMonitor.start()
     }
 
+    private func startJessicaHotkeyMonitorIfNeeded() {
+        guard config.salesCaddieAllowsSalesAgent else {
+            jessicaHotkeyMonitor.stop()
+            return
+        }
+        guard config.enableJessicaHotkey else {
+            jessicaHotkeyMonitor.stop()
+            return
+        }
+        let validation = ShortcutHotkeyPolicy.validateJessicaHotkey(
+            config.jessicaHotkey,
+            dictationHotkey: config.dictationHotkey,
+            computerUseHotkey: config.computerUseHotkey,
+            isComputerUseEnabled: config.enableComputerUseHotkey,
+            meetingRecordingHotkey: config.meetingRecordingHotkey,
+            isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
+        )
+        guard validation.didUpdate else {
+            jessicaHotkeyMonitor.stop()
+            fputs("[jessica] hotkey disabled because it conflicts with another active shortcut\n", stderr)
+            return
+        }
+        jessicaHotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
+        jessicaHotkeyMonitor.configure(config.jessicaHotkey)
+        jessicaHotkeyMonitor.start()
+    }
+
     private func startMeetingRecordingHotkeyMonitorIfNeeded() {
+        guard config.salesCaddieAllowsMeetingRecording else {
+            meetingRecordingHotkeyMonitor.stop()
+            return
+        }
         guard config.enableMeetingRecordingHotkey else {
             meetingRecordingHotkeyMonitor.stop()
             return
@@ -4072,7 +4901,9 @@ final class MuesliController: NSObject {
             config.meetingRecordingHotkey,
             dictationHotkey: config.dictationHotkey,
             computerUseHotkey: config.computerUseHotkey,
-            isComputerUseEnabled: config.enableComputerUseHotkey
+            isComputerUseEnabled: config.enableComputerUseHotkey,
+            jessicaHotkey: config.jessicaHotkey,
+            isJessicaEnabled: config.enableJessicaHotkey
         )
         guard validation.didUpdate else {
             meetingRecordingHotkeyMonitor.stop()
@@ -4298,8 +5129,16 @@ final class MuesliController: NSObject {
     }
 
     private func handleComputerUsePrepare() {
+        prepareVoiceCommand(.computerUse)
+    }
+
+    private func handleJessicaPrepare() {
+        prepareVoiceCommand(.jessica)
+    }
+
+    private func prepareVoiceCommand(_ destination: VoiceCommandDestination) {
         guard canPrepareComputerUseCommand else { return }
-        fputs("[cua] prepare\n", stderr)
+        fputs("[\(destination.logPrefix)] prepare\n", stderr)
         meetingMonitor.suppressWhileActive()
         meetingMonitor.refreshState()
         recorder.preferredInputDeviceID = nil
@@ -4307,7 +5146,7 @@ final class MuesliController: NSObject {
         do {
             try recorder.prepare()
         } catch {
-            fputs("[cua] recorder prepare failed: \(error)\n", stderr)
+            fputs("[\(destination.logPrefix)] recorder prepare failed: \(error)\n", stderr)
             recorder.cancel()
             setState(.idle)
             meetingMonitor.resumeAfterCooldown()
@@ -4316,22 +5155,32 @@ final class MuesliController: NSObject {
     }
 
     private func handleComputerUseStart() {
+        startVoiceCommand(.computerUse)
+    }
+
+    private func handleJessicaStart() {
+        startVoiceCommand(.jessica)
+    }
+
+    private func startVoiceCommand(_ destination: VoiceCommandDestination) {
         guard canStartComputerUseCommand else { return }
-        fputs("[cua] recording start\n", stderr)
+        fputs("[\(destination.logPrefix)] recording start\n", stderr)
         meetingMonitor.suppressWhileActive()
         recorder.preferredInputDeviceID = nil
         do {
             try recorder.start()
             computerUseCommandStartedAt = Date()
+            activeVoiceCommandDestination = destination
             indicator.powerProvider = { [weak self] in
                 self?.recorder.currentPower() ?? -160
             }
             setState(.recording)
             SoundController.playDictationStart(enabled: shouldPlayDictationLifecycleSounds && !isDictationTestMode)
         } catch {
-            fputs("[cua] recorder start failed: \(error)\n", stderr)
+            fputs("[\(destination.logPrefix)] recorder start failed: \(error)\n", stderr)
             recorder.cancel()
             computerUseCommandStartedAt = nil
+            activeVoiceCommandDestination = nil
             setState(.idle)
             meetingMonitor.resumeAfterCooldown()
             meetingMonitor.refreshState()
@@ -4348,45 +5197,84 @@ final class MuesliController: NSObject {
         handleComputerUseStart()
     }
 
+    private func handleJessicaToggleStart() {
+        guard canStartComputerUseCommand else {
+            jessicaHotkeyMonitor.cancelToggleMode()
+            return
+        }
+        fputs("[jessica] toggle command start\n", stderr)
+        indicator.isToggleDictation = true
+        handleJessicaStart()
+    }
+
     private func handleComputerUseToggleStop() {
         fputs("[cua] toggle command stop\n", stderr)
         indicator.isToggleDictation = false
         handleComputerUseStop()
     }
 
+    private func handleJessicaToggleStop() {
+        fputs("[jessica] toggle command stop\n", stderr)
+        indicator.isToggleDictation = false
+        handleJessicaStop()
+    }
+
     private func handleComputerUseCancel() {
-        fputs("[cua] cancel\n", stderr)
+        cancelActiveVoiceCommand(logPrefix: "cua")
+    }
+
+    private func handleJessicaCancel() {
+        cancelActiveVoiceCommand(logPrefix: "jessica")
+    }
+
+    private func cancelActiveVoiceCommand(logPrefix: String? = nil) {
+        let prefix = logPrefix ?? activeVoiceCommandDestination?.logPrefix ?? "voice-command"
+        fputs("[\(prefix)] cancel\n", stderr)
         computerUseCommandTask?.cancel()
         computerUseCommandTask = nil
         recorder.cancel()
         computerUseCommandStartedAt = nil
+        activeVoiceCommandDestination = nil
         indicator.isToggleDictation = false
         setState(.idle)
         meetingMonitor.resumeAfterCooldown()
     }
 
     private func handleComputerUseStop() {
-        fputs("[cua] stop\n", stderr)
+        stopVoiceCommand(.computerUse)
+    }
+
+    private func handleJessicaStop() {
+        stopVoiceCommand(.jessica)
+    }
+
+    private func stopActiveVoiceCommand() {
+        stopVoiceCommand(activeVoiceCommandDestination ?? .computerUse)
+    }
+
+    private func stopVoiceCommand(_ destination: VoiceCommandDestination) {
+        fputs("[\(destination.logPrefix)] stop\n", stderr)
         indicator.isToggleDictation = false
         let startedAt = computerUseCommandStartedAt ?? Date()
         computerUseCommandStartedAt = nil
+        activeVoiceCommandDestination = nil
 
         guard let wavURL = recorder.stop() else {
-            fputs("[cua] stop without wav\n", stderr)
+            fputs("[\(destination.logPrefix)] stop without wav\n", stderr)
             setState(.idle)
             meetingMonitor.resumeAfterCooldown()
             return
         }
         let duration = max(Date().timeIntervalSince(startedAt), 0)
         if duration < 0.3 {
-            fputs("[cua] discarded short recording\n", stderr)
+            fputs("[\(destination.logPrefix)] discarded short recording\n", stderr)
             try? FileManager.default.removeItem(at: wavURL)
             setState(.idle)
             meetingMonitor.resumeAfterCooldown()
             return
         }
 
-        indicator.setTranscribingTitle("Parsing command", config: config)
+        indicator.setTranscribingTitle(destination.parsingTitle, config: config)
         setState(.transcribing)
         let task = Task { [weak self] in
             guard let self else { return }
@@ -4408,10 +5296,11 @@ final class MuesliController: NSObject {
                 await MainActor.run {
                     TelemetryDeck.signal("computer_use.command_parsed", parameters: [
                         "planner_enabled": self.config.enableComputerUsePlanner ? "true" : "false",
+                        "destination": destination.telemetryName,
                     ])
                 }
                 guard !text.isEmpty else {
-                    fputs("[cua] empty transcript, skipping planner\n", stderr)
+                    fputs("[\(destination.logPrefix)] empty transcript, skipping planner\n", stderr)
                     await MainActor.run {
                         self.computerUseCommandTask = nil
                         self.setState(.idle)
@@ -4423,24 +5312,24 @@ final class MuesliController: NSObject {
                 let dictationID = try? self.dictationStore.insertDictation(
                     text: text,
                     durationSeconds: duration,
-                    source: "cua",
+                    source: destination.dictationSource,
                     startedAt: startedAt,
                     endedAt: commandEndedAt
                 )
-                await self.handleComputerUseCommand(transcript: text, dictationID: dictationID)
+                await self.handleVoiceCommand(destination: destination, transcript: text, dictationID: dictationID)
             } catch is CancellationError {
-                fputs("[cua] command parsing cancelled\n", stderr)
+                fputs("[\(destination.logPrefix)] command parsing cancelled\n", stderr)
                 await MainActor.run {
                     self.computerUseCommandTask = nil
                     self.setState(.idle)
                     self.meetingMonitor.resumeAfterCooldown()
                 }
             } catch {
-                fputs("[cua] transcription failed: \(error)\n", stderr)
+                fputs("[\(destination.logPrefix)] transcription failed: \(error)\n", stderr)
                 await MainActor.run {
                     self.computerUseCommandTask = nil
                     self.setState(.idle)
-                    self.indicator.showWarning("CUA command failed", icon: "!")
+                    self.indicator.showWarning(destination == .jessica ? "Jessica command failed" : "CUA command failed", icon: "!")
                     self.meetingMonitor.resumeAfterCooldown()
                 }
             }
@@ -4469,15 +5358,90 @@ final class MuesliController: NSObject {
 
     @MainActor
     private func handleComputerUseCommand(transcript: String, dictationID: Int64?) async {
+        await handleVoiceCommand(destination: .computerUse, transcript: transcript, dictationID: dictationID)
+    }
+
+    @MainActor
+    private func handleVoiceCommand(destination: VoiceCommandDestination, transcript: String, dictationID: Int64?) async {
         resetComputerUseFloatingStatus()
         presentComputerUseTranscript(transcript)
         setState(.transcribing)
+
+        let plannerCommand: String
+        if destination == .jessica {
+            presentComputerUseFloatingStatus("Asking Jessica")
+            do {
+                let agentResult = try await SalesAgentProvider.handleVoiceCommand(transcript: transcript, config: config)
+                switch agentResult {
+                case .runLocalPlanner(let command):
+                    let message = "Jessica returned a computer-control action, but the Jessica shortcut is answer-only. Use the Computer Use shortcut for desktop actions."
+                    let result = ComputerUsePlannerRuntimeResult(status: .failed, message: message)
+                    appendSalesAgentHistory(
+                        transcript: transcript,
+                        response: message,
+                        status: result.status,
+                        plannerCommand: command
+                    )
+                    computerUseCommandTask = nil
+                    await waitForComputerUseFloatingStatusDwell()
+                    presentJessicaRuntimeResult(result)
+                    meetingMonitor.resumeAfterCooldown()
+                    TelemetryDeck.signal("computer_use.command_finished", parameters: [
+                        "status": "\(result.status)",
+                        "destination": destination.telemetryName,
+                        "agent_provider": config.salesAgentBackend,
+                    ])
+                    return
+                case .display(let message):
+                    let result = ComputerUsePlannerRuntimeResult(status: .done, message: message)
+                    appendSalesAgentHistory(
+                        transcript: transcript,
+                        response: message,
+                        status: result.status
+                    )
+                    persistComputerUseTrace(result, dictationID: dictationID)
+                    computerUseCommandTask = nil
+                    await waitForComputerUseFloatingStatusDwell()
+                    presentJessicaRuntimeResult(result)
+                    meetingMonitor.resumeAfterCooldown()
+                    TelemetryDeck.signal("computer_use.command_finished", parameters: [
+                        "status": "\(result.status)",
+                        "destination": destination.telemetryName,
+                        "agent_provider": config.salesAgentBackend,
+                    ])
+                    return
+                }
+            } catch {
+                let result = ComputerUsePlannerRuntimeResult(
+                    status: .failed,
+                    message: error.localizedDescription
+                )
+                appendSalesAgentHistory(
+                    transcript: transcript,
+                    response: result.message,
+                    status: result.status
+                )
+                computerUseCommandTask = nil
+                await waitForComputerUseFloatingStatusDwell()
+                presentJessicaRuntimeResult(result)
+                meetingMonitor.resumeAfterCooldown()
+                TelemetryDeck.signal("computer_use.command_finished", parameters: [
+                    "status": "\(result.status)",
+                    "destination": destination.telemetryName,
+                    "agent_provider": config.salesAgentBackend,
+                ])
+                return
+            }
+        } else {
+            plannerCommand = destination.plannerCommand(from: transcript)
+        }
+
         let runtime = ComputerUsePlannerRuntime(config: config) { [weak self] status in
             guard let self else { return }
             self.presentComputerUseFloatingStatus(status)
         }
 
-        let result = await runtime.run(command: transcript)
+        let result = await runtime.run(command: plannerCommand)
         indicator.hideComputerUseCursor()
         if result.status == .cancelled {
             computerUseCommandTask = nil
@@ -4485,16 +5449,30 @@ final class MuesliController: NSObject {
             meetingMonitor.resumeAfterCooldown()
             TelemetryDeck.signal("computer_use.command_finished", parameters: [
                 "status": "\(result.status)",
+                "destination": destination.telemetryName,
             ])
             return
         }
         persistComputerUseTrace(result, dictationID: dictationID)
+        if destination == .jessica {
+            appendSalesAgentHistory(
+                transcript: transcript,
+                response: result.message,
+                status: result.status,
+                plannerCommand: plannerCommand
+            )
+        }
         computerUseCommandTask = nil
         await waitForComputerUseFloatingStatusDwell()
-        presentComputerUseRuntimeResult(result)
+        if destination == .jessica {
+            presentJessicaRuntimeResult(result)
+        } else {
+            presentComputerUseRuntimeResult(result)
+        }
         meetingMonitor.resumeAfterCooldown()
         TelemetryDeck.signal("computer_use.command_finished", parameters: [
             "status": "\(result.status)",
+            "destination": destination.telemetryName,
         ])
     }
 
@@ -4685,6 +5663,31 @@ final class MuesliController: NSObject {
         }
         statusBarController?.setStatus(message)
         indicator.showWarning(floatingMessage, icon: icon, duration: 3.0)
+    }
+
+    private func presentJessicaRuntimeResult(_ result: ComputerUsePlannerRuntimeResult) {
+        setState(.idle)
+        let title: String
+        let message: String
+        switch result.status {
+        case .done:
+            title = "Jessica"
+            message = result.message
+        case .timedOut:
+            title = "Jessica timed out"
+            message = result.message
+        case .needsConfirmation:
+            title = "Jessica needs confirmation"
+            message = result.message
+        case .failed:
+            title = "Jessica couldn't finish"
+            message = result.message
+        case .cancelled:
+            title = "Jessica cancelled"
+            message = result.message
+        }
+        statusBarController?.setStatus(message)
+        indicator.showAgentResponseCard(title: title, message: message)
     }
 
     private func handlePrepare() {
@@ -5492,6 +6495,14 @@ final class MuesliController: NSObject {
         let calendarEndDate = calendarEvent?.endDate
         let meetingURL = event.meetingURL ?? calendarEvent?.meetingURL
         let autoStopSource = meetingURL.flatMap { MeetingAutoStopSource(meetingURL: $0) }
+        let briefingEvent = calendarEvent ?? preCallBriefingEvent(
+            calendarEventID: event.id,
+            title: event.title,
+            startDate: event.startDate,
+            meetingURL: meetingURL,
+            endDate: calendarEndDate
+        )
+        let preCallBriefing = preCallBriefingDigest(for: briefingEvent)
 
         if config.autoRecordMeetings, !isMeetingRecording() {
             startMeetingRecording(
@@ -5527,6 +6538,7 @@ final class MuesliController: NSObject {
             title: "Upcoming meeting",
             subtitle: "\(title) · \(timeLabel)",
             meetingURL: meetingURL,
+            preCallBriefing: preCallBriefing,
             onStartRecording: { [weak self] in
                 guard let self else { return }
                 self.isShowingCalendarNotification = false
@@ -5556,6 +6568,44 @@ final class MuesliController: NSObject {
             },
             onClose: { [weak self] in self?.isShowingCalendarNotification = false }
         )
+    }
+
+    private func preCallBriefingEvent(
+        calendarEventID: String?,
+        title: String,
+        startDate: Date,
+        meetingURL: URL?,
+        endDate: Date?
+    ) -> UnifiedCalendarEvent {
+        if let calendarEventID,
+           let exact = appState.upcomingCalendarEvents.first(where: { $0.id == calendarEventID }) {
+            return exact
+        }
+        if let calendarEventID,
+           let prefixMatch = appState.upcomingCalendarEvents.first(where: { calendarEventID.hasPrefix("\($0.id)|") }) {
+            return prefixMatch
+        }
+        return UnifiedCalendarEvent(
+            id: calendarEventID ?? "meeting-\(Int(startDate.timeIntervalSince1970))",
+            title: title,
+            startDate: startDate,
+            endDate: endDate ?? startDate.addingTimeInterval(3600),
+            isAllDay: false,
+            source: .eventKit,
+            meetingURL: meetingURL
+        )
+    }
+
+    private func preCallBriefingDigest(for event: UnifiedCalendarEvent) -> SalesPreCallBriefingDigest? {
+        let provider = SalesCRMProvider(rawValue: config.salesPreCallCRMProvider) ?? .none
+        let briefing = SalesPreCallBriefingBuilder.build(
+            event: event,
+            meetings: appState.meetingRows,
+            modules: config.salesPreCallBriefingModules,
+            crmProvider: provider
+        )
+        let digest = briefing.digest(maxBullets: 4)
+        return digest.bullets.isEmpty ? nil : digest
     }
 
     private func scheduleMeetingEndNotification(endDate: Date?, title: String) {

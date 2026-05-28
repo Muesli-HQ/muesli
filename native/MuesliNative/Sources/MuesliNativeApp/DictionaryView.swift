@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import MuesliCore
 
@@ -9,6 +10,10 @@ struct DictionaryView: View {
     @State private var newWord = ""
     @State private var newReplacement = ""
     @State private var newThreshold = 0.85
+    @State private var showBulkImport = false
+    @State private var bulkImportText = ""
+    @State private var importMessage: String?
+    @State private var importError: String?
 
     var body: some View {
         ScrollView {
@@ -29,6 +34,50 @@ struct DictionaryView: View {
                     .font(MuesliTheme.title1())
                     .foregroundStyle(MuesliTheme.textPrimary)
                 Spacer()
+                Button {
+                    showBulkImport.toggle()
+                    importMessage = nil
+                    importError = nil
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "text.badge.plus")
+                            .font(.system(size: 11, weight: .bold))
+                        Text("Paste terms")
+                            .font(.system(size: 13, weight: .medium))
+                    }
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                    .padding(.horizontal, MuesliTheme.spacing12)
+                    .padding(.vertical, MuesliTheme.spacing8)
+                    .background(MuesliTheme.surfacePrimary)
+                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                            .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    importVocabularyFile()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "square.and.arrow.down")
+                            .font(.system(size: 11, weight: .bold))
+                        Text("Import file")
+                            .font(.system(size: 13, weight: .medium))
+                    }
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                    .padding(.horizontal, MuesliTheme.spacing12)
+                    .padding(.vertical, MuesliTheme.spacing8)
+                    .background(MuesliTheme.surfacePrimary)
+                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                            .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+
                 Button {
                     isAdding = true
                     newWord = ""
@@ -56,11 +105,25 @@ struct DictionaryView: View {
             Text("Add custom words for names, brands, and domain terms, and tune how aggressively each entry should fuzzy-match transcription errors.")
                 .font(MuesliTheme.body())
                 .foregroundStyle(MuesliTheme.textSecondary)
+            if let importMessage {
+                Text(importMessage)
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.success)
+            } else if let importError {
+                Text(importError)
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.recording)
+            }
         }
     }
 
     private var wordList: some View {
         VStack(spacing: 0) {
+            if showBulkImport {
+                bulkImportPanel
+                Divider().background(MuesliTheme.surfaceBorder)
+            }
+
             if isAdding {
                 addWordRow
                 Divider().background(MuesliTheme.surfaceBorder)
@@ -81,6 +144,49 @@ struct DictionaryView: View {
             RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
                 .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
         )
+    }
+
+    private var bulkImportPanel: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+            Text("Paste one term per line, or use CSV/TSV columns: word, replacement, threshold.")
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textSecondary)
+
+            TextEditor(text: $bulkImportText)
+                .font(.system(size: 13, design: .monospaced))
+                .foregroundStyle(MuesliTheme.textPrimary)
+                .scrollContentBackground(.hidden)
+                .background(MuesliTheme.surfacePrimary)
+                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                .overlay(
+                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                        .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                )
+                .frame(height: 140)
+
+            HStack {
+                Text("Examples: `Skriber`, `Nabla -> Nabla`, `Kvex,Caivex,0.78`")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                Spacer()
+                Button("Cancel") {
+                    showBulkImport = false
+                    bulkImportText = ""
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 12))
+                .foregroundStyle(MuesliTheme.textTertiary)
+
+                Button("Import") {
+                    importVocabularyText(bulkImportText)
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(MuesliTheme.accent)
+                .disabled(bulkImportText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(MuesliTheme.spacing16)
     }
 
     private var emptyState: some View {
@@ -163,6 +269,38 @@ struct DictionaryView: View {
                 .foregroundStyle(MuesliTheme.textSecondary)
                 .frame(width: 36, alignment: .trailing)
         }
+    }
+
+    private func importVocabularyFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.plainText, .commaSeparatedText, .tabSeparatedText]
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                let text = try String(contentsOf: url, encoding: .utf8)
+                importVocabularyText(text)
+            } catch {
+                importMessage = nil
+                importError = "Could not import \(url.lastPathComponent): \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func importVocabularyText(_ text: String) {
+        let words = DictionaryImportParser.parse(text)
+        guard !words.isEmpty else {
+            importMessage = nil
+            importError = "No valid terms found. Use one term per line, or word,replacement,threshold."
+            return
+        }
+        let count = controller.importCustomWords(words)
+        bulkImportText = ""
+        showBulkImport = false
+        importError = nil
+        importMessage = "Imported \(count) vocabulary term\(count == 1 ? "" : "s")."
     }
 }
 

@@ -37,8 +37,8 @@ final class StreamingVadController: @unchecked Sendable {
 
     convenience init(vadManager: VadManager) {
         self.init(
-            minChunkDuration: 3.0,
-            maxChunkDuration: 60.0,
+            minChunkDuration: 2.0,
+            maxChunkDuration: 10.0,
             makeInitialState: { await vadManager.makeStreamState() },
             processStreamChunk: { samples, state in
                 try await vadManager.processStreamingChunk(samples, state: state)

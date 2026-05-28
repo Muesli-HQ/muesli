@@ -27,6 +27,39 @@ enum GoogleCalendarAuthError: Error, LocalizedError {
     }
 }
 
+enum GoogleIntegrationScope: String, CaseIterable, Equatable {
+    case calendarEventsReadonly = "https://www.googleapis.com/auth/calendar.events.readonly"
+    case calendarReadonly = "https://www.googleapis.com/auth/calendar.readonly"
+    case driveFile = "https://www.googleapis.com/auth/drive.file"
+    case documents = "https://www.googleapis.com/auth/documents"
+
+    static let calendar: Set<GoogleIntegrationScope> = [
+        .calendarEventsReadonly,
+        .calendarReadonly,
+    ]
+
+    static let driveDocs: Set<GoogleIntegrationScope> = [
+        .driveFile,
+        .documents,
+    ]
+
+    var label: String {
+        switch self {
+        case .calendarEventsReadonly: return "Calendar events"
+        case .calendarReadonly: return "Calendar list"
+        case .driveFile: return "Drive files opened or created by Sales Caddie"
+        case .documents: return "Google Docs create/edit"
+        }
+    }
+
+    static func scopeString(_ scopes: Set<GoogleIntegrationScope>) -> String {
+        scopes
+            .map(\.rawValue)
+            .sorted()
+            .joined(separator: " ")
+    }
+}
+
 @MainActor
 final class GoogleCalendarAuthManager {
     static let shared = GoogleCalendarAuthManager()
@@ -34,7 +67,6 @@ final class GoogleCalendarAuthManager {
     private static let authURL = "https://accounts.google.com/o/oauth2/v2/auth"
     private static let tokenURL = "https://oauth2.googleapis.com/token"
     private static let redirectURI = "http://localhost:1456/auth/callback"
-    private static let scopes = "https://www.googleapis.com/auth/calendar.events.readonly"
     private static let callbackTimeoutSeconds: TimeInterval = 300
 
     private let credentials: GoogleCalendarCredentials?
@@ -60,23 +92,36 @@ final class GoogleCalendarAuthManager {
         tokenRead(key: "access_token") != nil
     }
 
-    func signIn() async throws {
+    func hasGrantedScopes(_ scopes: Set<GoogleIntegrationScope>) -> Bool {
+        let granted = Set(tokenReadList(key: "granted_scopes"))
+        return scopes.allSatisfy { granted.contains($0.rawValue) }
+    }
+
+    func signIn(scopes requestedScopes: Set<GoogleIntegrationScope> = GoogleIntegrationScope.calendar) async throws {
         guard let credentials else { throw GoogleCalendarAuthError.notAvailable }
         let (verifier, challenge) = generatePKCE()
         let code = try await startCallbackServerAndOpenBrowser(
             codeChallenge: challenge,
-            clientId: credentials.clientId
+            clientId: credentials.clientId,
+            scopes: requestedScopes
         )
-        let tokens = try await exchangeCodeForTokens(
-            code: code,
-            codeVerifier: verifier,
-            credentials: credentials
-        )
-        saveTokens(tokens)
-        fputs("[google-cal] signed in successfully\n", stderr)
+        do {
+            let tokens = try await exchangeCodeForTokens(
+                code: code,
+                codeVerifier: verifier,
+                credentials: credentials
+            )
+            saveTokens(tokens)
+            fputs("[google-cal] signed in successfully\n", stderr)
+            appendDiagnostic("signed_in token_file=\(tokenFileURL.path)")
+        } catch {
+            appendDiagnostic("sign_in_failed_after_callback error=\(error.localizedDescription)")
+            throw error
+        }
     }
 
     func signOut() {
+        appendDiagnostic("signed_out token_file=\(tokenFileURL.path)")
         deleteTokens()
         fputs("[google-cal] signed out\n", stderr)
     }
@@ -128,13 +173,18 @@ final class GoogleCalendarAuthManager {
 
     // MARK: - OAuth Flow
 
-    private func buildAuthorizationURL(codeChallenge: String, state: String, clientId: String) -> URL? {
+    private func buildAuthorizationURL(
+        codeChallenge: String,
+        state: String,
+        clientId: String,
+        scopes: Set<GoogleIntegrationScope>
+    ) -> URL? {
         var components = URLComponents(string: Self.authURL)!
         components.queryItems = [
             URLQueryItem(name: "client_id", value: clientId),
             URLQueryItem(name: "redirect_uri", value: Self.redirectURI),
             URLQueryItem(name: "response_type", value: "code"),
-            URLQueryItem(name: "scope", value: Self.scopes),
+            URLQueryItem(name: "scope", value: GoogleIntegrationScope.scopeString(scopes)),
             URLQueryItem(name: "state", value: state),
             URLQueryItem(name: "code_challenge", value: codeChallenge),
             URLQueryItem(name: "code_challenge_method", value: "S256"),
@@ -144,7 +194,11 @@ final class GoogleCalendarAuthManager {
         return components.url
     }
 
-    private func startCallbackServerAndOpenBrowser(codeChallenge: String, clientId: String) async throws -> String {
+    private func startCallbackServerAndOpenBrowser(
+        codeChallenge: String,
+        clientId: String,
+        scopes: Set<GoogleIntegrationScope>
+    ) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             let port: NWEndpoint.Port = 1456
             let params = NWParameters.tcp
@@ -173,7 +227,8 @@ final class GoogleCalendarAuthManager {
             let authURL = self.buildAuthorizationURL(
                 codeChallenge: codeChallenge,
                 state: expectedState,
-                clientId: clientId
+                clientId: clientId,
+                scopes: scopes
             )
 
             listener.stateUpdateHandler = { state in
@@ -277,8 +332,9 @@ final class GoogleCalendarAuthManager {
 
     private struct TokenResponse {
         let accessToken: String
-        let refreshToken: String
+        let refreshToken: String?
         let expiresAtMs: Double
+        let grantedScopes: [String]
     }
 
     private func exchangeCodeForTokens(
@@ -313,16 +369,17 @@ final class GoogleCalendarAuthManager {
             throw GoogleCalendarAuthError.tokenExchangeFailed("missing access_token in response")
         }
 
-        guard let refreshToken = json["refresh_token"] as? String, !refreshToken.isEmpty else {
-            throw GoogleCalendarAuthError.tokenExchangeFailed(
-                "No refresh token received. Ensure access_type=offline and prompt=consent are set, " +
-                "or revoke access at https://myaccount.google.com/permissions and try again."
-            )
-        }
+        let refreshToken = nonEmptyString(json["refresh_token"] as? String)
         let expiresIn = json["expires_in"] as? Double ?? 3600
         let expiresAtMs = (Date().timeIntervalSince1970 + expiresIn) * 1000.0
+        let grantedScopes = scopeList(json["scope"] as? String)
 
-        return TokenResponse(accessToken: accessToken, refreshToken: refreshToken, expiresAtMs: expiresAtMs)
+        return TokenResponse(
+            accessToken: accessToken,
+            refreshToken: refreshToken,
+            expiresAtMs: expiresAtMs,
+            grantedScopes: grantedScopes
+        )
     }
 
     private func refreshAccessToken(
@@ -360,21 +417,33 @@ final class GoogleCalendarAuthManager {
         }
 
         // Google may or may not return a new refresh token
-        let newRefreshToken = json["refresh_token"] as? String ?? refreshToken
+        let newRefreshToken = nonEmptyString(json["refresh_token"] as? String) ?? refreshToken
         let expiresIn = json["expires_in"] as? Double ?? 3600
         let expiresAtMs = (Date().timeIntervalSince1970 + expiresIn) * 1000.0
+        let grantedScopes = tokenReadList(key: "granted_scopes")
 
-        return TokenResponse(accessToken: accessToken, refreshToken: newRefreshToken, expiresAtMs: expiresAtMs)
+        return TokenResponse(
+            accessToken: accessToken,
+            refreshToken: newRefreshToken,
+            expiresAtMs: expiresAtMs,
+            grantedScopes: grantedScopes
+        )
     }
 
     // MARK: - File-based Token Storage
 
     private func saveTokens(_ tokens: TokenResponse) {
-        let dict: [String: String] = [
+        var dict: [String: String] = [
             "access_token": tokens.accessToken,
-            "refresh_token": tokens.refreshToken,
             "expires_at": String(format: "%.0f", tokens.expiresAtMs),
         ]
+        if let refreshToken = tokens.refreshToken ?? tokenRead(key: "refresh_token") {
+            dict["refresh_token"] = refreshToken
+        }
+        let grantedScopes = Set(tokenReadList(key: "granted_scopes")).union(tokens.grantedScopes)
+        if !grantedScopes.isEmpty {
+            dict["granted_scopes"] = grantedScopes.sorted().joined(separator: " ")
+        }
         do {
             let dir = tokenFileURL.deletingLastPathComponent()
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -387,6 +456,7 @@ final class GoogleCalendarAuthManager {
             try fileURL.setResourceValues(resourceValues)
         } catch {
             fputs("[google-cal] failed to save tokens: \(error)\n", stderr)
+            appendDiagnostic("failed_to_save_tokens path=\(tokenFileURL.path) error=\(error.localizedDescription)")
         }
     }
 
@@ -398,7 +468,43 @@ final class GoogleCalendarAuthManager {
         return dict[key]
     }
 
+    private func tokenReadList(key: String) -> [String] {
+        scopeList(tokenRead(key: key))
+    }
+
     private func deleteTokens() {
         try? FileManager.default.removeItem(at: tokenFileURL)
+    }
+
+    private func nonEmptyString(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func scopeList(_ value: String?) -> [String] {
+        (value ?? "")
+            .components(separatedBy: .whitespacesAndNewlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private func appendDiagnostic(_ message: String) {
+        let line = "\(ISO8601DateFormatter().string(from: Date())) \(message)\n"
+        let url = AppIdentity.supportDirectoryURL.appendingPathComponent("google-calendar-auth.log")
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if FileManager.default.fileExists(atPath: url.path),
+               let handle = try? FileHandle(forWritingTo: url) {
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                if let data = line.data(using: .utf8) {
+                    try handle.write(contentsOf: data)
+                }
+            } else {
+                try line.write(to: url, atomically: true, encoding: .utf8)
+            }
+        } catch {
+            fputs("[google-cal] failed to write auth diagnostic: \(error)\n", stderr)
+        }
     }
 }

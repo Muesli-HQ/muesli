@@ -32,6 +32,7 @@ final class MeetingNotificationController {
         subtitle: String,
         actionLabel: String = "Start Recording",
         meetingURL: URL? = nil,
+        preCallBriefing: SalesPreCallBriefingDigest? = nil,
         preferredScreen: NSScreen? = nil,
         platform explicitPlatform: MeetingPlatform? = nil,
         dismissAfter: TimeInterval? = nil,
@@ -57,8 +58,10 @@ final class MeetingNotificationController {
         let hasJoinButton = meetingURL != nil && onJoinAndRecord != nil
         let platform = explicitPlatform ?? meetingURL.flatMap { MeetingPlatform.detect(from: $0) }
 
-        let cardWidth: CGFloat = 344
-        let cardHeight: CGFloat = 60
+        let briefingBullets = preCallBriefing?.bullets.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? []
+        let showsBriefing = !briefingBullets.isEmpty
+        let cardWidth: CGFloat = showsBriefing ? 430 : 344
+        let cardHeight: CGFloat = showsBriefing ? 160 : 60
         let closeButtonSize: CGFloat = 22
         let cardX = closeButtonSize / 2 + 1
         let topGutter: CGFloat = closeButtonSize / 2 + 1
@@ -149,18 +152,23 @@ final class MeetingNotificationController {
             textX = 14
         }
 
+        let primaryRowY = showsBriefing ? cardHeight - 46 : 32
+        let secondaryRowY = showsBriefing ? cardHeight - 64 : 14
+
         // Title label
         let titleLabel = NSTextField(labelWithString: title)
         titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
         titleLabel.textColor = .white
-        titleLabel.frame = NSRect(x: textX, y: 32, width: 144, height: 18)
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.frame = NSRect(x: textX, y: primaryRowY, width: 144, height: 18)
         cardView.addSubview(titleLabel)
 
         // Subtitle label
         let subtitleLabel = NSTextField(labelWithString: subtitle)
         subtitleLabel.font = .systemFont(ofSize: 11)
         subtitleLabel.textColor = NSColor.white.withAlphaComponent(0.55)
-        subtitleLabel.frame = NSRect(x: textX, y: 14, width: 144, height: 16)
+        subtitleLabel.lineBreakMode = .byTruncatingTail
+        subtitleLabel.frame = NSRect(x: textX, y: secondaryRowY, width: 144, height: 16)
         cardView.addSubview(subtitleLabel)
 
         if hasJoinButton {
@@ -180,7 +188,7 @@ final class MeetingNotificationController {
             // Main "Join & Record" button
             let joinButton = NSButton(title: "Join & Record", target: self, action: #selector(handleJoinAndRecord))
             joinButton.font = .systemFont(ofSize: 11, weight: .medium)
-            joinButton.frame = NSRect(x: buttonX, y: 15, width: buttonWidth, height: 30)
+            joinButton.frame = NSRect(x: buttonX, y: showsBriefing ? cardHeight - 50 : 15, width: buttonWidth, height: 30)
             joinButton.wantsLayer = true
             joinButton.layer?.backgroundColor = greenColor.cgColor
             joinButton.layer?.cornerRadius = 6
@@ -192,7 +200,7 @@ final class MeetingNotificationController {
             // Chevron dropdown button
             let chevronButton = NSButton(title: "▾", target: self, action: #selector(handleChevronClick(_:)))
             chevronButton.font = .systemFont(ofSize: 9, weight: .medium)
-            chevronButton.frame = NSRect(x: buttonX + buttonWidth, y: 15, width: chevronWidth, height: 30)
+            chevronButton.frame = NSRect(x: buttonX + buttonWidth, y: showsBriefing ? cardHeight - 50 : 15, width: chevronWidth, height: 30)
             chevronButton.wantsLayer = true
             chevronButton.layer?.backgroundColor = greenDarker.cgColor
             chevronButton.layer?.cornerRadius = 6
@@ -204,13 +212,17 @@ final class MeetingNotificationController {
             // Single "Start Recording" button
             let startButton = NSButton(title: actionLabel, target: self, action: #selector(handleStartRecording))
             startButton.font = .systemFont(ofSize: 12, weight: .medium)
-            startButton.frame = NSRect(x: cardWidth - 122, y: 15, width: 110, height: 30)
+            startButton.frame = NSRect(x: cardWidth - 122, y: showsBriefing ? cardHeight - 50 : 15, width: 110, height: 30)
             startButton.wantsLayer = true
             startButton.layer?.backgroundColor = NSColor(red: 0.2, green: 0.5, blue: 1.0, alpha: 1.0).cgColor
             startButton.layer?.cornerRadius = 6
             startButton.isBordered = false
             startButton.contentTintColor = .white
             cardView.addSubview(startButton)
+        }
+
+        if showsBriefing, let preCallBriefing {
+            addPreCallBriefing(preCallBriefing, bullets: briefingBullets, to: cardView, cardWidth: cardWidth)
         }
 
         panel.contentView = contentView
@@ -227,6 +239,43 @@ final class MeetingNotificationController {
 
         startDismissCountdown(duration: duration)
         return true
+    }
+
+    private func addPreCallBriefing(
+        _ briefing: SalesPreCallBriefingDigest,
+        bullets: [String],
+        to cardView: NSView,
+        cardWidth: CGFloat
+    ) {
+        let separator = NSView(frame: NSRect(x: 14, y: 90, width: cardWidth - 28, height: 1))
+        separator.wantsLayer = true
+        separator.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.10).cgColor
+        cardView.addSubview(separator)
+
+        let headingLabel = NSTextField(labelWithString: briefing.heading)
+        headingLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        headingLabel.textColor = NSColor.white.withAlphaComponent(0.86)
+        headingLabel.frame = NSRect(x: 14, y: 72, width: 126, height: 14)
+        cardView.addSubview(headingLabel)
+
+        let statusLabel = NSTextField(labelWithString: briefing.status)
+        statusLabel.font = .systemFont(ofSize: 10)
+        statusLabel.textColor = NSColor.white.withAlphaComponent(0.48)
+        statusLabel.alignment = .right
+        statusLabel.lineBreakMode = .byTruncatingTail
+        statusLabel.frame = NSRect(x: 146, y: 72, width: cardWidth - 160, height: 14)
+        cardView.addSubview(statusLabel)
+
+        let maxVisibleBullets = min(bullets.count, 3)
+        for index in 0..<maxVisibleBullets {
+            let bullet = bullets[index]
+            let bulletLabel = NSTextField(labelWithString: "• \(bullet)")
+            bulletLabel.font = .systemFont(ofSize: 10.5)
+            bulletLabel.textColor = NSColor.white.withAlphaComponent(0.72)
+            bulletLabel.lineBreakMode = .byTruncatingTail
+            bulletLabel.frame = NSRect(x: 16, y: 52 - CGFloat(index * 17), width: cardWidth - 30, height: 14)
+            cardView.addSubview(bulletLabel)
+        }
     }
 
     var onClose: (() -> Void)?

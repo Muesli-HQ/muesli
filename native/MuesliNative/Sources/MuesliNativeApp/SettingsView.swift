@@ -1,6 +1,7 @@
 import AVFoundation
 import SwiftUI
 import MuesliCore
+import UniformTypeIdentifiers
 
 private struct MeetingDetectionAppOption: Identifiable {
     let bundleID: String
@@ -43,11 +44,13 @@ struct SettingsView: View {
         }
     }
 
-    private enum SettingsPane: String, CaseIterable, Identifiable {
+    enum SettingsPane: String, CaseIterable, Identifiable {
         case general
         case dictation
         case computerUse
         case meetings
+        case sales
+        case tools
         case appearance
 
         var id: String { rawValue }
@@ -58,6 +61,8 @@ struct SettingsView: View {
             case .dictation: return "Dictation"
             case .computerUse: return "Computer Use"
             case .meetings: return "Meetings"
+            case .sales: return "Sales"
+            case .tools: return "Tools"
             case .appearance: return "Appearance"
             }
         }
@@ -70,6 +75,8 @@ struct SettingsView: View {
     @State private var isSigningInChatGPT = false
     @State private var googleCalSignInError: String?
     @State private var isSigningInGoogleCal = false
+    @State private var googleDriveDocsAuthError: String?
+    @State private var isAuthorizingGoogleDriveDocs = false
     @State private var pendingDataDestruction: PendingDataDestruction?
     @State private var isPreviewingClip = false
     @State private var selectedPane: SettingsPane = .general
@@ -87,11 +94,33 @@ struct SettingsView: View {
     @State private var openRouterFreeModels: [SummaryModelPreset] = []
     @State private var isLoadingOpenRouterFreeModels = false
     @State private var openRouterFreeModelsError: String?
+    @State private var salesImportMessage: String?
+    @State private var salesImportError: String?
+    @State private var isExtractingSalesObjections = false
+    @State private var showSalesObjectionExtractionSheet = false
+    @State private var salesObjectionExtractionText = ""
+    @State private var selectedSalesObjectionID: String?
+    @State private var salesObjectionSearchQuery = ""
+    @State private var selectedSalesLiveCueID: String?
+    @State private var salesLiveCueSearchQuery = ""
+    @State private var isAnalyzingSalesCall = false
+    @State private var inviteSetupCode = ""
+    @State private var inviteAPIURL = ""
+    @State private var isRedeemingInvite = false
+    @State private var inviteRedeemMessage: String?
+    @State private var inviteRedeemError: String?
 
     // Uniform width for all right-side controls
     private let controlWidth: CGFloat = 220
     private let meetingControlWidth: CGFloat = 275
     private let screenContextGrantIntentTimeout: TimeInterval = 15 * 60
+    private var effectiveInviteAPIURL: String {
+        let typed = inviteAPIURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !typed.isEmpty { return typed }
+        let configured = appState.config.salesCaddieCloudAPIURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !configured.isEmpty { return configured }
+        return "https://sales-caddie-api-production.up.railway.app"
+    }
     private let meetingDetectionAppOptions: [MeetingDetectionAppOption] = [
         MeetingDetectionAppOption(bundleID: "com.google.Chrome", name: "Chrome", icon: "globe"),
         MeetingDetectionAppOption(bundleID: "company.thebrowser.Browser", name: "Arc", icon: "globe"),
@@ -104,6 +133,12 @@ struct SettingsView: View {
         MeetingDetectionAppOption(bundleID: "com.apple.FaceTime", name: "FaceTime", icon: "video.fill"),
         MeetingDetectionAppOption(bundleID: "net.whatsapp.WhatsApp", name: "WhatsApp", icon: "phone.fill"),
     ]
+
+    init(appState: AppState, controller: MuesliController, initialPane: SettingsPane = .general) {
+        self.appState = appState
+        self.controller = controller
+        _selectedPane = State(initialValue: initialPane)
+    }
 
     private var dictationBackendOptions: [BackendOption] {
         backendOptions(including: appState.selectedBackend)
@@ -120,8 +155,58 @@ struct SettingsView: View {
         return meetingBackendOptions.first?.label ?? "No downloaded models"
     }
 
+    private var selectedSalesAgentBackend: SalesAgentBackendOption {
+        SalesAgentBackendOption.resolved(appState.config.salesAgentBackend)
+    }
+
+    private var selectedSalesAgentUser: SalesAgentUserOption? {
+        SalesAgentUserOption.resolved(
+            userID: appState.config.salesAgentUserID,
+            repKey: appState.config.salesAgentRepKey
+        )
+    }
+
     private var selectedCohereLanguage: CohereTranscribeLanguage {
         appState.config.resolvedCohereLanguage
+    }
+
+    private var filteredSalesObjections: [SalesAssistObjection] {
+        let query = salesObjectionSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return appState.config.salesAssistObjections }
+        return appState.config.salesAssistObjections.filter { objection in
+            objection.name.lowercased().contains(query)
+                || objection.priority.lowercased().contains(query)
+                || objection.triggerPhrases.lowercased().contains(query)
+                || objection.guidance.lowercased().contains(query)
+        }
+    }
+
+    private var selectedSalesObjection: SalesAssistObjection? {
+        if let selectedSalesObjectionID,
+           let objection = appState.config.salesAssistObjections.first(where: { $0.id == selectedSalesObjectionID }) {
+            return objection
+        }
+        return filteredSalesObjections.first ?? appState.config.salesAssistObjections.first
+    }
+
+    private var filteredSalesLiveCues: [SalesAssistLiveCue] {
+        let query = salesLiveCueSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return appState.config.salesAssistLiveCues }
+        return appState.config.salesAssistLiveCues.filter { cue in
+            cue.name.lowercased().contains(query)
+                || cue.kind.lowercased().contains(query)
+                || cue.priority.lowercased().contains(query)
+                || cue.triggerPhrases.lowercased().contains(query)
+                || cue.guidance.lowercased().contains(query)
+        }
+    }
+
+    private var selectedSalesLiveCue: SalesAssistLiveCue? {
+        if let selectedSalesLiveCueID,
+           let cue = appState.config.salesAssistLiveCues.first(where: { $0.id == selectedSalesLiveCueID }) {
+            return cue
+        }
+        return filteredSalesLiveCues.first ?? appState.config.salesAssistLiveCues.first
     }
 
     var body: some View {
@@ -138,6 +223,7 @@ struct SettingsView: View {
         }
         .background(MuesliTheme.backgroundBase)
         .onAppear {
+            applyPreferredSettingsPane()
             refreshDownloadedModelOptions()
             startPermissionPolling()
             if appState.selectedMeetingSummaryBackend == .openRouter {
@@ -151,6 +237,7 @@ struct SettingsView: View {
         }
         .onChange(of: appState.selectedTab) { _, tab in
             if tab == .settings {
+                applyPreferredSettingsPane()
                 refreshDownloadedModelOptions()
                 refreshPermissionStatuses()
             }
@@ -189,6 +276,9 @@ struct SettingsView: View {
             }
         } message: {
             Text(pendingDataDestruction?.message ?? "")
+        }
+        .sheet(isPresented: $showSalesObjectionExtractionSheet) {
+            salesObjectionExtractionSheet
         }
     }
 
@@ -277,8 +367,44 @@ struct SettingsView: View {
             computerUseSettingsPane
         case .meetings:
             meetingsSettingsPane
+        case .sales:
+            salesSettingsPane
+        case .tools:
+            toolsSettingsPane
         case .appearance:
             appearanceSettingsPane
+        }
+    }
+
+    private var toolsSettingsPane: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
+            settingsSection("App Tools") {
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+                    settingsToolRow(
+                        title: "Models",
+                        subtitle: "Download and manage transcription models and post-processing models.",
+                        icon: "square.and.arrow.down"
+                    ) {
+                        appState.selectedTab = .models
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsToolRow(
+                        title: "Shortcuts",
+                        subtitle: "Set hotkeys for dictation, Jessica, computer use, and meeting recording.",
+                        icon: "keyboard"
+                    ) {
+                        appState.selectedTab = .shortcuts
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsToolRow(
+                        title: "Dictionary",
+                        subtitle: "Add custom words, names, brands, and domain terms for transcription cleanup.",
+                        icon: "character.book.closed"
+                    ) {
+                        appState.selectedTab = .dictionary
+                    }
+                }
+            }
         }
     }
 
@@ -316,6 +442,209 @@ struct SettingsView: View {
                     .disabled(controller.isMeetingRecording())
                     .help("Stop the current meeting recording before clearing meeting history.")
                 }
+            }
+        }
+    }
+
+    private var salesSettingsPane: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
+            settingsSection("Sales Caddie Cloud") {
+                settingsRow(
+                    "Use hosted API",
+                    description: "Routes sync through the Sales Caddie Cloud API instead of writing directly to Supabase."
+                ) {
+                    settingsSwitch(isOn: appState.config.salesCaddieCloudSyncEnabled) { newValue in
+                        controller.updateConfig { $0.salesCaddieCloudSyncEnabled = newValue }
+                    }
+                }
+
+                if appState.config.salesCaddieCloudSyncEnabled {
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("API URL", controlWidth: meetingControlWidth) {
+                        PastableTextField(
+                            text: appState.config.salesCaddieCloudAPIURL,
+                            placeholder: "https://sales-caddie-api.example.com",
+                            onChange: { value in controller.updateConfig { $0.salesCaddieCloudAPIURL = value } }
+                        )
+                        .frame(height: 22)
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("API token", controlWidth: meetingControlWidth) {
+                        PastableSecureField(
+                            text: appState.config.salesCaddieCloudAPIToken,
+                            placeholder: "Sales Caddie Cloud token",
+                            onChange: { value in controller.updateConfig { $0.salesCaddieCloudAPIToken = value } }
+                        )
+                        .frame(height: 22)
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Workspace slug", controlWidth: meetingControlWidth) {
+                        PastableTextField(
+                            text: appState.config.salesCaddieCloudWorkspaceSlug,
+                            placeholder: "skriber-sales",
+                            onChange: { value in controller.updateConfig { $0.salesCaddieCloudWorkspaceSlug = value } }
+                        )
+                        .frame(height: 22)
+                    }
+                    settingsDescription("Cloud sync uses the same Jessica history, transcript, and Sales library toggles below, but keeps Supabase credentials server-side.")
+                }
+            }
+
+            HStack(spacing: MuesliTheme.spacing12) {
+                actionButton("Sync all now") {
+                    controller.syncAllCloudArtifactsNow()
+                }
+                .disabled(
+                    !appState.config.salesCaddieCloudSyncEnabled
+                        && !appState.config.supabaseSyncEnabled
+                )
+                Text("Pushes recent meetings, Jessica history, and Sales Assist library changes, then refreshes cloud identity when hosted API is enabled.")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+            }
+
+            settingsSection("Join Workspace") {
+                settingsRow(
+                    "Setup code",
+                    description: "Paste the setup code from your Sales Caddie invite email."
+                ) {
+                    PastableTextField(
+                        text: inviteSetupCode,
+                        placeholder: "Invite setup code",
+                        onChange: { value in inviteSetupCode = value }
+                    )
+                    .frame(height: 22)
+                    .frame(width: meetingControlWidth)
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Cloud API URL", controlWidth: meetingControlWidth) {
+                    PastableTextField(
+                        text: effectiveInviteAPIURL,
+                        placeholder: "https://sales-caddie-api-production.up.railway.app",
+                        onChange: { value in inviteAPIURL = value }
+                    )
+                    .frame(height: 22)
+                }
+                HStack(spacing: MuesliTheme.spacing12) {
+                    actionButton(isRedeemingInvite ? "Joining..." : "Join workspace") {
+                        redeemInviteCode()
+                    }
+                    .disabled(isRedeemingInvite || inviteSetupCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    if let inviteRedeemMessage {
+                        Text(inviteRedeemMessage)
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.accent)
+                    }
+                    if let inviteRedeemError {
+                        Text(inviteRedeemError)
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.recording)
+                    }
+                }
+                settingsDescription("Joining stores the workspace, user email, and cloud connection settings on this Mac.")
+            }
+
+            settingsSection("Supabase Sync") {
+                settingsRow(
+                    "Enable sync",
+                    description: "Keeps Sales Caddie local-first, then syncs selected final artifacts online."
+                ) {
+                    settingsSwitch(isOn: appState.config.supabaseSyncEnabled) { newValue in
+                        controller.updateConfig { $0.supabaseSyncEnabled = newValue }
+                    }
+                }
+
+                if appState.config.supabaseSyncEnabled {
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Supabase URL", controlWidth: meetingControlWidth) {
+                        PastableTextField(
+                            text: appState.config.supabaseURL,
+                            placeholder: "https://project.supabase.co",
+                            onChange: { val in controller.updateConfig { $0.supabaseURL = val } }
+                        )
+                        .frame(height: 22)
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Anon key", controlWidth: meetingControlWidth) {
+                        PastableSecureField(
+                            text: appState.config.supabaseAnonKey,
+                            placeholder: "Supabase anon key",
+                            onChange: { val in controller.updateConfig { $0.supabaseAnonKey = val } }
+                        )
+                        .frame(height: 22)
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Workspace", controlWidth: meetingControlWidth) {
+                        PastableTextField(
+                            text: appState.config.supabaseWorkspaceID,
+                            placeholder: "skriber-sales",
+                            onChange: { val in controller.updateConfig { $0.supabaseWorkspaceID = val } }
+                        )
+                        .frame(height: 22)
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("User", controlWidth: meetingControlWidth) {
+                        PastableTextField(
+                            text: appState.config.supabaseUserID,
+                            placeholder: "Optional user or rep ID",
+                            onChange: { val in controller.updateConfig { $0.supabaseUserID = val } }
+                        )
+                        .frame(height: 22)
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Jessica history", controlWidth: meetingControlWidth) {
+                        settingsSwitch(isOn: appState.config.supabaseSyncJessicaHistory) { newValue in
+                            controller.updateConfig { $0.supabaseSyncJessicaHistory = newValue }
+                        }
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Transcripts", controlWidth: meetingControlWidth) {
+                        HStack(spacing: MuesliTheme.spacing8) {
+                            settingsSwitch(isOn: appState.config.supabaseSyncTranscripts) { newValue in
+                                controller.updateConfig { $0.supabaseSyncTranscripts = newValue }
+                            }
+                            actionButton("Sync now") {
+                                controller.syncMeetingsNow()
+                            }
+                            .disabled(!appState.config.supabaseSyncTranscripts)
+                        }
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Sales library", controlWidth: meetingControlWidth) {
+                        HStack(spacing: MuesliTheme.spacing8) {
+                            settingsSwitch(isOn: appState.config.supabaseSyncSalesLibrary) { newValue in
+                                controller.updateConfig { $0.supabaseSyncSalesLibrary = newValue }
+                            }
+                            actionButton("Sync now") {
+                                controller.syncSalesLibraryNow()
+                            }
+                            .disabled(!appState.config.supabaseSyncSalesLibrary)
+                        }
+                    }
+                    settingsDescription("Jessica history syncs as events are created. Transcripts sync completed meeting records and summaries. Sales library sync pulls the shared KB, objections, and live cue cards from Supabase, and seeds Supabase from this app if the shared library is empty.")
+                }
+            }
+
+            settingsSection("Sales Assist") {
+                settingsRow(
+                    "Enable overlay",
+                    description: "Shows selected live coaching prompts during meeting recordings."
+                ) {
+                    settingsSwitch(isOn: appState.config.salesAssistEnabled) { newValue in
+                        controller.updateConfig { $0.salesAssistEnabled = newValue }
+                    }
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow(
+                    "AI classifier",
+                    description: "Uses the sales knowledge base and live cue library for fuzzy moment detection."
+                ) {
+                    settingsSwitch(isOn: appState.config.salesAssistAIEnabled) { newValue in
+                        controller.updateConfig { $0.salesAssistAIEnabled = newValue }
+                    }
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                salesOverlayControls
             }
         }
     }
@@ -429,6 +758,117 @@ struct SettingsView: View {
 
     private var computerUseSettingsPane: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
+            settingsSection("Sales Agent") {
+                settingsRow("Provider", controlWidth: meetingControlWidth) {
+                    settingsMenu(
+                        selection: selectedSalesAgentBackend.label,
+                        options: SalesAgentBackendOption.all.map(\.label)
+                    ) { label in
+                        if let option = SalesAgentBackendOption.all.first(where: { $0.label == label }) {
+                            controller.updateConfig { $0.salesAgentBackend = option.backend }
+                        }
+                    }
+                }
+
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Speaker", controlWidth: meetingControlWidth) {
+                    settingsMenu(
+                        selection: selectedSalesAgentUser?.label ?? "Not set",
+                        options: ["Not set"] + SalesAgentUserOption.all.map(\.label)
+                    ) { label in
+                        if label == "Not set" {
+                            controller.updateConfig {
+                                $0.salesAgentUserID = ""
+                                $0.salesAgentUserName = ""
+                                $0.salesAgentUserRole = ""
+                                $0.salesAgentRepKey = ""
+                            }
+                        } else if let option = SalesAgentUserOption.all.first(where: { $0.label == label }) {
+                            controller.updateConfig {
+                                $0.salesAgentUserID = option.id
+                                $0.salesAgentUserName = option.name
+                                $0.salesAgentUserRole = option.role
+                                $0.salesAgentRepKey = option.repKey
+                            }
+                        }
+                    }
+                }
+
+                if selectedSalesAgentBackend.backend == SalesAgentBackendOption.hostedJessica.backend
+                    || selectedSalesAgentBackend.backend == SalesAgentBackendOption.customWebhook.backend {
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Agent URL", controlWidth: meetingControlWidth) {
+                        PastableTextField(
+                            text: appState.config.salesAgentEndpointURL,
+                            placeholder: selectedSalesAgentBackend.backend == SalesAgentBackendOption.hostedJessica.backend
+                                ? "Railway Jessica URL optional"
+                                : "https://your-agent.example.com/command",
+                            onChange: { val in controller.updateConfig { $0.salesAgentEndpointURL = val } }
+                        )
+                        .frame(height: 22)
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Token", controlWidth: meetingControlWidth) {
+                        PastableSecureField(
+                            text: appState.config.salesAgentAuthToken,
+                            placeholder: "Bearer token",
+                            onChange: { val in controller.updateConfig { $0.salesAgentAuthToken = val } }
+                        )
+                        .frame(height: 22)
+                    }
+                } else if selectedSalesAgentBackend.backend == SalesAgentBackendOption.openAI.backend
+                    || selectedSalesAgentBackend.backend == SalesAgentBackendOption.openRouter.backend
+                    || selectedSalesAgentBackend.backend == SalesAgentBackendOption.ollama.backend {
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Model", controlWidth: meetingControlWidth) {
+                        settingsModelTextField(
+                            currentModel: appState.config.salesAgentModel,
+                            placeholder: selectedSalesAgentBackend.backend == SalesAgentBackendOption.ollama.backend
+                                ? appState.config.ollamaModel
+                                : "Default"
+                        ) { val in controller.updateConfig { $0.salesAgentModel = val } }
+                    }
+                    if selectedSalesAgentBackend.backend == SalesAgentBackendOption.openAI.backend {
+                        Divider().background(MuesliTheme.surfaceBorder)
+                        settingsRow("OpenAI key", controlWidth: meetingControlWidth) {
+                            PastableSecureField(
+                                text: appState.config.openAIAPIKey,
+                                placeholder: "sk-...",
+                                onChange: { val in controller.updateConfig { $0.openAIAPIKey = val } }
+                            )
+                            .frame(height: 22)
+                        }
+                    } else if selectedSalesAgentBackend.backend == SalesAgentBackendOption.openRouter.backend {
+                        Divider().background(MuesliTheme.surfaceBorder)
+                        settingsRow("OpenRouter key", controlWidth: meetingControlWidth) {
+                            PastableSecureField(
+                                text: appState.config.openRouterAPIKey,
+                                placeholder: "sk-or-...",
+                                onChange: { val in controller.updateConfig { $0.openRouterAPIKey = val } }
+                            )
+                            .frame(height: 22)
+                        }
+                    } else {
+                        Divider().background(MuesliTheme.surfaceBorder)
+                        settingsRow("Ollama URL", controlWidth: meetingControlWidth) {
+                            PastableTextField(
+                                text: appState.config.ollamaURL,
+                                placeholder: "http://localhost:11434",
+                                onChange: { val in controller.updateConfig { $0.ollamaURL = val } }
+                            )
+                            .frame(height: 22)
+                        }
+                    }
+                }
+
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Send sales KB", controlWidth: meetingControlWidth) {
+                    settingsSwitch(isOn: appState.config.salesAgentSendKnowledgeBase) { newValue in
+                        controller.updateConfig { $0.salesAgentSendKnowledgeBase = newValue }
+                    }
+                }
+            }
+
             settingsSection("Computer Use") {
                 settingsRow("Enable planner", controlWidth: meetingControlWidth) {
                     settingsSwitch(isOn: appState.config.enableComputerUsePlanner) { newValue in
@@ -644,9 +1084,16 @@ struct SettingsView: View {
             }
 
             if appState.isGoogleCalendarAvailable {
-                settingsSection("Calendar") {
+                settingsSection("Google Workspace") {
                     settingsRow("Google Calendar") {
                         googleCalendarControl
+                    }
+                    if appState.isGoogleCalendarAuthenticated {
+                        Divider().background(MuesliTheme.surfaceBorder)
+                        settingsRow("Drive & Docs") {
+                            googleDriveDocsControl
+                        }
+                        settingsDescription("Optional. Request only when Sales Caddie needs to create Google Docs notes or access Drive files you choose.")
                     }
                 }
             }
@@ -799,8 +1246,8 @@ struct SettingsView: View {
                         controller.updateConfig { $0.menuBarIcon = option.id }
                     } label: {
                         Group {
-                            if option.id == "muesli",
-                               let img = MenuBarIconRenderer.make(choice: "muesli") {
+                            if option.id == "sales-caddie",
+                               let img = MenuBarIconRenderer.make(choice: "sales-caddie") {
                                 Image(nsImage: img)
                                     .resizable()
                                     .scaledToFit()
@@ -985,6 +1432,65 @@ struct SettingsView: View {
         }
     }
 
+    @ViewBuilder
+    private var googleDriveDocsControl: some View {
+        if appState.isGoogleDriveDocsAuthorized {
+            HStack(spacing: 5) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(MuesliTheme.success)
+                Text("Authorized")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else if isAuthorizingGoogleDriveDocs {
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Authorizing...")
+                    .font(.system(size: 11))
+                    .foregroundStyle(MuesliTheme.textSecondary)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                Button {
+                    isAuthorizingGoogleDriveDocs = true
+                    googleDriveDocsAuthError = nil
+                    Task {
+                        let error = await controller.authorizeGoogleDriveDocs()
+                        isAuthorizingGoogleDriveDocs = false
+                        googleDriveDocsAuthError = error
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "doc.badge.plus")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.white)
+                        Text("Authorize when needed")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(MuesliTheme.accent)
+                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                }
+                .buttonStyle(.plain)
+
+                if let googleDriveDocsAuthError {
+                    Text(googleDriveDocsAuthError)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
+                }
+            }
+        }
+    }
+
     private var maraudersMapControl: some View {
         HStack(spacing: MuesliTheme.spacing8) {
             settingsMenu(
@@ -1119,6 +1625,7 @@ struct SettingsView: View {
                 action: {
                     let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
                     AXIsProcessTrustedWithOptions(opts)
+                    openPrivacyPane("Privacy_Accessibility")
                 },
                 pane: "Privacy_Accessibility"
             )
@@ -1137,7 +1644,11 @@ struct SettingsView: View {
             permissionStatusRow(
                 "Screen Recording",
                 granted: screenRecordingGranted,
-                action: { CGRequestScreenCaptureAccess() },
+                action: {
+                    if !CGRequestScreenCaptureAccess() {
+                        openPrivacyPane("Privacy_ScreenCapture")
+                    }
+                },
                 pane: "Privacy_ScreenCapture"
             )
             if appState.config.useCoreAudioTap {
@@ -1147,6 +1658,7 @@ struct SettingsView: View {
                     granted: systemAudioGranted,
                     action: {
                         Task { await CoreAudioSystemRecorder.requestSystemAudioAccess() }
+                        openPrivacyPane("Privacy_ScreenCapture")
                     },
                     pane: "Privacy_ScreenCapture"
                 )
@@ -1388,6 +1900,41 @@ struct SettingsView: View {
         .frame(minHeight: 44)
     }
 
+    private func settingsToolRow(
+        title: String,
+        subtitle: String,
+        icon: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: MuesliTheme.spacing12) {
+                Image(systemName: icon)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(MuesliTheme.accent)
+                    .frame(width: 28, height: 28)
+                    .background(MuesliTheme.accentSubtle)
+                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(MuesliTheme.headline())
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                    Text(subtitle)
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(MuesliTheme.textTertiary)
+            }
+            .padding(.vertical, MuesliTheme.spacing8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
     private func settingsDescription(_ text: String) -> some View {
         Text(text)
             .font(MuesliTheme.caption())
@@ -1481,6 +2028,761 @@ struct SettingsView: View {
             }
             config.mutedMeetingDetectionAppBundleIDs = muted.sorted()
         }
+    }
+
+    private var salesOverlayControls: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+            HStack(alignment: .top, spacing: MuesliTheme.spacing16) {
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                    Text("Popup types")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                    Text("Enabled types can all run during the same call.")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                }
+                Spacer(minLength: MuesliTheme.spacing12)
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible(), spacing: MuesliTheme.spacing8),
+                        GridItem(.flexible(), spacing: MuesliTheme.spacing8),
+                    ],
+                    alignment: .leading,
+                    spacing: MuesliTheme.spacing8
+                ) {
+                    ForEach(SalesAssistLiveCue.supportedKinds, id: \.self) { kind in
+                        salesOverlayKindToggle(kind)
+                    }
+                }
+                .frame(width: 420)
+            }
+
+            Divider().background(MuesliTheme.surfaceBorder)
+
+            HStack(alignment: .top, spacing: MuesliTheme.spacing16) {
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                    Text("Preview")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                    Text("Fire a sample card without starting a meeting.")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                }
+                Spacer(minLength: MuesliTheme.spacing12)
+                LazyVGrid(
+                    columns: [
+                        GridItem(.fixed(126), spacing: MuesliTheme.spacing8),
+                        GridItem(.fixed(126), spacing: MuesliTheme.spacing8),
+                        GridItem(.fixed(126), spacing: MuesliTheme.spacing8),
+                    ],
+                    alignment: .trailing,
+                    spacing: MuesliTheme.spacing8
+                ) {
+                    salesTestButton("Buying", kind: "buying_signal")
+                    salesTestButton("Objection", kind: "objection")
+                    salesTestButton("Battlecard", kind: "competitor")
+                    salesTestButton("Discovery", kind: "discovery")
+                    salesTestButton("Talk time", kind: "talk_ratio")
+                }
+                .frame(width: 420, alignment: .trailing)
+            }
+        }
+    }
+
+    private func salesOverlayKindToggle(_ kind: String) -> some View {
+        let isEnabled = appState.config.salesAssistEnabledKinds.contains(kind)
+        return Button {
+            controller.updateConfig { config in
+                var enabled = Set(config.salesAssistEnabledKinds)
+                if isEnabled {
+                    enabled.remove(kind)
+                } else {
+                    enabled.insert(kind)
+                }
+                config.salesAssistEnabledKinds = SalesAssistLiveCue.supportedKinds.filter { enabled.contains($0) }
+            }
+        } label: {
+            HStack(spacing: MuesliTheme.spacing8) {
+                Image(systemName: isEnabled ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(isEnabled ? MuesliTheme.accent : MuesliTheme.textTertiary)
+                Text(SalesAssistLiveCue.kindLabels[kind] ?? kind)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 32)
+            .background(isEnabled ? MuesliTheme.accentSubtle : MuesliTheme.surfacePrimary)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            .overlay(
+                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                    .strokeBorder(isEnabled ? MuesliTheme.accent.opacity(0.35) : MuesliTheme.surfaceBorder, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func salesTestButton(_ label: String, kind: String) -> some View {
+        Button {
+            controller.testSalesAssistOverlay(kind: kind)
+        } label: {
+            Text(label)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(MuesliTheme.textPrimary)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+                .background(MuesliTheme.surfacePrimary)
+                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                .overlay(
+                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                        .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func salesLearningSuggestionRow(_ suggestion: SalesAssistLearningSuggestion) -> some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+            HStack(alignment: .firstTextBaseline, spacing: MuesliTheme.spacing8) {
+                Text(suggestion.kind == .objection ? "Objection" : "KB")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(suggestion.kind == .objection ? MuesliTheme.accent : MuesliTheme.success)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background((suggestion.kind == .objection ? MuesliTheme.accent : MuesliTheme.success).opacity(0.12))
+                    .clipShape(Capsule())
+                Text(suggestion.title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                Spacer()
+                Text(suggestion.sourceTitle)
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .lineLimit(1)
+            }
+
+            Text(suggestion.content)
+                .font(MuesliTheme.body())
+                .foregroundStyle(MuesliTheme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !suggestion.reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(suggestion.reason)
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: MuesliTheme.spacing8) {
+                Spacer()
+                if suggestion.kind == .knowledgeBase {
+                    actionButton("Add to KB") {
+                        acceptSalesLearningSuggestion(suggestion)
+                    }
+                    .frame(width: 120)
+                } else {
+                    actionButton("Add objection") {
+                        acceptSalesLearningSuggestion(suggestion)
+                    }
+                    .frame(width: 130)
+                }
+                actionButton("Dismiss") {
+                    dismissSalesLearningSuggestion(suggestion.id)
+                }
+                .frame(width: 100)
+            }
+        }
+        .padding(.vertical, MuesliTheme.spacing8)
+    }
+
+    private func analyzeLatestSalesCall() {
+        clearSalesImportStatus()
+        guard let meeting = appState.meetingRows.first(where: {
+            $0.status == .completed && !$0.rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }) else {
+            salesImportError = "No completed meeting transcript found."
+            return
+        }
+
+        isAnalyzingSalesCall = true
+        let config = appState.config
+        Task {
+            do {
+                let suggestions = try await SalesAssistCallLearningAnalyzer().analyze(meeting: meeting, config: config)
+                await MainActor.run {
+                    controller.updateConfig { config in
+                        config.salesAssistLearningSuggestions.insert(contentsOf: suggestions, at: 0)
+                    }
+                    salesImportMessage = "Found \(suggestions.count) learning suggestion\(suggestions.count == 1 ? "" : "s")."
+                    isAnalyzingSalesCall = false
+                }
+            } catch {
+                await MainActor.run {
+                    salesImportError = error.localizedDescription
+                    isAnalyzingSalesCall = false
+                }
+            }
+        }
+    }
+
+    private func acceptSalesLearningSuggestion(_ suggestion: SalesAssistLearningSuggestion) {
+        controller.updateConfig { config in
+            switch suggestion.kind {
+            case .knowledgeBase:
+                let note = """
+
+                ## \(suggestion.title)
+                \(suggestion.content)
+                Source: \(suggestion.sourceTitle)
+                """
+                config.salesAssistKnowledgeBase += note
+            case .objection:
+                if let objection = suggestion.objection {
+                    config.salesAssistObjections.append(objection)
+                    selectedSalesObjectionID = objection.id
+                }
+            }
+            config.salesAssistLearningSuggestions.removeAll { $0.id == suggestion.id }
+        }
+    }
+
+    private func dismissSalesLearningSuggestion(_ id: String) {
+        controller.updateConfig { config in
+            config.salesAssistLearningSuggestions.removeAll { $0.id == id }
+        }
+    }
+
+    private var salesObjectionLibraryBrowser: some View {
+        HStack(alignment: .top, spacing: MuesliTheme.spacing16) {
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                HStack {
+                    Text("\(filteredSalesObjections.count) of \(appState.config.salesAssistObjections.count)")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                    Spacer()
+                }
+
+                PastableTextField(
+                    text: salesObjectionSearchQuery,
+                    placeholder: "Search objections"
+                ) { value in
+                    salesObjectionSearchQuery = value
+                    if let first = filteredSalesObjections.first {
+                        selectedSalesObjectionID = first.id
+                    }
+                }
+                .frame(height: 28)
+
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 6) {
+                        ForEach(filteredSalesObjections) { objection in
+                            salesObjectionListRow(
+                                objection,
+                                isSelected: selectedSalesObjection?.id == objection.id
+                            )
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .frame(width: 250, height: 430)
+                .background(MuesliTheme.surfacePrimary.opacity(0.45))
+                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                .overlay(
+                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                        .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                )
+            }
+            .frame(width: 250)
+
+            Divider().background(MuesliTheme.surfaceBorder)
+
+            if let objection = selectedSalesObjection {
+                salesObjectionEditor(objection)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            } else {
+                Text("Select an objection.")
+                    .font(MuesliTheme.body())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .frame(maxWidth: .infinity, minHeight: 430, alignment: .center)
+            }
+        }
+        .onAppear {
+            ensureSelectedSalesObjection()
+        }
+        .onChange(of: appState.config.salesAssistObjections.map(\.id)) { _, _ in
+            ensureSelectedSalesObjection()
+        }
+    }
+
+    private func salesObjectionListRow(_ objection: SalesAssistObjection, isSelected: Bool) -> some View {
+        Button {
+            selectedSalesObjectionID = objection.id
+        } label: {
+            HStack(alignment: .top, spacing: MuesliTheme.spacing8) {
+                Circle()
+                    .fill(priorityColor(for: objection.priority))
+                    .frame(width: 8, height: 8)
+                    .padding(.top, 5)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(objection.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Untitled objection" : objection.name)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                        .lineLimit(1)
+                    Text(objection.triggerPhrases
+                        .components(separatedBy: CharacterSet(charactersIn: "\n,;"))
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
+                        .prefix(2)
+                        .joined(separator: ", "))
+                        .font(.system(size: 10))
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .padding(.horizontal, 9)
+            .padding(.vertical, 8)
+            .background(isSelected ? MuesliTheme.accentSubtle : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            .overlay(
+                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                    .strokeBorder(isSelected ? MuesliTheme.accent.opacity(0.35) : Color.clear, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func salesObjectionEditor(_ objection: SalesAssistObjection) -> some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+            HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
+                PastableTextField(
+                    text: objection.name,
+                    placeholder: "Objection name"
+                ) { value in
+                    updateSalesObjection(objection.id) { $0.name = value }
+                }
+                .frame(height: 28)
+
+                settingsMenu(
+                    selection: objection.priority.capitalized,
+                    options: ["High", "Medium", "Low"]
+                ) { label in
+                    updateSalesObjection(objection.id) { $0.priority = label.lowercased() }
+                }
+                .frame(width: 120)
+
+                Button {
+                    controller.updateConfig { config in
+                        config.salesAssistObjections.removeAll { $0.id == objection.id }
+                        selectedSalesObjectionID = config.salesAssistObjections.first?.id
+                    }
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(MuesliTheme.recording)
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .help("Remove objection")
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Trigger phrases")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                MultilineTextEditor(
+                    text: objection.triggerPhrases,
+                    placeholder: "One per line, or comma separated. Example: need to ask my office manager, concerned about HIPAA, send me info",
+                    minHeight: 64
+                ) { value in
+                    updateSalesObjection(objection.id) { $0.triggerPhrases = value }
+                }
+                .frame(minHeight: 64)
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Handling guidance")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                MultilineTextEditor(
+                    text: objection.guidance,
+                    placeholder: "What should the rep say or ask next?",
+                    minHeight: 72
+                ) { value in
+                    updateSalesObjection(objection.id) { $0.guidance = value }
+                }
+                .frame(minHeight: 72)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func ensureSelectedSalesObjection() {
+        if let selectedSalesObjectionID,
+           appState.config.salesAssistObjections.contains(where: { $0.id == selectedSalesObjectionID }) {
+            return
+        }
+        selectedSalesObjectionID = filteredSalesObjections.first?.id ?? appState.config.salesAssistObjections.first?.id
+    }
+
+    private func priorityColor(for priority: String) -> Color {
+        switch priority.lowercased() {
+        case "high":
+            return MuesliTheme.recording
+        case "low":
+            return MuesliTheme.textTertiary
+        default:
+            return MuesliTheme.accent
+        }
+    }
+
+    private func updateSalesObjection(_ id: String, mutate: @escaping (inout SalesAssistObjection) -> Void) {
+        controller.updateConfig { config in
+            guard let index = config.salesAssistObjections.firstIndex(where: { $0.id == id }) else { return }
+            mutate(&config.salesAssistObjections[index])
+        }
+    }
+
+    private var salesLiveCueLibraryBrowser: some View {
+        HStack(alignment: .top, spacing: MuesliTheme.spacing16) {
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                HStack {
+                    Text("\(filteredSalesLiveCues.count) of \(appState.config.salesAssistLiveCues.count)")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                    Spacer()
+                }
+
+                PastableTextField(
+                    text: salesLiveCueSearchQuery,
+                    placeholder: "Search live cues"
+                ) { value in
+                    salesLiveCueSearchQuery = value
+                    if let first = filteredSalesLiveCues.first {
+                        selectedSalesLiveCueID = first.id
+                    }
+                }
+                .frame(height: 28)
+
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 6) {
+                        ForEach(filteredSalesLiveCues) { cue in
+                            salesLiveCueListRow(
+                                cue,
+                                isSelected: selectedSalesLiveCue?.id == cue.id
+                            )
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .frame(width: 250, height: 360)
+                .background(MuesliTheme.surfacePrimary.opacity(0.45))
+                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                .overlay(
+                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                        .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                )
+            }
+            .frame(width: 250)
+
+            Divider().background(MuesliTheme.surfaceBorder)
+
+            if let cue = selectedSalesLiveCue {
+                salesLiveCueEditor(cue)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            } else {
+                Text("Select a live cue.")
+                    .font(MuesliTheme.body())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .frame(maxWidth: .infinity, minHeight: 360, alignment: .center)
+            }
+        }
+        .onAppear {
+            ensureSelectedSalesLiveCue()
+        }
+        .onChange(of: appState.config.salesAssistLiveCues.map(\.id)) { _, _ in
+            ensureSelectedSalesLiveCue()
+        }
+    }
+
+    private func salesLiveCueListRow(_ cue: SalesAssistLiveCue, isSelected: Bool) -> some View {
+        Button {
+            selectedSalesLiveCueID = cue.id
+        } label: {
+            HStack(alignment: .top, spacing: MuesliTheme.spacing8) {
+                Circle()
+                    .fill(priorityColor(for: cue.priority))
+                    .frame(width: 8, height: 8)
+                    .padding(.top, 5)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(cue.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Untitled cue" : cue.name)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                        .lineLimit(1)
+                    Text(SalesAssistLiveCue.kindLabels[cue.kind] ?? cue.kind)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(MuesliTheme.accent)
+                        .lineLimit(1)
+                    Text(cue.triggerPhrases
+                        .components(separatedBy: CharacterSet(charactersIn: "\n,;"))
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
+                        .prefix(2)
+                        .joined(separator: ", "))
+                        .font(.system(size: 10))
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .padding(.horizontal, 9)
+            .padding(.vertical, 8)
+            .background(isSelected ? MuesliTheme.accentSubtle : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            .overlay(
+                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                    .strokeBorder(isSelected ? MuesliTheme.accent.opacity(0.35) : Color.clear, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func salesLiveCueEditor(_ cue: SalesAssistLiveCue) -> some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+            HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
+                PastableTextField(
+                    text: cue.name,
+                    placeholder: "Cue name"
+                ) { value in
+                    updateSalesLiveCue(cue.id) { $0.name = value }
+                }
+                .frame(height: 28)
+
+                settingsMenu(
+                    selection: SalesAssistLiveCue.kindLabels[cue.kind] ?? cue.kind,
+                    options: SalesAssistLiveCue.supportedKinds
+                        .filter { $0 != "objection" }
+                        .map { SalesAssistLiveCue.kindLabels[$0] ?? $0 }
+                ) { label in
+                    let nextKind = SalesAssistLiveCue.supportedKinds.first {
+                        (SalesAssistLiveCue.kindLabels[$0] ?? $0) == label
+                    } ?? "buying_signal"
+                    updateSalesLiveCue(cue.id) { $0.kind = nextKind }
+                }
+                .frame(width: 180)
+
+                settingsMenu(
+                    selection: cue.priority.capitalized,
+                    options: ["High", "Medium", "Low"]
+                ) { label in
+                    updateSalesLiveCue(cue.id) { $0.priority = label.lowercased() }
+                }
+                .frame(width: 120)
+
+                Button {
+                    controller.updateConfig { config in
+                        config.salesAssistLiveCues.removeAll { $0.id == cue.id }
+                        selectedSalesLiveCueID = config.salesAssistLiveCues.first?.id
+                    }
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(MuesliTheme.recording)
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .help("Remove live cue")
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Trigger phrases")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                MultilineTextEditor(
+                    text: cue.triggerPhrases,
+                    placeholder: "One per line. Example: how do we get started, using Freed, notes take forever",
+                    minHeight: 64
+                ) { value in
+                    updateSalesLiveCue(cue.id) { $0.triggerPhrases = value }
+                }
+                .frame(minHeight: 64)
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Overlay guidance")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                MultilineTextEditor(
+                    text: cue.guidance,
+                    placeholder: "What should the rep say, ask, or do when this pops up?",
+                    minHeight: 72
+                ) { value in
+                    updateSalesLiveCue(cue.id) { $0.guidance = value }
+                }
+                .frame(minHeight: 72)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func ensureSelectedSalesLiveCue() {
+        if let selectedSalesLiveCueID,
+           appState.config.salesAssistLiveCues.contains(where: { $0.id == selectedSalesLiveCueID }) {
+            return
+        }
+        selectedSalesLiveCueID = filteredSalesLiveCues.first?.id ?? appState.config.salesAssistLiveCues.first?.id
+    }
+
+    private func updateSalesLiveCue(_ id: String, mutate: @escaping (inout SalesAssistLiveCue) -> Void) {
+        controller.updateConfig { config in
+            guard let index = config.salesAssistLiveCues.firstIndex(where: { $0.id == id }) else { return }
+            mutate(&config.salesAssistLiveCues[index])
+        }
+    }
+
+    private var salesObjectionExtractionSheet: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
+            Text("Extract Objections")
+                .font(MuesliTheme.title2())
+                .foregroundStyle(MuesliTheme.textPrimary)
+            Text("Paste messy notes, call snippets, markdown, or training material. The AI will create editable objection cards.")
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textTertiary)
+
+            MultilineTextEditor(
+                text: salesObjectionExtractionText,
+                placeholder: "Paste notes here...",
+                minHeight: 260
+            ) { value in
+                salesObjectionExtractionText = value
+            }
+            .frame(minHeight: 260)
+
+            HStack(spacing: MuesliTheme.spacing8) {
+                Spacer()
+                actionButton("Cancel") {
+                    showSalesObjectionExtractionSheet = false
+                }
+                .frame(width: 120)
+                actionButton(isExtractingSalesObjections ? "Extracting..." : "Extract") {
+                    extractSalesObjectionsFromText()
+                }
+                .frame(width: 140)
+                .disabled(isExtractingSalesObjections)
+            }
+        }
+        .padding(MuesliTheme.spacing24)
+        .frame(width: 680)
+        .frame(minHeight: 430)
+        .background(MuesliTheme.backgroundBase)
+    }
+
+    private func importSalesKnowledgeBaseFile(append: Bool) {
+        clearSalesImportStatus()
+        guard let url = selectFile(
+            title: append ? "Append Knowledge Base File" : "Replace Knowledge Base From File",
+            allowedContentTypes: salesTextImportTypes
+        ) else { return }
+        do {
+            let imported = try SalesAssistLibraryImport.text(from: url)
+            guard !imported.isEmpty else { throw SalesAssistImportError.unreadableFile }
+            controller.updateConfig { config in
+                if append, !config.salesAssistKnowledgeBase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    config.salesAssistKnowledgeBase += "\n\n" + imported
+                } else {
+                    config.salesAssistKnowledgeBase = imported
+                }
+            }
+            salesImportMessage = append ? "Knowledge base appended." : "Knowledge base replaced."
+        } catch {
+            salesImportError = error.localizedDescription
+        }
+    }
+
+    private func importSalesObjectionsFile() {
+        clearSalesImportStatus()
+        guard let url = selectFile(
+            title: "Import Objections",
+            allowedContentTypes: salesObjectionImportTypes
+        ) else { return }
+        do {
+            let objections = try SalesAssistLibraryImport.objections(from: url)
+            appendSalesObjections(objections)
+            salesImportMessage = "Imported \(objections.count) objection\(objections.count == 1 ? "" : "s")."
+        } catch {
+            salesImportError = error.localizedDescription
+        }
+    }
+
+    private func extractSalesObjectionsFromText() {
+        clearSalesImportStatus()
+        let notes = salesObjectionExtractionText
+        isExtractingSalesObjections = true
+        Task {
+            do {
+                let objections = try await SalesAssistObjectionExtractor().extract(from: notes)
+                await MainActor.run {
+                    appendSalesObjections(objections)
+                    salesImportMessage = "Extracted \(objections.count) objection\(objections.count == 1 ? "" : "s")."
+                    isExtractingSalesObjections = false
+                    showSalesObjectionExtractionSheet = false
+                }
+            } catch {
+                await MainActor.run {
+                    salesImportError = error.localizedDescription
+                    isExtractingSalesObjections = false
+                }
+            }
+        }
+    }
+
+    private func appendSalesObjections(_ objections: [SalesAssistObjection]) {
+        controller.updateConfig { config in
+            config.salesAssistObjections.append(contentsOf: objections)
+        }
+        if let first = objections.first {
+            selectedSalesObjectionID = first.id
+        }
+    }
+
+    private func clearSalesImportStatus() {
+        salesImportMessage = nil
+        salesImportError = nil
+    }
+
+    private var salesTextImportTypes: [UTType] {
+        [
+            .plainText,
+            .text,
+            UTType(filenameExtension: "md"),
+            UTType(filenameExtension: "markdown"),
+        ].compactMap { $0 }
+    }
+
+    private var salesObjectionImportTypes: [UTType] {
+        [
+            .json,
+            .commaSeparatedText,
+            UTType(filenameExtension: "csv"),
+        ].compactMap { $0 }
+    }
+
+    private func selectFile(title: String, allowedContentTypes: [UTType]) -> URL? {
+        let panel = NSOpenPanel()
+        panel.title = title
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = allowedContentTypes
+        return panel.runModal() == .OK ? panel.url : nil
     }
 
     // MARK: - Calendars
@@ -1897,6 +3199,48 @@ struct SettingsView: View {
         }
     }
 
+    private func applyPreferredSettingsPane() {
+        guard let rawValue = appState.preferredSettingsPane,
+              let pane = SettingsPane(rawValue: rawValue) else { return }
+        selectedPane = pane
+        appState.preferredSettingsPane = nil
+    }
+
+    private func redeemInviteCode() {
+        let token = inviteSetupCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else { return }
+
+        isRedeemingInvite = true
+        inviteRedeemMessage = nil
+        inviteRedeemError = nil
+        let apiURL = effectiveInviteAPIURL
+
+        Task {
+            do {
+                let response = try await SalesCaddieCloudAPIClient.redeemInvite(token: token, apiURL: apiURL)
+                await MainActor.run {
+                    controller.applySalesCaddieInviteConfig(response.config)
+                    controller.applySalesCaddieIdentity(
+                        SalesCaddieIdentityResponse(
+                            ok: response.ok,
+                            workspace: response.workspace,
+                            member: response.member,
+                            permissions: response.member.permissions ?? SalesCaddiePermissions()
+                        )
+                    )
+                    inviteSetupCode = ""
+                    inviteRedeemMessage = "Joined \(response.workspace.slug) as \(response.member.email)."
+                    isRedeemingInvite = false
+                }
+            } catch {
+                await MainActor.run {
+                    inviteRedeemError = error.localizedDescription
+                    isRedeemingInvite = false
+                }
+            }
+        }
+    }
+
     @ViewBuilder
     private func keyStatusRow(key: String) -> some View {
         HStack(spacing: 6) {
@@ -2116,6 +3460,90 @@ struct PastableTextField: NSViewRepresentable {
         func controlTextDidChange(_ obj: Notification) {
             guard let field = obj.object as? NSTextField else { return }
             onChange(field.stringValue)
+        }
+    }
+}
+
+struct MultilineTextEditor: NSViewRepresentable {
+    let text: String
+    let placeholder: String
+    let minHeight: CGFloat
+    let onChange: (String) -> Void
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = NSColor.textBackgroundColor.withAlphaComponent(0.08)
+        scrollView.borderType = .bezelBorder
+
+        let textView = NSTextView()
+        textView.font = .systemFont(ofSize: 13)
+        textView.string = text
+        textView.delegate = context.coordinator
+        textView.isRichText = false
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.textContainerInset = NSSize(width: 6, height: 6)
+        textView.backgroundColor = .clear
+        textView.allowsUndo = true
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+        textView.minSize = NSSize(width: 0, height: minHeight)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        scrollView.documentView = textView
+
+        context.coordinator.placeholder = placeholder
+        context.coordinator.applyPlaceholderIfNeeded(textView)
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard let textView = scrollView.documentView as? NSTextView else { return }
+        context.coordinator.placeholder = placeholder
+        if !context.coordinator.isShowingPlaceholder, textView.string != text {
+            textView.string = text
+        }
+        context.coordinator.applyPlaceholderIfNeeded(textView)
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onChange: onChange)
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        let onChange: (String) -> Void
+        var placeholder = ""
+        var isShowingPlaceholder = false
+
+        init(onChange: @escaping (String) -> Void) {
+            self.onChange = onChange
+        }
+
+        func textDidBeginEditing(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView, isShowingPlaceholder else { return }
+            isShowingPlaceholder = false
+            textView.string = ""
+            textView.textColor = .labelColor
+        }
+
+        func textDidEndEditing(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            applyPlaceholderIfNeeded(textView)
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView, !isShowingPlaceholder else { return }
+            onChange(textView.string)
+        }
+
+        func applyPlaceholderIfNeeded(_ textView: NSTextView) {
+            let isFirstResponder = textView.window?.firstResponder === textView
+            guard textView.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  !isFirstResponder else { return }
+            isShowingPlaceholder = true
+            textView.string = placeholder
+            textView.textColor = .placeholderTextColor
         }
     }
 }

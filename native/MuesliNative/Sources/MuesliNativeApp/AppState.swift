@@ -5,6 +5,10 @@ import MuesliCore
 enum DashboardTab: String, CaseIterable {
     case dictations
     case meetings
+    case jessica
+    case sales
+    case salesReview
+    case admin
     case dictionary
     case models
     case shortcuts
@@ -75,6 +79,7 @@ final class AppState {
     var isGoogleCalendarAvailable: Bool = false
     var isGoogleCalendarVerified: Bool = false
     var isGoogleCalendarAuthenticated: Bool = false
+    var isGoogleDriveDocsAuthorized: Bool = false
     var upcomingCalendarEvents: [UnifiedCalendarEvent] = []
     var hiddenCalendarEventIDs: Set<String> = []
     var availableEventKitCalendars: [AvailableCalendar] = []
@@ -103,6 +108,7 @@ final class AppState {
 
     // Navigation
     var selectedTab: DashboardTab = .dictations
+    var preferredSettingsPane: String?
 
     // Computed
     var selectedMeeting: MeetingRecord? {

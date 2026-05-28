@@ -83,6 +83,8 @@ private enum MeetingTranscriptRecoveryResult {
 
 final class MeetingSession {
     private static let logger = Logger(subsystem: "com.muesli.native", category: "MeetingSession")
+    private static let liveAssistQueue = DispatchQueue(label: "com.muesli.native.live-assist-chunks")
+    private static let liveAssistTranscriptURL = URL(fileURLWithPath: "/tmp/skriber-live-transcript.txt")
 
     private let title: String
     private let calendarEventID: String?
@@ -131,6 +133,44 @@ final class MeetingSession {
     private func setPausedStateOnQueue(_ paused: Bool) {
         isPaused = paused
         pausedDisplayLock.withLock { $0 = paused }
+    }
+
+    private func emitLiveAssistSegments(_ segments: [SpeechSegment], speaker: String) {
+        let texts = segments
+            .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let lines = texts.map { "\(speaker): \($0)" }
+        guard !lines.isEmpty else { return }
+
+        DispatchQueue.main.async {
+            texts.forEach { text in
+                NotificationCenter.default.post(
+                    name: .salesAssistTranscriptChunk,
+                    object: nil,
+                    userInfo: [
+                        "speaker": speaker,
+                        "text": text,
+                    ]
+                )
+            }
+        }
+
+        Self.liveAssistQueue.async {
+            let payload = lines.joined(separator: "\n") + "\n"
+            do {
+                let directory = Self.liveAssistTranscriptURL.deletingLastPathComponent()
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                if !FileManager.default.fileExists(atPath: Self.liveAssistTranscriptURL.path) {
+                    FileManager.default.createFile(atPath: Self.liveAssistTranscriptURL.path, contents: nil)
+                }
+                let handle = try FileHandle(forWritingTo: Self.liveAssistTranscriptURL)
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                try handle.write(contentsOf: Data(payload.utf8))
+            } catch {
+                fputs("[live-assist] failed to write transcript chunk: \(error)\n", stderr)
+            }
+        }
     }
 
     init(
@@ -360,6 +400,7 @@ final class MeetingSession {
                     systemChunkHealthTracker.noteEmptyChunk()
                 } else {
                     systemChunkHealthTracker.noteSuccessfulChunk()
+                    emitLiveAssistSegments(normalizedSegments, speaker: "Prospect")
                 }
                 systemSegments.append(contentsOf: normalizedSegments)
             } catch {
@@ -623,6 +664,7 @@ final class MeetingSession {
                         self.systemChunkHealthTracker.noteEmptyChunk()
                     } else {
                         self.systemChunkHealthTracker.noteSuccessfulChunk()
+                        self.emitLiveAssistSegments(normalizedSegments, speaker: "Prospect")
                     }
                     return normalizedSegments
                 }
@@ -799,6 +841,7 @@ final class MeetingSession {
                     micChunkHealthTracker.noteEmptyChunk()
                 } else {
                     micChunkHealthTracker.noteSuccessfulChunk()
+                    emitLiveAssistSegments(normalizedSegments, speaker: "Rep")
                 }
                 return normalizedSegments
             }

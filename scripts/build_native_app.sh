@@ -8,12 +8,12 @@ INSTALL_DIR="${MUESLI_INSTALL_DIR:-/Applications}"
 BUILD_CONFIG="${1:-release}"
 APP_BINARY="MuesliNativeApp"
 CLI_BINARY="muesli-cli"
-APP_NAME="${MUESLI_APP_NAME:-Muesli}"
+APP_NAME="${MUESLI_APP_NAME:-Sales Caddie}"
 APP_DISPLAY_NAME="${MUESLI_DISPLAY_NAME:-$APP_NAME}"
 APP_BUNDLE_NAME="${MUESLI_APP_BUNDLE_NAME:-$APP_NAME.app}"
-APP_EXECUTABLE_NAME="${MUESLI_EXECUTABLE_NAME:-Muesli}"
+APP_EXECUTABLE_NAME="${MUESLI_EXECUTABLE_NAME:-Sales Caddie}"
 APP_SUPPORT_DIR_NAME="${MUESLI_SUPPORT_DIR_NAME:-$APP_DISPLAY_NAME}"
-BUNDLE_ID="${MUESLI_BUNDLE_ID:-com.muesli.app}"
+BUNDLE_ID="${MUESLI_BUNDLE_ID:-com.salescaddie.app}"
 DEFAULT_APP_VERSION="0.6.7"
 APP_VERSION="${MUESLI_BUILD_VERSION:-$DEFAULT_APP_VERSION}"
 APP_BUNDLE_VERSION="${MUESLI_BUNDLE_VERSION:-$APP_VERSION}"
@@ -24,10 +24,15 @@ STAGED_APP_DIR="$DIST_DIR/$APP_BUNDLE_NAME"
 APP_DIR="$INSTALL_DIR/$APP_BUNDLE_NAME"
 DEFAULT_SIGN_IDENTITY="Developer ID Application: Pranav Hari Guruvayurappan (58W55QJ567)"
 SIGN_IDENTITY="${MUESLI_SIGN_IDENTITY:-$DEFAULT_SIGN_IDENTITY}"
+SIGN_KEYCHAIN="${MUESLI_SIGN_KEYCHAIN:-}"
 SKIP_SIGN="${MUESLI_SKIP_SIGN:-0}"
 CODESIGN_TIMESTAMP="${MUESLI_CODESIGN_TIMESTAMP:---timestamp}"
 if [[ "$CODESIGN_TIMESTAMP" == "none" ]]; then
   CODESIGN_TIMESTAMP="--timestamp=none"
+fi
+CODESIGN_KEYCHAIN_ARGS=()
+if [[ -n "$SIGN_KEYCHAIN" ]]; then
+  CODESIGN_KEYCHAIN_ARGS=(--keychain "$SIGN_KEYCHAIN")
 fi
 
 SWIFT_BUILD_ARGS=(--package-path "$PACKAGE_DIR" -c "$BUILD_CONFIG")
@@ -97,8 +102,8 @@ if [[ -f "$LOCALVQE_MODEL_PATH" ]]; then
 fi
 
 # Bundle assets
-cp "$ROOT/assets/menu_m_template.png" "$STAGED_APP_DIR/Contents/Resources/menu_m_template.png"
-cp "$ROOT/assets/muesli.icns" "$STAGED_APP_DIR/Contents/Resources/muesli.icns"
+cp "$ROOT/assets/menu_sales_caddie_template.png" "$STAGED_APP_DIR/Contents/Resources/menu_sales_caddie_template.png"
+cp "$ROOT/assets/sales-caddie.icns" "$STAGED_APP_DIR/Contents/Resources/sales-caddie.icns"
 cp "$ROOT/assets/zoom-app.png" "$STAGED_APP_DIR/Contents/Resources/zoom-app.png"
 cp "$ROOT/assets/Google_Meet_icon_(2020).svg.png" "$STAGED_APP_DIR/Contents/Resources/google-meet.png"
 cp "$ROOT/assets/Microsoft_Office_Teams_(2025–present).svg.png" "$STAGED_APP_DIR/Contents/Resources/teams.png"
@@ -134,7 +139,7 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleIconFile</key>
-  <string>muesli.icns</string>
+  <string>sales-caddie.icns</string>
   <key>MuesliSupportDirectoryName</key>
   <string>$APP_SUPPORT_DIR_NAME</string>
   <key>LSUIElement</key>
@@ -170,31 +175,39 @@ ditto "$STAGED_APP_DIR" "$APP_DIR"
 
 if [[ "$SKIP_SIGN" != "1" ]]; then
   if ! security find-identity -v -p codesigning | grep -Fq "$SIGN_IDENTITY"; then
-    echo "Signing identity not found: $SIGN_IDENTITY" >&2
-    echo "For local contributor builds without this certificate, run: MUESLI_SKIP_SIGN=1 ./scripts/dev-test.sh" >&2
-    exit 1
+    SIGN_PROBE="$(mktemp)"
+    printf '#!/bin/sh\nexit 0\n' > "$SIGN_PROBE"
+    chmod +x "$SIGN_PROBE"
+    if ! codesign --force "${CODESIGN_KEYCHAIN_ARGS[@]}" --sign "$SIGN_IDENTITY" "$SIGN_PROBE" >/dev/null 2>&1; then
+      rm -f "$SIGN_PROBE"
+      echo "Signing identity not found or not usable: $SIGN_IDENTITY" >&2
+      echo "For local contributor builds without a usable certificate, run: MUESLI_SKIP_SIGN=1 ./scripts/dev-test.sh" >&2
+      exit 1
+    fi
+    rm -f "$SIGN_PROBE"
   fi
 
   # Sign all bundled frameworks, including nested Sparkle executables.
   find "$APP_DIR/Contents/MacOS" -maxdepth 1 -name "*.framework" -type d | while read -r framework; do
+    find "$framework" -type f -perm +111 | while read -r binary; do
+      if file "$binary" | grep -q "Mach-O"; then
+        codesign --force --options runtime "$CODESIGN_TIMESTAMP" "${CODESIGN_KEYCHAIN_ARGS[@]}" \
+          --sign "$SIGN_IDENTITY" "$binary"
+      fi
+    done
+
     if [[ "$(basename "$framework")" == "Sparkle.framework" ]]; then
-      find "$framework" -type f -perm +111 | while read -r binary; do
-        if file "$binary" | grep -q "Mach-O"; then
-          codesign --force --options runtime "$CODESIGN_TIMESTAMP" \
-            --sign "$SIGN_IDENTITY" "$binary"
-        fi
-      done
       find "$framework" -name "*.xpc" -type d | while read -r xpc; do
-        codesign --force --options runtime "$CODESIGN_TIMESTAMP" \
+        codesign --force --options runtime "$CODESIGN_TIMESTAMP" "${CODESIGN_KEYCHAIN_ARGS[@]}" \
           --sign "$SIGN_IDENTITY" "$xpc"
       done
       find "$framework" -name "*.app" -type d | while read -r app; do
-        codesign --force --options runtime "$CODESIGN_TIMESTAMP" \
+        codesign --force --options runtime "$CODESIGN_TIMESTAMP" "${CODESIGN_KEYCHAIN_ARGS[@]}" \
           --sign "$SIGN_IDENTITY" "$app"
       done
     fi
 
-    codesign --force --options runtime "$CODESIGN_TIMESTAMP" \
+    codesign --force --options runtime "$CODESIGN_TIMESTAMP" "${CODESIGN_KEYCHAIN_ARGS[@]}" \
       --sign "$SIGN_IDENTITY" \
       "$framework"
   done
@@ -203,19 +216,19 @@ if [[ "$SKIP_SIGN" != "1" ]]; then
   # library validation requires these to have the same Team ID as the app.
   find "$APP_DIR/Contents/MacOS" -maxdepth 1 \( -name "liblocalvqe*.dylib" -o -name "libggml*.dylib" -o -name "libggml*.so" \) -type f | while read -r library; do
     if file "$library" | grep -q "Mach-O"; then
-      codesign --force --options runtime "$CODESIGN_TIMESTAMP" \
+      codesign --force --options runtime "$CODESIGN_TIMESTAMP" "${CODESIGN_KEYCHAIN_ARGS[@]}" \
         --sign "$SIGN_IDENTITY" \
         "$library"
     fi
   done
 
-  codesign --force --options runtime "$CODESIGN_TIMESTAMP" \
+  codesign --force --options runtime "$CODESIGN_TIMESTAMP" "${CODESIGN_KEYCHAIN_ARGS[@]}" \
     --sign "$SIGN_IDENTITY" \
     "$APP_DIR/Contents/MacOS/muesli-cli"
 
   # Sign the app bundle with hardened runtime, secure timestamp, and entitlements
-  ENTITLEMENTS="$ROOT/scripts/Muesli.entitlements"
-  codesign --force --options runtime "$CODESIGN_TIMESTAMP" \
+  ENTITLEMENTS="${MUESLI_ENTITLEMENTS:-$ROOT/scripts/Muesli.entitlements}"
+  codesign --force --options runtime "$CODESIGN_TIMESTAMP" "${CODESIGN_KEYCHAIN_ARGS[@]}" \
     --entitlements "$ENTITLEMENTS" \
     --sign "$SIGN_IDENTITY" \
     "$APP_DIR"

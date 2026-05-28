@@ -10,6 +10,7 @@ struct ShortcutsView: View {
     @State private var pendingModifierKeyCode: UInt16?
     @State private var dictationShortcutMessage: String?
     @State private var computerUseShortcutMessage: String?
+    @State private var jessicaShortcutMessage: String?
     @State private var meetingRecordingShortcutMessage: String?
 
     var body: some View {
@@ -19,13 +20,15 @@ struct ShortcutsView: View {
                     .font(MuesliTheme.title1())
                     .foregroundStyle(MuesliTheme.textPrimary)
 
-                Text("Choose your preferred shortcuts for dictation and computer use commands.")
+                Text("Choose your preferred shortcuts for dictation, agent commands, and meeting recording.")
                     .font(MuesliTheme.body())
                     .foregroundStyle(MuesliTheme.textSecondary)
 
                 dictationShortcutSection
 
                 computerUseShortcutSection
+
+                jessicaShortcutSection
 
                 meetingRecordingShortcutSection
 
@@ -44,6 +47,7 @@ struct ShortcutsView: View {
     private enum ShortcutTarget {
         case dictation
         case computerUse
+        case jessica
         case meetingRecording
     }
 
@@ -190,6 +194,54 @@ struct ShortcutsView: View {
         )
     }
 
+    private var jessicaShortcutSection: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                    Text("Jessica Command")
+                        .font(MuesliTheme.headline())
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                    Text("Hold to speak a Sales Caddie task, release to send it to Jessica")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
+                Spacer()
+                Toggle("", isOn: Binding(
+                    get: { appState.config.enableJessicaHotkey },
+                    set: { newValue in
+                        let result = controller.updateJessicaHotkeyEnabled(newValue)
+                        jessicaShortcutMessage = result.message
+                    }
+                ))
+                .toggleStyle(.switch)
+                .tint(MuesliTheme.accent)
+                .labelsHidden()
+            }
+
+            Divider()
+                .background(MuesliTheme.surfaceBorder)
+
+            shortcutControls(
+                target: .jessica,
+                threshold: appState.config.jessicaHotkeyTriggerThresholdMS,
+                isEnabled: appState.config.enableJessicaHotkey
+            ) { value in
+                controller.updateConfig { $0.jessicaHotkeyTriggerThresholdMS = value }
+            }
+
+            if let jessicaShortcutMessage {
+                shortcutMessage(jessicaShortcutMessage)
+            }
+        }
+        .padding(MuesliTheme.spacing16)
+        .background(MuesliTheme.backgroundRaised)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+        .overlay(
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
+                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+        )
+    }
+
     private func hotkeyBadge(_ hotkey: HotkeyConfig) -> some View {
         Text(hotkey.displayLabel)
             .font(.system(size: 12, weight: .medium, design: .rounded))
@@ -232,6 +284,8 @@ struct ShortcutsView: View {
             return appState.config.dictationHotkey
         case .computerUse:
             return appState.config.computerUseHotkey
+        case .jessica:
+            return appState.config.jessicaHotkey
         case .meetingRecording:
             return appState.config.meetingRecordingHotkey
         }
@@ -305,7 +359,7 @@ struct ShortcutsView: View {
         switch target {
         case .meetingRecording:
             return "Press a key or modifier..."
-        case .dictation, .computerUse:
+        case .dictation, .computerUse, .jessica:
             return "Press a modifier key..."
         }
     }
@@ -347,6 +401,7 @@ struct ShortcutsView: View {
             controller.resetShortcutDefaults()
             dictationShortcutMessage = nil
             computerUseShortcutMessage = nil
+            jessicaShortcutMessage = nil
             meetingRecordingShortcutMessage = nil
         } label: {
             Text("Reset to Defaults")
@@ -358,10 +413,13 @@ struct ShortcutsView: View {
             appState.config.dictationHotkey == .default
                 && appState.config.computerUseHotkey == .computerUseDefault
                 && !appState.config.enableComputerUseHotkey
+                && appState.config.jessicaHotkey == .jessicaDefault
+                && !appState.config.enableJessicaHotkey
                 && appState.config.meetingRecordingHotkey == .meetingRecordingDefault
                 && !appState.config.enableMeetingRecordingHotkey
                 && appState.config.hotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds
                 && appState.config.computerUseHotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds
+                && appState.config.jessicaHotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds
                 && appState.config.meetingRecordingHotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultMeetingThresholdMilliseconds
         )
     }
@@ -420,6 +478,8 @@ struct ShortcutsView: View {
             result = controller.updateDictationHotkey(config)
         case .computerUse:
             result = controller.updateComputerUseHotkey(config)
+        case .jessica:
+            result = controller.updateJessicaHotkey(config)
         case .meetingRecording:
             result = controller.updateMeetingRecordingHotkey(config)
         }
@@ -435,13 +495,16 @@ struct ShortcutsView: View {
         switch target {
         case .dictation:
             dictationShortcutMessage = message
-            if message == nil { computerUseShortcutMessage = nil; meetingRecordingShortcutMessage = nil }
+            if message == nil { computerUseShortcutMessage = nil; jessicaShortcutMessage = nil; meetingRecordingShortcutMessage = nil }
         case .computerUse:
             computerUseShortcutMessage = message
-            if message == nil { dictationShortcutMessage = nil; meetingRecordingShortcutMessage = nil }
+            if message == nil { dictationShortcutMessage = nil; jessicaShortcutMessage = nil; meetingRecordingShortcutMessage = nil }
+        case .jessica:
+            jessicaShortcutMessage = message
+            if message == nil { dictationShortcutMessage = nil; computerUseShortcutMessage = nil; meetingRecordingShortcutMessage = nil }
         case .meetingRecording:
             meetingRecordingShortcutMessage = message
-            if message == nil { dictationShortcutMessage = nil; computerUseShortcutMessage = nil }
+            if message == nil { dictationShortcutMessage = nil; computerUseShortcutMessage = nil; jessicaShortcutMessage = nil }
         }
     }
 

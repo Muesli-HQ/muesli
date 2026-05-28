@@ -43,6 +43,14 @@ struct DashboardRootView: View {
                 DictationsView(appState: appState, controller: controller)
             case .meetings:
                 MeetingsView(appState: appState, controller: controller)
+            case .jessica:
+                JessicaHistoryView(appState: appState, controller: controller)
+            case .sales:
+                SalesDashboardView(appState: appState, controller: controller)
+            case .salesReview:
+                SalesCallReviewView(appState: appState, controller: controller)
+            case .admin:
+                SalesAdminView(appState: appState, controller: controller)
             case .dictionary:
                 DictionaryView(appState: appState, controller: controller)
             case .models:

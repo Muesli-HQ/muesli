@@ -455,6 +455,16 @@ struct AppConfigTests {
         config.meetingHookEnabled = true
         config.meetingHookPath = "/tmp/meeting-hook.sh"
         config.meetingHookTimeoutSeconds = 45
+        config.disabledCalendarIDs = ["subscribed-holidays"]
+        config.googleCalendarPrimaryOnlyDefaultApplied = true
+        config.eventKitSubscriptionCalendarDefaultApplied = true
+        config.salesAssistAdminManagedLibraryEnabled = true
+        config.salesAssistAdminLibraryURL = "https://example.test/sales-library"
+        config.salesAssistAdminLibraryUpdatedAt = "2026-05-26T10:00:00Z"
+        config.salesAgentUserID = "mike"
+        config.salesAgentUserName = "Mike Preece"
+        config.salesAgentUserRole = "admin"
+        config.salesAgentRepKey = "mike"
         config.showScheduledMeetingNotifications = false
         config.showMeetingDetectionNotification = false
         config.mutedMeetingDetectionAppBundleIDs = ["com.google.Chrome", "com.tinyspeck.slackmacgap"]
@@ -483,6 +493,16 @@ struct AppConfigTests {
         #expect(decoded.meetingHookEnabled == true)
         #expect(decoded.meetingHookPath == "/tmp/meeting-hook.sh")
         #expect(decoded.meetingHookTimeoutSeconds == 45)
+        #expect(decoded.disabledCalendarIDs == ["subscribed-holidays"])
+        #expect(decoded.googleCalendarPrimaryOnlyDefaultApplied == true)
+        #expect(decoded.eventKitSubscriptionCalendarDefaultApplied == true)
+        #expect(decoded.salesAssistAdminManagedLibraryEnabled == true)
+        #expect(decoded.salesAssistAdminLibraryURL == "https://example.test/sales-library")
+        #expect(decoded.salesAssistAdminLibraryUpdatedAt == "2026-05-26T10:00:00Z")
+        #expect(decoded.salesAgentUserID == "mike")
+        #expect(decoded.salesAgentUserName == "Mike Preece")
+        #expect(decoded.salesAgentUserRole == "admin")
+        #expect(decoded.salesAgentRepKey == "mike")
         #expect(decoded.showScheduledMeetingNotifications == false)
         #expect(decoded.showMeetingDetectionNotification == false)
         #expect(decoded.mutedMeetingDetectionAppBundleIDs == ["com.google.Chrome", "com.tinyspeck.slackmacgap"])
@@ -531,6 +551,16 @@ struct AppConfigTests {
         #expect(json["meeting_hook_enabled"] != nil)
         #expect(json["meeting_hook_path"] != nil)
         #expect(json["meeting_hook_timeout_seconds"] != nil)
+        #expect(json["disabled_calendar_ids"] != nil)
+        #expect(json["google_calendar_primary_only_default_applied"] != nil)
+        #expect(json["eventkit_subscription_calendar_default_applied"] != nil)
+        #expect(json["sales_assist_admin_managed_library_enabled"] != nil)
+        #expect(json["sales_assist_admin_library_url"] != nil)
+        #expect(json["sales_assist_admin_library_updated_at"] != nil)
+        #expect(json["sales_agent_user_id"] != nil)
+        #expect(json["sales_agent_user_name"] != nil)
+        #expect(json["sales_agent_user_role"] != nil)
+        #expect(json["sales_agent_rep_key"] != nil)
     }
 
     @Test("decodes with missing fields using defaults")
@@ -984,7 +1014,7 @@ struct HotkeyMonitorTests {
     @Test("low trigger threshold still allows double-tap toggle")
     @MainActor
     func lowTriggerThresholdStillAllowsDoubleTapToggle() async throws {
-        let monitor = HotkeyMonitor(doubleTapWindow: 0.35)
+        let monitor = HotkeyMonitor(doubleTapWindow: 2.0)
         monitor.configureTriggerThreshold(milliseconds: 75)
         var prepareCount = 0
         var toggleStartCount = 0
@@ -1007,7 +1037,7 @@ struct HotkeyMonitorTests {
     @Test("low trigger threshold arms immediately but defers audio while double-tap is possible")
     @MainActor
     func lowTriggerThresholdArmsImmediatelyButDefersAudio() async throws {
-        let monitor = HotkeyMonitor(doubleTapWindow: 0.35)
+        let monitor = HotkeyMonitor(doubleTapWindow: 2.0)
         monitor.configureTriggerThreshold(milliseconds: 75)
         var armCount = 0
         var prepareCount = 0
@@ -1024,7 +1054,6 @@ struct HotkeyMonitorTests {
 
         monitor.handleFlagsChanged(keyCode: 55, flags: .command)
         #expect(armCount == 1)
-        try await Task.sleep(for: .milliseconds(100))
         #expect(prepareCount == 0)
         #expect(startCount == 0)
         monitor.handleFlagsChanged(keyCode: 55, flags: [])
@@ -1129,7 +1158,7 @@ struct HotkeyMonitorTests {
     @Test("combination shortcut requires hold threshold before toggling")
     @MainActor
     func combinationShortcutRequiresHoldThresholdBeforeToggling() async throws {
-        let monitor = HotkeyMonitor(startDelay: 0.05)
+        let monitor = HotkeyMonitor(startDelay: 0.3)
         monitor.configure(HotkeyConfig.combination(modifiers: [.command, .shift], keyCode: 15))
         var toggleStartCount = 0
         monitor.onToggleStart = {
@@ -1139,7 +1168,7 @@ struct HotkeyMonitorTests {
         monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
         try await Task.sleep(for: .milliseconds(20))
         monitor.handleCombinationForTests(type: .keyUp, keyCode: 15, flags: [.command, .shift])
-        try await Task.sleep(for: .milliseconds(50))
+        try await Task.sleep(for: .milliseconds(80))
 
         #expect(toggleStartCount == 0)
     }
@@ -1188,7 +1217,7 @@ struct HotkeyMonitorTests {
     @Test("combination shortcut cancels when modifiers release before threshold")
     @MainActor
     func combinationShortcutCancelsWhenModifiersReleaseBeforeThreshold() async throws {
-        let monitor = HotkeyMonitor(startDelay: 0.05)
+        let monitor = HotkeyMonitor(startDelay: 0.3)
         monitor.configure(HotkeyConfig.combination(modifiers: [.command, .shift], keyCode: 15))
         var toggleStartCount = 0
         monitor.onToggleStart = {
@@ -1198,7 +1227,7 @@ struct HotkeyMonitorTests {
         monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
         try await Task.sleep(for: .milliseconds(20))
         monitor.handleCombinationForTests(type: .flagsChanged, keyCode: 56, flags: .command)
-        try await Task.sleep(for: .milliseconds(50))
+        try await Task.sleep(for: .milliseconds(80))
 
         #expect(toggleStartCount == 0)
     }

@@ -291,7 +291,7 @@ def generate():
 
     # 5. Icon columns
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    icon_path = os.path.normpath(os.path.join(script_dir, "assets", "muesli_app_icon.png"))
+    icon_path = os.path.normpath(os.path.join(script_dir, "assets", "sales-caddie-icon.png"))
 
     icon_cy = 315 * S
     draw_icon_column(img, cx=260 * S, cy=icon_cy, label=APP_DISPLAY_NAME,

@@ -15,12 +15,12 @@ struct OnboardingFlowTests {
 
     @Test("meetings orders meetings-only steps")
     func meetingsOrderedSteps() {
-        #expect(OnboardingFlow.orderedSteps(for: .meetings) == [0, 1, 3, 5, 6])
+        #expect(OnboardingFlow.orderedSteps(for: .meetings) == [0, 1, 6, 3, 5])
     }
 
     @Test("dictation and meetings orders combined steps")
     func dictationAndMeetingsOrderedSteps() {
-        #expect(OnboardingFlow.orderedSteps(for: .dictationAndMeetings) == [0, 1, 2, 3, 4, 5, 6])
+        #expect(OnboardingFlow.orderedSteps(for: .dictationAndMeetings) == [0, 1, 6, 2, 3, 4, 5])
     }
 
     @Test("normalized step advances over skipped steps")

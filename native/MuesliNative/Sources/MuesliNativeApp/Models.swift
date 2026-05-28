@@ -354,6 +354,102 @@ struct MeetingSummaryBackendOption: Equatable {
     }
 }
 
+struct SalesAgentBackendOption: Equatable {
+    let backend: String
+    let label: String
+
+    static let localPlanner = SalesAgentBackendOption(
+        backend: "local_planner",
+        label: "Local Sales Caddie"
+    )
+
+    static let hostedJessica = SalesAgentBackendOption(
+        backend: "hosted_jessica",
+        label: "Hosted Jessica"
+    )
+
+    static let openAI = SalesAgentBackendOption(
+        backend: "openai",
+        label: "OpenAI"
+    )
+
+    static let openRouter = SalesAgentBackendOption(
+        backend: "openrouter",
+        label: "OpenRouter"
+    )
+
+    static let ollama = SalesAgentBackendOption(
+        backend: "ollama",
+        label: "Ollama"
+    )
+
+    static let customWebhook = SalesAgentBackendOption(
+        backend: "custom_webhook",
+        label: "Custom Webhook"
+    )
+
+    static let all: [SalesAgentBackendOption] = [
+        .hostedJessica,
+        .openAI,
+        .openRouter,
+        .ollama,
+        .customWebhook,
+    ]
+
+    static func resolved(_ backend: String?) -> SalesAgentBackendOption {
+        guard let backend, let option = all.first(where: { $0.backend == backend }) else {
+            return .hostedJessica
+        }
+        return option
+    }
+}
+
+struct SalesAgentUserOption: Equatable, Identifiable {
+    let id: String
+    let name: String
+    let role: String
+    let repKey: String
+
+    var label: String { name }
+
+    static let mike = SalesAgentUserOption(id: "mike", name: "Mike Preece", role: "admin", repKey: "mike")
+    static let tommy = SalesAgentUserOption(id: "tommy", name: "Tommy", role: "rep", repKey: "tommy")
+    static let kaden = SalesAgentUserOption(id: "kaden", name: "Kaden", role: "rep", repKey: "kaden")
+    static let clay = SalesAgentUserOption(id: "clay", name: "Clay", role: "rep", repKey: "clay")
+    static let jason = SalesAgentUserOption(id: "jason", name: "Jason", role: "rep", repKey: "jason")
+    static let kaleb = SalesAgentUserOption(id: "kaleb", name: "Kaleb", role: "rep", repKey: "kaleb")
+
+    static let all: [SalesAgentUserOption] = [.mike, .tommy, .kaden, .clay, .jason, .kaleb]
+
+    static func resolved(userID: String?, repKey: String?) -> SalesAgentUserOption? {
+        let normalizedUserID = userID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedRepKey = repKey?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return all.first { option in
+            option.id == normalizedUserID || option.repKey == normalizedRepKey
+        }
+    }
+}
+
+struct SalesAgentHistoryItem: Codable, Identifiable, Equatable {
+    var id: String = UUID().uuidString
+    var createdAt: Date = Date()
+    var provider: String = SalesAgentBackendOption.localPlanner.backend
+    var transcript: String = ""
+    var response: String = ""
+    var plannerCommand: String?
+    var status: String = "done"
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case createdAt = "created_at"
+        case provider
+        case transcript
+        case response
+        case plannerCommand = "planner_command"
+        case status
+    }
+}
+
 struct PostProcessorOption: Identifiable, Equatable {
     let id: String
     let label: String
@@ -626,6 +722,7 @@ struct HotkeyConfig: Codable, Equatable {
 
     static let `default` = HotkeyConfig()
     static let computerUseDefault = HotkeyConfig(keyCode: 54, label: "Right Cmd")
+    static let jessicaDefault = HotkeyConfig(keyCode: 62, label: "Right Ctrl")
     static let meetingRecordingDefault = HotkeyConfig(
         keyCode: UInt16.max,
         label: "⌘⇧R",
@@ -672,10 +769,339 @@ enum OnboardingUseCase: String, Codable, CaseIterable {
     }
 }
 
+struct SalesAssistObjection: Codable, Identifiable, Equatable {
+    var id: String = UUID().uuidString
+    var name: String = ""
+    var priority: String = "medium"
+    var triggerPhrases: String = ""
+    var guidance: String = ""
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case priority
+        case triggerPhrases = "trigger_phrases"
+        case guidance
+    }
+}
+
+struct SalesAssistLiveCue: Codable, Identifiable, Equatable {
+    var id: String = UUID().uuidString
+    var kind: String = "buying_signal"
+    var name: String = ""
+    var priority: String = "medium"
+    var triggerPhrases: String = ""
+    var guidance: String = ""
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case kind
+        case name
+        case priority
+        case triggerPhrases = "trigger_phrases"
+        case guidance
+    }
+}
+
+struct SalesAssistLearningSuggestion: Codable, Identifiable, Equatable {
+    enum SuggestionKind: String, Codable {
+        case knowledgeBase = "knowledge_base"
+        case objection
+    }
+
+    var id: String
+    var kind: SuggestionKind
+    var title: String
+    var content: String
+    var reason: String
+    var sourceTitle: String
+    var createdAt: String
+    var objection: SalesAssistObjection?
+
+    init(
+        id: String = UUID().uuidString,
+        kind: SuggestionKind,
+        title: String,
+        content: String,
+        reason: String,
+        sourceTitle: String,
+        createdAt: String = ISO8601DateFormatter().string(from: Date()),
+        objection: SalesAssistObjection? = nil
+    ) {
+        self.id = id
+        self.kind = kind
+        self.title = title
+        self.content = content
+        self.reason = reason
+        self.sourceTitle = sourceTitle
+        self.createdAt = createdAt
+        self.objection = objection
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case kind
+        case title
+        case content
+        case reason
+        case sourceTitle = "source_title"
+        case createdAt = "created_at"
+        case objection
+    }
+}
+
+extension SalesAssistObjection {
+    static let defaultKnowledgeBase = """
+    Skriber is an AI medical scribe for SMB, solo, and small-group providers. It listens to patient encounters and generates structured clinical notes in roughly 10-30 seconds, including Chief Complaint, HPI, ROS, Objective, Assessment & Plan, billing codes, and patient instructions.
+
+    Core positioning:
+    - Close means trial started and account setup begun, not verbal interest.
+    - Do not give generic close-rate advice. Coach the rep on the friction point that is preventing live setup.
+    - Live account setup is the goal. Keep the prospect on the call while the trial is created, templates are assigned, and their first workflow is clear.
+    - Always personalize the demo to the prospect's specialty. Never rely on a generic template.
+    - The strongest conversion action is assigning templates live while the prospect watches.
+    - The trial should feel low-risk: nothing charges during the trial, and templates can be built before they start using it.
+    - If timing is the concern, negotiate the start date rather than accepting a vague follow-up.
+
+    Product facts:
+    - Pricing: annual is $85/month billed yearly; monthly is $125/month. Annual saves roughly five months.
+    - Trial: 10 visits or 14 days; card on file for the paid trial. Use the Netflix analogy: card on file, nothing bills until trial ends.
+    - Custom templates are unlimited and can be built in 3-5 minutes through support.
+    - Works with every EHR through copy/paste. Direct integrations cost more and take much longer.
+    - Supports ICD-10, CPT, DSM-5, CDT, Advanced Clinical Reasoning, Spanish-to-English, style learning, resume recording, and 24/7 support.
+    - HIPAA/GDPR compliant, ISO 27001 certified, BAA available, encrypted in transit and at rest, patient data is not used to train public AI models.
+
+    Demo flow:
+    1. Set agenda: discovery, live demo, free trial.
+    2. Ask about specialty, note workflow, EMR, time spent charting, billing/coding pain, and decision-maker.
+    3. Use their specialty template and a specialty-specific mock patient.
+    4. Pause after note generation and ask how long their typical note takes.
+    5. Show copy/paste to EHR and mention their EHR by name.
+    6. Close by tying the trial to their stated pain and begin setup live.
+
+    Best coaching instincts:
+    - Label the concern first, then ask one clarifying question.
+    - Convert soft exits into a concrete next step while still on the call.
+    - For partner/manager approval, book the second decision-maker demo immediately.
+    - For institutional approval, split personal/private patients from hospital/VA/risk-management patients.
+    - For competitor objections, suggest a side-by-side trial and anchor on templates, specialty depth, support, and price.
+    - For price objections, use time math: $85/month is less than $3/day and far cheaper than human scribes.
+    - For HIPAA concerns, answer clearly, offer BAA/compliance summary, then move back to trial setup.
+    """
+
+    static let defaultObjections: [SalesAssistObjection] = [
+        SalesAssistObjection(
+            name: "Decision hesitation",
+            priority: "high",
+            triggerPhrases: "think about it\nsleep on it\nnot sure\nneed more time\nlet me think\non the fence\nconsider it",
+            guidance: "Label it, then lower the risk: \"Totally fair. Let's get the trial open now so you can decide from real notes, not a sales call. I'll build the templates while you think it over.\""
+        ),
+        SalesAssistObjection(
+            name: "Partner or manager approval",
+            priority: "high",
+            triggerPhrases: "talk to my wife\ntalk to my husband\ntalk to my partner\nask my office manager\ncheck with my manager\nask my boss\nneed approval\nsign off",
+            guidance: "Do not accept a vague follow-up. Offer to book the decision-maker now: \"Can we grab 15 minutes with them? I'll show the ROI and templates so you have an easy yes/no.\""
+        ),
+        SalesAssistObjection(
+            name: "Institutional approval",
+            priority: "high",
+            triggerPhrases: "hospital approval\nrisk management\nmedical director\nVA approval\nDOD approval\nIT department\nprocurement\ncompliance department\nemployer has to approve",
+            guidance: "Split the population: \"Does that restriction cover every patient you see, or do you have private/per diem patients where you decide? If so, let's start that today while institutional approval runs.\""
+        ),
+        SalesAssistObjection(
+            name: "Card resistance",
+            priority: "high",
+            triggerPhrases: "credit card\ncard on file\npayment information\nbilling info\nwhy do you need my card\nnot comfortable giving card\nfree trial card",
+            guidance: "Use the Netflix analogy: \"Nothing bills during the trial. The card only keeps the account live if you decide to continue. If it doesn't save time, we cancel before anything charges.\""
+        ),
+        SalesAssistObjection(
+            name: "Send information soft exit",
+            priority: "high",
+            triggerPhrases: "send me info\nemail me information\nsend me pricing\nsend me details\nsend me a link\nlook at it later\nreview it later",
+            guidance: "Do not let the call end as a brochure handoff. Say: \"I can send it, but it'll make more sense after we anchor it to your workflow. Give me 90 seconds and I'll show the exact next step.\""
+        ),
+        SalesAssistObjection(
+            name: "Bad timing",
+            priority: "medium",
+            triggerPhrases: "too busy\nbad timing\nnot a good time\ncall me back later\nstart later\nnot ready yet\nmaybe next month",
+            guidance: "Negotiate the start date: \"Trial starts when you start, not today. I'll build templates now so day one is ready. What date should we have it start?\""
+        ),
+        SalesAssistObjection(
+            name: "Price concern",
+            priority: "medium",
+            triggerPhrases: "too expensive\ncosts too much\nprice is high\nbudget\nafford\ncheaper\nmonthly cost",
+            guidance: "Use time math: \"$85/month is less than $3/day. If it saves even one admin hour or a few minutes per patient, it pays for itself quickly.\""
+        ),
+        SalesAssistObjection(
+            name: "Competitor in use",
+            priority: "medium",
+            triggerPhrases: "using freed\nusing heidi\nusing doximity\nusing dragon\nusing dax\nusing abridge\nusing suki\nalready have a scribe\nalready use another tool",
+            guidance: "Suggest a side-by-side trial: \"Keep what you're using. Let's compare Skriber on your specialty templates, support, and note quality for 30 days. If it doesn't win, cancel.\""
+        ),
+        SalesAssistObjection(
+            name: "Native EHR AI",
+            priority: "medium",
+            triggerPhrases: "EHR is building it\nEpic AI\nathena ambient\nnative AI\nbuilt into my EHR\nwaiting for my EMR",
+            guidance: "Position specialty depth: \"Native EHR AI is built for everyone. Skriber is built around your specialty and custom templates. Try Skriber now so you have a benchmark.\""
+        ),
+        SalesAssistObjection(
+            name: "HIPAA or privacy concern",
+            priority: "high",
+            triggerPhrases: "HIPAA\nprivacy\npatient consent\nBAA\nsecurity\ndata training\nrecording patients\nPHI",
+            guidance: "Answer directly, then move forward: \"Yes, Skriber is HIPAA compliant, encrypted, BAA available, and patient data is not used to train public models. I can send the BAA; let's still get your trial ready.\""
+        ),
+        SalesAssistObjection(
+            name: "Copy-paste or integration concern",
+            priority: "medium",
+            triggerPhrases: "doesn't integrate\nno integration\ncopy paste\nmanual transfer\nmy EHR won't work\ncheckbox heavy",
+            guidance: "Use the time comparison: \"Copy/paste takes 2-3 minutes versus 20-30 minutes writing. We use this workflow to keep cost low and it works across EHRs.\""
+        ),
+        SalesAssistObjection(
+            name: "Team adoption concern",
+            priority: "medium",
+            triggerPhrases: "doctors won't adopt\nteam won't use it\nproviders won't like it\nhard to get buy in\nstaff won't change",
+            guidance: "Start with one workflow: \"Let's build your templates first. When they see a real note in their style, the value lands in 15 seconds.\""
+        ),
+        SalesAssistObjection(
+            name: "Tried Skriber before",
+            priority: "medium",
+            triggerPhrases: "tried Skriber before\nused Skriber before\ndidn't work before\nhad issues before\ncancelled before",
+            guidance: "Acknowledge and name the fix: \"That makes sense. Here's what's different now: [specific improvement]. I'll be your direct contact and we can do an extended high-touch trial.\""
+        ),
+        SalesAssistObjection(
+            name: "ChatGPT comparison",
+            priority: "medium",
+            triggerPhrases: "just use ChatGPT\nuse Gemini\nuse general AI\nfree AI",
+            guidance: "Separate consumer AI from clinical workflow: \"Consumer AI is not HIPAA-safe for PHI and doesn't give you templates, billing codes, ambient capture, or clinical workflow support.\""
+        ),
+        SalesAssistObjection(
+            name: "Accuracy concern",
+            priority: "medium",
+            triggerPhrases: "how accurate\naccuracy\nwrong notes\nhallucinate\ntrust the note\nmistakes",
+            guidance: "Anchor to trial proof: \"The trial is the proof. We'll use your specialty template and real workflow so you can judge note quality before anything bills.\""
+        )
+    ]
+}
+
+extension SalesAssistLiveCue {
+    static let supportedKinds = ["objection", "buying_signal", "competitor", "discovery", "pricing", "close", "talk_ratio"]
+    static let defaultEnabledKinds = supportedKinds
+
+    static let kindLabels: [String: String] = [
+        "objection": "Objections",
+        "buying_signal": "Buying signals",
+        "competitor": "Battlecards",
+        "discovery": "Discovery prompts",
+        "pricing": "Pricing/card guidance",
+        "close": "Close-now moments",
+        "talk_ratio": "Talk-time nudges",
+    ]
+
+    static let defaultCues: [SalesAssistLiveCue] = [
+        SalesAssistLiveCue(
+            kind: "buying_signal",
+            name: "Trial interest",
+            priority: "medium",
+            triggerPhrases: "how do we get started\nwhat is the next step\nstart the trial\nsounds good\ni like this\nthis could work",
+            guidance: "Treat this as permission to close. Tie the trial to their pain in one sentence, then start account setup while they are live."
+        ),
+        SalesAssistLiveCue(
+            kind: "competitor",
+            name: "Competitor mentioned",
+            priority: "medium",
+            triggerPhrases: "competitor\nanother scribe\nanother tool\nalready have a scribe\nalready use another tool\nalready using an AI scribe",
+            guidance: "Ask what they like and what still takes work. Offer a side-by-side trial using their specialty templates, note quality, support, and price."
+        ),
+        SalesAssistLiveCue(
+            kind: "competitor",
+            name: "Freed Battlecard",
+            priority: "medium",
+            triggerPhrases: "Freed\nusing Freed\nFreed AI\nFreed scribe",
+            guidance: "Ask what Freed does well and where it still creates cleanup. Contrast on specialty templates, support, billing/code help, and a live side-by-side trial."
+        ),
+        SalesAssistLiveCue(
+            kind: "competitor",
+            name: "Heidi Battlecard",
+            priority: "medium",
+            triggerPhrases: "Heidi\nusing Heidi\nHeidi Health\nHeidi AI",
+            guidance: "Do not argue broad AI quality. Ask whether Heidi matches their specialty note style, then position Skriber around custom templates, support, and workflow fit."
+        ),
+        SalesAssistLiveCue(
+            kind: "competitor",
+            name: "Doximity Battlecard",
+            priority: "medium",
+            triggerPhrases: "Doximity\nDoximity scribe\nDoximity GPT\nDoximity AI",
+            guidance: "Ask if they use Doximity for actual full notes or quick drafting. Position Skriber as the workflow tool for specialty templates, patient instructions, codes, and repeat daily use."
+        ),
+        SalesAssistLiveCue(
+            kind: "competitor",
+            name: "Dragon/DAX Battlecard",
+            priority: "medium",
+            triggerPhrases: "Dragon\nNuance\nDAX\nDAX Copilot\nDragon Ambient",
+            guidance: "Acknowledge Dragon/DAX as established. Ask about cost, setup, and template flexibility, then compare Skriber as faster to trial, easier to customize, and lower-risk for small practices."
+        ),
+        SalesAssistLiveCue(
+            kind: "competitor",
+            name: "Nabla Battlecard",
+            priority: "medium",
+            triggerPhrases: "Nabla\nusing Nabla\nNabla Copilot",
+            guidance: "Ask what part of Nabla they like and whether the output matches their specialty. Offer a side-by-side test on the same visit style and compare cleanup time."
+        ),
+        SalesAssistLiveCue(
+            kind: "competitor",
+            name: "Suki Battlecard",
+            priority: "medium",
+            triggerPhrases: "Suki\nusing Suki\nSuki AI",
+            guidance: "Ask whether Suki is solving notes, orders, or enterprise workflow. Recenter on small-practice speed: custom templates, fast setup, lower price, and direct support."
+        ),
+        SalesAssistLiveCue(
+            kind: "competitor",
+            name: "Abridge Battlecard",
+            priority: "medium",
+            triggerPhrases: "Abridge\nusing Abridge\nAbridge AI",
+            guidance: "Acknowledge Abridge as a strong enterprise option. Ask if they can start quickly and customize notes; position Skriber as easier to trial and tailor for their exact specialty."
+        ),
+        SalesAssistLiveCue(
+            kind: "competitor",
+            name: "Native EHR AI Battlecard",
+            priority: "medium",
+            triggerPhrases: "Epic AI\nathena ambient\nEHR AI\nEMR AI\nnative AI\nbuilt into my EHR\nwaiting for my EHR",
+            guidance: "Do not fight the EHR roadmap. Say native AI is built for everyone; Skriber can be tested now against their specialty workflow and becomes the benchmark."
+        ),
+        SalesAssistLiveCue(
+            kind: "discovery",
+            name: "Quantify charting pain",
+            priority: "medium",
+            triggerPhrases: "charting takes\nnotes take\ndocumentation takes\nlate at night\nafter hours\nbehind on notes",
+            guidance: "Ask: \"How many minutes per patient does that usually cost you, and how many patients do you see on a normal day?\""
+        ),
+        SalesAssistLiveCue(
+            kind: "close",
+            name: "Close the trial",
+            priority: "high",
+            triggerPhrases: "let's do it\nsign me up\nget me started\nset it up\nready to start\nmove forward",
+            guidance: "Move immediately to setup. Ask for the best email, confirm specialty, and keep talking while the account and templates are created."
+        ),
+    ]
+
+    static let seedCueNamesForMigration: Set<String> = Set(defaultCues.map(\.name))
+
+    static func appendingMissingSeedCues(to cues: [SalesAssistLiveCue]) -> [SalesAssistLiveCue] {
+        let existingNames = Set(cues.map { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+        let missing = defaultCues.filter { cue in
+            seedCueNamesForMigration.contains(cue.name)
+                && !existingNames.contains(cue.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        }
+        return cues + missing
+    }
+}
+
 struct AppConfig: Codable {
     var dictationHotkey: HotkeyConfig = .default
     var computerUseHotkey: HotkeyConfig = .computerUseDefault
     var enableComputerUseHotkey: Bool = false
+    var jessicaHotkey: HotkeyConfig = .jessicaDefault
+    var enableJessicaHotkey: Bool = false
     var meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault
     var enableMeetingRecordingHotkey: Bool = false
     var computerUseHotkeyDefaultDisabledMigrationApplied: Bool = true
@@ -700,6 +1126,7 @@ struct AppConfig: Codable {
     var enableDoubleTapDictation: Bool = true
     var hotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
     var computerUseHotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
+    var jessicaHotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
     var meetingRecordingHotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultMeetingThresholdMilliseconds
     var launchAtLogin: Bool = false
     var openDashboardOnLaunch: Bool = true
@@ -728,13 +1155,15 @@ struct AppConfig: Codable {
     var pauseMediaDuringDictation: Bool = false
     var muteSystemAudioDuringDictation: Bool = false
     var recordingColorHex: String = "1e1e2e"   // Catppuccin Mocha base, without #
-    var menuBarIcon: String = "muesli"
+    var menuBarIcon: String = "sales-caddie"
     var showNextMeetingInMenuBar: Bool = true
     var maraudersMapUnlocked: Bool = false
     var maraudersMapAudioClip: String = "bbc_world_news"
     var maraudersMapCustomAudioPath: String?
     var hiddenCalendarEventIDs: [String] = []
     var disabledCalendarIDs: [String] = []
+    var googleCalendarPrimaryOnlyDefaultApplied: Bool = false
+    var eventKitSubscriptionCalendarDefaultApplied: Bool = false
     var enablePostProcessor: Bool = false
     var activePostProcessorId: String = PostProcessorOption.defaultOption.id
     var postProcessorSystemPrompt: String = PostProcessorOption.defaultSystemPrompt
@@ -743,11 +1172,56 @@ struct AppConfig: Codable {
     var meetingHookEnabled: Bool = false
     var meetingHookPath: String = ""
     var meetingHookTimeoutSeconds: Int = 30
+    var salesCaddieInstallID: String = UUID().uuidString
+    var salesCaddieCloudSyncEnabled: Bool = false
+    var salesCaddieCloudAPIURL: String = ""
+    var salesCaddieCloudAPIToken: String = ""
+    var salesCaddieCloudWorkspaceSlug: String = ""
+    var salesCaddieCloudPermissions: SalesCaddiePermissions? = nil
+    var supabaseSyncEnabled: Bool = false
+    var supabaseURL: String = ""
+    var supabaseAnonKey: String = ""
+    var supabaseWorkspaceID: String = ""
+    var supabaseUserID: String = ""
+    var supabaseSyncJessicaHistory: Bool = true
+    var supabaseSyncTranscripts: Bool = false
+    var supabaseSyncSalesLibrary: Bool = false
+    var salesAssistAdminManagedLibraryEnabled: Bool = false
+    var salesAssistAdminLibraryURL: String = ""
+    var salesAssistAdminLibraryUpdatedAt: String = ""
+    var salesAssistKnowledgeBaseItemID: String = UUID().uuidString
+    var salesAgentBackend: String = SalesAgentBackendOption.hostedJessica.backend
+    var salesAgentEndpointURL: String = ""
+    var salesAgentAuthToken: String = ""
+    var salesAgentModel: String = ""
+    var salesAgentUserID: String = ""
+    var salesAgentUserName: String = ""
+    var salesAgentUserRole: String = ""
+    var salesAgentRepKey: String = ""
+    var salesAgentAllowComputerActions: Bool = false
+    var salesAgentSendScreenContext: Bool = false
+    var salesAgentSendKnowledgeBase: Bool = true
+    var salesAgentHistory: [SalesAgentHistoryItem] = []
+    var salesAssistEnabled: Bool = true
+    var salesAssistAIEnabled: Bool = true
+    var salesAssistEnabledKinds: [String] = SalesAssistLiveCue.defaultEnabledKinds
+    var salesAssistKnowledgeBase: String = SalesAssistObjection.defaultKnowledgeBase
+    var salesAssistObjections: [SalesAssistObjection] = SalesAssistObjection.defaultObjections
+    var salesAssistLiveCues: [SalesAssistLiveCue] = SalesAssistLiveCue.defaultCues
+    var salesAssistLearningSuggestions: [SalesAssistLearningSuggestion] = []
+    var salesPreCallBriefingModules: [SalesPreCallBriefingModule] = SalesPreCallBriefingModule.defaultModules
+    var salesPreCallCRMProvider: String = SalesCRMProvider.none.rawValue
+    var salesPreCallCRMConnectionLabel: String = ""
+    var salesPreCallHighLevelBaseURL: String = "https://services.leadconnectorhq.com"
+    var salesPreCallHighLevelToken: String = ""
+    var salesPreCallHighLevelLocationID: String = ""
 
     enum CodingKeys: String, CodingKey {
         case dictationHotkey = "dictation_hotkey"
         case computerUseHotkey = "computer_use_hotkey"
         case enableComputerUseHotkey = "enable_computer_use_hotkey"
+        case jessicaHotkey = "jessica_hotkey"
+        case enableJessicaHotkey = "enable_jessica_hotkey"
         case meetingRecordingHotkey = "meeting_recording_hotkey"
         case enableMeetingRecordingHotkey = "enable_meeting_recording_hotkey"
         case computerUseHotkeyDefaultDisabledMigrationApplied = "computer_use_hotkey_default_disabled_migration_applied"
@@ -772,6 +1246,7 @@ struct AppConfig: Codable {
         case enableDoubleTapDictation = "enable_double_tap_dictation"
         case hotkeyTriggerThresholdMS = "hotkey_trigger_threshold_ms"
         case computerUseHotkeyTriggerThresholdMS = "computer_use_hotkey_trigger_threshold_ms"
+        case jessicaHotkeyTriggerThresholdMS = "jessica_hotkey_trigger_threshold_ms"
         case meetingRecordingHotkeyTriggerThresholdMS = "meeting_recording_hotkey_trigger_threshold_ms"
         case launchAtLogin = "launch_at_login"
         case openDashboardOnLaunch = "open_dashboard_on_launch"
@@ -805,6 +1280,8 @@ struct AppConfig: Codable {
         case maraudersMapCustomAudioPath = "marauders_map_custom_audio_path"
         case hiddenCalendarEventIDs = "hidden_calendar_event_ids"
         case disabledCalendarIDs = "disabled_calendar_ids"
+        case googleCalendarPrimaryOnlyDefaultApplied = "google_calendar_primary_only_default_applied"
+        case eventKitSubscriptionCalendarDefaultApplied = "eventkit_subscription_calendar_default_applied"
         case enablePostProcessor = "enable_post_processor"
         case activePostProcessorId = "active_post_processor_id"
         case postProcessorSystemPrompt = "post_processor_system_prompt"
@@ -813,6 +1290,49 @@ struct AppConfig: Codable {
         case meetingHookEnabled = "meeting_hook_enabled"
         case meetingHookPath = "meeting_hook_path"
         case meetingHookTimeoutSeconds = "meeting_hook_timeout_seconds"
+        case salesCaddieInstallID = "sales_caddie_install_id"
+        case salesCaddieCloudSyncEnabled = "sales_caddie_cloud_sync_enabled"
+        case salesCaddieCloudAPIURL = "sales_caddie_cloud_api_url"
+        case salesCaddieCloudAPIToken = "sales_caddie_cloud_api_token"
+        case salesCaddieCloudWorkspaceSlug = "sales_caddie_cloud_workspace_slug"
+        case salesCaddieCloudPermissions = "sales_caddie_cloud_permissions"
+        case supabaseSyncEnabled = "supabase_sync_enabled"
+        case supabaseURL = "supabase_url"
+        case supabaseAnonKey = "supabase_anon_key"
+        case supabaseWorkspaceID = "supabase_workspace_id"
+        case supabaseUserID = "supabase_user_id"
+        case supabaseSyncJessicaHistory = "supabase_sync_jessica_history"
+        case supabaseSyncTranscripts = "supabase_sync_transcripts"
+        case supabaseSyncSalesLibrary = "supabase_sync_sales_library"
+        case salesAssistAdminManagedLibraryEnabled = "sales_assist_admin_managed_library_enabled"
+        case salesAssistAdminLibraryURL = "sales_assist_admin_library_url"
+        case salesAssistAdminLibraryUpdatedAt = "sales_assist_admin_library_updated_at"
+        case salesAssistKnowledgeBaseItemID = "sales_assist_knowledge_base_item_id"
+        case salesAgentBackend = "sales_agent_backend"
+        case salesAgentEndpointURL = "sales_agent_endpoint_url"
+        case salesAgentAuthToken = "sales_agent_auth_token"
+        case salesAgentModel = "sales_agent_model"
+        case salesAgentUserID = "sales_agent_user_id"
+        case salesAgentUserName = "sales_agent_user_name"
+        case salesAgentUserRole = "sales_agent_user_role"
+        case salesAgentRepKey = "sales_agent_rep_key"
+        case salesAgentAllowComputerActions = "sales_agent_allow_computer_actions"
+        case salesAgentSendScreenContext = "sales_agent_send_screen_context"
+        case salesAgentSendKnowledgeBase = "sales_agent_send_knowledge_base"
+        case salesAgentHistory = "sales_agent_history"
+        case salesAssistEnabled = "sales_assist_enabled"
+        case salesAssistAIEnabled = "sales_assist_ai_enabled"
+        case salesAssistEnabledKinds = "sales_assist_enabled_kinds"
+        case salesAssistKnowledgeBase = "sales_assist_knowledge_base"
+        case salesAssistObjections = "sales_assist_objections"
+        case salesAssistLiveCues = "sales_assist_live_cues"
+        case salesAssistLearningSuggestions = "sales_assist_learning_suggestions"
+        case salesPreCallBriefingModules = "sales_pre_call_briefing_modules"
+        case salesPreCallCRMProvider = "sales_pre_call_crm_provider"
+        case salesPreCallCRMConnectionLabel = "sales_pre_call_crm_connection_label"
+        case salesPreCallHighLevelBaseURL = "sales_pre_call_high_level_base_url"
+        case salesPreCallHighLevelToken = "sales_pre_call_high_level_token"
+        case salesPreCallHighLevelLocationID = "sales_pre_call_high_level_location_id"
     }
 
     init() {}
@@ -828,6 +1348,8 @@ struct AppConfig: Codable {
             ? ((try? c.decode(Bool.self, forKey: .enableComputerUseHotkey)) ?? defaults.enableComputerUseHotkey)
             : false
         computerUseHotkeyDefaultDisabledMigrationApplied = true
+        jessicaHotkey = (try? c.decode(HotkeyConfig.self, forKey: .jessicaHotkey)) ?? defaults.jessicaHotkey
+        enableJessicaHotkey = (try? c.decode(Bool.self, forKey: .enableJessicaHotkey)) ?? defaults.enableJessicaHotkey
         meetingRecordingHotkey = (try? c.decode(HotkeyConfig.self, forKey: .meetingRecordingHotkey)) ?? defaults.meetingRecordingHotkey
         enableMeetingRecordingHotkey = (try? c.decode(Bool.self, forKey: .enableMeetingRecordingHotkey)) ?? defaults.enableMeetingRecordingHotkey
         enableComputerUsePlanner = (try? c.decode(Bool.self, forKey: .enableComputerUsePlanner)) ?? defaults.enableComputerUsePlanner
@@ -858,6 +1380,9 @@ struct AppConfig: Codable {
         )
         computerUseHotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(
             (try? c.decode(Int.self, forKey: .computerUseHotkeyTriggerThresholdMS)) ?? hotkeyTriggerThresholdMS
+        )
+        jessicaHotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(
+            (try? c.decode(Int.self, forKey: .jessicaHotkeyTriggerThresholdMS)) ?? hotkeyTriggerThresholdMS
         )
         meetingRecordingHotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(
             (try? c.decode(Int.self, forKey: .meetingRecordingHotkeyTriggerThresholdMS))
@@ -904,6 +1429,8 @@ struct AppConfig: Codable {
         maraudersMapCustomAudioPath = try? c.decode(String.self, forKey: .maraudersMapCustomAudioPath)
         hiddenCalendarEventIDs = (try? c.decode([String].self, forKey: .hiddenCalendarEventIDs)) ?? defaults.hiddenCalendarEventIDs
         disabledCalendarIDs = (try? c.decode([String].self, forKey: .disabledCalendarIDs)) ?? defaults.disabledCalendarIDs
+        googleCalendarPrimaryOnlyDefaultApplied = (try? c.decode(Bool.self, forKey: .googleCalendarPrimaryOnlyDefaultApplied)) ?? defaults.googleCalendarPrimaryOnlyDefaultApplied
+        eventKitSubscriptionCalendarDefaultApplied = (try? c.decode(Bool.self, forKey: .eventKitSubscriptionCalendarDefaultApplied)) ?? defaults.eventKitSubscriptionCalendarDefaultApplied
         enablePostProcessor = (try? c.decode(Bool.self, forKey: .enablePostProcessor)) ?? defaults.enablePostProcessor
         activePostProcessorId = (try? c.decode(String.self, forKey: .activePostProcessorId)) ?? defaults.activePostProcessorId
         postProcessorSystemPrompt = (try? c.decode(String.self, forKey: .postProcessorSystemPrompt)) ?? defaults.postProcessorSystemPrompt
@@ -912,6 +1439,57 @@ struct AppConfig: Codable {
         meetingHookEnabled = (try? c.decode(Bool.self, forKey: .meetingHookEnabled)) ?? defaults.meetingHookEnabled
         meetingHookPath = (try? c.decode(String.self, forKey: .meetingHookPath)) ?? defaults.meetingHookPath
         meetingHookTimeoutSeconds = (try? c.decode(Int.self, forKey: .meetingHookTimeoutSeconds)) ?? defaults.meetingHookTimeoutSeconds
+        salesCaddieInstallID = (try? c.decode(String.self, forKey: .salesCaddieInstallID)) ?? defaults.salesCaddieInstallID
+        salesCaddieCloudSyncEnabled = (try? c.decode(Bool.self, forKey: .salesCaddieCloudSyncEnabled)) ?? defaults.salesCaddieCloudSyncEnabled
+        salesCaddieCloudAPIURL = (try? c.decode(String.self, forKey: .salesCaddieCloudAPIURL)) ?? defaults.salesCaddieCloudAPIURL
+        salesCaddieCloudAPIToken = (try? c.decode(String.self, forKey: .salesCaddieCloudAPIToken)) ?? defaults.salesCaddieCloudAPIToken
+        salesCaddieCloudWorkspaceSlug = (try? c.decode(String.self, forKey: .salesCaddieCloudWorkspaceSlug)) ?? defaults.salesCaddieCloudWorkspaceSlug
+        salesCaddieCloudPermissions = try? c.decode(SalesCaddiePermissions.self, forKey: .salesCaddieCloudPermissions)
+        supabaseSyncEnabled = (try? c.decode(Bool.self, forKey: .supabaseSyncEnabled)) ?? defaults.supabaseSyncEnabled
+        supabaseURL = (try? c.decode(String.self, forKey: .supabaseURL)) ?? defaults.supabaseURL
+        supabaseAnonKey = (try? c.decode(String.self, forKey: .supabaseAnonKey)) ?? defaults.supabaseAnonKey
+        supabaseWorkspaceID = (try? c.decode(String.self, forKey: .supabaseWorkspaceID)) ?? defaults.supabaseWorkspaceID
+        supabaseUserID = (try? c.decode(String.self, forKey: .supabaseUserID)) ?? defaults.supabaseUserID
+        supabaseSyncJessicaHistory = (try? c.decode(Bool.self, forKey: .supabaseSyncJessicaHistory)) ?? defaults.supabaseSyncJessicaHistory
+        supabaseSyncTranscripts = (try? c.decode(Bool.self, forKey: .supabaseSyncTranscripts)) ?? defaults.supabaseSyncTranscripts
+        supabaseSyncSalesLibrary = (try? c.decode(Bool.self, forKey: .supabaseSyncSalesLibrary)) ?? defaults.supabaseSyncSalesLibrary
+        salesAssistAdminManagedLibraryEnabled = (try? c.decode(Bool.self, forKey: .salesAssistAdminManagedLibraryEnabled)) ?? defaults.salesAssistAdminManagedLibraryEnabled
+        salesAssistAdminLibraryURL = (try? c.decode(String.self, forKey: .salesAssistAdminLibraryURL)) ?? defaults.salesAssistAdminLibraryURL
+        salesAssistAdminLibraryUpdatedAt = (try? c.decode(String.self, forKey: .salesAssistAdminLibraryUpdatedAt)) ?? defaults.salesAssistAdminLibraryUpdatedAt
+        salesAssistKnowledgeBaseItemID = (try? c.decode(String.self, forKey: .salesAssistKnowledgeBaseItemID)) ?? defaults.salesAssistKnowledgeBaseItemID
+        salesAgentBackend = (try? c.decode(String.self, forKey: .salesAgentBackend)) ?? defaults.salesAgentBackend
+        salesAgentEndpointURL = (try? c.decode(String.self, forKey: .salesAgentEndpointURL)) ?? defaults.salesAgentEndpointURL
+        salesAgentAuthToken = (try? c.decode(String.self, forKey: .salesAgentAuthToken)) ?? defaults.salesAgentAuthToken
+        salesAgentModel = (try? c.decode(String.self, forKey: .salesAgentModel)) ?? defaults.salesAgentModel
+        salesAgentUserID = (try? c.decode(String.self, forKey: .salesAgentUserID)) ?? defaults.salesAgentUserID
+        salesAgentUserName = (try? c.decode(String.self, forKey: .salesAgentUserName)) ?? defaults.salesAgentUserName
+        salesAgentUserRole = (try? c.decode(String.self, forKey: .salesAgentUserRole)) ?? defaults.salesAgentUserRole
+        salesAgentRepKey = (try? c.decode(String.self, forKey: .salesAgentRepKey)) ?? defaults.salesAgentRepKey
+        salesAgentAllowComputerActions = (try? c.decode(Bool.self, forKey: .salesAgentAllowComputerActions)) ?? defaults.salesAgentAllowComputerActions
+        salesAgentSendScreenContext = (try? c.decode(Bool.self, forKey: .salesAgentSendScreenContext)) ?? defaults.salesAgentSendScreenContext
+        salesAgentSendKnowledgeBase = (try? c.decode(Bool.self, forKey: .salesAgentSendKnowledgeBase)) ?? defaults.salesAgentSendKnowledgeBase
+        salesAgentHistory = (try? c.decode([SalesAgentHistoryItem].self, forKey: .salesAgentHistory)) ?? defaults.salesAgentHistory
+        salesAssistEnabled = (try? c.decode(Bool.self, forKey: .salesAssistEnabled)) ?? defaults.salesAssistEnabled
+        salesAssistAIEnabled = (try? c.decode(Bool.self, forKey: .salesAssistAIEnabled)) ?? defaults.salesAssistAIEnabled
+        salesAssistEnabledKinds = (try? c.decode([String].self, forKey: .salesAssistEnabledKinds)) ?? defaults.salesAssistEnabledKinds
+        salesAssistKnowledgeBase = (try? c.decode(String.self, forKey: .salesAssistKnowledgeBase)) ?? defaults.salesAssistKnowledgeBase
+        salesAssistObjections = (try? c.decode([SalesAssistObjection].self, forKey: .salesAssistObjections)) ?? defaults.salesAssistObjections
+        let decodedSalesAssistLiveCues = (try? c.decode([SalesAssistLiveCue].self, forKey: .salesAssistLiveCues)) ?? defaults.salesAssistLiveCues
+        salesAssistLiveCues = SalesAssistLiveCue.appendingMissingSeedCues(to: decodedSalesAssistLiveCues)
+        salesAssistLearningSuggestions = (try? c.decode([SalesAssistLearningSuggestion].self, forKey: .salesAssistLearningSuggestions)) ?? defaults.salesAssistLearningSuggestions
+        let decodedPreCallModules = (try? c.decode([SalesPreCallBriefingModule].self, forKey: .salesPreCallBriefingModules)) ?? defaults.salesPreCallBriefingModules
+        salesPreCallBriefingModules = Self.mergedPreCallModules(decodedPreCallModules)
+        salesPreCallCRMProvider = (try? c.decode(String.self, forKey: .salesPreCallCRMProvider)) ?? defaults.salesPreCallCRMProvider
+        salesPreCallCRMConnectionLabel = (try? c.decode(String.self, forKey: .salesPreCallCRMConnectionLabel)) ?? defaults.salesPreCallCRMConnectionLabel
+        salesPreCallHighLevelBaseURL = (try? c.decode(String.self, forKey: .salesPreCallHighLevelBaseURL)) ?? defaults.salesPreCallHighLevelBaseURL
+        salesPreCallHighLevelToken = (try? c.decode(String.self, forKey: .salesPreCallHighLevelToken)) ?? defaults.salesPreCallHighLevelToken
+        salesPreCallHighLevelLocationID = (try? c.decode(String.self, forKey: .salesPreCallHighLevelLocationID)) ?? defaults.salesPreCallHighLevelLocationID
+    }
+
+    static func mergedPreCallModules(_ modules: [SalesPreCallBriefingModule]) -> [SalesPreCallBriefingModule] {
+        let existingIDs = Set(modules.map(\.id))
+        let missing = SalesPreCallBriefingModule.defaultModules.filter { !existingIDs.contains($0.id) }
+        return (modules + missing).sorted { $0.sortOrder < $1.sortOrder }
     }
 
     var resolvedCohereLanguage: CohereTranscribeLanguage {

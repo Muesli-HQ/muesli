@@ -45,11 +45,14 @@ struct GoogleCalendarSummary: Identifiable, Equatable {
 
 enum GoogleCalendarClientError: Error, LocalizedError {
     case requestFailed(String)
+    case permissionDenied(String)
 
     var errorDescription: String? {
         switch self {
         case .requestFailed(let message):
             return "Google Calendar request failed: \(message)"
+        case .permissionDenied(let message):
+            return "Google Calendar permission denied: \(message)"
         }
     }
 }
@@ -183,8 +186,11 @@ final class GoogleCalendarClient {
             guard statusCode == 200 else {
                 let body = String(data: data, encoding: .utf8) ?? ""
                 fputs("[google-cal] API error \(statusCode) for \(calendarID): \(body.prefix(200))\n", stderr)
-                if statusCode == 401 || statusCode == 403 {
+                if statusCode == 401 {
                     throw GoogleCalendarAuthError.notAuthenticated
+                }
+                if statusCode == 403 {
+                    throw GoogleCalendarClientError.permissionDenied("events returned 403")
                 }
                 throw GoogleCalendarClientError.requestFailed("events returned \(statusCode)")
             }
@@ -253,8 +259,11 @@ final class GoogleCalendarClient {
             guard statusCode == 200 else {
                 let body = String(data: data, encoding: .utf8) ?? ""
                 fputs("[google-cal] calendarList error \(statusCode): \(body.prefix(200))\n", stderr)
-                if statusCode == 401 || statusCode == 403 {
+                if statusCode == 401 {
                     throw GoogleCalendarAuthError.notAuthenticated
+                }
+                if statusCode == 403 {
+                    throw GoogleCalendarClientError.permissionDenied("calendarList returned 403")
                 }
                 throw GoogleCalendarClientError.requestFailed("calendarList returned \(statusCode)")
             }

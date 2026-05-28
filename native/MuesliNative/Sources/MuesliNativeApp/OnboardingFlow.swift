@@ -13,13 +13,16 @@ enum OnboardingFlow {
 
     static func orderedSteps(for useCase: OnboardingUseCase) -> [Int] {
         var steps = [Step.welcome.rawValue, Step.model.rawValue]
+        if useCase.includesMeetings {
+            steps += [Step.googleCalendar.rawValue]
+        }
         if useCase.includesPushToTalk {
             steps += [Step.hotkey.rawValue, Step.permissions.rawValue, Step.dictationTest.rawValue]
         } else if useCase.includesMeetings {
             steps += [Step.permissions.rawValue]
         }
         if useCase.includesMeetings {
-            steps += [Step.meetingSummary.rawValue, Step.googleCalendar.rawValue]
+            steps += [Step.meetingSummary.rawValue]
         }
         return steps
     }
@@ -27,7 +30,8 @@ enum OnboardingFlow {
     static func normalizedStep(_ step: Int, for useCase: OnboardingUseCase) -> Int {
         let steps = orderedSteps(for: useCase)
         if steps.contains(step) { return step }
-        return steps.first { $0 > step } ?? steps.last ?? Step.welcome.rawValue
+        let requestedRank = flowRank(for: step)
+        return steps.first { flowRank(for: $0) > requestedRank } ?? steps.last ?? Step.welcome.rawValue
     }
 
     static func stepIndex(_ step: Int, for useCase: OnboardingUseCase) -> Int {
@@ -41,5 +45,18 @@ enum OnboardingFlow {
 
     static func completionTab(for useCase: OnboardingUseCase) -> DashboardTab {
         useCase == .meetings ? .meetings : .dictations
+    }
+
+    private static func flowRank(for step: Int) -> Int {
+        switch Step(rawValue: step) {
+        case .welcome: return 0
+        case .model: return 1
+        case .googleCalendar: return 2
+        case .hotkey: return 3
+        case .permissions: return 4
+        case .dictationTest: return 5
+        case .meetingSummary: return 6
+        case nil: return step
+        }
     }
 }

@@ -48,10 +48,15 @@ struct ShortcutHotkeyPolicy {
         _ hotkey: HotkeyConfig,
         computerUseHotkey: HotkeyConfig,
         isComputerUseEnabled: Bool,
+        jessicaHotkey: HotkeyConfig = .jessicaDefault,
+        isJessicaEnabled: Bool = false,
         meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault,
         isMeetingRecordingEnabled: Bool = false
     ) -> ShortcutHotkeyUpdateResult {
         if isComputerUseEnabled && hotkeysConflict(hotkey, computerUseHotkey) {
+            return .conflict(message: conflictMessage)
+        }
+        if isJessicaEnabled && hotkeysConflict(hotkey, jessicaHotkey) {
             return .conflict(message: conflictMessage)
         }
         if isMeetingRecordingEnabled && hotkeysConflict(hotkey, meetingRecordingHotkey) {
@@ -64,10 +69,35 @@ struct ShortcutHotkeyPolicy {
         _ hotkey: HotkeyConfig,
         dictationHotkey: HotkeyConfig,
         isComputerUseEnabled: Bool,
+        jessicaHotkey: HotkeyConfig = .jessicaDefault,
+        isJessicaEnabled: Bool = false,
         meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault,
         isMeetingRecordingEnabled: Bool = false
     ) -> ShortcutHotkeyUpdateResult {
         if isComputerUseEnabled && hotkeysConflict(hotkey, dictationHotkey) {
+            return .conflict(message: conflictMessage)
+        }
+        if isJessicaEnabled && hotkeysConflict(hotkey, jessicaHotkey) {
+            return .conflict(message: conflictMessage)
+        }
+        if isMeetingRecordingEnabled && hotkeysConflict(hotkey, meetingRecordingHotkey) {
+            return .conflict(message: conflictMessage)
+        }
+        return .updated
+    }
+
+    static func validateJessicaHotkey(
+        _ hotkey: HotkeyConfig,
+        dictationHotkey: HotkeyConfig,
+        computerUseHotkey: HotkeyConfig,
+        isComputerUseEnabled: Bool,
+        meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault,
+        isMeetingRecordingEnabled: Bool = false
+    ) -> ShortcutHotkeyUpdateResult {
+        if hotkeysConflict(hotkey, dictationHotkey) {
+            return .conflict(message: conflictMessage)
+        }
+        if isComputerUseEnabled && hotkeysConflict(hotkey, computerUseHotkey) {
             return .conflict(message: conflictMessage)
         }
         if isMeetingRecordingEnabled && hotkeysConflict(hotkey, meetingRecordingHotkey) {
@@ -80,12 +110,17 @@ struct ShortcutHotkeyPolicy {
         _ hotkey: HotkeyConfig,
         dictationHotkey: HotkeyConfig,
         computerUseHotkey: HotkeyConfig,
-        isComputerUseEnabled: Bool
+        isComputerUseEnabled: Bool,
+        jessicaHotkey: HotkeyConfig = .jessicaDefault,
+        isJessicaEnabled: Bool = false
     ) -> ShortcutHotkeyUpdateResult {
         if hotkeysConflict(hotkey, dictationHotkey) {
             return .conflict(message: conflictMessage)
         }
         if isComputerUseEnabled && hotkeysConflict(hotkey, computerUseHotkey) {
+            return .conflict(message: conflictMessage)
+        }
+        if isJessicaEnabled && hotkeysConflict(hotkey, jessicaHotkey) {
             return .conflict(message: conflictMessage)
         }
         return .updated(notice: commonGlobalShortcutWarning(for: hotkey))
@@ -109,6 +144,8 @@ struct ShortcutHotkeyPolicy {
     static func resolvedComputerUseHotkeyWhenEnabling(
         currentHotkey: HotkeyConfig,
         dictationHotkey: HotkeyConfig,
+        jessicaHotkey: HotkeyConfig = .jessicaDefault,
+        isJessicaEnabled: Bool = false,
         meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault,
         isMeetingRecordingEnabled: Bool = false
     ) -> (hotkey: HotkeyConfig, result: ShortcutHotkeyUpdateResult) {
@@ -119,9 +156,18 @@ struct ShortcutHotkeyPolicy {
             resolved = HotkeyConfig.computerUseDefault(avoiding: dictationHotkey)
             notice = "Computer Use Command moved to \(resolved.label) to avoid matching Push to Talk."
         }
+        if isJessicaEnabled && hotkeysConflict(resolved, jessicaHotkey) {
+            resolved = HotkeyConfig.computerUseDefault(avoiding: dictationHotkey)
+            if hotkeysConflict(resolved, dictationHotkey)
+                || hotkeysConflict(resolved, jessicaHotkey) {
+                return (currentHotkey, .conflict(message: conflictMessage))
+            }
+            notice = "Computer Use Command moved to \(resolved.label) to avoid matching Jessica Command."
+        }
         if isMeetingRecordingEnabled && hotkeysConflict(resolved, meetingRecordingHotkey) {
             let fallback = HotkeyConfig.computerUseDefault(avoiding: dictationHotkey)
             if hotkeysConflict(fallback, dictationHotkey)
+                || (isJessicaEnabled && hotkeysConflict(fallback, jessicaHotkey))
                 || hotkeysConflict(fallback, meetingRecordingHotkey) {
                 return (currentHotkey, .conflict(message: conflictMessage))
             }

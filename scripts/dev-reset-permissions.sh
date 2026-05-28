@@ -5,7 +5,7 @@ set -euo pipefail
 #
 # Default behavior:
 # - Resets all permissions for com.muesli.dev using tccutil
-# - Refuses to run while MuesliDev appears to be running unless forced
+# - Refuses to run while Sales Caddie Dev appears to be running unless forced
 # - Prints the manual next steps required to re-grant permissions
 #
 # Usage:
@@ -14,8 +14,8 @@ set -euo pipefail
 #   ./scripts/dev-reset-permissions.sh --dry-run
 
 BUNDLE_ID="${MUESLI_DEV_BUNDLE_ID:-com.muesli.dev}"
-APP_PROCESS_NAME="${MUESLI_DEV_PROCESS_NAME:-MuesliDev}"
-APP_BUNDLE_PATH="${MUESLI_DEV_APP_PATH:-/Applications/MuesliDev.app}"
+APP_PROCESS_NAME="${MUESLI_DEV_PROCESS_NAME:-Sales Caddie}"
+APP_BUNDLE_PATH="${MUESLI_DEV_APP_PATH:-/Applications/Sales Caddie Dev.app}"
 DRY_RUN=0
 FORCE=0
 

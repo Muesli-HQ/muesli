@@ -100,15 +100,15 @@ struct SidebarView: View {
             sidebarHeader
             searchBar
 
-            sidebarItem(tab: .dictations, icon: "mic.fill", label: "Dictations")
             meetingsSection
-            sidebarItem(tab: .dictionary, icon: "character.book.closed", label: "Dictionary")
-            sidebarItem(tab: .models, icon: "square.and.arrow.down", label: "Models")
-            sidebarItem(tab: .shortcuts, icon: "keyboard", label: "Shortcuts")
+            sidebarItem(tab: .jessica, icon: "sparkles", label: "Jessica")
+            sidebarItem(tab: .sales, icon: "chart.line.uptrend.xyaxis", label: "Sales Assist")
+            sidebarItem(tab: .admin, icon: "person.2.badge.gearshape", label: "Workspace")
 
             Spacer()
 
             modelPreparationStatus
+            sidebarItem(tab: .dictations, icon: "mic.fill", label: "Dictations")
             sidebarItem(tab: .settings, icon: "gearshape", label: "Settings")
             sidebarItem(tab: .about, icon: "info.circle", label: "About", updateCTA: pendingUpdateCTA)
             darkModeToggle
@@ -157,8 +157,8 @@ struct SidebarView: View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
             HStack(spacing: MuesliTheme.spacing12) {
                 Group {
-                    if appState.config.menuBarIcon == "muesli",
-                       let img = MenuBarIconRenderer.make(choice: "muesli") {
+                    if (appState.config.menuBarIcon == "sales-caddie" || appState.config.menuBarIcon == "muesli"),
+                       let img = MenuBarIconRenderer.make(choice: "sales-caddie") {
                         Image(nsImage: img)
                             .resizable()
                             .scaledToFit()
@@ -168,7 +168,7 @@ struct SidebarView: View {
                 }
                 .frame(width: 22, height: 22)
                 .foregroundStyle(MuesliTheme.accent)
-                Text("muesli")
+                Text(AppIdentity.displayName)
                     .font(MuesliTheme.title2())
                     .foregroundStyle(MuesliTheme.textPrimary)
             }
@@ -390,7 +390,7 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func sidebarItem(tab: DashboardTab, icon: String, label: String, updateCTA: UpdateCTA? = nil) -> some View {
-        let isSelected = appState.selectedTab == tab
+        let isSelected = isSidebarItemSelected(tab)
         Button {
             withAnimation(.easeInOut(duration: 0.15)) {
                 appState.selectedTab = tab
@@ -436,6 +436,14 @@ struct SidebarView: View {
         }
         .buttonStyle(.plain)
         .padding(.horizontal, sidebarRowOuterPadding)
+    }
+
+    private func isSidebarItemSelected(_ tab: DashboardTab) -> Bool {
+        if appState.selectedTab == tab { return true }
+        guard tab == .settings else { return false }
+        return appState.selectedTab == .models
+            || appState.selectedTab == .shortcuts
+            || appState.selectedTab == .dictionary
     }
 
     @ViewBuilder

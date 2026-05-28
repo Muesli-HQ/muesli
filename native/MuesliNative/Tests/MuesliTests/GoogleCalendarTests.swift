@@ -46,6 +46,19 @@ struct GoogleCalendarTests {
         #expect(verified == true)
     }
 
+    @Test("Google integration scopes keep Drive and Docs optional")
+    func googleIntegrationScopesAreFeatureBased() {
+        let calendarScopes = GoogleIntegrationScope.scopeString(GoogleIntegrationScope.calendar)
+        let driveDocsScopes = GoogleIntegrationScope.scopeString(GoogleIntegrationScope.driveDocs)
+
+        #expect(calendarScopes.contains("calendar.events.readonly"))
+        #expect(calendarScopes.contains("calendar.readonly"))
+        #expect(!calendarScopes.contains("drive.file"))
+        #expect(!calendarScopes.contains("documents"))
+        #expect(driveDocsScopes.contains("drive.file"))
+        #expect(driveDocsScopes.contains("documents"))
+    }
+
     // MARK: - Event JSON parsing
 
     @Test("parses timed event from Google Calendar API response")

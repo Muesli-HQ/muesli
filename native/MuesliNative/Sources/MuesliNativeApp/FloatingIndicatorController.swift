@@ -104,6 +104,7 @@ final class FloatingIndicatorController: NSObject {
     private var stopLayer: CALayer?
     private var transcribingTitle = "Transcribing"
     private var computerUseTranscriptText: String?
+    private var agentResponseDismissWorkItem: DispatchWorkItem?
     private var loadingSpinner: NSProgressIndicator?
     private var isShowingLoading = false
     private var isComputerUseCursorMode = false
@@ -241,6 +242,8 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func setTranscribingTitle(_ title: String, config: AppConfig) {
+        agentResponseDismissWorkItem?.cancel()
+        agentResponseDismissWorkItem = nil
         computerUseTranscriptText = nil
         transcribingTitle = title
         guard state == .transcribing else { return }
@@ -248,10 +251,107 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func showComputerUseTranscript(_ transcript: String, config: AppConfig) {
+        agentResponseDismissWorkItem?.cancel()
+        agentResponseDismissWorkItem = nil
         let normalized = Self.normalizedComputerUseTranscript(transcript)
         computerUseTranscriptText = normalized.isEmpty ? nil : normalized
         transcribingTitle = normalized.isEmpty ? "Starting CUA" : normalized
         setState(.transcribing, config: config)
+    }
+
+    func showAgentResponseCard(title: String, message: String, duration: TimeInterval = 12.0) {
+        let config = configStore.load()
+        if panel == nil { createPanel(config: config) }
+        guard let panel, let contentView, let iconLabel, let textLabel else { return }
+        guard let screen = NSScreen.main?.visibleFrame else { return }
+
+        agentResponseDismissWorkItem?.cancel()
+        agentResponseDismissWorkItem = nil
+        if isComputerUseCursorMode {
+            exitComputerUseCursorMode(restoreFrame: false)
+        }
+        stopWaveformAnimation()
+        loadingSpinner?.stopAnimation(nil)
+        loadingSpinner?.isHidden = true
+        isShowingLoading = false
+        state = .idle
+        isHovered = false
+        computerUseTranscriptText = nil
+        transcribingTitle = "Transcribing"
+
+        let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Jessica" : title
+        let normalizedMessage = Self.normalizedAgentResponse(message)
+        let cardSize = Self.agentResponseCardSize(title: normalizedTitle, message: normalizedMessage, screen: screen)
+        let center = CGPoint(x: panel.frame.midX, y: panel.frame.midY)
+        let x = min(max(center.x - cardSize.width / 2, screen.minX + 12), screen.maxX - cardSize.width - 12)
+        let y = min(max(center.y - cardSize.height / 2, screen.minY + 12), screen.maxY - cardSize.height - 12)
+        let targetFrame = NSRect(x: x, y: y, width: cardSize.width, height: cardSize.height)
+
+        glassView?.isHidden = true
+        tintLayer?.isHidden = true
+        micIconView?.isHidden = true
+        wandIconView?.isHidden = true
+
+        iconLabel.isHidden = false
+        iconLabel.stringValue = normalizedTitle
+        iconLabel.font = NSFont.systemFont(ofSize: 12, weight: .bold)
+        iconLabel.textColor = NSColor.colorWith(hex: 0xF4D35E, alpha: 1.0)
+        iconLabel.alignment = .left
+
+        textLabel.isHidden = false
+        textLabel.stringValue = normalizedMessage
+        textLabel.font = NSFont.systemFont(ofSize: 12, weight: .regular)
+        textLabel.textColor = NSColor.colorWith(hex: 0xF8F4E8, alpha: 0.94)
+        textLabel.lineBreakMode = .byWordWrapping
+        textLabel.maximumNumberOfLines = 0
+        textLabel.usesSingleLineMode = false
+        textLabel.cell?.wraps = true
+        textLabel.cell?.isScrollable = false
+        textLabel.alignment = .left
+
+        let padding: CGFloat = 16
+        let titleHeight: CGFloat = 16
+        let titleFrame = NSRect(
+            x: padding,
+            y: cardSize.height - padding - titleHeight,
+            width: cardSize.width - (padding * 2),
+            height: titleHeight
+        )
+        let bodyFrame = NSRect(
+            x: padding,
+            y: padding,
+            width: cardSize.width - (padding * 2),
+            height: max(20, titleFrame.minY - padding - 8)
+        )
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            context.allowsImplicitAnimation = true
+
+            panel.animator().setFrame(targetFrame, display: true)
+            panel.animator().alphaValue = 1.0
+            contentView.animator().frame = NSRect(origin: .zero, size: cardSize)
+            contentView.layer?.cornerRadius = 14
+            contentView.layer?.backgroundColor = NSColor.colorWith(hex: 0x08241C, alpha: 0.96).cgColor
+            contentView.layer?.borderWidth = 1.0
+            contentView.layer?.borderColor = NSColor.colorWith(hex: 0xF4D35E, alpha: 0.34).cgColor
+
+            iconLabel.animator().alphaValue = 1
+            iconLabel.animator().frame = titleFrame
+            textLabel.animator().alphaValue = 1
+            textLabel.animator().frame = bodyFrame
+        }
+        panel.orderFrontRegardless()
+
+        let dwell = max(duration, min(28.0, 6.0 + Double(normalizedMessage.count) / 55.0))
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.agentResponseDismissWorkItem = nil
+            self.setState(.idle, config: self.configStore.load())
+        }
+        agentResponseDismissWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + dwell, execute: workItem)
     }
 
     func setState(_ state: DictationState, config: AppConfig) {
@@ -264,6 +364,10 @@ final class FloatingIndicatorController: NSObject {
         if state != .transcribing {
             transcribingTitle = "Transcribing"
             computerUseTranscriptText = nil
+        }
+        if state != .idle {
+            agentResponseDismissWorkItem?.cancel()
+            agentResponseDismissWorkItem = nil
         }
         if state != .recording {
             recordingWaveformMode = .level
@@ -685,6 +789,8 @@ final class FloatingIndicatorController: NSObject {
         stopWaveformAnimation()
         hoverExitWorkItem?.cancel()
         hoverExitWorkItem = nil
+        agentResponseDismissWorkItem?.cancel()
+        agentResponseDismissWorkItem = nil
         panel?.close()
         panel = nil
         contentView = nil
@@ -1433,6 +1539,25 @@ final class FloatingIndicatorController: NSObject {
         return NSSize(width: preferredWidth, height: min(preferredHeight, maxHeight))
     }
 
+    private static func agentResponseCardSize(title: String, message: String, screen: NSRect) -> NSSize {
+        let padding: CGFloat = 16
+        let titleHeight: CGFloat = 16
+        let titleBodyGap: CGFloat = 8
+        let minWidth = min(CGFloat(320), max(220, screen.width - 48))
+        let maxWidth = max(minWidth, min(560, screen.width - 48))
+        let bodyFont = NSFont.systemFont(ofSize: 12, weight: .regular)
+        let titleFont = NSFont.systemFont(ofSize: 12, weight: .bold)
+        let titleWidth = ceil((title as NSString).size(withAttributes: [.font: titleFont]).width) + (padding * 2)
+        let messageSingleLineWidth = ceil((message as NSString).size(withAttributes: [.font: bodyFont]).width) + (padding * 2)
+        let preferredWidth = min(maxWidth, max(minWidth, min(messageSingleLineWidth, 520), titleWidth))
+        let bodyWidth = max(60, preferredWidth - (padding * 2))
+        let bodyHeight = transcriptTextHeight(message, font: bodyFont, width: bodyWidth)
+        let preferredHeight = padding + titleHeight + titleBodyGap + bodyHeight + padding
+        let minHeight: CGFloat = 112
+        let maxHeight = max(minHeight, min(360, screen.height - 48))
+        return NSSize(width: preferredWidth, height: min(max(preferredHeight, minHeight), maxHeight))
+    }
+
     private static func transcriptTextHeight(_ text: String, font: NSFont, width: CGFloat) -> CGFloat {
         let bounding = (text as NSString).boundingRect(
             with: NSSize(width: width, height: .greatestFiniteMagnitude),
@@ -1447,6 +1572,28 @@ final class FloatingIndicatorController: NSObject {
             .components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
+    }
+
+    private static func normalizedAgentResponse(_ message: String) -> String {
+        let trimmedLines = message
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        var result: [String] = []
+        var previousWasBlank = false
+        for line in trimmedLines {
+            if line.isEmpty {
+                if !previousWasBlank, !result.isEmpty {
+                    result.append("")
+                }
+                previousWasBlank = true
+            } else {
+                result.append(line)
+                previousWasBlank = false
+            }
+        }
+        let normalized = result.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.isEmpty ? "No response returned." : normalized
     }
 
     private func pointerIsInsidePanel() -> Bool {

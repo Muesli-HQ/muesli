@@ -261,7 +261,7 @@ final class HotkeyMonitor {
             type: event.type,
             keyCode: event.keyCode,
             flags: event.modifierFlags,
-            isRepeat: event.isARepeat
+            isRepeat: event.type == .keyDown && event.isARepeat
         )
     }
 

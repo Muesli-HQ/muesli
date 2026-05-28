@@ -17,6 +17,11 @@ struct OnboardingView: View {
     @State private var isSigningInChatGPT = false
     @State private var chatGPTSignInDone = false
     @State private var chatGPTSignInError: String?
+    @State private var inviteSetupCode = ""
+    @State private var inviteAPIURL = ""
+    @State private var isRedeemingInvite = false
+    @State private var inviteRedeemMessage: String?
+    @State private var inviteRedeemError: String?
 
     // Permission states — polled from OS every second
     @State private var micGranted = false
@@ -81,6 +86,14 @@ struct OnboardingView: View {
             options.insert(selectedBackend, at: 0)
         }
         return options
+    }
+
+    private var effectiveInviteAPIURL: String {
+        let typed = inviteAPIURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !typed.isEmpty { return typed }
+        let configured = appState.config.salesCaddieCloudAPIURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !configured.isEmpty { return configured }
+        return "https://sales-caddie-api-production.up.railway.app"
     }
 
     init(
@@ -296,9 +309,19 @@ struct OnboardingView: View {
             }
         case 6:
             HStack(spacing: MuesliTheme.spacing12) {
-                skipButton { finishOnboarding(withKey: true) }
-                onboardingButton("Finish", enabled: true) {
-                    finishOnboarding(withKey: true)
+                skipButton {
+                    if currentStepIndex == orderedSteps.count - 1 {
+                        finishOnboarding(withKey: true)
+                    } else {
+                        goToNextStep()
+                    }
+                }
+                onboardingButton(currentStepIndex == orderedSteps.count - 1 ? "Finish" : "Continue", enabled: true) {
+                    if currentStepIndex == orderedSteps.count - 1 {
+                        finishOnboarding(withKey: true)
+                    } else {
+                        goToNextStep()
+                    }
                 }
             }
         default:
@@ -504,6 +527,49 @@ struct OnboardingView: View {
                     .font(MuesliTheme.body())
                     .foregroundStyle(MuesliTheme.textSecondary)
             }
+
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                Text("Join your workspace")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+
+                HStack(spacing: MuesliTheme.spacing8) {
+                    OnboardingTextField(text: $inviteSetupCode, placeholder: "Paste invite setup code", onSubmit: {
+                        redeemWorkspaceInvite()
+                    })
+                    .frame(width: 230, height: 32)
+
+                    Button {
+                        redeemWorkspaceInvite()
+                    } label: {
+                        Text(isRedeemingInvite ? "Joining..." : "Join")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 72, height: 32)
+                            .background(MuesliTheme.accent)
+                            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isRedeemingInvite || inviteSetupCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .opacity(isRedeemingInvite || inviteSetupCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.55 : 1)
+                }
+
+                if let inviteRedeemMessage {
+                    Text(inviteRedeemMessage)
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.success)
+                } else if let inviteRedeemError {
+                    Text(inviteRedeemError)
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.recording)
+                        .lineLimit(2)
+                } else {
+                    Text("This fills your identity and connects team sync automatically.")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                }
+            }
+            .frame(width: 310, alignment: .leading)
 
             VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
                 Text("Your name")
@@ -1112,6 +1178,46 @@ struct OnboardingView: View {
     private func saveProgressAndRestart() {
         saveProgress(atStep: Self.dictationTestStep)
         controller.relaunchApp()
+    }
+
+    private func redeemWorkspaceInvite() {
+        let token = inviteSetupCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty, !isRedeemingInvite else { return }
+
+        isRedeemingInvite = true
+        inviteRedeemMessage = nil
+        inviteRedeemError = nil
+        let apiURL = effectiveInviteAPIURL
+
+        Task {
+            do {
+                let response = try await SalesCaddieCloudAPIClient.redeemInvite(token: token, apiURL: apiURL)
+                await MainActor.run {
+                    controller.applySalesCaddieInviteConfig(response.config)
+                    controller.applySalesCaddieIdentity(
+                        SalesCaddieIdentityResponse(
+                            ok: response.ok,
+                            workspace: response.workspace,
+                            member: response.member,
+                            permissions: response.member.permissions ?? SalesCaddiePermissions()
+                        )
+                    )
+                    let inviteName = response.config.userName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let memberName = response.member.displayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    let email = response.member.email.trimmingCharacters(in: .whitespacesAndNewlines)
+                    userName = !inviteName.isEmpty ? inviteName : (!memberName.isEmpty ? memberName : email)
+                    inviteSetupCode = ""
+                    inviteRedeemMessage = "Joined \(response.workspace.slug) as \(email)."
+                    isRedeemingInvite = false
+                    saveProgress(atStep: currentStep)
+                }
+            } catch {
+                await MainActor.run {
+                    inviteRedeemError = error.localizedDescription
+                    isRedeemingInvite = false
+                }
+            }
+        }
     }
 
     private func openSystemSettingsForPermission(at permissionIndex: Int) {
@@ -1823,7 +1929,7 @@ struct OnboardingView: View {
                     .font(MuesliTheme.title1())
                     .foregroundStyle(MuesliTheme.textPrimary)
 
-                Text("Connect Google Calendar to see upcoming meetings.\nYou can set this up later in Settings.")
+                Text("Connect your work Google Calendar so Sales Caddie can show the right upcoming meetings.\nYou can add Apple Calendar later in Settings if you need it.")
                     .font(MuesliTheme.body())
                     .foregroundStyle(MuesliTheme.textSecondary)
                     .multilineTextAlignment(.center)
