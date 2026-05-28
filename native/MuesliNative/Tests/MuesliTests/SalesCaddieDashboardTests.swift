@@ -118,6 +118,34 @@ struct SalesCaddieDashboardTests {
         #expect(alerts.contains { $0.kind == "objection" || $0.kind == "competitor" })
     }
 
+    @MainActor
+    @Test("sales assist engine buffers transcript and suppresses dismissed cues")
+    func salesAssistEngineBuffersAndSuppresses() {
+        var config = AppConfig()
+        config.salesAssistEnabled = true
+        config.salesAssistAIEnabled = false
+        config.salesAssistEnabledKinds = SalesAssistLiveCue.supportedKinds
+        var emitted: [SalesAssistAlert] = []
+        var visible: [[SalesAssistAlert]] = []
+        let engine = SalesAssistEngine(
+            configProvider: { config },
+            alertHandler: { emitted.append($0) },
+            activeAlertsChanged: { visible.append($0) }
+        )
+
+        engine.handleTranscriptLine("Prospect: I like this. How do we get started with the trial?")
+
+        #expect(emitted.contains { $0.kind == "close" || $0.kind == "buying_signal" })
+        let firstVisible = try? #require(visible.last?.first)
+        if let firstVisible {
+            _ = engine.handleAction(.dismiss, for: firstVisible)
+            let emissionCount = emitted.count
+            engine.handleTranscriptLine("Prospect: I like this. How do we get started with the trial?")
+            #expect(emitted.count == emissionCount)
+            #expect(visible.last?.isEmpty == true)
+        }
+    }
+
     private func meeting(
         id: Int64,
         start: String,

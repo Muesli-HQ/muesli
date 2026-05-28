@@ -39,16 +39,12 @@ final class SalesAssistController {
     private let feedbackHandler: (SalesAssistAlert, SalesAssistOverlayAction) -> Void
     private var observer: NSObjectProtocol?
     private var panel: NSPanel?
-    private var latestAlert: SalesAssistAlert?
-    private var activeAlerts: [SalesAssistAlert] = []
-    private var snoozedUntilByFingerprint: [String: Date] = [:]
-    private var dismissedFingerprints: Set<String> = []
-    private let maxVisibleAlerts = 3
-    private var recentTranscriptLines: [String] = []
-    private let detector = SalesAssistDetector()
-    private let classifier = SalesAssistLLMClassifier()
-    private var classifierTask: Task<Void, Never>?
-    private var lastClassifierFingerprint: String?
+    private lazy var engine = SalesAssistEngine(
+        configProvider: configProvider,
+        alertHandler: alertHandler
+    ) { [weak self] alerts in
+        self?.showActiveAlerts(alerts)
+    }
 
     init(
         configProvider: @escaping () -> AppConfig,
@@ -81,11 +77,7 @@ final class SalesAssistController {
             NotificationCenter.default.removeObserver(observer)
             self.observer = nil
         }
-        classifierTask?.cancel()
-        classifierTask = nil
-        activeAlerts = []
-        snoozedUntilByFingerprint = [:]
-        dismissedFingerprints = []
+        engine.reset()
         close()
     }
 
@@ -142,71 +134,14 @@ final class SalesAssistController {
                 updatedAt: Date()
             )
         }
-        present(alerts: [sample])
+        engine.presentManual(alerts: [sample])
     }
 
     private func handleTranscriptLine(_ line: String) {
-        let config = configProvider()
-        guard config.salesAssistEnabled else { return }
-        recentTranscriptLines.append(line)
-        recentTranscriptLines = Array(recentTranscriptLines.suffix(10))
-        let localAlerts = detector.detectAlerts(lines: recentTranscriptLines, config: config)
-        let localAlert = localAlerts.first
-        present(alerts: localAlerts)
-        scheduleClassifierIfNeeded(localAlert: localAlert, config: config)
+        engine.handleTranscriptLine(line)
     }
 
-    private func scheduleClassifierIfNeeded(localAlert: SalesAssistAlert?, config: AppConfig) {
-        guard config.salesAssistAIEnabled else { return }
-        guard detector.shouldAskClassifier(
-            lines: recentTranscriptLines,
-            localAlert: localAlert,
-            config: config
-        ) else { return }
-        let transcript = recentTranscriptLines.joined(separator: "\n")
-        let fingerprint = String(transcript.suffix(420))
-        guard fingerprint != lastClassifierFingerprint else { return }
-        lastClassifierFingerprint = fingerprint
-
-        classifierTask?.cancel()
-        classifierTask = Task { [weak self, classifier] in
-            do {
-                try await Task.sleep(nanoseconds: 650_000_000)
-                guard !Task.isCancelled else { return }
-                guard let alert = await classifier.classify(transcript: transcript, config: config) else { return }
-                await MainActor.run {
-                    guard let self else { return }
-                    self.present(alerts: [alert])
-                }
-            } catch {
-                return
-            }
-        }
-    }
-
-    private func present(alerts: [SalesAssistAlert]) {
-        pruneExpiredSnoozes()
-        let freshAlerts = alerts.filter { alert in
-            guard dismissedFingerprints.contains(alert.fingerprint) == false else { return false }
-            guard let snoozedUntil = snoozedUntilByFingerprint[alert.fingerprint] else { return true }
-            return snoozedUntil <= Date()
-        }
-        guard !freshAlerts.isEmpty else { return }
-
-        for alert in freshAlerts {
-            latestAlert = alert
-            alertHandler(alert)
-            if let index = activeAlerts.firstIndex(where: { $0.fingerprint == alert.fingerprint }) {
-                activeAlerts[index] = alert
-            } else {
-                activeAlerts.append(alert)
-            }
-        }
-        activeAlerts = sortedAlerts(activeAlerts).prefix(maxVisibleAlerts).map { $0 }
-        showActiveAlerts()
-    }
-
-    private func showActiveAlerts() {
+    private func showActiveAlerts(_ activeAlerts: [SalesAssistAlert]) {
         guard !activeAlerts.isEmpty else {
             close()
             return
@@ -225,44 +160,10 @@ final class SalesAssistController {
     }
 
     private func handleOverlayAction(_ action: SalesAssistOverlayAction, for alert: SalesAssistAlert) {
-        switch action {
-        case .dismiss:
-            dismissedFingerprints.insert(alert.fingerprint)
-        case .snooze:
-            snoozedUntilByFingerprint[alert.fingerprint] = Date().addingTimeInterval(120)
-        case .useful:
-            dismissedFingerprints.insert(alert.fingerprint)
-        case .notUseful:
-            dismissedFingerprints.insert(alert.fingerprint)
-            snoozedUntilByFingerprint[alert.fingerprint] = Date().addingTimeInterval(10 * 60)
-        }
         if action == .useful || action == .notUseful {
             feedbackHandler(alert, action)
         }
-        activeAlerts.removeAll { $0.fingerprint == alert.fingerprint }
-        showActiveAlerts()
-    }
-
-    private func pruneExpiredSnoozes() {
-        let now = Date()
-        snoozedUntilByFingerprint = snoozedUntilByFingerprint.filter { $0.value > now }
-    }
-
-    private func sortedAlerts(_ alerts: [SalesAssistAlert]) -> [SalesAssistAlert] {
-        alerts.sorted { lhs, rhs in
-            let leftScore = priorityScore(lhs.priority)
-            let rightScore = priorityScore(rhs.priority)
-            if leftScore != rightScore { return leftScore > rightScore }
-            return lhs.updatedAt > rhs.updatedAt
-        }
-    }
-
-    private func priorityScore(_ priority: String) -> Int {
-        switch priority.lowercased() {
-        case "high": return 3
-        case "low": return 1
-        default: return 2
-        }
+        _ = engine.handleAction(action, for: alert)
     }
 
     private func close() {
@@ -882,7 +783,7 @@ final class SalesAssistDetector {
     }
 }
 
-private actor SalesAssistLLMClassifier {
+actor SalesAssistLLMClassifier {
     private static let whamURL = URL(string: "https://chatgpt.com/backend-api/wham/responses")!
     private static let model = "gpt-5.4-mini"
 
