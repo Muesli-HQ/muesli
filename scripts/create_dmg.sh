@@ -9,6 +9,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_PATH="${1:-/Applications/Muesli.app}"
 OUTPUT_DIR="${2:-$ROOT/dist-release}"
 SIGN_IDENTITY="${MUESLI_SIGN_IDENTITY:-Developer ID Application: Pranav Hari Guruvayurappan (58W55QJ567)}"
+SKIP_DMG_SIGN="${MUESLI_SKIP_DMG_SIGN:-0}"
 BACKGROUND_DIR="$ROOT/scripts/assets"
 
 if [[ ! -d "$APP_PATH" ]]; then
@@ -170,8 +171,12 @@ MOUNT_POINT=""  # already detached — prevent double-detach in cleanup trap
 hdiutil convert "$TEMP_DMG" -format UDZO -o "$DMG_PATH"
 rm -f "$TEMP_DMG"
 
-# Sign the DMG
-codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$DMG_PATH"
+if [[ "$SKIP_DMG_SIGN" != "1" ]]; then
+  # Sign the DMG
+  codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$DMG_PATH"
+  echo "Signed with: $SIGN_IDENTITY"
+else
+  echo "DMG signing skipped for local/internal build."
+fi
 
 echo "DMG created: $DMG_PATH ($(du -sh "$DMG_PATH" | cut -f1))"
-echo "Signed with: $SIGN_IDENTITY"

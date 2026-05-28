@@ -23,10 +23,16 @@ struct SalesCaddieDashboardTests {
             salesAssistEnabled: true,
             salesAssistAIEnabled: true,
             salesAgentProvider: "Hosted Jessica",
-            supabaseSyncEnabled: false
+            cloudSyncEnabled: true,
+            supabaseSyncEnabled: false,
+            syncMode: "Hosted API",
+            workspaceLabel: "skriber-sales",
+            userLabel: "Michael",
+            libraryUpdatedAt: "2026-05-28T12:00:00Z"
         )
         #expect(ready.allEnabledMonitorsRunning)
         #expect(ready.readyForLiveSalesAssist)
+        #expect(ready.anyCloudSyncEnabled)
 
         var broken = ready
         broken.jessicaMonitorRunning = false

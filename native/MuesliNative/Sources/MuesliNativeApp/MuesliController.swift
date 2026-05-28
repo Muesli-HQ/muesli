@@ -1933,8 +1933,22 @@ final class MuesliController: NSObject {
             salesAssistEnabled: config.salesAssistEnabled,
             salesAssistAIEnabled: config.salesAssistAIEnabled,
             salesAgentProvider: SalesAgentBackendOption.resolved(config.salesAgentBackend).label,
-            supabaseSyncEnabled: config.supabaseSyncEnabled
+            cloudSyncEnabled: config.salesCaddieCloudSyncEnabled,
+            supabaseSyncEnabled: config.supabaseSyncEnabled,
+            syncMode: config.salesCaddieCloudSyncEnabled ? "Hosted API" : config.supabaseSyncEnabled ? "Direct Supabase" : "Local only",
+            workspaceLabel: nonEmpty(config.salesCaddieCloudWorkspaceSlug)
+                ?? nonEmpty(config.supabaseWorkspaceID)
+                ?? "No workspace",
+            userLabel: nonEmpty(config.salesAgentUserName)
+                ?? nonEmpty(config.supabaseUserID)
+                ?? "No user",
+            libraryUpdatedAt: nonEmpty(config.salesAssistAdminLibraryUpdatedAt) ?? "Not synced"
         )
+    }
+
+    private func nonEmpty(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     func restartShortcutListeners() {

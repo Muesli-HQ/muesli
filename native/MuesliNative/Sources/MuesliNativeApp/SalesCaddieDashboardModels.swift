@@ -17,7 +17,12 @@ struct SalesCaddieHealthSnapshot: Equatable {
     var salesAssistEnabled: Bool
     var salesAssistAIEnabled: Bool
     var salesAgentProvider: String
+    var cloudSyncEnabled: Bool
     var supabaseSyncEnabled: Bool
+    var syncMode: String
+    var workspaceLabel: String
+    var userLabel: String
+    var libraryUpdatedAt: String
 
     var allEnabledMonitorsRunning: Bool {
         (!dictationShortcutEnabled || dictationMonitorRunning)
@@ -28,6 +33,10 @@ struct SalesCaddieHealthSnapshot: Equatable {
 
     var readyForLiveSalesAssist: Bool {
         microphoneGranted && inputMonitoringGranted && salesAssistEnabled
+    }
+
+    var anyCloudSyncEnabled: Bool {
+        cloudSyncEnabled || supabaseSyncEnabled
     }
 }
 

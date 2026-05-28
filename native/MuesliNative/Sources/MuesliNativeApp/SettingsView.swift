@@ -1668,22 +1668,28 @@ struct SettingsView: View {
 
     @ViewBuilder
     private func permissionStatusRow(_ name: String, granted: Bool, action: @escaping () -> Void, pane: String) -> some View {
-        HStack {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(granted ? MuesliTheme.success : MuesliTheme.recording)
-                    .frame(width: 8, height: 8)
+        HStack(spacing: MuesliTheme.spacing12) {
+            Image(systemName: granted ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(granted ? MuesliTheme.success : MuesliTheme.recording)
+
+            VStack(alignment: .leading, spacing: 3) {
                 Text(name)
                     .font(MuesliTheme.body())
                     .foregroundStyle(MuesliTheme.textPrimary)
+                Text(granted ? "Connected" : "Needed for \(permissionReason(name))")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
             }
+            .layoutPriority(1)
+
             Spacer()
             if granted {
                 Text("Granted")
                     .font(.system(size: 11))
                     .foregroundStyle(MuesliTheme.success)
             } else {
-                Button("Grant") {
+                Button("Fix") {
                     action()
                 }
                 .buttonStyle(.plain)
@@ -1694,6 +1700,16 @@ struct SettingsView: View {
                 .background(MuesliTheme.accentSubtle)
                 .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
             }
+            Button("Recheck") {
+                refreshPermissionStatuses()
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(MuesliTheme.textSecondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 3)
+            .background(MuesliTheme.surfacePrimary)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
             Button {
                 openPrivacyPane(pane)
             } label: {
@@ -1704,7 +1720,18 @@ struct SettingsView: View {
             .buttonStyle(.plain)
             .help("Open in System Settings")
         }
-        .frame(minHeight: 32)
+        .frame(minHeight: 44)
+    }
+
+    private func permissionReason(_ name: String) -> String {
+        switch name {
+        case "Microphone": return "recording and transcription"
+        case "Accessibility": return "agent actions and UI automation"
+        case "Input Monitoring": return "global shortcuts"
+        case "Screen Recording": return "meeting context"
+        case "System Audio": return "meeting audio capture"
+        default: return "Sales Caddie"
+        }
     }
 
     private func openPrivacyPane(_ pane: String) {

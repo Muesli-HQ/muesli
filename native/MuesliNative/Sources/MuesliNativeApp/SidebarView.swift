@@ -100,6 +100,7 @@ struct SidebarView: View {
             sidebarHeader
             searchBar
 
+            sidebarSectionLabel("Workspace")
             meetingsSection
             sidebarItem(tab: .jessica, icon: "sparkles", label: "Jessica")
             sidebarItem(tab: .sales, icon: "chart.line.uptrend.xyaxis", label: "Sales Assist")
@@ -108,6 +109,7 @@ struct SidebarView: View {
             Spacer()
 
             modelPreparationStatus
+            sidebarSectionLabel("Tools")
             sidebarItem(tab: .dictations, icon: "mic.fill", label: "Dictations")
             sidebarItem(tab: .settings, icon: "gearshape", label: "Settings")
             sidebarItem(tab: .about, icon: "info.circle", label: "About", updateCTA: pendingUpdateCTA)
@@ -150,6 +152,16 @@ struct SidebarView: View {
                 Text("This folder will be permanently removed.")
             }
         }
+    }
+
+    private func sidebarSectionLabel(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(MuesliTheme.textTertiary)
+            .textCase(.uppercase)
+            .padding(.horizontal, MuesliTheme.spacing16)
+            .padding(.top, MuesliTheme.spacing8)
+            .padding(.bottom, 2)
     }
 
     @ViewBuilder

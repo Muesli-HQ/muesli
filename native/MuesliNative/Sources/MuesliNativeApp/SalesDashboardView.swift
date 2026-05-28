@@ -21,6 +21,7 @@ struct SalesDashboardView: View {
     @State private var objectionSearchQuery = ""
     @State private var selectedLiveCueID: String?
     @State private var liveCueSearchQuery = ""
+    @State private var liveCueKindFilter = "all"
     @State private var selectedPreCallEventID: String?
     @State private var preCallCRMRecord: SalesCRMRecord?
     @State private var preCallCRMStatus: String?
@@ -83,7 +84,9 @@ struct SalesDashboardView: View {
     private var sectionContent: some View {
         switch selectedSection {
         case .overview:
+            setupChecklistPanel
             healthPanel
+            syncStatusPanel
             testPanel
             learningQueuePanel
             reviewPreviewPanel
@@ -103,10 +106,10 @@ struct SalesDashboardView: View {
         panel("Shortcut Health") {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
                 HStack(spacing: MuesliTheme.spacing12) {
-                    statusTile("Mic", isGood: health.microphoneGranted)
-                    statusTile("Input", isGood: health.inputMonitoringGranted)
-                    statusTile("Access", isGood: health.accessibilityGranted)
-                    statusTile("Screen", isGood: health.screenRecordingGranted)
+                    permissionTile("Mic", detail: "record calls", isGood: health.microphoneGranted)
+                    permissionTile("Input", detail: "hotkeys", isGood: health.inputMonitoringGranted)
+                    permissionTile("Access", detail: "automation", isGood: health.accessibilityGranted)
+                    permissionTile("Screen", detail: "context", isGood: health.screenRecordingGranted)
                 }
 
                 Divider().background(MuesliTheme.surfaceBorder)
@@ -122,7 +125,55 @@ struct SalesDashboardView: View {
                     readinessPill(health.allEnabledMonitorsRunning ? "Shortcut listeners running" : "Shortcut listener needs attention", good: health.allEnabledMonitorsRunning)
                     readinessPill(health.readyForLiveSalesAssist ? "Sales Assist ready" : "Sales Assist not ready", good: health.readyForLiveSalesAssist)
                     readinessPill("Agent: \(health.salesAgentProvider)", good: true)
-                    readinessPill(health.supabaseSyncEnabled ? "Supabase on" : "Local only", good: health.supabaseSyncEnabled)
+                    readinessPill(health.syncMode, good: health.anyCloudSyncEnabled)
+                }
+            }
+        }
+    }
+
+    private var setupChecklistPanel: some View {
+        panel("Setup Checklist") {
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: MuesliTheme.spacing12) {
+                    setupStep("Join workspace", subtitle: health.workspaceLabel, done: health.workspaceLabel != "No workspace") {
+                        appState.preferredSettingsPane = "sales"
+                        appState.selectedTab = .settings
+                    }
+                    setupStep("Connect calendar", subtitle: appState.isGoogleCalendarAuthenticated ? "Google Calendar connected" : "Connect Google Calendar", done: appState.isGoogleCalendarAuthenticated) {
+                        appState.preferredSettingsPane = "meetings"
+                        appState.selectedTab = .settings
+                    }
+                    setupStep("Grant permissions", subtitle: health.readyForLiveSalesAssist ? "Ready for live assist" : "Mic and Input Monitoring required", done: health.readyForLiveSalesAssist) {
+                        appState.preferredSettingsPane = "general"
+                        appState.selectedTab = .settings
+                    }
+                    setupStep("Choose Jessica speaker", subtitle: health.userLabel, done: health.userLabel != "No user") {
+                        appState.preferredSettingsPane = "computerUse"
+                        appState.selectedTab = .settings
+                    }
+                }
+            }
+        }
+    }
+
+    private var syncStatusPanel: some View {
+        panel("Sync Status") {
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: MuesliTheme.spacing12) {
+                    metricTile(health.syncMode, "sync mode")
+                    metricTile(health.workspaceLabel, "workspace")
+                    metricTile(health.libraryUpdatedAt, "library updated")
+                }
+                HStack(spacing: MuesliTheme.spacing8) {
+                    readinessPill(appState.config.supabaseSyncJessicaHistory ? "Jessica history" : "Jessica local", good: appState.config.supabaseSyncJessicaHistory)
+                    readinessPill(appState.config.supabaseSyncTranscripts ? "Transcripts" : "Transcripts local", good: appState.config.supabaseSyncTranscripts)
+                    readinessPill(appState.config.supabaseSyncSalesLibrary ? "Library" : "Library local", good: appState.config.supabaseSyncSalesLibrary)
+                    Spacer()
+                    actionButton("Sync all now", systemImage: "arrow.triangle.2.circlepath") {
+                        controller.syncAllCloudArtifactsNow()
+                    }
+                    .frame(width: 150)
+                    .disabled(!health.anyCloudSyncEnabled)
                 }
             }
         }
@@ -757,9 +808,11 @@ struct SalesDashboardView: View {
 
     private var filteredLiveCues: [SalesAssistLiveCue] {
         let query = liveCueSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !query.isEmpty else { return appState.config.salesAssistLiveCues }
         return appState.config.salesAssistLiveCues.filter { cue in
-            cue.name.lowercased().contains(query)
+            let matchesKind = liveCueKindFilter == "all" || cue.kind == liveCueKindFilter
+            guard matchesKind else { return false }
+            guard !query.isEmpty else { return true }
+            return cue.name.lowercased().contains(query)
                 || cue.kind.lowercased().contains(query)
                 || cue.triggerPhrases.lowercased().contains(query)
                 || cue.guidance.lowercased().contains(query)
@@ -933,6 +986,8 @@ struct SalesDashboardView: View {
             }
             .frame(height: 28)
 
+            liveCueKindFilters
+
             libraryPicker(
                 items: filteredLiveCues,
                 selectedID: selectedLiveCue?.id,
@@ -951,6 +1006,34 @@ struct SalesDashboardView: View {
         .onChange(of: appState.config.salesAssistLiveCues.map(\.id)) { _, _ in
             ensureSelectedLiveCue()
         }
+    }
+
+    private var liveCueKindFilters: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: MuesliTheme.spacing8) {
+                liveCueKindChip("all", label: "All")
+                ForEach(SalesAssistLiveCue.supportedKinds.filter { $0 != "objection" }, id: \.self) { kind in
+                    liveCueKindChip(kind, label: SalesAssistLiveCue.kindLabels[kind] ?? kind)
+                }
+            }
+        }
+    }
+
+    private func liveCueKindChip(_ kind: String, label: String) -> some View {
+        let isSelected = liveCueKindFilter == kind
+        return Button {
+            liveCueKindFilter = kind
+            selectedLiveCueID = filteredLiveCues.first?.id
+        } label: {
+            Text(label)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(isSelected ? MuesliTheme.accent : MuesliTheme.textSecondary)
+                .padding(.horizontal, MuesliTheme.spacing8)
+                .padding(.vertical, 5)
+                .background(isSelected ? MuesliTheme.accentSubtle : MuesliTheme.surfacePrimary.opacity(0.45))
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 
     private func learningRow(_ suggestion: SalesAssistLearningSuggestion) -> some View {
@@ -1449,6 +1532,63 @@ private func statusTile(_ label: String, isGood: Bool) -> some View {
     .padding(.vertical, MuesliTheme.spacing8)
     .background(MuesliTheme.surfacePrimary.opacity(0.55))
     .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+}
+
+private func permissionTile(_ label: String, detail: String, isGood: Bool) -> some View {
+    VStack(alignment: .leading, spacing: 4) {
+        HStack(spacing: MuesliTheme.spacing8) {
+            Image(systemName: isGood ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                .foregroundStyle(isGood ? MuesliTheme.success : MuesliTheme.transcribing)
+            Text(label)
+                .font(MuesliTheme.captionMedium())
+                .foregroundStyle(MuesliTheme.textPrimary)
+        }
+        Text(isGood ? "Ready" : detail)
+            .font(MuesliTheme.caption())
+            .foregroundStyle(MuesliTheme.textTertiary)
+            .lineLimit(1)
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(.horizontal, MuesliTheme.spacing12)
+    .padding(.vertical, MuesliTheme.spacing8)
+    .background(isGood ? MuesliTheme.success.opacity(0.10) : MuesliTheme.surfacePrimary.opacity(0.55))
+    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+    .overlay(
+        RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+            .strokeBorder(isGood ? MuesliTheme.success.opacity(0.25) : MuesliTheme.surfaceBorder, lineWidth: 1)
+    )
+}
+
+private func setupStep(_ title: String, subtitle: String, done: Bool, action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+        HStack(spacing: MuesliTheme.spacing12) {
+            Image(systemName: done ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(done ? MuesliTheme.success : MuesliTheme.textTertiary)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(MuesliTheme.headline())
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(MuesliTheme.textTertiary)
+        }
+        .padding(MuesliTheme.spacing12)
+        .background(done ? MuesliTheme.success.opacity(0.08) : MuesliTheme.surfacePrimary.opacity(0.55))
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        .overlay(
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                .strokeBorder(done ? MuesliTheme.success.opacity(0.2) : MuesliTheme.surfaceBorder, lineWidth: 1)
+        )
+    }
+    .buttonStyle(.plain)
 }
 
 private func monitorRow(_ label: String, enabled: Bool, running: Bool) -> some View {

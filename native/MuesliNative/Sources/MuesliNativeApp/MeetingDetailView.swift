@@ -279,6 +279,7 @@ struct MeetingDetailView: View {
         } else {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
                 contentToolbar(for: meeting)
+                salesIntelligencePanel(for: meeting)
 
                 ZStack(alignment: .topLeading) {
                     MeetingNotesView(markdown: Self.notesContent(for: meeting))
@@ -569,6 +570,94 @@ struct MeetingDetailView: View {
             .buttonStyle(.plain)
         }
         .frame(maxWidth: 980, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func salesIntelligencePanel(for meeting: MeetingRecord) -> some View {
+        if meeting.status == .completed {
+            let insights = SalesCallReviewAnalyzer.callInsights(for: meeting)
+            let actions = SalesCallReviewAnalyzer.actionItems(for: meeting)
+            let scorecard = SalesCallReviewAnalyzer.scorecard(for: meeting)
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+                HStack(spacing: MuesliTheme.spacing12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Sales Intelligence")
+                            .font(MuesliTheme.headline())
+                            .foregroundStyle(MuesliTheme.textPrimary)
+                        Text("\(actions.count) action item\(actions.count == 1 ? "" : "s") · \(insights.count) signal\(insights.count == 1 ? "" : "s")")
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                    }
+                    Spacer()
+                    Text("\(scorecard.score)")
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundStyle(scorecard.score >= 75 ? MuesliTheme.success : scorecard.score >= 55 ? MuesliTheme.transcribing : MuesliTheme.recording)
+                    Text("score")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                }
+
+                if actions.isEmpty && insights.isEmpty {
+                    Text("No sales-specific action items or signals were found in this call yet.")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                } else {
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: MuesliTheme.spacing8) {
+                        ForEach(actions.prefix(3)) { item in
+                            salesIntelligenceCard(
+                                title: item.title,
+                                subtitle: item.priority.capitalized,
+                                body: item.evidence,
+                                systemImage: "checklist"
+                            )
+                        }
+                        ForEach(insights.prefix(3)) { insight in
+                            salesIntelligenceCard(
+                                title: insight.name,
+                                subtitle: insight.kind.replacingOccurrences(of: "_", with: " ").capitalized,
+                                body: insight.guidance,
+                                systemImage: insight.kind == "buying_signal" ? "hand.thumbsup" : "exclamationmark.bubble"
+                            )
+                        }
+                    }
+                }
+            }
+            .padding(MuesliTheme.spacing16)
+            .frame(maxWidth: 980, alignment: .leading)
+            .background(MuesliTheme.backgroundRaised)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+            .overlay(
+                RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
+                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+            )
+        }
+    }
+
+    private func salesIntelligenceCard(title: String, subtitle: String, body: String, systemImage: String) -> some View {
+        HStack(alignment: .top, spacing: MuesliTheme.spacing8) {
+            Image(systemName: systemImage)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(MuesliTheme.accent)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: MuesliTheme.spacing8) {
+                    Text(title)
+                        .font(MuesliTheme.captionMedium())
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                        .lineLimit(1)
+                    Text(subtitle)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                }
+                Text(body)
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                    .lineLimit(2)
+            }
+        }
+        .padding(MuesliTheme.spacing8)
+        .background(MuesliTheme.surfacePrimary.opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
     }
 
     @ViewBuilder
