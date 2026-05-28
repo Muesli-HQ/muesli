@@ -33,6 +33,7 @@ struct SalesAdminView: View {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
                 header
                 statusStrip
+                adminOverviewSection
                 librarySection
                 membersSection
                 editorSection
@@ -133,6 +134,66 @@ struct SalesAdminView: View {
         .opacity(canManageLibrary ? 1 : 0.6)
     }
 
+    private var adminOverviewSection: some View {
+        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: MuesliTheme.spacing12) {
+            adminCapabilityCard(
+                title: "Members",
+                value: members.isEmpty ? "Not loaded" : "\(members.count) users",
+                detail: canManageMembers ? "Invite, map, and permission reps." : "Your role cannot edit members.",
+                systemImage: "person.2",
+                good: canManageMembers
+            )
+            adminCapabilityCard(
+                title: "Shared Library",
+                value: appState.config.salesAssistAdminManagedLibraryEnabled ? "Managed" : "Local",
+                detail: "Controls KB, objections, battlecards, and live cue cards.",
+                systemImage: "rectangle.stack",
+                good: canManageLibrary
+            )
+            adminCapabilityCard(
+                title: "Cloud",
+                value: appState.config.salesCaddieCloudSyncEnabled ? "Hosted API" : "Not connected",
+                detail: identity?.workspace.slug ?? "Connect in Settings > Sales.",
+                systemImage: "cloud",
+                good: appState.config.salesCaddieCloudSyncEnabled && identity != nil
+            )
+        }
+    }
+
+    private func adminCapabilityCard(title: String, value: String, detail: String, systemImage: String, good: Bool) -> some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+            HStack {
+                Image(systemName: systemImage)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(good ? MuesliTheme.accent : MuesliTheme.textTertiary)
+                Spacer()
+                Circle()
+                    .fill(good ? MuesliTheme.success : MuesliTheme.transcribing)
+                    .frame(width: 8, height: 8)
+            }
+            Text(title)
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textTertiary)
+            Text(value)
+                .font(MuesliTheme.headline())
+                .foregroundStyle(MuesliTheme.textPrimary)
+                .lineLimit(1)
+            Text(detail)
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textSecondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(MuesliTheme.spacing16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(MuesliTheme.backgroundRaised)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+        .overlay(
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
+                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+        )
+    }
+
     @ViewBuilder
     private var statusStrip: some View {
         if let identity {
@@ -196,9 +257,22 @@ struct SalesAdminView: View {
             }
 
             LazyVStack(spacing: 0) {
-                memberHeader
-                ForEach(members) { member in
-                    memberRow(member)
+                if members.isEmpty {
+                    VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                        Text("No workspace members loaded")
+                            .font(MuesliTheme.headline())
+                            .foregroundStyle(MuesliTheme.textPrimary)
+                        Text(appState.config.salesCaddieCloudSyncEnabled ? "Refresh the workspace or create the first invite." : "Enable Sales Caddie Cloud in Settings > Sales before managing members.")
+                            .font(MuesliTheme.body())
+                            .foregroundStyle(MuesliTheme.textSecondary)
+                    }
+                    .padding(MuesliTheme.spacing20)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    memberHeader
+                    ForEach(members) { member in
+                        memberRow(member)
+                    }
                 }
             }
             .background(MuesliTheme.backgroundRaised)

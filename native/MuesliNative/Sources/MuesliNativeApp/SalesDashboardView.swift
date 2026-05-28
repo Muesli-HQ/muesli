@@ -29,6 +29,7 @@ struct SalesDashboardView: View {
     @State private var isLoadingPreCallCRM = false
     @State private var libraryMessage: String?
     @State private var libraryError: String?
+    @State private var diagnosticsRanAt: Date?
 
     private var health: SalesCaddieHealthSnapshot {
         controller.salesCaddieHealthSnapshot()
@@ -85,6 +86,7 @@ struct SalesDashboardView: View {
         switch selectedSection {
         case .overview:
             setupChecklistPanel
+            diagnosticsPanel
             healthPanel
             syncStatusPanel
             testPanel
@@ -154,6 +156,76 @@ struct SalesDashboardView: View {
                 }
             }
         }
+    }
+
+    private var diagnosticsPanel: some View {
+        panel("Test Everything") {
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+                HStack(alignment: .center) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Sales Caddie readiness")
+                            .font(MuesliTheme.headline())
+                            .foregroundStyle(MuesliTheme.textPrimary)
+                        Text(diagnosticsRanAt.map { "Last checked \(Self.shortTimeFormatter.string(from: $0))" } ?? "Run this before a rep uses the app.")
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                    }
+                    Spacer()
+                    actionButton("Run checks", systemImage: "checkmark.seal") {
+                        diagnosticsRanAt = Date()
+                        controller.restartShortcutListeners()
+                    }
+                    .frame(width: 136)
+                }
+
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: MuesliTheme.spacing8) {
+                    ForEach(diagnosticRows) { row in
+                        diagnosticRow(row)
+                    }
+                }
+            }
+        }
+    }
+
+    private var diagnosticRows: [SalesCaddieDiagnosticRow] {
+        [
+            SalesCaddieDiagnosticRow(
+                id: "permissions",
+                title: "Live permissions",
+                detail: health.readyForLiveSalesAssist ? "Microphone and hotkeys are ready." : "Grant Microphone and Input Monitoring.",
+                status: health.readyForLiveSalesAssist ? .pass : .fail
+            ),
+            SalesCaddieDiagnosticRow(
+                id: "shortcuts",
+                title: "Shortcut listeners",
+                detail: health.allEnabledMonitorsRunning ? "Enabled listeners are running." : "Restart or review Shortcuts settings.",
+                status: health.allEnabledMonitorsRunning ? .pass : .fail
+            ),
+            SalesCaddieDiagnosticRow(
+                id: "calendar",
+                title: "Calendar",
+                detail: appState.isGoogleCalendarAuthenticated ? "Google Calendar is connected." : "Connect Google Calendar for pre-call briefings.",
+                status: appState.isGoogleCalendarAuthenticated ? .pass : .warning
+            ),
+            SalesCaddieDiagnosticRow(
+                id: "jessica",
+                title: "Jessica",
+                detail: appState.config.salesCaddieAllowsSalesAgent ? "\(health.salesAgentProvider) enabled." : "Workspace permissions block Jessica.",
+                status: appState.config.salesCaddieAllowsSalesAgent ? .pass : .fail
+            ),
+            SalesCaddieDiagnosticRow(
+                id: "library",
+                title: "Sales library",
+                detail: appState.config.salesAssistObjections.isEmpty ? "Add objection cards." : "\(appState.config.salesAssistObjections.count) objections and \(appState.config.salesAssistLiveCues.count) cue cards.",
+                status: appState.config.salesAssistObjections.isEmpty ? .warning : .pass
+            ),
+            SalesCaddieDiagnosticRow(
+                id: "sync",
+                title: "Sync",
+                detail: health.anyCloudSyncEnabled ? "\(health.syncMode) for \(health.workspaceLabel)." : "Local-only mode.",
+                status: health.anyCloudSyncEnabled ? .pass : .warning
+            ),
+        ]
     }
 
     private var syncStatusPanel: some View {
@@ -789,6 +861,12 @@ struct SalesDashboardView: View {
         formatter.timeStyle = .short
         return formatter
     }
+
+    private static let shortTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        return formatter
+    }()
 
     private func updatePreCallModule(_ id: String, mutate: @escaping (inout SalesPreCallBriefingModule) -> Void) {
         controller.updateConfig { config in
@@ -1589,6 +1667,49 @@ private func setupStep(_ title: String, subtitle: String, done: Bool, action: @e
         )
     }
     .buttonStyle(.plain)
+}
+
+private func diagnosticRow(_ row: SalesCaddieDiagnosticRow) -> some View {
+    let color = diagnosticColor(row.status)
+    return HStack(alignment: .top, spacing: MuesliTheme.spacing8) {
+        Image(systemName: diagnosticIcon(row.status))
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(color)
+            .frame(width: 18)
+        VStack(alignment: .leading, spacing: 3) {
+            Text(row.title)
+                .font(MuesliTheme.captionMedium())
+                .foregroundStyle(MuesliTheme.textPrimary)
+            Text(row.detail)
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(MuesliTheme.spacing12)
+    .background(color.opacity(0.08))
+    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+    .overlay(
+        RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+            .strokeBorder(color.opacity(0.20), lineWidth: 1)
+    )
+}
+
+private func diagnosticIcon(_ status: SalesCaddieDiagnosticRow.Status) -> String {
+    switch status {
+    case .pass: return "checkmark.circle.fill"
+    case .warning: return "exclamationmark.triangle.fill"
+    case .fail: return "xmark.octagon.fill"
+    }
+}
+
+private func diagnosticColor(_ status: SalesCaddieDiagnosticRow.Status) -> Color {
+    switch status {
+    case .pass: return MuesliTheme.success
+    case .warning: return MuesliTheme.transcribing
+    case .fail: return MuesliTheme.recording
+    }
 }
 
 private func monitorRow(_ label: String, enabled: Bool, running: Bool) -> some View {

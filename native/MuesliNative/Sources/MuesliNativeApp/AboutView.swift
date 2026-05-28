@@ -16,6 +16,20 @@ struct AboutView: View {
         AppIdentity.supportDirectoryURL.path
     }
 
+    private var workspaceSummary: String {
+        let cloudWorkspace = appState.config.salesCaddieCloudWorkspaceSlug.trimmingCharacters(in: .whitespacesAndNewlines)
+        let supabaseWorkspace = appState.config.supabaseWorkspaceID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cloudWorkspace.isEmpty { return cloudWorkspace }
+        if !supabaseWorkspace.isEmpty { return supabaseWorkspace }
+        return "Not joined"
+    }
+
+    private var syncSummary: String {
+        if appState.config.salesCaddieCloudSyncEnabled { return "Hosted API" }
+        if appState.config.supabaseSyncEnabled { return "Direct Supabase" }
+        return "Local only"
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing32) {
@@ -44,11 +58,37 @@ struct AboutView: View {
                             .foregroundStyle(MuesliTheme.textSecondary)
                             .multilineTextAlignment(.trailing)
                     }
+
+                    Divider().background(MuesliTheme.surfaceBorder)
+
+                    aboutRow("Workspace") {
+                        Text(workspaceSummary)
+                            .font(MuesliTheme.callout())
+                            .foregroundStyle(MuesliTheme.textSecondary)
+                            .multilineTextAlignment(.trailing)
+                    }
+
+                    Divider().background(MuesliTheme.surfaceBorder)
+
+                    aboutRow("Sync Mode") {
+                        Text(syncSummary)
+                            .font(MuesliTheme.callout())
+                            .foregroundStyle(MuesliTheme.textSecondary)
+                            .multilineTextAlignment(.trailing)
+                    }
                 }
 
                 // MARK: - Support
                 sectionHeader("Support")
                 aboutCard {
+                    aboutRow("Diagnostics") {
+                        actionButton("Open Sales Checks", icon: "checkmark.seal") {
+                            appState.selectedTab = .sales
+                        }
+                    }
+
+                    Divider().background(MuesliTheme.surfaceBorder)
+
                     aboutRow("Support Development") {
                         Button {
                             if let url = URL(string: donateURL) { NSWorkspace.shared.open(url) }

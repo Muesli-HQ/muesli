@@ -64,6 +64,24 @@ struct JessicaHistoryView: View {
                 .font(MuesliTheme.body())
                 .foregroundStyle(MuesliTheme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: MuesliTheme.spacing8) {
+                Button {
+                    appState.preferredSettingsPane = "computerUse"
+                    appState.selectedTab = .settings
+                } label: {
+                    Label("Set up Jessica", systemImage: "slider.horizontal.3")
+                        .font(MuesliTheme.caption())
+                }
+                .buttonStyle(.plain)
+                Button {
+                    controller.testJessicaResponseCard()
+                } label: {
+                    Label("Test response card", systemImage: "sparkles")
+                        .font(MuesliTheme.caption())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.top, MuesliTheme.spacing8)
         }
         .padding(MuesliTheme.spacing20)
         .frame(maxWidth: 520, alignment: .leading)

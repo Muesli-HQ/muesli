@@ -40,6 +40,19 @@ struct SalesCaddieHealthSnapshot: Equatable {
     }
 }
 
+struct SalesCaddieDiagnosticRow: Identifiable, Equatable {
+    enum Status: Equatable {
+        case pass
+        case warning
+        case fail
+    }
+
+    var id: String
+    var title: String
+    var detail: String
+    var status: Status
+}
+
 struct SalesCallReviewSummary {
     var completedCalls: Int
     var totalMinutes: Int
