@@ -19,7 +19,7 @@ final class SalesAssistEngine {
 
     init(
         configProvider: @escaping () -> AppConfig,
-        maxVisibleAlerts: Int = 3,
+        maxVisibleAlerts: Int = 2,
         alertHandler: @escaping (SalesAssistAlert) -> Void,
         activeAlertsChanged: @escaping ([SalesAssistAlert]) -> Void
     ) {

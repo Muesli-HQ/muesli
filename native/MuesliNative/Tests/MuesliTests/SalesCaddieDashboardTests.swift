@@ -118,6 +118,29 @@ struct SalesCaddieDashboardTests {
         #expect(alerts.contains { $0.kind == "objection" || $0.kind == "competitor" })
     }
 
+    @Test("live overlay ignores weak or rep-side objection language")
+    func liveOverlayIgnoresWeakOrRepSideLanguage() {
+        var config = AppConfig()
+        config.salesAssistEnabledKinds = SalesAssistLiveCue.supportedKinds
+        let detector = SalesAssistDetector()
+
+        let weakProspectAlerts = detector.detectAlerts(
+            lines: [
+                "Prospect: I was just looking at the notes and the magic edit routing.",
+            ],
+            config: config
+        )
+        let repSideAlerts = detector.detectAlerts(
+            lines: [
+                "Rep: Yeah, consider those paid for and then we can look at the notes.",
+            ],
+            config: config
+        )
+
+        #expect(weakProspectAlerts.isEmpty)
+        #expect(repSideAlerts.isEmpty)
+    }
+
     @MainActor
     @Test("sales assist engine buffers transcript and suppresses dismissed cues")
     func salesAssistEngineBuffersAndSuppresses() {

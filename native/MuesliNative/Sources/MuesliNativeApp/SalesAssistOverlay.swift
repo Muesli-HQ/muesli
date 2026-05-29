@@ -149,7 +149,7 @@ final class SalesAssistController {
         let panel = panel ?? makePanel()
         self.panel = panel
         let height = SalesAssistOverlayView.height(for: activeAlerts.count)
-        panel.setContentSize(NSSize(width: 460, height: height))
+        panel.setContentSize(NSSize(width: 560, height: height))
         panel.contentView = NSHostingView(
             rootView: SalesAssistOverlayView(alerts: activeAlerts) { [weak self] alert, action in
                 self?.handleOverlayAction(action, for: alert)
@@ -205,8 +205,8 @@ private struct SalesAssistOverlayView: View {
     let onAction: (SalesAssistAlert, SalesAssistOverlayAction) -> Void
 
     static func height(for alertCount: Int) -> CGFloat {
-        let count = max(1, min(alertCount, 3))
-        return CGFloat(72 + (count * 152) + ((count - 1) * 10))
+        let count = max(1, min(alertCount, 2))
+        return CGFloat(72 + (count * 248) + ((count - 1) * 10))
     }
 
     var body: some View {
@@ -241,7 +241,7 @@ private struct SalesAssistOverlayView: View {
             }
         }
         .padding(14)
-        .frame(width: 460, height: Self.height(for: alerts.count), alignment: .topLeading)
+        .frame(width: 560, height: Self.height(for: alerts.count), alignment: .topLeading)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .fill(Color(red: 0.08, green: 0.09, blue: 0.11).opacity(0.96))
@@ -281,23 +281,29 @@ private struct SalesAssistOverlayCard: View {
             }
 
             Text(alert.objection)
-                .font(.system(size: 17, weight: .bold))
+                .font(.system(size: 19, weight: .bold))
                 .foregroundColor(.white)
-                .lineLimit(1)
+                .lineLimit(2)
 
             Text(alert.quote)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundColor(.white.opacity(0.64))
-                .lineLimit(1)
-
-            Text(alert.talkTrack)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(.white)
                 .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Recommended response")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(priorityColor.opacity(0.9))
+                    .textCase(.uppercase)
+                Text(alert.talkTrack)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.white)
+                    .lineLimit(6)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, minHeight: 152, maxHeight: 152, alignment: .topLeading)
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 248, maxHeight: 248, alignment: .topLeading)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(Color.white.opacity(0.055))
@@ -399,7 +405,7 @@ final class SalesAssistDetector {
                 kind: "objection",
                 priority: "high",
                 cues: [
-                    #"\b(need|want|have)\b.{0,50}\b(think|sleep on it|consider|mull it over)\b"#,
+                    #"\b(i|we)\b.{0,20}\b(need|want|have)\b.{0,50}\b(think about it|sleep on it|mull it over)\b"#,
                     #"\b(not sure|unsure|on the fence|need more time|let me think|think about it)\b"#,
                 ],
                 talkTrack: "That makes sense. The lowest-risk way to think about it is to start the trial and judge it from real notes, not a sales call. Let's get the account live and you can decide with evidence."
@@ -515,7 +521,7 @@ final class SalesAssistDetector {
     }
 
     func detectAlerts(lines: [String], config: AppConfig) -> [SalesAssistAlert] {
-        let normalized = lines.joined(separator: " ")
+        let normalized = relevantProspectText(from: lines)
             .split(whereSeparator: \.isWhitespace)
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -595,24 +601,59 @@ final class SalesAssistDetector {
             .split(whereSeparator: \.isWhitespace)
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard normalized.count >= 18 else { return false }
+        let prospectText = relevantProspectText(from: lines)
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard prospectText.count >= 18 || normalized.count >= 18 else { return false }
 
         if localAlert?.objection == "New objection" {
             return true
         }
 
-        if config.salesAssistObjections.contains(where: { customObjectionMatches($0, text: normalized) }) {
+        if config.salesAssistObjections.contains(where: { customObjectionMatches($0, text: prospectText) }) {
             return true
         }
 
-        if config.salesAssistLiveCues.contains(where: { customCueMatches($0, text: normalized) }) {
+        if config.salesAssistLiveCues.contains(where: { customCueMatches($0, text: prospectText) }) {
             return true
         }
 
-        let range = NSRange(normalized.startIndex..<normalized.endIndex, in: normalized)
+        let range = NSRange(prospectText.startIndex..<prospectText.endIndex, in: prospectText)
         return salesMomentCues.contains { regex in
-            regex.firstMatch(in: normalized, options: [], range: range) != nil
+            regex.firstMatch(in: prospectText, options: [], range: range) != nil
         }
+    }
+
+    private func relevantProspectText(from lines: [String]) -> String {
+        var sawSpeakerLabel = false
+        let prospectLines = lines.compactMap { line -> String? in
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            if trimmed.localizedCaseInsensitiveContains("Prospect:") {
+                sawSpeakerLabel = true
+                return trimmed.replacingOccurrences(
+                    of: #"(?i)^.*?\bProspect:\s*"#,
+                    with: "",
+                    options: .regularExpression
+                )
+            }
+            if trimmed.range(of: #"(?i)^Rep:"# , options: .regularExpression) != nil {
+                sawSpeakerLabel = true
+                return nil
+            }
+            return nil
+        }
+
+        if !prospectLines.isEmpty {
+            return prospectLines.suffix(3).joined(separator: " ")
+        }
+
+        if sawSpeakerLabel {
+            return ""
+        }
+
+        return lines.suffix(1).joined(separator: " ")
     }
 
     private func alert(for category: SalesMomentCategory, quote: String) -> SalesAssistAlert {
