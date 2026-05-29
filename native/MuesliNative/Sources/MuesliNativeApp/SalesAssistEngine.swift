@@ -16,6 +16,7 @@ final class SalesAssistEngine {
     private let classifier = SalesAssistLLMClassifier()
     private var classifierTask: Task<Void, Never>?
     private var lastClassifierFingerprint: String?
+    private var isDisabledForSession = false
 
     init(
         configProvider: @escaping () -> AppConfig,
@@ -39,11 +40,13 @@ final class SalesAssistEngine {
         snoozedUntilByCueKey = [:]
         dismissedCueKeys = []
         lastClassifierFingerprint = nil
+        isDisabledForSession = false
         activeAlertsChanged([])
     }
 
     func handleTranscriptLine(_ line: String) {
         let config = configProvider()
+        guard !isDisabledForSession else { return }
         guard config.salesAssistEnabled else { return }
         recentTranscriptLines.append(line)
         recentTranscriptLines = Array(recentTranscriptLines.suffix(10))
@@ -60,6 +63,13 @@ final class SalesAssistEngine {
 
     func handleAction(_ action: SalesAssistOverlayAction, for alert: SalesAssistAlert) -> [SalesAssistAlert] {
         switch action {
+        case .disableForSession:
+            isDisabledForSession = true
+            classifierTask?.cancel()
+            classifierTask = nil
+            activeAlerts = []
+            activeAlertsChanged([])
+            return activeAlerts
         case .dismiss:
             dismissedFingerprints.insert(alert.fingerprint)
             dismissedCueKeys.insert(cueKey(alert))

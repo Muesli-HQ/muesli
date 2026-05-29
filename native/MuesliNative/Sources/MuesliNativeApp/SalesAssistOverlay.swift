@@ -30,6 +30,7 @@ enum SalesAssistOverlayAction {
     case snooze
     case useful
     case notUseful
+    case disableForSession
 }
 
 @MainActor
@@ -223,6 +224,19 @@ private struct SalesAssistOverlayView: View {
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3)
                     .background(Color.white.opacity(0.08), in: Capsule())
+                Button {
+                    if let firstAlert = alerts.first {
+                        onAction(firstAlert, .disableForSession)
+                    }
+                } label: {
+                    Image(systemName: "bell.slash")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.white.opacity(0.72))
+                        .frame(width: 24, height: 24)
+                        .background(Color.white.opacity(0.08), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .help("Turn off overlay for this call")
                 Button {
                     alerts.forEach { onAction($0, .dismiss) }
                 } label: {

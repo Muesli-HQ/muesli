@@ -229,6 +229,33 @@ struct SalesCaddieDashboardTests {
         }
     }
 
+    @MainActor
+    @Test("sales assist overlay can be disabled for the current call")
+    func salesAssistOverlayCanBeDisabledForSession() {
+        var config = AppConfig()
+        config.salesAssistEnabled = true
+        config.salesAssistAIEnabled = false
+        config.salesAssistEnabledKinds = SalesAssistLiveCue.supportedKinds
+        var emitted: [SalesAssistAlert] = []
+        var visible: [[SalesAssistAlert]] = []
+        let engine = SalesAssistEngine(
+            configProvider: { config },
+            alertHandler: { emitted.append($0) },
+            activeAlertsChanged: { visible.append($0) }
+        )
+
+        engine.handleTranscriptLine("Prospect: I like this. How do we get started with the trial?")
+        let firstVisible = try? #require(visible.last?.first)
+        if let firstVisible {
+            _ = engine.handleAction(.disableForSession, for: firstVisible)
+            let emissionCount = emitted.count
+            engine.handleTranscriptLine("Prospect: I need to talk to my wife before we start.")
+
+            #expect(visible.last?.isEmpty == true)
+            #expect(emitted.count == emissionCount)
+        }
+    }
+
     private func meeting(
         id: Int64,
         start: String,
