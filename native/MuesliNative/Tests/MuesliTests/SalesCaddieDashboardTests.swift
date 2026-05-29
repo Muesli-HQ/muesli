@@ -135,6 +135,24 @@ struct SalesCaddieDashboardTests {
         #expect(!alerts.contains { $0.kind == "objection" })
     }
 
+    @Test("discovery question popups respond to conversation context")
+    func discoveryQuestionsRespondToConversationContext() {
+        var config = AppConfig()
+        config.salesAssistEnabledKinds = ["discovery"]
+        config.salesAssistLiveCues = []
+        let detector = SalesAssistDetector()
+
+        let ehrAlerts = detector.detectAlerts(
+            lines: [
+                "Prospect: We use Epic today, and the copy paste back into the chart is the part that feels clunky.",
+            ],
+            config: config
+        )
+
+        #expect(ehrAlerts.contains { $0.kind == "discovery" && $0.objection == "Map the EHR workflow" })
+        #expect(ehrAlerts.first?.talkTrack.contains("Where does the note need to land") == true)
+    }
+
     @Test("live overlay ignores weak or rep-side objection language")
     func liveOverlayIgnoresWeakOrRepSideLanguage() {
         var config = AppConfig()
@@ -207,7 +225,7 @@ struct SalesCaddieDashboardTests {
         var config = AppConfig()
         config.salesAssistEnabled = true
         config.salesAssistAIEnabled = false
-        config.salesAssistEnabledKinds = SalesAssistLiveCue.supportedKinds
+        config.salesAssistEnabledKinds = SalesAssistLiveCue.supportedKinds.filter { $0 != "discovery" }
         var emitted: [SalesAssistAlert] = []
         var visible: [[SalesAssistAlert]] = []
         let engine = SalesAssistEngine(

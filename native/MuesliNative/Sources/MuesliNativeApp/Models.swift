@@ -1115,6 +1115,27 @@ extension SalesAssistLiveCue {
             guidance: "Ask: \"How many minutes per patient does that usually cost you, and how many patients do you see on a normal day?\""
         ),
         SalesAssistLiveCue(
+            kind: "discovery",
+            name: "Map EHR workflow",
+            priority: "medium",
+            triggerPhrases: "Epic\nathena\nCerner\nEHR\nEMR\ncopy paste\nintegration",
+            guidance: "Ask: \"Where does the note need to land in your EHR, and what part of that handoff is most annoying today?\""
+        ),
+        SalesAssistLiveCue(
+            kind: "discovery",
+            name: "Anchor template fit",
+            priority: "medium",
+            triggerPhrases: "specialty\ntemplate\nSOAP\nHPI\nassessment and plan\nbilling codes",
+            guidance: "Ask: \"What does a great note look like for your specialty, and what would make a generated note unusable for you?\""
+        ),
+        SalesAssistLiveCue(
+            kind: "discovery",
+            name: "Define trial success",
+            priority: "medium",
+            triggerPhrases: "trial\ntest it\ntry it\nget started\npricing\ncard",
+            guidance: "Ask: \"If we start the trial, what would you need to see in the first few visits to feel confident keeping it?\""
+        ),
+        SalesAssistLiveCue(
             kind: "close",
             name: "Close the trial",
             priority: "high",

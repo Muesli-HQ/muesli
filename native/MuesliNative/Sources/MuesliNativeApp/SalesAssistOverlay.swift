@@ -505,7 +505,7 @@ final class SalesAssistDetector {
                 talkTrack: "Pause the demo and quantify it: \"How many minutes per patient does that usually cost you, and how many patients do you see on a normal day?\""
             ),
             Self.category(
-                name: "EHR workflow detail",
+                name: "Map the EHR workflow",
                 kind: "discovery",
                 priority: "low",
                 cues: [
@@ -590,6 +590,12 @@ final class SalesAssistDetector {
             .map(\.alert)
             .prefix(2)
         alerts.append(contentsOf: customCueAlerts)
+
+        if enabledKinds.contains("discovery"),
+           !alerts.contains(where: { $0.kind == "discovery" }),
+           let discoveryAlert = discoveryQuestionAlert(for: prospectText) {
+            alerts.append(discoveryAlert)
+        }
 
         if alerts.isEmpty,
            enabledKinds.contains("objection"),
@@ -839,6 +845,66 @@ final class SalesAssistDetector {
         )
     }
 
+    private func discoveryQuestionAlert(for text: String) -> SalesAssistAlert? {
+        let lowercased = text.lowercased()
+        guard lowercased.count >= 18 else { return nil }
+
+        let question: (name: String, priority: String, response: String)?
+        if Self.containsAny(lowercased, ["after hours", "late at night", "behind"])
+            || (
+                Self.containsAny(lowercased, ["charting", "documentation", "notes", "paperwork"])
+                && Self.containsAny(lowercased, ["takes", "take", "spend", "spent", "too long", "forever", "hours", "minutes"])
+            ) {
+            question = (
+                "Quantify charting pain",
+                "medium",
+                "Ask: \"How many minutes per patient does documentation take today, and how many patients do you see on a normal day?\""
+            )
+        } else if Self.containsAny(lowercased, ["epic", "athena", "cerner", "modmed", "eclinicalworks", "ecw", "ehr", "emr", "copy paste", "integration"]) {
+            question = (
+                "Map the EHR workflow",
+                "medium",
+                "Ask: \"Where does the note need to land in your EHR, and what part of that handoff is most annoying today?\""
+            )
+        } else if Self.containsAny(lowercased, ["specialty", "template", "soap", "hpi", "assessment", "plan", "billing", "codes", "icd", "cpt"]) {
+            question = (
+                "Anchor the template",
+                "medium",
+                "Ask: \"What does a great note look like for your specialty, and what would make a generated note unusable for you?\""
+            )
+        } else if Self.containsAny(lowercased, ["provider", "providers", "doctors", "team", "clinic", "practice", "office manager", "staff"]) {
+            question = (
+                "Map team adoption",
+                "medium",
+                "Ask: \"Who would use this first, and whose approval or workflow would decide whether the rest of the team adopts it?\""
+            )
+        } else if Self.containsAny(lowercased, ["freed", "heidi", "nabla", "abridge", "dax", "dragon", "doximity", "suki", "scribe"]) {
+            question = (
+                "Compare current workflow",
+                "medium",
+                "Ask: \"What do you like about that workflow, and where do you still spend time cleaning things up?\""
+            )
+        } else if Self.containsAny(lowercased, ["trial", "test", "try it", "start", "get started", "card", "pricing"]) {
+            question = (
+                "Define trial success",
+                "medium",
+                "Ask: \"If we start the trial, what would you need to see in the first few visits to feel confident keeping it?\""
+            )
+        } else {
+            question = nil
+        }
+
+        guard let question else { return nil }
+        return SalesAssistAlert(
+            kind: "discovery",
+            objection: question.name,
+            quote: String(text.suffix(260)),
+            talkTrack: question.response,
+            priority: question.priority,
+            updatedAt: Date()
+        )
+    }
+
     private static func category(
         name: String,
         kind: String,
@@ -877,6 +943,10 @@ final class SalesAssistDetector {
             .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
             .split(whereSeparator: \.isWhitespace)
             .joined(separator: " ")
+    }
+
+    private static func containsAny(_ text: String, _ needles: [String]) -> Bool {
+        needles.contains { text.contains($0) }
     }
 
     private static func normalizedPriority(_ raw: String) -> String {
