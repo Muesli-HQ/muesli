@@ -153,6 +153,50 @@ struct SalesCaddieDashboardTests {
         #expect(ehrAlerts.first?.talkTrack.contains("Where does the note need to land") == true)
     }
 
+    @Test("discovery question popups cover Skriber sales playbook moments")
+    func discoveryQuestionsCoverSalesPlaybookMoments() {
+        var config = AppConfig()
+        config.salesAssistEnabledKinds = ["discovery"]
+        config.salesAssistLiveCues = []
+        let detector = SalesAssistDetector()
+
+        let workflowAlerts = detector.detectAlerts(
+            lines: [
+                "Prospect: Right now I use Dragon and then type notes myself after clinic.",
+            ],
+            config: config
+        )
+        let billingAlerts = detector.detectAlerts(
+            lines: [
+                "Prospect: Coding and ICD-10 documentation are where our billing team gets nervous.",
+            ],
+            config: config
+        )
+        let specialtyAlerts = detector.detectAlerts(
+            lines: [
+                "Prospect: I am in mental health and most of my work is therapy intakes.",
+            ],
+            config: config
+        )
+
+        #expect(workflowAlerts.contains { $0.objection == "Current note workflow" })
+        #expect(billingAlerts.contains { $0.objection == "Billing and coding pain" })
+        #expect(specialtyAlerts.contains { $0.objection == "Specialty note type" })
+    }
+
+    @Test("sales library migrations add new Skriber enablement cards")
+    func salesLibraryMigrationsAddNewEnablementCards() throws {
+        var oldConfig = AppConfig()
+        oldConfig.salesAssistObjections = oldConfig.salesAssistObjections.filter { $0.name != "Billing guarantee pressure" }
+        oldConfig.salesAssistLiveCues = oldConfig.salesAssistLiveCues.filter { $0.name != "athenaAmbient Battlecard" }
+
+        let encoded = try JSONEncoder().encode(oldConfig)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: encoded)
+
+        #expect(decoded.salesAssistObjections.contains { $0.name == "Billing guarantee pressure" })
+        #expect(decoded.salesAssistLiveCues.contains { $0.name == "athenaAmbient Battlecard" })
+    }
+
     @Test("live overlay ignores weak or rep-side objection language")
     func liveOverlayIgnoresWeakOrRepSideLanguage() {
         var config = AppConfig()

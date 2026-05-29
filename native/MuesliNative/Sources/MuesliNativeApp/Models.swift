@@ -901,6 +901,9 @@ extension SalesAssistObjection {
     - The strongest conversion action is assigning templates live while the prospect watches.
     - The trial should feel low-risk: nothing charges during the trial, and templates can be built before they start using it.
     - If timing is the concern, negotiate the start date rather than accepting a vague follow-up.
+    - Core discovery: specialty, patient volume, current note workflow, most time-consuming documentation step, and whether notes go home.
+    - Use patient volume to do time math. At 25 patients/day, even five minutes saved per note is roughly two hours back.
+    - Ask whether the decision is individual, partner/manager, team, or institutional before closing.
 
     Product facts:
     - Pricing: annual is $85/month billed yearly; monthly is $125/month. Annual saves roughly five months.
@@ -909,6 +912,8 @@ extension SalesAssistObjection {
     - Works with every EHR through copy/paste. Direct integrations cost more and take much longer.
     - Supports ICD-10, CPT, DSM-5, CDT, Advanced Clinical Reasoning, Spanish-to-English, style learning, resume recording, and 24/7 support.
     - HIPAA/GDPR compliant, ISO 27001 certified, BAA available, encrypted in transit and at rest, patient data is not used to train public AI models.
+    - Billing messaging must stay safe: Skriber supports stronger documentation for appropriate billing; never guarantee reimbursement or coding compliance.
+    - Direct integration should be scoped. Copy/paste works broadly today; do not promise every write-back workflow is live.
 
     Demo flow:
     1. Set agenda: discovery, live demo, free trial.
@@ -969,7 +974,7 @@ extension SalesAssistObjection {
             name: "Price concern",
             priority: "medium",
             triggerPhrases: "too expensive\ncosts too much\nprice is high\nbudget\nafford\ncheaper\nmonthly cost",
-            guidance: "Use time math: \"$85/month is less than $3/day. If it saves even one admin hour or a few minutes per patient, it pays for itself quickly.\""
+            guidance: "Use time math without promising ROI: \"$85/month annually is less than $3/day. At even a few minutes saved per visit, the time value usually dwarfs the fee.\""
         ),
         SalesAssistObjection(
             name: "Competitor in use",
@@ -992,8 +997,14 @@ extension SalesAssistObjection {
         SalesAssistObjection(
             name: "Copy-paste or integration concern",
             priority: "medium",
-            triggerPhrases: "doesn't integrate\nno integration\ncopy paste\nmanual transfer\nmy EHR won't work\ncheckbox heavy",
-            guidance: "Use the time comparison: \"Copy/paste takes 2-3 minutes versus 20-30 minutes writing. We use this workflow to keep cost low and it works across EHRs.\""
+            triggerPhrases: "doesn't integrate\nno integration\ncopy paste\nmanual transfer\nmy EHR won't work\nwrite back\nFHIR\nHL7",
+            guidance: "Scope instead of overpromising: \"Let's confirm your EHR and workflow first. What is live today is copy/paste/export, which keeps setup fast and cost low; deeper integration needs to be scoped.\""
+        ),
+        SalesAssistObjection(
+            name: "Checkbox-heavy EHR",
+            priority: "medium",
+            triggerPhrases: "checkbox heavy\nall checkboxes\nExperity\nclick boxes\nstructured fields\nfree text fields",
+            guidance: "Do not pretend Skriber replaces every checkbox. Say: \"For checkbox-heavy systems, Skriber is strongest for HPI, narrative, assessment, and plan. Where are the free-text sections that take the most time today?\""
         ),
         SalesAssistObjection(
             name: "Team adoption concern",
@@ -1014,12 +1025,41 @@ extension SalesAssistObjection {
             guidance: "Separate consumer AI from clinical workflow: \"Consumer AI is not HIPAA-safe for PHI and doesn't give you templates, billing codes, ambient capture, or clinical workflow support.\""
         ),
         SalesAssistObjection(
+            name: "Billing guarantee pressure",
+            priority: "medium",
+            triggerPhrases: "guarantee reimbursement\nguarantee revenue\nguarantee billing\nensure coding compliance\nwill this increase reimbursement\nwill this get us paid more",
+            guidance: "Stay inside guardrails: \"We support stronger, more complete documentation for appropriate billing workflows, but final coding decisions stay with your clinicians or coders and we do not promise reimbursement outcomes.\""
+        ),
+        SalesAssistObjection(
+            name: "Human scribe or MA in place",
+            priority: "medium",
+            triggerPhrases: "human scribe\nmedical assistant does notes\nMA does notes\nnurse documents\nalready have staff\nscribe already",
+            guidance: "Position as a force multiplier: \"Keep your staff focused on higher-value work. Skriber is always available, costs far less than hourly scribe coverage, and can make their review faster.\""
+        ),
+        SalesAssistObjection(
+            name: "Patient consent concern",
+            priority: "medium",
+            triggerPhrases: "patient consent\npatients won't like recording\npermission to record\nrecording consent\none party consent",
+            guidance: "Keep it simple and compliant: \"Many practices use a one-line intake or verbal disclosure. If you want, I can send approved consent language; let's also look at dictation mode for sensitive workflows.\""
+        ),
+        SalesAssistObjection(
             name: "Accuracy concern",
             priority: "medium",
             triggerPhrases: "how accurate\naccuracy\nwrong notes\nhallucinate\ntrust the note\nmistakes",
             guidance: "Anchor to trial proof: \"The trial is the proof. We'll use your specialty template and real workflow so you can judge note quality before anything bills.\""
         )
     ]
+
+    static let seedObjectionNamesForMigration: Set<String> = Set(defaultObjections.map(\.name))
+
+    static func appendingMissingSeedObjections(to objections: [SalesAssistObjection]) -> [SalesAssistObjection] {
+        let existingNames = Set(objections.map { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+        let missing = defaultObjections.filter { objection in
+            seedObjectionNamesForMigration.contains(objection.name)
+                && !existingNames.contains(objection.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        }
+        return objections + missing
+    }
 }
 
 extension SalesAssistLiveCue {
@@ -1056,7 +1096,7 @@ extension SalesAssistLiveCue {
             name: "Freed Battlecard",
             priority: "medium",
             triggerPhrases: "Freed\nusing Freed\nFreed AI\nFreed scribe",
-            guidance: "Ask what Freed does well and where it still creates cleanup. Contrast on specialty templates, support, billing/code help, and a live side-by-side trial."
+            guidance: "Ask what Freed does well and where it still creates cleanup. Position Skriber around unlimited custom templates, specialty depth, dedicated support, and a 30-day side-by-side trial."
         ),
         SalesAssistLiveCue(
             kind: "competitor",
@@ -1070,7 +1110,7 @@ extension SalesAssistLiveCue {
             name: "Doximity Battlecard",
             priority: "medium",
             triggerPhrases: "Doximity\nDoximity scribe\nDoximity GPT\nDoximity AI",
-            guidance: "Ask if they use Doximity for actual full notes or quick drafting. Position Skriber as the workflow tool for specialty templates, patient instructions, codes, and repeat daily use."
+            guidance: "Acknowledge free is attractive, then test workflow fit: \"Does it match your specialty templates and style, or are you still cleaning up the note?\" Position Skriber on templates, support, patient instructions, and repeat daily use."
         ),
         SalesAssistLiveCue(
             kind: "competitor",
@@ -1108,11 +1148,46 @@ extension SalesAssistLiveCue {
             guidance: "Do not fight the EHR roadmap. Say native AI is built for everyone; Skriber can be tested now against their specialty workflow and becomes the benchmark."
         ),
         SalesAssistLiveCue(
+            kind: "competitor",
+            name: "athenaAmbient Battlecard",
+            priority: "medium",
+            triggerPhrases: "athenaAmbient\nathena ambient\nathena AI\nathenahealth AI\nathenaOne ambient",
+            guidance: "Do not argue with free. Say: \"If athenaAmbient is coming, let's use Skriber now as the benchmark on your specialty templates and note quality, then compare when it is actually live for your workflow.\""
+        ),
+        SalesAssistLiveCue(
+            kind: "competitor",
+            name: "Commure Battlecard",
+            priority: "medium",
+            triggerPhrases: "Commure\nCommure scribe\nCommure AI",
+            guidance: "Ask whether they are buying as an enterprise health system or an individual clinic. Position Skriber as faster to trial, easier to tailor, and built for small-group provider workflow."
+        ),
+        SalesAssistLiveCue(
+            kind: "competitor",
+            name: "DeepScribe Battlecard",
+            priority: "medium",
+            triggerPhrases: "DeepScribe\nDeep Scribe\nusing DeepScribe",
+            guidance: "Ask about sales-cycle friction, price, and trial access. Position Skriber as lower-risk, faster to start, and easier to customize without enterprise procurement."
+        ),
+        SalesAssistLiveCue(
             kind: "discovery",
             name: "Quantify charting pain",
             priority: "medium",
             triggerPhrases: "charting takes\nnotes take\ndocumentation takes\nlate at night\nafter hours\nbehind on notes",
             guidance: "Ask: \"How many minutes per patient does that usually cost you, and how many patients do you see on a normal day?\""
+        ),
+        SalesAssistLiveCue(
+            kind: "discovery",
+            name: "Current note workflow",
+            priority: "medium",
+            triggerPhrases: "typing notes\nwrite notes by hand\ncopy from last note\nDragon\ndot phrases\nmedical assistant does notes\nscribe",
+            guidance: "Ask: \"Walk me through how notes get done today, from the visit ending to the note being signed.\""
+        ),
+        SalesAssistLiveCue(
+            kind: "discovery",
+            name: "Patient volume math",
+            priority: "medium",
+            triggerPhrases: "patients per day\nvisits per day\npatients a week\npatient volume\nsee about",
+            guidance: "Ask: \"Roughly how many patients do you see per day or week? I want to translate note time into actual hours saved.\""
         ),
         SalesAssistLiveCue(
             kind: "discovery",
@@ -1127,6 +1202,27 @@ extension SalesAssistLiveCue {
             priority: "medium",
             triggerPhrases: "specialty\ntemplate\nSOAP\nHPI\nassessment and plan\nbilling codes",
             guidance: "Ask: \"What does a great note look like for your specialty, and what would make a generated note unusable for you?\""
+        ),
+        SalesAssistLiveCue(
+            kind: "discovery",
+            name: "Specialty note type",
+            priority: "medium",
+            triggerPhrases: "mental health\npsychiatry\ntherapy\nphysical therapy\noccupational therapy\ndental\nchiropractic\nurgent care\nhome health",
+            guidance: "Ask the specialty-specific follow-up: mental health: \"DAP, BIRP, SOAP, or intake?\" PT/OT: \"Evals, progress notes, or discharge notes?\" Dental: \"Are CDT codes part of the pain?\""
+        ),
+        SalesAssistLiveCue(
+            kind: "discovery",
+            name: "Billing and coding pain",
+            priority: "medium",
+            triggerPhrases: "billing\ncoding\nICD-10\nCPT\nDSM-5\nCDT\nundercoding\ndenials\nrevenue",
+            guidance: "Ask safely: \"Where does documentation create billing or coding friction today? We can support stronger documentation, but your team still owns final coding decisions.\""
+        ),
+        SalesAssistLiveCue(
+            kind: "discovery",
+            name: "Decision process",
+            priority: "medium",
+            triggerPhrases: "decision maker\npartner\nmanager\nowner\nmedical director\nrisk management\nIT department\nprocurement",
+            guidance: "Ask: \"Is this something you can decide for your own workflow, or does someone else need to approve it before a trial starts?\""
         ),
         SalesAssistLiveCue(
             kind: "discovery",
@@ -1535,7 +1631,8 @@ struct AppConfig: Codable {
         salesAssistAIEnabled = (try? c.decode(Bool.self, forKey: .salesAssistAIEnabled)) ?? defaults.salesAssistAIEnabled
         salesAssistEnabledKinds = (try? c.decode([String].self, forKey: .salesAssistEnabledKinds)) ?? defaults.salesAssistEnabledKinds
         salesAssistKnowledgeBase = (try? c.decode(String.self, forKey: .salesAssistKnowledgeBase)) ?? defaults.salesAssistKnowledgeBase
-        salesAssistObjections = (try? c.decode([SalesAssistObjection].self, forKey: .salesAssistObjections)) ?? defaults.salesAssistObjections
+        let decodedSalesAssistObjections = (try? c.decode([SalesAssistObjection].self, forKey: .salesAssistObjections)) ?? defaults.salesAssistObjections
+        salesAssistObjections = SalesAssistObjection.appendingMissingSeedObjections(to: decodedSalesAssistObjections)
         let decodedSalesAssistLiveCues = (try? c.decode([SalesAssistLiveCue].self, forKey: .salesAssistLiveCues)) ?? defaults.salesAssistLiveCues
         salesAssistLiveCues = SalesAssistLiveCue.appendingMissingSeedCues(to: decodedSalesAssistLiveCues)
         salesAssistLearningSuggestions = (try? c.decode([SalesAssistLearningSuggestion].self, forKey: .salesAssistLearningSuggestions)) ?? defaults.salesAssistLearningSuggestions

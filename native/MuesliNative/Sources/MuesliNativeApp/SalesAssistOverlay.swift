@@ -514,6 +514,34 @@ final class SalesAssistDetector {
                 ],
                 talkTrack: "Ask one workflow question before pitching: \"Where does the note need to land in your EHR, and what part is most annoying today?\""
             ),
+            Self.category(
+                name: "Current note workflow",
+                kind: "discovery",
+                priority: "medium",
+                cues: [
+                    #"\b(type|typing|write|writing|dictate|dictation|dragon|dot phrase|macro|copy from|copying from|scribe|medical assistant|ma)\b.{0,80}\b(notes?|documentation|charting)\b"#,
+                    #"\b(notes?|documentation|charting)\b.{0,80}\b(type|typing|write|writing|dictate|dictation|dragon|dot phrase|macro|copy from|scribe|medical assistant|ma)\b"#,
+                ],
+                talkTrack: "Ask: \"Walk me through how notes get done today, from the visit ending to the note being signed.\""
+            ),
+            Self.category(
+                name: "Billing and coding pain",
+                kind: "discovery",
+                priority: "medium",
+                cues: [
+                    #"\b(billing|coding|icd-?10|cpt|dsm-?5|cdt|undercod(e|ing)|denials?|revenue|hcc)\b"#,
+                ],
+                talkTrack: "Ask safely: \"Where does documentation create billing or coding friction today? We can support stronger documentation, but your team still owns final coding decisions.\""
+            ),
+            Self.category(
+                name: "Decision process",
+                kind: "discovery",
+                priority: "medium",
+                cues: [
+                    #"\b(decision maker|partner|office manager|manager|owner|medical director|risk management|it department|procurement|approval)\b"#,
+                ],
+                talkTrack: "Ask: \"Is this something you can decide for your own workflow, or does someone else need to approve it before a trial starts?\""
+            ),
         ]
 
         salesMomentCues = Self.compile([
@@ -860,17 +888,41 @@ final class SalesAssistDetector {
                 "medium",
                 "Ask: \"How many minutes per patient does documentation take today, and how many patients do you see on a normal day?\""
             )
-        } else if Self.containsAny(lowercased, ["epic", "athena", "cerner", "modmed", "eclinicalworks", "ecw", "ehr", "emr", "copy paste", "integration"]) {
+        } else if Self.containsAny(lowercased, ["patient per day", "patients per day", "patients a day", "visits per day", "patient volume", "see patients", "see about", "per week"]) {
+            question = (
+                "Patient volume math",
+                "medium",
+                "Ask: \"Roughly how many patients do you see per day or week? I want to translate note time into actual hours saved.\""
+            )
+        } else if Self.containsAny(lowercased, ["type notes", "typing notes", "write notes", "writing notes", "dragon", "dot phrases", "copy from last", "medical assistant", "human scribe", "scribe does"]) {
+            question = (
+                "Current note workflow",
+                "medium",
+                "Ask: \"Walk me through how notes get done today, from the visit ending to the note being signed.\""
+            )
+        } else if Self.containsAny(lowercased, ["epic", "athena", "cerner", "modmed", "eclinicalworks", "ecw", "ehr", "emr", "copy paste", "integration", "write back", "fhir", "hl7"]) {
             question = (
                 "Map the EHR workflow",
                 "medium",
                 "Ask: \"Where does the note need to land in your EHR, and what part of that handoff is most annoying today?\""
             )
-        } else if Self.containsAny(lowercased, ["specialty", "template", "soap", "hpi", "assessment", "plan", "billing", "codes", "icd", "cpt"]) {
+        } else if Self.containsAny(lowercased, ["mental health", "psychiatry", "therapy", "physical therapy", "occupational therapy", "dental", "chiropractic", "urgent care", "home health", "family medicine", "primary care"]) {
+            question = (
+                "Specialty note type",
+                "medium",
+                "Ask the specialty-specific follow-up: mental health: \"DAP, BIRP, SOAP, or intake?\" PT/OT: \"Evals, progress notes, or discharge notes?\" Dental: \"Are CDT codes part of the pain?\""
+            )
+        } else if Self.containsAny(lowercased, ["specialty", "template", "soap", "hpi", "assessment", "plan"]) {
             question = (
                 "Anchor the template",
                 "medium",
                 "Ask: \"What does a great note look like for your specialty, and what would make a generated note unusable for you?\""
+            )
+        } else if Self.containsAny(lowercased, ["billing", "coding", "icd", "cpt", "dsm", "cdt", "undercoding", "denial", "denials", "revenue"]) {
+            question = (
+                "Billing and coding pain",
+                "medium",
+                "Ask safely: \"Where does documentation create billing or coding friction today? We can support stronger documentation, but your team still owns final coding decisions.\""
             )
         } else if Self.containsAny(lowercased, ["provider", "providers", "doctors", "team", "clinic", "practice", "office manager", "staff"]) {
             question = (
@@ -878,11 +930,17 @@ final class SalesAssistDetector {
                 "medium",
                 "Ask: \"Who would use this first, and whose approval or workflow would decide whether the rest of the team adopts it?\""
             )
-        } else if Self.containsAny(lowercased, ["freed", "heidi", "nabla", "abridge", "dax", "dragon", "doximity", "suki", "scribe"]) {
+        } else if Self.containsAny(lowercased, ["freed", "heidi", "nabla", "abridge", "dax", "dragon", "doximity", "suki", "deepscribe", "commure"]) {
             question = (
                 "Compare current workflow",
                 "medium",
                 "Ask: \"What do you like about that workflow, and where do you still spend time cleaning things up?\""
+            )
+        } else if Self.containsAny(lowercased, ["decision maker", "partner", "manager", "owner", "medical director", "risk management", "it department", "procurement", "approval"]) {
+            question = (
+                "Decision process",
+                "medium",
+                "Ask: \"Is this something you can decide for your own workflow, or does someone else need to approve it before a trial starts?\""
             )
         } else if Self.containsAny(lowercased, ["trial", "test", "try it", "start", "get started", "card", "pricing"]) {
             question = (
