@@ -141,6 +141,49 @@ struct SalesCaddieDashboardTests {
         #expect(repSideAlerts.isEmpty)
     }
 
+    @Test("objection tuning examples affect live detection")
+    func objectionTuningExamplesAffectDetection() {
+        let detector = SalesAssistDetector()
+        var config = AppConfig()
+        config.salesAssistEnabledKinds = ["objection"]
+        let objection = SalesAssistObjection(
+            id: "procurement-freeze",
+            name: "Procurement freeze",
+            priority: "high",
+            triggerPhrases: "",
+            guidance: "Ask whether a trial can start while procurement reviews the vendor paperwork."
+        )
+        config.salesAssistObjections = [objection]
+        config.salesAssistLiveCues = []
+        config.salesAssistObjectionTuningExamples = [
+            SalesAssistObjectionTuningExample(
+                objectionID: objection.id,
+                phrase: "legal has a vendor freeze",
+                outcome: .accepted
+            ),
+        ]
+
+        let acceptedAlerts = detector.detectAlerts(
+            lines: ["Prospect: Legal has a vendor freeze until next month."],
+            config: config
+        )
+        #expect(acceptedAlerts.contains { $0.objection == "Procurement freeze" })
+
+        config.salesAssistObjectionTuningExamples.append(
+            SalesAssistObjectionTuningExample(
+                objectionID: objection.id,
+                phrase: "legal has a vendor freeze",
+                outcome: .falsePositive
+            )
+        )
+
+        let suppressedAlerts = detector.detectAlerts(
+            lines: ["Prospect: Legal has a vendor freeze until next month."],
+            config: config
+        )
+        #expect(!suppressedAlerts.contains { $0.objection == "Procurement freeze" })
+    }
+
     @MainActor
     @Test("sales assist engine buffers transcript and suppresses dismissed cues")
     func salesAssistEngineBuffersAndSuppresses() {

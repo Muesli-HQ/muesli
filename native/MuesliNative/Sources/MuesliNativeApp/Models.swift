@@ -850,6 +850,45 @@ struct SalesAssistLearningSuggestion: Codable, Identifiable, Equatable {
     }
 }
 
+struct SalesAssistObjectionTuningExample: Codable, Identifiable, Equatable {
+    enum Outcome: String, Codable {
+        case accepted
+        case falsePositive = "false_positive"
+    }
+
+    var id: String
+    var objectionID: String
+    var phrase: String
+    var outcome: Outcome
+    var source: String
+    var createdAt: String
+
+    init(
+        id: String = UUID().uuidString,
+        objectionID: String,
+        phrase: String,
+        outcome: Outcome,
+        source: String = "manual",
+        createdAt: String = ISO8601DateFormatter().string(from: Date())
+    ) {
+        self.id = id
+        self.objectionID = objectionID
+        self.phrase = phrase
+        self.outcome = outcome
+        self.source = source
+        self.createdAt = createdAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case objectionID = "objection_id"
+        case phrase
+        case outcome
+        case source
+        case createdAt = "created_at"
+    }
+}
+
 extension SalesAssistObjection {
     static let defaultKnowledgeBase = """
     Skriber is an AI medical scribe for SMB, solo, and small-group providers. It listens to patient encounters and generates structured clinical notes in roughly 10-30 seconds, including Chief Complaint, HPI, ROS, Objective, Assessment & Plan, billing codes, and patient instructions.
@@ -1209,6 +1248,7 @@ struct AppConfig: Codable {
     var salesAssistObjections: [SalesAssistObjection] = SalesAssistObjection.defaultObjections
     var salesAssistLiveCues: [SalesAssistLiveCue] = SalesAssistLiveCue.defaultCues
     var salesAssistLearningSuggestions: [SalesAssistLearningSuggestion] = []
+    var salesAssistObjectionTuningExamples: [SalesAssistObjectionTuningExample] = []
     var salesPreCallBriefingModules: [SalesPreCallBriefingModule] = SalesPreCallBriefingModule.defaultModules
     var salesPreCallCRMProvider: String = SalesCRMProvider.none.rawValue
     var salesPreCallCRMConnectionLabel: String = ""
@@ -1327,6 +1367,7 @@ struct AppConfig: Codable {
         case salesAssistObjections = "sales_assist_objections"
         case salesAssistLiveCues = "sales_assist_live_cues"
         case salesAssistLearningSuggestions = "sales_assist_learning_suggestions"
+        case salesAssistObjectionTuningExamples = "sales_assist_objection_tuning_examples"
         case salesPreCallBriefingModules = "sales_pre_call_briefing_modules"
         case salesPreCallCRMProvider = "sales_pre_call_crm_provider"
         case salesPreCallCRMConnectionLabel = "sales_pre_call_crm_connection_label"
@@ -1477,6 +1518,7 @@ struct AppConfig: Codable {
         let decodedSalesAssistLiveCues = (try? c.decode([SalesAssistLiveCue].self, forKey: .salesAssistLiveCues)) ?? defaults.salesAssistLiveCues
         salesAssistLiveCues = SalesAssistLiveCue.appendingMissingSeedCues(to: decodedSalesAssistLiveCues)
         salesAssistLearningSuggestions = (try? c.decode([SalesAssistLearningSuggestion].self, forKey: .salesAssistLearningSuggestions)) ?? defaults.salesAssistLearningSuggestions
+        salesAssistObjectionTuningExamples = (try? c.decode([SalesAssistObjectionTuningExample].self, forKey: .salesAssistObjectionTuningExamples)) ?? defaults.salesAssistObjectionTuningExamples
         let decodedPreCallModules = (try? c.decode([SalesPreCallBriefingModule].self, forKey: .salesPreCallBriefingModules)) ?? defaults.salesPreCallBriefingModules
         salesPreCallBriefingModules = Self.mergedPreCallModules(decodedPreCallModules)
         salesPreCallCRMProvider = (try? c.decode(String.self, forKey: .salesPreCallCRMProvider)) ?? defaults.salesPreCallCRMProvider

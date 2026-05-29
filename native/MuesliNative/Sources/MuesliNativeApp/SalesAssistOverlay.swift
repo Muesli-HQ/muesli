@@ -537,6 +537,7 @@ final class SalesAssistDetector {
         let range = NSRange(normalized.startIndex..<normalized.endIndex, in: normalized)
         let categoryAlerts = categories
             .filter({ enabledKinds.contains($0.kind) })
+            .filter({ !isCategorySuppressedByTuning($0, text: normalized, config: config) })
             .map({ ($0, Self.score(category: $0, text: normalized, range: range)) })
             .filter({ $0.1 > 0 })
             .sorted(by: { $0.1 > $1.1 })
@@ -546,7 +547,7 @@ final class SalesAssistDetector {
 
         if enabledKinds.contains("objection") {
             let customAlerts = config.salesAssistObjections
-            .compactMap({ customAlert(for: $0, quote: normalized) })
+            .compactMap({ customAlert(for: $0, quote: normalized, config: config) })
             .prefix(2)
             alerts.append(contentsOf: customAlerts)
         }
@@ -611,7 +612,7 @@ final class SalesAssistDetector {
             return true
         }
 
-        if config.salesAssistObjections.contains(where: { customObjectionMatches($0, text: prospectText) }) {
+        if config.salesAssistObjections.contains(where: { customObjectionMatches($0, text: prospectText, config: config) }) {
             return true
         }
 
@@ -667,8 +668,8 @@ final class SalesAssistDetector {
         )
     }
 
-    private func customAlert(for objection: SalesAssistObjection, quote: String) -> SalesAssistAlert? {
-        guard customObjectionMatches(objection, text: quote) else { return nil }
+    private func customAlert(for objection: SalesAssistObjection, quote: String, config: AppConfig) -> SalesAssistAlert? {
+        guard customObjectionMatches(objection, text: quote, config: config) else { return nil }
         let name = objection.name.trimmingCharacters(in: .whitespacesAndNewlines)
         let guidance = objection.guidance.trimmingCharacters(in: .whitespacesAndNewlines)
         return SalesAssistAlert(
@@ -707,11 +708,44 @@ final class SalesAssistDetector {
         )
     }
 
-    private func customObjectionMatches(_ objection: SalesAssistObjection, text: String) -> Bool {
+    private func customObjectionMatches(_ objection: SalesAssistObjection, text: String, config: AppConfig) -> Bool {
         let phrases = Self.customTriggerPhrases(from: objection.triggerPhrases)
+            + config.salesAssistObjectionTuningExamples
+                .filter { $0.objectionID == objection.id && $0.outcome == .accepted }
+                .map(\.phrase)
+                .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         guard !phrases.isEmpty else { return false }
         let lowercased = text.lowercased()
+        if hasFalsePositiveExample(for: objection, text: lowercased, config: config) {
+            return false
+        }
         return phrases.contains { lowercased.contains($0.lowercased()) }
+    }
+
+    private func isCategorySuppressedByTuning(
+        _ category: SalesMomentCategory,
+        text: String,
+        config: AppConfig
+    ) -> Bool {
+        guard let objection = config.salesAssistObjections.first(where: {
+            Self.normalizedLabel($0.name) == Self.normalizedLabel(category.name)
+        }) else {
+            return false
+        }
+        return hasFalsePositiveExample(for: objection, text: text.lowercased(), config: config)
+    }
+
+    private func hasFalsePositiveExample(
+        for objection: SalesAssistObjection,
+        text: String,
+        config: AppConfig
+    ) -> Bool {
+        config.salesAssistObjectionTuningExamples
+            .filter { $0.objectionID == objection.id && $0.outcome == .falsePositive }
+            .map(\.phrase)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { $0.count >= 3 }
+            .contains { text.contains($0) }
     }
 
     private func customCueMatches(_ cue: SalesAssistLiveCue, text: String) -> Bool {
@@ -778,6 +812,13 @@ final class SalesAssistDetector {
             .components(separatedBy: CharacterSet(charactersIn: ",\n"))
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { $0.count >= 3 }
+    }
+
+    private static func normalizedLabel(_ raw: String) -> String {
+        raw.lowercased()
+            .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
     }
 
     private static func normalizedPriority(_ raw: String) -> String {

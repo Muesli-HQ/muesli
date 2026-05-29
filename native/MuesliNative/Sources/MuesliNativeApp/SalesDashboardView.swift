@@ -8,6 +8,7 @@ struct SalesDashboardView: View {
         case overview = "Overview"
         case preCall = "Pre-Call"
         case library = "Library"
+        case tuning = "Tuning"
         case overlay = "Live Overlay"
         case review = "Call Review"
 
@@ -29,6 +30,8 @@ struct SalesDashboardView: View {
     @State private var isLoadingPreCallCRM = false
     @State private var libraryMessage: String?
     @State private var libraryError: String?
+    @State private var tuningPhraseDraft = ""
+    @State private var tuningMessage: String?
     @State private var diagnosticsRanAt: Date?
 
     private var health: SalesCaddieHealthSnapshot {
@@ -96,6 +99,8 @@ struct SalesDashboardView: View {
             preCallContent
         case .library:
             libraryEditorPanel
+        case .tuning:
+            objectionTuningContent
         case .overlay:
             liveOverlayPanel
             testPanel
@@ -599,6 +604,73 @@ struct SalesDashboardView: View {
                     }
                 }
             }
+        }
+    }
+
+    private var objectionTuningContent: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
+            panel("Objection Tuning") {
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
+                    HStack(alignment: .top, spacing: MuesliTheme.spacing16) {
+                        VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+                            HStack {
+                                Text("Categories")
+                                    .font(MuesliTheme.headline())
+                                    .foregroundStyle(MuesliTheme.textPrimary)
+                                Text("\(appState.config.salesAssistObjections.count)")
+                                    .font(MuesliTheme.caption())
+                                    .foregroundStyle(MuesliTheme.textTertiary)
+                                Spacer()
+                                actionButton("New", systemImage: "plus") {
+                                    createTunedObjection()
+                                }
+                                .frame(width: 82)
+                            }
+
+                            libraryPicker(
+                                items: appState.config.salesAssistObjections,
+                                selectedID: selectedObjection?.id,
+                                title: { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Untitled objection" : $0.name },
+                                subtitle: { tuningSubtitle(for: $0) },
+                                onSelect: { selectedObjectionID = $0.id }
+                            )
+                            .frame(height: 260)
+                        }
+                        .frame(width: 330, alignment: .topLeading)
+
+                        if let selectedObjection {
+                            tunedObjectionEditor(selectedObjection)
+                        } else {
+                            emptyLine("Create or select an objection to tune.")
+                        }
+                    }
+
+                    if let tuningMessage {
+                        Text(tuningMessage)
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.success)
+                    }
+                }
+            }
+
+            panel("Recent Objection Review") {
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+                    Text("Use recent call insights to teach Sales Caddie which phrases are real objections, which are noise, and where the talk track needs a human edit.")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+
+                    if recentObjectionInsights.isEmpty {
+                        emptyLine("No recent objection insights found.")
+                    } else {
+                        ForEach(recentObjectionInsights.prefix(8)) { insight in
+                            tuningInsightRow(insight)
+                        }
+                    }
+                }
+            }
+        }
+        .onAppear {
+            ensureSelectedObjection()
         }
     }
 
@@ -1114,6 +1186,183 @@ struct SalesDashboardView: View {
         .buttonStyle(.plain)
     }
 
+    private var recentObjectionInsights: [SalesCallInsight] {
+        reviewSummary.callInsights
+            .filter { $0.kind == "objection" || $0.kind == "pricing" }
+            .sorted {
+                if $0.priority != $1.priority {
+                    return priorityRank($0.priority) > priorityRank($1.priority)
+                }
+                return $0.meetingID > $1.meetingID
+            }
+    }
+
+    private func tunedObjectionEditor(_ objection: SalesAssistObjection) -> some View {
+        let tuningExamples = appState.config.salesAssistObjectionTuningExamples.filter { $0.objectionID == objection.id }
+        let acceptedExamples = tuningExamples.filter { $0.outcome == .accepted }
+        let falsePositives = tuningExamples.filter { $0.outcome == .falsePositive }
+
+        return VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+            HStack(spacing: MuesliTheme.spacing8) {
+                PastableTextField(text: objection.name, placeholder: "Objection name") { value in
+                    updateObjection(objection.id) { $0.name = value }
+                }
+                .frame(height: 30)
+                priorityMenu(selection: objection.priority) { value in
+                    updateObjection(objection.id) { $0.priority = value }
+                }
+                .frame(width: 120)
+            }
+
+            HStack(spacing: MuesliTheme.spacing8) {
+                PastableTextField(text: tuningPhraseDraft, placeholder: "Example phrase from a prospect") { value in
+                    tuningPhraseDraft = value
+                }
+                .frame(height: 30)
+                actionButton("Should trigger", systemImage: "checkmark.circle") {
+                    addTuningExample(outcome: .accepted, objectionID: objection.id, phrase: tuningPhraseDraft, source: "manual")
+                    appendTriggerPhrase(tuningPhraseDraft, to: objection.id)
+                    tuningPhraseDraft = ""
+                }
+                .frame(width: 150)
+                actionButton("Ignore", systemImage: "nosign") {
+                    addTuningExample(outcome: .falsePositive, objectionID: objection.id, phrase: tuningPhraseDraft, source: "manual")
+                    tuningPhraseDraft = ""
+                }
+                .frame(width: 96)
+            }
+
+            HStack(alignment: .top, spacing: MuesliTheme.spacing12) {
+                labeledEditor("Approved triggers", text: objection.triggerPhrases, placeholder: "One phrase per line. Only use phrases a prospect would actually say.") { value in
+                    updateObjection(objection.id) { $0.triggerPhrases = value }
+                }
+
+                labeledEditor("Approved talk track", text: objection.guidance, placeholder: "The full response the overlay should show to the rep.") { value in
+                    updateObjection(objection.id) { $0.guidance = value }
+                }
+            }
+
+            HStack(alignment: .top, spacing: MuesliTheme.spacing12) {
+                tuningExampleList("Accepted examples", examples: acceptedExamples, empty: "No accepted examples yet.")
+                tuningExampleList("False positives", examples: falsePositives, empty: "No false-positive examples yet.")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private func tuningExampleList(
+        _ title: String,
+        examples: [SalesAssistObjectionTuningExample],
+        empty: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+            HStack {
+                Text(title)
+                    .font(MuesliTheme.captionMedium())
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                Text("\(examples.count)")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                Spacer()
+            }
+            if examples.isEmpty {
+                emptyLine(empty)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(examples.prefix(6)) { example in
+                        HStack(alignment: .top, spacing: MuesliTheme.spacing8) {
+                            Text(example.phrase)
+                                .font(MuesliTheme.caption())
+                                .foregroundStyle(MuesliTheme.textSecondary)
+                                .lineLimit(2)
+                            Spacer()
+                            trashButton {
+                                removeTuningExample(example.id)
+                            }
+                        }
+                        .padding(8)
+                        .background(MuesliTheme.surfacePrimary.opacity(0.45))
+                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private func tuningInsightRow(_ insight: SalesCallInsight) -> some View {
+        let matchingObjection = matchingObjection(for: insight)
+        return VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+            HStack(spacing: MuesliTheme.spacing8) {
+                Text(insight.name)
+                    .font(MuesliTheme.headline())
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                    .lineLimit(1)
+                priorityPill(insight.priority)
+                Text(insight.meetingTitle)
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .lineLimit(1)
+                Spacer()
+            }
+            Text(insight.evidence)
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textSecondary)
+                .lineLimit(2)
+            Text(insight.guidance)
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textTertiary)
+                .lineLimit(2)
+            HStack(spacing: MuesliTheme.spacing8) {
+                actionButton("Correct", systemImage: "checkmark") {
+                    let objectionID = matchingObjection?.id ?? selectedObjection?.id
+                    if let objectionID {
+                        addTuningExample(outcome: .accepted, objectionID: objectionID, phrase: insight.evidence, source: insight.meetingTitle)
+                        appendTriggerPhrase(insight.evidence, to: objectionID)
+                        selectedObjectionID = objectionID
+                    }
+                }
+                .frame(width: 106)
+                .disabled((matchingObjection?.id ?? selectedObjection?.id) == nil)
+
+                actionButton("False positive", systemImage: "nosign") {
+                    let objectionID = matchingObjection?.id ?? selectedObjection?.id
+                    if let objectionID {
+                        addTuningExample(outcome: .falsePositive, objectionID: objectionID, phrase: insight.evidence, source: insight.meetingTitle)
+                        selectedObjectionID = objectionID
+                    }
+                }
+                .frame(width: 142)
+                .disabled((matchingObjection?.id ?? selectedObjection?.id) == nil)
+
+                actionButton("New objection", systemImage: "plus") {
+                    createTunedObjection(from: insight)
+                }
+                .frame(width: 138)
+
+                actionButton("Better talk track", systemImage: "quote.bubble") {
+                    if let objection = matchingObjection ?? selectedObjection {
+                        selectedObjectionID = objection.id
+                        tuningMessage = "Edit the approved talk track for \(objection.name) above. The overlay will use the full response."
+                    }
+                }
+                .frame(width: 162)
+
+                Spacer()
+            }
+        }
+        .padding(MuesliTheme.spacing12)
+        .background(MuesliTheme.surfacePrimary.opacity(0.45))
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+    }
+
+    private func tuningSubtitle(for objection: SalesAssistObjection) -> String {
+        let examples = appState.config.salesAssistObjectionTuningExamples.filter { $0.objectionID == objection.id }
+        let accepted = examples.filter { $0.outcome == .accepted }.count
+        let falsePositives = examples.filter { $0.outcome == .falsePositive }.count
+        return "\(accepted) accepted, \(falsePositives) ignored"
+    }
+
     private func learningRow(_ suggestion: SalesAssistLearningSuggestion) -> some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
             HStack {
@@ -1358,6 +1607,98 @@ struct SalesDashboardView: View {
         }
     }
 
+    private func createTunedObjection(from insight: SalesCallInsight? = nil) {
+        controller.updateConfig { config in
+            let objection = SalesAssistObjection(
+                name: insight?.name ?? "New objection",
+                priority: insight?.priority ?? "medium",
+                triggerPhrases: insight?.evidence ?? "",
+                guidance: insight?.guidance ?? ""
+            )
+            config.salesAssistObjections.append(objection)
+            if let insight {
+                config.salesAssistObjectionTuningExamples.append(
+                    SalesAssistObjectionTuningExample(
+                        objectionID: objection.id,
+                        phrase: insight.evidence,
+                        outcome: .accepted,
+                        source: insight.meetingTitle
+                    )
+                )
+            }
+            selectedObjectionID = objection.id
+        }
+        selectedSection = .tuning
+        tuningMessage = insight == nil ? "New objection created." : "New objection created from recent call insight."
+    }
+
+    private func addTuningExample(
+        outcome: SalesAssistObjectionTuningExample.Outcome,
+        objectionID: String,
+        phrase: String,
+        source: String
+    ) {
+        let cleaned = phrase.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard cleaned.count >= 3 else { return }
+        controller.updateConfig { config in
+            let normalized = Self.normalizedTuningText(cleaned)
+            let exists = config.salesAssistObjectionTuningExamples.contains {
+                $0.objectionID == objectionID
+                    && $0.outcome == outcome
+                    && Self.normalizedTuningText($0.phrase) == normalized
+            }
+            guard !exists else { return }
+            config.salesAssistObjectionTuningExamples.append(
+                SalesAssistObjectionTuningExample(
+                    objectionID: objectionID,
+                    phrase: cleaned,
+                    outcome: outcome,
+                    source: source
+                )
+            )
+        }
+        tuningMessage = outcome == .accepted ? "Added accepted trigger example." : "Added false-positive example."
+    }
+
+    private func appendTriggerPhrase(_ phrase: String, to objectionID: String) {
+        let cleaned = phrase.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard cleaned.count >= 3 else { return }
+        controller.updateConfig { config in
+            guard let index = config.salesAssistObjections.firstIndex(where: { $0.id == objectionID }) else { return }
+            let existing = config.salesAssistObjections[index].triggerPhrases
+                .components(separatedBy: CharacterSet(charactersIn: "\n,"))
+                .map(Self.normalizedTuningText)
+            guard !existing.contains(Self.normalizedTuningText(cleaned)) else { return }
+            if config.salesAssistObjections[index].triggerPhrases.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                config.salesAssistObjections[index].triggerPhrases = cleaned
+            } else {
+                config.salesAssistObjections[index].triggerPhrases += "\n\(cleaned)"
+            }
+        }
+    }
+
+    private func removeTuningExample(_ id: String) {
+        controller.updateConfig { config in
+            config.salesAssistObjectionTuningExamples.removeAll { $0.id == id }
+        }
+        tuningMessage = "Tuning example removed."
+    }
+
+    private func matchingObjection(for insight: SalesCallInsight) -> SalesAssistObjection? {
+        let insightName = Self.normalizedTuningText(insight.name)
+        return appState.config.salesAssistObjections.first {
+            Self.normalizedTuningText($0.name) == insightName
+        }
+    }
+
+    private func priorityRank(_ priority: String) -> Int {
+        switch priority.lowercased() {
+        case "high": return 3
+        case "low": return 1
+        default: return 2
+        }
+    }
+
     private func ensureSelectedObjection() {
         if let selectedObjectionID,
            appState.config.salesAssistObjections.contains(where: { $0.id == selectedObjectionID }) {
@@ -1413,6 +1754,13 @@ struct SalesDashboardView: View {
             .filter { !$0.isEmpty }
             .prefix(2)
             .joined(separator: ", ")
+    }
+
+    private static func normalizedTuningText(_ text: String) -> String {
+        text.lowercased()
+            .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
     }
 }
 
