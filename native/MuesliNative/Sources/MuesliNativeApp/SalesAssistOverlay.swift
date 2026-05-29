@@ -521,11 +521,15 @@ final class SalesAssistDetector {
     }
 
     func detectAlerts(lines: [String], config: AppConfig) -> [SalesAssistAlert] {
-        let normalized = relevantProspectText(from: lines)
+        let prospectText = relevantProspectText(from: lines)
             .split(whereSeparator: \.isWhitespace)
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalized.isEmpty else { return [] }
+        let conversationText = relevantConversationText(from: lines)
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prospectText.isEmpty || !conversationText.isEmpty else { return [] }
 
         let enabledKinds = Set(config.salesAssistEnabledKinds)
         var alerts: [SalesAssistAlert] = []
@@ -534,27 +538,40 @@ final class SalesAssistDetector {
             alerts.append(talkRatioAlert)
         }
 
-        let range = NSRange(normalized.startIndex..<normalized.endIndex, in: normalized)
         let categoryAlerts = categories
             .filter({ enabledKinds.contains($0.kind) })
-            .filter({ !isCategorySuppressedByTuning($0, text: normalized, config: config) })
-            .map({ ($0, Self.score(category: $0, text: normalized, range: range)) })
-            .filter({ $0.1 > 0 })
-            .sorted(by: { $0.1 > $1.1 })
+            .compactMap { category -> (SalesMomentCategory, String, Int)? in
+                let text = category.kind == "competitor" ? conversationText : prospectText
+                guard !text.isEmpty else { return nil }
+                if category.kind == "competitor",
+                   customCompetitorCueMatches(text: text, config: config) {
+                    return nil
+                }
+                guard !isCategorySuppressedByTuning(category, text: text, config: config) else { return nil }
+                let range = NSRange(text.startIndex..<text.endIndex, in: text)
+                return (category, text, Self.score(category: category, text: text, range: range))
+            }
+            .filter({ $0.2 > 0 })
+            .sorted(by: { $0.2 > $1.2 })
             .prefix(3)
-            .map { alert(for: $0.0, quote: normalized) }
+            .map { alert(for: $0.0, quote: $0.1) }
         alerts.append(contentsOf: categoryAlerts)
 
         if enabledKinds.contains("objection") {
             let customAlerts = config.salesAssistObjections
-            .compactMap({ customAlert(for: $0, quote: normalized, config: config) })
+            .compactMap({ customAlert(for: $0, quote: prospectText, config: config) })
             .prefix(2)
             alerts.append(contentsOf: customAlerts)
         }
 
         let customCueAlerts = config.salesAssistLiveCues
             .filter({ enabledKinds.contains($0.kind) })
-            .compactMap({ customAlertWithScore(for: $0, quote: normalized) })
+            .compactMap { cue in
+                customAlertWithScore(
+                    for: cue,
+                    quote: cue.kind == "competitor" ? conversationText : prospectText
+                )
+            }
             .sorted(by: { $0.score > $1.score })
             .map(\.alert)
             .prefix(2)
@@ -562,12 +579,16 @@ final class SalesAssistDetector {
 
         if alerts.isEmpty,
            enabledKinds.contains("objection"),
-           salesMomentCues.contains(where: { $0.firstMatch(in: normalized, options: [], range: range) != nil }) {
+           !prospectText.isEmpty,
+           {
+               let range = NSRange(prospectText.startIndex..<prospectText.endIndex, in: prospectText)
+               return salesMomentCues.contains { $0.firstMatch(in: prospectText, options: [], range: range) != nil }
+           }() {
             alerts.append(
                 SalesAssistAlert(
                     kind: "objection",
                     objection: "New objection",
-                    quote: String(normalized.suffix(260)),
+                    quote: String(prospectText.suffix(260)),
                     talkTrack: "Pause and label it first: \"That sounds like the main concern.\" Then ask one clarifying question: \"Is this about fit, timing, cost, or trust?\" Once they answer, tie the trial to that specific concern.",
                     priority: "medium",
                     updatedAt: Date()
@@ -593,6 +614,17 @@ final class SalesAssistDetector {
             .map { $0 }
     }
 
+    private func relevantConversationText(from lines: [String]) -> String {
+        lines.suffix(4)
+            .map { line in
+                line
+                    .replacingOccurrences(of: #"(?i)^.*?\b(Prospect|Rep|Transcript):\s*"#, with: "", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
     func shouldAskClassifier(
         lines: [String],
         localAlert: SalesAssistAlert?,
@@ -606,6 +638,10 @@ final class SalesAssistDetector {
             .split(whereSeparator: \.isWhitespace)
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let conversationText = relevantConversationText(from: lines)
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard prospectText.count >= 18 || normalized.count >= 18 else { return false }
 
         if localAlert?.objection == "New objection" {
@@ -616,7 +652,9 @@ final class SalesAssistDetector {
             return true
         }
 
-        if config.salesAssistLiveCues.contains(where: { customCueMatches($0, text: prospectText) }) {
+        if config.salesAssistLiveCues.contains(where: {
+            customCueMatches($0, text: $0.kind == "competitor" ? conversationText : prospectText)
+        }) {
             return true
         }
 
@@ -750,6 +788,12 @@ final class SalesAssistDetector {
 
     private func customCueMatches(_ cue: SalesAssistLiveCue, text: String) -> Bool {
         customCueScore(cue, text: text) > 0
+    }
+
+    private func customCompetitorCueMatches(text: String, config: AppConfig) -> Bool {
+        config.salesAssistLiveCues
+            .filter { $0.kind == "competitor" }
+            .contains { customCueMatches($0, text: text) }
     }
 
     private func customCueScore(_ cue: SalesAssistLiveCue, text: String) -> Int {

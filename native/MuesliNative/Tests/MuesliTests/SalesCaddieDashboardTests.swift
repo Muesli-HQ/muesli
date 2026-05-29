@@ -118,6 +118,23 @@ struct SalesCaddieDashboardTests {
         #expect(alerts.contains { $0.kind == "objection" || $0.kind == "competitor" })
     }
 
+    @Test("competitor battlecards can trigger from rep-side mentions")
+    func competitorBattlecardsTriggerFromRepMentions() {
+        var config = AppConfig()
+        config.salesAssistEnabledKinds = SalesAssistLiveCue.supportedKinds
+        let detector = SalesAssistDetector()
+
+        let alerts = detector.detectAlerts(
+            lines: [
+                "Rep: A lot of teams compare us against Freed, so I can show where Skriber is different.",
+            ],
+            config: config
+        )
+
+        #expect(alerts.contains { $0.kind == "competitor" && $0.objection.localizedCaseInsensitiveContains("Freed") })
+        #expect(!alerts.contains { $0.kind == "objection" })
+    }
+
     @Test("live overlay ignores weak or rep-side objection language")
     func liveOverlayIgnoresWeakOrRepSideLanguage() {
         var config = AppConfig()
