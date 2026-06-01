@@ -2186,6 +2186,20 @@ final class MuesliController: NSObject {
         resummarize(meeting: meeting, using: templateSnapshot, completion: completion)
     }
 
+    /// Regenerate notes from a name-substituted transcript (the stored blob keeps
+    /// its `Speaker N`/`You` tokens). Only auto/confirmed names are substituted;
+    /// unmatched/suggested speakers stay `Speaker N`.
+    func updateNotesWithCorrectedNames(meeting: MeetingRecord, completion: @escaping (Result<Void, Error>) -> Void) {
+        let speakers = SpeakerNameResolver.speakerMap(from: meetingSpeakers(for: meeting.id))
+        let substituted = SpeakerNameSubstitution.substitute(
+            transcript: meeting.rawTranscript,
+            speakers: speakers,
+            userName: config.userName
+        )
+        let templateSnapshot = meetingTemplateSnapshot(for: meeting)
+        resummarize(meeting: meeting, using: templateSnapshot, transcriptOverride: substituted, completion: completion)
+    }
+
     func applyMeetingTemplate(id: String, to meeting: MeetingRecord, completion: @escaping (Result<Void, Error>) -> Void) {
         guard let templateSnapshot = MeetingTemplates.resolveExactSnapshot(
             id: id,
@@ -2200,6 +2214,7 @@ final class MuesliController: NSObject {
     private func resummarize(
         meeting: MeetingRecord,
         using templateSnapshot: MeetingTemplateSnapshot,
+        transcriptOverride: String? = nil,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         Task { [weak self] in
@@ -2207,7 +2222,7 @@ final class MuesliController: NSObject {
             let plan = MeetingResummarizationPolicy.plan(for: meeting)
             do {
                 let notes = try await MeetingSummaryClient.summarize(
-                    transcript: meeting.rawTranscript,
+                    transcript: transcriptOverride ?? meeting.rawTranscript,
                     meetingTitle: plan.promptTitle,
                     config: self.config,
                     template: templateSnapshot,
@@ -3840,6 +3855,57 @@ final class MuesliController: NSObject {
             fputs("[muesli-native] reject speaker failed (\(meetingID)/\(label)): \(error)\n", stderr)
         }
         syncAppState()
+    }
+
+    // MARK: - Speakers library (voice profiles)
+
+    func speakerProfiles() -> [SpeakerProfile] {
+        (try? dictationStore.speakerProfiles()) ?? []
+    }
+
+    func renameSpeakerProfile(id: String, name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        do {
+            try dictationStore.renameSpeakerProfile(id: id, name: trimmed)
+        } catch {
+            fputs("[muesli-native] rename speaker profile failed (\(id)): \(error)\n", stderr)
+        }
+        syncAppState()
+    }
+
+    func mergeSpeakerProfiles(keepID: String, removeID: String) {
+        do {
+            try dictationStore.mergeSpeakerProfiles(keepID: keepID, removeID: removeID)
+        } catch {
+            fputs("[muesli-native] merge speaker profiles failed (\(keepID)<-\(removeID)): \(error)\n", stderr)
+        }
+        syncAppState()
+    }
+
+    func deleteSpeakerProfile(id: String) {
+        do {
+            try dictationStore.deleteSpeakerProfile(id: id)
+        } catch {
+            fputs("[muesli-native] delete speaker profile failed (\(id)): \(error)\n", stderr)
+        }
+        syncAppState()
+    }
+
+    func showSpeakersManager() {
+        appState.selectedTab = .meetings
+        appState.isSpeakersManagerPresented = true
+    }
+
+    /// Whether the one-time "voiceprints are stored locally" note still needs to
+    /// be shown (on first enrollment).
+    var shouldShowVoiceProfileNote: Bool {
+        !config.hasSeenVoiceProfileNote
+    }
+
+    func markVoiceProfileNoteSeen() {
+        guard !config.hasSeenVoiceProfileNote else { return }
+        updateConfig { $0.hasSeenVoiceProfileNote = true }
     }
 
     /// Persist the per-cluster voiceprints captured at stop into `meeting_speakers`

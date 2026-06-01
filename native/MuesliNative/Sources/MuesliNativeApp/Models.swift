@@ -769,6 +769,7 @@ struct AppConfig: Codable {
     var activePostProcessorId: String = PostProcessorOption.defaultOption.id
     var postProcessorSystemPrompt: String = PostProcessorOption.defaultSystemPrompt
     var enableScreenContext: Bool = false
+    var hasSeenVoiceProfileNote: Bool = false
     var useCoreAudioTap: Bool = true
     var meetingHookEnabled: Bool = false
     var meetingHookPath: String = ""
@@ -845,6 +846,7 @@ struct AppConfig: Codable {
         case activePostProcessorId = "active_post_processor_id"
         case postProcessorSystemPrompt = "post_processor_system_prompt"
         case enableScreenContext = "enable_screen_context"
+        case hasSeenVoiceProfileNote = "has_seen_voice_profile_note"
         case useCoreAudioTap = "use_core_audio_tap"
         case meetingHookEnabled = "meeting_hook_enabled"
         case meetingHookPath = "meeting_hook_path"
@@ -951,6 +953,7 @@ struct AppConfig: Codable {
         activePostProcessorId = (try? c.decode(String.self, forKey: .activePostProcessorId)) ?? defaults.activePostProcessorId
         postProcessorSystemPrompt = (try? c.decode(String.self, forKey: .postProcessorSystemPrompt)) ?? defaults.postProcessorSystemPrompt
         enableScreenContext = (try? c.decode(Bool.self, forKey: .enableScreenContext)) ?? defaults.enableScreenContext
+        hasSeenVoiceProfileNote = (try? c.decode(Bool.self, forKey: .hasSeenVoiceProfileNote)) ?? defaults.hasSeenVoiceProfileNote
         useCoreAudioTap = (try? c.decode(Bool.self, forKey: .useCoreAudioTap)) ?? defaults.useCoreAudioTap
         meetingHookEnabled = (try? c.decode(Bool.self, forKey: .meetingHookEnabled)) ?? defaults.meetingHookEnabled
         meetingHookPath = (try? c.decode(String.self, forKey: .meetingHookPath)) ?? defaults.meetingHookPath

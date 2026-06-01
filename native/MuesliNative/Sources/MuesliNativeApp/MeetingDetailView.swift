@@ -55,8 +55,12 @@ struct MeetingDetailView: View {
     /// even though the stored transcript string is unchanged.
     @State private var speakerMap: [String: MeetingSpeaker] = [:]
     /// Set when a speaker name changes, enabling the "Update notes with corrected
-    /// names" affordance (wired in the notes-integration unit).
+    /// names" affordance.
     @State private var speakerNamesChanged = false
+    @State private var isUpdatingNotesWithNames = false
+    /// One-time "voiceprints are stored locally" disclosure, shown on first
+    /// enrollment.
+    @State private var showVoiceProfileNote = false
 
     init(
         meeting: MeetingRecord?,
@@ -151,6 +155,17 @@ struct MeetingDetailView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Are you sure you want to delete this meeting? Saved notes, transcript, and any retained recording will be removed.")
+        }
+        .alert("Voice profile saved on this device", isPresented: $showVoiceProfileNote) {
+            Button("Manage Speakers…") {
+                controller.markVoiceProfileNoteSeen()
+                controller.showSpeakersManager()
+            }
+            Button("Got it", role: .cancel) {
+                controller.markVoiceProfileNoteSeen()
+            }
+        } message: {
+            Text("Naming a speaker saves a local voiceprint so Muesli can recognize them in future meetings. Voiceprints never leave this device and can be deleted anytime in the Speakers library.")
         }
     }
 
@@ -292,6 +307,10 @@ struct MeetingDetailView: View {
         } else {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
                 contentToolbar(for: meeting)
+
+                if speakerNamesChanged, meeting.notesState != .missing {
+                    updateNotesBanner(for: meeting)
+                }
 
                 ZStack(alignment: .topLeading) {
                     MeetingNotesView(markdown: Self.notesContent(for: meeting))
@@ -1323,15 +1342,69 @@ struct MeetingDetailView: View {
     }
 
     private func renameSpeaker(meeting: MeetingRecord, label: String, to newName: String) {
+        let shouldNote = controller.shouldShowVoiceProfileNote
         controller.renameMeetingSpeaker(meetingID: meeting.id, label: label, to: newName)
         speakerMap = Self.loadSpeakerMap(controller: controller, meeting: meeting)
         speakerNamesChanged = true
+        // Show the one-time disclosure only when a profile was actually enrolled.
+        if shouldNote, speakerMap[label]?.profileID != nil {
+            showVoiceProfileNote = true
+        }
     }
 
     private func confirmSpeaker(meeting: MeetingRecord, label: String) {
+        let shouldNote = controller.shouldShowVoiceProfileNote
         controller.confirmSuggestedSpeaker(meetingID: meeting.id, label: label)
         speakerMap = Self.loadSpeakerMap(controller: controller, meeting: meeting)
         speakerNamesChanged = true
+        if shouldNote, speakerMap[label]?.profileID != nil {
+            showVoiceProfileNote = true
+        }
+    }
+
+    @ViewBuilder
+    private func updateNotesBanner(for meeting: MeetingRecord) -> some View {
+        HStack(spacing: MuesliTheme.spacing8) {
+            Image(systemName: "person.text.rectangle")
+                .font(.system(size: 12))
+                .foregroundStyle(MuesliTheme.accent)
+            Text("Speaker names changed. Update the notes to use the corrected names?")
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textSecondary)
+            Spacer()
+            Button {
+                updateNotesWithCorrectedNames(meeting: meeting)
+            } label: {
+                HStack(spacing: 6) {
+                    if isUpdatingNotesWithNames {
+                        ProgressView().controlSize(.small)
+                    }
+                    Text(isUpdatingNotesWithNames ? "Updating…" : "Update notes")
+                        .font(.system(size: 12, weight: .medium))
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(isUpdatingNotesWithNames)
+            .foregroundStyle(MuesliTheme.accent)
+        }
+        .padding(.horizontal, MuesliTheme.spacing12)
+        .padding(.vertical, 8)
+        .background(MuesliTheme.accent.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        .padding(.horizontal, 40)
+    }
+
+    private func updateNotesWithCorrectedNames(meeting: MeetingRecord) {
+        guard !isUpdatingNotesWithNames else { return }
+        isUpdatingNotesWithNames = true
+        controller.updateNotesWithCorrectedNames(meeting: meeting) { result in
+            isUpdatingNotesWithNames = false
+            if case .success = result {
+                speakerNamesChanged = false
+            } else if case .failure = result {
+                summaryErrorMessage = "The notes could not be updated with the corrected names."
+            }
+        }
     }
 
     private func rejectSpeaker(meeting: MeetingRecord, label: String) {

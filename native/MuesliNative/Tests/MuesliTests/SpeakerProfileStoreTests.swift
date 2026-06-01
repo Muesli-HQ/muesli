@@ -202,6 +202,21 @@ struct SpeakerProfileStoreTests {
         #expect(row.displayName == "Robert") // aligned to kept profile's name
     }
 
+    @Test("hasSeenVoiceProfileNote round-trips; missing key decodes false")
+    func voiceProfileNoteFlag() throws {
+        var config = AppConfig()
+        #expect(config.hasSeenVoiceProfileNote == false) // default
+        config.hasSeenVoiceProfileNote = true
+
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+        #expect(decoded.hasSeenVoiceProfileNote == true)
+
+        // A config JSON missing the key decodes to false (note shows once).
+        let legacy = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+        #expect(legacy.hasSeenVoiceProfileNote == false)
+    }
+
     // Covers R9.
     @Test("deleting a profile removes it AND scrubs linked voiceprint copies")
     func deleteScrubsVoiceprint() throws {
