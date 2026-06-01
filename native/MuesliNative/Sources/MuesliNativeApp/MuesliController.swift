@@ -3811,6 +3811,37 @@ final class MuesliController: NSObject {
         (try? dictationStore.meetingSpeakers(for: meetingID)) ?? []
     }
 
+    /// Name or correct a speaker in a meeting transcript (creates/refines a
+    /// voice profile when a voiceprint is present).
+    func renameMeetingSpeaker(meetingID: Int64, label: String, to newName: String) {
+        do {
+            try SpeakerNamingService(store: dictationStore).rename(meetingID: meetingID, label: label, to: newName)
+        } catch {
+            fputs("[muesli-native] rename speaker failed (\(meetingID)/\(label)): \(error)\n", stderr)
+        }
+        syncAppState()
+    }
+
+    /// Confirm a borderline recognition suggestion.
+    func confirmSuggestedSpeaker(meetingID: Int64, label: String) {
+        do {
+            try SpeakerNamingService(store: dictationStore).confirm(meetingID: meetingID, label: label)
+        } catch {
+            fputs("[muesli-native] confirm speaker failed (\(meetingID)/\(label)): \(error)\n", stderr)
+        }
+        syncAppState()
+    }
+
+    /// Reject a borderline recognition suggestion (returns to `Speaker N`).
+    func rejectSuggestedSpeaker(meetingID: Int64, label: String) {
+        do {
+            try SpeakerNamingService(store: dictationStore).reject(meetingID: meetingID, label: label)
+        } catch {
+            fputs("[muesli-native] reject speaker failed (\(meetingID)/\(label)): \(error)\n", stderr)
+        }
+        syncAppState()
+    }
+
     /// Persist the per-cluster voiceprints captured at stop into `meeting_speakers`
     /// (replacing any prior rows so re-persist is idempotent), then run recognition
     /// against the saved profile library. A failure here must never block meeting
