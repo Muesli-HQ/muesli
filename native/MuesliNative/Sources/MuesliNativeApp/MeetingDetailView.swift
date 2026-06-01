@@ -50,6 +50,10 @@ struct MeetingDetailView: View {
     @State private var showFolderPopover = false
     @State private var showNewFolderPrompt = false
     @State private var newFolderName = ""
+    /// Label → per-meeting speaker row, driving the render-time name overlay.
+    /// Refreshed on meeting change and after renames so the transcript re-renders
+    /// even though the stored transcript string is unchanged.
+    @State private var speakerMap: [String: MeetingSpeaker] = [:]
 
     init(
         meeting: MeetingRecord?,
@@ -71,6 +75,7 @@ struct MeetingDetailView: View {
         _loadedMeetingID = State(initialValue: meeting?.id)
         _pendingTemplateID = State(initialValue: initialTemplateID)
         _documentMode = State(initialValue: meeting.map(Self.defaultDocumentMode(for:)) ?? .notes)
+        _speakerMap = State(initialValue: Self.loadSpeakerMap(controller: controller, meeting: meeting))
     }
 
     var body: some View {
@@ -291,7 +296,11 @@ struct MeetingDetailView: View {
                         .allowsHitTesting(documentMode == .notes)
                         .accessibilityHidden(documentMode != .notes)
 
-                    MeetingTranscriptView(transcript: meeting.rawTranscript)
+                    MeetingTranscriptView(
+                        transcript: meeting.rawTranscript,
+                        speakerMap: speakerMap,
+                        userName: appState.config.userName
+                    )
                         .opacity(documentMode == .transcript ? 1 : 0)
                         .allowsHitTesting(documentMode == .transcript)
                         .accessibilityHidden(documentMode != .transcript)
@@ -1291,6 +1300,7 @@ struct MeetingDetailView: View {
         }
         pendingTemplateID = meeting.map { controller.meetingTemplateSnapshot(for: $0).id } ?? controller.defaultMeetingTemplate().id
         if meetingChanged {
+            speakerMap = Self.loadSpeakerMap(controller: controller, meeting: meeting)
             documentMode = meeting.map(Self.defaultDocumentMode(for:)) ?? .notes
             isEditingNotes = false
             isEditingTranscript = false
@@ -1298,6 +1308,11 @@ struct MeetingDetailView: View {
             showNewFolderPrompt = false
             newFolderName = ""
         }
+    }
+
+    static func loadSpeakerMap(controller: MuesliController, meeting: MeetingRecord?) -> [String: MeetingSpeaker] {
+        guard let meeting else { return [:] }
+        return SpeakerNameResolver.speakerMap(from: controller.meetingSpeakers(for: meeting.id))
     }
 
     private func syncManualNotesState(with meeting: MeetingRecord?) {
@@ -1563,10 +1578,14 @@ struct TranscriptChatMessage: Identifiable, Equatable {
 
 private struct MeetingTranscriptView: View {
     let transcript: String
+    let speakerMap: [String: MeetingSpeaker]
+    let userName: String
     @State private var messages: [TranscriptChatMessage]
 
-    init(transcript: String) {
+    init(transcript: String, speakerMap: [String: MeetingSpeaker], userName: String) {
         self.transcript = transcript
+        self.speakerMap = speakerMap
+        self.userName = userName
         _messages = State(initialValue: TranscriptChatMessage.messages(from: transcript))
     }
 
@@ -1581,7 +1600,15 @@ private struct MeetingTranscriptView: View {
                         .padding(MuesliTheme.spacing24)
                 } else {
                     ForEach(messages) { message in
-                        TranscriptChatBubble(message: message)
+                        // Resolve the display name at render time; the parsed
+                        // message keeps its raw `Speaker N`/`You` token so
+                        // `isUser` and re-parsing stay correct.
+                        TranscriptChatBubble(
+                            message: message,
+                            resolved: message.speaker.map {
+                                SpeakerNameResolver.resolve(label: $0, speakers: speakerMap, userName: userName)
+                            }
+                        )
                     }
                 }
             }
@@ -1598,6 +1625,7 @@ private struct MeetingTranscriptView: View {
 
 private struct TranscriptChatBubble: View {
     let message: TranscriptChatMessage
+    var resolved: ResolvedSpeakerName?
 
     var body: some View {
         HStack(alignment: .bottom, spacing: MuesliTheme.spacing8) {
@@ -1607,10 +1635,20 @@ private struct TranscriptChatBubble: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 if let metadata = metadata {
-                    Text(metadata)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(MuesliTheme.textTertiary)
-                        .textSelection(.enabled)
+                    HStack(spacing: 4) {
+                        Text(metadata)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                            .textSelection(.enabled)
+                        if resolved?.isAutoRecognized == true {
+                            // Distinguish an auto-recognized (unconfirmed) name from
+                            // a user-confirmed one so it can be verified before trust.
+                            Image(systemName: "wand.and.stars")
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(MuesliTheme.textTertiary)
+                                .help("Auto-recognized — confirm to verify")
+                        }
+                    }
                 }
                 Text(message.text)
                     .font(.system(size: 14))
@@ -1636,7 +1674,9 @@ private struct TranscriptChatBubble: View {
     }
 
     private var metadata: String? {
-        switch (message.speaker, message.timestamp) {
+        // Prefer the resolved display name; fall back to the raw parsed label.
+        let speaker = resolved?.display ?? message.speaker
+        switch (speaker, message.timestamp) {
         case let (speaker?, timestamp?):
             return "\(speaker) \(timestamp)"
         case let (speaker?, nil):

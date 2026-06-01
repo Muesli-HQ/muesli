@@ -279,7 +279,7 @@ public enum SpeakerMatchState: String, Codable, Sendable {
 /// `embedding` is the representative 256-D voiceprint used for recognition;
 /// `rawEmbeddings` retains the per-confirmation samples so the centroid can be
 /// recomputed recoverably (re-average) rather than via a lossy in-place EMA.
-public struct SpeakerProfile: Identifiable, Codable, Sendable {
+public struct SpeakerProfile: Identifiable, Codable, Sendable, Equatable {
     public let id: String
     public var name: String
     public var embedding: [Float]
@@ -309,7 +309,7 @@ public struct SpeakerProfile: Identifiable, Codable, Sendable {
 
 /// Links one diarized cluster of a single meeting to a `Speaker N` label, its
 /// representative embedding captured at stop, and its resolved name/profile.
-public struct MeetingSpeaker: Identifiable, Codable, Sendable {
+public struct MeetingSpeaker: Identifiable, Codable, Sendable, Equatable {
     public let id: Int64
     public let meetingID: Int64
     public let speakerLabel: String

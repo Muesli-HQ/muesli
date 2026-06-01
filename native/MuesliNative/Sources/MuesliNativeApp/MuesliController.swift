@@ -3804,6 +3804,13 @@ final class MuesliController: NSObject {
         return CompletedMeetingPersistenceResult(meetingID: meetingID, recordingSaveError: recordingSaveError)
     }
 
+    /// The per-meeting speaker rows (cluster → resolved name/state), label-keyed
+    /// for the render-time overlay. Returns empty on any error or for pre-feature
+    /// meetings with no rows.
+    func meetingSpeakers(for meetingID: Int64) -> [MeetingSpeaker] {
+        (try? dictationStore.meetingSpeakers(for: meetingID)) ?? []
+    }
+
     /// Persist the per-cluster voiceprints captured at stop into `meeting_speakers`
     /// (replacing any prior rows so re-persist is idempotent), then run recognition
     /// against the saved profile library. A failure here must never block meeting
