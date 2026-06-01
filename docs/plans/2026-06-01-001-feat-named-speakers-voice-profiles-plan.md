@@ -1,7 +1,7 @@
 ---
 title: "feat: Named speakers + persistent voice profiles"
 type: feat
-status: active
+status: completed
 date: 2026-06-01
 origin: docs/brainstorms/2026-06-01-named-speakers-voice-profiles-requirements.md
 ---
