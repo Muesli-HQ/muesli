@@ -19,6 +19,14 @@ struct SpeakerNamingControllerLogicTests {
         (0..<dim).map { Float($0) * 0.001 + value }
     }
 
+    /// A 256-D unit basis vector (1 at `axis`, 0 elsewhere) — distinct axes are
+    /// cosine-orthogonal (distance 1.0), the same axis is distance 0.
+    private func basis(_ axis: Int) -> [Float] {
+        var v = [Float](repeating: 0, count: dim)
+        v[axis] = 1
+        return v
+    }
+
     private func service(_ store: DictationStore, ids: [String] = []) -> SpeakerNamingService {
         var svc = SpeakerNamingService(store: store)
         if !ids.isEmpty {
@@ -162,6 +170,52 @@ struct SpeakerNamingControllerLogicTests {
         #expect(row.matchState == .confirmed)
         #expect(row.profileID == "bob-id")
         #expect(try store.speakerProfile(id: "bob-id")?.observationCount == 2)
+    }
+
+    @Test("same name + close voice refines one profile")
+    func sameNameCloseVoiceRefines() throws {
+        let store = try makeStore()
+        let m1 = try makeMeetingWithSpeaker(store, label: "Speaker 1", embedding: basis(0))
+        let m2 = try makeMeetingWithSpeaker(store, label: "Speaker 1", embedding: basis(0))
+
+        try service(store, ids: ["bob-1", "bob-2"]).rename(meetingID: m1.meetingID, label: "Speaker 1", to: "Bob")
+        try service(store, ids: ["bob-2"]).rename(meetingID: m2.meetingID, label: "Speaker 1", to: "Bob")
+
+        let profiles = try store.speakerProfiles()
+        #expect(profiles.count == 1)                 // same voice → one Bob
+        #expect(profiles.first?.observationCount == 2)
+    }
+
+    @Test("same name + far voice creates a separate profile (no centroid poisoning)")
+    func sameNameFarVoiceSplits() throws {
+        let store = try makeStore()
+        let m1 = try makeMeetingWithSpeaker(store, label: "Speaker 1", embedding: basis(0))
+        let m2 = try makeMeetingWithSpeaker(store, label: "Speaker 1", embedding: basis(1)) // orthogonal → distance 1.0
+
+        try service(store, ids: ["bob-1"]).rename(meetingID: m1.meetingID, label: "Speaker 1", to: "Bob")
+        try service(store, ids: ["bob-2"]).rename(meetingID: m2.meetingID, label: "Speaker 1", to: "Bob")
+
+        let profiles = try store.speakerProfiles()
+        #expect(profiles.count == 2)                 // two different people sharing a name
+        #expect(profiles.allSatisfy { $0.name == "Bob" })
+        #expect(profiles.allSatisfy { $0.observationCount == 1 })
+    }
+
+    @Test("confirming a row with no candidate name is a no-op")
+    func confirmNoNameNoOp() throws {
+        let store = try makeStore()
+        let (meetingID, _) = try makeMeetingWithSpeaker(store, embedding: vec(0.2), state: .unmatched)
+        try service(store).confirm(meetingID: meetingID, label: "Speaker 1")
+        let row = try #require(try store.meetingSpeakers(for: meetingID).first)
+        #expect(row.matchState == .unmatched)
+        #expect(try store.speakerProfiles().isEmpty)
+    }
+
+    @Test("refiner with cap=0 keeps all raw embeddings unbounded")
+    func refinerUnbounded() {
+        let existing = (0..<30).map { vec(Float($0) * 0.01) }
+        let r = SpeakerProfileRefiner.refine(existingRaw: existing, adding: vec(9.0), cap: 0)
+        #expect(r.rawEmbeddings.count == 31) // no trimming
     }
 
     @Test("rejecting a suggestion returns to unmatched without touching profiles")

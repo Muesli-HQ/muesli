@@ -48,4 +48,17 @@ enum SpeakerNameResolver {
     static func speakerMap(from speakers: [MeetingSpeaker]) -> [String: MeetingSpeaker] {
         Dictionary(speakers.map { ($0.speakerLabel, $0) }, uniquingKeysWith: { first, _ in first })
     }
+
+    /// Whether a label is a diarized cluster token (`Speaker N`). Single source of
+    /// truth shared by the transcript parser, the rename affordance, and the notes
+    /// substitution — a cheap allocation-light check (no per-render regex compile).
+    static func isSpeakerClusterLabel(_ label: String) -> Bool {
+        guard label.count <= 32 else { return false }
+        let parts = label.split(separator: " ", omittingEmptySubsequences: true)
+        guard parts.count == 2,
+              parts[0].caseInsensitiveCompare("Speaker") == .orderedSame,
+              !parts[1].isEmpty,
+              parts[1].allSatisfy(\.isNumber) else { return false }
+        return true
+    }
 }

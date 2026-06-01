@@ -43,6 +43,8 @@ enum SpeakerRecognizer {
         }
 
         var matches: [Match] = clusters.map { cluster in
+            // Empty (e.g. scrubbed `[]`) or wrong-dimension embeddings yield a
+            // non-finite cosineDistance below and fall through to unmatched.
             guard !profiles.isEmpty else {
                 return Match(profileID: nil, name: nil, distance: .infinity, tier: .unmatched)
             }

@@ -2426,6 +2426,9 @@ final class MuesliController: NSObject {
     func updateMeetingTranscript(id: Int64, transcript: String) {
         do {
             try dictationStore.updateMeetingTranscript(id: id, rawTranscript: transcript)
+            // A manual edit can change/renumber `Speaker N` labels, so any captured
+            // cluster→name mapping is no longer guaranteed to align with the blob.
+            try? dictationStore.deleteMeetingSpeakers(for: id)
         } catch {
             fputs("[muesli-native] failed to update meeting transcript \(id): \(error)\n", stderr)
         }
@@ -3876,6 +3879,27 @@ final class MuesliController: NSObject {
 
     func mergeSpeakerProfiles(keepID: String, removeID: String) {
         do {
+            // Fold the removed profile's voiceprint samples into the kept profile
+            // and recompute its centroid before deleting, so merging two profiles
+            // of the same person improves (not degrades) future recognition.
+            let profiles = try dictationStore.speakerProfiles()
+            if let keep = profiles.first(where: { $0.id == keepID }),
+               let remove = profiles.first(where: { $0.id == removeID }) {
+                var combined = keep.rawEmbeddings + remove.rawEmbeddings
+                let cap = SpeakerProfileRefiner.maxRawEmbeddings
+                if cap > 0, combined.count > cap {
+                    combined.removeFirst(combined.count - cap)
+                }
+                if let centroid = SpeakerClusterAggregator.representativeEmbedding(from: combined) {
+                    try dictationStore.upsertSpeakerProfile(
+                        id: keepID,
+                        name: keep.name,
+                        embedding: centroid,
+                        rawEmbeddings: combined,
+                        observationCount: keep.observationCount + remove.observationCount
+                    )
+                }
+            }
             try dictationStore.mergeSpeakerProfiles(keepID: keepID, removeID: removeID)
         } catch {
             fputs("[muesli-native] merge speaker profiles failed (\(keepID)<-\(removeID)): \(error)\n", stderr)
@@ -3914,14 +3938,11 @@ final class MuesliController: NSObject {
     /// persistence, so errors are logged and swallowed.
     func persistMeetingSpeakers(_ clusters: [SpeakerCluster], meetingID: Int64) {
         do {
-            try dictationStore.deleteMeetingSpeakers(for: meetingID)
-            for cluster in clusters {
-                try dictationStore.insertMeetingSpeaker(
-                    meetingID: meetingID,
-                    speakerLabel: cluster.label,
-                    embedding: cluster.embedding
-                )
-            }
+            // Atomic delete+insert so a mid-insert failure can't leave a partial set.
+            try dictationStore.replaceMeetingSpeakers(
+                meetingID: meetingID,
+                speakers: clusters.map { (label: $0.label, embedding: $0.embedding) }
+            )
         } catch {
             fputs("[muesli-native] failed to persist meeting speakers for \(meetingID): \(error)\n", stderr)
             return

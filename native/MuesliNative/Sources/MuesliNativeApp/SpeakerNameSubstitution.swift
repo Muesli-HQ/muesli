@@ -46,6 +46,6 @@ enum SpeakerNameSubstitution {
     private static func isSpeakerLabel(_ label: String) -> Bool {
         if label.localizedCaseInsensitiveCompare("You") == .orderedSame { return true }
         if label.localizedCaseInsensitiveCompare("Others") == .orderedSame { return true }
-        return label.range(of: #"^Speaker\s+\d+$"#, options: [.regularExpression, .caseInsensitive]) != nil
+        return SpeakerNameResolver.isSpeakerClusterLabel(label)
     }
 }

@@ -1,3 +1,4 @@
+import FluidAudio
 import Foundation
 import MuesliCore
 
@@ -38,6 +39,11 @@ struct SpeakerNamingService {
     let store: DictationStore
     var maxRawEmbeddings: Int = SpeakerProfileRefiner.maxRawEmbeddings
     private let dimension = SpeakerClusterAggregator.embeddingDimension
+
+    /// When a manual rename matches an existing profile *by name* but the voice is
+    /// this far apart, treat it as a different person sharing a name and create a
+    /// new profile rather than poisoning the existing centroid.
+    var sameNameMaxDistance: Float = SpeakerRecognizer.defaultSuggestThreshold
 
     /// Generates new profile IDs. Injectable for deterministic tests.
     var makeID: () -> String = { UUID().uuidString }
@@ -117,38 +123,44 @@ struct SpeakerNamingService {
     }
 
     /// Find the profile to attach to and refine it, or create a new one.
-    /// `preferredID` (confirm path) refines that exact profile; otherwise we
-    /// match by name so renames don't pollute a mismatched profile.
+    /// `preferredID` (confirm path) refines that exact profile; otherwise we match
+    /// by name — but only when the voice is close enough, so two different people
+    /// who happen to share a name don't get folded into one poisoned centroid.
     private func resolveProfile(preferredID: String?, name: String, embedding: [Float]) throws -> String {
         let profiles = try store.speakerProfiles()
-        let target = preferredID.flatMap { id in profiles.first { $0.id == id } }
-            ?? profiles.first { $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame }
 
-        if let target {
-            let refinement = SpeakerProfileRefiner.refine(
-                existingRaw: target.rawEmbeddings,
-                adding: embedding,
-                cap: maxRawEmbeddings
-            )
-            try store.upsertSpeakerProfile(
-                id: target.id,
-                name: name,
-                embedding: refinement.embedding,
-                rawEmbeddings: refinement.rawEmbeddings,
-                observationCount: refinement.observationCount
-            )
-            return target.id
+        if let preferredID, let target = profiles.first(where: { $0.id == preferredID }) {
+            return try refine(target, name: name, embedding: embedding)
         }
 
-        let newID = makeID()
-        let refinement = SpeakerProfileRefiner.refine(existingRaw: [], adding: embedding, cap: maxRawEmbeddings)
+        if let target = profiles.first(where: { $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame }) {
+            // Attach when the matched profile has no usable voiceprint yet
+            // (non-finite distance) or the voice is close; otherwise split.
+            let distance = SpeakerUtilities.cosineDistance(embedding, target.embedding)
+            if !distance.isFinite || distance <= sameNameMaxDistance {
+                return try refine(target, name: name, embedding: embedding)
+            }
+        }
+
+        return try refine(nil, name: name, embedding: embedding)
+    }
+
+    /// Refine an existing profile (or create a new one when `target` is nil) by
+    /// re-averaging its retained raw embeddings with the new sample.
+    private func refine(_ target: SpeakerProfile?, name: String, embedding: [Float]) throws -> String {
+        let id = target?.id ?? makeID()
+        let refinement = SpeakerProfileRefiner.refine(
+            existingRaw: target?.rawEmbeddings ?? [],
+            adding: embedding,
+            cap: maxRawEmbeddings
+        )
         try store.upsertSpeakerProfile(
-            id: newID,
+            id: id,
             name: name,
             embedding: refinement.embedding,
             rawEmbeddings: refinement.rawEmbeddings,
             observationCount: refinement.observationCount
         )
-        return newID
+        return id
     }
 }

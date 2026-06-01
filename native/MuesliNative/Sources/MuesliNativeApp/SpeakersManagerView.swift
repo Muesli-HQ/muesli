@@ -14,8 +14,13 @@ struct SpeakersManagerView: View {
     @State private var profileToDelete: SpeakerProfile?
     @State private var selectedForMerge: Set<String> = []
     @State private var showMergeConfirmation = false
+    /// Loaded once on appear and refreshed after each mutation — never read from
+    /// SQLite inside `body`.
+    @State private var profiles: [SpeakerProfile] = []
 
-    private var profiles: [SpeakerProfile] { controller.speakerProfiles() }
+    private func reload() {
+        profiles = controller.speakerProfiles()
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing20) {
@@ -39,6 +44,7 @@ struct SpeakersManagerView: View {
         .padding(MuesliTheme.spacing24)
         .frame(minWidth: 720, minHeight: 480)
         .background(MuesliTheme.backgroundBase)
+        .onAppear { reload() }
         .alert(
             "Delete \"\(profileToDelete?.name ?? "")\"?",
             isPresented: Binding(
@@ -51,6 +57,7 @@ struct SpeakersManagerView: View {
                 if let profile = profileToDelete {
                     controller.deleteSpeakerProfile(id: profile.id)
                     selectedForMerge.remove(profile.id)
+                    reload()
                 }
                 profileToDelete = nil
             }
@@ -193,6 +200,7 @@ struct SpeakersManagerView: View {
             controller.mergeSpeakerProfiles(keepID: keepID, removeID: removeID)
         }
         selectedForMerge.removeAll()
+        reload()
     }
 
     private func beginRename(_ profile: SpeakerProfile) {
@@ -205,6 +213,7 @@ struct SpeakersManagerView: View {
         editingProfileID = nil
         guard !trimmed.isEmpty else { return }
         controller.renameSpeakerProfile(id: profile.id, name: trimmed)
+        reload()
     }
 
     @ViewBuilder

@@ -97,6 +97,15 @@ struct SpeakerRecognizerTests {
         #expect(results.allSatisfy { $0.state == .auto })
     }
 
+    @Test("a wrong-dimension or empty cluster embedding stays unmatched")
+    func malformedEmbeddingUnmatched() {
+        let bob = profile("bob-1", "Bob", embedding: Array(repeating: Float(0), count: 256).enumerated().map { $0.offset == 0 ? 1 : 0 })
+        let empty = SpeakerRecognizer.Cluster(label: "Speaker 1", embedding: [])
+        let wrongSize = SpeakerRecognizer.Cluster(label: "Speaker 2", embedding: [1, 0, 0])
+        let results = SpeakerRecognizer.recognize(clusters: [empty, wrongSize], profiles: [bob])
+        #expect(results.allSatisfy { $0.state == .unmatched })
+    }
+
     @Test("results preserve input cluster order")
     func preservesOrder() {
         let bob = profile("bob-1", "Bob")

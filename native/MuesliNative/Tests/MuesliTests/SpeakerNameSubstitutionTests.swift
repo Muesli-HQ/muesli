@@ -80,6 +80,14 @@ struct SpeakerNameSubstitutionTests {
         #expect(out == transcript)
     }
 
+    @Test("CRLF line endings are normalized and substituted")
+    func crlfNormalized() {
+        let transcript = "[10:00:00] Speaker 1: hi\r\n[10:00:05] You: yo"
+        let speakers = map([speaker("Speaker 1", name: "Bob", state: .confirmed)])
+        let out = SpeakerNameSubstitution.substitute(transcript: transcript, speakers: speakers, userName: "Sam")
+        #expect(out == "[10:00:00] Bob: hi\n[10:00:05] Sam: yo")
+    }
+
     @Test("labels without a timestamp prefix are also substituted")
     func noTimestampPrefix() {
         let transcript = "Speaker 1: hello"

@@ -1666,10 +1666,7 @@ struct TranscriptChatMessage: Identifiable, Equatable {
         guard !label.isEmpty, label.count <= 32 else { return false }
         if label.localizedCaseInsensitiveCompare("You") == .orderedSame { return true }
         if label.localizedCaseInsensitiveCompare("Others") == .orderedSame { return true }
-        if label.range(of: #"^Speaker\s+\d+$"#, options: [.regularExpression, .caseInsensitive]) != nil {
-            return true
-        }
-        return false
+        return SpeakerNameResolver.isSpeakerClusterLabel(label)
     }
 }
 
@@ -1753,7 +1750,7 @@ private struct TranscriptChatBubble: View {
     /// are not. The stored token stays `Speaker N` even after naming.
     private var renameableLabel: String? {
         guard let speaker = message.speaker,
-              speaker.range(of: #"^Speaker\s+\d+$"#, options: [.regularExpression, .caseInsensitive]) != nil
+              SpeakerNameResolver.isSpeakerClusterLabel(speaker)
         else { return nil }
         return speaker
     }
@@ -1854,11 +1851,13 @@ private struct TranscriptChatBubble: View {
                 }
                 .buttonStyle(.plain)
                 .help("Confirm \(candidate)")
+                .accessibilityLabel("Confirm \(candidate)")
                 Button { onReject(label) } label: {
                     Image(systemName: "xmark.circle")
                 }
                 .buttonStyle(.plain)
                 .help("Not \(candidate)")
+                .accessibilityLabel("Not \(candidate)")
             }
             .padding(.horizontal, 6)
             .padding(.vertical, 2)

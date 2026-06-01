@@ -167,7 +167,8 @@ public final class DictationStore {
         CREATE INDEX IF NOT EXISTS idx_meeting_speakers_profile ON meeting_speakers(profile_id);
         """
         try exec(speakersSQL, db: db)
-
+        // Hardening also runs on every openDatabase() (below) so it survives
+        // SQLite recreating the -wal/-shm sidecars; this call covers fresh DBs.
         hardenDatabaseFiles()
     }
 
@@ -1218,19 +1219,42 @@ public final class DictationStore {
         return makeSpeakerProfile(statement)
     }
 
+    /// Rename a profile and propagate the new name to the resolved `display_name`
+    /// snapshot on every linked per-meeting row, so past meetings' overlays don't
+    /// go stale. Done in one transaction.
     public func renameSpeakerProfile(id: String, name: String) throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
-        let sql = "UPDATE speaker_profiles SET name = ?, updated_at = datetime('now') WHERE id = ?"
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+        guard sqlite3_exec(db, "BEGIN TRANSACTION", nil, nil, nil) == SQLITE_OK else {
             throw lastError(db)
         }
-        defer { sqlite3_finalize(statement) }
-        sqlite3_bind_text(statement, 1, (name as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(statement, 2, (id as NSString).utf8String, -1, nil)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
-            throw lastError(db)
+        do {
+            var s1: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "UPDATE speaker_profiles SET name = ?, updated_at = datetime('now') WHERE id = ?", -1, &s1, nil) == SQLITE_OK else {
+                throw lastError(db)
+            }
+            defer { sqlite3_finalize(s1) }
+            sqlite3_bind_text(s1, 1, (name as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(s1, 2, (id as NSString).utf8String, -1, nil)
+            guard sqlite3_step(s1) == SQLITE_DONE else { throw lastError(db) }
+
+            // Refresh the display_name snapshot only on rows that already show a
+            // name (auto/confirmed); unmatched/suggested rows keep their label.
+            var s2: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "UPDATE meeting_speakers SET display_name = ? WHERE profile_id = ? AND display_name IS NOT NULL", -1, &s2, nil) == SQLITE_OK else {
+                throw lastError(db)
+            }
+            defer { sqlite3_finalize(s2) }
+            sqlite3_bind_text(s2, 1, (name as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(s2, 2, (id as NSString).utf8String, -1, nil)
+            guard sqlite3_step(s2) == SQLITE_DONE else { throw lastError(db) }
+
+            guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
+                throw lastError(db)
+            }
+        } catch {
+            sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
         }
     }
 
@@ -1426,6 +1450,50 @@ public final class DictationStore {
         }
     }
 
+    /// Atomically replace a meeting's captured cluster rows: delete existing rows
+    /// and insert the new set in one transaction, so a mid-insert failure can't
+    /// leave a partial/empty speaker set. New rows start `unmatched` (recognition
+    /// fills them in afterward). Idempotent on re-persist.
+    public func replaceMeetingSpeakers(
+        meetingID: Int64,
+        speakers: [(label: String, embedding: [Float])]
+    ) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        guard sqlite3_exec(db, "BEGIN TRANSACTION", nil, nil, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        do {
+            var del: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "DELETE FROM meeting_speakers WHERE meeting_id = ?", -1, &del, nil) == SQLITE_OK else {
+                throw lastError(db)
+            }
+            sqlite3_bind_int64(del, 1, meetingID)
+            guard sqlite3_step(del) == SQLITE_DONE else { sqlite3_finalize(del); throw lastError(db) }
+            sqlite3_finalize(del)
+
+            for speaker in speakers {
+                var ins: OpaquePointer?
+                guard sqlite3_prepare_v2(db, "INSERT INTO meeting_speakers (meeting_id, speaker_label, embedding, match_state) VALUES (?, ?, ?, 'unmatched')", -1, &ins, nil) == SQLITE_OK else {
+                    throw lastError(db)
+                }
+                sqlite3_bind_int64(ins, 1, meetingID)
+                sqlite3_bind_text(ins, 2, (speaker.label as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(ins, 3, (Self.encodeEmbedding(speaker.embedding) as NSString).utf8String, -1, nil)
+                let stepped = sqlite3_step(ins)
+                sqlite3_finalize(ins)
+                guard stepped == SQLITE_DONE else { throw lastError(db) }
+            }
+
+            guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
+                throw lastError(db)
+            }
+        } catch {
+            sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
+    }
+
     private func makeSpeakerProfile(_ statement: OpaquePointer?) -> SpeakerProfile {
         SpeakerProfile(
             id: stringColumn(statement, index: 0),
@@ -1562,6 +1630,11 @@ public final class DictationStore {
         if sqlite3_exec(db, "PRAGMA journal_mode=WAL", nil, nil, nil) != SQLITE_OK {
             throw lastError(db)
         }
+        // Enabling WAL (re)creates the -wal/-shm sidecars, which SQLite deletes on
+        // checkpoint and recreates with default perms. Re-harden on every open so
+        // biometric embeddings written to the WAL never land in an unprotected,
+        // backup-included sidecar.
+        hardenDatabaseFiles()
         return db
     }
 

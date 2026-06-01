@@ -202,6 +202,67 @@ struct SpeakerProfileStoreTests {
         #expect(row.displayName == "Robert") // aligned to kept profile's name
     }
 
+    @Test("upsert + fetch round-trips rawEmbeddings")
+    func rawEmbeddingsRoundTrip() throws {
+        let store = try makeStore()
+        let raw: [[Float]] = [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
+        try store.upsertSpeakerProfile(id: "p1", name: "Bob", embedding: [0.1, 0.2, 0.3], rawEmbeddings: raw, observationCount: 2)
+        let fetched = try #require(try store.speakerProfile(id: "p1"))
+        #expect(fetched.rawEmbeddings.count == 2)
+        expectClose(fetched.rawEmbeddings[0], raw[0])
+        expectClose(fetched.rawEmbeddings[1], raw[1])
+    }
+
+    @Test("replaceMeetingSpeakers atomically replaces the row set and is idempotent")
+    func replaceMeetingSpeakers() throws {
+        let store = try makeStore()
+        let meetingID = try makeMeeting(store)
+        try store.replaceMeetingSpeakers(meetingID: meetingID, speakers: [
+            (label: "Speaker 1", embedding: [0.1]),
+            (label: "Speaker 2", embedding: [0.2]),
+        ])
+        #expect(try store.meetingSpeakers(for: meetingID).count == 2)
+
+        // Re-run with a smaller set: old rows are fully replaced, not appended.
+        try store.replaceMeetingSpeakers(meetingID: meetingID, speakers: [
+            (label: "Speaker 1", embedding: [0.9]),
+        ])
+        let rows = try store.meetingSpeakers(for: meetingID)
+        #expect(rows.count == 1)
+        #expect(rows.first?.speakerLabel == "Speaker 1")
+        #expect(rows.first?.matchState == .unmatched)
+        expectClose(rows.first!.embedding, [0.9])
+
+        // Empty set clears all rows.
+        try store.replaceMeetingSpeakers(meetingID: meetingID, speakers: [])
+        #expect(try store.meetingSpeakers(for: meetingID).isEmpty)
+    }
+
+    @Test("renaming a profile propagates the new name to linked named rows only")
+    func renamePropagatesToMeetingRows() throws {
+        let store = try makeStore()
+        let meetingID = try makeMeeting(store)
+        try store.upsertSpeakerProfile(id: "p1", name: "Bob", embedding: [0.1])
+        // A confirmed (named) row and an unmatched row both linkable to the profile.
+        let namedID = try store.insertMeetingSpeaker(
+            meetingID: meetingID, speakerLabel: "Speaker 1", embedding: [0.1],
+            profileID: "p1", displayName: "Bob", matchState: .confirmed
+        )
+        let unmatchedID = try store.insertMeetingSpeaker(
+            meetingID: meetingID, speakerLabel: "Speaker 2", embedding: [0.2],
+            profileID: "p1", displayName: nil, matchState: .unmatched
+        )
+
+        try store.renameSpeakerProfile(id: "p1", name: "Robert")
+
+        let rows = try store.meetingSpeakers(for: meetingID)
+        let named = rows.first { $0.id == namedID }
+        let unmatched = rows.first { $0.id == unmatchedID }
+        #expect(try store.speakerProfile(id: "p1")?.name == "Robert")
+        #expect(named?.displayName == "Robert")     // named snapshot refreshed
+        #expect(unmatched?.displayName == nil)       // unnamed row untouched
+    }
+
     @Test("hasSeenVoiceProfileNote round-trips; missing key decodes false")
     func voiceProfileNoteFlag() throws {
         var config = AppConfig()

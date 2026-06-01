@@ -143,6 +143,14 @@ struct SpeakerClusterAggregatorTests {
         }
     }
 
+    @Test("l2Normalize returns a zero vector unchanged (no NaN)")
+    func l2NormalizeZeroVector() {
+        let zero = [Float](repeating: 0, count: 8)
+        let out = SpeakerClusterAggregator.l2Normalize(zero)
+        #expect(out == zero)
+        #expect(out.allSatisfy { !$0.isNaN })
+    }
+
     @Test("all wrong-sized input yields nil (no representative)")
     func allWrongSizedNil() {
         let rep = SpeakerClusterAggregator.representativeEmbedding(from: [vec(0.1, count: 5), vec(0.2, count: 7)])
