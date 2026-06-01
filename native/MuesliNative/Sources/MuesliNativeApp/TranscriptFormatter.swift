@@ -23,14 +23,7 @@ enum TranscriptFormatter {
         let taggedSystem: [TaggedSegment]
         if let diarizationSegments, !diarizationSegments.isEmpty {
             // Build speaker label map: raw ID → "Speaker 1", "Speaker 2", etc. in first-appearance order
-            var speakerLabelMap: [String: String] = [:]
-            var nextSpeakerNumber = 1
-            for seg in diarizationSegments.sorted(by: { $0.startTimeSeconds < $1.startTimeSeconds }) {
-                if speakerLabelMap[seg.speakerId] == nil {
-                    speakerLabelMap[seg.speakerId] = "Speaker \(nextSpeakerNumber)"
-                    nextSpeakerNumber += 1
-                }
-            }
+            let speakerLabelMap = speakerLabelMap(for: diarizationSegments)
 
             taggedSystem = systemSegments.map { segment in
                 let speaker = findSpeaker(for: segment, in: diarizationSegments, labelMap: speakerLabelMap)
@@ -55,6 +48,23 @@ enum TranscriptFormatter {
             let text = taggedSegment.segment.text.trimmingCharacters(in: .whitespaces)
             return "[\(formatter.string(from: timestamp))] \(taggedSegment.speaker): \(text)"
         }.joined(separator: "\n")
+    }
+
+    /// Maps each diarization cluster's raw speaker ID to its `Speaker N` label
+    /// in first-appearance (earliest start time) order. This is the single source
+    /// of truth for cluster→label numbering, shared by `merge` and by
+    /// `SpeakerClusterAggregator` so captured embeddings line up with the labels
+    /// that actually land in the transcript.
+    static func speakerLabelMap(for diarizationSegments: [TimedSpeakerSegment]) -> [String: String] {
+        var speakerLabelMap: [String: String] = [:]
+        var nextSpeakerNumber = 1
+        for seg in diarizationSegments.sorted(by: { $0.startTimeSeconds < $1.startTimeSeconds }) {
+            if speakerLabelMap[seg.speakerId] == nil {
+                speakerLabelMap[seg.speakerId] = "Speaker \(nextSpeakerNumber)"
+                nextSpeakerNumber += 1
+            }
+        }
+        return speakerLabelMap
     }
 
     /// Merge consecutive segments from the same speaker into single entries,

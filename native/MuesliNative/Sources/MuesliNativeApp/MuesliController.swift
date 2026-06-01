@@ -2315,6 +2315,9 @@ final class MuesliController: NSObject {
                         selectedTemplateKind: templateSnapshot.kind,
                         selectedTemplatePrompt: templateSnapshot.prompt
                     )
+                    // This path rewrites the blob without diarization labels, so any
+                    // prior cluster→name mapping is now stale — drop it.
+                    try? self.dictationStore.deleteMeetingSpeakers(for: meeting.id)
                 } catch {
                     throw MeetingRetranscriptionError.failedToSave(underlying: error)
                 }
@@ -3150,9 +3153,10 @@ final class MuesliController: NSObject {
         selectedTemplateID: String?,
         selectedTemplateName: String?,
         selectedTemplateKind: MeetingTemplateKind?,
-        selectedTemplatePrompt: String?
+        selectedTemplatePrompt: String?,
+        speakerClusters: [SpeakerCluster] = []
     ) throws -> Int64 {
-        try dictationStore.insertMeeting(
+        let meetingID = try dictationStore.insertMeeting(
             title: title,
             calendarEventID: calendarEventID,
             startTime: startTime,
@@ -3168,6 +3172,8 @@ final class MuesliController: NSObject {
             selectedTemplatePrompt: selectedTemplatePrompt,
             source: .audioImport
         )
+        persistMeetingSpeakers(speakerClusters, meetingID: meetingID)
+        return meetingID
     }
 
     func cancelMeetingPreparation() {
@@ -3794,7 +3800,35 @@ final class MuesliController: NSObject {
                 selectedTemplatePrompt: result.templateSnapshot.prompt
             )
         }
+        persistMeetingSpeakers(result.speakerClusters, meetingID: meetingID)
         return CompletedMeetingPersistenceResult(meetingID: meetingID, recordingSaveError: recordingSaveError)
+    }
+
+    /// Persist the per-cluster voiceprints captured at stop into `meeting_speakers`
+    /// (replacing any prior rows so re-persist is idempotent), then run recognition
+    /// against the saved profile library. A failure here must never block meeting
+    /// persistence, so errors are logged and swallowed.
+    func persistMeetingSpeakers(_ clusters: [SpeakerCluster], meetingID: Int64) {
+        do {
+            try dictationStore.deleteMeetingSpeakers(for: meetingID)
+            for cluster in clusters {
+                try dictationStore.insertMeetingSpeaker(
+                    meetingID: meetingID,
+                    speakerLabel: cluster.label,
+                    embedding: cluster.embedding
+                )
+            }
+        } catch {
+            fputs("[muesli-native] failed to persist meeting speakers for \(meetingID): \(error)\n", stderr)
+            return
+        }
+        recognizeMeetingSpeakers(meetingID: meetingID)
+    }
+
+    /// Placeholder for U3 recognition; capture (U2) lands rows as `unmatched`.
+    /// Overridden behavior is filled in by the recognition unit.
+    func recognizeMeetingSpeakers(meetingID: Int64) {
+        // U3 wires SpeakerRecognizer here.
     }
 
     private func liveMeetingTitle(id: Int64) -> String? {
