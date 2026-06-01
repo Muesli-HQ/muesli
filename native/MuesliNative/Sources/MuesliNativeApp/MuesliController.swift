@@ -3825,10 +3825,29 @@ final class MuesliController: NSObject {
         recognizeMeetingSpeakers(meetingID: meetingID)
     }
 
-    /// Placeholder for U3 recognition; capture (U2) lands rows as `unmatched`.
-    /// Overridden behavior is filled in by the recognition unit.
+    /// Match this meeting's captured clusters against the saved profile library
+    /// and persist confidence-tiered names. Best-effort: failures (or a missing
+    /// diarizer/empty library) leave rows as `unmatched`, never crash.
     func recognizeMeetingSpeakers(meetingID: Int64) {
-        // U3 wires SpeakerRecognizer here.
+        do {
+            let speakers = try dictationStore.meetingSpeakers(for: meetingID)
+            guard !speakers.isEmpty else { return }
+            let profiles = try dictationStore.speakerProfiles()
+            guard !profiles.isEmpty else { return } // first-ever meeting: nothing to match
+            let clusters = speakers.map { SpeakerRecognizer.Cluster(label: $0.speakerLabel, embedding: $0.embedding) }
+            let results = SpeakerRecognizer.recognize(clusters: clusters, profiles: profiles)
+            for (speaker, result) in zip(speakers, results) where result.state != .unmatched {
+                try dictationStore.updateMeetingSpeaker(
+                    id: speaker.id,
+                    profileID: result.profileID,
+                    displayName: result.displayName,
+                    matchDistance: result.distance,
+                    matchState: result.state
+                )
+            }
+        } catch {
+            fputs("[muesli-native] speaker recognition failed for \(meetingID): \(error)\n", stderr)
+        }
     }
 
     private func liveMeetingTitle(id: Int64) -> String? {
