@@ -262,6 +262,84 @@ public struct MeetingFolder: Identifiable, Codable, Sendable {
     }
 }
 
+/// Confidence tier for a diarized cluster's link to a saved voice profile.
+public enum SpeakerMatchState: String, Codable, Sendable {
+    /// No profile matched (renders as the raw `Speaker N`).
+    case unmatched
+    /// Borderline match surfaced as a suggestion for the user to confirm or reject.
+    case suggested
+    /// Confident automatic match (display name shown with an "auto-recognized" hint).
+    case auto
+    /// User explicitly named/confirmed this speaker.
+    case confirmed
+}
+
+/// A persistent, cross-meeting voice profile (the Speakers library).
+///
+/// `embedding` is the representative 256-D voiceprint used for recognition;
+/// `rawEmbeddings` retains the per-confirmation samples so the centroid can be
+/// recomputed recoverably (re-average) rather than via a lossy in-place EMA.
+public struct SpeakerProfile: Identifiable, Codable, Sendable {
+    public let id: String
+    public var name: String
+    public var embedding: [Float]
+    public var rawEmbeddings: [[Float]]
+    public var observationCount: Int
+    public let createdAt: String
+    public let updatedAt: String
+
+    public init(
+        id: String,
+        name: String,
+        embedding: [Float],
+        rawEmbeddings: [[Float]] = [],
+        observationCount: Int = 1,
+        createdAt: String = "",
+        updatedAt: String = ""
+    ) {
+        self.id = id
+        self.name = name
+        self.embedding = embedding
+        self.rawEmbeddings = rawEmbeddings
+        self.observationCount = observationCount
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+}
+
+/// Links one diarized cluster of a single meeting to a `Speaker N` label, its
+/// representative embedding captured at stop, and its resolved name/profile.
+public struct MeetingSpeaker: Identifiable, Codable, Sendable {
+    public let id: Int64
+    public let meetingID: Int64
+    public let speakerLabel: String
+    public var embedding: [Float]
+    public var profileID: String?
+    public var displayName: String?
+    public var matchDistance: Double?
+    public var matchState: SpeakerMatchState
+
+    public init(
+        id: Int64,
+        meetingID: Int64,
+        speakerLabel: String,
+        embedding: [Float],
+        profileID: String? = nil,
+        displayName: String? = nil,
+        matchDistance: Double? = nil,
+        matchState: SpeakerMatchState = .unmatched
+    ) {
+        self.id = id
+        self.meetingID = meetingID
+        self.speakerLabel = speakerLabel
+        self.embedding = embedding
+        self.profileID = profileID
+        self.displayName = displayName
+        self.matchDistance = matchDistance
+        self.matchState = matchState
+    }
+}
+
 public struct DictationStats: Codable, Sendable {
     public let totalWords: Int
     public let totalSessions: Int
