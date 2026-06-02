@@ -24,7 +24,7 @@ struct DictationAudioSessionManagerTests {
         let harness = Harness(routeKind: .speakerLike)
         harness.recorder.warmUpDelay = 0.2
 
-        harness.manager.refreshRoute(reason: "route-change", canWarmUp: true)
+        harness.manager.refreshRoute(intent: .idlePrewarm(.routeChange), canWarmUp: true)
         let startedAt = Date()
         harness.manager.arm(source: "hotkey")
         let elapsed = Date().timeIntervalSince(startedAt)
@@ -45,7 +45,7 @@ struct DictationAudioSessionManagerTests {
         harness.wait()
 
         #expect(harness.recorder.activateCalls == 2)
-        #expect(harness.recorder.prepareCalls == 1)
+        #expect(harness.recorder.prepareCalls == 0)
         #expect(harness.recorder.startCalls == 1)
         #expect(harness.events.contains { event in
             if case .latency(let name, _) = event {
@@ -81,7 +81,7 @@ struct DictationAudioSessionManagerTests {
         })
     }
 
-    @Test("headphone route skips ducking and selects built-in mic")
+    @Test("headphone route skips ducking and selects built-in mic app-locally")
     func headphoneRouteSkipsDucking() {
         let harness = Harness(routeKind: .headphoneLike, preferredInputDeviceID: 82)
 
@@ -107,7 +107,7 @@ struct DictationAudioSessionManagerTests {
         #expect(harness.recorder.startCalls == 1)
     }
 
-    @Test("headphone arm refreshes preferred input without opening mic")
+    @Test("headphone arm activates with app-scoped built-in mic")
     func armRefreshesPreferredInput() {
         let harness = Harness(routeKind: .headphoneLike, preferredInputDeviceID: 82)
         harness.route.cachedPreferredInputDeviceID = nil
@@ -116,11 +116,11 @@ struct DictationAudioSessionManagerTests {
         harness.wait()
 
         #expect(harness.route.preferredInputCalls == 1)
-        #expect(harness.recorder.activateCalls == 0)
-        #expect(harness.recorder.lastWarmInputDeviceID == nil)
+        #expect(harness.recorder.activateCalls == 1)
+        #expect(harness.recorder.lastWarmInputDeviceID == 82)
         #expect(harness.events.contains { event in
             if case .latency(let name, _) = event {
-                return name == "activation_deferred:hotkey"
+                return name == "activation_end:hotkey"
             }
             return false
         })
@@ -166,7 +166,7 @@ struct DictationAudioSessionManagerTests {
         harness.wait()
 
         #expect(harness.route.preferredInputCalls == 1)
-        #expect(harness.recorder.activateCalls == 1)
+        #expect(harness.recorder.activateCalls == 2)
         #expect(harness.recorder.lastWarmInputDeviceID == nil)
         #expect(harness.recorder.preferredInputDeviceID == nil)
         #expect(harness.ducking.beginCalls == [true])
@@ -266,11 +266,11 @@ struct DictationAudioSessionManagerTests {
         })
     }
 
-    @Test("route refresh warms graph without opening mic")
-    func routeRefreshWarmsGraphWithoutOpeningMic() {
-        let harness = Harness(routeKind: .headphoneLike, preferredInputDeviceID: 82)
+    @Test("speaker route refresh warms graph without opening mic")
+    func speakerRouteRefreshWarmsGraphWithoutOpeningMic() {
+        let harness = Harness(routeKind: .speakerLike)
 
-        harness.manager.refreshRoute(reason: "route-change", canWarmUp: true)
+        harness.manager.refreshRoute(intent: .idlePrewarm(.routeChange), canWarmUp: true)
         harness.wait()
 
         #expect(harness.route.refreshCalls == 1)
@@ -280,16 +280,66 @@ struct DictationAudioSessionManagerTests {
         #expect(harness.recorder.activateCalls == 0)
     }
 
-    @Test("delayed route refresh does not block hotkey arm")
-    func delayedRouteRefreshDoesNotBlockHotkeyArm() {
+    @Test("headphone route refresh skips idle mic warmup")
+    func headphoneRouteRefreshSkipsIdleMicWarmup() {
         let harness = Harness(routeKind: .headphoneLike, preferredInputDeviceID: 82)
 
-        harness.manager.refreshRoute(reason: "route-change", delay: 0.2, canWarmUp: true)
+        harness.manager.refreshRoute(intent: .idlePrewarm(.routeChange), canWarmUp: true)
+        harness.wait()
+
+        #expect(harness.route.refreshCalls == 1)
+        #expect(harness.recorder.coolDownCalls == 1)
+        #expect(harness.recorder.warmUpCalls == 0)
+        #expect(harness.recorder.startCalls == 0)
+        #expect(harness.recorder.activateCalls == 0)
+        #expect(!harness.recorder.keepsAudioGraphWarm)
+        #expect(harness.events.contains { event in
+            if case .latency(let name, _) = event {
+                return name == "warmup_skipped:idle_routeChange:risky_route"
+            }
+            return false
+        })
+    }
+
+    @Test("unknown route refresh skips idle mic warmup")
+    func unknownRouteRefreshSkipsIdleMicWarmup() {
+        let harness = Harness(routeKind: .unknown)
+
+        harness.manager.refreshRoute(intent: .idlePrewarm(.routeChange), canWarmUp: true)
+        harness.wait()
+
+        #expect(harness.route.refreshCalls == 1)
+        #expect(harness.recorder.coolDownCalls == 1)
+        #expect(harness.recorder.warmUpCalls == 0)
+        #expect(harness.recorder.startCalls == 0)
+        #expect(harness.recorder.activateCalls == 0)
+        #expect(!harness.recorder.keepsAudioGraphWarm)
+    }
+
+    @Test("headphone post-dictation refresh skips mic warmup")
+    func headphonePostDictationRefreshSkipsMicWarmup() {
+        let harness = Harness(routeKind: .headphoneLike, preferredInputDeviceID: 82)
+
+        harness.manager.refreshRoute(intent: .postDictation(.transcriptionComplete), canWarmUp: true)
+        harness.wait()
+
+        #expect(harness.route.refreshCalls == 1)
+        #expect(harness.recorder.coolDownCalls == 1)
+        #expect(harness.recorder.warmUpCalls == 0)
+        #expect(harness.recorder.startCalls == 0)
+        #expect(harness.recorder.activateCalls == 0)
+    }
+
+    @Test("delayed route refresh does not block explicit headphone activation")
+    func delayedRouteRefreshDoesNotBlockExplicitHeadphoneActivation() {
+        let harness = Harness(routeKind: .headphoneLike, preferredInputDeviceID: 82)
+
+        harness.manager.refreshRoute(intent: .idlePrewarm(.routeChange), delay: 0.2, canWarmUp: true)
         harness.manager.arm(source: "hotkey")
         harness.wait()
 
         #expect(harness.route.refreshCalls == 1)
-        #expect(harness.recorder.activateCalls == 0)
+        #expect(harness.recorder.activateCalls == 1)
         #expect(harness.recorder.warmUpCalls == 0)
 
         Thread.sleep(forTimeInterval: 0.25)
@@ -298,7 +348,7 @@ struct DictationAudioSessionManagerTests {
         #expect(harness.recorder.warmUpCalls == 0)
         #expect(harness.events.contains { event in
             if case .latency(let name, _) = event {
-                return name == "route_refresh_cancelled:route-change"
+                return name == "route_refresh_cancelled:idle_routeChange"
             }
             return false
         })
@@ -340,8 +390,8 @@ struct DictationAudioSessionManagerTests {
         #expect(!harness.events.contains { if case .noAudioTimeout = $0 { return true }; return false })
     }
 
-    @Test("no audio timeout on headphone preferred input does not retry default input")
-    func noAudioTimeoutOnHeadphonePreferredInputDoesNotRetryDefaultInput() {
+    @Test("no audio timeout on headphone preferred input does not retry system default")
+    func noAudioTimeoutOnHeadphonePreferredInputDoesNotRetrySystemDefault() {
         let harness = Harness(routeKind: .headphoneLike, preferredInputDeviceID: 82)
 
         harness.manager.beginRecording(mode: "toggle", duckingEnabled: true, mediaPauseEnabled: false)
@@ -353,7 +403,6 @@ struct DictationAudioSessionManagerTests {
         #expect(harness.recorder.startCalls == 1)
         #expect(harness.recorder.activateCalls == 1)
         #expect(harness.recorder.lastWarmInputDeviceID == 82)
-        #expect(harness.recorder.preferredInputDeviceID == nil)
         #expect(harness.manager.currentSessionID == nil)
         #expect(harness.events.contains { if case .failed = $0 { return true }; return false })
         #expect(!harness.events.contains { event in

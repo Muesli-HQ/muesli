@@ -25,6 +25,7 @@ final class StreamingMicRecorder: StreamingDictationRecording {
     var preferredInputDeviceID: AudioObjectID?
 
     private let engine = AVAudioEngine()
+    private let directoryName: String
     private let lock = OSAllocatedUnfairLock(initialState: FileState())
     private let failureLock = OSAllocatedUnfairLock(initialState: FailureState())
     private let failureCallbackQueue = DispatchQueue(label: "com.muesli.streaming-mic-recorder-failures")
@@ -46,6 +47,10 @@ final class StreamingMicRecorder: StreamingDictationRecording {
 
     private static let sampleRate: Double = 16_000
     private static let bufferSize: AVAudioFrameCount = 4096 // 256ms at 16kHz
+
+    init(directoryName: String = "muesli-meeting-mic") {
+        self.directoryName = directoryName
+    }
 
     func prepare() throws {
         AudioInputDeviceSelection.applyPreferredInputDeviceID(
@@ -318,7 +323,7 @@ final class StreamingMicRecorder: StreamingDictationRecording {
 
     private func createNewFile() throws -> FileState {
         let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("muesli-meeting-mic", isDirectory: true)
+            .appendingPathComponent(directoryName, isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent(UUID().uuidString).appendingPathExtension("wav")
         FileManager.default.createFile(atPath: url.path, contents: nil)

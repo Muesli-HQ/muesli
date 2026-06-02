@@ -31,6 +31,43 @@ enum DictationAudioSessionEvent {
     case latency(String, Date)
 }
 
+enum DictationWarmupIntent: Equatable {
+    case idlePrewarm(IdlePrewarmTrigger)
+    case postDictation(PostDictationTrigger)
+
+    var debugName: String {
+        switch self {
+        case .idlePrewarm(let trigger):
+            return "idle_\(trigger.debugName)"
+        case .postDictation(let trigger):
+            return "post_dictation_\(trigger.debugName)"
+        }
+    }
+}
+
+enum IdlePrewarmTrigger: String {
+    case startup
+    case routeChange
+    case configChange
+    case permissionsReady
+    case meetingStateChanged
+    case backendRecovery
+
+    var debugName: String { rawValue }
+}
+
+enum PostDictationTrigger: String {
+    case cancel
+    case stopWithoutWav
+    case shortRecording
+    case dictationStop
+    case transcriptionComplete
+    case transcriptionCancelled
+    case transcriptionFailed
+
+    var debugName: String { rawValue }
+}
+
 protocol DictationAudioRecording: AnyObject {
     var preferredInputDeviceID: AudioObjectID? { get set }
     var keepsAudioGraphWarm: Bool { get set }
@@ -160,14 +197,10 @@ final class DictationAudioSessionManager: @unchecked Sendable {
             self.routeSnapshot = self.makeRouteSnapshot(refreshInput: true)
             self.emitLatency("route_snapshot \(self.routeSnapshot.debugDescription)")
             self.recorder.keepsAudioGraphWarm = true
-            guard self.routeSnapshot.routeKind != .headphoneLike else {
-                self.emitLatency("activation_deferred:\(source)")
-                fputs("[dictation-session] armed without warm activation source=\(source) \(self.routeSnapshot.debugDescription)\n", stderr)
-                return
-            }
+            let recorderInputDeviceID = self.recorderInputDeviceID(for: self.routeSnapshot)
             do {
                 self.emitLatency("activation_begin:\(source)")
-                try self.recorder.activateWarmEngine(preferredInputDeviceID: self.routeSnapshot.preferredInputDeviceID)
+                try self.recorder.activateWarmEngine(preferredInputDeviceID: recorderInputDeviceID)
                 self.emitLatency("activation_end:\(source)")
                 fputs("[dictation-session] armed source=\(source) \(self.routeSnapshot.debugDescription)\n", stderr)
             } catch {
@@ -208,14 +241,12 @@ final class DictationAudioSessionManager: @unchecked Sendable {
             }
             self.beginSessionAudioControls(duckingEnabled: duckingEnabled, mediaPauseEnabled: mediaPauseEnabled)
             self.duckingController.ensureCurrentDefaultDucked()
-            self.recorder.preferredInputDeviceID = self.routeSnapshot.preferredInputDeviceID
+            let recorderInputDeviceID = self.recorderInputDeviceID(for: self.routeSnapshot)
+            self.recorder.preferredInputDeviceID = recorderInputDeviceID
             self.recorder.keepsAudioGraphWarm = true
             do {
                 self.emitLatency("activation_begin:\(mode)")
-                try self.recorder.activateWarmEngine(preferredInputDeviceID: self.routeSnapshot.preferredInputDeviceID)
-                self.emitLatency("engine_prepare_begin")
-                try self.recorder.prepare()
-                self.emitLatency("engine_prepare_end")
+                try self.recorder.activateWarmEngine(preferredInputDeviceID: recorderInputDeviceID)
                 self.activeRecorderRunID = try self.recorder.start()
                 self.emitLatency("activation_end:\(mode)")
                 fputs("[dictation-session] recording mode=\(mode) \(self.routeSnapshot.debugDescription)\n", stderr)
@@ -286,18 +317,18 @@ final class DictationAudioSessionManager: @unchecked Sendable {
         }
     }
 
-    func refreshRoute(reason: String, delay: TimeInterval = 0, canWarmUp: Bool) {
+    func refreshRoute(intent: DictationWarmupIntent, delay: TimeInterval = 0, canWarmUp: Bool) {
         routingController.refreshRouteCache()
         queue.async { [self] in
             self.routeRefreshGeneration += 1
             let generation = self.routeRefreshGeneration
             guard delay > 0 else {
-                self.performRouteRefreshLocked(reason: reason, canWarmUp: canWarmUp, generation: generation)
+                self.performRouteRefreshLocked(intent: intent, canWarmUp: canWarmUp, generation: generation)
                 return
             }
-            self.emitLatency("route_refresh_deferred:\(reason)")
+            self.emitLatency("route_refresh_deferred:\(intent.debugName)")
             self.queue.asyncAfter(deadline: .now() + delay) { [self] in
-                self.performRouteRefreshLocked(reason: reason, canWarmUp: canWarmUp, generation: generation)
+                self.performRouteRefreshLocked(intent: intent, canWarmUp: canWarmUp, generation: generation)
             }
         }
     }
@@ -355,30 +386,41 @@ final class DictationAudioSessionManager: @unchecked Sendable {
         routeRefreshGeneration += 1
     }
 
-    private func performRouteRefreshLocked(reason: String, canWarmUp: Bool, generation: Int) {
+    private func performRouteRefreshLocked(intent: DictationWarmupIntent, canWarmUp: Bool, generation: Int) {
         guard routeRefreshGeneration == generation else {
-            emitLatency("route_refresh_cancelled:\(reason)")
+            emitLatency("route_refresh_cancelled:\(intent.debugName)")
             return
         }
         routeSnapshot = makeRouteSnapshot(refreshInput: false)
-        emitLatency("route_refresh:\(reason) \(routeSnapshot.debugDescription)")
+        emitLatency("route_refresh:\(intent.debugName) \(routeSnapshot.debugDescription)")
         guard stateStorage == .idle, !externalSessionActive else { return }
-        guard canWarmUp else {
+        if let skipReason = idleWarmupSkipReason(route: routeSnapshot, canWarmUp: canWarmUp) {
             recorder.keepsAudioGraphWarm = false
             recorder.coolDown()
+            emitLatency("warmup_skipped:\(intent.debugName):\(skipReason)")
+            fputs("[dictation-session] warmup skipped intent=\(intent.debugName) reason=\(skipReason) \(routeSnapshot.debugDescription)\n", stderr)
             return
         }
         recorder.keepsAudioGraphWarm = true
         recorder.coolDown()
         do {
-            emitLatency("engine_prepare_begin:warmup:\(reason)")
+            emitLatency("engine_prepare_begin:warmup:\(intent.debugName)")
             try recorder.warmUp(preferredInputDeviceID: routeSnapshot.preferredInputDeviceID)
-            emitLatency("engine_prepare_end:warmup:\(reason)")
-            fputs("[dictation-session] warmed reason=\(reason) \(routeSnapshot.debugDescription)\n", stderr)
+            emitLatency("engine_prepare_end:warmup:\(intent.debugName)")
+            fputs("[dictation-session] warmed intent=\(intent.debugName) \(routeSnapshot.debugDescription)\n", stderr)
         } catch {
-            emitLatency("engine_prepare_failed:warmup:\(reason)")
-            fputs("[dictation-session] warmup failed reason=\(reason) error=\(error)\n", stderr)
+            emitLatency("engine_prepare_failed:warmup:\(intent.debugName)")
+            fputs("[dictation-session] warmup failed intent=\(intent.debugName) error=\(error)\n", stderr)
         }
+    }
+
+    private func idleWarmupSkipReason(route: RouteSnapshot, canWarmUp: Bool) -> String? {
+        guard canWarmUp else { return "not_allowed" }
+        return route.routeKind == .speakerLike ? nil : "risky_route"
+    }
+
+    private func recorderInputDeviceID(for route: RouteSnapshot) -> AudioObjectID? {
+        route.preferredInputDeviceID
     }
 
     private func beginSessionAudioControls(duckingEnabled: Bool, mediaPauseEnabled: Bool) {
