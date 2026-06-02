@@ -3885,7 +3885,10 @@ final class MuesliController: NSObject {
             let profiles = try dictationStore.speakerProfiles()
             if let keep = profiles.first(where: { $0.id == keepID }),
                let remove = profiles.first(where: { $0.id == removeID }) {
-                var combined = keep.rawEmbeddings + remove.rawEmbeddings
+                // Fall back to the representative embedding when a profile has no
+                // retained raw samples, so the removed voiceprint still folds into
+                // the kept centroid (otherwise an embedding-only profile is lost).
+                var combined = rawSamples(of: keep) + rawSamples(of: remove)
                 let cap = SpeakerProfileRefiner.maxRawEmbeddings
                 if cap > 0, combined.count > cap {
                     combined.removeFirst(combined.count - cap)
@@ -3914,6 +3917,15 @@ final class MuesliController: NSObject {
             fputs("[muesli-native] delete speaker profile failed (\(id)): \(error)\n", stderr)
         }
         syncAppState()
+    }
+
+    /// Retained voiceprint samples for a profile, falling back to the
+    /// representative embedding when no raw samples were kept (so merge/refine
+    /// never silently discards an embedding-only profile's voice).
+    private func rawSamples(of profile: SpeakerProfile) -> [[Float]] {
+        if !profile.rawEmbeddings.isEmpty { return profile.rawEmbeddings }
+        if profile.embedding.count == SpeakerClusterAggregator.embeddingDimension { return [profile.embedding] }
+        return []
     }
 
     func showSpeakersManager() {

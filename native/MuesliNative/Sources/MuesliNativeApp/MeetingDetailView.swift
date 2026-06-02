@@ -1343,9 +1343,12 @@ struct MeetingDetailView: View {
 
     private func renameSpeaker(meeting: MeetingRecord, label: String, to newName: String) {
         let shouldNote = controller.shouldShowVoiceProfileNote
+        let before = speakerMap
         controller.renameMeetingSpeaker(meetingID: meeting.id, label: label, to: newName)
         speakerMap = Self.loadSpeakerMap(controller: controller, meeting: meeting)
-        speakerNamesChanged = true
+        // Only offer "Update notes" when something actually changed — a blank
+        // rename is a no-op and shouldn't trigger a needless re-summary.
+        if speakerMap != before { speakerNamesChanged = true }
         // Show the one-time disclosure only when a profile was actually enrolled.
         if shouldNote, speakerMap[label]?.profileID != nil {
             showVoiceProfileNote = true
@@ -1354,9 +1357,10 @@ struct MeetingDetailView: View {
 
     private func confirmSpeaker(meeting: MeetingRecord, label: String) {
         let shouldNote = controller.shouldShowVoiceProfileNote
+        let before = speakerMap
         controller.confirmSuggestedSpeaker(meetingID: meeting.id, label: label)
         speakerMap = Self.loadSpeakerMap(controller: controller, meeting: meeting)
-        speakerNamesChanged = true
+        if speakerMap != before { speakerNamesChanged = true }
         if shouldNote, speakerMap[label]?.profileID != nil {
             showVoiceProfileNote = true
         }
