@@ -38,4 +38,17 @@ struct MeetingPreviewTextTests {
 
         #expect(preview == "No notes yet")
     }
+
+    @Test("note preview resumes after metadata section when prose follows")
+    func notePreviewResumesAfterMetadataSection() {
+        let preview = MeetingPreviewText.noteSnippet(from: """
+        ## Attendees
+
+        No attendees captured
+
+        The team reviewed pipeline progress and next steps.
+        """, limit: 120)
+
+        #expect(preview == "The team reviewed pipeline progress and next steps.")
+    }
 }

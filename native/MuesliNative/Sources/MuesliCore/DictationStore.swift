@@ -284,9 +284,9 @@ public final class DictationStore {
 
         var sql: String
         if folderID != nil {
-            sql = "SELECT \(Self.meetingColumns) FROM meetings WHERE folder_id = ? ORDER BY id DESC"
+            sql = "SELECT \(Self.meetingColumns) FROM meetings WHERE folder_id = ? ORDER BY start_time DESC, id DESC"
         } else {
-            sql = "SELECT \(Self.meetingColumns) FROM meetings ORDER BY id DESC"
+            sql = "SELECT \(Self.meetingColumns) FROM meetings ORDER BY start_time DESC, id DESC"
         }
         if limit != nil { sql += " LIMIT ?" }
 

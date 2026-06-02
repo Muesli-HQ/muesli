@@ -149,6 +149,28 @@ struct GoogleCalendarTests {
         #expect(event?.meetingURL == nil)
     }
 
+    @Test("parses organizer and attendee emails from Google Calendar event")
+    func parsesEventAttendees() {
+        let item: [String: Any] = [
+            "id": "attendees1",
+            "summary": "Client Call",
+            "start": ["dateTime": "2026-04-10T14:00:00Z"],
+            "end": ["dateTime": "2026-04-10T15:00:00Z"],
+            "organizer": ["displayName": "Sam Gaddis", "email": "sam@runpoint.ai"],
+            "attendees": [
+                ["displayName": "Pat Prospect", "email": "pat@example.com"],
+                ["displayName": "Conference Room", "email": "room@example.com", "resource": true],
+                ["displayName": "Sam Gaddis", "email": "sam@runpoint.ai"],
+            ],
+        ]
+
+        let event = GoogleCalendarClient().parseEvent(item, calendarID: "primary")
+        #expect(event?.attendees.map(\.markdownLabel) == [
+            "Sam Gaddis <sam@runpoint.ai>",
+            "Pat Prospect <pat@example.com>",
+        ])
+    }
+
     @Test("CalendarMonitor extracts Zoom URL from text")
     func extractsZoomURL() {
         let url = CalendarMonitor.findMeetingURL(in: "Join at https://us02web.zoom.us/j/123456789?pwd=abc please")
@@ -196,6 +218,28 @@ struct GoogleCalendarTests {
         let merged = GoogleCalendarClient.mergeEvents(eventKit: ek, google: google)
         #expect(merged.count == 1)
         #expect(merged[0].source == .eventKit)
+    }
+
+    @Test("dedupe preserves Google attendees when EventKit has none")
+    func dedupePreservesGoogleAttendees() {
+        let ek = [
+            UnifiedCalendarEvent(id: "ek1", title: "Sprint Planning", startDate: date("2026-04-10T14:00:00Z"), endDate: date("2026-04-10T15:00:00Z"), isAllDay: false, source: .eventKit),
+        ]
+        let google = [
+            UnifiedCalendarEvent(
+                id: "g1",
+                title: "Sprint Planning",
+                startDate: date("2026-04-10T14:02:00Z"),
+                endDate: date("2026-04-10T15:00:00Z"),
+                isAllDay: false,
+                source: .googleCalendar,
+                attendees: [CalendarEventAttendee(name: "Pat Prospect", email: "pat@example.com")]
+            ),
+        ]
+
+        let merged = GoogleCalendarClient.mergeEvents(eventKit: ek, google: google)
+        #expect(merged.count == 1)
+        #expect(merged[0].attendees.map(\.markdownLabel) == ["Pat Prospect <pat@example.com>"])
     }
 
     @Test("keeps events with same title but different times")

@@ -14,6 +14,7 @@ struct UnifiedCalendarEvent: Identifiable, Equatable {
     /// Optional because legacy events deserialized from older state may not have it.
     var calendarID: String? = nil
     var meetingURL: URL? = nil
+    var attendees: [CalendarEventAttendee] = []
 
     enum CalendarSource: String {
         case eventKit
@@ -31,6 +32,24 @@ struct UnifiedCalendarEvent: Identifiable, Equatable {
             guard let id = event.calendarID else { return true }
             return !disabledCalendarIDs.contains(id)
         }
+    }
+}
+
+struct CalendarEventAttendee: Equatable {
+    let name: String?
+    let email: String?
+
+    init(name: String?, email: String?) {
+        let cleanName = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanEmail = email?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.name = cleanName?.isEmpty == false ? cleanName : nil
+        self.email = cleanEmail?.isEmpty == false ? cleanEmail : nil
+    }
+
+    var markdownLabel: String {
+        if let name, let email { return "\(name) <\(email)>" }
+        if let name { return name }
+        return email ?? ""
     }
 }
 
@@ -375,8 +394,34 @@ final class GoogleCalendarClient {
             isAllDay: isAllDay,
             source: .googleCalendar,
             calendarID: calendarID,
-            meetingURL: meetingURL
+            meetingURL: meetingURL,
+            attendees: Self.parseAttendees(from: item)
         )
+    }
+
+    static func parseAttendees(from item: [String: Any]) -> [CalendarEventAttendee] {
+        var attendees: [CalendarEventAttendee] = []
+        var seen = Set<String>()
+
+        func append(name: String?, email: String?) {
+            let attendee = CalendarEventAttendee(name: name, email: email)
+            let key = (attendee.email ?? attendee.name ?? attendee.markdownLabel).lowercased()
+            guard !key.isEmpty, !seen.contains(key) else { return }
+            seen.insert(key)
+            attendees.append(attendee)
+        }
+
+        if let organizer = item["organizer"] as? [String: Any] {
+            append(name: organizer["displayName"] as? String, email: organizer["email"] as? String)
+        }
+        if let entries = item["attendees"] as? [[String: Any]] {
+            for entry in entries {
+                if entry["resource"] as? Bool == true { continue }
+                append(name: entry["displayName"] as? String, email: entry["email"] as? String)
+            }
+        }
+
+        return attendees
     }
 
     // MARK: - Merge & Deduplicate
@@ -399,6 +444,9 @@ final class GoogleCalendarClient {
                 // Prefer Google Calendar's meetingURL when EventKit doesn't have one
                 if merged[idx].meetingURL == nil, gEvent.meetingURL != nil {
                     merged[idx].meetingURL = gEvent.meetingURL
+                }
+                if merged[idx].attendees.isEmpty, !gEvent.attendees.isEmpty {
+                    merged[idx].attendees = gEvent.attendees
                 }
             } else {
                 merged.append(gEvent)
