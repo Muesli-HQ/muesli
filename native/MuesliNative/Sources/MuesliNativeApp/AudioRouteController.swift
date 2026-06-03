@@ -405,6 +405,7 @@ final class CoreAudioDeviceInspector: CoreAudioDeviceInspecting {
             .filter { hasStreams(deviceID: $0, scope: kAudioDevicePropertyScopeInput) }
             .compactMap { deviceID in
                 guard let uid = deviceUID(for: deviceID) else { return nil }
+                guard !Self.isSystemDefaultAggregateDeviceUID(uid) else { return nil }
                 let name = deviceName(for: deviceID) ?? "Microphone \(deviceID)"
                 return AudioInputDeviceInfo(
                     uid: uid,
@@ -419,7 +420,8 @@ final class CoreAudioDeviceInspector: CoreAudioDeviceInspecting {
     }
 
     func inputDeviceID(matchingUID uid: String) -> AudioObjectID? {
-        allDeviceIDs().first { deviceID in
+        guard !Self.isSystemDefaultAggregateDeviceUID(uid) else { return nil }
+        return allDeviceIDs().first { deviceID in
             hasStreams(deviceID: deviceID, scope: kAudioDevicePropertyScopeInput)
                 && deviceUID(for: deviceID) == uid
         }
@@ -555,6 +557,10 @@ final class CoreAudioDeviceInspector: CoreAudioDeviceInspecting {
 
     private func deviceUID(for deviceID: AudioObjectID) -> String? {
         stringProperty(kAudioDevicePropertyDeviceUID, objectID: deviceID)
+    }
+
+    private static func isSystemDefaultAggregateDeviceUID(_ uid: String) -> Bool {
+        uid.hasPrefix("CADefaultDeviceAggregate")
     }
 
     private func transportType(for deviceID: AudioObjectID) -> UInt32? {
