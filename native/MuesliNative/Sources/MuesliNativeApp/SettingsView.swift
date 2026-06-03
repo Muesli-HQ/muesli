@@ -411,7 +411,7 @@ struct SettingsView: View {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow(
                     "Microphone",
-                    description: "Automatic uses the system input on speakers and the Mac mic on AirPods or headphones."
+                    description: "Automatic uses system input, or Mac mic with AirPods."
                 ) {
                     let options = dictationMicrophoneOptions
                     FixedWidthPopUp(
