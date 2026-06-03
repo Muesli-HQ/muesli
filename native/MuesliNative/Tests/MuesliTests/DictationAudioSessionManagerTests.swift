@@ -691,6 +691,7 @@ private final class FakeMediaPlaybackManager: MediaPlaybackManaging {
 
 private final class FakeDictationRoute: DictationAudioRouting {
     var onPreferredInputDeviceChanged: ((AudioObjectID?) -> Void)?
+    var selectedInputDeviceUID: String?
     var routeKind: AudioOutputRouteKind
     var preferredInputDeviceID: AudioObjectID?
     var cachedPreferredInputDeviceID: AudioObjectID?
@@ -716,6 +717,10 @@ private final class FakeDictationRoute: DictationAudioRouting {
 
     func cachedPreferredInputDeviceIDForDictation() -> AudioObjectID? {
         cachedPreferredInputDeviceID
+    }
+
+    func availableInputDevices() -> [AudioInputDeviceInfo] {
+        []
     }
 
     func isDefaultOutputHeadphoneLike() -> Bool {

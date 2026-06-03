@@ -308,6 +308,7 @@ final class MuesliController: NSObject {
         self.launchAtLoginCoordinator = LaunchAtLoginCoordinator(manager: launchAtLoginManager)
         self.audioDuckingController = audioDuckingController
         self.dictationAudioRoutingController = dictationAudioRoutingController
+        self.dictationAudioRoutingController.selectedInputDeviceUID = loadedConfig.dictationInputDeviceUID
         self.config = loadedConfig
         if loadedConfig.recordingColorHex != "1e1e2e" {
             MuesliTheme.accentOverrideHex = loadedConfig.recordingColorHex
@@ -614,6 +615,7 @@ final class MuesliController: NSObject {
             self.activeMeetingID = nil
         }
         endMeetingActivity()
+        dictationAudioSessionManager.cancel(reason: "shutdown")
         recorder.cancel()
         Task {
             await transcriptionCoordinator.shutdown()
@@ -869,6 +871,7 @@ final class MuesliController: NSObject {
         if hotkeyTriggerThresholdChanged {
             configureHotkeyMonitorTiming()
         }
+        dictationAudioRoutingController.selectedInputDeviceUID = config.dictationInputDeviceUID
         historyWindowController?.updateBackendLabel()
         if config.showFloatingIndicator {
             indicator.ensureVisible(config: config)
@@ -884,6 +887,14 @@ final class MuesliController: NSObject {
         syncMeetingDetectionMonitor()
         updateMeetingNotificationVisibility()
         syncDictationRecorderWarmup(intent: .idlePrewarm(.configChange))
+    }
+
+    func availableDictationInputDevices() -> [AudioInputDeviceInfo] {
+        dictationAudioRoutingController.availableInputDevices()
+    }
+
+    func selectDictationInputDeviceUID(_ uid: String?) {
+        updateConfig { $0.dictationInputDeviceUID = uid }
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {
@@ -1725,6 +1736,7 @@ final class MuesliController: NSObject {
     func cancelTestDictation() {
         dictationTestTask?.cancel()
         dictationTestTask = nil
+        dictationAudioSessionManager.cancel(reason: "test-cancel")
         recorder.cancel()
         setState(.idle)
     }

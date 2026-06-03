@@ -91,6 +91,49 @@ struct DictationAudioRouteControllerTests {
         #expect(controller.cachedPreferredInputDeviceIDForDictation() == nil)
     }
 
+    @Test("user selected microphone overrides automatic route policy")
+    func userSelectedMicrophoneOverridesAutomaticRoutePolicy() {
+        let inspector = FakeCoreAudioDeviceInspector(
+            defaultOutputDeviceID: 10,
+            outputRouteKind: .headphoneLike,
+            builtInInputDeviceID: 82,
+            inputDevices: [
+                AudioInputDeviceInfo(uid: "external-mic", name: "External Mic", deviceID: 91, isBuiltIn: false),
+                AudioInputDeviceInfo(uid: "built-in-mic", name: "MacBook Microphone", deviceID: 82, isBuiltIn: true),
+            ]
+        )
+        let controller = DictationAudioRouteController(
+            inspector: inspector,
+            queue: DispatchQueue(label: "test.dictation-audio-route.selected-input"),
+            observesDefaultOutputChanges: false
+        )
+        controller.selectedInputDeviceUID = "external-mic"
+
+        #expect(controller.preferredInputDeviceIDForDictation() == 91)
+        #expect(controller.cachedPreferredInputDeviceIDForDictation() == 91)
+    }
+
+    @Test("unavailable selected microphone falls back to automatic route policy")
+    func unavailableSelectedMicrophoneFallsBackToAutomaticRoutePolicy() {
+        let inspector = FakeCoreAudioDeviceInspector(
+            defaultOutputDeviceID: 10,
+            outputRouteKind: .headphoneLike,
+            builtInInputDeviceID: 82,
+            inputDevices: [
+                AudioInputDeviceInfo(uid: "built-in-mic", name: "MacBook Microphone", deviceID: 82, isBuiltIn: true),
+            ]
+        )
+        let controller = DictationAudioRouteController(
+            inspector: inspector,
+            queue: DispatchQueue(label: "test.dictation-audio-route.missing-selected-input"),
+            observesDefaultOutputChanges: false
+        )
+        controller.selectedInputDeviceUID = "missing-mic"
+
+        #expect(controller.preferredInputDeviceIDForDictation() == 82)
+        #expect(controller.cachedPreferredInputDeviceIDForDictation() == 82)
+    }
+
     @Test("default input refresh can notify even when preferred route is unchanged")
     func defaultInputRefreshCanNotifyEvenWhenPreferredRouteIsUnchanged() {
         let inspector = FakeCoreAudioDeviceInspector(
@@ -119,17 +162,20 @@ private final class FakeCoreAudioDeviceInspector: CoreAudioDeviceInspecting {
     var outputRouteKindValue: AudioOutputRouteKind
     var outputIsAmbiguousBluetoothValue: Bool
     var builtInInputDeviceIDValue: AudioObjectID?
+    var inputDevices: [AudioInputDeviceInfo]
 
     init(
         defaultOutputDeviceID: AudioObjectID?,
         outputRouteKind: AudioOutputRouteKind,
         outputIsAmbiguousBluetooth: Bool = false,
-        builtInInputDeviceID: AudioObjectID?
+        builtInInputDeviceID: AudioObjectID?,
+        inputDevices: [AudioInputDeviceInfo] = []
     ) {
         self.defaultOutputDeviceIDValue = defaultOutputDeviceID
         self.outputRouteKindValue = outputRouteKind
         self.outputIsAmbiguousBluetoothValue = outputIsAmbiguousBluetooth
         self.builtInInputDeviceIDValue = builtInInputDeviceID
+        self.inputDevices = inputDevices
     }
 
     func defaultOutputDeviceID() -> AudioObjectID? {
@@ -142,6 +188,14 @@ private final class FakeCoreAudioDeviceInspector: CoreAudioDeviceInspecting {
 
     func setDefaultInputDeviceID(_ deviceID: AudioObjectID) -> Bool {
         false
+    }
+
+    func availableInputDevices() -> [AudioInputDeviceInfo] {
+        inputDevices
+    }
+
+    func inputDeviceID(matchingUID uid: String) -> AudioObjectID? {
+        inputDevices.first(where: { $0.uid == uid })?.deviceID
     }
 
     func isDeviceAvailable(_ deviceID: AudioObjectID) -> Bool {

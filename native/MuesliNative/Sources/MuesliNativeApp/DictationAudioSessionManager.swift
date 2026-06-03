@@ -416,7 +416,12 @@ final class DictationAudioSessionManager: @unchecked Sendable {
 
     private func idleWarmupSkipReason(route: RouteSnapshot, canWarmUp: Bool) -> String? {
         guard canWarmUp else { return "not_allowed" }
-        return route.routeKind == .speakerLike ? nil : "risky_route"
+        switch route.routeKind {
+        case .speakerLike:
+            return nil
+        case .headphoneLike, .unknown:
+            return "risky_route"
+        }
     }
 
     private func recorderInputDeviceID(for route: RouteSnapshot) -> AudioObjectID? {
