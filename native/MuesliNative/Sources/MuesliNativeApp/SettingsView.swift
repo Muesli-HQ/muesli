@@ -416,12 +416,13 @@ struct SettingsView: View {
                     let options = dictationMicrophoneOptions
                     FixedWidthPopUp(
                         selection: selectedDictationMicrophoneLabel,
-                        options: options.map(\.label)
-                    ) { index in
-                        guard index >= 0, index < options.count else { return }
-                        controller.selectDictationInputDeviceUID(options[index].uid)
-                        refreshDictationInputDevices()
-                    }
+                        options: options.map(\.label),
+                        onSelectIndex: { index in
+                            guard index >= 0, index < options.count else { return }
+                            controller.selectDictationInputDeviceUID(options[index].uid)
+                            refreshDictationInputDevices()
+                        }
+                    )
                     .frame(height: 24)
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
