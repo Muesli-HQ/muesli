@@ -190,7 +190,7 @@ final class MuesliController: NSObject {
     private let computerUseHotkeyMonitor = HotkeyMonitor()
     private let meetingRecordingHotkeyMonitor = HotkeyMonitor()
     private let recorder = MicrophoneRecorder()
-    private let dictationRecorder = AppScopedDictationRecorder()
+    private let dictationRecorder = RouteAwareDictationRecorder()
     private let audioDuckingController: AudioDuckingManaging
     private let dictationAudioRoutingController: DictationAudioRouting
     private lazy var dictationAudioSessionManager = DictationAudioSessionManager(

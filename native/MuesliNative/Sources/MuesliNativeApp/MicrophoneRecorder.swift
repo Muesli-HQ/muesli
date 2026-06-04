@@ -9,6 +9,7 @@ final class MicrophoneRecorder: NSObject, AVAudioRecorderDelegate, @unchecked Se
     var onFirstSpeechDetected: ((Date) -> Void)?
     var onNoAudioTimeout: ((Date) -> Void)?
     var onRecordingFailed: ((Error, UUID) -> Void)?
+    var onLatencyEvent: ((String, Date) -> Void)?
 
     private static let sampleRate: Double = 16_000
     private static let speechThresholdDB: Float = -58

@@ -20,6 +20,7 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
     var onFirstSpeechDetected: ((Date) -> Void)?
     var onNoAudioTimeout: ((Date) -> Void)?
     var onRecordingFailed: ((Error, UUID) -> Void)?
+    var onLatencyEvent: ((String, Date) -> Void)?
 
     private static let speechThresholdDB: Float = -58
     private static let noAudioTimeout: TimeInterval = 1.5
@@ -32,6 +33,12 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
     private var hasReceivedFirstAudioBuffer = false
     private var hasDetectedSpeech = false
     private var hasReportedNoAudioTimeout = false
+
+    init() {
+        recorder.onLatencyEvent = { [weak self] event, date in
+            self?.onLatencyEvent?(event, date)
+        }
+    }
 
     deinit {
         cancel()

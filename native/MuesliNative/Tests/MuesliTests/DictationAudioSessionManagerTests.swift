@@ -90,7 +90,8 @@ struct DictationAudioSessionManagerTests {
         harness.wait()
 
         #expect(harness.ducking.beginCalls.allSatisfy { $0 == false })
-        #expect(harness.recorder.lastWarmInputDeviceID == 82)
+        #expect(harness.recorder.activateCalls == 0)
+        #expect(harness.recorder.startCalls == 1)
         #expect(harness.recorder.preferredInputDeviceID == 82)
     }
 
@@ -107,8 +108,8 @@ struct DictationAudioSessionManagerTests {
         #expect(harness.recorder.startCalls == 1)
     }
 
-    @Test("headphone arm activates with app-scoped built-in mic")
-    func armRefreshesPreferredInput() {
+    @Test("headphone arm refreshes preferred input without activating app-scoped mic")
+    func headphoneArmRefreshesPreferredInputWithoutActivatingMic() {
         let harness = Harness(routeKind: .headphoneLike, preferredInputDeviceID: 82)
         harness.route.cachedPreferredInputDeviceID = nil
 
@@ -116,11 +117,12 @@ struct DictationAudioSessionManagerTests {
         harness.wait()
 
         #expect(harness.route.preferredInputCalls == 1)
-        #expect(harness.recorder.activateCalls == 1)
-        #expect(harness.recorder.lastWarmInputDeviceID == 82)
+        #expect(harness.recorder.activateCalls == 0)
+        #expect(harness.recorder.startCalls == 0)
+        #expect(harness.recorder.preferredInputDeviceID == 82)
         #expect(harness.events.contains { event in
             if case .latency(let name, _) = event {
-                return name == "activation_end:hotkey"
+                return name == "activation_skipped:hotkey:app_scoped_route"
             }
             return false
         })
@@ -135,9 +137,15 @@ struct DictationAudioSessionManagerTests {
         harness.wait()
 
         #expect(harness.route.preferredInputCalls == 1)
-        #expect(harness.recorder.activateCalls == 1)
+        #expect(harness.recorder.activateCalls == 0)
         #expect(harness.recorder.preferredInputDeviceID == 82)
         #expect(harness.recorder.startCalls == 1)
+        #expect(harness.events.contains { event in
+            if case .latency(let name, _) = event {
+                return name == "activation_prepare_skipped:toggle:app_scoped_start"
+            }
+            return false
+        })
     }
 
     @Test("external session refreshes preferred input instead of using stale route cache")
@@ -166,7 +174,7 @@ struct DictationAudioSessionManagerTests {
         harness.wait()
 
         #expect(harness.route.preferredInputCalls == 1)
-        #expect(harness.recorder.activateCalls == 2)
+        #expect(harness.recorder.activateCalls == 1)
         #expect(harness.recorder.lastWarmInputDeviceID == nil)
         #expect(harness.recorder.preferredInputDeviceID == nil)
         #expect(harness.ducking.beginCalls == [true])
@@ -330,8 +338,8 @@ struct DictationAudioSessionManagerTests {
         #expect(harness.recorder.activateCalls == 0)
     }
 
-    @Test("delayed route refresh does not block explicit headphone activation")
-    func delayedRouteRefreshDoesNotBlockExplicitHeadphoneActivation() {
+    @Test("delayed route refresh does not arm-activate headphone route")
+    func delayedRouteRefreshDoesNotArmActivateHeadphoneRoute() {
         let harness = Harness(routeKind: .headphoneLike, preferredInputDeviceID: 82)
 
         harness.manager.refreshRoute(intent: .idlePrewarm(.routeChange), delay: 0.2, canWarmUp: true)
@@ -339,7 +347,7 @@ struct DictationAudioSessionManagerTests {
         harness.wait()
 
         #expect(harness.route.refreshCalls == 1)
-        #expect(harness.recorder.activateCalls == 1)
+        #expect(harness.recorder.activateCalls == 0)
         #expect(harness.recorder.warmUpCalls == 0)
 
         Thread.sleep(forTimeInterval: 0.25)
@@ -401,8 +409,8 @@ struct DictationAudioSessionManagerTests {
 
         #expect(harness.recorder.cancelCalls == 1)
         #expect(harness.recorder.startCalls == 1)
-        #expect(harness.recorder.activateCalls == 1)
-        #expect(harness.recorder.lastWarmInputDeviceID == 82)
+        #expect(harness.recorder.activateCalls == 0)
+        #expect(harness.recorder.preferredInputDeviceID == nil)
         #expect(harness.manager.currentSessionID == nil)
         #expect(harness.events.contains { if case .failed = $0 { return true }; return false })
         #expect(!harness.events.contains { event in
@@ -579,6 +587,7 @@ private final class FakeDictationRecorder: DictationAudioRecording {
     var onFirstSpeechDetected: ((Date) -> Void)?
     var onNoAudioTimeout: ((Date) -> Void)?
     var onRecordingFailed: ((Error, UUID) -> Void)?
+    var onLatencyEvent: ((String, Date) -> Void)?
 
     var prepareCalls = 0
     var warmUpCalls = 0

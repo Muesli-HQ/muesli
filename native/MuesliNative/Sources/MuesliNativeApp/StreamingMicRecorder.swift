@@ -20,6 +20,7 @@ final class StreamingMicRecorder: StreamingDictationRecording {
     /// Called with 4096-sample Float chunks (256ms at 16kHz) for VAD processing.
     var onAudioBuffer: (([Float]) -> Void)?
     var onRecordingFailed: ((Error) -> Void)?
+    var onLatencyEvent: ((String, Date) -> Void)?
     /// Called with 16-bit PCM mono samples for retained meeting recording.
     var onPCMSamples: (([Int16]) -> Void)?
     var preferredInputDeviceID: AudioObjectID?
@@ -53,19 +54,23 @@ final class StreamingMicRecorder: StreamingDictationRecording {
     }
 
     func prepare() throws {
+        emitLatency("app_scoped_prepare_begin")
         AudioInputDeviceSelection.applyPreferredInputDeviceID(
             preferredInputDeviceID,
             to: engine,
             logPrefix: "streaming-mic"
         )
+        emitLatency("app_scoped_preferred_input_applied")
 
         let inputNode = engine.inputNode
+        emitLatency("app_scoped_input_node_ready")
         let hwFormat = inputNode.outputFormat(forBus: 0)
         guard hwFormat.sampleRate > 0 else {
             throw NSError(domain: "StreamingMicRecorder", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "No audio input available",
             ])
         }
+        emitLatency("app_scoped_prepare_end")
     }
 
     func start() throws {
@@ -101,6 +106,7 @@ final class StreamingMicRecorder: StreamingDictationRecording {
         let fileState = try createNewFile()
         lock.withLock { $0 = fileState }
 
+        emitLatency("app_scoped_tap_install_begin")
         inputNode.installTap(onBus: 0, bufferSize: Self.bufferSize, format: nil) { [weak self] buffer, _ in
             guard let self else { return }
             guard self.isCurrentRecording(recordingID) else { return }
@@ -185,9 +191,12 @@ final class StreamingMicRecorder: StreamingDictationRecording {
             self.onAudioBuffer?(floats)
         }
         tapInstalled = true
+        emitLatency("app_scoped_tap_install_end")
 
         do {
+            emitLatency("app_scoped_engine_start_begin")
             try engine.start()
+            emitLatency("app_scoped_engine_start_end")
             isRunning = true
         } catch {
             removeTapIfNeeded()
@@ -298,6 +307,10 @@ final class StreamingMicRecorder: StreamingDictationRecording {
             $0.activeRecordingID = nil
             $0.hasReportedFailure = true
         }
+    }
+
+    private func emitLatency(_ event: String, at date: Date = Date()) {
+        onLatencyEvent?(event, date)
     }
 
     private func reportRecordingFailure(_ error: Error, recordingID: UUID) {
