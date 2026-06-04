@@ -86,6 +86,14 @@ final class MicrophoneRecorder: NSObject, AVAudioRecorderDelegate, @unchecked Se
         }
     }
 
+    func beginExplicitWarmup(preferredInputDeviceID: AudioObjectID?) {
+        do {
+            try activateWarmEngine(preferredInputDeviceID: preferredInputDeviceID)
+        } catch {
+            onLatencyEvent?("explicit_warmup_failed:system_default", Date())
+        }
+    }
+
     func warmUp(preferredInputDeviceID: AudioObjectID?) throws {
         lock.lock()
         defer { lock.unlock() }

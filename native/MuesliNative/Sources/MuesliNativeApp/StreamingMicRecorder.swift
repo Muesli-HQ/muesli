@@ -27,11 +27,14 @@ final class StreamingMicRecorder: StreamingDictationRecording {
 
     private let engine = AVAudioEngine()
     private let directoryName: String
+    private let graphLock = NSRecursiveLock()
     private let lock = OSAllocatedUnfairLock(initialState: FileState())
     private let failureLock = OSAllocatedUnfairLock(initialState: FailureState())
     private let failureCallbackQueue = DispatchQueue(label: "com.muesli.streaming-mic-recorder-failures")
     private var isRunning = false
     private var tapInstalled = false
+    private var graphPreparedInputDeviceID: AudioObjectID?
+    private var isGraphPrepared = false
 
     private struct FailureState {
         var activeRecordingID: UUID?
@@ -54,6 +57,19 @@ final class StreamingMicRecorder: StreamingDictationRecording {
     }
 
     func prepare() throws {
+        graphLock.lock()
+        defer { graphLock.unlock() }
+
+        try prepareLocked()
+    }
+
+    private func prepareLocked() throws {
+        if isGraphPrepared,
+           graphPreparedInputDeviceID == preferredInputDeviceID {
+            emitLatency("app_scoped_prepare_reused")
+            return
+        }
+
         emitLatency("app_scoped_prepare_begin")
         AudioInputDeviceSelection.applyPreferredInputDeviceID(
             preferredInputDeviceID,
@@ -66,16 +82,24 @@ final class StreamingMicRecorder: StreamingDictationRecording {
         emitLatency("app_scoped_input_node_ready")
         let hwFormat = inputNode.outputFormat(forBus: 0)
         guard hwFormat.sampleRate > 0 else {
+            isGraphPrepared = false
+            graphPreparedInputDeviceID = nil
             throw NSError(domain: "StreamingMicRecorder", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "No audio input available",
             ])
         }
+        engine.prepare()
+        isGraphPrepared = true
+        graphPreparedInputDeviceID = preferredInputDeviceID
         emitLatency("app_scoped_prepare_end")
     }
 
     func start() throws {
+        graphLock.lock()
+        defer { graphLock.unlock() }
+
         guard !isRunning else { return }
-        try prepare()
+        try prepareLocked()
         let recordingID = UUID()
         failureLock.withLock {
             $0.activeRecordingID = recordingID
@@ -237,6 +261,9 @@ final class StreamingMicRecorder: StreamingDictationRecording {
 
     /// Stop recording. Returns the final WAV URL.
     func stop() -> URL? {
+        graphLock.lock()
+        defer { graphLock.unlock() }
+
         guard isRunning else { return nil }
         isRunning = false
         clearFailureState()
@@ -269,10 +296,15 @@ final class StreamingMicRecorder: StreamingDictationRecording {
     }
 
     func cancel() {
+        graphLock.lock()
+        defer { graphLock.unlock() }
+
         isRunning = false
         clearFailureState()
         removeTapIfNeeded()
         engine.stop()
+        isGraphPrepared = false
+        graphPreparedInputDeviceID = nil
         onAudioBuffer = nil
         onPCMSamples = nil
         onRecordingFailed = nil

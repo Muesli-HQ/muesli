@@ -4819,6 +4819,7 @@ final class MuesliController: NSObject {
             meetingMonitor.suppressWhileActive()
             meetingMonitor.refreshState()
             setState(.preparing)
+            dictationAudioSessionManager.arm(source: "hotkey_prepare")
         }
     }
 
@@ -4832,7 +4833,9 @@ final class MuesliController: NSObject {
             setState(.preparing)
             meetingMonitor.suppressWhileActive()
             meetingMonitor.refreshState()
-            dictationAudioSessionManager.arm(source: "hotkey_arm")
+            if !dictationAudioSessionManager.hasActiveSession {
+                dictationAudioSessionManager.arm(source: "hotkey_arm")
+            }
         }
     }
 
@@ -4931,6 +4934,7 @@ final class MuesliController: NSObject {
             break
         case .acquiringAudio:
             markDictationLatency("acquiring_audio")
+            activateDictationPreparingIndicator()
         case .streamActive(_, let capturedAt):
             handleDictationStreamActive(capturedAt: capturedAt)
         case .speechDetected(_, let capturedAt):
@@ -4982,11 +4986,19 @@ final class MuesliController: NSObject {
         }
     }
 
-    private func handleDictationStreamActive(capturedAt: Date) {
-        if dictationStartedAt == nil {
-            dictationStartedAt = capturedAt
+    private func activateDictationPreparingIndicator() {
+        if dictationState != .preparing {
+            setState(.preparing)
         }
-        capturedDictationContext = nil
+        if !isDictationTestMode {
+            indicator.powerProvider = { [weak self] in
+                self?.dictationAudioSessionManager.currentPower() ?? -160
+            }
+            indicator.setPreparingWaveformWaiting(config: config)
+        }
+    }
+
+    private func activateDictationRecordingIndicator() {
         if hotkeyMonitor.isToggleRecording {
             setState(.recording)
             indicator.setToggleDictation(true, config: config)
@@ -5000,6 +5012,16 @@ final class MuesliController: NSObject {
                 self?.dictationAudioSessionManager.currentPower() ?? -160
             }
         }
+    }
+
+    private func handleDictationStreamActive(capturedAt: Date) {
+        markDictationLatency("ui_stream_active_handling_begin")
+        markDictationLatency("ui_stream_active_received", at: capturedAt)
+        if dictationStartedAt == nil {
+            dictationStartedAt = capturedAt
+        }
+        capturedDictationContext = nil
+        activateDictationRecordingIndicator()
         markDictationLatency("sound_start_requested:stream-active")
         SoundController.playDictationStart(enabled: shouldPlayDictationLifecycleSounds && !isDictationTestMode)
         markDictationLatency("ui_stream_active")

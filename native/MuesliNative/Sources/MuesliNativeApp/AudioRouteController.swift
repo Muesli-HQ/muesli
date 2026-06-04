@@ -119,6 +119,7 @@ protocol DictationAudioRouting: AnyObject {
     func isDefaultOutputHeadphoneLike() -> Bool
     func currentOutputRouteKindForDebug() -> AudioOutputRouteKind
     func currentRouteDebugDescription() -> String
+    func systemDefaultInputIsBuiltInForDictation() -> Bool
     func refreshRouteAfterDictationSession()
 }
 
@@ -127,7 +128,13 @@ final class DictationAudioRouteController: DictationAudioRouting {
         var outputRouteKind: AudioOutputRouteKind = .unknown
         var outputIsAmbiguousBluetooth: Bool = false
         var builtInInputDeviceID: AudioObjectID?
+        var defaultInputDeviceID: AudioObjectID?
         var selectedInputDeviceID: AudioObjectID?
+
+        var systemDefaultInputIsBuiltIn: Bool {
+            guard let defaultInputDeviceID, let builtInInputDeviceID else { return false }
+            return defaultInputDeviceID == builtInInputDeviceID
+        }
     }
 
     private let inspector: CoreAudioDeviceInspecting
@@ -173,6 +180,7 @@ final class DictationAudioRouteController: DictationAudioRouting {
             outputRouteKind: initialOutputClassification?.kind ?? .unknown,
             outputIsAmbiguousBluetooth: initialOutputClassification?.isAmbiguousBluetooth ?? false,
             builtInInputDeviceID: inspector.builtInInputDeviceID(),
+            defaultInputDeviceID: inspector.defaultInputDeviceID(),
             selectedInputDeviceID: nil
         )
         if observesDefaultOutputChanges {
@@ -258,7 +266,11 @@ final class DictationAudioRouteController: DictationAudioRouting {
         let current = lock.withLock { snapshot }
         let preferredInput = Self.preferredInputDeviceID(for: current)
             .map(String.init) ?? "default"
-        return "output=\(current.outputRouteKind.description) preferredInput=\(preferredInput)"
+        return "output=\(current.outputRouteKind.description) preferredInput=\(preferredInput) defaultInputBuiltIn=\(current.systemDefaultInputIsBuiltIn)"
+    }
+
+    func systemDefaultInputIsBuiltInForDictation() -> Bool {
+        lock.withLock { snapshot.systemDefaultInputIsBuiltIn }
     }
 
     func refreshRouteAfterDictationSession() {
@@ -299,6 +311,7 @@ final class DictationAudioRouteController: DictationAudioRouting {
             outputRouteKind: outputClassification.kind,
             outputIsAmbiguousBluetooth: outputClassification.isAmbiguousBluetooth,
             builtInInputDeviceID: inspector.builtInInputDeviceID(),
+            defaultInputDeviceID: inspector.defaultInputDeviceID(),
             selectedInputDeviceID: selectedInputDeviceUID.flatMap {
                 inspector.inputDeviceID(matchingUID: $0)
             }

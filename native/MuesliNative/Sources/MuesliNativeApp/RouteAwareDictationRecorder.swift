@@ -71,6 +71,13 @@ final class RouteAwareDictationRecorder: DictationAudioRecording {
         try activeRecorderLocked().prepare()
     }
 
+    func beginExplicitWarmup(preferredInputDeviceID: AudioObjectID?) {
+        lock.lock()
+        defer { lock.unlock() }
+        selectRecorderLocked(preferredInputDeviceID: preferredInputDeviceID)
+        activeRecorderLocked().beginExplicitWarmup(preferredInputDeviceID: preferredInputDeviceID)
+    }
+
     func warmUp(preferredInputDeviceID: AudioObjectID?) throws {
         lock.lock()
         defer { lock.unlock() }

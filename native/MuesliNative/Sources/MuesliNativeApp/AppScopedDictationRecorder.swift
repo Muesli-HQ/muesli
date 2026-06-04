@@ -27,12 +27,25 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
 
     private let recorder = StreamingMicRecorder(directoryName: "muesli-native-dictation")
     private let lock = NSRecursiveLock()
+    private let prepareQueue = DispatchQueue(label: "com.muesli.app-scoped-dictation-recorder-prepare")
     private let callbackQueue = DispatchQueue(label: "com.muesli.app-scoped-dictation-recorder-callbacks")
     private var noAudioTimeoutWorkItem: DispatchWorkItem?
     private var activeRecordingID: UUID?
+    private var explicitPreparation: ExplicitPreparation?
     private var hasReceivedFirstAudioBuffer = false
     private var hasDetectedSpeech = false
     private var hasReportedNoAudioTimeout = false
+
+    private final class ExplicitPreparation {
+        let inputDeviceID: AudioObjectID?
+        let group = DispatchGroup()
+        var result: Result<Void, Error>?
+
+        init(inputDeviceID: AudioObjectID?) {
+            self.inputDeviceID = inputDeviceID
+            group.enter()
+        }
+    }
 
     init() {
         recorder.onLatencyEvent = { [weak self] event, date in
@@ -49,6 +62,49 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
         defer { lock.unlock() }
 
         try recorder.prepare()
+    }
+
+    func beginExplicitWarmup(preferredInputDeviceID: AudioObjectID?) {
+        lock.lock()
+        if let explicitPreparation,
+           explicitPreparation.inputDeviceID == preferredInputDeviceID {
+            lock.unlock()
+            onLatencyEvent?("app_scoped_explicit_prepare_reused", Date())
+            return
+        }
+        guard activeRecordingID == nil else {
+            lock.unlock()
+            return
+        }
+
+        recorder.preferredInputDeviceID = preferredInputDeviceID
+        let preparation = ExplicitPreparation(inputDeviceID: preferredInputDeviceID)
+        explicitPreparation = preparation
+        lock.unlock()
+
+        onLatencyEvent?("app_scoped_explicit_prepare_begin", Date())
+        prepareQueue.async { [weak self, preparation] in
+            guard let self else {
+                preparation.result = .success(())
+                preparation.group.leave()
+                return
+            }
+
+            let result = Result { try self.recorder.prepare() }
+            self.lock.lock()
+            if self.explicitPreparation === preparation {
+                preparation.result = result
+            }
+            self.lock.unlock()
+
+            switch result {
+            case .success:
+                self.onLatencyEvent?("app_scoped_explicit_prepare_end", Date())
+            case .failure:
+                self.onLatencyEvent?("app_scoped_explicit_prepare_failed", Date())
+            }
+            preparation.group.leave()
+        }
     }
 
     func warmUp(preferredInputDeviceID: AudioObjectID?) throws {
@@ -80,22 +136,43 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
     @discardableResult
     func start() throws -> UUID {
         lock.lock()
-        defer { lock.unlock() }
-
-        if let activeRecordingID { return activeRecordingID }
+        if let activeRecordingID {
+            lock.unlock()
+            return activeRecordingID
+        }
 
         resetCaptureStateLocked()
         configureRecorderCallbacksLocked()
         let recordingID = UUID()
         activeRecordingID = recordingID
+        let preparation = explicitPreparation
+        lock.unlock()
+        do {
+            try awaitExplicitPreparationIfNeeded(preparation)
+        } catch {
+            lock.lock()
+            activeRecordingID = nil
+            lock.unlock()
+            recorder.cancel()
+            throw error
+        }
+        lock.lock()
+        guard activeRecordingID == recordingID else {
+            lock.unlock()
+            throw NSError(domain: "AppScopedDictationRecorder", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Dictation recording was cancelled before microphone startup finished",
+            ])
+        }
         do {
             try recorder.start()
         } catch {
             activeRecordingID = nil
+            lock.unlock()
             recorder.cancel()
             throw error
         }
         scheduleNoAudioTimeoutLocked()
+        lock.unlock()
         return recordingID
     }
 
@@ -114,6 +191,7 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
 
         cancelTimersLocked()
         activeRecordingID = nil
+        explicitPreparation = nil
         recorder.cancel()
     }
 
@@ -134,6 +212,21 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
         hasReceivedFirstAudioBuffer = false
         hasDetectedSpeech = false
         hasReportedNoAudioTimeout = false
+    }
+
+    private func awaitExplicitPreparationIfNeeded(_ preparation: ExplicitPreparation?) throws {
+        guard let preparation else { return }
+        onLatencyEvent?("app_scoped_explicit_prepare_wait_begin", Date())
+        preparation.group.wait()
+        onLatencyEvent?("app_scoped_explicit_prepare_wait_end", Date())
+        switch preparation.result {
+        case .success?:
+            return
+        case .failure(let error)?:
+            throw error
+        case nil:
+            return
+        }
     }
 
     private func handleAudioBuffer(_ samples: [Float]) {

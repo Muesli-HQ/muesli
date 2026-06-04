@@ -55,6 +55,21 @@ struct RouteAwareDictationRecorderTests {
         #expect(appScoped.preferredInputDeviceID == 82)
     }
 
+    @Test("preferred input explicit warmup uses app scoped recorder")
+    func preferredInputExplicitWarmupUsesAppScopedRecorder() {
+        let system = FakeRouteAwareChildRecorder()
+        let appScoped = FakeRouteAwareChildRecorder()
+        let recorder = RouteAwareDictationRecorder(systemDefaultRecorder: system, appScopedRecorder: appScoped)
+
+        recorder.beginExplicitWarmup(preferredInputDeviceID: 82)
+
+        #expect(recorder.activeRecorderKindForDebug() == .appScoped)
+        #expect(system.explicitWarmupCalls == 0)
+        #expect(appScoped.explicitWarmupCalls == 1)
+        #expect(appScoped.preferredInputDeviceID == 82)
+    }
+
+
     @Test("latency events are forwarded from active child recorder")
     func latencyEventsAreForwardedFromActiveChildRecorder() throws {
         let system = FakeRouteAwareChildRecorder()
@@ -98,11 +113,17 @@ private final class FakeRouteAwareChildRecorder: DictationAudioRecording {
     var onLatencyEvent: ((String, Date) -> Void)?
 
     var warmUpCalls = 0
+    var explicitWarmupCalls = 0
     var activateCalls = 0
     var startCalls = 0
     var cancelCalls = 0
 
     func prepare() throws {}
+
+    func beginExplicitWarmup(preferredInputDeviceID: AudioObjectID?) {
+        explicitWarmupCalls += 1
+        self.preferredInputDeviceID = preferredInputDeviceID
+    }
 
     func warmUp(preferredInputDeviceID: AudioObjectID?) throws {
         warmUpCalls += 1

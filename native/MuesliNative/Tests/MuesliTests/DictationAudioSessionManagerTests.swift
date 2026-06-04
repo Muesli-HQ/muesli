@@ -90,6 +90,7 @@ struct DictationAudioSessionManagerTests {
         harness.wait()
 
         #expect(harness.ducking.beginCalls.allSatisfy { $0 == false })
+        #expect(harness.recorder.explicitWarmupCalls == 1)
         #expect(harness.recorder.activateCalls == 0)
         #expect(harness.recorder.startCalls == 1)
         #expect(harness.recorder.preferredInputDeviceID == 82)
@@ -117,12 +118,13 @@ struct DictationAudioSessionManagerTests {
         harness.wait()
 
         #expect(harness.route.preferredInputCalls == 1)
+        #expect(harness.recorder.explicitWarmupCalls == 1)
         #expect(harness.recorder.activateCalls == 0)
         #expect(harness.recorder.startCalls == 0)
         #expect(harness.recorder.preferredInputDeviceID == 82)
         #expect(harness.events.contains { event in
             if case .latency(let name, _) = event {
-                return name == "activation_skipped:hotkey:app_scoped_route"
+                return name == "activation_async_prepare_started:hotkey:app_scoped_route"
             }
             return false
         })
@@ -142,7 +144,7 @@ struct DictationAudioSessionManagerTests {
         #expect(harness.recorder.startCalls == 1)
         #expect(harness.events.contains { event in
             if case .latency(let name, _) = event {
-                return name == "activation_prepare_skipped:toggle:app_scoped_start"
+                return name == "activation_prepare_skipped:toggle:app_scoped_route"
             }
             return false
         })
@@ -288,6 +290,67 @@ struct DictationAudioSessionManagerTests {
         #expect(harness.recorder.activateCalls == 0)
     }
 
+    @Test("speaker route skips idle warmup when default input is not built in")
+    func speakerRouteSkipsIdleWarmupWhenDefaultInputIsNotBuiltIn() {
+        let harness = Harness(routeKind: .speakerLike)
+        harness.route.systemDefaultInputIsBuiltIn = false
+
+        harness.manager.refreshRoute(intent: .idlePrewarm(.routeChange), canWarmUp: true)
+        harness.wait()
+
+        #expect(harness.route.refreshCalls == 1)
+        #expect(harness.recorder.coolDownCalls == 1)
+        #expect(harness.recorder.warmUpCalls == 0)
+        #expect(harness.recorder.startCalls == 0)
+        #expect(harness.recorder.activateCalls == 0)
+        #expect(!harness.recorder.keepsAudioGraphWarm)
+        #expect(harness.events.contains { event in
+            if case .latency(let name, _) = event {
+                return name == "warmup_skipped:idle_routeChange:risky_default_input"
+            }
+            return false
+        })
+    }
+
+    @Test("speaker route with non built-in default input does not arm-activate")
+    func speakerRouteWithNonBuiltInDefaultInputDoesNotArmActivate() {
+        let harness = Harness(routeKind: .speakerLike)
+        harness.route.systemDefaultInputIsBuiltIn = false
+
+        harness.manager.arm(source: "hotkey")
+        harness.wait()
+
+        #expect(harness.route.preferredInputCalls == 1)
+        #expect(harness.recorder.activateCalls == 0)
+        #expect(harness.recorder.startCalls == 0)
+        #expect(!harness.recorder.keepsAudioGraphWarm)
+        #expect(harness.events.contains { event in
+            if case .latency(let name, _) = event {
+                return name == "activation_skipped:hotkey:risky_default_input"
+            }
+            return false
+        })
+    }
+
+    @Test("explicit speaker recording with non built-in default input still starts cold")
+    func explicitSpeakerRecordingWithNonBuiltInDefaultInputStillStartsCold() {
+        let harness = Harness(routeKind: .speakerLike)
+        harness.route.systemDefaultInputIsBuiltIn = false
+
+        harness.manager.beginRecording(mode: "toggle", duckingEnabled: true, mediaPauseEnabled: false)
+        harness.wait()
+
+        #expect(harness.recorder.activateCalls == 0)
+        #expect(harness.recorder.startCalls == 1)
+        #expect(!harness.recorder.keepsAudioGraphWarm)
+        #expect(harness.events.contains { event in
+            if case .latency(let name, _) = event {
+                return name == "activation_prepare_skipped:toggle:risky_default_input"
+            }
+            return false
+        })
+    }
+
     @Test("headphone route refresh skips idle mic warmup")
     func headphoneRouteRefreshSkipsIdleMicWarmup() {
         let harness = Harness(routeKind: .headphoneLike, preferredInputDeviceID: 82)
@@ -332,7 +395,7 @@ struct DictationAudioSessionManagerTests {
         harness.wait()
 
         #expect(harness.route.refreshCalls == 1)
-        #expect(harness.recorder.coolDownCalls == 1)
+        #expect(harness.recorder.coolDownCalls == 0)
         #expect(harness.recorder.warmUpCalls == 0)
         #expect(harness.recorder.startCalls == 0)
         #expect(harness.recorder.activateCalls == 0)
@@ -590,6 +653,7 @@ private final class FakeDictationRecorder: DictationAudioRecording {
     var onLatencyEvent: ((String, Date) -> Void)?
 
     var prepareCalls = 0
+    var explicitWarmupCalls = 0
     var warmUpCalls = 0
     var activateCalls = 0
     var coolDownCalls = 0
@@ -604,6 +668,11 @@ private final class FakeDictationRecorder: DictationAudioRecording {
 
     func prepare() throws {
         prepareCalls += 1
+    }
+
+    func beginExplicitWarmup(preferredInputDeviceID: AudioObjectID?) {
+        explicitWarmupCalls += 1
+        self.preferredInputDeviceID = preferredInputDeviceID
     }
 
     func warmUp(preferredInputDeviceID: AudioObjectID?) throws {
@@ -704,6 +773,7 @@ private final class FakeDictationRoute: DictationAudioRouting {
     var routeKind: AudioOutputRouteKind
     var preferredInputDeviceID: AudioObjectID?
     var cachedPreferredInputDeviceID: AudioObjectID?
+    var systemDefaultInputIsBuiltIn = true
     var refreshCalls = 0
     var restoreCalls = 0
     var preferredInputCalls = 0
@@ -741,7 +811,11 @@ private final class FakeDictationRoute: DictationAudioRouting {
     }
 
     func currentRouteDebugDescription() -> String {
-        "output=\(routeKind.description) preferredInput=\(preferredInputDeviceID.map(String.init) ?? "default")"
+        "output=\(routeKind.description) preferredInput=\(preferredInputDeviceID.map(String.init) ?? "default") defaultInputBuiltIn=\(systemDefaultInputIsBuiltIn)"
+    }
+
+    func systemDefaultInputIsBuiltInForDictation() -> Bool {
+        systemDefaultInputIsBuiltIn
     }
 
     func refreshRouteAfterDictationSession() {

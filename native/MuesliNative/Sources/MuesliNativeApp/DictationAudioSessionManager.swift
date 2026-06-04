@@ -43,6 +43,15 @@ enum DictationWarmupIntent: Equatable {
             return "post_dictation_\(trigger.debugName)"
         }
     }
+
+    var shouldCoolDownOnSkippedWarmup: Bool {
+        switch self {
+        case .idlePrewarm:
+            return true
+        case .postDictation:
+            return false
+        }
+    }
 }
 
 enum IdlePrewarmTrigger: String {
@@ -78,6 +87,7 @@ protocol DictationAudioRecording: AnyObject {
     var onLatencyEvent: ((String, Date) -> Void)? { get set }
 
     func prepare() throws
+    func beginExplicitWarmup(preferredInputDeviceID: AudioObjectID?)
     func warmUp(preferredInputDeviceID: AudioObjectID?) throws
     func activateWarmEngine(preferredInputDeviceID: AudioObjectID?) throws
     func coolDown()
@@ -104,10 +114,19 @@ final class DictationAudioSessionManager: @unchecked Sendable {
     private struct RouteSnapshot {
         let routeKind: AudioOutputRouteKind
         let preferredInputDeviceID: AudioObjectID?
+        let systemDefaultInputIsBuiltIn: Bool
         let debugDescription: String
 
         var usesSpeakerDefaultRecorder: Bool {
             routeKind == .speakerLike && preferredInputDeviceID == nil
+        }
+
+        var usesAppScopedRecorder: Bool {
+            preferredInputDeviceID != nil
+        }
+
+        var canSpeculativelyWarmRecorder: Bool {
+            usesSpeakerDefaultRecorder && systemDefaultInputIsBuiltIn
         }
 
         var shouldDuck: Bool {
@@ -153,6 +172,7 @@ final class DictationAudioSessionManager: @unchecked Sendable {
         self.routeSnapshot = RouteSnapshot(
             routeKind: routingController.currentOutputRouteKindForDebug(),
             preferredInputDeviceID: routingController.cachedPreferredInputDeviceIDForDictation(),
+            systemDefaultInputIsBuiltIn: routingController.systemDefaultInputIsBuiltInForDictation(),
             debugDescription: routingController.currentRouteDebugDescription()
         )
 
@@ -206,9 +226,14 @@ final class DictationAudioSessionManager: @unchecked Sendable {
             self.emitLatency("route_snapshot \(self.routeSnapshot.debugDescription)")
             let recorderInputDeviceID = self.recorderInputDeviceID(for: self.routeSnapshot)
             self.recorder.preferredInputDeviceID = recorderInputDeviceID
-            guard self.routeSnapshot.usesSpeakerDefaultRecorder else {
+            guard self.routeSnapshot.canSpeculativelyWarmRecorder else {
                 self.recorder.keepsAudioGraphWarm = false
-                self.emitLatency("activation_skipped:\(source):app_scoped_route")
+                if self.routeSnapshot.usesAppScopedRecorder {
+                    self.recorder.beginExplicitWarmup(preferredInputDeviceID: recorderInputDeviceID)
+                    self.emitLatency("activation_async_prepare_started:\(source):app_scoped_route")
+                } else {
+                    self.emitLatency("activation_skipped:\(source):\(self.activationWarmupSkipReason(route: self.routeSnapshot))")
+                }
                 fputs("[dictation-session] armed source=\(source) skipped activation \(self.routeSnapshot.debugDescription)\n", stderr)
                 return
             }
@@ -258,13 +283,13 @@ final class DictationAudioSessionManager: @unchecked Sendable {
             self.duckingController.ensureCurrentDefaultDucked()
             let recorderInputDeviceID = self.recorderInputDeviceID(for: self.routeSnapshot)
             self.recorder.preferredInputDeviceID = recorderInputDeviceID
-            self.recorder.keepsAudioGraphWarm = self.routeSnapshot.usesSpeakerDefaultRecorder
+            self.recorder.keepsAudioGraphWarm = self.routeSnapshot.canSpeculativelyWarmRecorder
             do {
                 self.emitLatency("activation_begin:\(mode)")
-                if self.routeSnapshot.usesSpeakerDefaultRecorder {
+                if self.routeSnapshot.canSpeculativelyWarmRecorder {
                     try self.recorder.activateWarmEngine(preferredInputDeviceID: recorderInputDeviceID)
                 } else {
-                    self.emitLatency("activation_prepare_skipped:\(mode):app_scoped_start")
+                    self.emitLatency("activation_prepare_skipped:\(mode):\(self.activationWarmupSkipReason(route: self.routeSnapshot))")
                 }
                 self.activeRecorderRunID = try self.recorder.start()
                 self.emitLatency("activation_end:\(mode)")
@@ -415,7 +440,9 @@ final class DictationAudioSessionManager: @unchecked Sendable {
         guard stateStorage == .idle, !externalSessionActive else { return }
         if let skipReason = idleWarmupSkipReason(route: routeSnapshot, canWarmUp: canWarmUp) {
             recorder.keepsAudioGraphWarm = false
-            recorder.coolDown()
+            if intent.shouldCoolDownOnSkippedWarmup {
+                recorder.coolDown()
+            }
             emitLatency("warmup_skipped:\(intent.debugName):\(skipReason)")
             fputs("[dictation-session] warmup skipped intent=\(intent.debugName) reason=\(skipReason) \(routeSnapshot.debugDescription)\n", stderr)
             return
@@ -437,10 +464,20 @@ final class DictationAudioSessionManager: @unchecked Sendable {
         guard canWarmUp else { return "not_allowed" }
         switch route.routeKind {
         case .speakerLike:
+            if !route.systemDefaultInputIsBuiltIn {
+                return "risky_default_input"
+            }
             return nil
         case .headphoneLike, .unknown:
             return "risky_route"
         }
+    }
+
+    private func activationWarmupSkipReason(route: RouteSnapshot) -> String {
+        if route.usesSpeakerDefaultRecorder {
+            return route.systemDefaultInputIsBuiltIn ? "not_needed" : "risky_default_input"
+        }
+        return "app_scoped_route"
     }
 
     private func recorderInputDeviceID(for route: RouteSnapshot) -> AudioObjectID? {
@@ -477,6 +514,7 @@ final class DictationAudioSessionManager: @unchecked Sendable {
         return RouteSnapshot(
             routeKind: routingController.currentOutputRouteKindForDebug(),
             preferredInputDeviceID: preferredInputDeviceID,
+            systemDefaultInputIsBuiltIn: routingController.systemDefaultInputIsBuiltInForDictation(),
             debugDescription: routingController.currentRouteDebugDescription()
         )
     }
