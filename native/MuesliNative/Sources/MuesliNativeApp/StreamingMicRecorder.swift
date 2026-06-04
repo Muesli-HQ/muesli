@@ -17,7 +17,11 @@ protocol StreamingDictationRecording: AnyObject {
     func currentPower() -> Float
 }
 
-final class StreamingMicRecorder: StreamingDictationRecording {
+protocol StreamingDictationLatencyReporting: AnyObject {
+    var onLatencyEvent: ((String, Date) -> Void)? { get set }
+}
+
+final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting {
     /// Called with 4096-sample Float chunks (256ms at 16kHz) for VAD processing.
     var onAudioBuffer: (([Float]) -> Void)?
     var onRecordingFailed: ((Error) -> Void)?
@@ -80,7 +84,6 @@ final class StreamingMicRecorder: StreamingDictationRecording {
         emitLatency("app_scoped_preferred_input_applied")
 
         let inputNode = engine.inputNode
-        emitLatency("app_scoped_input_node_ready")
         let hwFormat = inputNode.outputFormat(forBus: 0)
         guard hwFormat.sampleRate > 0 else {
             isGraphPrepared = false

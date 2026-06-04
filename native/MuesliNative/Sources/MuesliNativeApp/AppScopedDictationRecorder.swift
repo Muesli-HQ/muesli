@@ -86,7 +86,10 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
     }
 
     init(
-        recorder: StreamingDictationRecording = StreamingMicRecorder(directoryName: "muesli-native-dictation"),
+        recorder: StreamingDictationRecording = FallbackStreamingDictationRecorder(
+            primary: AudioQueueInputRecorder(directoryName: "muesli-native-dictation"),
+            fallback: StreamingMicRecorder(directoryName: "muesli-native-dictation")
+        ),
         prepareQueue: DispatchQueue = DispatchQueue(label: "com.muesli.app-scoped-dictation-recorder-prepare"),
         callbackQueue: DispatchQueue = DispatchQueue(label: "com.muesli.app-scoped-dictation-recorder-callbacks")
     ) {
@@ -94,7 +97,7 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
         self.prepareQueue = prepareQueue
         self.callbackQueue = callbackQueue
 
-        (recorder as? StreamingMicRecorder)?.onLatencyEvent = { [weak self] event, date in
+        (recorder as? StreamingDictationLatencyReporting)?.onLatencyEvent = { [weak self] event, date in
             self?.onLatencyEvent?(event, date)
         }
     }

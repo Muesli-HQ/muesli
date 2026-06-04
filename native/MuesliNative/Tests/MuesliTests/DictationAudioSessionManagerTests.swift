@@ -175,15 +175,15 @@ struct DictationAudioSessionManagerTests {
         harness.manager.beginRecording(mode: "prepare", duckingEnabled: true, mediaPauseEnabled: false)
         harness.wait()
 
-        #expect(harness.route.preferredInputCalls == 1)
+        #expect(harness.route.preferredInputCalls == 2)
         #expect(harness.recorder.activateCalls == 1)
         #expect(harness.recorder.lastWarmInputDeviceID == nil)
         #expect(harness.recorder.preferredInputDeviceID == nil)
         #expect(harness.ducking.beginCalls == [true])
     }
 
-    @Test("hold start uses cached route snapshot from arm path")
-    func holdStartUsesCachedRouteSnapshot() {
+    @Test("hold start refreshes route snapshot from arm path")
+    func holdStartRefreshesRouteSnapshot() {
         let harness = Harness(routeKind: .headphoneLike, preferredInputDeviceID: 82)
 
         harness.manager.arm(source: "hotkey")
@@ -191,10 +191,10 @@ struct DictationAudioSessionManagerTests {
         harness.manager.beginRecording(mode: "hold-start", duckingEnabled: false, mediaPauseEnabled: false)
         harness.wait()
 
-        #expect(harness.route.preferredInputCalls == 1)
+        #expect(harness.route.preferredInputCalls == 2)
         #expect(harness.events.contains { event in
             if case .latency(let name, _) = event {
-                return name.hasPrefix("route_snapshot_cached:hold-start")
+                return name.hasPrefix("route_snapshot_refreshed:hold-start")
             }
             return false
         })

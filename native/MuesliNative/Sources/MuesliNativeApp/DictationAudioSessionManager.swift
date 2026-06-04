@@ -140,6 +140,7 @@ final class DictationAudioSessionManager: @unchecked Sendable {
     private var externalSessionActive = false
     private var routeRefreshGeneration = 0
     private var activeRecorderRunID: UUID?
+    private var failedSessionIDs = Set<UUID>()
     private let sessionHintLock = NSLock()
     private var sessionHint: UUID?
     private var externalSessionHint = false
@@ -249,6 +250,10 @@ final class DictationAudioSessionManager: @unchecked Sendable {
                 self.emitLatency("stale_session_ignored:\(mode)")
                 return
             }
+            guard !self.failedSessionIDs.contains(sessionID) else {
+                self.emitLatency("stale_session_ignored:\(mode)")
+                return
+            }
             let previousState = self.stateStorage
             self.ensureSessionStateLocked(sessionID)
             guard self.isCurrent(sessionID) else { return }
@@ -263,10 +268,12 @@ final class DictationAudioSessionManager: @unchecked Sendable {
             self.emit(.acquiringAudio(sessionID))
             self.emitLatency("threshold_met:\(mode)")
             if case .armed = previousState {
-                // arm() already refreshed the preferred input; keep threshold
-                // transition on the cached hotkey path.
-                self.routeSnapshot = self.makeRouteSnapshot(refreshInput: false)
-                self.emitLatency("route_snapshot_cached:\(mode) \(self.routeSnapshot.debugDescription)")
+                // AirPods can become the active route between hotkey arm and
+                // threshold. Refresh here so a stale speaker snapshot does not
+                // start the system-default recorder while CoreAudio is moving
+                // the route to headphones.
+                self.routeSnapshot = self.makeRouteSnapshot(refreshInput: true)
+                self.emitLatency("route_snapshot_refreshed:\(mode) \(self.routeSnapshot.debugDescription)")
             } else {
                 self.routeSnapshot = self.makeRouteSnapshot(refreshInput: true)
             }
@@ -392,6 +399,7 @@ final class DictationAudioSessionManager: @unchecked Sendable {
         if stateStorage.sessionID == nil {
             stateStorage = .armed(sessionID)
         }
+        failedSessionIDs.remove(sessionID)
     }
 
     private func clearSessionHint(_ sessionID: UUID?) {
@@ -510,6 +518,9 @@ final class DictationAudioSessionManager: @unchecked Sendable {
 
     private func failCurrentSession(error: Error) {
         let sessionID = stateStorage.sessionID
+        if let sessionID {
+            failedSessionIDs.insert(sessionID)
+        }
         stateStorage = .idle
         activeRecorderRunID = nil
         recorder.preferredInputDeviceID = nil
