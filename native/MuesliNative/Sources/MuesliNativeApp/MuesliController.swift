@@ -189,7 +189,7 @@ final class MuesliController: NSObject {
     private let hotkeyMonitor = HotkeyMonitor()
     private let computerUseHotkeyMonitor = HotkeyMonitor()
     private let meetingRecordingHotkeyMonitor = HotkeyMonitor()
-    private let recorder = MicrophoneRecorder()
+    private let computerUseRecorder = MicrophoneRecorder()
     private let dictationRecorder = RouteAwareDictationRecorder()
     private let audioDuckingController: AudioDuckingManaging
     private let dictationAudioRoutingController: DictationAudioRouting
@@ -616,7 +616,7 @@ final class MuesliController: NSObject {
         }
         endMeetingActivity()
         dictationAudioSessionManager.cancel(reason: "shutdown")
-        recorder.cancel()
+        computerUseRecorder.cancel()
         Task {
             await transcriptionCoordinator.shutdown()
         }
@@ -1737,7 +1737,6 @@ final class MuesliController: NSObject {
         dictationTestTask?.cancel()
         dictationTestTask = nil
         dictationAudioSessionManager.cancel(reason: "test-cancel")
-        recorder.cancel()
         setState(.idle)
     }
 
@@ -4420,13 +4419,13 @@ final class MuesliController: NSObject {
         fputs("[cua] prepare\n", stderr)
         meetingMonitor.suppressWhileActive()
         meetingMonitor.refreshState()
-        recorder.preferredInputDeviceID = nil
+        computerUseRecorder.preferredInputDeviceID = nil
         setState(.preparing)
         do {
-            try recorder.prepare()
+            try computerUseRecorder.prepare()
         } catch {
             fputs("[cua] recorder prepare failed: \(error)\n", stderr)
-            recorder.cancel()
+            computerUseRecorder.cancel()
             setState(.idle)
             meetingMonitor.resumeAfterCooldown()
             meetingMonitor.refreshState()
@@ -4437,18 +4436,18 @@ final class MuesliController: NSObject {
         guard canStartComputerUseCommand else { return }
         fputs("[cua] recording start\n", stderr)
         meetingMonitor.suppressWhileActive()
-        recorder.preferredInputDeviceID = nil
+        computerUseRecorder.preferredInputDeviceID = nil
         do {
-            try recorder.start()
+            try computerUseRecorder.start()
             computerUseCommandStartedAt = Date()
             indicator.powerProvider = { [weak self] in
-                self?.recorder.currentPower() ?? -160
+                self?.computerUseRecorder.currentPower() ?? -160
             }
             setState(.recording)
             SoundController.playDictationStart(enabled: shouldPlayDictationLifecycleSounds && !isDictationTestMode)
         } catch {
             fputs("[cua] recorder start failed: \(error)\n", stderr)
-            recorder.cancel()
+            computerUseRecorder.cancel()
             computerUseCommandStartedAt = nil
             setState(.idle)
             meetingMonitor.resumeAfterCooldown()
@@ -4476,7 +4475,7 @@ final class MuesliController: NSObject {
         fputs("[cua] cancel\n", stderr)
         computerUseCommandTask?.cancel()
         computerUseCommandTask = nil
-        recorder.cancel()
+        computerUseRecorder.cancel()
         computerUseCommandStartedAt = nil
         indicator.isToggleDictation = false
         setState(.idle)
@@ -4489,7 +4488,7 @@ final class MuesliController: NSObject {
         let startedAt = computerUseCommandStartedAt ?? Date()
         computerUseCommandStartedAt = nil
 
-        guard let wavURL = recorder.stop() else {
+        guard let wavURL = computerUseRecorder.stop() else {
             fputs("[cua] stop without wav\n", stderr)
             setState(.idle)
             meetingMonitor.resumeAfterCooldown()
