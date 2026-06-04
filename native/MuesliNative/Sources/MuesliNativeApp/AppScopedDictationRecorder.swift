@@ -25,10 +25,10 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
     private static let speechThresholdDB: Float = -58
     private static let noAudioTimeout: TimeInterval = 1.5
 
-    private let recorder = StreamingMicRecorder(directoryName: "muesli-native-dictation")
+    private let recorder: StreamingDictationRecording
     private let lock = NSRecursiveLock()
-    private let prepareQueue = DispatchQueue(label: "com.muesli.app-scoped-dictation-recorder-prepare")
-    private let callbackQueue = DispatchQueue(label: "com.muesli.app-scoped-dictation-recorder-callbacks")
+    private let prepareQueue: DispatchQueue
+    private let callbackQueue: DispatchQueue
     private var noAudioTimeoutWorkItem: DispatchWorkItem?
     private var activeRecordingID: UUID?
     private var explicitPreparation: ExplicitPreparation?
@@ -39,16 +39,62 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
     private final class ExplicitPreparation {
         let inputDeviceID: AudioObjectID?
         let group = DispatchGroup()
-        var result: Result<Void, Error>?
+        private let lock = NSLock()
+        private var completed = false
+        private var cancelled = false
+        private var resultStorage: Result<Void, Error>?
 
         init(inputDeviceID: AudioObjectID?) {
             self.inputDeviceID = inputDeviceID
             group.enter()
         }
+
+        var result: Result<Void, Error>? {
+            lock.withLock { resultStorage }
+        }
+
+        var isCancelled: Bool {
+            lock.withLock { cancelled }
+        }
+
+        @discardableResult
+        func complete(_ result: Result<Void, Error>) -> Bool {
+            lock.withLock {
+                guard !completed else { return false }
+                resultStorage = result
+                completed = true
+                group.leave()
+                return true
+            }
+        }
+
+        func cancel() {
+            lock.withLock {
+                cancelled = true
+                guard !completed else { return }
+                resultStorage = .failure(Self.cancelledError())
+                completed = true
+                group.leave()
+            }
+        }
+
+        private static func cancelledError() -> NSError {
+            NSError(domain: "AppScopedDictationRecorder", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "Dictation microphone preparation was cancelled",
+            ])
+        }
     }
 
-    init() {
-        recorder.onLatencyEvent = { [weak self] event, date in
+    init(
+        recorder: StreamingDictationRecording = StreamingMicRecorder(directoryName: "muesli-native-dictation"),
+        prepareQueue: DispatchQueue = DispatchQueue(label: "com.muesli.app-scoped-dictation-recorder-prepare"),
+        callbackQueue: DispatchQueue = DispatchQueue(label: "com.muesli.app-scoped-dictation-recorder-callbacks")
+    ) {
+        self.recorder = recorder
+        self.prepareQueue = prepareQueue
+        self.callbackQueue = callbackQueue
+
+        (recorder as? StreamingMicRecorder)?.onLatencyEvent = { [weak self] event, date in
             self?.onLatencyEvent?(event, date)
         }
     }
@@ -67,10 +113,17 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
     func beginExplicitWarmup(preferredInputDeviceID: AudioObjectID?) {
         lock.lock()
         if let explicitPreparation,
-           explicitPreparation.inputDeviceID == preferredInputDeviceID {
-            lock.unlock()
-            onLatencyEvent?("app_scoped_explicit_prepare_reused", Date())
-            return
+           explicitPreparation.inputDeviceID == preferredInputDeviceID,
+           !explicitPreparation.isCancelled {
+            switch explicitPreparation.result {
+            case nil, .success?:
+                lock.unlock()
+                onLatencyEvent?("app_scoped_explicit_prepare_reused", Date())
+                return
+            case .failure?:
+                self.explicitPreparation = nil
+                recorder.cancel()
+            }
         }
         guard activeRecordingID == nil else {
             lock.unlock()
@@ -85,25 +138,44 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
         onLatencyEvent?("app_scoped_explicit_prepare_begin", Date())
         prepareQueue.async { [weak self, preparation] in
             guard let self else {
-                preparation.result = .success(())
-                preparation.group.leave()
+                preparation.complete(.success(()))
+                return
+            }
+
+            self.lock.lock()
+            let shouldPrepare = self.explicitPreparation === preparation && !preparation.isCancelled
+            self.lock.unlock()
+            guard shouldPrepare else {
+                preparation.complete(.failure(Self.cancelledPreparationError()))
+                self.onLatencyEvent?("app_scoped_explicit_prepare_cancelled", Date())
                 return
             }
 
             let result = Result { try self.recorder.prepare() }
+            var shouldTearDown = false
             self.lock.lock()
-            if self.explicitPreparation === preparation {
-                preparation.result = result
+            if self.explicitPreparation === preparation && !preparation.isCancelled {
+                _ = preparation.complete(result)
+                if case .failure = result {
+                    if self.activeRecordingID == nil {
+                        self.explicitPreparation = nil
+                        shouldTearDown = true
+                    }
+                }
+            } else if self.activeRecordingID == nil {
+                shouldTearDown = true
             }
             self.lock.unlock()
 
+            if shouldTearDown {
+                self.recorder.cancel()
+            }
             switch result {
             case .success:
                 self.onLatencyEvent?("app_scoped_explicit_prepare_end", Date())
             case .failure:
                 self.onLatencyEvent?("app_scoped_explicit_prepare_failed", Date())
             }
-            preparation.group.leave()
         }
     }
 
@@ -191,6 +263,7 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
 
         cancelTimersLocked()
         activeRecordingID = nil
+        explicitPreparation?.cancel()
         explicitPreparation = nil
         recorder.cancel()
     }
@@ -219,6 +292,15 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
         onLatencyEvent?("app_scoped_explicit_prepare_wait_begin", Date())
         preparation.group.wait()
         onLatencyEvent?("app_scoped_explicit_prepare_wait_end", Date())
+        lock.lock()
+        let isCurrentPreparation = explicitPreparation === preparation
+        if isCurrentPreparation, case .failure? = preparation.result {
+            explicitPreparation = nil
+        }
+        lock.unlock()
+        guard isCurrentPreparation, !preparation.isCancelled else {
+            throw Self.cancelledPreparationError()
+        }
         switch preparation.result {
         case .success?:
             return
@@ -258,6 +340,12 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
         }
         lock.unlock()
         onRecordingFailed?(error, activeRecordingID)
+    }
+
+    private static func cancelledPreparationError() -> NSError {
+        NSError(domain: "AppScopedDictationRecorder", code: 2, userInfo: [
+            NSLocalizedDescriptionKey: "Dictation microphone preparation was cancelled",
+        ])
     }
 
     private func scheduleNoAudioTimeoutLocked() {

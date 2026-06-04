@@ -43,15 +43,6 @@ enum DictationWarmupIntent: Equatable {
             return "post_dictation_\(trigger.debugName)"
         }
     }
-
-    var shouldCoolDownOnSkippedWarmup: Bool {
-        switch self {
-        case .idlePrewarm:
-            return true
-        case .postDictation:
-            return false
-        }
-    }
 }
 
 enum IdlePrewarmTrigger: String {
@@ -440,9 +431,7 @@ final class DictationAudioSessionManager: @unchecked Sendable {
         guard stateStorage == .idle, !externalSessionActive else { return }
         if let skipReason = idleWarmupSkipReason(route: routeSnapshot, canWarmUp: canWarmUp) {
             recorder.keepsAudioGraphWarm = false
-            if intent.shouldCoolDownOnSkippedWarmup {
-                recorder.coolDown()
-            }
+            recorder.coolDown()
             emitLatency("warmup_skipped:\(intent.debugName):\(skipReason)")
             fputs("[dictation-session] warmup skipped intent=\(intent.debugName) reason=\(skipReason) \(routeSnapshot.debugDescription)\n", stderr)
             return

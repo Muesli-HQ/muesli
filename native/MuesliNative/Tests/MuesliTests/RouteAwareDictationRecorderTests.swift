@@ -101,6 +101,18 @@ struct RouteAwareDictationRecorderTests {
         #expect(system.cancelCalls == 1)
         #expect(appScoped.activateCalls == 1)
     }
+
+    @Test("cool down tears down both recorder graphs")
+    func coolDownTearsDownBothRecorderGraphs() {
+        let system = FakeRouteAwareChildRecorder()
+        let appScoped = FakeRouteAwareChildRecorder()
+        let recorder = RouteAwareDictationRecorder(systemDefaultRecorder: system, appScopedRecorder: appScoped)
+
+        recorder.coolDown()
+
+        #expect(system.coolDownCalls == 1)
+        #expect(appScoped.coolDownCalls == 1)
+    }
 }
 
 private final class FakeRouteAwareChildRecorder: DictationAudioRecording {
@@ -116,6 +128,7 @@ private final class FakeRouteAwareChildRecorder: DictationAudioRecording {
     var explicitWarmupCalls = 0
     var activateCalls = 0
     var startCalls = 0
+    var coolDownCalls = 0
     var cancelCalls = 0
 
     func prepare() throws {}
@@ -135,7 +148,9 @@ private final class FakeRouteAwareChildRecorder: DictationAudioRecording {
         self.preferredInputDeviceID = preferredInputDeviceID
     }
 
-    func coolDown() {}
+    func coolDown() {
+        coolDownCalls += 1
+    }
 
     func start() throws -> UUID {
         startCalls += 1

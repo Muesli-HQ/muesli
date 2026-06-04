@@ -395,7 +395,7 @@ struct DictationAudioSessionManagerTests {
         harness.wait()
 
         #expect(harness.route.refreshCalls == 1)
-        #expect(harness.recorder.coolDownCalls == 0)
+        #expect(harness.recorder.coolDownCalls == 1)
         #expect(harness.recorder.warmUpCalls == 0)
         #expect(harness.recorder.startCalls == 0)
         #expect(harness.recorder.activateCalls == 0)

@@ -14,6 +14,7 @@ protocol StreamingDictationRecording: AnyObject {
     func start() throws
     func stop() -> URL?
     func cancel()
+    func currentPower() -> Float
 }
 
 final class StreamingMicRecorder: StreamingDictationRecording {
