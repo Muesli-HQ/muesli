@@ -153,6 +153,14 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
                 self.onLatencyEvent?("app_scoped_explicit_prepare_cancelled", Date())
                 return
             }
+            self.lock.lock()
+            let isStillCurrent = self.explicitPreparation === preparation && !preparation.isCancelled
+            self.lock.unlock()
+            guard isStillCurrent else {
+                preparation.complete(.failure(Self.cancelledPreparationError()))
+                self.onLatencyEvent?("app_scoped_explicit_prepare_cancelled", Date())
+                return
+            }
 
             let result = Result { try self.recorder.prepare() }
             var shouldTearDown = false
