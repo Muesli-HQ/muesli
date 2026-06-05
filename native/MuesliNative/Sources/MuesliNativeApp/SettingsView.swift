@@ -679,7 +679,7 @@ struct SettingsView: View {
                         controller.updateConfig { $0.showScheduledMeetingNotifications = newValue }
                     }
                 }
-                settingsDescription("Show notifications before meetings start based on your calendar.")
+                settingsDescription("Show notifications before calendar meetings with a join link start.")
 
                 Divider().background(MuesliTheme.surfaceBorder)
 

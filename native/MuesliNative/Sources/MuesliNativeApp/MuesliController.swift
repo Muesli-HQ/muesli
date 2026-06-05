@@ -1372,9 +1372,12 @@ final class MuesliController: NSObject {
             return Date(timeIntervalSince1970: ts) > cutoff
         }
 
-        let candidates = appState.upcomingCalendarEvents.filter {
-            !$0.isAllDay && $0.startDate > now && $0.startDate <= fiveMinutesFromNow
-        }
+        let candidates = ScheduledMeetingNotificationPolicy.upcomingCandidates(
+            from: appState.upcomingCalendarEvents,
+            now: now,
+            hiddenEventIDs: appState.hiddenCalendarEventIDs,
+            leadTime: fiveMinutesFromNow.timeIntervalSince(now)
+        )
         for event in candidates {
             let key = notificationKey(id: event.id, startDate: event.startDate)
             guard !notifiedUpcomingEventIDs.contains(key) else { continue }
@@ -1394,15 +1397,26 @@ final class MuesliController: NSObject {
             // Schedule a second "Meeting starting now" notification at event start time
             let delay = event.startDate.timeIntervalSinceNow
             if delay > 15 { // Only if there's enough gap after the first notification auto-dismisses
-                let meetingURL = event.meetingURL
-                let endDate = event.endDate
-                let title = event.title
+                let eventID = event.id
+                let startDate = event.startDate
                 meetingStartingNowTimers[key]?.invalidate()
                 meetingStartingNowTimers[key] = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
                     DispatchQueue.main.async { [weak self] in
-                        guard let self, !self.isMeetingRecording() else { return }
+                        guard let self else { return }
                         self.meetingStartingNowTimers.removeValue(forKey: key)
-                        self.showMeetingStartingNowNotification(title: title, calendarEventID: key, meetingURL: meetingURL, endDate: endDate)
+                        guard !self.isMeetingRecording(),
+                              let event = ScheduledMeetingNotificationPolicy.startingNowCandidate(
+                                from: self.appState.upcomingCalendarEvents,
+                                eventID: eventID,
+                                startDate: startDate,
+                                hiddenEventIDs: self.appState.hiddenCalendarEventIDs
+                              ) else { return }
+                        self.showMeetingStartingNowNotification(
+                            title: event.title,
+                            calendarEventID: key,
+                            meetingURL: event.meetingURL,
+                            endDate: event.endDate
+                        )
                     }
                 }
             }
@@ -1413,7 +1427,8 @@ final class MuesliController: NSObject {
 
     /// Show a "Meeting starting now" notification — independent of Marauder's Map.
     private func showMeetingStartingNowNotification(title: String, calendarEventID: String?, meetingURL: URL?, endDate: Date?) {
-        guard config.showScheduledMeetingNotifications,
+        guard ScheduledMeetingNotificationPolicy.shouldShowStartingNowPrompt(meetingURL: meetingURL),
+              config.showScheduledMeetingNotifications,
               !isMeetingRecording(),
               !isStartingMeetingRecording else { return }
         isShowingCalendarNotification = true
@@ -5542,9 +5557,12 @@ final class MuesliController: NSObject {
                 guard let self else { return nil }
                 let now = Date()
                 let hidden = self.appState.hiddenCalendarEventIDs
-                guard let event = self.appState.upcomingCalendarEvents
-                    .filter({ !$0.isAllDay && $0.startDate > now && !hidden.contains($0.id) })
-                    .min(by: { $0.startDate < $1.startDate }) else { return nil }
+                guard let event = (self.appState.upcomingCalendarEvents
+                    .filter {
+                        ScheduledMeetingNotificationPolicy.isJoinableMeeting($0, hiddenEventIDs: hidden)
+                            && $0.startDate > now
+                    }
+                    .min(by: { $0.startDate < $1.startDate })) else { return nil }
                 return (id: event.id, title: event.title, startDate: event.startDate)
             },
             audioClipID: config.maraudersMapAudioClip,
@@ -5564,13 +5582,18 @@ final class MuesliController: NSObject {
                     timer.invalidate()
                     self.meetingStartingNowTimers.removeValue(forKey: key)
                 }
-                let event = self.appState.upcomingCalendarEvents.first(where: { $0.id == info.id })
+                guard let event = ScheduledMeetingNotificationPolicy.startingNowCandidate(
+                    from: self.appState.upcomingCalendarEvents,
+                    eventID: info.id,
+                    startDate: info.startDate,
+                    hiddenEventIDs: self.appState.hiddenCalendarEventIDs
+                ) else { return }
                 // Reuse the same notification method as the timer path
                 self.showMeetingStartingNowNotification(
-                    title: info.title,
-                    calendarEventID: info.id,
-                    meetingURL: event?.meetingURL,
-                    endDate: event?.endDate
+                    title: event.title,
+                    calendarEventID: self.notificationKey(id: event.id, startDate: event.startDate),
+                    meetingURL: event.meetingURL,
+                    endDate: event.endDate
                 )
             }
         )
