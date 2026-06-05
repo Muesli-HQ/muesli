@@ -87,6 +87,38 @@ struct RouteAwareDictationRecorderTests {
         #expect(events == ["app_scoped_engine_start_end"])
     }
 
+    @Test("callbacks from inactive child recorder are ignored")
+    func callbacksFromInactiveChildRecorderAreIgnored() throws {
+        let system = FakeRouteAwareChildRecorder()
+        let appScoped = FakeRouteAwareChildRecorder()
+        let recorder = RouteAwareDictationRecorder(systemDefaultRecorder: system, appScopedRecorder: appScoped)
+        var firstBufferCount = 0
+        var speechCount = 0
+        var timeoutCount = 0
+        var failureCount = 0
+        var latencyEvents: [String] = []
+        recorder.onFirstCapturedAudioBuffer = { _ in firstBufferCount += 1 }
+        recorder.onFirstSpeechDetected = { _ in speechCount += 1 }
+        recorder.onNoAudioTimeout = { _ in timeoutCount += 1 }
+        recorder.onRecordingFailed = { _, _ in failureCount += 1 }
+        recorder.onLatencyEvent = { event, _ in latencyEvents.append(event) }
+
+        _ = try recorder.start()
+        appScoped.onFirstCapturedAudioBuffer?(Date())
+        appScoped.onFirstSpeechDetected?(Date())
+        appScoped.onNoAudioTimeout?(Date())
+        appScoped.onRecordingFailed?(NSError(domain: "RouteAwareDictationRecorderTests", code: 1), UUID())
+        appScoped.onLatencyEvent?("inactive_latency", Date())
+        system.onFirstCapturedAudioBuffer?(Date())
+        system.onLatencyEvent?("active_latency", Date())
+
+        #expect(firstBufferCount == 1)
+        #expect(speechCount == 0)
+        #expect(timeoutCount == 0)
+        #expect(failureCount == 0)
+        #expect(latencyEvents == ["active_latency"])
+    }
+
     @Test("switching recorder cancels inactive warmed graph")
     func switchingRecorderCancelsInactiveWarmedGraph() throws {
         let system = FakeRouteAwareChildRecorder()

@@ -49,7 +49,14 @@ final class FallbackStreamingDictationRecorder: StreamingDictationRecording, Str
         } catch {
             emitLatency("streaming_recorder_primary_prepare_failed")
             primary.cancel()
-            try prepareFallbackLocked()
+            wireCallbacks()
+            do {
+                try prepareFallbackLocked()
+            } catch {
+                fallback.cancel()
+                wireCallbacks()
+                throw error
+            }
         }
     }
 
@@ -64,11 +71,30 @@ final class FallbackStreamingDictationRecorder: StreamingDictationRecording, Str
             } catch {
                 emitLatency("streaming_recorder_primary_start_failed")
                 primary.cancel()
-                try prepareFallbackLocked()
-                try fallback.start()
+                wireCallbacks()
+                do {
+                    try prepareFallbackLocked()
+                } catch {
+                    fallback.cancel()
+                    wireCallbacks()
+                    throw error
+                }
+                do {
+                    try fallback.start()
+                } catch {
+                    fallback.cancel()
+                    wireCallbacks()
+                    throw error
+                }
             }
         case .fallback:
-            try fallback.start()
+            do {
+                try fallback.start()
+            } catch {
+                fallback.cancel()
+                wireCallbacks()
+                throw error
+            }
         }
     }
 
@@ -80,6 +106,7 @@ final class FallbackStreamingDictationRecorder: StreamingDictationRecording, Str
 
         let url = recorder.stop()
         inactive.cancel()
+        wireCallbacks()
         return url
     }
 
@@ -90,6 +117,7 @@ final class FallbackStreamingDictationRecorder: StreamingDictationRecording, Str
 
         primary.cancel()
         fallback.cancel()
+        wireCallbacks()
     }
 
     func currentPower() -> Float {

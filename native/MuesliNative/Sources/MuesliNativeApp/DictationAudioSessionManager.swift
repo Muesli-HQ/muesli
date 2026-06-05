@@ -140,7 +140,7 @@ final class DictationAudioSessionManager: @unchecked Sendable {
     private var externalSessionActive = false
     private var routeRefreshGeneration = 0
     private var activeRecorderRunID: UUID?
-    private var failedSessionIDs = Set<UUID>()
+    private var failedSessionID: UUID?
     private let sessionHintLock = NSLock()
     private var sessionHint: UUID?
     private var externalSessionHint = false
@@ -250,7 +250,7 @@ final class DictationAudioSessionManager: @unchecked Sendable {
                 self.emitLatency("stale_session_ignored:\(mode)")
                 return
             }
-            guard !self.failedSessionIDs.contains(sessionID) else {
+            guard self.failedSessionID != sessionID else {
                 self.emitLatency("stale_session_ignored:\(mode)")
                 return
             }
@@ -399,7 +399,9 @@ final class DictationAudioSessionManager: @unchecked Sendable {
         if stateStorage.sessionID == nil {
             stateStorage = .armed(sessionID)
         }
-        failedSessionIDs.remove(sessionID)
+        if failedSessionID != sessionID {
+            failedSessionID = nil
+        }
     }
 
     private func clearSessionHint(_ sessionID: UUID?) {
@@ -519,7 +521,7 @@ final class DictationAudioSessionManager: @unchecked Sendable {
     private func failCurrentSession(error: Error) {
         let sessionID = stateStorage.sessionID
         if let sessionID {
-            failedSessionIDs.insert(sessionID)
+            failedSessionID = sessionID
         }
         stateStorage = .idle
         activeRecorderRunID = nil

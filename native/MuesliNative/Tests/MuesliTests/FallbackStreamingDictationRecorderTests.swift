@@ -47,6 +47,48 @@ struct FallbackStreamingDictationRecorderTests {
         #expect(fallback.startedInputDeviceID == 82)
     }
 
+    @Test("fallback start failure cleans up fallback recorder")
+    func fallbackStartFailureCleansUpFallbackRecorder() throws {
+        let primaryError = NSError(domain: "FallbackStreamingDictationRecorderTests", code: 20)
+        let fallbackError = NSError(domain: "FallbackStreamingDictationRecorderTests", code: 21)
+        let primary = FakeFallbackStreamingRecorder()
+        primary.startResults = [.failure(primaryError)]
+        let fallback = FakeFallbackStreamingRecorder()
+        fallback.startResults = [.failure(fallbackError)]
+        let recorder = FallbackStreamingDictationRecorder(primary: primary, fallback: fallback)
+
+        try recorder.prepare()
+        #expect(throws: Error.self) {
+            try recorder.start()
+        }
+
+        #expect(primary.cancelCalls == 1)
+        #expect(fallback.prepareCalls == 1)
+        #expect(fallback.startCalls == 1)
+        #expect(fallback.cancelCalls == 1)
+    }
+
+    @Test("callbacks are rewired after child cancel")
+    func callbacksAreRewiredAfterChildCancel() throws {
+        let error = NSError(domain: "FallbackStreamingDictationRecorderTests", code: 4)
+        let primary = FakeFallbackStreamingRecorder()
+        primary.startResults = [.failure(error)]
+        let fallback = FakeFallbackStreamingRecorder()
+        fallback.clearsCallbacksOnCancel = true
+        let recorder = FallbackStreamingDictationRecorder(primary: primary, fallback: fallback)
+        var bufferCount = 0
+        recorder.onAudioBuffer = { _ in bufferCount += 1 }
+
+        recorder.cancel()
+        try recorder.prepare()
+        try recorder.start()
+        fallback.onAudioBuffer?([0.3])
+
+        #expect(fallback.cancelCalls == 1)
+        #expect(fallback.startCalls == 1)
+        #expect(bufferCount == 1)
+    }
+
     @Test("callbacks from inactive recorder are ignored after fallback")
     func callbacksFromInactiveRecorderAreIgnoredAfterFallback() throws {
         let error = NSError(domain: "FallbackStreamingDictationRecorderTests", code: 3)
@@ -82,6 +124,7 @@ private final class FakeFallbackStreamingRecorder: StreamingDictationRecording {
     var startCalls = 0
     var stopCalls = 0
     var cancelCalls = 0
+    var clearsCallbacksOnCancel = false
 
     func prepare() throws {
         prepareCalls += 1
@@ -106,6 +149,10 @@ private final class FakeFallbackStreamingRecorder: StreamingDictationRecording {
 
     func cancel() {
         cancelCalls += 1
+        if clearsCallbacksOnCancel {
+            onAudioBuffer = nil
+            onRecordingFailed = nil
+        }
     }
 
     func currentPower() -> Float {

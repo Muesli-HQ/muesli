@@ -129,23 +129,34 @@ final class RouteAwareDictationRecorder: DictationAudioRecording {
     }
 
     private func wireCallbacks() {
-        for recorder in [systemDefaultRecorder, appScopedRecorder] {
-            recorder.onFirstCapturedAudioBuffer = { [weak self] date in
-                self?.onFirstCapturedAudioBuffer?(date)
-            }
-            recorder.onFirstSpeechDetected = { [weak self] date in
-                self?.onFirstSpeechDetected?(date)
-            }
-            recorder.onNoAudioTimeout = { [weak self] date in
-                self?.onNoAudioTimeout?(date)
-            }
-            recorder.onRecordingFailed = { [weak self] error, id in
-                self?.onRecordingFailed?(error, id)
-            }
-            recorder.onLatencyEvent = { [weak self] event, date in
-                self?.onLatencyEvent?(event, date)
-            }
+        wireCallbacks(for: systemDefaultRecorder, kind: .systemDefault)
+        wireCallbacks(for: appScopedRecorder, kind: .appScoped)
+    }
+
+    private func wireCallbacks(for recorder: DictationAudioRecording, kind: ActiveRecorderKind) {
+        recorder.onFirstCapturedAudioBuffer = { [weak self] date in
+            self?.forwardIfActive(kind) { $0.onFirstCapturedAudioBuffer?(date) }
         }
+        recorder.onFirstSpeechDetected = { [weak self] date in
+            self?.forwardIfActive(kind) { $0.onFirstSpeechDetected?(date) }
+        }
+        recorder.onNoAudioTimeout = { [weak self] date in
+            self?.forwardIfActive(kind) { $0.onNoAudioTimeout?(date) }
+        }
+        recorder.onRecordingFailed = { [weak self] error, id in
+            self?.forwardIfActive(kind) { $0.onRecordingFailed?(error, id) }
+        }
+        recorder.onLatencyEvent = { [weak self] event, date in
+            self?.forwardIfActive(kind) { $0.onLatencyEvent?(event, date) }
+        }
+    }
+
+    private func forwardIfActive(_ kind: ActiveRecorderKind, _ body: (RouteAwareDictationRecorder) -> Void) {
+        lock.lock()
+        let shouldForward = activeRecorderKindStorage == kind
+        lock.unlock()
+        guard shouldForward else { return }
+        body(self)
     }
 
     private func selectRecorderLocked(preferredInputDeviceID: AudioObjectID?) {
