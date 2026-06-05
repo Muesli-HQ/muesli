@@ -15,9 +15,10 @@ final class RouteAwareDictationRecorder: DictationAudioRecording {
         }
         set {
             lock.lock()
-            defer { lock.unlock() }
             preferredInputDeviceIDStorage = newValue
-            activeRecorderLocked().preferredInputDeviceID = newValue
+            let recorder = activeRecorderLocked()
+            lock.unlock()
+            recorder.preferredInputDeviceID = newValue
         }
     }
 
@@ -29,10 +30,12 @@ final class RouteAwareDictationRecorder: DictationAudioRecording {
         }
         set {
             lock.lock()
-            defer { lock.unlock() }
             keepsAudioGraphWarmStorage = newValue
-            systemDefaultRecorder.keepsAudioGraphWarm = newValue
-            appScopedRecorder.keepsAudioGraphWarm = newValue
+            let systemDefault = systemDefaultRecorder
+            let appScoped = appScopedRecorder
+            lock.unlock()
+            systemDefault.keepsAudioGraphWarm = newValue
+            appScoped.keepsAudioGraphWarm = newValue
         }
     }
 
@@ -65,7 +68,7 @@ final class RouteAwareDictationRecorder: DictationAudioRecording {
     }
 
     func prepare() throws {
-        let recorder = selectRecorder(preferredInputDeviceID: preferredInputDeviceIDStorage)
+        let recorder = selectRecorder(preferredInputDeviceID: currentPreferredInputDeviceID())
         try recorder.prepare()
     }
 
@@ -91,7 +94,7 @@ final class RouteAwareDictationRecorder: DictationAudioRecording {
 
     @discardableResult
     func start() throws -> UUID {
-        let recorder = selectRecorder(preferredInputDeviceID: preferredInputDeviceIDStorage)
+        let recorder = selectRecorder(preferredInputDeviceID: currentPreferredInputDeviceID())
         return try recorder.start()
     }
 
@@ -146,6 +149,13 @@ final class RouteAwareDictationRecorder: DictationAudioRecording {
         lock.unlock()
         guard shouldForward else { return }
         body(self)
+    }
+
+    private func currentPreferredInputDeviceID() -> AudioObjectID? {
+        lock.lock()
+        let preferredInputDeviceID = preferredInputDeviceIDStorage
+        lock.unlock()
+        return preferredInputDeviceID
     }
 
     private func selectRecorder(preferredInputDeviceID: AudioObjectID?) -> DictationAudioRecording {
