@@ -260,6 +260,7 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
 
         cancelTimersLocked()
         activeRecordingID = nil
+        explicitPreparation = nil
         return recorder.stop()
     }
 

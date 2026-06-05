@@ -66,6 +66,28 @@ struct AppScopedDictationRecorderTests {
         #expect(streamingRecorder.startedInputDeviceID == 82)
     }
 
+    @Test("stop clears explicit preparation so rapid re-arm re-prepares")
+    func stopClearsExplicitPreparationBeforeRapidRearm() throws {
+        let streamingRecorder = FakeStreamingRecorder()
+        let prepareQueue = DispatchQueue(label: "test.app-scoped-dictation.prepare.stop-rearm")
+        let recorder = AppScopedDictationRecorder(
+            recorder: streamingRecorder,
+            prepareQueue: prepareQueue
+        )
+
+        recorder.beginExplicitWarmup(preferredInputDeviceID: 82)
+        prepareQueue.sync {}
+        _ = try recorder.start()
+        _ = recorder.stop()
+
+        recorder.beginExplicitWarmup(preferredInputDeviceID: 82)
+        prepareQueue.sync {}
+
+        #expect(streamingRecorder.prepareCalls == 2)
+        #expect(streamingRecorder.stopCalls == 1)
+        #expect(streamingRecorder.preparedInputDeviceIDs == [82, 82])
+    }
+
     @Test("cool down clears explicit preparation so next arm re-warms")
     func coolDownClearsExplicitPreparation() {
         let streamingRecorder = FakeStreamingRecorder()
