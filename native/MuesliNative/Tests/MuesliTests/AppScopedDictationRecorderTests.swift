@@ -65,6 +65,26 @@ struct AppScopedDictationRecorderTests {
         #expect(streamingRecorder.startCalls == 1)
         #expect(streamingRecorder.startedInputDeviceID == 82)
     }
+
+    @Test("cool down clears explicit preparation so next arm re-warms")
+    func coolDownClearsExplicitPreparation() {
+        let streamingRecorder = FakeStreamingRecorder()
+        let prepareQueue = DispatchQueue(label: "test.app-scoped-dictation.prepare.cooldown")
+        let recorder = AppScopedDictationRecorder(
+            recorder: streamingRecorder,
+            prepareQueue: prepareQueue
+        )
+
+        recorder.beginExplicitWarmup(preferredInputDeviceID: 82)
+        prepareQueue.sync {}
+        recorder.coolDown()
+        recorder.beginExplicitWarmup(preferredInputDeviceID: 82)
+        prepareQueue.sync {}
+
+        #expect(streamingRecorder.prepareCalls == 2)
+        #expect(streamingRecorder.cancelCalls == 1)
+        #expect(streamingRecorder.preparedInputDeviceIDs == [82, 82])
+    }
 }
 
 private final class FakeStreamingRecorder: StreamingDictationRecording {

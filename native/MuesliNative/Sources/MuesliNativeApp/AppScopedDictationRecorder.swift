@@ -205,6 +205,8 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
         defer { lock.unlock() }
 
         guard activeRecordingID == nil else { return }
+        explicitPreparation?.cancel()
+        explicitPreparation = nil
         recorder.cancel()
     }
 
