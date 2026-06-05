@@ -147,24 +147,17 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
 
             self.lock.lock()
             let shouldPrepare = self.explicitPreparation === preparation && !preparation.isCancelled
-            self.lock.unlock()
             guard shouldPrepare else {
-                preparation.complete(.failure(Self.cancelledPreparationError()))
-                self.onLatencyEvent?("app_scoped_explicit_prepare_cancelled", Date())
-                return
-            }
-            self.lock.lock()
-            let isStillCurrent = self.explicitPreparation === preparation && !preparation.isCancelled
-            self.lock.unlock()
-            guard isStillCurrent else {
+                self.lock.unlock()
                 preparation.complete(.failure(Self.cancelledPreparationError()))
                 self.onLatencyEvent?("app_scoped_explicit_prepare_cancelled", Date())
                 return
             }
 
+            // Keep cancellation and prepare serialized: once cancel/coolDown returns,
+            // a previously queued warmup cannot start opening mic resources.
             let result = Result { try self.recorder.prepare() }
             var shouldTearDown = false
-            self.lock.lock()
             if self.explicitPreparation === preparation && !preparation.isCancelled {
                 _ = preparation.complete(result)
                 if case .failure = result {
@@ -176,11 +169,11 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
             } else if self.activeRecordingID == nil {
                 shouldTearDown = true
             }
-            self.lock.unlock()
 
             if shouldTearDown {
                 self.recorder.cancel()
             }
+            self.lock.unlock()
             switch result {
             case .success:
                 self.onLatencyEvent?("app_scoped_explicit_prepare_end", Date())
