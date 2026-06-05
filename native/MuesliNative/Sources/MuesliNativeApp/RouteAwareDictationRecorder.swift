@@ -65,67 +65,56 @@ final class RouteAwareDictationRecorder: DictationAudioRecording {
     }
 
     func prepare() throws {
-        lock.lock()
-        defer { lock.unlock() }
-        selectRecorderLocked(preferredInputDeviceID: preferredInputDeviceIDStorage)
-        try activeRecorderLocked().prepare()
+        let recorder = selectRecorder(preferredInputDeviceID: preferredInputDeviceIDStorage)
+        try recorder.prepare()
     }
 
     func beginExplicitWarmup(preferredInputDeviceID: AudioObjectID?) {
-        lock.lock()
-        defer { lock.unlock() }
-        selectRecorderLocked(preferredInputDeviceID: preferredInputDeviceID)
-        activeRecorderLocked().beginExplicitWarmup(preferredInputDeviceID: preferredInputDeviceID)
+        let recorder = selectRecorder(preferredInputDeviceID: preferredInputDeviceID)
+        recorder.beginExplicitWarmup(preferredInputDeviceID: preferredInputDeviceID)
     }
 
     func warmUp(preferredInputDeviceID: AudioObjectID?) throws {
-        lock.lock()
-        defer { lock.unlock() }
-        selectRecorderLocked(preferredInputDeviceID: preferredInputDeviceID)
-        try activeRecorderLocked().warmUp(preferredInputDeviceID: preferredInputDeviceID)
+        let recorder = selectRecorder(preferredInputDeviceID: preferredInputDeviceID)
+        try recorder.warmUp(preferredInputDeviceID: preferredInputDeviceID)
     }
 
     func activateWarmEngine(preferredInputDeviceID: AudioObjectID?) throws {
-        lock.lock()
-        defer { lock.unlock() }
-        selectRecorderLocked(preferredInputDeviceID: preferredInputDeviceID)
-        try activeRecorderLocked().activateWarmEngine(preferredInputDeviceID: preferredInputDeviceID)
+        let recorder = selectRecorder(preferredInputDeviceID: preferredInputDeviceID)
+        try recorder.activateWarmEngine(preferredInputDeviceID: preferredInputDeviceID)
     }
 
     func coolDown() {
-        lock.lock()
-        defer { lock.unlock() }
         systemDefaultRecorder.coolDown()
         appScopedRecorder.coolDown()
     }
 
     @discardableResult
     func start() throws -> UUID {
-        lock.lock()
-        defer { lock.unlock() }
-        selectRecorderLocked(preferredInputDeviceID: preferredInputDeviceIDStorage)
-        return try activeRecorderLocked().start()
+        let recorder = selectRecorder(preferredInputDeviceID: preferredInputDeviceIDStorage)
+        return try recorder.start()
     }
 
     func stop() -> URL? {
         lock.lock()
-        defer { lock.unlock() }
-        let url = activeRecorderLocked().stop()
-        inactiveRecorderLocked().cancel()
+        let activeRecorder = activeRecorderLocked()
+        let inactiveRecorder = inactiveRecorderLocked()
+        lock.unlock()
+        let url = activeRecorder.stop()
+        inactiveRecorder.cancel()
         return url
     }
 
     func cancel() {
-        lock.lock()
-        defer { lock.unlock() }
         systemDefaultRecorder.cancel()
         appScopedRecorder.cancel()
     }
 
     func currentPower() -> Float {
         lock.lock()
-        defer { lock.unlock() }
-        return activeRecorderLocked().currentPower()
+        let recorder = activeRecorderLocked()
+        lock.unlock()
+        return recorder.currentPower()
     }
 
     private func wireCallbacks() {
@@ -159,19 +148,20 @@ final class RouteAwareDictationRecorder: DictationAudioRecording {
         body(self)
     }
 
-    private func selectRecorderLocked(preferredInputDeviceID: AudioObjectID?) {
+    private func selectRecorder(preferredInputDeviceID: AudioObjectID?) -> DictationAudioRecording {
+        lock.lock()
         let nextKind: ActiveRecorderKind = preferredInputDeviceID == nil ? .systemDefault : .appScoped
+        let inactiveRecorderToCancel = nextKind == activeRecorderKindStorage ? nil : activeRecorderLocked()
         preferredInputDeviceIDStorage = preferredInputDeviceID
-        guard nextKind != activeRecorderKindStorage else {
-            activeRecorderLocked().preferredInputDeviceID = preferredInputDeviceID
-            activeRecorderLocked().keepsAudioGraphWarm = keepsAudioGraphWarmStorage
-            return
-        }
-
-        inactiveRecorder(for: nextKind).cancel()
         activeRecorderKindStorage = nextKind
-        activeRecorderLocked().preferredInputDeviceID = preferredInputDeviceID
-        activeRecorderLocked().keepsAudioGraphWarm = keepsAudioGraphWarmStorage
+        let selectedRecorder = activeRecorderLocked()
+        let keepsAudioGraphWarm = keepsAudioGraphWarmStorage
+        lock.unlock()
+
+        selectedRecorder.preferredInputDeviceID = preferredInputDeviceID
+        selectedRecorder.keepsAudioGraphWarm = keepsAudioGraphWarm
+        inactiveRecorderToCancel?.cancel()
+        return selectedRecorder
     }
 
     private func activeRecorderLocked() -> DictationAudioRecording {
