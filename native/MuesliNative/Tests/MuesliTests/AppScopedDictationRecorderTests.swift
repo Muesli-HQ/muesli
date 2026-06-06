@@ -41,8 +41,14 @@ struct AppScopedDictationRecorderTests {
 
         recorder.beginExplicitWarmup(preferredInputDeviceID: 82)
         #expect(prepareStarted.wait(timeout: .now() + 1) == .success)
-        recorder.cancel()
+        let cancelReturned = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            recorder.cancel()
+            cancelReturned.signal()
+        }
+        #expect(cancelReturned.wait(timeout: .now() + 0.1) == .timedOut)
         finishPrepare.signal()
+        #expect(cancelReturned.wait(timeout: .now() + 1) == .success)
         prepareQueue.sync {}
 
         streamingRecorder.prepareSemaphore = nil
@@ -137,6 +143,41 @@ struct AppScopedDictationRecorderTests {
         #expect(streamingRecorder.cancelCalls == 1)
         #expect(streamingRecorder.preparedInputDeviceIDs == [82, 82])
     }
+
+    @Test("cancel waits for in-flight child startup before returning")
+    func cancelWaitsForInFlightChildStartupBeforeReturning() throws {
+        let streamingRecorder = FakeStreamingRecorder()
+        let startStarted = DispatchSemaphore(value: 0)
+        let finishStart = DispatchSemaphore(value: 0)
+        let cancelReturned = DispatchSemaphore(value: 0)
+        streamingRecorder.onStartStarted = {
+            startStarted.signal()
+        }
+        streamingRecorder.startSemaphore = finishStart
+        let recorder = AppScopedDictationRecorder(
+            recorder: streamingRecorder,
+            prepareQueue: DispatchQueue(label: "test.app-scoped-dictation.prepare.startup-cancel")
+        )
+
+        let startQueue = DispatchQueue(label: "test.app-scoped-dictation.start")
+        startQueue.async {
+            _ = try? recorder.start()
+        }
+
+        #expect(startStarted.wait(timeout: .now() + 1) == .success)
+        DispatchQueue.global(qos: .userInitiated).async {
+            recorder.cancel()
+            cancelReturned.signal()
+        }
+
+        #expect(cancelReturned.wait(timeout: .now() + 0.1) == .timedOut)
+        finishStart.signal()
+        #expect(cancelReturned.wait(timeout: .now() + 1) == .success)
+        startQueue.sync {}
+
+        #expect(streamingRecorder.startCalls == 1)
+        #expect(streamingRecorder.cancelCalls >= 1)
+    }
 }
 
 private final class FakeStreamingRecorder: StreamingDictationRecording {
@@ -153,6 +194,8 @@ private final class FakeStreamingRecorder: StreamingDictationRecording {
     var startedInputDeviceID: AudioObjectID?
     var onPrepareStarted: (() -> Void)?
     var prepareSemaphore: DispatchSemaphore?
+    var onStartStarted: (() -> Void)?
+    var startSemaphore: DispatchSemaphore?
 
     func prepare() throws {
         prepareCalls += 1
@@ -167,6 +210,8 @@ private final class FakeStreamingRecorder: StreamingDictationRecording {
     func start() throws {
         startCalls += 1
         startedInputDeviceID = preferredInputDeviceID
+        onStartStarted?()
+        startSemaphore?.wait()
     }
 
     func stop() -> URL? {
