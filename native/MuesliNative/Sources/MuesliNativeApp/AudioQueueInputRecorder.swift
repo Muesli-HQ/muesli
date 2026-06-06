@@ -20,6 +20,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
     private let failureCallbackQueue = DispatchQueue(label: "com.muesli.audio-queue-input-recorder-failures")
 
     private var audioQueue: AudioQueueRef?
+    private var queueCallbackUserData: UnsafeMutableRawPointer?
     private var buffers: [AudioQueueBufferRef] = []
     private var preparedInputDeviceID: AudioObjectID?
     private var isPrepared = false
@@ -127,7 +128,9 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         isRunning = false
         captureGeneration &+= 1
         let queueToDispose = audioQueue
+        let callbackUserDataToRelease = queueCallbackUserData
         audioQueue = nil
+        queueCallbackUserData = nil
         buffers.removeAll()
         preparedInputDeviceID = nil
         isPrepared = false
@@ -139,6 +142,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
             emitLatency("audio_queue_cancel_stop_end")
             AudioQueueDispose(queueToDispose, true)
         }
+        Self.releaseCallbackUserData(callbackUserDataToRelease)
 
         processingQueue.sync {}
 
@@ -178,11 +182,12 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         )
 
         var queue: AudioQueueRef?
+        let callbackUserData = Unmanaged.passRetained(self).toOpaque()
         emitLatency("audio_queue_new_input_begin")
         let newInputStatus = AudioQueueNewInput(
             &format,
             Self.inputCallback,
-            Unmanaged.passUnretained(self).toOpaque(),
+            callbackUserData,
             nil,
             nil,
             0,
@@ -190,28 +195,34 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         )
         emitLatency("audio_queue_new_input_end")
         guard newInputStatus == noErr, let queue else {
+            Self.releaseCallbackUserData(callbackUserData)
             throw Self.runtimeError(code: 4, message: "AudioQueueNewInput failed: \(newInputStatus)")
         }
         audioQueue = queue
+        queueCallbackUserData = callbackUserData
 
-        if let preferredInputDeviceID {
-            try applyPreferredInputDeviceID(preferredInputDeviceID, to: queue)
-        } else {
-            emitLatency("audio_queue_preferred_input_default_route")
-        }
-
-        let bytesPerBuffer = Self.framesPerBuffer * format.mBytesPerFrame
-        emitLatency("audio_queue_allocate_buffers_begin")
-        for _ in 0..<Self.bufferCount {
-            var buffer: AudioQueueBufferRef?
-            let status = AudioQueueAllocateBuffer(queue, bytesPerBuffer, &buffer)
-            guard status == noErr, let buffer else {
-                disposeQueueLocked()
-                throw Self.runtimeError(code: 5, message: "AudioQueueAllocateBuffer failed: \(status)")
+        do {
+            if let preferredInputDeviceID {
+                try applyPreferredInputDeviceID(preferredInputDeviceID, to: queue)
+            } else {
+                emitLatency("audio_queue_preferred_input_default_route")
             }
-            buffers.append(buffer)
+
+            let bytesPerBuffer = Self.framesPerBuffer * format.mBytesPerFrame
+            emitLatency("audio_queue_allocate_buffers_begin")
+            for _ in 0..<Self.bufferCount {
+                var buffer: AudioQueueBufferRef?
+                let status = AudioQueueAllocateBuffer(queue, bytesPerBuffer, &buffer)
+                guard status == noErr, let buffer else {
+                    throw Self.runtimeError(code: 5, message: "AudioQueueAllocateBuffer failed: \(status)")
+                }
+                buffers.append(buffer)
+            }
+            emitLatency("audio_queue_allocate_buffers_end")
+        } catch {
+            disposeQueueLocked()
+            throw error
         }
-        emitLatency("audio_queue_allocate_buffers_end")
 
         preparedInputDeviceID = preferredInputDeviceID
         isPrepared = true
@@ -324,15 +335,18 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
     }
 
     private func disposeQueueLocked() {
+        let callbackUserDataToRelease = queueCallbackUserData
         if let audioQueue {
             captureGeneration &+= 1
             AudioQueueStop(audioQueue, true)
             AudioQueueDispose(audioQueue, true)
         }
         audioQueue = nil
+        queueCallbackUserData = nil
         buffers.removeAll()
         preparedInputDeviceID = nil
         isPrepared = false
+        Self.releaseCallbackUserData(callbackUserDataToRelease)
     }
 
     private func reportFailure(_ error: Error) {
@@ -349,6 +363,11 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         NSError(domain: "AudioQueueInputRecorder", code: code, userInfo: [
             NSLocalizedDescriptionKey: message,
         ])
+    }
+
+    private static func releaseCallbackUserData(_ userData: UnsafeMutableRawPointer?) {
+        guard let userData else { return }
+        Unmanaged<AudioQueueInputRecorder>.fromOpaque(userData).release()
     }
 
     private static func deviceUID(for deviceID: AudioObjectID) -> String? {
