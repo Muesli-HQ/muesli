@@ -19,9 +19,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/muesli_spm_cache.sh"
 
 PACKAGE_DIR="$ROOT/native/MuesliNative"
-SWIFTPM_SCRATCH_PATH="${MUESLI_SWIFTPM_SCRATCH_PATH:-$HOME/Library/Caches/muesli-spm/preprod}"
+SWIFTPM_SCRATCH_PATH="$(muesli_resolve_spm_scratch_path preprod)"
 PROFILE_NAME="${MUESLI_NOTARY_PROFILE:-MuesliNotary}"
 SIGN_IDENTITY="${MUESLI_SIGN_IDENTITY:-Developer ID Application: Pranav Hari Guruvayurappan (58W55QJ567)}"
 APP_NAME="MuesliPreprod"
