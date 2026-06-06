@@ -41,8 +41,11 @@ MuesliDev uses bundle ID `com.muesli.dev` and stores data at `~/Library/Applicat
 SwiftPM can write build artifacts to `native/MuesliNative/.build` inside the active worktree. That can consume several GB per worktree. Local scripts now resolve a shared SwiftPM scratch path through `scripts/muesli_spm_cache.sh`:
 
 - Explicit `MUESLI_SWIFTPM_SCRATCH_PATH` wins.
+- `MUESLI_SWIFTPM_SCRATCH_CHANNEL` overrides the channel segment under the resolved cache root.
+- `MUESLI_EXTERNAL_SPM_CACHE_ROOT` overrides the default `/Volumes/MuesliBuildCache/muesli-spm` external cache root.
 - If `/Volumes/MuesliBuildCache/muesli-spm` is mounted, scripts use that external APFS cache.
 - Otherwise scripts fall back to `~/Library/Caches/muesli-spm`.
+- `MUESLI_DISABLE_SWIFTPM_SCRATCH_PATH=1` intentionally opts out and uses SwiftPM's package-local `.build`.
 
 The preferred local cache is an APFS sparse bundle stored on the external SSD at `/Volumes/eSSD/MuesliBuildCache.sparsebundle`. Mount it before build-heavy local work:
 
@@ -50,10 +53,12 @@ The preferred local cache is an APFS sparse bundle stored on the external SSD at
 hdiutil attach /Volumes/eSSD/MuesliBuildCache.sparsebundle
 ```
 
+That sparse-bundle path is the maintainer's local SSD path. Contributors can substitute their own volume path or skip the attach step; scripts fall back to `~/Library/Caches/muesli-spm` when the external cache is not mounted.
+
 Default script channels:
 
 ```bash
-./scripts/dev-test.sh                 # /Volumes/MuesliBuildCache/muesli-spm/dev when mounted
+./scripts/dev-test.sh                 # /Volumes/MuesliBuildCache/muesli-spm/worktrees/<worktree>/dev when mounted
 ./scripts/build_native_app.sh release # /Volumes/MuesliBuildCache/muesli-spm/release when mounted
 ./scripts/release-preprod.sh          # /Volumes/MuesliBuildCache/muesli-spm/preprod when mounted
 ./scripts/release-alpha.sh            # /Volumes/MuesliBuildCache/muesli-spm/alpha when mounted

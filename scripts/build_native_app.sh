@@ -32,10 +32,10 @@ if [[ "$CODESIGN_TIMESTAMP" == "none" ]]; then
 fi
 
 SWIFT_BUILD_ARGS=(--package-path "$PACKAGE_DIR" -c "$BUILD_CONFIG")
-if [[ "${MUESLI_DISABLE_SWIFTPM_SCRATCH_PATH:-0}" != "1" ]]; then
+if ! muesli_spm_scratch_disabled; then
   DEFAULT_SCRATCH_CHANNEL="release"
   if [[ "$BUILD_CONFIG" == "debug" ]]; then
-    DEFAULT_SCRATCH_CHANNEL="dev"
+    DEFAULT_SCRATCH_CHANNEL="$(muesli_worktree_spm_scratch_channel dev "$ROOT")"
   fi
   SWIFTPM_SCRATCH_PATH="$(muesli_resolve_spm_scratch_path "$DEFAULT_SCRATCH_CHANNEL")"
   mkdir -p "$SWIFTPM_SCRATCH_PATH"

@@ -10,6 +10,10 @@
 # Set MUESLI_DISABLE_SWIFTPM_SCRATCH_PATH=1 to let SwiftPM use the package-local
 # .build directory.
 
+muesli_spm_scratch_disabled() {
+  [[ "${MUESLI_DISABLE_SWIFTPM_SCRATCH_PATH:-0}" == "1" ]]
+}
+
 muesli_default_spm_cache_root() {
   local external_root="${MUESLI_EXTERNAL_SPM_CACHE_ROOT:-/Volumes/MuesliBuildCache/muesli-spm}"
   if [[ -d "$external_root" ]]; then
@@ -29,4 +33,24 @@ muesli_resolve_spm_scratch_path() {
     channel="$MUESLI_SWIFTPM_SCRATCH_CHANNEL"
   fi
   printf '%s/%s\n' "$(muesli_default_spm_cache_root)" "$channel"
+}
+
+muesli_worktree_spm_scratch_channel() {
+  local channel="${1:-dev}"
+  local root="${2:-$PWD}"
+  local root_name
+  local root_hash
+  root_name="$(basename "$root")"
+  root_hash="$(printf '%s' "$root" | cksum | awk '{print $1}')"
+  printf 'worktrees/%s-%s/%s\n' "$root_name" "$root_hash" "$channel"
+}
+
+muesli_spm_artifacts_root() {
+  local package_dir="$1"
+  local scratch_path="${2:-}"
+  if [[ -n "$scratch_path" ]]; then
+    printf '%s/artifacts\n' "$scratch_path"
+  else
+    printf '%s/.build/artifacts\n' "$package_dir"
+  fi
 }
