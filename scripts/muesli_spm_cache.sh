@@ -2,13 +2,16 @@
 
 # Shared SwiftPM scratch-path resolution for local Muesli builds.
 #
-# Precedence:
+# Resolution precedence, unless disabled:
 #   1. MUESLI_SWIFTPM_SCRATCH_PATH, when explicitly set
 #   2. MUESLI_EXTERNAL_SPM_CACHE_ROOT/<channel>, when that root exists
 #   3. ~/Library/Caches/muesli-spm/<channel>
 #
-# Set MUESLI_DISABLE_SWIFTPM_SCRATCH_PATH=1 to let SwiftPM use the package-local
-# .build directory.
+# MUESLI_DISABLE_SWIFTPM_SCRATCH_PATH=1 takes precedence over all other path
+# settings and lets SwiftPM use the package-local .build directory.
+
+[[ -n "${_MUESLI_SPM_CACHE_LOADED:-}" ]] && return 0
+_MUESLI_SPM_CACHE_LOADED=1
 
 muesli_spm_scratch_disabled() {
   [[ "${MUESLI_DISABLE_SWIFTPM_SCRATCH_PATH:-0}" == "1" ]]
@@ -45,7 +48,7 @@ muesli_worktree_spm_scratch_channel() {
   printf 'worktrees/%s-%s/%s\n' "$root_name" "$root_hash" "$channel"
 }
 
-muesli_spm_artifacts_root() {
+muesli_spm_artifacts_dir() {
   local package_dir="$1"
   local scratch_path="${2:-}"
   if [[ -n "$scratch_path" ]]; then

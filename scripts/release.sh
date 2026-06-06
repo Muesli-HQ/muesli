@@ -35,6 +35,9 @@ PACKAGE_DIR="$ROOT/native/MuesliNative"
 SWIFTPM_SCRATCH_PATH=""
 SWIFT_TEST_ARGS=(--package-path "$PACKAGE_DIR")
 BUILD_ENV=()
+# The release channel is intentionally shared across worktrees. Do not run this
+# script concurrently from multiple worktrees unless you set an isolated
+# MUESLI_SWIFTPM_SCRATCH_PATH or MUESLI_SWIFTPM_SCRATCH_CHANNEL.
 if ! muesli_spm_scratch_disabled; then
   SWIFTPM_SCRATCH_PATH="$(muesli_resolve_spm_scratch_path release)"
   SWIFT_TEST_ARGS+=(--scratch-path "$SWIFTPM_SCRATCH_PATH")
@@ -47,7 +50,7 @@ SIGN_IDENTITY="${MUESLI_SIGN_IDENTITY:-Developer ID Application: Pranav Hari Gur
 OUTPUT_DIR="$ROOT/dist-release"
 INSTALL_DIR="${MUESLI_RELEASE_INSTALL_DIR:-$OUTPUT_DIR/install-root}"
 APP_DIR="${MUESLI_RELEASE_APP_DIR:-$INSTALL_DIR/Muesli.app}"
-GENERATE_APPCAST="$(muesli_spm_artifacts_root "$PACKAGE_DIR" "$SWIFTPM_SCRATCH_PATH")/sparkle/Sparkle/bin/generate_appcast"
+GENERATE_APPCAST="$(muesli_spm_artifacts_dir "$PACKAGE_DIR" "$SWIFTPM_SCRATCH_PATH")/sparkle/Sparkle/bin/generate_appcast"
 UPDATE_APPCAST_RELEASE_NOTES="$ROOT/scripts/update_appcast_release_notes.py"
 TAP_REPO="${MUESLI_TAP_REPO:-Muesli-HQ/homebrew-muesli}"
 TAP_CASK_REL_PATH="${MUESLI_TAP_CASK_REL_PATH:-Casks/m/muesli.rb}"

@@ -45,7 +45,7 @@ SwiftPM can write build artifacts to `native/MuesliNative/.build` inside the act
 - `MUESLI_EXTERNAL_SPM_CACHE_ROOT` overrides the default `/Volumes/MuesliBuildCache/muesli-spm` external cache root.
 - If `/Volumes/MuesliBuildCache/muesli-spm` is mounted, scripts use that external APFS cache.
 - Otherwise scripts fall back to `~/Library/Caches/muesli-spm`.
-- `MUESLI_DISABLE_SWIFTPM_SCRATCH_PATH=1` intentionally opts out and uses SwiftPM's package-local `.build`.
+- `MUESLI_DISABLE_SWIFTPM_SCRATCH_PATH=1` intentionally opts out and uses SwiftPM's package-local `.build`; this takes precedence over all scratch path settings.
 
 The preferred local cache is an APFS sparse bundle stored on the external SSD at `/Volumes/eSSD/MuesliBuildCache.sparsebundle`. Mount it before build-heavy local work:
 

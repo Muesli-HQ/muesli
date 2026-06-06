@@ -11,7 +11,7 @@ Local build scripts resolve a shared SwiftPM scratch path through `scripts/muesl
 - If `MUESLI_EXTERNAL_SPM_CACHE_ROOT` is set, it replaces the default `/Volumes/MuesliBuildCache/muesli-spm` external cache root.
 - Otherwise, if `/Volumes/MuesliBuildCache/muesli-spm` is mounted, scripts use that external APFS cache.
 - Otherwise, scripts fall back to `$HOME/Library/Caches/muesli-spm`.
-- Set `MUESLI_DISABLE_SWIFTPM_SCRATCH_PATH=1` to intentionally use SwiftPM's package-local `.build`.
+- Set `MUESLI_DISABLE_SWIFTPM_SCRATCH_PATH=1` to intentionally use SwiftPM's package-local `.build`; this takes precedence over all scratch path settings.
 
 The external cache lives in an APFS sparse bundle at `/Volumes/eSSD/MuesliBuildCache.sparsebundle`; attach it before build-heavy work:
 

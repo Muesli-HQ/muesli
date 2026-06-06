@@ -29,6 +29,9 @@ PACKAGE_DIR="$ROOT/native/MuesliNative"
 SWIFTPM_SCRATCH_PATH=""
 SWIFT_TEST_ARGS=(--package-path "$PACKAGE_DIR")
 BUILD_ENV=()
+# The alpha channel is intentionally shared across worktrees. Do not run this
+# script concurrently from multiple worktrees unless you set an isolated
+# MUESLI_SWIFTPM_SCRATCH_PATH or MUESLI_SWIFTPM_SCRATCH_CHANNEL.
 if ! muesli_spm_scratch_disabled; then
   SWIFTPM_SCRATCH_PATH="$(muesli_resolve_spm_scratch_path alpha)"
   SWIFT_TEST_ARGS+=(--scratch-path "$SWIFTPM_SCRATCH_PATH")

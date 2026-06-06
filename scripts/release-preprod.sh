@@ -25,6 +25,9 @@ PACKAGE_DIR="$ROOT/native/MuesliNative"
 SWIFTPM_SCRATCH_PATH=""
 SWIFT_TEST_ARGS=(--package-path "$PACKAGE_DIR")
 BUILD_ENV=()
+# The preprod channel is intentionally shared across worktrees. Do not run this
+# script concurrently from multiple worktrees unless you set an isolated
+# MUESLI_SWIFTPM_SCRATCH_PATH or MUESLI_SWIFTPM_SCRATCH_CHANNEL.
 if ! muesli_spm_scratch_disabled; then
   SWIFTPM_SCRATCH_PATH="$(muesli_resolve_spm_scratch_path preprod)"
   SWIFT_TEST_ARGS+=(--scratch-path "$SWIFTPM_SCRATCH_PATH")
@@ -42,7 +45,7 @@ OUTPUT_DIR="$ROOT/dist-preprod"
 INSTALL_DIR="$OUTPUT_DIR/install-root"
 APP_DIR="$INSTALL_DIR/${APP_NAME}.app"
 APPCAST_PATH="$ROOT/docs/appcast-preprod.xml"
-GENERATE_APPCAST="$(muesli_spm_artifacts_root "$PACKAGE_DIR" "$SWIFTPM_SCRATCH_PATH")/sparkle/Sparkle/bin/generate_appcast"
+GENERATE_APPCAST="$(muesli_spm_artifacts_dir "$PACKAGE_DIR" "$SWIFTPM_SCRATCH_PATH")/sparkle/Sparkle/bin/generate_appcast"
 UPDATE_APPCAST_RELEASE_NOTES="$ROOT/scripts/update_appcast_release_notes.py"
 VERIFY_DIR=""
 HOSTED_MOUNT_POINT=""
