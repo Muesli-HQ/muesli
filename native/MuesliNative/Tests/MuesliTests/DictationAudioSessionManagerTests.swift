@@ -212,6 +212,7 @@ struct DictationAudioSessionManagerTests {
         harness.wait()
 
         #expect(harness.recorder.stopCalls == 1)
+        #expect(!harness.recorder.keepsAudioGraphWarm)
         #expect(harness.ducking.restoreCalls == 1)
         #expect(harness.route.restoreCalls == 1)
         #expect(harness.events.contains { event in

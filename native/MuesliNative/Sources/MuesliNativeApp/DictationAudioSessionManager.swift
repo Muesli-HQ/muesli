@@ -330,6 +330,7 @@ final class DictationAudioSessionManager: @unchecked Sendable {
                 return
             }
             self.emitLatency("stop")
+            self.recorder.keepsAudioGraphWarm = false
             let wavURL = self.recorder.stop()
             self.activeRecorderRunID = nil
             self.recorder.preferredInputDeviceID = nil
