@@ -168,6 +168,9 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
                     guard shouldPrepare else {
                         throw Self.cancelledPreparationError()
                     }
+                    // recorderQueue serializes this prepare against cancelChildRecorder().
+                    // If cancellation arrives after this check, cancel() waits behind
+                    // the prepare and the post-check below tears the child graph down.
                     didTouchChildRecorder = true
                     self.recorder.preferredInputDeviceID = preferredInputDeviceID
                     try self.recorder.prepare()
@@ -277,7 +280,9 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
         lifecycleGeneration &+= 1
         lock.unlock()
         return recorderQueue.sync {
-            recorder.stop()
+            let url = recorder.stop()
+            recorder.cancel()
+            return url
         }
     }
 

@@ -124,6 +124,22 @@ struct AppScopedDictationRecorderTests {
         #expect(streamingRecorder.preparedInputDeviceIDs == [82, 82])
     }
 
+    @Test("stop tears down child recorder graph after finalizing recording")
+    func stopTearsDownChildRecorderGraphAfterFinalizingRecording() throws {
+        let streamingRecorder = FakeStreamingRecorder()
+        let recorder = AppScopedDictationRecorder(
+            recorder: streamingRecorder,
+            prepareQueue: DispatchQueue(label: "test.app-scoped-dictation.prepare.stop-teardown")
+        )
+
+        _ = try recorder.start()
+        _ = recorder.stop()
+
+        #expect(streamingRecorder.startCalls == 1)
+        #expect(streamingRecorder.stopCalls == 1)
+        #expect(streamingRecorder.cancelCalls == 1)
+    }
+
     @Test("cool down clears explicit preparation so next arm re-warms")
     func coolDownClearsExplicitPreparation() {
         let streamingRecorder = FakeStreamingRecorder()

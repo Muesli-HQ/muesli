@@ -145,6 +145,41 @@ struct RouteAwareDictationRecorderTests {
         #expect(system.coolDownCalls == 1)
         #expect(appScoped.coolDownCalls == 1)
     }
+
+    @Test("route switch waits for in-flight app scoped explicit warmup teardown")
+    func routeSwitchWaitsForInFlightAppScopedExplicitWarmupTeardown() throws {
+        let system = FakeRouteAwareChildRecorder()
+        let appScopedStreaming = FakeRouteAwareStreamingRecorder()
+        let prepareStarted = DispatchSemaphore(value: 0)
+        let finishPrepare = DispatchSemaphore(value: 0)
+        let routeSwitchReturned = DispatchSemaphore(value: 0)
+        appScopedStreaming.onPrepareStarted = {
+            prepareStarted.signal()
+        }
+        appScopedStreaming.prepareSemaphore = finishPrepare
+        let appScoped = AppScopedDictationRecorder(
+            recorder: appScopedStreaming,
+            prepareQueue: DispatchQueue(label: "test.route-aware.app-scoped.prepare.route-switch")
+        )
+        let recorder = RouteAwareDictationRecorder(systemDefaultRecorder: system, appScopedRecorder: appScoped)
+
+        recorder.beginExplicitWarmup(preferredInputDeviceID: 82)
+        #expect(prepareStarted.wait(timeout: .now() + 1) == .success)
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            try? recorder.warmUp(preferredInputDeviceID: nil)
+            routeSwitchReturned.signal()
+        }
+
+        #expect(routeSwitchReturned.wait(timeout: .now() + 0.1) == .timedOut)
+        finishPrepare.signal()
+        #expect(routeSwitchReturned.wait(timeout: .now() + 1) == .success)
+
+        #expect(recorder.activeRecorderKindForDebug() == .systemDefault)
+        #expect(system.warmUpCalls == 1)
+        #expect(appScopedStreaming.prepareCalls == 1)
+        #expect(appScopedStreaming.cancelCalls >= 1)
+    }
 }
 
 private final class FakeRouteAwareChildRecorder: DictationAudioRecording {
@@ -160,6 +195,7 @@ private final class FakeRouteAwareChildRecorder: DictationAudioRecording {
     var explicitWarmupCalls = 0
     var activateCalls = 0
     var startCalls = 0
+    var stopCalls = 0
     var coolDownCalls = 0
     var cancelCalls = 0
 
@@ -190,7 +226,44 @@ private final class FakeRouteAwareChildRecorder: DictationAudioRecording {
     }
 
     func stop() -> URL? {
-        nil
+        stopCalls += 1
+        return nil
+    }
+
+    func cancel() {
+        cancelCalls += 1
+    }
+
+    func currentPower() -> Float {
+        -160
+    }
+}
+
+private final class FakeRouteAwareStreamingRecorder: StreamingDictationRecording {
+    var onAudioBuffer: (([Float]) -> Void)?
+    var onRecordingFailed: ((Error) -> Void)?
+    var preferredInputDeviceID: AudioObjectID?
+
+    var prepareCalls = 0
+    var startCalls = 0
+    var stopCalls = 0
+    var cancelCalls = 0
+    var onPrepareStarted: (() -> Void)?
+    var prepareSemaphore: DispatchSemaphore?
+
+    func prepare() throws {
+        prepareCalls += 1
+        onPrepareStarted?()
+        prepareSemaphore?.wait()
+    }
+
+    func start() throws {
+        startCalls += 1
+    }
+
+    func stop() -> URL? {
+        stopCalls += 1
+        return nil
     }
 
     func cancel() {

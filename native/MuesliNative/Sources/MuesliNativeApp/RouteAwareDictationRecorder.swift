@@ -14,11 +14,13 @@ final class RouteAwareDictationRecorder: DictationAudioRecording {
             return preferredInputDeviceIDStorage
         }
         set {
-            lock.lock()
-            preferredInputDeviceIDStorage = newValue
-            let recorder = activeRecorderLocked()
-            lock.unlock()
-            recorder.preferredInputDeviceID = newValue
+            lifecycleQueue.sync {
+                lock.lock()
+                preferredInputDeviceIDStorage = newValue
+                let recorder = activeRecorderLocked()
+                lock.unlock()
+                recorder.preferredInputDeviceID = newValue
+            }
         }
     }
 
@@ -29,13 +31,15 @@ final class RouteAwareDictationRecorder: DictationAudioRecording {
             return keepsAudioGraphWarmStorage
         }
         set {
-            lock.lock()
-            keepsAudioGraphWarmStorage = newValue
-            let systemDefault = systemDefaultRecorder
-            let appScoped = appScopedRecorder
-            lock.unlock()
-            systemDefault.keepsAudioGraphWarm = newValue
-            appScoped.keepsAudioGraphWarm = newValue
+            lifecycleQueue.sync {
+                lock.lock()
+                keepsAudioGraphWarmStorage = newValue
+                let systemDefault = systemDefaultRecorder
+                let appScoped = appScopedRecorder
+                lock.unlock()
+                systemDefault.keepsAudioGraphWarm = newValue
+                appScoped.keepsAudioGraphWarm = newValue
+            }
         }
     }
 
@@ -47,6 +51,7 @@ final class RouteAwareDictationRecorder: DictationAudioRecording {
 
     private let systemDefaultRecorder: DictationAudioRecording
     private let appScopedRecorder: DictationAudioRecording
+    private let lifecycleQueue: DispatchQueue
     private let lock = NSRecursiveLock()
     private var preferredInputDeviceIDStorage: AudioObjectID?
     private var keepsAudioGraphWarmStorage = false
@@ -54,10 +59,12 @@ final class RouteAwareDictationRecorder: DictationAudioRecording {
 
     init(
         systemDefaultRecorder: DictationAudioRecording = MicrophoneRecorder(),
-        appScopedRecorder: DictationAudioRecording = AppScopedDictationRecorder()
+        appScopedRecorder: DictationAudioRecording = AppScopedDictationRecorder(),
+        lifecycleQueue: DispatchQueue = DispatchQueue(label: "com.muesli.route-aware-dictation-recorder-lifecycle")
     ) {
         self.systemDefaultRecorder = systemDefaultRecorder
         self.appScopedRecorder = appScopedRecorder
+        self.lifecycleQueue = lifecycleQueue
         wireCallbacks()
     }
 
@@ -68,49 +75,65 @@ final class RouteAwareDictationRecorder: DictationAudioRecording {
     }
 
     func prepare() throws {
-        let recorder = selectRecorder(preferredInputDeviceID: currentPreferredInputDeviceID())
-        try recorder.prepare()
+        try lifecycleQueue.sync {
+            let recorder = selectRecorder(preferredInputDeviceID: currentPreferredInputDeviceID())
+            try recorder.prepare()
+        }
     }
 
     func beginExplicitWarmup(preferredInputDeviceID: AudioObjectID?) {
-        let recorder = selectRecorder(preferredInputDeviceID: preferredInputDeviceID)
-        recorder.beginExplicitWarmup(preferredInputDeviceID: preferredInputDeviceID)
+        lifecycleQueue.sync {
+            let recorder = selectRecorder(preferredInputDeviceID: preferredInputDeviceID)
+            recorder.beginExplicitWarmup(preferredInputDeviceID: preferredInputDeviceID)
+        }
     }
 
     func warmUp(preferredInputDeviceID: AudioObjectID?) throws {
-        let recorder = selectRecorder(preferredInputDeviceID: preferredInputDeviceID)
-        try recorder.warmUp(preferredInputDeviceID: preferredInputDeviceID)
+        try lifecycleQueue.sync {
+            let recorder = selectRecorder(preferredInputDeviceID: preferredInputDeviceID)
+            try recorder.warmUp(preferredInputDeviceID: preferredInputDeviceID)
+        }
     }
 
     func activateWarmEngine(preferredInputDeviceID: AudioObjectID?) throws {
-        let recorder = selectRecorder(preferredInputDeviceID: preferredInputDeviceID)
-        try recorder.activateWarmEngine(preferredInputDeviceID: preferredInputDeviceID)
+        try lifecycleQueue.sync {
+            let recorder = selectRecorder(preferredInputDeviceID: preferredInputDeviceID)
+            try recorder.activateWarmEngine(preferredInputDeviceID: preferredInputDeviceID)
+        }
     }
 
     func coolDown() {
-        systemDefaultRecorder.coolDown()
-        appScopedRecorder.coolDown()
+        lifecycleQueue.sync {
+            systemDefaultRecorder.coolDown()
+            appScopedRecorder.coolDown()
+        }
     }
 
     @discardableResult
     func start() throws -> UUID {
-        let recorder = selectRecorder(preferredInputDeviceID: currentPreferredInputDeviceID())
-        return try recorder.start()
+        try lifecycleQueue.sync {
+            let recorder = selectRecorder(preferredInputDeviceID: currentPreferredInputDeviceID())
+            return try recorder.start()
+        }
     }
 
     func stop() -> URL? {
-        lock.lock()
-        let activeRecorder = activeRecorderLocked()
-        let inactiveRecorder = inactiveRecorderLocked()
-        lock.unlock()
-        let url = activeRecorder.stop()
-        inactiveRecorder.cancel()
-        return url
+        lifecycleQueue.sync {
+            lock.lock()
+            let activeRecorder = activeRecorderLocked()
+            let inactiveRecorder = inactiveRecorderLocked()
+            lock.unlock()
+            let url = activeRecorder.stop()
+            inactiveRecorder.cancel()
+            return url
+        }
     }
 
     func cancel() {
-        systemDefaultRecorder.cancel()
-        appScopedRecorder.cancel()
+        lifecycleQueue.sync {
+            systemDefaultRecorder.cancel()
+            appScopedRecorder.cancel()
+        }
     }
 
     func currentPower() -> Float {
