@@ -329,7 +329,7 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
             activeRecordingID = nil
             return true
         }
-        return activeRecordingID == nil
+        return false
     }
 
     private func cancelChildRecorder() {

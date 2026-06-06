@@ -194,6 +194,43 @@ struct AppScopedDictationRecorderTests {
         #expect(streamingRecorder.startCalls == 1)
         #expect(streamingRecorder.cancelCalls >= 1)
     }
+
+    @Test("stale startup failure after cancel does not cancel child twice")
+    func staleStartupFailureAfterCancelDoesNotCancelChildTwice() throws {
+        let error = NSError(domain: "AppScopedDictationRecorderTests", code: 2)
+        let streamingRecorder = FakeStreamingRecorder()
+        let startStarted = DispatchSemaphore(value: 0)
+        let finishStart = DispatchSemaphore(value: 0)
+        let cancelReturned = DispatchSemaphore(value: 0)
+        streamingRecorder.onStartStarted = {
+            startStarted.signal()
+        }
+        streamingRecorder.startSemaphore = finishStart
+        streamingRecorder.startError = error
+        let recorder = AppScopedDictationRecorder(
+            recorder: streamingRecorder,
+            prepareQueue: DispatchQueue(label: "test.app-scoped-dictation.prepare.stale-start-failure")
+        )
+
+        let startQueue = DispatchQueue(label: "test.app-scoped-dictation.stale-start-failure")
+        startQueue.async {
+            _ = try? recorder.start()
+        }
+
+        #expect(startStarted.wait(timeout: .now() + 1) == .success)
+        DispatchQueue.global(qos: .userInitiated).async {
+            recorder.cancel()
+            cancelReturned.signal()
+        }
+
+        #expect(cancelReturned.wait(timeout: .now() + 0.1) == .timedOut)
+        finishStart.signal()
+        #expect(cancelReturned.wait(timeout: .now() + 1) == .success)
+        startQueue.sync {}
+
+        #expect(streamingRecorder.startCalls == 1)
+        #expect(streamingRecorder.cancelCalls == 1)
+    }
 }
 
 private final class FakeStreamingRecorder: StreamingDictationRecording {
@@ -212,6 +249,7 @@ private final class FakeStreamingRecorder: StreamingDictationRecording {
     var prepareSemaphore: DispatchSemaphore?
     var onStartStarted: (() -> Void)?
     var startSemaphore: DispatchSemaphore?
+    var startError: Error?
 
     func prepare() throws {
         prepareCalls += 1
@@ -228,6 +266,9 @@ private final class FakeStreamingRecorder: StreamingDictationRecording {
         startedInputDeviceID = preferredInputDeviceID
         onStartStarted?()
         startSemaphore?.wait()
+        if let startError {
+            throw startError
+        }
     }
 
     func stop() -> URL? {
