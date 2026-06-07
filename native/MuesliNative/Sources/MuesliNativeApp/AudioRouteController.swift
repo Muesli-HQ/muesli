@@ -45,6 +45,15 @@ struct AudioOutputDeviceDescription: Equatable {
     }
 }
 
+struct AudioInputDeviceInfo: Equatable, Identifiable {
+    let uid: String
+    let name: String
+    let deviceID: AudioObjectID
+    let isBuiltIn: Bool
+
+    var id: String { uid }
+}
+
 enum AudioRouteClassifier {
     struct Classification: Equatable {
         let kind: AudioOutputRouteKind
@@ -101,13 +110,16 @@ enum AudioRouteClassifier {
 
 protocol DictationAudioRouting: AnyObject {
     var onPreferredInputDeviceChanged: ((AudioObjectID?) -> Void)? { get set }
+    var selectedInputDeviceUID: String? { get set }
 
     func refreshRouteCache()
     func preferredInputDeviceIDForDictation() -> AudioObjectID?
     func cachedPreferredInputDeviceIDForDictation() -> AudioObjectID?
+    func availableInputDevices() -> [AudioInputDeviceInfo]
     func isDefaultOutputHeadphoneLike() -> Bool
     func currentOutputRouteKindForDebug() -> AudioOutputRouteKind
     func currentRouteDebugDescription() -> String
+    func systemDefaultInputIsBuiltInForDictation() -> Bool
     func refreshRouteAfterDictationSession()
 }
 
@@ -116,6 +128,13 @@ final class DictationAudioRouteController: DictationAudioRouting {
         var outputRouteKind: AudioOutputRouteKind = .unknown
         var outputIsAmbiguousBluetooth: Bool = false
         var builtInInputDeviceID: AudioObjectID?
+        var defaultInputDeviceID: AudioObjectID?
+        var selectedInputDeviceID: AudioObjectID?
+
+        var systemDefaultInputIsBuiltIn: Bool {
+            guard let defaultInputDeviceID, let builtInInputDeviceID else { return false }
+            return defaultInputDeviceID == builtInInputDeviceID
+        }
     }
 
     private let inspector: CoreAudioDeviceInspecting
@@ -123,9 +142,20 @@ final class DictationAudioRouteController: DictationAudioRouting {
     private let queueKey = DispatchSpecificKey<Void>()
     private let lock = NSLock()
     private var snapshot = RouteSnapshot()
+    private var selectedInputDeviceUIDStorage: String?
     private var defaultOutputListener: AudioObjectPropertyListenerBlock?
     private var defaultInputListener: AudioObjectPropertyListenerBlock?
     private var onPreferredInputDeviceChangedStorage: ((AudioObjectID?) -> Void)?
+    var selectedInputDeviceUID: String? {
+        get {
+            lock.withLock { selectedInputDeviceUIDStorage }
+        }
+        set {
+            let normalized = newValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+            lock.withLock { selectedInputDeviceUIDStorage = normalized?.isEmpty == false ? normalized : nil }
+            refreshRouteCache(notifyEvenIfPreferredUnchanged: true)
+        }
+    }
     var onPreferredInputDeviceChanged: ((AudioObjectID?) -> Void)? {
         get {
             lock.withLock { onPreferredInputDeviceChangedStorage }
@@ -149,7 +179,9 @@ final class DictationAudioRouteController: DictationAudioRouting {
         self.snapshot = RouteSnapshot(
             outputRouteKind: initialOutputClassification?.kind ?? .unknown,
             outputIsAmbiguousBluetooth: initialOutputClassification?.isAmbiguousBluetooth ?? false,
-            builtInInputDeviceID: inspector.builtInInputDeviceID()
+            builtInInputDeviceID: inspector.builtInInputDeviceID(),
+            defaultInputDeviceID: inspector.defaultInputDeviceID(),
+            selectedInputDeviceID: nil
         )
         if observesDefaultOutputChanges {
             installDefaultOutputListener()
@@ -214,6 +246,10 @@ final class DictationAudioRouteController: DictationAudioRouting {
         Self.preferredInputDeviceID(for: lock.withLock { snapshot })
     }
 
+    func availableInputDevices() -> [AudioInputDeviceInfo] {
+        inspector.availableInputDevices()
+    }
+
     func isDefaultOutputHeadphoneLike() -> Bool {
         // Unknown outputs are treated as non-speaker for lifecycle sounds so we
         // avoid playing cues into headphones during CoreAudio route transitions.
@@ -230,7 +266,11 @@ final class DictationAudioRouteController: DictationAudioRouting {
         let current = lock.withLock { snapshot }
         let preferredInput = Self.preferredInputDeviceID(for: current)
             .map(String.init) ?? "default"
-        return "output=\(current.outputRouteKind.description) preferredInput=\(preferredInput)"
+        return "output=\(current.outputRouteKind.description) preferredInput=\(preferredInput) defaultInputBuiltIn=\(current.systemDefaultInputIsBuiltIn)"
+    }
+
+    func systemDefaultInputIsBuiltInForDictation() -> Bool {
+        lock.withLock { snapshot.systemDefaultInputIsBuiltIn }
     }
 
     func refreshRouteAfterDictationSession() {
@@ -251,6 +291,9 @@ final class DictationAudioRouteController: DictationAudioRouting {
     }
 
     private static func preferredInputDeviceID(for snapshot: RouteSnapshot) -> AudioObjectID? {
+        if let selectedInputDeviceID = snapshot.selectedInputDeviceID {
+            return selectedInputDeviceID
+        }
         switch snapshot.outputRouteKind {
         case .headphoneLike:
             return snapshot.builtInInputDeviceID
@@ -263,10 +306,15 @@ final class DictationAudioRouteController: DictationAudioRouting {
 
     private func makeRouteSnapshot() -> RouteSnapshot {
         let outputClassification = currentOutputRouteClassification()
+        let selectedInputDeviceUID = lock.withLock { selectedInputDeviceUIDStorage }
         return RouteSnapshot(
             outputRouteKind: outputClassification.kind,
             outputIsAmbiguousBluetooth: outputClassification.isAmbiguousBluetooth,
-            builtInInputDeviceID: inspector.builtInInputDeviceID()
+            builtInInputDeviceID: inspector.builtInInputDeviceID(),
+            defaultInputDeviceID: inspector.defaultInputDeviceID(),
+            selectedInputDeviceID: selectedInputDeviceUID.flatMap {
+                inspector.inputDeviceID(matchingUID: $0)
+            }
         )
     }
 
@@ -330,6 +378,8 @@ protocol CoreAudioDeviceInspecting {
     func defaultOutputDeviceID() -> AudioObjectID?
     func defaultInputDeviceID() -> AudioObjectID?
     func setDefaultInputDeviceID(_ deviceID: AudioObjectID) -> Bool
+    func availableInputDevices() -> [AudioInputDeviceInfo]
+    func inputDeviceID(matchingUID uid: String) -> AudioObjectID?
     func isDeviceAvailable(_ deviceID: AudioObjectID) -> Bool
     func nominalSampleRate(for deviceID: AudioObjectID) -> Double?
     func outputRouteClassification(for deviceID: AudioObjectID) -> AudioRouteClassifier.Classification
@@ -361,6 +411,33 @@ final class CoreAudioDeviceInspector: CoreAudioDeviceInspecting {
             dataSize,
             &mutableDeviceID
         ) == noErr
+    }
+
+    func availableInputDevices() -> [AudioInputDeviceInfo] {
+        allDeviceIDs()
+            .filter { hasStreams(deviceID: $0, scope: kAudioDevicePropertyScopeInput) }
+            .compactMap { deviceID in
+                guard let uid = deviceUID(for: deviceID) else { return nil }
+                guard !Self.isSystemDefaultAggregateDeviceUID(uid) else { return nil }
+                let name = deviceName(for: deviceID) ?? "Microphone \(deviceID)"
+                return AudioInputDeviceInfo(
+                    uid: uid,
+                    name: name,
+                    deviceID: deviceID,
+                    isBuiltIn: transportType(for: deviceID) == kAudioDeviceTransportTypeBuiltIn
+                )
+            }
+            .sorted { lhs, rhs in
+                inputDeviceSortKey(lhs.deviceID) < inputDeviceSortKey(rhs.deviceID)
+            }
+    }
+
+    func inputDeviceID(matchingUID uid: String) -> AudioObjectID? {
+        guard !Self.isSystemDefaultAggregateDeviceUID(uid) else { return nil }
+        return allDeviceIDs().first { deviceID in
+            hasStreams(deviceID: deviceID, scope: kAudioDevicePropertyScopeInput)
+                && deviceUID(for: deviceID) == uid
+        }
     }
 
     func isDeviceAvailable(_ deviceID: AudioObjectID) -> Bool {
@@ -491,6 +568,14 @@ final class CoreAudioDeviceInspector: CoreAudioDeviceInspecting {
         return name.takeRetainedValue() as String
     }
 
+    private func deviceUID(for deviceID: AudioObjectID) -> String? {
+        stringProperty(kAudioDevicePropertyDeviceUID, objectID: deviceID)
+    }
+
+    private static func isSystemDefaultAggregateDeviceUID(_ uid: String) -> Bool {
+        uid.hasPrefix("CADefaultDeviceAggregate")
+    }
+
     private func transportType(for deviceID: AudioObjectID) -> UInt32? {
         var transportType = UInt32(0)
         guard getUInt32(
@@ -503,6 +588,21 @@ final class CoreAudioDeviceInspector: CoreAudioDeviceInspecting {
             return nil
         }
         return transportType
+    }
+
+    private func stringProperty(_ selector: AudioObjectPropertySelector, objectID: AudioObjectID) -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value: Unmanaged<CFString>?
+        var dataSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        guard AudioObjectGetPropertyData(objectID, &address, 0, nil, &dataSize, &value) == noErr,
+              let value else {
+            return nil
+        }
+        return value.takeRetainedValue() as String
     }
 
     private func hasStreams(deviceID: AudioObjectID, scope: AudioObjectPropertyScope) -> Bool {

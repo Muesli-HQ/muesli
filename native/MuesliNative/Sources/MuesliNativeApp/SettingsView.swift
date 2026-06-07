@@ -10,6 +10,13 @@ private struct MeetingDetectionAppOption: Identifiable {
     var id: String { bundleID }
 }
 
+private struct DictationMicrophoneOption: Identifiable {
+    let uid: String?
+    let label: String
+
+    var id: String { uid ?? "__automatic__" }
+}
+
 struct SettingsView: View {
     private enum PendingDataDestruction {
         case dictations
@@ -75,6 +82,7 @@ struct SettingsView: View {
     @State private var selectedPane: SettingsPane = .general
     @State private var downloadedBackendOptions: [BackendOption] = []
     @State private var downloadedPostProcOptions: [PostProcessorOption] = []
+    @State private var dictationInputDevices: [AudioInputDeviceInfo] = []
     @State private var permissionPollTimer: Timer?
     @State private var micGranted = false
     @State private var accessibilityGranted = false
@@ -124,6 +132,23 @@ struct SettingsView: View {
         appState.config.resolvedCohereLanguage
     }
 
+    private var dictationMicrophoneOptions: [DictationMicrophoneOption] {
+        var options = [DictationMicrophoneOption(uid: nil, label: "Automatic")]
+        options += dictationInputDevices.map { device in
+            DictationMicrophoneOption(uid: device.uid, label: device.name)
+        }
+        if let selectedUID = appState.config.dictationInputDeviceUID,
+           !options.contains(where: { $0.uid == selectedUID }) {
+            options.append(DictationMicrophoneOption(uid: selectedUID, label: "Selected microphone unavailable"))
+        }
+        return options
+    }
+
+    private var selectedDictationMicrophoneLabel: String {
+        let selectedUID = appState.config.dictationInputDeviceUID
+        return dictationMicrophoneOptions.first(where: { $0.uid == selectedUID })?.label ?? "Automatic"
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
@@ -139,6 +164,7 @@ struct SettingsView: View {
         .background(MuesliTheme.backgroundBase)
         .onAppear {
             refreshDownloadedModelOptions()
+            refreshDictationInputDevices()
             startPermissionPolling()
             if appState.selectedMeetingSummaryBackend == .openRouter {
                 loadOpenRouterFreeModelsIfNeeded()
@@ -152,6 +178,7 @@ struct SettingsView: View {
         .onChange(of: appState.selectedTab) { _, tab in
             if tab == .settings {
                 refreshDownloadedModelOptions()
+                refreshDictationInputDevices()
                 refreshPermissionStatuses()
             }
         }
@@ -196,6 +223,10 @@ struct SettingsView: View {
         controller.refreshMeetingTranscriptionSelectionForAvailability()
         downloadedBackendOptions = BackendOption.downloaded
         downloadedPostProcOptions = PostProcessorOption.downloaded
+    }
+
+    private func refreshDictationInputDevices() {
+        dictationInputDevices = controller.availableDictationInputDevices()
     }
 
     private func backendOptions(including selection: BackendOption) -> [BackendOption] {
@@ -376,6 +407,23 @@ struct SettingsView: View {
                             controller.selectCohereLanguage(language)
                         }
                     }
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow(
+                    "Microphone",
+                    description: "Automatic uses system input, or Mac mic with AirPods."
+                ) {
+                    let options = dictationMicrophoneOptions
+                    FixedWidthPopUp(
+                        selection: selectedDictationMicrophoneLabel,
+                        options: options.map(\.label),
+                        onSelectIndex: { index in
+                            guard index >= 0, index < options.count else { return }
+                            controller.selectDictationInputDeviceUID(options[index].uid)
+                            refreshDictationInputDevices()
+                        }
+                    )
+                    .frame(height: 24)
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("AI transcript cleanup") {

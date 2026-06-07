@@ -9,6 +9,8 @@ set -euo pipefail
 # - Signed with Developer ID by default (Accessibility permission persists across rebuilds)
 # - External contributors can set MUESLI_SKIP_SIGN=1 to build without the
 #   maintainer signing certificate
+# - Uses a shared, worktree-isolated SwiftPM scratch path by default; set
+#   MUESLI_DISABLE_SWIFTPM_SCRATCH_PATH=1 to use package-local .build instead
 # - Installs to /Applications/MuesliDev.app
 #
 # Usage:

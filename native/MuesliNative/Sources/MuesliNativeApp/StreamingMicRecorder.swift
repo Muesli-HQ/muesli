@@ -14,22 +14,32 @@ protocol StreamingDictationRecording: AnyObject {
     func start() throws
     func stop() -> URL?
     func cancel()
+    func currentPower() -> Float
 }
 
-final class StreamingMicRecorder: StreamingDictationRecording {
+protocol StreamingDictationLatencyReporting: AnyObject {
+    var onLatencyEvent: ((String, Date) -> Void)? { get set }
+}
+
+final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting {
     /// Called with 4096-sample Float chunks (256ms at 16kHz) for VAD processing.
     var onAudioBuffer: (([Float]) -> Void)?
     var onRecordingFailed: ((Error) -> Void)?
+    var onLatencyEvent: ((String, Date) -> Void)?
     /// Called with 16-bit PCM mono samples for retained meeting recording.
     var onPCMSamples: (([Int16]) -> Void)?
     var preferredInputDeviceID: AudioObjectID?
 
     private let engine = AVAudioEngine()
+    private let directoryName: String
+    private let graphLock = NSRecursiveLock()
     private let lock = OSAllocatedUnfairLock(initialState: FileState())
     private let failureLock = OSAllocatedUnfairLock(initialState: FailureState())
     private let failureCallbackQueue = DispatchQueue(label: "com.muesli.streaming-mic-recorder-failures")
     private var isRunning = false
     private var tapInstalled = false
+    private var graphPreparedInputDeviceID: AudioObjectID?
+    private var isGraphPrepared = false
 
     private struct FailureState {
         var activeRecordingID: UUID?
@@ -47,25 +57,53 @@ final class StreamingMicRecorder: StreamingDictationRecording {
     private static let sampleRate: Double = 16_000
     private static let bufferSize: AVAudioFrameCount = 4096 // 256ms at 16kHz
 
+    init(directoryName: String = "muesli-meeting-mic") {
+        self.directoryName = directoryName
+    }
+
     func prepare() throws {
+        graphLock.lock()
+        defer { graphLock.unlock() }
+
+        try prepareLocked()
+    }
+
+    private func prepareLocked() throws {
+        if isGraphPrepared,
+           graphPreparedInputDeviceID == preferredInputDeviceID {
+            emitLatency("app_scoped_prepare_reused")
+            return
+        }
+
+        emitLatency("app_scoped_prepare_begin")
         AudioInputDeviceSelection.applyPreferredInputDeviceID(
             preferredInputDeviceID,
             to: engine,
             logPrefix: "streaming-mic"
         )
+        emitLatency("app_scoped_preferred_input_applied")
 
         let inputNode = engine.inputNode
         let hwFormat = inputNode.outputFormat(forBus: 0)
         guard hwFormat.sampleRate > 0 else {
+            isGraphPrepared = false
+            graphPreparedInputDeviceID = nil
             throw NSError(domain: "StreamingMicRecorder", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "No audio input available",
             ])
         }
+        engine.prepare()
+        isGraphPrepared = true
+        graphPreparedInputDeviceID = preferredInputDeviceID
+        emitLatency("app_scoped_prepare_end")
     }
 
     func start() throws {
+        graphLock.lock()
+        defer { graphLock.unlock() }
+
         guard !isRunning else { return }
-        try prepare()
+        try prepareLocked()
         let recordingID = UUID()
         failureLock.withLock {
             $0.activeRecordingID = recordingID
@@ -96,6 +134,7 @@ final class StreamingMicRecorder: StreamingDictationRecording {
         let fileState = try createNewFile()
         lock.withLock { $0 = fileState }
 
+        emitLatency("app_scoped_tap_install_begin")
         inputNode.installTap(onBus: 0, bufferSize: Self.bufferSize, format: nil) { [weak self] buffer, _ in
             guard let self else { return }
             guard self.isCurrentRecording(recordingID) else { return }
@@ -180,9 +219,12 @@ final class StreamingMicRecorder: StreamingDictationRecording {
             self.onAudioBuffer?(floats)
         }
         tapInstalled = true
+        emitLatency("app_scoped_tap_install_end")
 
         do {
+            emitLatency("app_scoped_engine_start_begin")
             try engine.start()
+            emitLatency("app_scoped_engine_start_end")
             isRunning = true
         } catch {
             removeTapIfNeeded()
@@ -223,6 +265,9 @@ final class StreamingMicRecorder: StreamingDictationRecording {
 
     /// Stop recording. Returns the final WAV URL.
     func stop() -> URL? {
+        graphLock.lock()
+        defer { graphLock.unlock() }
+
         guard isRunning else { return nil }
         isRunning = false
         clearFailureState()
@@ -255,10 +300,15 @@ final class StreamingMicRecorder: StreamingDictationRecording {
     }
 
     func cancel() {
+        graphLock.lock()
+        defer { graphLock.unlock() }
+
         isRunning = false
         clearFailureState()
         removeTapIfNeeded()
         engine.stop()
+        isGraphPrepared = false
+        graphPreparedInputDeviceID = nil
         onAudioBuffer = nil
         onPCMSamples = nil
         onRecordingFailed = nil
@@ -295,6 +345,10 @@ final class StreamingMicRecorder: StreamingDictationRecording {
         }
     }
 
+    private func emitLatency(_ event: String, at date: Date = Date()) {
+        onLatencyEvent?(event, date)
+    }
+
     private func reportRecordingFailure(_ error: Error, recordingID: UUID) {
         let callback = failureLock.withLock { state -> ((Error) -> Void)? in
             guard state.activeRecordingID == recordingID,
@@ -318,7 +372,7 @@ final class StreamingMicRecorder: StreamingDictationRecording {
 
     private func createNewFile() throws -> FileState {
         let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("muesli-meeting-mic", isDirectory: true)
+            .appendingPathComponent(directoryName, isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent(UUID().uuidString).appendingPathExtension("wav")
         FileManager.default.createFile(atPath: url.path, contents: nil)

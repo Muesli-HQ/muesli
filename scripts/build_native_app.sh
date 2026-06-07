@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/muesli_spm_cache.sh"
 PACKAGE_DIR="$ROOT/native/MuesliNative"
 DIST_DIR="$ROOT/dist-native"
 INSTALL_DIR="${MUESLI_INSTALL_DIR:-/Applications}"
@@ -31,10 +32,15 @@ if [[ "$CODESIGN_TIMESTAMP" == "none" ]]; then
 fi
 
 SWIFT_BUILD_ARGS=(--package-path "$PACKAGE_DIR" -c "$BUILD_CONFIG")
-if [[ -n "${MUESLI_SWIFTPM_SCRATCH_PATH:-}" ]]; then
-  mkdir -p "$MUESLI_SWIFTPM_SCRATCH_PATH"
-  SWIFT_BUILD_ARGS+=(--scratch-path "$MUESLI_SWIFTPM_SCRATCH_PATH")
-  echo "Using SwiftPM scratch path: $MUESLI_SWIFTPM_SCRATCH_PATH"
+if ! muesli_spm_scratch_disabled; then
+  DEFAULT_SCRATCH_CHANNEL="release"
+  if [[ "$BUILD_CONFIG" == "debug" ]]; then
+    DEFAULT_SCRATCH_CHANNEL="$(muesli_worktree_spm_scratch_channel dev "$ROOT")"
+  fi
+  SWIFTPM_SCRATCH_PATH="$(muesli_resolve_spm_scratch_path "$DEFAULT_SCRATCH_CHANNEL")"
+  mkdir -p "$SWIFTPM_SCRATCH_PATH"
+  SWIFT_BUILD_ARGS+=(--scratch-path "$SWIFTPM_SCRATCH_PATH")
+  echo "Using SwiftPM scratch path: $SWIFTPM_SCRATCH_PATH"
 fi
 
 mkdir -p "$DIST_DIR"

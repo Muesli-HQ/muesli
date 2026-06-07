@@ -412,6 +412,10 @@ private final class FailingStreamingDictationRecorder: StreamingDictationRecordi
     func cancel() {
         cancelCalls += 1
     }
+
+    func currentPower() -> Float {
+        -160
+    }
 }
 
 @available(macOS 15, *)
@@ -464,6 +468,10 @@ private final class InspectableStreamingDictationRecorder: StreamingDictationRec
 
     func cancel() {
         cancelCalls += 1
+    }
+
+    func currentPower() -> Float {
+        -160
     }
 }
 

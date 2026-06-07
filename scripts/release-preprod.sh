@@ -19,9 +19,22 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/muesli_spm_cache.sh"
 
 PACKAGE_DIR="$ROOT/native/MuesliNative"
-SWIFTPM_SCRATCH_PATH="${MUESLI_SWIFTPM_SCRATCH_PATH:-$HOME/Library/Caches/muesli-spm/preprod}"
+SWIFTPM_SCRATCH_PATH=""
+SWIFT_TEST_ARGS=(--package-path "$PACKAGE_DIR")
+BUILD_ENV=()
+# The preprod channel is intentionally shared across worktrees. Do not run this
+# script concurrently from multiple worktrees unless you set an isolated
+# MUESLI_SWIFTPM_SCRATCH_PATH or MUESLI_SWIFTPM_SCRATCH_CHANNEL.
+if ! muesli_spm_scratch_disabled; then
+  SWIFTPM_SCRATCH_PATH="$(muesli_resolve_spm_scratch_path preprod)"
+  SWIFT_TEST_ARGS+=(--scratch-path "$SWIFTPM_SCRATCH_PATH")
+  BUILD_ENV+=(MUESLI_SWIFTPM_SCRATCH_PATH="$SWIFTPM_SCRATCH_PATH")
+else
+  BUILD_ENV+=(MUESLI_DISABLE_SWIFTPM_SCRATCH_PATH=1)
+fi
 PROFILE_NAME="${MUESLI_NOTARY_PROFILE:-MuesliNotary}"
 SIGN_IDENTITY="${MUESLI_SIGN_IDENTITY:-Developer ID Application: Pranav Hari Guruvayurappan (58W55QJ567)}"
 APP_NAME="MuesliPreprod"
@@ -32,7 +45,7 @@ OUTPUT_DIR="$ROOT/dist-preprod"
 INSTALL_DIR="$OUTPUT_DIR/install-root"
 APP_DIR="$INSTALL_DIR/${APP_NAME}.app"
 APPCAST_PATH="$ROOT/docs/appcast-preprod.xml"
-GENERATE_APPCAST="$SWIFTPM_SCRATCH_PATH/artifacts/sparkle/Sparkle/bin/generate_appcast"
+GENERATE_APPCAST="$(muesli_spm_artifacts_dir "$PACKAGE_DIR" "$SWIFTPM_SCRATCH_PATH")/sparkle/Sparkle/bin/generate_appcast"
 UPDATE_APPCAST_RELEASE_NOTES="$ROOT/scripts/update_appcast_release_notes.py"
 VERIFY_DIR=""
 HOSTED_MOUNT_POINT=""
@@ -129,26 +142,32 @@ mkdir -p "$INSTALL_DIR"
 
 # --- Step 1: Run tests ---
 echo "[1/11] Running tests..."
-mkdir -p "$SWIFTPM_SCRATCH_PATH"
-echo "  SwiftPM scratch path: $SWIFTPM_SCRATCH_PATH"
-swift test --package-path "$PACKAGE_DIR" --scratch-path "$SWIFTPM_SCRATCH_PATH"
+if [[ -n "$SWIFTPM_SCRATCH_PATH" ]]; then
+  mkdir -p "$SWIFTPM_SCRATCH_PATH"
+  echo "  SwiftPM scratch path: $SWIFTPM_SCRATCH_PATH"
+else
+  echo "  SwiftPM scratch path: package-local .build"
+fi
+swift test "${SWIFT_TEST_ARGS[@]}"
 echo "  Tests passed."
 
 # --- Step 2: Build and sign ---
 echo "[2/11] Building and signing..."
-MUESLI_INSTALL_DIR="$INSTALL_DIR" \
-  MUESLI_SWIFTPM_SCRATCH_PATH="$SWIFTPM_SCRATCH_PATH" \
-  MUESLI_BUILD_VERSION="$VERSION" \
-  MUESLI_BUNDLE_VERSION="$SPARKLE_BUILD_VERSION" \
-  MUESLI_SHORT_VERSION="$VERSION" \
-  MUESLI_APP_NAME="$APP_NAME" \
-  MUESLI_APP_BUNDLE_NAME="${APP_NAME}.app" \
-  MUESLI_BUNDLE_ID="$BUNDLE_ID" \
-  MUESLI_DISPLAY_NAME="$APP_NAME" \
-  MUESLI_SUPPORT_DIR_NAME="$SUPPORT_DIR_NAME" \
-  MUESLI_SPARKLE_FEED_URL="$PREPROD_FEED_URL" \
-  MUESLI_SIGN_IDENTITY="$SIGN_IDENTITY" \
-  "$ROOT/scripts/build_native_app.sh" > /dev/null
+PREPROD_BUILD_ENV=(
+  MUESLI_INSTALL_DIR="$INSTALL_DIR"
+  "${BUILD_ENV[@]}"
+  MUESLI_BUILD_VERSION="$VERSION"
+  MUESLI_BUNDLE_VERSION="$SPARKLE_BUILD_VERSION"
+  MUESLI_SHORT_VERSION="$VERSION"
+  MUESLI_APP_NAME="$APP_NAME"
+  MUESLI_APP_BUNDLE_NAME="${APP_NAME}.app"
+  MUESLI_BUNDLE_ID="$BUNDLE_ID"
+  MUESLI_DISPLAY_NAME="$APP_NAME"
+  MUESLI_SUPPORT_DIR_NAME="$SUPPORT_DIR_NAME"
+  MUESLI_SPARKLE_FEED_URL="$PREPROD_FEED_URL"
+  MUESLI_SIGN_IDENTITY="$SIGN_IDENTITY"
+)
+env "${PREPROD_BUILD_ENV[@]}" "$ROOT/scripts/build_native_app.sh" > /dev/null
 echo "  Installed to $APP_DIR"
 if [[ ! -x "$GENERATE_APPCAST" ]]; then
   echo "ERROR: generate_appcast not found at $GENERATE_APPCAST" >&2
