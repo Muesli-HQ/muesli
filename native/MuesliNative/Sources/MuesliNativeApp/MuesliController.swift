@@ -3286,40 +3286,37 @@ final class MuesliController: NSObject {
                         return self.liveMeetingTitle(id: meetingID)
                     }
                 }
-                let liveTranscriptStart = meetingSession.startTime ?? Date()
-                let liveTranscriptCalendar = Calendar(identifier: .gregorian)
-                meetingSession.onChunkTranscribed = { [weak self] segments, speaker in
-                    guard let self else { return }
-                    guard self.appState.liveMeetingTranscriptOwnerID == meetingID else { return }
-                    let entries = segments.compactMap { segment -> LiveTranscriptCheckpointEntry? in
-                        let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                        guard !text.isEmpty else { return nil }
-                        let timestampDate = liveTranscriptStart.addingTimeInterval(segment.start)
-                        let components = liveTranscriptCalendar.dateComponents([.hour, .minute, .second], from: timestampDate)
-                        let timestamp = String(
-                            format: "%02d:%02d:%02d",
-                            components.hour ?? 0,
-                            components.minute ?? 0,
-                            components.second ?? 0
-                        )
-                        return LiveTranscriptCheckpointEntry(
-                            timestampLabel: timestamp,
-                            speaker: speaker,
-                            startSeconds: segment.start,
-                            endSeconds: segment.end,
-                            text: text
-                        )
-                    }
-                    guard !entries.isEmpty else { return }
-                    do {
-                        try self.dictationStore.appendLiveTranscriptCheckpoints(meetingID: meetingID, entries: entries)
-                    } catch {
-                        fputs("[muesli-native] failed to checkpoint live transcript for meeting \(meetingID): \(error)\n", stderr)
-                    }
-
-                    Task { @MainActor [weak self] in
+                meetingSession.onChunkTranscribed = { [weak self, weak meetingSession] segments, speaker in
+                    Task { @MainActor [weak self, weak meetingSession] in
                         guard let self else { return }
                         guard self.appState.liveMeetingTranscriptOwnerID == meetingID else { return }
+                        let liveTranscriptStart = meetingSession?.startTime ?? Date()
+                        let liveTranscriptCalendar = Calendar(identifier: .gregorian)
+                        let entries = segments.compactMap { segment -> LiveTranscriptCheckpointEntry? in
+                            let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !text.isEmpty else { return nil }
+                            let timestampDate = liveTranscriptStart.addingTimeInterval(segment.start)
+                            let components = liveTranscriptCalendar.dateComponents([.hour, .minute, .second], from: timestampDate)
+                            let timestamp = String(
+                                format: "%02d:%02d:%02d",
+                                components.hour ?? 0,
+                                components.minute ?? 0,
+                                components.second ?? 0
+                            )
+                            return LiveTranscriptCheckpointEntry(
+                                timestampLabel: timestamp,
+                                speaker: speaker,
+                                startSeconds: segment.start,
+                                endSeconds: segment.end,
+                                text: text
+                            )
+                        }
+                        guard !entries.isEmpty else { return }
+                        do {
+                            try self.dictationStore.appendLiveTranscriptCheckpoints(meetingID: meetingID, entries: entries)
+                        } catch {
+                            fputs("[muesli-native] failed to checkpoint live transcript for meeting \(meetingID): \(error)\n", stderr)
+                        }
                         // Live view is arrival-order closed captions. Recovery reads checkpoints sorted
                         // by segment timestamps, so the durable fallback stays temporally ordered.
                         let lines = entries.map { "[\($0.timestampLabel)] \($0.speaker): \($0.text)" }
