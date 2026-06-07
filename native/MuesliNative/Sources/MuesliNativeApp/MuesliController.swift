@@ -3286,16 +3286,22 @@ final class MuesliController: NSObject {
                         return self.liveMeetingTitle(id: meetingID)
                     }
                 }
-                meetingSession.onChunkTranscribed = { [weak self, weak meetingSession] segments, speaker in
+                let liveTranscriptStart = meetingSession.startTime ?? Date()
+                let liveTranscriptCalendar = Calendar(identifier: .gregorian)
+                meetingSession.onChunkTranscribed = { [weak self] segments, speaker in
                     guard let self else { return }
-                    let start = meetingSession?.startTime ?? Date()
-                    let formatter = DateFormatter()
-                    formatter.locale = Locale(identifier: "en_US_POSIX")
-                    formatter.dateFormat = "HH:mm:ss"
+                    guard self.appState.liveMeetingTranscriptOwnerID == meetingID else { return }
                     let entries = segments.compactMap { segment -> LiveTranscriptCheckpointEntry? in
                         let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
                         guard !text.isEmpty else { return nil }
-                        let timestamp = formatter.string(from: start.addingTimeInterval(segment.start))
+                        let timestampDate = liveTranscriptStart.addingTimeInterval(segment.start)
+                        let components = liveTranscriptCalendar.dateComponents([.hour, .minute, .second], from: timestampDate)
+                        let timestamp = String(
+                            format: "%02d:%02d:%02d",
+                            components.hour ?? 0,
+                            components.minute ?? 0,
+                            components.second ?? 0
+                        )
                         return LiveTranscriptCheckpointEntry(
                             timestampLabel: timestamp,
                             speaker: speaker,
@@ -3314,6 +3320,8 @@ final class MuesliController: NSObject {
                     Task { @MainActor [weak self] in
                         guard let self else { return }
                         guard self.appState.liveMeetingTranscriptOwnerID == meetingID else { return }
+                        // Live view is arrival-order closed captions. Recovery reads checkpoints sorted
+                        // by segment timestamps, so the durable fallback stays temporally ordered.
                         let lines = entries.map { "[\($0.timestampLabel)] \($0.speaker): \($0.text)" }
                         self.appState.liveMeetingTranscript += lines.joined(separator: "\n") + "\n"
                     }
