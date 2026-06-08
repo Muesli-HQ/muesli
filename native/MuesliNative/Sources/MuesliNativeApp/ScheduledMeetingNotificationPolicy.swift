@@ -1,7 +1,8 @@
 import Foundation
 
 enum ScheduledMeetingNotificationPolicy {
-    static let defaultLeadTime: TimeInterval = 5 * 60
+    static let defaultLeadTime: TimeInterval = 0
+    static let startPromptGracePeriod: TimeInterval = 90
 
     static func upcomingCandidates(
         from events: [UnifiedCalendarEvent],
@@ -9,6 +10,18 @@ enum ScheduledMeetingNotificationPolicy {
         hiddenEventIDs: Set<String>,
         leadTime: TimeInterval = defaultLeadTime
     ) -> [UnifiedCalendarEvent] {
+        guard leadTime > 0 else {
+            return events
+                .filter { event in
+                    shouldShowStartTimePrompt(
+                        for: event,
+                        now: now,
+                        hiddenEventIDs: hiddenEventIDs
+                    )
+                }
+                .sorted { $0.startDate < $1.startDate }
+        }
+
         let windowEnd = now.addingTimeInterval(leadTime)
         return events
             .filter { event in
@@ -30,6 +43,16 @@ enum ScheduledMeetingNotificationPolicy {
     ) -> Bool {
         guard isJoinableMeeting(event, hiddenEventIDs: hiddenEventIDs) else { return false }
         return event.startDate > now && event.startDate <= windowEnd
+    }
+
+    static func shouldShowStartTimePrompt(
+        for event: UnifiedCalendarEvent,
+        now: Date,
+        hiddenEventIDs: Set<String>,
+        gracePeriod: TimeInterval = startPromptGracePeriod
+    ) -> Bool {
+        guard isJoinableMeeting(event, hiddenEventIDs: hiddenEventIDs) else { return false }
+        return event.startDate <= now && event.startDate > now.addingTimeInterval(-gracePeriod)
     }
 
     static func shouldShowStartingNowPrompt(meetingURL: URL?) -> Bool {

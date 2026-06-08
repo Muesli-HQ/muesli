@@ -419,6 +419,7 @@ struct AppConfigTests {
         #expect(config.defaultMeetingTemplateID == MeetingTemplates.autoID)
         #expect(config.meetingRecordingSavePolicy == .never)
         #expect(config.showScheduledMeetingNotifications == true)
+        #expect(config.scheduledMeetingNotificationLeadTime == .atStart)
         #expect(config.showMeetingDetectionNotification == true)
         #expect(config.mutedMeetingDetectionAppBundleIDs.isEmpty)
         #expect(config.openAIAPIKey.isEmpty)
@@ -474,6 +475,7 @@ struct AppConfigTests {
         config.meetingHookPath = "/tmp/meeting-hook.sh"
         config.meetingHookTimeoutSeconds = 45
         config.showScheduledMeetingNotifications = false
+        config.scheduledMeetingNotificationLeadTime = .threeMinutes
         config.showMeetingDetectionNotification = false
         config.mutedMeetingDetectionAppBundleIDs = ["com.google.Chrome", "com.tinyspeck.slackmacgap"]
         config.computerUseHotkey = HotkeyConfig(keyCode: 62, label: "Right Ctrl")
@@ -508,6 +510,7 @@ struct AppConfigTests {
         #expect(decoded.meetingHookPath == "/tmp/meeting-hook.sh")
         #expect(decoded.meetingHookTimeoutSeconds == 45)
         #expect(decoded.showScheduledMeetingNotifications == false)
+        #expect(decoded.scheduledMeetingNotificationLeadTime == .threeMinutes)
         #expect(decoded.showMeetingDetectionNotification == false)
         #expect(decoded.mutedMeetingDetectionAppBundleIDs == ["com.google.Chrome", "com.tinyspeck.slackmacgap"])
         #expect(decoded.meetingTranscriptionBackend == config.meetingTranscriptionBackend)

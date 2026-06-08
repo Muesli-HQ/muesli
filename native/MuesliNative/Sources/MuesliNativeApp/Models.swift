@@ -718,6 +718,7 @@ struct AppConfig: Codable {
     var idleTimeout: Double = 120
     var autoRecordMeetings: Bool = false
     var showScheduledMeetingNotifications: Bool = true
+    var scheduledMeetingNotificationLeadTime: ScheduledMeetingNotificationLeadTime = .atStart
     var showMeetingDetectionNotification: Bool = true
     var mutedMeetingDetectionAppBundleIDs: [String] = []
     var meetingRecordingSavePolicy: MeetingRecordingSavePolicy = .never
@@ -797,6 +798,7 @@ struct AppConfig: Codable {
         case idleTimeout = "idle_timeout"
         case autoRecordMeetings = "auto_record_meetings"
         case showScheduledMeetingNotifications = "show_scheduled_meeting_notifications"
+        case scheduledMeetingNotificationLeadTime = "scheduled_meeting_notification_lead_time"
         case showMeetingDetectionNotification = "show_meeting_detection_notification"
         case mutedMeetingDetectionAppBundleIDs = "muted_meeting_detection_app_bundle_ids"
         case meetingRecordingSavePolicy = "meeting_recording_save_policy"
@@ -887,6 +889,9 @@ struct AppConfig: Codable {
             (try? c.decode(Bool.self, forKey: .showScheduledMeetingNotifications))
             ?? decodedShowMeetingDetectionNotification
             ?? defaults.showScheduledMeetingNotifications
+        scheduledMeetingNotificationLeadTime =
+            (try? c.decode(ScheduledMeetingNotificationLeadTime.self, forKey: .scheduledMeetingNotificationLeadTime))
+            ?? defaults.scheduledMeetingNotificationLeadTime
         showMeetingDetectionNotification = decodedShowMeetingDetectionNotification ?? defaults.showMeetingDetectionNotification
         mutedMeetingDetectionAppBundleIDs = (try? c.decode([String].self, forKey: .mutedMeetingDetectionAppBundleIDs)) ?? defaults.mutedMeetingDetectionAppBundleIDs
         meetingRecordingSavePolicy = (try? c.decode(MeetingRecordingSavePolicy.self, forKey: .meetingRecordingSavePolicy)) ?? defaults.meetingRecordingSavePolicy

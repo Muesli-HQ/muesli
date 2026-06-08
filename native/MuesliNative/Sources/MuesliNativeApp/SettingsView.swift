@@ -727,7 +727,22 @@ struct SettingsView: View {
                         controller.updateConfig { $0.showScheduledMeetingNotifications = newValue }
                     }
                 }
-                settingsDescription("Show notifications before calendar meetings with a join link start.")
+                settingsDescription("Show notifications for calendar meetings with a join link.")
+
+                if appState.config.showScheduledMeetingNotifications {
+                    Divider().background(MuesliTheme.surfaceBorder)
+
+                    settingsRow("Notify") {
+                        settingsMenu(
+                            selection: scheduledMeetingLeadTimeLabel(for: appState.config.scheduledMeetingNotificationLeadTime),
+                            options: ScheduledMeetingNotificationLeadTime.allCases.map(scheduledMeetingLeadTimeLabel(for:))
+                        ) { label in
+                            guard let leadTime = scheduledMeetingLeadTime(for: label) else { return }
+                            controller.updateConfig { $0.scheduledMeetingNotificationLeadTime = leadTime }
+                        }
+                    }
+                    settingsDescription("At start time avoids early calendar-only prompts before you join.")
+                }
 
                 Divider().background(MuesliTheme.surfaceBorder)
 
@@ -2056,6 +2071,29 @@ struct SettingsView: View {
             assertionFailure("Unexpected recording save label: \(label)")
         }
         return policy
+    }
+
+    private func scheduledMeetingLeadTimeLabel(for leadTime: ScheduledMeetingNotificationLeadTime) -> String {
+        switch leadTime {
+        case .atStart:
+            return "At start time"
+        case .oneMinute:
+            return "1 min before"
+        case .threeMinutes:
+            return "3 min before"
+        case .fiveMinutes:
+            return "5 min before"
+        }
+    }
+
+    private func scheduledMeetingLeadTime(for label: String) -> ScheduledMeetingNotificationLeadTime? {
+        let leadTime = ScheduledMeetingNotificationLeadTime.allCases.first {
+            scheduledMeetingLeadTimeLabel(for: $0) == label
+        }
+        if leadTime == nil {
+            assertionFailure("Unexpected scheduled meeting notification lead time label: \(label)")
+        }
+        return leadTime
     }
 }
 

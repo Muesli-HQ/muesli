@@ -132,10 +132,28 @@ struct MeetingNotificationControllerTests {
         let candidates = ScheduledMeetingNotificationPolicy.upcomingCandidates(
             from: [later, personal, hidden, sooner],
             now: now,
-            hiddenEventIDs: ["hidden"]
+            hiddenEventIDs: ["hidden"],
+            leadTime: 5 * 60
         )
 
         #expect(candidates.map(\.id) == ["sooner", "later"])
+    }
+
+    @Test("Default scheduled prompts wait until meeting start")
+    func defaultScheduledPromptsWaitUntilMeetingStart() {
+        let now = Date(timeIntervalSinceReferenceDate: 2_500)
+        let meetingURL = URL(string: "https://meet.google.com/abc-defg-hij")!
+        let beforeStart = unifiedCalendarEvent(id: "before", startDate: now.addingTimeInterval(60), meetingURL: meetingURL)
+        let justStarted = unifiedCalendarEvent(id: "started", startDate: now.addingTimeInterval(-30), meetingURL: meetingURL)
+        let stale = unifiedCalendarEvent(id: "stale", startDate: now.addingTimeInterval(-120), meetingURL: meetingURL)
+
+        let candidates = ScheduledMeetingNotificationPolicy.upcomingCandidates(
+            from: [beforeStart, justStarted, stale],
+            now: now,
+            hiddenEventIDs: []
+        )
+
+        #expect(candidates.map(\.id) == ["started"])
     }
 
     @Test("Starting now scheduled prompts require a join link")

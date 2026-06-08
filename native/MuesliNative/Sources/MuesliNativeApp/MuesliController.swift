@@ -1366,9 +1366,10 @@ final class MuesliController: NSObject {
         }
     }
 
-    /// Check all upcoming calendar events (EventKit + Google) for events starting within 5 minutes.
-    /// Shows a notification when the event enters the 5-minute window, and schedules a second
-    /// "Meeting starting now" notification at event start time.
+    /// Check all upcoming calendar events (EventKit + Google) for events entering the configured prompt window.
+    /// With a pre-start lead time, shows a notification when the event enters that window and schedules a second
+    /// "Meeting starting now" notification at event start time. With the default start-time policy, waits until
+    /// the event has started so calendar prompts do not fire before the user is expected to join.
     /// This is the single notification path for all calendar sources.
     /// Composite dedup key: same event rescheduled to a new time gets a fresh notification.
     private func notificationKey(id: String, startDate: Date) -> String {
@@ -1380,7 +1381,7 @@ final class MuesliController: NSObject {
               !isStartingMeetingRecording else { return }
 
         let now = Date()
-        let fiveMinutesFromNow = now.addingTimeInterval(5 * 60)
+        let leadTime = config.scheduledMeetingNotificationLeadTime.seconds
 
         // Prune stale entries (events that started more than 1 hour ago)
         let cutoff = now.addingTimeInterval(-3600)
@@ -1394,7 +1395,7 @@ final class MuesliController: NSObject {
             from: appState.upcomingCalendarEvents,
             now: now,
             hiddenEventIDs: appState.hiddenCalendarEventIDs,
-            leadTime: fiveMinutesFromNow.timeIntervalSince(now)
+            leadTime: leadTime
         )
         for event in candidates {
             let key = notificationKey(id: event.id, startDate: event.startDate)
@@ -1412,9 +1413,9 @@ final class MuesliController: NSObject {
             // Show "starts in X min" notification now
             handleUpcomingMeeting(upcomingEvent)
 
-            // Schedule a second "Meeting starting now" notification at event start time
+            // Schedule a second "Meeting starting now" notification at event start time for pre-start prompts.
             let delay = event.startDate.timeIntervalSinceNow
-            if delay > 15 { // Only if there's enough gap after the first notification auto-dismisses
+            if leadTime > 0, delay > 15 { // Only if there's enough gap after the first notification auto-dismisses
                 let eventID = event.id
                 let startDate = event.startDate
                 meetingStartingNowTimers[key]?.invalidate()
@@ -5783,8 +5784,9 @@ final class MuesliController: NSObject {
         }
 
         let title = event.title
+        let notificationTitle = minutesUntil <= 0 ? "Meeting starting now" : "Upcoming meeting"
         meetingNotification.show(
-            title: "Upcoming meeting",
+            title: notificationTitle,
             subtitle: "\(title) · \(timeLabel)",
             meetingURL: meetingURL,
             onStartRecording: { [weak self] in
