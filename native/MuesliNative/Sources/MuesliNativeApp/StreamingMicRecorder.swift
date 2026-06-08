@@ -21,7 +21,12 @@ protocol StreamingDictationLatencyReporting: AnyObject {
     var onLatencyEvent: ((String, Date) -> Void)? { get set }
 }
 
-final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting {
+protocol PausableStreamingDictationRecording: AnyObject {
+    func pause()
+    func resume()
+}
+
+final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting, PausableStreamingDictationRecording {
     /// Called with 4096-sample Float chunks (256ms at 16kHz) for VAD processing.
     var onAudioBuffer: (([Float]) -> Void)?
     var onRecordingFailed: ((Error) -> Void)?
