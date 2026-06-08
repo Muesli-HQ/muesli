@@ -21,6 +21,24 @@ struct DictationAudioRouteControllerTests {
         #expect(controller.cachedPreferredInputDeviceIDForDictation() == 82)
     }
 
+    @Test("meeting reuses route-aware preferred input policy")
+    func meetingReusesRouteAwarePreferredInputPolicy() {
+        let inspector = FakeCoreAudioDeviceInspector(
+            defaultOutputDeviceID: 10,
+            outputRouteKind: .headphoneLike,
+            builtInInputDeviceID: 82
+        )
+        let controller = DictationAudioRouteController(
+            inspector: inspector,
+            queue: DispatchQueue(label: "test.dictation-audio-route.meeting-headphone-like"),
+            observesDefaultOutputChanges: false
+        )
+
+        #expect(controller.preferredInputDeviceIDForMeeting() == 82)
+        #expect(controller.meetingInputRouteSnapshot().preferredInputDeviceID == 82)
+        #expect(controller.meetingInputRouteSnapshot().outputRouteKind == "headphone-like")
+    }
+
     @Test("dictation preserves default input for speaker output")
     func dictationPreservesDefaultInputForSpeakerOutput() {
         let inspector = FakeCoreAudioDeviceInspector(
@@ -38,6 +56,8 @@ struct DictationAudioRouteControllerTests {
         #expect(controller.preferredInputDeviceIDForDictation() == nil)
         #expect(controller.cachedPreferredInputDeviceIDForDictation() == nil)
         #expect(controller.systemDefaultInputIsBuiltInForDictation())
+        #expect(controller.preferredInputDeviceIDForMeeting() == 82)
+        #expect(controller.meetingInputRouteSnapshot().preferredInputDeviceID == 82)
     }
 
     @Test("speaker output with non-built-in default input is not warmup-safe")
@@ -131,6 +151,7 @@ struct DictationAudioRouteControllerTests {
 
         #expect(controller.preferredInputDeviceIDForDictation() == 91)
         #expect(controller.cachedPreferredInputDeviceIDForDictation() == 91)
+        #expect(controller.preferredInputDeviceIDForMeeting() == 91)
     }
 
     @Test("unavailable selected microphone falls back to automatic route policy")

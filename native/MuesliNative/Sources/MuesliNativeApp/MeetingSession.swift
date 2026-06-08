@@ -119,8 +119,8 @@ final class MeetingSession {
     private let systemAudioRecorder: SystemAudioCapturing
     private let neuralAec = MeetingNeuralAec()
 
-    /// Streaming mic recorder with real-time buffer access (AVAudioEngine)
-    private var streamingMicRecorder = StreamingMicRecorder()
+    /// Route-aware mic recorder with real-time 16 kHz mono PCM access.
+    private var meetingMicRecorder: MeetingMicRecording
     private var rawMicChunkRecorder: PCMChunkRecorder?
     private var retainedRecordingWriter: MeetingRecordingWriter?
     private var retainedRecordingWriterError: Error?
@@ -131,12 +131,14 @@ final class MeetingSession {
     private let systemChunkCollector = MeetingChunkCollector()
     private let micChunkHealthTracker = MeetingTranscriptChunkHealthTracker()
     private let systemChunkHealthTracker = MeetingTranscriptChunkHealthTracker()
+    private let micHealthTracker = MeetingMicHealthTracker()
     private let chunkRotationQueue = DispatchQueue(label: "MuesliNative.MeetingSession.chunkRotation")
     private let pausedDisplayLock = OSAllocatedUnfairLock(initialState: false)
     private var chunkTimingTracker = MeetingChunkTimingTracker()
     private var systemChunkTimingTracker = MeetingChunkTimingTracker()
     private var systemChunkRecorder: PCMChunkRecorder?
     var onProgress: ((MeetingProcessingStage) -> Void)?
+    var onMicHealthChanged: ((MeetingMicHealthSnapshot) -> Void)?
     var manualNotesProvider: (() async -> String?)?
     var liveTitleProvider: (() async -> String?)?
     var onChunkTranscribed: (([SpeechSegment], String) -> Void)?
@@ -148,7 +150,7 @@ final class MeetingSession {
         if pausedDisplayLock.withLock({ $0 }) {
             return -160
         }
-        return streamingMicRecorder.currentPower()
+        return meetingMicRecorder.currentPower()
     }
 
     private(set) var startTime: Date?
@@ -166,7 +168,8 @@ final class MeetingSession {
         backend: BackendOption,
         runtime: RuntimePaths,
         config: AppConfig,
-        transcriptionCoordinator: TranscriptionCoordinator
+        transcriptionCoordinator: TranscriptionCoordinator,
+        meetingMicRecorder: MeetingMicRecording = RouteAwareMeetingMicRecorder()
     ) {
         self.title = title
         self.calendarEventID = calendarEventID
@@ -174,6 +177,7 @@ final class MeetingSession {
         self.runtime = runtime
         self.config = config
         self.transcriptionCoordinator = transcriptionCoordinator
+        self.meetingMicRecorder = meetingMicRecorder
         if config.useCoreAudioTap {
             self.systemAudioRecorder = CoreAudioSystemRecorder()
         } else {
@@ -207,17 +211,16 @@ final class MeetingSession {
 
         do {
             try prepareRealtimeAudioPipeline(vadManager: vadManager)
-            try streamingMicRecorder.prepare()
+            try meetingMicRecorder.prepare()
             setupRetainedRecordingWriterIfNeeded()
             try await systemAudioRecorder.start()
-            try streamingMicRecorder.start()
+            try meetingMicRecorder.start()
         } catch {
             vadController?.stop()
             vadController = nil
             systemVadController?.stop()
             systemVadController = nil
-            streamingMicRecorder.onAudioBuffer = nil
-            streamingMicRecorder.onPCMSamples = nil
+            meetingMicRecorder.onRawPCMSamples = nil
             systemAudioRecorder.onPCMSamples = nil
             retainedRecordingWriter?.cancel()
             retainedRecordingWriter = nil
@@ -232,7 +235,7 @@ final class MeetingSession {
                 chunkTimingTracker.discard()
                 systemChunkTimingTracker.discard()
             }
-            streamingMicRecorder.cancel()
+            meetingMicRecorder.cancel()
             if let url = systemAudioRecorder.stop() {
                 try? FileManager.default.removeItem(at: url)
             }
@@ -263,7 +266,7 @@ final class MeetingSession {
         }
         guard shouldPause else { return }
 
-        streamingMicRecorder.pause()
+        meetingMicRecorder.pause()
         systemAudioRecorder.pause()
         Task { await screenContextCollector.setPaused(true) }
         fputs("[meeting] recording paused\n", stderr)
@@ -277,7 +280,7 @@ final class MeetingSession {
         }
         guard shouldResume else { return }
 
-        streamingMicRecorder.resume()
+        meetingMicRecorder.resume()
         systemAudioRecorder.resume()
         Task { await screenContextCollector.setPaused(false) }
         fputs("[meeting] recording resumed\n", stderr)
@@ -306,9 +309,8 @@ final class MeetingSession {
         retainedRecordingWriterError = nil
         rawRecorder?.cancel()
         systemRecorder?.cancel()
-        streamingMicRecorder.onAudioBuffer = nil
-        streamingMicRecorder.onPCMSamples = nil
-        streamingMicRecorder.cancel()
+        meetingMicRecorder.onRawPCMSamples = nil
+        meetingMicRecorder.cancel()
         systemAudioRecorder.onPCMSamples = nil
         if let url = systemAudioRecorder.stop() {
             try? FileManager.default.removeItem(at: url)
@@ -329,8 +331,7 @@ final class MeetingSession {
         vadController = nil
         systemVadController?.stop()
         systemVadController = nil
-        streamingMicRecorder.onAudioBuffer = nil
-        streamingMicRecorder.onPCMSamples = nil
+        meetingMicRecorder.onRawPCMSamples = nil
         systemAudioRecorder.onPCMSamples = nil
         let (meetingStart, lastChunkTiming, lastRawMicURL, lastSystemChunkTiming, lastSystemChunkURL) = chunkRotationQueue.sync { () -> (Date, MeetingChunkTimingSnapshot?, URL?, MeetingChunkTimingSnapshot?, URL?) in
             isRecording = false
@@ -348,7 +349,7 @@ final class MeetingSession {
             let lastSystemChunkTiming = systemChunkTimingTracker.finish()
             return (meetingStart, lastChunkTiming, lastRawMicURL, lastSystemChunkTiming, lastSystemChunkURL)
         }
-        let rawStreamingMicURL = streamingMicRecorder.stop()
+        let rawStreamingMicURL = meetingMicRecorder.stop()
         let retainedRecordingURL = retainedRecordingWriter?.stop()
         retainedRecordingWriter = nil
         defer {
@@ -520,6 +521,8 @@ final class MeetingSession {
             rawMicURL: rawStreamingMicURL,
             systemAudioURL: systemAudioURL,
             systemCapture: (systemAudioRecorder as? SystemAudioDiagnosticsProviding)?.diagnosticsSnapshot,
+            micRecorder: meetingMicRecorder.diagnosticsSnapshot(),
+            micHealth: micHealthTracker.snapshot(),
             aec: neuralAec.diagnosticsSnapshot,
             micChunks: micChunkHealthTracker.snapshot(),
             systemChunks: systemChunkHealthTracker.snapshot(),
@@ -727,9 +730,7 @@ final class MeetingSession {
             systemVadController = nil
         }
         neuralAec.resetForStreaming()
-        streamingMicRecorder.onAudioBuffer = nil
-
-        streamingMicRecorder.onPCMSamples = { [weak self] samples in
+        meetingMicRecorder.onRawPCMSamples = { [weak self] samples in
             self?.enqueueRealtimeMicSamples(samples)
         }
         systemAudioRecorder.onPCMSamples = { [weak self] samples in
@@ -743,6 +744,8 @@ final class MeetingSession {
         chunkRotationQueue.async { [weak self] in
             guard let self, self.isRecording, !self.isPaused else { return }
 
+            let healthSnapshot = self.micHealthTracker.noteRawMicSamples(rawSamples)
+            self.onMicHealthChanged?(healthSnapshot)
             self.retainedRecordingWriter?.appendMic(rawSamples)
 
             let floatSamples = rawSamples.map { Float($0) / 32767.0 }
@@ -766,6 +769,8 @@ final class MeetingSession {
         chunkRotationQueue.async { [weak self] in
             guard let self, self.isRecording, !self.isPaused else { return }
 
+            let healthSnapshot = self.micHealthTracker.noteSystemSamples(samples)
+            self.onMicHealthChanged?(healthSnapshot)
             self.retainedRecordingWriter?.appendSystem(samples)
             self.systemChunkRecorder?.append(samples)
             self.systemChunkTimingTracker.append(sampleCount: samples.count)

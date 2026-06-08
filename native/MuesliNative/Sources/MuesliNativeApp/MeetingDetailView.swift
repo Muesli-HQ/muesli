@@ -224,6 +224,8 @@ struct MeetingDetailView: View {
                 MeetingRecordingPlayerView(recordingPath: savedRecordingPath)
             }
 
+            activeMeetingAudioWarningBanner(for: meeting)
+
             if !showsManualNotesEditor(for: meeting), isRawTranscript(meeting), documentMode == .notes {
                 transcriptCTA
             }
@@ -525,20 +527,24 @@ struct MeetingDetailView: View {
                 .padding(.horizontal, MuesliTheme.spacing8)
             } else {
                 iconButton("arrow.clockwise", label: "Re-transcribe") {
-                    isRetranscribing = true
-                    controller.retranscribe(meeting: meeting) { [meeting] result in
-                        isRetranscribing = false
-                        switch result {
-                        case .success:
-                            if let updated = controller.meeting(id: meeting.id) {
-                                syncLocalState(with: updated)
-                            }
-                        case .failure(let error):
-                            retranscriptionErrorMessage = error.localizedDescription
-                        }
-                    }
+                    startRetranscription(for: meeting)
                 }
                 .disabled(meeting.status == .recording || meeting.status == .processing || isEditingNotes || isEditingTranscript)
+            }
+        }
+    }
+
+    private func startRetranscription(for meeting: MeetingRecord) {
+        isRetranscribing = true
+        controller.retranscribe(meeting: meeting) { [meeting] result in
+            isRetranscribing = false
+            switch result {
+            case .success:
+                if let updated = controller.meeting(id: meeting.id) {
+                    syncLocalState(with: updated)
+                }
+            case .failure(let error):
+                retranscriptionErrorMessage = error.localizedDescription
             }
         }
     }
@@ -1103,6 +1109,30 @@ struct MeetingDetailView: View {
         .padding(MuesliTheme.spacing12)
         .background(MuesliTheme.accent.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+    }
+
+    @ViewBuilder
+    private func activeMeetingAudioWarningBanner(for meeting: MeetingRecord) -> some View {
+        if meeting.status == .recording,
+           let warning = appState.activeMeetingAudioWarning,
+           warning.meetingID == meeting.id {
+            HStack(alignment: .top, spacing: MuesliTheme.spacing8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.orange)
+                Text(warning.message)
+                    .font(MuesliTheme.callout())
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                Spacer(minLength: MuesliTheme.spacing8)
+            }
+            .padding(MuesliTheme.spacing12)
+            .background(Color.orange.opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            .overlay(
+                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                    .strokeBorder(Color.orange.opacity(0.35), lineWidth: 1)
+            )
+        }
     }
 
     private var hasApiKey: Bool {
