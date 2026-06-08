@@ -5,30 +5,56 @@ import MuesliCore
 import os
 
 final class MeetingChunkCollector {
+    private struct PendingTask {
+        let id: UUID
+        let task: Task<[SpeechSegment], Never>
+    }
+
     private struct State {
-        var tasks: [Task<[SpeechSegment], Never>] = []
+        // Only in-flight tasks live here. Completed tasks are retired into
+        // completedSegments so Task objects and their captured state don't
+        // accumulate for the full meeting duration.
+        var pendingTasks: [PendingTask] = []
+        var completedSegments: [SpeechSegment] = []
         var isClosed = false
     }
 
     private let lock = OSAllocatedUnfairLock(initialState: State())
 
-    func add(_ task: Task<[SpeechSegment], Never>) -> Bool {
+    /// Register a transcription task. Returns the retire ID to pass to retire(id:segments:)
+    /// once the task completes.
+    func add(_ task: Task<[SpeechSegment], Never>) -> (registered: Bool, retireID: UUID) {
+        let id = UUID()
+        let registered = lock.withLock { state in
+            guard !state.isClosed else { return false }
+            state.pendingTasks.append(PendingTask(id: id, task: task))
+            return true
+        }
+        return (registered, id)
+    }
+
+    /// Move a completed task's result into the collector and drop the Task reference.
+    /// Must be called from the watcher Task after awaiting the transcription task's value.
+    func retire(id: UUID, segments: [SpeechSegment]) -> Bool {
         lock.withLock { state in
             guard !state.isClosed else { return false }
-            state.tasks.append(task)
+            state.completedSegments.append(contentsOf: segments)
+            state.pendingTasks.removeAll { $0.id == id }
             return true
         }
     }
 
     func closeAndDrainSortedSegments() async -> [SpeechSegment] {
-        let tasksToAwait = lock.withLock { state in
+        let (tasksToAwait, alreadyCompleted) = lock.withLock { state in
             state.isClosed = true
-            let pendingTasks = state.tasks
-            state.tasks.removeAll()
-            return pendingTasks
+            let tasks = state.pendingTasks.map { $0.task }
+            let completed = state.completedSegments
+            state.pendingTasks.removeAll()
+            state.completedSegments.removeAll()
+            return (tasks, completed)
         }
 
-        var segments: [SpeechSegment] = []
+        var segments = alreadyCompleted
         for task in tasksToAwait {
             segments.append(contentsOf: await task.value)
         }
@@ -44,11 +70,11 @@ final class MeetingChunkCollector {
     func cancelAll() {
         let tasksToCancel = lock.withLock { state in
             state.isClosed = true
-            let pendingTasks = state.tasks
-            state.tasks.removeAll()
-            return pendingTasks
+            let tasks = state.pendingTasks.map { $0.task }
+            state.pendingTasks.removeAll()
+            state.completedSegments.removeAll()
+            return tasks
         }
-
         tasksToCancel.forEach { $0.cancel() }
     }
 }
@@ -93,8 +119,8 @@ final class MeetingSession {
     private let systemAudioRecorder: SystemAudioCapturing
     private let neuralAec = MeetingNeuralAec()
 
-    /// Streaming mic recorder with real-time buffer access (AVAudioEngine)
-    private var streamingMicRecorder = StreamingMicRecorder()
+    /// Route-aware mic recorder with real-time 16 kHz mono PCM access.
+    private var meetingMicRecorder: MeetingMicRecording
     private var rawMicChunkRecorder: PCMChunkRecorder?
     private var retainedRecordingWriter: MeetingRecordingWriter?
     private var retainedRecordingWriterError: Error?
@@ -105,14 +131,17 @@ final class MeetingSession {
     private let systemChunkCollector = MeetingChunkCollector()
     private let micChunkHealthTracker = MeetingTranscriptChunkHealthTracker()
     private let systemChunkHealthTracker = MeetingTranscriptChunkHealthTracker()
+    private let micHealthTracker = MeetingMicHealthTracker()
     private let chunkRotationQueue = DispatchQueue(label: "MuesliNative.MeetingSession.chunkRotation")
     private let pausedDisplayLock = OSAllocatedUnfairLock(initialState: false)
     private var chunkTimingTracker = MeetingChunkTimingTracker()
     private var systemChunkTimingTracker = MeetingChunkTimingTracker()
     private var systemChunkRecorder: PCMChunkRecorder?
     var onProgress: ((MeetingProcessingStage) -> Void)?
+    var onMicHealthChanged: ((MeetingMicHealthSnapshot) -> Void)?
     var manualNotesProvider: (() async -> String?)?
     var liveTitleProvider: (() async -> String?)?
+    var onChunkTranscribed: (([SpeechSegment], String) -> Void)?
     private let screenContextCollector = MeetingScreenContextCollector()
     private var diagnostics: MeetingSessionDiagnostics?
 
@@ -121,7 +150,7 @@ final class MeetingSession {
         if pausedDisplayLock.withLock({ $0 }) {
             return -160
         }
-        return streamingMicRecorder.currentPower()
+        return meetingMicRecorder.currentPower()
     }
 
     private(set) var startTime: Date?
@@ -139,7 +168,8 @@ final class MeetingSession {
         backend: BackendOption,
         runtime: RuntimePaths,
         config: AppConfig,
-        transcriptionCoordinator: TranscriptionCoordinator
+        transcriptionCoordinator: TranscriptionCoordinator,
+        meetingMicRecorder: MeetingMicRecording = RouteAwareMeetingMicRecorder()
     ) {
         self.title = title
         self.calendarEventID = calendarEventID
@@ -147,6 +177,7 @@ final class MeetingSession {
         self.runtime = runtime
         self.config = config
         self.transcriptionCoordinator = transcriptionCoordinator
+        self.meetingMicRecorder = meetingMicRecorder
         if config.useCoreAudioTap {
             self.systemAudioRecorder = CoreAudioSystemRecorder()
         } else {
@@ -180,17 +211,16 @@ final class MeetingSession {
 
         do {
             try prepareRealtimeAudioPipeline(vadManager: vadManager)
-            try streamingMicRecorder.prepare()
+            try meetingMicRecorder.prepare()
             setupRetainedRecordingWriterIfNeeded()
             try await systemAudioRecorder.start()
-            try streamingMicRecorder.start()
+            try meetingMicRecorder.start()
         } catch {
             vadController?.stop()
             vadController = nil
             systemVadController?.stop()
             systemVadController = nil
-            streamingMicRecorder.onAudioBuffer = nil
-            streamingMicRecorder.onPCMSamples = nil
+            meetingMicRecorder.onRawPCMSamples = nil
             systemAudioRecorder.onPCMSamples = nil
             retainedRecordingWriter?.cancel()
             retainedRecordingWriter = nil
@@ -205,7 +235,7 @@ final class MeetingSession {
                 chunkTimingTracker.discard()
                 systemChunkTimingTracker.discard()
             }
-            streamingMicRecorder.cancel()
+            meetingMicRecorder.cancel()
             if let url = systemAudioRecorder.stop() {
                 try? FileManager.default.removeItem(at: url)
             }
@@ -236,7 +266,7 @@ final class MeetingSession {
         }
         guard shouldPause else { return }
 
-        streamingMicRecorder.pause()
+        meetingMicRecorder.pause()
         systemAudioRecorder.pause()
         Task { await screenContextCollector.setPaused(true) }
         fputs("[meeting] recording paused\n", stderr)
@@ -250,7 +280,7 @@ final class MeetingSession {
         }
         guard shouldResume else { return }
 
-        streamingMicRecorder.resume()
+        meetingMicRecorder.resume()
         systemAudioRecorder.resume()
         Task { await screenContextCollector.setPaused(false) }
         fputs("[meeting] recording resumed\n", stderr)
@@ -279,9 +309,8 @@ final class MeetingSession {
         retainedRecordingWriterError = nil
         rawRecorder?.cancel()
         systemRecorder?.cancel()
-        streamingMicRecorder.onAudioBuffer = nil
-        streamingMicRecorder.onPCMSamples = nil
-        streamingMicRecorder.cancel()
+        meetingMicRecorder.onRawPCMSamples = nil
+        meetingMicRecorder.cancel()
         systemAudioRecorder.onPCMSamples = nil
         if let url = systemAudioRecorder.stop() {
             try? FileManager.default.removeItem(at: url)
@@ -302,8 +331,7 @@ final class MeetingSession {
         vadController = nil
         systemVadController?.stop()
         systemVadController = nil
-        streamingMicRecorder.onAudioBuffer = nil
-        streamingMicRecorder.onPCMSamples = nil
+        meetingMicRecorder.onRawPCMSamples = nil
         systemAudioRecorder.onPCMSamples = nil
         let (meetingStart, lastChunkTiming, lastRawMicURL, lastSystemChunkTiming, lastSystemChunkURL) = chunkRotationQueue.sync { () -> (Date, MeetingChunkTimingSnapshot?, URL?, MeetingChunkTimingSnapshot?, URL?) in
             isRecording = false
@@ -321,7 +349,7 @@ final class MeetingSession {
             let lastSystemChunkTiming = systemChunkTimingTracker.finish()
             return (meetingStart, lastChunkTiming, lastRawMicURL, lastSystemChunkTiming, lastSystemChunkURL)
         }
-        let rawStreamingMicURL = streamingMicRecorder.stop()
+        let rawStreamingMicURL = meetingMicRecorder.stop()
         let retainedRecordingURL = retainedRecordingWriter?.stop()
         retainedRecordingWriter = nil
         defer {
@@ -493,6 +521,8 @@ final class MeetingSession {
             rawMicURL: rawStreamingMicURL,
             systemAudioURL: systemAudioURL,
             systemCapture: (systemAudioRecorder as? SystemAudioDiagnosticsProviding)?.diagnosticsSnapshot,
+            micRecorder: meetingMicRecorder.diagnosticsSnapshot(),
+            micHealth: micHealthTracker.snapshot(),
             aec: neuralAec.diagnosticsSnapshot,
             micChunks: micChunkHealthTracker.snapshot(),
             systemChunks: systemChunkHealthTracker.snapshot(),
@@ -574,7 +604,15 @@ final class MeetingSession {
             )
             return segments
         }
-        if !micChunkCollector.add(task) {
+        let (registered, retireID) = micChunkCollector.add(task)
+        if registered {
+            Task { [weak self] in
+                let segments = await task.value
+                guard self?.micChunkCollector.retire(id: retireID, segments: segments) == true else { return }
+                guard !segments.isEmpty else { return }
+                self?.onChunkTranscribed?(segments, "You")
+            }
+        } else {
             task.cancel()
             cleanupTemporaryChunkURLs(rawChunkURL)
         }
@@ -633,7 +671,15 @@ final class MeetingSession {
             }
             return []
         }
-        if !systemChunkCollector.add(task) {
+        let (registered, retireID) = systemChunkCollector.add(task)
+        if registered {
+            Task { [weak self] in
+                let segments = await task.value
+                guard self?.systemChunkCollector.retire(id: retireID, segments: segments) == true else { return }
+                guard !segments.isEmpty else { return }
+                self?.onChunkTranscribed?(segments, "Others")
+            }
+        } else {
             task.cancel()
         }
     }
@@ -684,9 +730,7 @@ final class MeetingSession {
             systemVadController = nil
         }
         neuralAec.resetForStreaming()
-        streamingMicRecorder.onAudioBuffer = nil
-
-        streamingMicRecorder.onPCMSamples = { [weak self] samples in
+        meetingMicRecorder.onRawPCMSamples = { [weak self] samples in
             self?.enqueueRealtimeMicSamples(samples)
         }
         systemAudioRecorder.onPCMSamples = { [weak self] samples in
@@ -700,6 +744,8 @@ final class MeetingSession {
         chunkRotationQueue.async { [weak self] in
             guard let self, self.isRecording, !self.isPaused else { return }
 
+            let healthSnapshot = self.micHealthTracker.noteRawMicSamples(rawSamples)
+            self.onMicHealthChanged?(healthSnapshot)
             self.retainedRecordingWriter?.appendMic(rawSamples)
 
             let floatSamples = rawSamples.map { Float($0) / 32767.0 }
@@ -723,6 +769,8 @@ final class MeetingSession {
         chunkRotationQueue.async { [weak self] in
             guard let self, self.isRecording, !self.isPaused else { return }
 
+            let healthSnapshot = self.micHealthTracker.noteSystemSamples(samples)
+            self.onMicHealthChanged?(healthSnapshot)
             self.retainedRecordingWriter?.appendSystem(samples)
             self.systemChunkRecorder?.append(samples)
             self.systemChunkTimingTracker.append(sampleCount: samples.count)

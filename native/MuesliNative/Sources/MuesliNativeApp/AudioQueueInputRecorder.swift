@@ -3,7 +3,7 @@ import CoreAudio
 import Foundation
 import os
 
-final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting {
+final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting, PausableStreamingDictationRecording {
     var onAudioBuffer: (([Float]) -> Void)?
     var onRecordingFailed: ((Error) -> Void)?
     var onLatencyEvent: ((String, Date) -> Void)?
@@ -25,6 +25,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
     private var preparedInputDeviceID: AudioObjectID?
     private var isPrepared = false
     private var isRunning = false
+    private var isPaused = false
     private var captureGeneration: UInt64 = 0
 
     private struct FileState {
@@ -63,6 +64,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         stateLock.withLock { $0 = FileState() }
         let fileState = try createNewFile()
         stateLock.withLock { $0 = fileState }
+        isPaused = false
 
         for buffer in buffers {
             let status = AudioQueueEnqueueBuffer(audioQueue, buffer, 0, nil)
@@ -110,6 +112,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         if captureGeneration == generationToFinish {
             captureGeneration &+= 1
         }
+        isPaused = false
         queueLock.unlock()
 
         emitLatency("audio_queue_finalize_begin")
@@ -126,6 +129,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
     func cancel() {
         queueLock.lock()
         isRunning = false
+        isPaused = false
         captureGeneration &+= 1
         let queueToDispose = audioQueue
         let callbackUserDataToRelease = queueCallbackUserData
@@ -158,6 +162,27 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
 
     func currentPower() -> Float {
         stateLock.withLock { $0.latestPowerDB }
+    }
+
+    func pause() {
+        queueLock.lock()
+        guard isRunning else {
+            queueLock.unlock()
+            return
+        }
+        isPaused = true
+        queueLock.unlock()
+        stateLock.withLock { $0.latestPowerDB = -160 }
+    }
+
+    func resume() {
+        queueLock.lock()
+        guard isRunning else {
+            queueLock.unlock()
+            return
+        }
+        isPaused = false
+        queueLock.unlock()
     }
 
     private func prepareLocked() throws {
@@ -284,7 +309,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
 
     private func processAudioData(_ data: Data, generation: UInt64) {
         queueLock.lock()
-        let shouldProcess = captureGeneration == generation
+        let shouldProcess = captureGeneration == generation && !isPaused
         queueLock.unlock()
         guard shouldProcess else { return }
 
@@ -338,6 +363,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         let callbackUserDataToRelease = queueCallbackUserData
         if let audioQueue {
             captureGeneration &+= 1
+            isPaused = false
             AudioQueueStop(audioQueue, true)
             AudioQueueDispose(audioQueue, true)
         }

@@ -31,6 +31,28 @@ public enum MeetingSource: String, Codable, Sendable {
     case audioImport = "audio_import"
 }
 
+public struct LiveTranscriptCheckpointEntry: Sendable, Equatable {
+    public let timestampLabel: String
+    public let speaker: String
+    public let startSeconds: Double
+    public let endSeconds: Double
+    public let text: String
+
+    public init(
+        timestampLabel: String,
+        speaker: String,
+        startSeconds: Double,
+        endSeconds: Double,
+        text: String
+    ) {
+        self.timestampLabel = timestampLabel
+        self.speaker = speaker
+        self.startSeconds = startSeconds
+        self.endSeconds = endSeconds
+        self.text = text
+    }
+}
+
 public struct DictationRecord: Identifiable, Codable, Sendable {
     public let id: Int64
     public let timestamp: String

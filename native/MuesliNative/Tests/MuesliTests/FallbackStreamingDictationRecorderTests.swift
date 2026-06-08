@@ -109,9 +109,27 @@ struct FallbackStreamingDictationRecorderTests {
         #expect(bufferCount == 1)
         #expect(failureCount == 0)
     }
+
+    @Test("pause and resume delegate to active recorder")
+    func pauseAndResumeDelegateToActiveRecorder() throws {
+        let error = NSError(domain: "FallbackStreamingDictationRecorderTests", code: 5)
+        let primary = FakeFallbackStreamingRecorder()
+        primary.prepareResults = [.failure(error)]
+        let fallback = FakeFallbackStreamingRecorder()
+        let recorder = FallbackStreamingDictationRecorder(primary: primary, fallback: fallback)
+
+        try recorder.prepare()
+        recorder.pause()
+        recorder.resume()
+
+        #expect(primary.pauseCalls == 0)
+        #expect(primary.resumeCalls == 0)
+        #expect(fallback.pauseCalls == 1)
+        #expect(fallback.resumeCalls == 1)
+    }
 }
 
-private final class FakeFallbackStreamingRecorder: StreamingDictationRecording {
+private final class FakeFallbackStreamingRecorder: StreamingDictationRecording, PausableStreamingDictationRecording {
     var onAudioBuffer: (([Float]) -> Void)?
     var onRecordingFailed: ((Error) -> Void)?
     var preferredInputDeviceID: AudioObjectID?
@@ -124,6 +142,8 @@ private final class FakeFallbackStreamingRecorder: StreamingDictationRecording {
     var startCalls = 0
     var stopCalls = 0
     var cancelCalls = 0
+    var pauseCalls = 0
+    var resumeCalls = 0
     var clearsCallbacksOnCancel = false
 
     func prepare() throws {
@@ -153,6 +173,14 @@ private final class FakeFallbackStreamingRecorder: StreamingDictationRecording {
             onAudioBuffer = nil
             onRecordingFailed = nil
         }
+    }
+
+    func pause() {
+        pauseCalls += 1
+    }
+
+    func resume() {
+        resumeCalls += 1
     }
 
     func currentPower() -> Float {

@@ -1,7 +1,7 @@
 import CoreAudio
 import Foundation
 
-final class FallbackStreamingDictationRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting {
+final class FallbackStreamingDictationRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting, PausableStreamingDictationRecording {
     var onAudioBuffer: (([Float]) -> Void)?
     var onRecordingFailed: ((Error) -> Void)?
     var onLatencyEvent: ((String, Date) -> Void)?
@@ -118,6 +118,20 @@ final class FallbackStreamingDictationRecorder: StreamingDictationRecording, Str
         primary.cancel()
         fallback.cancel()
         wireCallbacks()
+    }
+
+    func pause() {
+        lock.lock()
+        let recorder = activeRecorderLocked()
+        lock.unlock()
+        (recorder as? PausableStreamingDictationRecording)?.pause()
+    }
+
+    func resume() {
+        lock.lock()
+        let recorder = activeRecorderLocked()
+        lock.unlock()
+        (recorder as? PausableStreamingDictationRecording)?.resume()
     }
 
     func currentPower() -> Float {
