@@ -732,7 +732,7 @@ struct SettingsView: View {
                 if appState.config.showScheduledMeetingNotifications {
                     Divider().background(MuesliTheme.surfaceBorder)
 
-                    settingsRow("Notify") {
+                    settingsRow("Reminder timing") {
                         settingsMenu(
                             selection: scheduledMeetingLeadTimeLabel(for: appState.config.scheduledMeetingNotificationLeadTime),
                             options: ScheduledMeetingNotificationLeadTime.allCases.map(scheduledMeetingLeadTimeLabel(for:))
