@@ -162,6 +162,7 @@ struct MeetingNotificationControllerTests {
         let meetingURL = URL(string: "https://meet.google.com/abc-defg-hij")!
         let beforeStart = unifiedCalendarEvent(id: "before", startDate: now.addingTimeInterval(5 * 60), meetingURL: meetingURL)
         let justStarted = unifiedCalendarEvent(id: "started", startDate: now.addingTimeInterval(-30), meetingURL: meetingURL)
+        let noLink = unifiedCalendarEvent(id: "no-link", startDate: now.addingTimeInterval(-30), meetingURL: nil)
 
         let reminderCandidates = ScheduledMeetingNotificationPolicy.upcomingCandidates(
             from: [beforeStart, justStarted],
@@ -170,7 +171,7 @@ struct MeetingNotificationControllerTests {
             leadTime: 5 * 60
         )
         let autoRecordCandidates = ScheduledMeetingNotificationPolicy.autoRecordCandidates(
-            from: [beforeStart, justStarted],
+            from: [beforeStart, justStarted, noLink],
             now: now,
             hiddenEventIDs: []
         )

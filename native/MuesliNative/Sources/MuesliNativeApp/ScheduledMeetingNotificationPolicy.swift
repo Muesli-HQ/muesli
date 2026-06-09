@@ -40,6 +40,8 @@ enum ScheduledMeetingNotificationPolicy {
         now: Date,
         hiddenEventIDs: Set<String>
     ) -> [UnifiedCalendarEvent] {
+        // Auto-record follows the same joinable-meeting eligibility as scheduled prompts,
+        // but it always waits until the event start window instead of using reminder lead time.
         events
             .filter { event in
                 shouldShowStartTimePrompt(
