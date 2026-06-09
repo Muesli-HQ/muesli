@@ -156,6 +156,29 @@ struct MeetingNotificationControllerTests {
         #expect(candidates.map(\.id) == ["started"])
     }
 
+    @Test("Auto-record candidates ignore reminder lead time")
+    func autoRecordCandidatesIgnoreReminderLeadTime() {
+        let now = Date(timeIntervalSinceReferenceDate: 2_750)
+        let meetingURL = URL(string: "https://meet.google.com/abc-defg-hij")!
+        let beforeStart = unifiedCalendarEvent(id: "before", startDate: now.addingTimeInterval(5 * 60), meetingURL: meetingURL)
+        let justStarted = unifiedCalendarEvent(id: "started", startDate: now.addingTimeInterval(-30), meetingURL: meetingURL)
+
+        let reminderCandidates = ScheduledMeetingNotificationPolicy.upcomingCandidates(
+            from: [beforeStart, justStarted],
+            now: now,
+            hiddenEventIDs: [],
+            leadTime: 5 * 60
+        )
+        let autoRecordCandidates = ScheduledMeetingNotificationPolicy.autoRecordCandidates(
+            from: [beforeStart, justStarted],
+            now: now,
+            hiddenEventIDs: []
+        )
+
+        #expect(reminderCandidates.map(\.id) == ["before"])
+        #expect(autoRecordCandidates.map(\.id) == ["started"])
+    }
+
     @Test("Starting now scheduled prompts require a join link")
     func startingNowScheduledPromptsRequireJoinLink() {
         #expect(ScheduledMeetingNotificationPolicy.shouldShowStartingNowPrompt(

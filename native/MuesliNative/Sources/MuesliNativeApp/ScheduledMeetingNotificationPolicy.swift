@@ -35,6 +35,22 @@ enum ScheduledMeetingNotificationPolicy {
             .sorted { $0.startDate < $1.startDate }
     }
 
+    static func autoRecordCandidates(
+        from events: [UnifiedCalendarEvent],
+        now: Date,
+        hiddenEventIDs: Set<String>
+    ) -> [UnifiedCalendarEvent] {
+        events
+            .filter { event in
+                shouldShowStartTimePrompt(
+                    for: event,
+                    now: now,
+                    hiddenEventIDs: hiddenEventIDs
+                )
+            }
+            .sorted { $0.startDate < $1.startDate }
+    }
+
     static func shouldShowUpcomingPrompt(
         for event: UnifiedCalendarEvent,
         now: Date,
