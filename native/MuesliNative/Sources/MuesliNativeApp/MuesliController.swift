@@ -5756,7 +5756,7 @@ final class MuesliController: NSObject {
                 // Reuse the same notification method as the timer path
                 self.showMeetingStartingNowNotification(
                     title: event.title,
-                    calendarEventID: self.notificationKey(id: event.id, startDate: event.startDate),
+                    calendarEventID: event.id,
                     meetingURL: event.meetingURL,
                     endDate: event.endDate
                 )
