@@ -724,6 +724,7 @@ struct AppConfig: Codable {
     var meetingRecordingSavePolicy: MeetingRecordingSavePolicy = .never
     var darkMode: Bool = true
     var enableDoubleTapDictation: Bool = true
+    var pasteShortcut: PasteShortcut = .commandV
     var hotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
     var computerUseHotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
     var meetingRecordingHotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultMeetingThresholdMilliseconds
@@ -804,6 +805,7 @@ struct AppConfig: Codable {
         case meetingRecordingSavePolicy = "meeting_recording_save_policy"
         case darkMode = "dark_mode"
         case enableDoubleTapDictation = "enable_double_tap_dictation"
+        case pasteShortcut = "paste_shortcut"
         case hotkeyTriggerThresholdMS = "hotkey_trigger_threshold_ms"
         case computerUseHotkeyTriggerThresholdMS = "computer_use_hotkey_trigger_threshold_ms"
         case meetingRecordingHotkeyTriggerThresholdMS = "meeting_recording_hotkey_trigger_threshold_ms"
@@ -897,6 +899,7 @@ struct AppConfig: Codable {
         meetingRecordingSavePolicy = (try? c.decode(MeetingRecordingSavePolicy.self, forKey: .meetingRecordingSavePolicy)) ?? defaults.meetingRecordingSavePolicy
         darkMode = (try? c.decode(Bool.self, forKey: .darkMode)) ?? defaults.darkMode
         enableDoubleTapDictation = (try? c.decode(Bool.self, forKey: .enableDoubleTapDictation)) ?? defaults.enableDoubleTapDictation
+        pasteShortcut = (try? c.decode(PasteShortcut.self, forKey: .pasteShortcut)) ?? defaults.pasteShortcut
         hotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(
             (try? c.decode(Int.self, forKey: .hotkeyTriggerThresholdMS)) ?? defaults.hotkeyTriggerThresholdMS
         )

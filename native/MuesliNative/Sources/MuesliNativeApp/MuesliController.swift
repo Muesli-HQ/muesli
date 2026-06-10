@@ -5631,7 +5631,7 @@ final class MuesliController: NSObject {
                     self.historyWindowController?.reload()
                     self.syncAppState()
                     if outputMode != .voiceNote {
-                        PasteController.paste(text: text)
+                        PasteController.paste(text: text, shortcut: self.config.pasteShortcut)
                     }
                     self.resetDictationOutputMode()
                     self.setState(.idle)

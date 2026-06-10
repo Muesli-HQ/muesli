@@ -62,6 +62,37 @@ struct PasteControllerTests {
         }
     }
 
+    // MARK: - paste shortcut flags
+
+    @Test("⌘V maps to the command modifier only")
+    func commandVFlags() {
+        #expect(PasteController.eventFlags(for: .commandV) == .maskCommand)
+    }
+
+    @Test("⌘⇧V maps to command + shift modifiers")
+    func commandShiftVFlags() {
+        #expect(PasteController.eventFlags(for: .commandShiftV) == [.maskCommand, .maskShift])
+    }
+
+    @Test("paste honors a non-default shortcut and still stages text on the clipboard")
+    func pasteWithShortcutStagesText() async {
+        let pasteboard = makePasteboard()
+        pasteboard.clearContents()
+        pasteboard.setString("original", forType: .string)
+
+        var simulated = false
+        PasteController.paste(
+            text: "dictated text",
+            pasteboard: pasteboard,
+            shortcut: .commandShiftV,
+            simulatePasteAction: { simulated = true }
+        )
+
+        #expect(pasteboard.string(forType: .string) == "dictated text")
+        _ = await waitForClipboardString(in: pasteboard, expected: "original")
+        #expect(simulated)
+    }
+
     // MARK: - paste() clipboard restoration
 
     @Test("paste with empty string is a no-op")
