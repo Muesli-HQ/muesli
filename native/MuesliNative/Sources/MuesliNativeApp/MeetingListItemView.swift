@@ -51,6 +51,10 @@ struct MeetingListItemView: View {
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textSecondary)
 
+                if let sourceIndicator = sourceIndicator {
+                    sourceIndicator
+                }
+
                 // Current folder badge
                 if let name = currentFolderName {
                     Text("\u{2022}")
@@ -203,6 +207,48 @@ struct MeetingListItemView: View {
             .padding(.vertical, 2)
             .background(record.status.displayColor.opacity(0.12))
             .clipShape(Capsule())
+    }
+
+    private var sourceIndicator: AnyView? {
+        if isImportedAudio {
+            return AnyView(sourceBadge(icon: "square.and.arrow.down", label: "Imported", help: "Imported audio"))
+        }
+        if hasSavedRecording {
+            return AnyView(sourceBadge(icon: "waveform", label: "Recording", help: "Saved recording available"))
+        }
+        return nil
+    }
+
+    private var isImportedAudio: Bool {
+        record.source == .audioImport || hasLegacyImportedRecordingPath
+    }
+
+    private var hasLegacyImportedRecordingPath: Bool {
+        guard let savedRecordingPath = record.savedRecordingPath else { return false }
+        let filename = URL(fileURLWithPath: savedRecordingPath).lastPathComponent
+        let pattern = #"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}_.+_[0-9A-Fa-f]{8}\.wav$"#
+        return filename.range(of: pattern, options: .regularExpression) != nil
+    }
+
+    private var hasSavedRecording: Bool {
+        guard let savedRecordingPath = record.savedRecordingPath else { return false }
+        return !savedRecordingPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func sourceBadge(icon: String, label: String, help: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 10, weight: .semibold))
+            Text(label)
+                .font(.system(size: 10, weight: .semibold))
+        }
+        .foregroundStyle(isImportedAudio ? MuesliTheme.accent : MuesliTheme.textSecondary)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background((isImportedAudio ? MuesliTheme.accent : MuesliTheme.textSecondary).opacity(0.12))
+        .clipShape(Capsule())
+        .help(help)
+        .accessibilityLabel(help)
     }
 
     private func formatMeta() -> String {

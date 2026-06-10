@@ -153,7 +153,7 @@ actor TranscriptionCoordinator {
         activeBackend = backend.backend
 
         if includeMeetingHelpers {
-            // Meeting helpers are intentionally skipped for dictation-only onboarding.
+            // Meeting helpers are intentionally loaded only when the caller needs meeting behavior.
             if vadManager == nil {
                 do {
                     vadManager = try await VadManager()

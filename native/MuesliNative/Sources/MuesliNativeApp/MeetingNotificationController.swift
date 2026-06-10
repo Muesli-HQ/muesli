@@ -57,8 +57,13 @@ final class MeetingNotificationController {
         let hasJoinButton = meetingURL != nil && onJoinAndRecord != nil
         let platform = explicitPlatform ?? meetingURL.flatMap { MeetingPlatform.detect(from: $0) }
 
-        let width: CGFloat = 344
-        let height: CGFloat = 60
+        let cardWidth: CGFloat = 344
+        let cardHeight: CGFloat = 60
+        let closeButtonSize: CGFloat = 22
+        let cardX = closeButtonSize / 2 + 1
+        let topGutter: CGFloat = closeButtonSize / 2 + 1
+        let width = cardWidth + cardX
+        let height = cardHeight + topGutter
         let margin: CGFloat = 16
         guard let frame = verifiedNotificationFrame(
             preferredScreen: preferredScreen,
@@ -90,36 +95,46 @@ final class MeetingNotificationController {
         contentView.onMouseEntered = { [weak self] in self?.pauseDismissCountdown() }
         contentView.onMouseExited = { [weak self] in self?.resumeDismissCountdown() }
         contentView.wantsLayer = true
-        contentView.layer?.cornerRadius = 10
-        contentView.layer?.masksToBounds = true
-        contentView.layer?.backgroundColor = NSColor(red: 0.10, green: 0.10, blue: 0.12, alpha: 0.97).cgColor
-        contentView.layer?.borderWidth = 1
-        contentView.layer?.borderColor = NSColor.white.withAlphaComponent(0.10).cgColor
+
+        let cardView = NSView(frame: NSRect(x: cardX, y: 0, width: cardWidth, height: cardHeight))
+        cardView.wantsLayer = true
+        cardView.layer?.cornerRadius = 10
+        cardView.layer?.masksToBounds = true
+        cardView.layer?.backgroundColor = NSColor(red: 0.10, green: 0.10, blue: 0.12, alpha: 0.97).cgColor
+        cardView.layer?.borderWidth = 1
+        cardView.layer?.borderColor = NSColor.white.withAlphaComponent(0.10).cgColor
+        contentView.addSubview(cardView)
 
         // Countdown progress bar at bottom
         let progressBar = CALayer()
-        progressBar.frame = CGRect(x: 0, y: 0, width: width, height: 3)
+        progressBar.frame = CGRect(x: 0, y: 0, width: cardWidth, height: 3)
         progressBar.backgroundColor = NSColor(red: 0.3, green: 0.6, blue: 1.0, alpha: 0.8).cgColor
-        contentView.layer?.addSublayer(progressBar)
+        cardView.layer?.addSublayer(progressBar)
         self.progressLayer = progressBar
 
         progressBar.anchorPoint = CGPoint(x: 0, y: 0.5)
         progressBar.position = CGPoint(x: 0, y: 1.5)
 
         let dismissButton = NSButton(title: "×", target: self, action: #selector(handleDismiss))
-        dismissButton.font = .systemFont(ofSize: 13, weight: .medium)
-        dismissButton.frame = NSRect(x: 9, y: height - 27, width: 20, height: 20)
+        dismissButton.font = .systemFont(ofSize: 15, weight: .medium)
+        dismissButton.frame = NSRect(
+            x: cardX - closeButtonSize / 2,
+            y: cardHeight + topGutter - closeButtonSize,
+            width: closeButtonSize,
+            height: closeButtonSize
+        )
         dismissButton.wantsLayer = true
-        dismissButton.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.055).cgColor
+        dismissButton.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.70).cgColor
         dismissButton.layer?.borderWidth = 1
-        dismissButton.layer?.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
-        dismissButton.layer?.cornerRadius = 10
+        dismissButton.layer?.borderColor = NSColor.white.withAlphaComponent(0.55).cgColor
+        dismissButton.layer?.cornerRadius = closeButtonSize / 2
         dismissButton.alignment = .center
         dismissButton.focusRingType = .none
         dismissButton.isBordered = false
-        dismissButton.contentTintColor = NSColor.white.withAlphaComponent(0.72)
+        dismissButton.contentTintColor = NSColor.white.withAlphaComponent(0.86)
         dismissButton.toolTip = "Dismiss"
         contentView.addSubview(dismissButton)
+        contentView.hoverFrames = [cardView.frame, dismissButton.frame]
 
         // Platform icon + text layout
         let textX: CGFloat
@@ -127,11 +142,11 @@ final class MeetingNotificationController {
             let iconSize: CGFloat = 26
             let iconView = NSImageView(image: icon)
             iconView.imageScaling = .scaleProportionallyUpOrDown
-            iconView.frame = NSRect(x: 38, y: (height - iconSize) / 2 + 1, width: iconSize, height: iconSize)
-            contentView.addSubview(iconView)
-            textX = 38 + iconSize + 9
+            iconView.frame = NSRect(x: 14, y: (cardHeight - iconSize) / 2 + 1, width: iconSize, height: iconSize)
+            cardView.addSubview(iconView)
+            textX = 14 + iconSize + 9
         } else {
-            textX = 38
+            textX = 14
         }
 
         // Title label
@@ -139,21 +154,21 @@ final class MeetingNotificationController {
         titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
         titleLabel.textColor = .white
         titleLabel.frame = NSRect(x: textX, y: 32, width: 144, height: 18)
-        contentView.addSubview(titleLabel)
+        cardView.addSubview(titleLabel)
 
         // Subtitle label
         let subtitleLabel = NSTextField(labelWithString: subtitle)
         subtitleLabel.font = .systemFont(ofSize: 11)
         subtitleLabel.textColor = NSColor.white.withAlphaComponent(0.55)
         subtitleLabel.frame = NSRect(x: textX, y: 14, width: 144, height: 16)
-        contentView.addSubview(subtitleLabel)
+        cardView.addSubview(subtitleLabel)
 
         if hasJoinButton {
             // Split button: "Join & Record" (main) + chevron dropdown with "Join Only"
             let buttonWidth: CGFloat = 98
             let chevronWidth: CGFloat = 24
             let totalWidth = buttonWidth + chevronWidth
-            let buttonX = width - totalWidth - 12
+            let buttonX = cardWidth - totalWidth - 12
             let textMaxX = buttonX - 8
             let greenColor = NSColor(red: 0.20, green: 0.72, blue: 0.53, alpha: 1.0)
             let greenDarker = NSColor(red: 0.15, green: 0.58, blue: 0.42, alpha: 1.0)
@@ -172,7 +187,7 @@ final class MeetingNotificationController {
             joinButton.layer?.maskedCorners = [.layerMinXMinYCorner, .layerMinXMaxYCorner]
             joinButton.isBordered = false
             joinButton.contentTintColor = .white
-            contentView.addSubview(joinButton)
+            cardView.addSubview(joinButton)
 
             // Chevron dropdown button
             let chevronButton = NSButton(title: "▾", target: self, action: #selector(handleChevronClick(_:)))
@@ -184,18 +199,18 @@ final class MeetingNotificationController {
             chevronButton.layer?.maskedCorners = [.layerMaxXMinYCorner, .layerMaxXMaxYCorner]
             chevronButton.isBordered = false
             chevronButton.contentTintColor = NSColor.white.withAlphaComponent(0.8)
-            contentView.addSubview(chevronButton)
+            cardView.addSubview(chevronButton)
         } else {
             // Single "Start Recording" button
             let startButton = NSButton(title: actionLabel, target: self, action: #selector(handleStartRecording))
             startButton.font = .systemFont(ofSize: 12, weight: .medium)
-            startButton.frame = NSRect(x: width - 122, y: 15, width: 110, height: 30)
+            startButton.frame = NSRect(x: cardWidth - 122, y: 15, width: 110, height: 30)
             startButton.wantsLayer = true
             startButton.layer?.backgroundColor = NSColor(red: 0.2, green: 0.5, blue: 1.0, alpha: 1.0).cgColor
             startButton.layer?.cornerRadius = 6
             startButton.isBordered = false
             startButton.contentTintColor = .white
-            contentView.addSubview(startButton)
+            cardView.addSubview(startButton)
         }
 
         panel.contentView = contentView
@@ -432,6 +447,8 @@ final class MeetingNotificationController {
 private final class HoverAwareView: NSView {
     var onMouseEntered: (() -> Void)?
     var onMouseExited: (() -> Void)?
+    var hoverFrames: [NSRect] = []
+    private var isHoveringActiveFrame = false
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -441,7 +458,7 @@ private final class HoverAwareView: NSView {
         addTrackingArea(
             NSTrackingArea(
                 rect: bounds,
-                options: [.activeAlways, .mouseEnteredAndExited, .inVisibleRect],
+                options: [.activeAlways, .mouseEnteredAndExited, .mouseMoved, .inVisibleRect],
                 owner: self,
                 userInfo: nil
             )
@@ -449,11 +466,30 @@ private final class HoverAwareView: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        onMouseEntered?()
+        updateHoverState(with: event)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        updateHoverState(with: event)
     }
 
     override func mouseExited(with event: NSEvent) {
-        onMouseExited?()
+        setHoveringActiveFrame(false)
+    }
+
+    private func updateHoverState(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        setHoveringActiveFrame(hoverFrames.contains { $0.contains(point) })
+    }
+
+    private func setHoveringActiveFrame(_ isHovering: Bool) {
+        guard isHovering != isHoveringActiveFrame else { return }
+        isHoveringActiveFrame = isHovering
+        if isHovering {
+            onMouseEntered?()
+        } else {
+            onMouseExited?()
+        }
     }
 }
 
