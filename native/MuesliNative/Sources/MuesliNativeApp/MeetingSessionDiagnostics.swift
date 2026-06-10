@@ -127,6 +127,8 @@ final class MeetingSessionDiagnostics {
         let endedAt: String
         let durationSeconds: Double
         let systemCapture: SystemAudioCaptureDiagnosticsSnapshot?
+        let micRecorder: MeetingMicRecorderDiagnosticsSnapshot?
+        let micHealth: MeetingMicHealthSnapshot?
         let aec: MeetingAecDiagnosticsSnapshot
         let micChunks: ChunkStats
         let systemChunks: ChunkStats
@@ -227,6 +229,8 @@ final class MeetingSessionDiagnostics {
         rawMicURL: URL?,
         systemAudioURL: URL?,
         systemCapture: SystemAudioCaptureDiagnosticsSnapshot?,
+        micRecorder: MeetingMicRecorderDiagnosticsSnapshot?,
+        micHealth: MeetingMicHealthSnapshot?,
         aec: MeetingAecDiagnosticsSnapshot,
         micChunks: MeetingTranscriptChunkHealthSnapshot,
         systemChunks: MeetingTranscriptChunkHealthSnapshot,
@@ -254,6 +258,8 @@ final class MeetingSessionDiagnostics {
             endedAt: Self.iso8601.string(from: endedAt),
             durationSeconds: max(endedAt.timeIntervalSince(startedAt), 0),
             systemCapture: systemCapture,
+            micRecorder: micRecorder,
+            micHealth: micHealth,
             aec: aec,
             micChunks: ChunkStats(
                 successful: micChunks.successfulChunkCount,

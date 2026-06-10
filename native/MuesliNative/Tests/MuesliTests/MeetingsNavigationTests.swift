@@ -713,6 +713,32 @@ struct MeetingsNavigationTests {
         #expect(meeting.status == .failed)
     }
 
+    @Test("startup recovery uses live transcript checkpoints before failing stale meetings")
+    func startupRecoveryUsesLiveTranscriptCheckpoints() throws {
+        let store = try makeStore()
+        let id = try store.createLiveMeeting(title: "Checkpoint Draft", calendarEventID: nil, startTime: Date())
+        try store.appendLiveTranscriptCheckpoints(meetingID: id, entries: [
+            LiveTranscriptCheckpointEntry(timestampLabel: "11:45:02", speaker: "Others", startSeconds: 2, endSeconds: 3, text: "The fallback transcript survived.")
+        ])
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            dictationStore: store
+        )
+
+        controller.recoverStaleLiveMeetings()
+
+        let meeting = try #require(try store.meeting(id: id))
+        #expect(meeting.status == .completed)
+        #expect(meeting.notesState == .rawTranscriptFallback)
+        #expect(meeting.rawTranscript == "[11:45:02] Others: The fallback transcript survived.")
+        #expect(try store.liveTranscriptCheckpointText(meetingID: id) == nil)
+    }
+
     @Test("showMeetingTemplatesManager preserves current meetings context and presents manager")
     func showMeetingTemplatesManagerPresentsManager() {
         let controller = makeController()

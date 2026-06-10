@@ -65,15 +65,23 @@ final class HotkeyMonitor {
     private var prepareDelay: TimeInterval
     private var startDelay: TimeInterval
     private var doubleTapWindow: TimeInterval
+    private let scheduleAfter: (TimeInterval, DispatchWorkItem) -> Void
+    private let now: () -> Date
 
     init(
         prepareDelay: TimeInterval = 0.15,
         startDelay: TimeInterval = 0.25,
-        doubleTapWindow: TimeInterval = 0.35
+        doubleTapWindow: TimeInterval = 0.35,
+        scheduleAfter: @escaping (TimeInterval, DispatchWorkItem) -> Void = { delay, item in
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+        },
+        now: @escaping () -> Date = Date.init
     ) {
         self.prepareDelay = prepareDelay
         self.startDelay = startDelay
         self.doubleTapWindow = doubleTapWindow
+        self.scheduleAfter = scheduleAfter
+        self.now = now
     }
 
     func configureTriggerThreshold(milliseconds: Int) {
@@ -316,7 +324,7 @@ final class HotkeyMonitor {
             self.fireCombinationToggle()
         }
         combinationWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + startDelay, execute: item)
+        scheduleAfter(startDelay, item)
         fputs("[hotkey] combination armed\n", stderr)
         return true
     }
@@ -396,7 +404,7 @@ final class HotkeyMonitor {
                     if doubleTapEnabled,
                        lastTapWasShort,
                        let lastUp = lastTapUpTime,
-                       Date().timeIntervalSince(lastUp) < doubleTapWindow {
+                       now().timeIntervalSince(lastUp) < doubleTapWindow {
                         // Double-tap detected!
                         fputs("[hotkey] double-tap → toggle start\n", stderr)
                         lastTapWasShort = false
@@ -432,7 +440,7 @@ final class HotkeyMonitor {
                 // should still count as a tap.
                 if wasDown && !active && !otherKeyPressed {
                     lastTapWasShort = true
-                    lastTapUpTime = Date()
+                    lastTapUpTime = now()
                 } else {
                     lastTapWasShort = false
                 }
@@ -565,8 +573,8 @@ final class HotkeyMonitor {
         }
         prepareWorkItem = prepare
         startWorkItem = start
-        DispatchQueue.main.asyncAfter(deadline: .now() + delays.prepare, execute: prepare)
-        DispatchQueue.main.asyncAfter(deadline: .now() + delays.start, execute: start)
+        scheduleAfter(delays.prepare, prepare)
+        scheduleAfter(delays.start, start)
     }
 
     private func scheduleArmCancel() {
@@ -582,7 +590,7 @@ final class HotkeyMonitor {
             self.onCancel?()
         }
         armCancelWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + doubleTapWindow, execute: item)
+        scheduleAfter(doubleTapWindow, item)
     }
 
     private func timerDelays() -> (prepare: TimeInterval, start: TimeInterval) {

@@ -216,6 +216,69 @@ struct DictationStoreTests {
         #expect(completed.manualNotes == "- Keep this")
     }
 
+    @Test("live transcript checkpoints recover stale meetings as raw transcript fallback")
+    func liveTranscriptCheckpointsRecoverStaleMeeting() throws {
+        let store = try makeStore()
+        let id = try store.createLiveMeeting(
+            title: "Crashed Meeting",
+            calendarEventID: nil,
+            startTime: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        try store.updateMeetingManualNotes(id: id, manualNotes: "Remember this decision")
+
+        try store.appendLiveTranscriptCheckpoints(meetingID: id, entries: [
+            LiveTranscriptCheckpointEntry(timestampLabel: "10:00:01", speaker: "You", startSeconds: 1, endSeconds: 2, text: "We should ship today."),
+            LiveTranscriptCheckpointEntry(timestampLabel: "10:00:03", speaker: "Others", startSeconds: 3, endSeconds: 4, text: "Agreed with the plan.")
+        ])
+
+        let recovered = try store.recoverLiveMeetingFromTranscriptCheckpoints(id: id)
+
+        #expect(recovered == true)
+        let meeting = try #require(try store.meeting(id: id))
+        #expect(meeting.status == .completed)
+        #expect(meeting.notesState == .rawTranscriptFallback)
+        #expect(meeting.rawTranscript.contains("[10:00:01] You: We should ship today."))
+        #expect(meeting.rawTranscript.contains("[10:00:03] Others: Agreed with the plan."))
+        #expect(meeting.formattedNotes.contains("Recovered from live transcript checkpoints"))
+        #expect(meeting.wordCount == DictationStore.countWords(in: meeting.rawTranscript) + 3)
+        #expect(meeting.durationSeconds == 4)
+        #expect(try store.liveTranscriptCheckpointText(meetingID: id) == nil)
+    }
+
+    @Test("normal live meeting completion clears transcript checkpoints")
+    func completeLiveMeetingClearsTranscriptCheckpoints() throws {
+        let store = try makeStore()
+        let start = Date()
+        let id = try store.createLiveMeeting(title: "Draft", calendarEventID: nil, startTime: start)
+        try store.appendLiveTranscriptCheckpoints(meetingID: id, entries: [
+            LiveTranscriptCheckpointEntry(timestampLabel: "10:00:01", speaker: "You", startSeconds: 1, endSeconds: 2, text: "Temporary live text")
+        ])
+
+        try store.completeLiveMeeting(
+            id: id,
+            title: "Generated Title",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(120),
+            rawTranscript: "final diarized transcript",
+            formattedNotes: "## Summary\nFinal notes",
+            micAudioPath: nil,
+            systemAudioPath: nil,
+            savedRecordingPath: nil,
+            selectedTemplateID: "auto",
+            selectedTemplateName: "Auto",
+            selectedTemplateKind: .auto,
+            selectedTemplatePrompt: "## Summary"
+        )
+
+        let meeting = try #require(try store.meeting(id: id))
+        #expect(meeting.status == .completed)
+        #expect(meeting.rawTranscript == "final diarized transcript")
+        #expect(meeting.notesState == .structuredNotes)
+        #expect(try store.liveTranscriptCheckpointText(meetingID: id) == nil)
+        #expect(try store.recoverLiveMeetingFromTranscriptCheckpoints(id: id) == false)
+    }
+
     @Test("note-only status updates word count from manual notes")
     func noteOnlyStatusCountsManualNotes() throws {
         let store = try makeStore()

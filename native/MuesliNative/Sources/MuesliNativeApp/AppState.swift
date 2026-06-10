@@ -36,6 +36,11 @@ enum GoogleCalendarListLoadState: Equatable {
     case failed(String)
 }
 
+struct ActiveMeetingAudioWarning: Equatable {
+    let meetingID: Int64
+    let message: String
+}
+
 @MainActor
 @Observable
 final class AppState {
@@ -70,6 +75,9 @@ final class AppState {
     var isMeetingRecordingPaused: Bool = false
     var isMeetingStarting: Bool = false
     var meetingStartStatus: String?
+    var liveMeetingTranscript: String = ""
+    var liveMeetingTranscriptOwnerID: Int64? = nil
+    var activeMeetingAudioWarning: ActiveMeetingAudioWarning?
     var dictationState: DictationState = .idle
     var isVoiceNoteRecording: Bool = false
     var isChatGPTAuthenticated: Bool = false

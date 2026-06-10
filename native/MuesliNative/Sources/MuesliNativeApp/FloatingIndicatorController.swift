@@ -233,6 +233,17 @@ final class FloatingIndicatorController: NSObject {
         }
     }
 
+    func setPreparingWaveformWaiting(config: AppConfig) {
+        recordingWaveformMode = .waiting
+        guard state == .preparing else {
+            setState(.preparing, config: config)
+            return
+        }
+        if let panel {
+            ensureWaveformAnimation(in: panel.frame.size, mode: .waiting)
+        }
+    }
+
     func setMeetingRecordingPaused(_ paused: Bool, config: AppConfig) {
         guard isMeetingRecordingPaused != paused else { return }
         isMeetingRecordingPaused = paused
