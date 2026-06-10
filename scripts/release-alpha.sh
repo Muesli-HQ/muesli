@@ -24,6 +24,21 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/muesli_spm_cache.sh"
+PACKAGE_DIR="$ROOT/native/MuesliNative"
+SWIFTPM_SCRATCH_PATH=""
+SWIFT_TEST_ARGS=(--package-path "$PACKAGE_DIR")
+BUILD_ENV=()
+# The alpha channel is intentionally shared across worktrees. Do not run this
+# script concurrently from multiple worktrees unless you set an isolated
+# MUESLI_SWIFTPM_SCRATCH_PATH or MUESLI_SWIFTPM_SCRATCH_CHANNEL.
+if ! muesli_spm_scratch_disabled; then
+  SWIFTPM_SCRATCH_PATH="$(muesli_resolve_spm_scratch_path alpha)"
+  SWIFT_TEST_ARGS+=(--scratch-path "$SWIFTPM_SCRATCH_PATH")
+  BUILD_ENV+=(MUESLI_SWIFTPM_SCRATCH_PATH="$SWIFTPM_SCRATCH_PATH")
+else
+  BUILD_ENV+=(MUESLI_DISABLE_SWIFTPM_SCRATCH_PATH=1)
+fi
 PROFILE_NAME="${MUESLI_NOTARY_PROFILE:-MuesliNotary}"
 SIGN_IDENTITY="${MUESLI_SIGN_IDENTITY:-Developer ID Application: Pranav Hari Guruvayurappan (58W55QJ567)}"
 APP_DIR="/Applications/MuesliCanary.app"
@@ -104,7 +119,7 @@ Installs as **MuesliCanary** alongside your existing Muesli install.
 - Sparkle is disabled; use MuesliPreprod for updater-flow testing
 
 ### Not linked from the main site
-Download from [GitHub Releases](https://github.com/pHequals7/muesli/releases).
+Download from [GitHub Releases](https://github.com/Muesli-HQ/muesli/releases).
 EOF
 )"
 
@@ -115,18 +130,27 @@ mkdir -p "$OUTPUT_DIR"
 
 # --- Step 1: Run tests ---
 echo "[1/10] Running tests..."
-swift test --package-path "$ROOT/native/MuesliNative"
+if [[ -n "$SWIFTPM_SCRATCH_PATH" ]]; then
+  mkdir -p "$SWIFTPM_SCRATCH_PATH"
+  echo "  SwiftPM scratch path: $SWIFTPM_SCRATCH_PATH"
+else
+  echo "  SwiftPM scratch path: package-local .build"
+fi
+swift test "${SWIFT_TEST_ARGS[@]}"
 echo "  Tests passed."
 
 # --- Step 2: Build and sign ---
 echo "[2/10] Building and signing (version: ${VERSION})..."
-echo "y" | MUESLI_BUILD_VERSION="$VERSION" \
-  MUESLI_APP_NAME=MuesliCanary \
-  MUESLI_BUNDLE_ID=com.muesli.canary \
-  MUESLI_DISPLAY_NAME=MuesliCanary \
-  MUESLI_SUPPORT_DIR_NAME=MuesliCanary \
-  MUESLI_SPARKLE_FEED_URL="" \
-  "$ROOT/scripts/build_native_app.sh" > /dev/null
+ALPHA_BUILD_ENV=(
+  MUESLI_BUILD_VERSION="$VERSION"
+  "${BUILD_ENV[@]}"
+  MUESLI_APP_NAME=MuesliCanary
+  MUESLI_BUNDLE_ID=com.muesli.canary
+  MUESLI_DISPLAY_NAME=MuesliCanary
+  MUESLI_SUPPORT_DIR_NAME=MuesliCanary
+  MUESLI_SPARKLE_FEED_URL=""
+)
+echo "y" | env "${ALPHA_BUILD_ENV[@]}" "$ROOT/scripts/build_native_app.sh" > /dev/null
 echo "  Installed to $APP_DIR"
 
 FLAGS=$(codesign -dvvv "$APP_DIR" 2>&1 | grep -o 'flags=0x[0-9a-f]*([^)]*)')

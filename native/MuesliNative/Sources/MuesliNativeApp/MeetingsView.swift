@@ -203,6 +203,13 @@ struct MeetingsView: View {
                     comingUpSection
                 }
 
+                if appState.isMeetingStarting {
+                    MeetingPreparationBanner(
+                        status: appState.meetingStartStatus,
+                        onCancel: { controller.cancelMeetingPreparation() }
+                    )
+                }
+
                 if let activeLiveMeeting {
                     activeMeetingBanner(activeLiveMeeting)
                 }
@@ -237,6 +244,19 @@ struct MeetingsView: View {
             .padding(.horizontal, 40)
             .padding(.vertical, 32)
             .frame(maxWidth: .infinity, alignment: .center)
+        }
+        .onDrop(of: ["public.file-url"], isTargeted: nil) { providers in
+            guard let provider = providers.first else { return false }
+            provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { item, _ in
+                guard let data = item as? Data,
+                      let urlString = String(data: data, encoding: .utf8),
+                      let url = URL(string: urlString) else { return }
+                guard AudioFileImportController.isSupportedFileURL(url) else { return }
+                DispatchQueue.main.async {
+                    controller.importAudioFileFromURL(url)
+                }
+            }
+            return true
         }
     }
 
@@ -375,7 +395,9 @@ struct MeetingsView: View {
 
                                 Spacer()
 
-                                if let meetingURL = event.meetingURL, !appState.isMeetingRecording {
+                                if let meetingURL = event.meetingURL,
+                                   !appState.isMeetingRecording,
+                                   !appState.isMeetingStarting {
                                     Button {
                                         controller.joinAndRecord(title: event.title, meetingURL: meetingURL, endDate: event.endDate)
                                     } label: {
@@ -532,12 +554,37 @@ struct MeetingsView: View {
                 .foregroundStyle(MuesliTheme.backgroundBase)
                 .padding(.horizontal, MuesliTheme.spacing12)
                 .padding(.vertical, 8)
-                .background(appState.isMeetingRecording ? MuesliTheme.surfacePrimary : MuesliTheme.accent)
+                .background(appState.isMeetingRecording || appState.isMeetingStarting ? MuesliTheme.surfacePrimary : MuesliTheme.accent)
                 .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
             }
             .buttonStyle(.plain)
-            .disabled(appState.isMeetingRecording)
+            .disabled(appState.isMeetingRecording || appState.isMeetingStarting)
             .help("Start a quick meeting note")
+            .fixedSize()
+
+            Button {
+                controller.importAudioFile()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "square.and.arrow.down")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("Import Audio")
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(MuesliTheme.textPrimary)
+                .padding(.horizontal, MuesliTheme.spacing12)
+                .padding(.vertical, 8)
+                .background(MuesliTheme.surfacePrimary)
+                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                .overlay(
+                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                        .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(appState.isMeetingRecording || appState.isMeetingStarting)
+            .help("Import an audio file for offline transcription")
             .fixedSize()
 
             sortButton

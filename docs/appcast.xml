@@ -6,53 +6,48 @@
         <language>en</language>
         <!-- Items are added by generate_appcast or the release script -->
         <item>
+            <title>0.6.9</title>
+            <pubDate>Wed, 27 May 2026 23:34:28 +0530</pubDate>
+            <description><![CDATA[
+<h2>Muesli 0.6.9</h2>
+<p>This release focuses on meeting transcription reliability, summary backend flexibility, and a cleaner dictionary editing workflow.</p>
+<h3>What's New</h3>
+<ul>
+<li><strong>More meeting summary backends:</strong> Added LM Studio plus custom OpenAI-compatible and Anthropic-compatible summary endpoints, with settings validation and endpoint normalization.</li>
+<li><strong>Background meeting processing:</strong> Stopping a meeting no longer has to block the app while transcription and summarization finish, and completion notifications are handed off more reliably.</li>
+<li><strong>Better meeting detection:</strong> Browser audio by itself no longer creates false meeting candidates; meeting detection now requires stronger input activity evidence.</li>
+<li><strong>Calendar reliability fixes:</strong> The Coming Up section and calendar monitor now start correctly for legacy meeting settings and meeting-detection configurations.</li>
+<li><strong>Dictionary UI polish:</strong> Dictionary rows are more compact, and threshold editing now uses a dedicated popover slider for clearer tuning.</li>
+<li><strong>Expanded tests:</strong> Added coverage for meeting detection, summary backend readiness, notification handoff, dictionary threshold editing, and update-flow policy.</li>
+</ul>
+<p>Signed, notarized, and stapled by Apple.</p>
+]]></description>
+            <sparkle:version>0.6.9</sparkle:version>
+            <sparkle:shortVersionString>0.6.9</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>10.13</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.6.9/Muesli-0.6.9.dmg" length="73446621" type="application/octet-stream" sparkle:edSignature="uK+zNpzCPytfT9O+1HvkhoHeh3VkhGF/GxLxu495eoAxwPMrxRrs83t5V7DozGoEry/9K6k7aLiZKLEg8/IQAA=="/>
+            <sparkle:deltas>
+            </sparkle:deltas>
+        </item>
+        <item>
+            <title>0.6.8</title>
+            <pubDate>Mon, 25 May 2026 23:46:57 +0530</pubDate>
+            <sparkle:version>0.6.8</sparkle:version>
+            <sparkle:shortVersionString>0.6.8</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>10.13</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.6.8/Muesli-0.6.8.dmg" length="73414000" type="application/octet-stream" sparkle:edSignature="cHC0J/iCNuFKxGQLWhT85JIQDEGcM5bodINux+x5XxGCJ90Nb7lXkT0/mW0t42SXx7S9tZ+5o2A6D5OITQ0DDA=="/>
+            <sparkle:deltas/>
+        </item>
+        <item>
             <title>0.6.7</title>
             <pubDate>Mon, 11 May 2026 10:48:53 +0530</pubDate>
-            <description><![CDATA[
-<h2>Muesli 0.6.7</h2>
-<p>This release focuses on more reliable meeting capture, safer updates, and smoother setup.</p>
-<h3>What's new</h3>
-<ul>
-<li>System audio from Zoom, Microsoft Teams, and other call clients is now routed to the "Others" side of meeting transcripts instead of being mislabelled as you.</li>
-<li>Ollama is now available as a local meeting-summary backend, with improved timeout handling, title generation diagnostics, and Qwen 3.5 as the default Ollama model.</li>
-<li>Launch at Login is now wired through macOS login items, with better approval-state refresh in Settings.</li>
-<li>The onboarding flow is smoother for permission setup, meeting-only users, accessibility prompts, and model selection.</li>
-<li>Sparkle updates now show release notes and use the standard updater flow from the About screen, avoiding the previous busy-state loop.</li>
-</ul>
-<h3>Fixes and polish</h3>
-<ul>
-<li>Computer Use alpha foundations are included, but the CUA hotkey is disabled by default so users do not accidentally trigger it before ChatGPT integration is configured.</li>
-<li>Paste handling is safer and avoids restoring stale clipboard contents over newer user clipboard changes.</li>
-<li>Custom dictionary phrase matching is more reliable.</li>
-<li>Meeting detection work has moved off the main thread to reduce UI stalls.</li>
-<li>CoreAudio recording cleanup is more robust across restart failures, teardown, and app deinitialization.</li>
-</ul>
-]]></description>
             <sparkle:version>0.6.7</sparkle:version>
             <sparkle:shortVersionString>0.6.7</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>10.13</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/pHequals7/muesli/releases/download/v0.6.7/Muesli-0.6.7.dmg" length="63371647" type="application/octet-stream" sparkle:edSignature="9MsAH/ykgy/odyEO11DpO0r1dyZTLIyCzouo7VKm4Zctr1ffMnc2le1JsnV2GIp+qMwUU9VWxYxvxzj0DC5XBA=="/>
-        </item>
-        <item>
-            <title>0.6.6</title>
-            <pubDate>Sun, 03 May 2026 14:54:15 +0530</pubDate>
-            <sparkle:version>0.6.6</sparkle:version>
-            <sparkle:shortVersionString>0.6.6</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>10.13</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/pHequals7/muesli/releases/download/v0.6.6/Muesli-0.6.6.dmg" length="62824130" type="application/octet-stream" sparkle:edSignature="Jl7W4HCu1tPNr3eb+DPM8P6cishgSVqOEpqVLmlJTd3HYmOfTg4WhwOmuPuKmP9q0oNF9BD0XJFNTZeGIotQCw=="/>
-            <sparkle:deltas/>
-        </item>
-        <item>
-            <title>0.6.5</title>
-            <pubDate>Thu, 30 Apr 2026 15:43:05 +0530</pubDate>
-            <sparkle:version>0.6.5</sparkle:version>
-            <sparkle:shortVersionString>0.6.5</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>10.13</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/pHequals7/muesli/releases/download/v0.6.5/Muesli-0.6.5.dmg" length="62609412" type="application/octet-stream" sparkle:edSignature="rcLBVSHyNmwt4ZkpJqWb/XmzCAvGaaODWgMVkVGPLtSNacee7+groSq8S/jw7SM+9tXp9cKHGSJfgJolOcK5CA=="/>
-            <sparkle:deltas/>
+            <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.6.7/Muesli-0.6.7.dmg" length="63371647" type="application/octet-stream" sparkle:edSignature="9MsAH/ykgy/odyEO11DpO0r1dyZTLIyCzouo7VKm4Zctr1ffMnc2le1JsnV2GIp+qMwUU9VWxYxvxzj0DC5XBA=="/>
         </item>
     </channel>
 </rss>

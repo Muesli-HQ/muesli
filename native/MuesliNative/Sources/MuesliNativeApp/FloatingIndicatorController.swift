@@ -90,6 +90,9 @@ final class FloatingIndicatorController: NSObject {
     private var barLayers: [CALayer] = []
     private var amplitudeTimer: Timer?
     private var smoothedAmplitude: CGFloat = 0
+    private var waveformAnimationMode: WaveformAnimationMode = .level
+    private var recordingWaveformMode: WaveformAnimationMode = .level
+    private var waveformAnimationStartedAt = Date()
     fileprivate var isDragging = false
     var powerProvider: (() -> Float)?
     var onStopMeeting: (() -> Void)?
@@ -105,6 +108,11 @@ final class FloatingIndicatorController: NSObject {
     private var isShowingLoading = false
     private var isComputerUseCursorMode = false
     private var computerUseCursorReturnFrame: NSRect?
+
+    private enum WaveformAnimationMode {
+        case level
+        case waiting
+    }
 
     init(configStore: ConfigStore) {
         self.configStore = configStore
@@ -148,7 +156,12 @@ final class FloatingIndicatorController: NSObject {
     func collapseForDrag() {
         isDragging = true
         hoverExitWorkItem?.cancel()
-        guard state == .idle, let panel, let contentView, let iconLabel, let textLabel else { return }
+        guard state == .idle,
+              !isShowingLoading,
+              let panel,
+              let contentView,
+              let iconLabel,
+              let textLabel else { return }
         isHovered = false
 
         let config = configStore.load()
@@ -190,6 +203,7 @@ final class FloatingIndicatorController: NSObject {
 
     func setMeetingRecording(_ recording: Bool, config: AppConfig) {
         isMeetingRecording = recording
+        recordingWaveformMode = .level
         if !recording {
             isMeetingRecordingPaused = false
         }
@@ -197,6 +211,36 @@ final class FloatingIndicatorController: NSObject {
             setState(.recording, config: config)
         } else {
             setState(.idle, config: config)
+        }
+    }
+
+    func setRecordingWaveformWaiting(config: AppConfig) {
+        recordingWaveformMode = .waiting
+        guard state == .recording else { return }
+        if let panel {
+            ensureWaveformAnimation(in: panel.frame.size, mode: .waiting)
+        }
+    }
+
+    func setRecordingWaveformLevel(config: AppConfig) {
+        recordingWaveformMode = .level
+        guard state == .recording else {
+            setState(.recording, config: config)
+            return
+        }
+        if let panel {
+            ensureWaveformAnimation(in: panel.frame.size, mode: .level)
+        }
+    }
+
+    func setPreparingWaveformWaiting(config: AppConfig) {
+        recordingWaveformMode = .waiting
+        guard state == .preparing else {
+            setState(.preparing, config: config)
+            return
+        }
+        if let panel {
+            ensureWaveformAnimation(in: panel.frame.size, mode: .waiting)
         }
     }
 
@@ -232,6 +276,9 @@ final class FloatingIndicatorController: NSObject {
             transcribingTitle = "Transcribing"
             computerUseTranscriptText = nil
         }
+        if state != .recording {
+            recordingWaveformMode = .level
+        }
         if state != .idle {
             isHovered = false
         }
@@ -244,7 +291,10 @@ final class FloatingIndicatorController: NSObject {
         }
         guard let panel, let contentView, let iconLabel, let textLabel else { return }
 
-        if previousState == .recording && state != .recording {
+        let preservesWaveformAcrossTransition = previousState == .preparing && state == .recording
+        if (previousState == .recording || previousState == .preparing)
+            && state != previousState
+            && !preservesWaveformAcrossTransition {
             stopWaveformAnimation()
         }
 
@@ -332,8 +382,7 @@ final class FloatingIndicatorController: NSObject {
 
         switch state {
         case .recording:
-            setupWaveformBars(in: targetFrame.size)
-            startWaveformAnimation()
+            ensureWaveformAnimation(in: targetFrame.size, mode: recordingWaveformMode)
             addStopLayer(in: targetFrame.size)
         case .transcribing:
             if #available(macOS 15, *) {
@@ -342,11 +391,17 @@ final class FloatingIndicatorController: NSObject {
                     options: .repeating, animated: true
                 )
             }
+        case .preparing:
+            ensureWaveformAnimation(in: targetFrame.size, mode: .waiting)
         default:
             break
         }
 
         panel.orderFrontRegardless()
+        if state == .preparing {
+            contentView.displayIfNeeded()
+            panel.displayIfNeeded()
+        }
     }
 
     func showComputerUseCursor(at quartzPoint: CGPoint, label rawLabel: String?) {
@@ -513,11 +568,11 @@ final class FloatingIndicatorController: NSObject {
         let config = configStore.load()
         if panel == nil { createPanel(config: config) }
         guard let panel, let contentView, let textLabel else { return }
+        guard let screen = NSScreen.main?.visibleFrame else { return }
 
         isShowingLoading = true
-        let loadingSize = NSSize(width: 180, height: 36)
+        let loadingSize = loadingPillSize(message: message, screen: screen)
         let center = CGPoint(x: panel.frame.midX, y: panel.frame.midY)
-        guard let screen = NSScreen.main?.visibleFrame else { return }
         let x = min(max(center.x - loadingSize.width / 2, screen.minX), screen.maxX - loadingSize.width)
         let y = min(max(center.y - loadingSize.height / 2, screen.minY), screen.maxY - loadingSize.height)
         let targetFrame = NSRect(x: x, y: y, width: loadingSize.width, height: loadingSize.height)
@@ -535,10 +590,13 @@ final class FloatingIndicatorController: NSObject {
 
         let spinnerSize: CGFloat = 16
         let gap: CGFloat = 8
+        let horizontalPadding: CGFloat = 16
         let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11, weight: .medium)]
-        let textW = ceil((message as NSString).size(withAttributes: attrs).width) + 2
+        let measuredTextW = ceil((message as NSString).size(withAttributes: attrs).width) + 2
+        let availableTextW = max(40, loadingSize.width - (horizontalPadding * 2) - spinnerSize - gap)
+        let textW = min(measuredTextW, availableTextW)
         let totalW = spinnerSize + gap + textW
-        let startX = (loadingSize.width - totalW) / 2
+        let startX = max(horizontalPadding, (loadingSize.width - totalW) / 2)
 
         micIconView?.isHidden = true
         wandIconView?.isHidden = true
@@ -570,6 +628,11 @@ final class FloatingIndicatorController: NSObject {
 
             textLabel.stringValue = message
             textLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+            textLabel.lineBreakMode = .byTruncatingTail
+            textLabel.maximumNumberOfLines = 1
+            textLabel.usesSingleLineMode = true
+            textLabel.cell?.wraps = false
+            textLabel.cell?.isScrollable = false
             textLabel.textColor = NSColor.colorWith(hex: 0xFFFFFF, alpha: 0.82)
             textLabel.frame = NSRect(
                 x: startX + spinnerSize + gap,
@@ -580,6 +643,18 @@ final class FloatingIndicatorController: NSObject {
             textLabel.animator().alphaValue = 1
         }
         panel.orderFrontRegardless()
+    }
+
+    private func loadingPillSize(message: String, screen: NSRect) -> NSSize {
+        let font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        let spinnerSize: CGFloat = 16
+        let gap: CGFloat = 8
+        let horizontalPadding: CGFloat = 16
+        let textWidth = ceil((message as NSString).size(withAttributes: [.font: font]).width) + 2
+        let preferredWidth = horizontalPadding + spinnerSize + gap + textWidth + horizontalPadding
+        let minWidth = min(CGFloat(180), max(120, screen.width - 32))
+        let maxWidth = max(minWidth, min(360, screen.width - 32))
+        return NSSize(width: min(max(preferredWidth, minWidth), maxWidth), height: 36)
     }
 
     func hideLoading() {
@@ -594,7 +669,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func setHovered(_ hovered: Bool) {
-        guard state == .idle, !isDragging, isHovered != hovered else { return }
+        guard state == .idle, !isShowingLoading, !isDragging, isHovered != hovered else { return }
         hoverExitWorkItem?.cancel()
         isHovered = hovered
         let config = configStore.load()
@@ -602,7 +677,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func scheduleHoverExit() {
-        guard state == .idle, isHovered else { return }
+        guard state == .idle, !isShowingLoading, isHovered else { return }
         hoverExitWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
@@ -614,7 +689,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func closeIfIdle() {
-        if state == .idle { close() }
+        if state == .idle, !isShowingLoading { close() }
     }
 
     func close() {
@@ -669,6 +744,7 @@ final class FloatingIndicatorController: NSObject {
         barLayers.forEach { $0.removeFromSuperlayer() }
         barLayers.removeAll()
         smoothedAmplitude = 0
+        waveformAnimationMode = .level
         powerProvider = nil
         contentView?.layer?.transform = CATransform3DIdentity
         removeStopLayer()
@@ -697,15 +773,56 @@ final class FloatingIndicatorController: NSObject {
         }
     }
 
-    private func startWaveformAnimation() {
+    private func updateWaveformBarsLayout(in frameSize: NSSize) {
+        guard !barLayers.isEmpty else { return }
+        let barWidth: CGFloat = 3
+        let barSpacing: CGFloat = 3
+        let totalWidth = CGFloat(barLayers.count) * barWidth + CGFloat(max(0, barLayers.count - 1)) * barSpacing
+        let startX = (frameSize.width - totalWidth) / 2
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for (i, bar) in barLayers.enumerated() {
+            var frame = bar.frame
+            frame.origin.x = startX + CGFloat(i) * (barWidth + barSpacing)
+            frame.origin.y = (frameSize.height - frame.height) / 2
+            frame.size.width = barWidth
+            bar.frame = frame
+            bar.cornerRadius = barWidth / 2
+        }
+        CATransaction.commit()
+    }
+
+    private func ensureWaveformAnimation(in frameSize: NSSize, mode: WaveformAnimationMode) {
+        if barLayers.isEmpty {
+            setupWaveformBars(in: frameSize)
+        } else {
+            updateWaveformBarsLayout(in: frameSize)
+        }
+        setWaveformAnimationMode(mode)
+        if amplitudeTimer == nil {
+            startWaveformAnimation(mode: mode)
+        }
+    }
+
+    private func setWaveformAnimationMode(_ mode: WaveformAnimationMode) {
+        guard waveformAnimationMode != mode else { return }
+        waveformAnimationMode = mode
+        waveformAnimationStartedAt = Date()
+    }
+
+    private func startWaveformAnimation(mode: WaveformAnimationMode) {
         amplitudeTimer?.invalidate()
-        amplitudeTimer = Timer.scheduledTimer(
+        waveformAnimationMode = mode
+        waveformAnimationStartedAt = Date()
+        let timer = Timer(
             timeInterval: 1.0 / 30.0,
             target: self,
             selector: #selector(waveformTimerFired(_:)),
             userInfo: nil,
             repeats: true
         )
+        RunLoop.main.add(timer, forMode: .common)
+        amplitudeTimer = timer
     }
 
     @objc private func waveformTimerFired(_ timer: Timer) {
@@ -713,16 +830,33 @@ final class FloatingIndicatorController: NSObject {
         let multipliers: [CGFloat] = [0.6, 0.85, 1.0, 0.85, 0.6]
         let minHeight: CGFloat = 3
         let maxHeight: CGFloat = 14
-        let dB = CGFloat(powerProvider?() ?? -160)
-        let raw = max(0, min(1, (dB + 50) / 50))
-        smoothedAmplitude = 0.35 * raw + 0.65 * smoothedAmplitude
         let pillHeight = contentView.frame.height
+        let elapsed = CGFloat(Date().timeIntervalSince(waveformAnimationStartedAt))
+        let levelAmplitude: CGFloat
+        if waveformAnimationMode == .level {
+            let dB = CGFloat(powerProvider?() ?? -160)
+            let raw = max(0, min(1, (dB + 68) / 38))
+            smoothedAmplitude = 0.48 * raw + 0.52 * smoothedAmplitude
+            levelAmplitude = smoothedAmplitude
+        } else {
+            levelAmplitude = 0
+        }
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for (i, bar) in barLayers.enumerated() {
             let m = i < multipliers.count ? multipliers[i] : 1.0
-            let h = minHeight + (maxHeight - minHeight) * smoothedAmplitude * m
+            let amplitude: CGFloat
+            switch waveformAnimationMode {
+            case .level:
+                amplitude = levelAmplitude * m
+                bar.opacity = 0.85
+            case .waiting:
+                let phase = elapsed * 5.8 + CGFloat(i) * 0.72
+                amplitude = 0.28 + (sin(phase) + 1) * 0.22 * m
+                bar.opacity = Float(0.38 + (sin(phase) + 1) * 0.18)
+            }
+            let h = minHeight + (maxHeight - minHeight) * amplitude
             bar.frame.size.height = h
             bar.frame.origin.y = (pillHeight - h) / 2
         }
@@ -770,6 +904,7 @@ final class FloatingIndicatorController: NSObject {
             iconLabel?.isHidden = true
             micIconView?.isHidden = false
             if let mic = micIconView {
+                mic.alphaValue = 1
                 if isHovered {
                     mic.frame = NSRect(x: 12, y: (frameSize.height - iconSize.height) / 2,
                                       width: iconSize.width, height: iconSize.height)
@@ -801,7 +936,10 @@ final class FloatingIndicatorController: NSObject {
                 let attrs: [NSAttributedString.Key: Any] = [
                     .font: NSFont.systemFont(ofSize: 11, weight: .regular)
                 ]
-                let measuredTextW = ceil((transcribingTitle as NSString).size(withAttributes: attrs).width) + 2
+                let measuredTextW = max(
+                    ceil((transcribingTitle as NSString).size(withAttributes: attrs).width),
+                    ceil(textLabel?.intrinsicContentSize.width ?? 0)
+                ) + 8
                 let availableTextW = max(0, frameSize.width - iconSize.width - gap - (horizontalPadding * 2))
                 let textW = min(measuredTextW, availableTextW)
                 let totalW = iconSize.width + gap + textW
@@ -819,8 +957,8 @@ final class FloatingIndicatorController: NSObject {
 
         case .preparing:
             wandIconView?.isHidden = true
+            iconLabel?.isHidden = true
             micIconView?.isHidden = true
-            iconLabel?.isHidden = false
         }
     }
 
@@ -1113,7 +1251,7 @@ final class FloatingIndicatorController: NSObject {
         switch state {
         case .idle:
             size = isHovered ? NSSize(width: 220, height: 36) : NSSize(width: 44, height: 28)
-        case .preparing: size = NSSize(width: 44, height: 28)
+        case .preparing: size = NSSize(width: 76, height: 22)
         case .recording: size = NSSize(width: 76, height: 22)
         case .transcribing:
             if let transcript = computerUseTranscriptText {
@@ -1182,6 +1320,12 @@ final class FloatingIndicatorController: NSObject {
     }
 
     private func transitionDuration(from oldState: DictationState, to newState: DictationState, wasHovered: Bool, isHovered: Bool) -> TimeInterval {
+        if newState == .preparing {
+            return 0
+        }
+        if oldState == .preparing, newState == .recording {
+            return 0
+        }
         if oldState == .idle, newState == .idle, wasHovered != isHovered {
             return isHovered ? 0.24 : 0.2
         }
@@ -1274,7 +1418,7 @@ final class FloatingIndicatorController: NSObject {
         let iconWidth: CGFloat = 18
         let gap: CGFloat = 6
         let horizontalPadding: CGFloat = 14
-        let textWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width) + 2
+        let textWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width) + 8
         let preferredWidth = horizontalPadding + iconWidth + gap + textWidth + horizontalPadding
         let minWidth = min(CGFloat(190), max(120, screenWidth - 32))
         let maxWidth = max(minWidth, min(420, screenWidth - 32))
