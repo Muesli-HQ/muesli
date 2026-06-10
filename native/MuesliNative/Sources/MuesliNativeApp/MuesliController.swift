@@ -8802,6 +8802,7 @@ public final class MuesliController: NSObject {
                     var pasteLifecycleEvents: [PasteController.LifecycleEvent] = []
                     PasteController.paste(
                         text: replacement,
+                        shortcut: configSnapshot.pasteShortcut,
                         requireStagedClipboardOwnership: true,
                         targetApplicationProvider: { snapshot.application },
                         shouldDispatchPaste: { snapshot.isTargetStillFocused() },
@@ -8839,7 +8840,7 @@ public final class MuesliController: NSObject {
                                 deliveryStatus = "needs_attention"
                                 deliveryMessage = "Generated text is ready for manual paste"
                                 deliveryTraceBody = "Automatic paste was not accepted; generated text was retained on the clipboard"
-                                userMessage = "Generated — press ⌘V to paste"
+                                userMessage = "Generated — press \(configSnapshot.pasteShortcut.chordLabel) to paste"
                             } else {
                                 deliveryStatus = "needs_attention"
                                 deliveryMessage = "Automatic paste could not be completed"
@@ -10777,6 +10778,7 @@ public final class MuesliController: NSObject {
                         var completionTargetApp: DictationCorrectionTargetApp?
                         PasteController.paste(
                             text: text,
+                            shortcut: self.config.pasteShortcut,
                             requireStagedClipboardOwnership: true,
                             onPasteFinished: { [weak self] targetApplication in
                                 guard let self else { return }

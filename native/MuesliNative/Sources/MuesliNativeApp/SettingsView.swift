@@ -1881,6 +1881,18 @@ struct SettingsView: View {
                     }
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Paste shortcut") {
+                    settingsMenu(
+                        selection: appState.config.pasteShortcut.displayName,
+                        options: PasteShortcut.allCases.map(\.displayName)
+                    ) { label in
+                        if let choice = PasteShortcut.allCases.first(where: { $0.displayName == label }) {
+                            controller.updateConfig { $0.pasteShortcut = choice }
+                        }
+                    }
+                }
+                settingsDescription("Applies to keyboard paste actions in every app, including Computer Use. Browser app Paste commands are unaffected.")
+                Divider().background(MuesliTheme.surfaceBorder)
                 screenContextRow("App context")
                 Divider().background(MuesliTheme.surfaceBorder)
                 dictationOCRContextRow

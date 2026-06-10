@@ -36,7 +36,8 @@ struct ComputerUseExecutorTests {
         let registry = ComputerUseElementRegistry()
         let result = await ComputerUseToolExecutor.execute(
             ComputerUseToolCall(tool: .click, elementIndex: 9, label: "Search"),
-            registry: registry
+            registry: registry,
+            pasteShortcut: .commandV
         )
 
         #expect(result.status == .failed)
@@ -49,7 +50,8 @@ struct ComputerUseExecutorTests {
         let registry = ComputerUseElementRegistry()
         let result = await ComputerUseToolExecutor.execute(
             ComputerUseToolCall(tool: .performSecondaryAction, elementIndex: 9, actionName: "AXShowMenu", label: "More"),
-            registry: registry
+            registry: registry,
+            pasteShortcut: .commandV
         )
 
         #expect(result.status == .failed)
@@ -62,7 +64,8 @@ struct ComputerUseExecutorTests {
         let registry = ComputerUseElementRegistry()
         let result = await ComputerUseToolExecutor.execute(
             ComputerUseToolCall(tool: .scroll, elementIndex: 9, direction: .down),
-            registry: registry
+            registry: registry,
+            pasteShortcut: .commandV
         )
 
         #expect(result.status == .failed)
