@@ -775,6 +775,7 @@ struct AppConfig: Codable {
     var meetingHookEnabled: Bool = false
     var meetingHookPath: String = ""
     var meetingHookTimeoutSeconds: Int = 30
+    var enableEventLog: Bool = true
 
     enum CodingKeys: String, CodingKey {
         case dictationHotkey = "dictation_hotkey"
@@ -853,6 +854,7 @@ struct AppConfig: Codable {
         case meetingHookEnabled = "meeting_hook_enabled"
         case meetingHookPath = "meeting_hook_path"
         case meetingHookTimeoutSeconds = "meeting_hook_timeout_seconds"
+        case enableEventLog = "enable_event_log"
     }
 
     init() {}
@@ -963,6 +965,7 @@ struct AppConfig: Codable {
         meetingHookEnabled = (try? c.decode(Bool.self, forKey: .meetingHookEnabled)) ?? defaults.meetingHookEnabled
         meetingHookPath = (try? c.decode(String.self, forKey: .meetingHookPath)) ?? defaults.meetingHookPath
         meetingHookTimeoutSeconds = (try? c.decode(Int.self, forKey: .meetingHookTimeoutSeconds)) ?? defaults.meetingHookTimeoutSeconds
+        enableEventLog = (try? c.decode(Bool.self, forKey: .enableEventLog)) ?? defaults.enableEventLog
     }
 
     var resolvedCohereLanguage: CohereTranscribeLanguage {

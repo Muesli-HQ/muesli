@@ -1,7 +1,6 @@
 import AppKit
 import Foundation
 import Sparkle
-import TelemetryDeck
 import MuesliCore
 
 @MainActor
@@ -12,10 +11,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installStandardEditMenu()
-
-        let telemetryConfig = TelemetryDeck.Config(appID: "7F2B7846-1CB5-4FE6-8ABC-56F217B06A86")
-        TelemetryDeck.initialize(config: telemetryConfig)
-        TelemetryDeck.signal("app.launched")
 
         do {
             let runtime = try RuntimePaths.resolve()
@@ -36,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             self.controller = controller
             controller.start()
+            LocalTelemetry.signal("app.launched")
         } catch {
             let alert = NSAlert()
             alert.messageText = "\(AppIdentity.displayName) failed to start"
@@ -47,6 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         controller?.shutdown()
+        LocalTelemetry.flush()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

@@ -19,7 +19,6 @@ let package = Package(
         // eastriverlee/LLM.swift once explicit Qwen/ChatML template behavior is validated against our GGUF models.
         .package(url: "https://github.com/obra/LLM.swift.git", revision: "f1e1e11982dbc59662be191b8bed408dfb48e9df"),
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.9.3"),
-        .package(url: "https://github.com/TelemetryDeck/SwiftSDK", from: "2.0.0"),
         .package(url: "https://github.com/MimicScribe/dtln-aec-coreml.git", from: "0.4.0-beta"),
         .package(url: "https://github.com/apple/swift-atomics.git", from: "1.2.0"),
     ],
@@ -40,7 +39,6 @@ let package = Package(
                 .product(name: "LLM", package: "LLM.swift"),
                 .product(name: "WhisperKit", package: "WhisperKit"),
                 .product(name: "Sparkle", package: "Sparkle"),
-                .product(name: "TelemetryDeck", package: "SwiftSDK"),
                 .product(name: "Atomics", package: "swift-atomics"),
                 .product(name: "DTLNAecCoreML", package: "dtln-aec-coreml"),
                 .product(name: "DTLNAec512", package: "dtln-aec-coreml"),

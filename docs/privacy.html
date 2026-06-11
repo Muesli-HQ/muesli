@@ -162,11 +162,11 @@
     <li><strong>Calendar</strong> &mdash; to read upcoming events from your local macOS calendar (EventKit)</li>
   </ul>
 
-  <h2>Anonymous Usage Analytics</h2>
-  <p>Muesli uses <a href="https://telemetrydeck.com">TelemetryDeck</a> to collect minimal, anonymized usage signals (e.g., which features are used, app launch counts). TelemetryDeck is privacy-first by design &mdash; it does not collect IP addresses, device identifiers, or any information that could identify you personally. No audio, transcripts, calendar data, or personal content is ever included in analytics. You can learn more about TelemetryDeck's privacy practices on their <a href="https://telemetrydeck.com/privacy">privacy page</a>.</p>
+  <h2>Local Usage Log</h2>
+  <p>Muesli does not use any analytics service. Minimal usage events (e.g., which features are used, app launch counts) are recorded only to a local file on your Mac (<code>events.jsonl</code> in the application's support directory) and never leave your device. No audio, transcripts, calendar data, or personal content is included. You can disable this log entirely by setting <code>enable_event_log</code> to <code>false</code> in the application's <code>config.json</code>.</p>
 
   <h2>No Personal Data Collection</h2>
-  <p><strong>Muesli does not collect, transmit, or store any personal data on external servers.</strong> Apart from the anonymous usage signals described above, no data leaves your device. The application is fully functional without an internet connection (except for optional cloud summarization and calendar sync).</p>
+  <p><strong>Muesli does not collect, transmit, or store any personal data on external servers.</strong> No usage data leaves your device. The application is fully functional without an internet connection (except for optional cloud summarization and calendar sync).</p>
 
   <h2>Open Source</h2>
   <p>Muesli's source code is publicly available on <a href="https://github.com/Muesli-HQ/muesli">GitHub</a> under the MIT license. You can inspect exactly what the application does with your data.</p>
