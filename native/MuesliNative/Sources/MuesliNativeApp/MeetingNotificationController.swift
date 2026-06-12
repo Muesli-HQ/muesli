@@ -510,6 +510,7 @@ enum MeetingPlatform: Equatable {
         if host.hasSuffix("teams.microsoft.com") { return .teams }
         if host.hasSuffix("webex.com") { return .webex }
         if host == "facetime.apple.com" { return .facetime }
+        if host == "app.slack.com" && url.path.hasPrefix("/huddle/") { return .slack }
         return nil
     }
 

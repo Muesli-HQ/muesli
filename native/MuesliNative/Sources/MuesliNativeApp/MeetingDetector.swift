@@ -343,5 +343,6 @@ final class MeetingDetector {
             || lowercased.contains("teams.microsoft.com")
             || lowercased.contains("webex.com")
             || lowercased.contains("facetime.apple.com")
+            || lowercased.contains("app.slack.com/huddle/")
     }
 }
