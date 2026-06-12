@@ -28,6 +28,14 @@ struct OnboardingView: View {
     @State private var grantingPermissionName: String?
     @State private var nativePermissionPromptName: String?
     @State private var recentlyGrantedPermissionName: String?
+    @State private var permissionGrantingStartedAt: Date?
+    @State private var showStalePermissionHint = false
+    @State private var isResettingStalePermission = false
+
+    /// How long we wait after the user clicks "Open Settings" before assuming
+    /// the permission entry might be stale (signed identity changed, cdhash
+    /// drift on unsigned dev builds, etc.) and surfacing a recovery hint.
+    private static let stalePermissionHintDelay: TimeInterval = 30
 
     // Hotkey recorder
     @State private var selectedHotkey: HotkeyConfig
@@ -824,6 +832,8 @@ struct OnboardingView: View {
                     } else {
                         grantingPermissionName = step.name
                         recentlyGrantedPermissionName = nil
+                        permissionGrantingStartedAt = Date()
+                        showStalePermissionHint = false
                         saveProgress(atStep: currentStep)
                         step.action()
                     }
@@ -872,6 +882,35 @@ struct OnboardingView: View {
                             .foregroundStyle(MuesliTheme.accent)
                     }
                     .buttonStyle(.plain)
+                }
+
+                if showStalePermissionHint,
+                   grantingPermissionName == step.name,
+                   let service = tccutilService(for: step.name) {
+                    VStack(spacing: 4) {
+                        Text("Still stuck? macOS may have a stale permission entry.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                        Button {
+                            resetStalePermissionAndQuit(service: service)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.system(size: 11, weight: .semibold))
+                                Text(isResettingStalePermission
+                                    ? "Resetting…"
+                                    : "Reset \(step.name) Permission & Restart")
+                                    .font(.system(size: 12, weight: .semibold))
+                            }
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, MuesliTheme.spacing12)
+                            .padding(.vertical, 6)
+                            .background(MuesliTheme.transcribing)
+                            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isResettingStalePermission)
+                    }
                 }
 
                 if step.name == "Input Monitoring", grantingPermissionName == step.name {
@@ -953,9 +992,18 @@ struct OnboardingView: View {
         grantingPermissionName = nil
         nativePermissionPromptName = nil
         recentlyGrantedPermissionName = nil
+        permissionGrantingStartedAt = nil
+        showStalePermissionHint = false
         selectedUseCase = .voiceNotes
         currentStep = OnboardingFlow.normalizedStep(currentStep, for: .voiceNotes)
         saveProgress(atStep: currentStep)
+    }
+
+    private func resetStalePermissionAndQuit(service: String) {
+        guard !isResettingStalePermission else { return }
+        isResettingStalePermission = true
+        saveProgress(atStep: currentStep)
+        controller.resetTCCPermissionAndQuit(service: service)
     }
 
     private func systemSettingsPane(for permissionIndex: Int) -> String {
@@ -1056,6 +1104,15 @@ struct OnboardingView: View {
 
         if let grantingPermissionName, isPermissionGranted(named: grantingPermissionName) {
             notePermissionGranted(grantingPermissionName)
+            return
+        }
+
+        if let startedAt = permissionGrantingStartedAt,
+           let granting = grantingPermissionName,
+           !showStalePermissionHint,
+           Date().timeIntervalSince(startedAt) >= Self.stalePermissionHintDelay {
+            showStalePermissionHint = true
+            fputs("[onboarding] stale-permission hint shown for \(granting) after \(Int(Date().timeIntervalSince(startedAt)))s\n", stderr)
         }
     }
 
@@ -1078,6 +1135,8 @@ struct OnboardingView: View {
         grantingPermissionName = nil
         nativePermissionPromptName = nil
         recentlyGrantedPermissionName = permissionName
+        permissionGrantingStartedAt = nil
+        showStalePermissionHint = false
         saveProgress(atStep: currentStep)
         controller.bringOnboardingToFront()
 
@@ -1120,9 +1179,28 @@ struct OnboardingView: View {
             grantingPermissionName = steps[permissionIndex].name
             nativePermissionPromptName = nil
             recentlyGrantedPermissionName = nil
+            // Start the stale-hint timer on the first attempt for this
+            // permission, but don't reset it on repeat clicks — the user's
+            // total wait time is what matters, not per-click time.
+            if permissionGrantingStartedAt == nil {
+                permissionGrantingStartedAt = Date()
+            }
             saveProgress(atStep: currentStep)
         }
         openSystemSettings(systemSettingsPane(for: permissionIndex))
+    }
+
+    /// Map a permission step name to the `tccutil` service identifier used
+    /// for `tccutil reset <Service> <bundleID>`. Returns nil for permissions
+    /// that don't have a tccutil-resettable entry (e.g. Microphone is granted
+    /// via in-app prompt and rarely goes stale through System Settings churn).
+    private func tccutilService(for permissionName: String) -> String? {
+        switch permissionName {
+        case "Microphone": return "Microphone"
+        case "Accessibility": return "Accessibility"
+        case "Input Monitoring": return "ListenEvent"
+        default: return nil
+        }
     }
 
     private func openSystemSettings(_ pane: String) {
