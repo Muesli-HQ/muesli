@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import MuesliCore
 
@@ -20,6 +21,7 @@ struct DictationsView: View {
     let appState: AppState
     let controller: MuesliController
     @State private var selectedFilter: DictationFilter = .all
+    private let iOSCompanionURL = URL(string: "https://github.com/Muesli-HQ/muesli-ios")!
 
     private var groupedDictations: [(header: String, records: [DictationRecord])] {
         let calendar = Calendar.current
@@ -73,6 +75,12 @@ struct DictationsView: View {
                 dictationStats: appState.dictationStats,
                 meetingStats: appState.meetingStats
             )
+
+            if appState.config.showIOSCompanionPrompt {
+                iOSCompanionPrompt
+                    .padding(.horizontal, MuesliTheme.spacing24)
+                    .padding(.bottom, MuesliTheme.spacing12)
+            }
 
             if appState.config.resolvedOnboardingUseCase.includesVoiceNotes {
                 HStack {
@@ -169,6 +177,60 @@ struct DictationsView: View {
                 }
             }
         }
+    }
+
+    private var iOSCompanionPrompt: some View {
+        HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
+            Image(systemName: "iphone.gen3")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(MuesliTheme.accent)
+                .frame(width: 28)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Muesli for iPhone")
+                    .font(MuesliTheme.body())
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                Text("Capture offline meetings on iPhone and prepare private iCloud sync with this Mac.")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: MuesliTheme.spacing12)
+
+            Button {
+                NSWorkspace.shared.open(iOSCompanionURL)
+            } label: {
+                Text("Open")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .frame(height: 28)
+                    .background(MuesliTheme.accent)
+                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                controller.updateConfig { $0.showIOSCompanionPrompt = false }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .frame(width: 28, height: 28)
+                    .background(MuesliTheme.surfacePrimary)
+                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            }
+            .buttonStyle(.plain)
+            .help("Hide iOS companion prompt")
+        }
+        .padding(MuesliTheme.spacing12)
+        .background(MuesliTheme.backgroundRaised)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+        .overlay(
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
+                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+        )
     }
 
     private var emptyStateInstruction: String {

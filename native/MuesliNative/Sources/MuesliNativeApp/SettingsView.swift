@@ -99,6 +99,7 @@ struct SettingsView: View {
     // Uniform width for all right-side controls
     private let controlWidth: CGFloat = 220
     private let meetingControlWidth: CGFloat = 275
+    private let iOSCompanionURL = URL(string: "https://github.com/Muesli-HQ/muesli-ios")!
     private let screenContextGrantIntentTimeout: TimeInterval = 15 * 60
     private let meetingDetectionAppOptions: [MeetingDetectionAppOption] = [
         MeetingDetectionAppOption(bundleID: "com.google.Chrome", name: "Chrome", icon: "globe"),
@@ -331,6 +332,43 @@ struct SettingsView: View {
                     settingsSwitch(isOn: appState.config.openDashboardOnLaunch) { newValue in
                         controller.updateConfig { $0.openDashboardOnLaunch = newValue }
                     }
+                }
+            }
+
+            settingsSection("Muesli iOS") {
+                settingsRow("Private iCloud sync") {
+                    settingsSwitch(isOn: appState.config.iCloudSyncEnabled) { newValue in
+                        controller.updateConfig { $0.iCloudSyncEnabled = newValue }
+                    }
+                }
+                settingsDescription("Prepare this Mac for opt-in sync with the iOS companion app. Transcription stays on-device; sync will use the user's private iCloud account.")
+
+                Divider().background(MuesliTheme.surfaceBorder)
+
+                settingsRow("Show iOS companion prompt") {
+                    settingsSwitch(isOn: appState.config.showIOSCompanionPrompt) { newValue in
+                        controller.updateConfig { $0.showIOSCompanionPrompt = newValue }
+                    }
+                }
+                settingsDescription("Keep a lightweight prompt available for users who want Muesli dictation and meeting capture on iPhone.")
+
+                Divider().background(MuesliTheme.surfaceBorder)
+
+                HStack(spacing: MuesliTheme.spacing12) {
+                    VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                        Text("Muesli for iPhone")
+                            .font(MuesliTheme.body())
+                            .foregroundStyle(MuesliTheme.textPrimary)
+                        Text("Use iPhone for offline meetings, keyboard dictation, and future iCloud sync with this Mac.")
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: MuesliTheme.spacing16)
+                    actionButton("Open iOS app page") {
+                        NSWorkspace.shared.open(iOSCompanionURL)
+                    }
+                    .frame(width: controlWidth)
                 }
             }
 
