@@ -25,7 +25,7 @@ Muesli is a free, open-source macOS application that provides hold-to-talk dicta
 
 - Website: https://freedspeech.xyz
 - GitHub: https://github.com/Muesli-HQ/muesli
-- Download: https://github.com/Muesli-HQ/muesli/releases/download/v0.6.9/Muesli-0.6.9.dmg
+- Download: https://github.com/Muesli-HQ/muesli/releases/download/v0.7.0/Muesli-0.7.0.dmg
 - Support: https://buymeacoffee.com/phequals7
 - License: MIT
 
