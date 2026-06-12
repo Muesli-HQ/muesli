@@ -8,7 +8,7 @@ SHORT_VERSION=""
 ARTIFACT_VERSION=""
 DMG_PATH=""
 APP_NAME="Muesli"
-EXPECTED_FEED_URL="https://pHequals7.github.io/muesli/appcast.xml"
+EXPECTED_FEED_URL="https://muesli-hq.github.io/muesli/appcast.xml"
 SKIP_DMG=0
 REQUIRE_NOTARIZED=0
 REQUIRE_RELEASE_NOTES=0
@@ -150,7 +150,7 @@ if not signature:
     raise SystemExit("ERROR: latest appcast enclosure is missing sparkle:edSignature")
 
 expected_artifact_version = artifact_version or version
-expected_url = f"https://github.com/pHequals7/muesli/releases/download/v{expected_artifact_version}/{app_name}-{expected_artifact_version}.dmg"
+expected_url = f"https://github.com/Muesli-HQ/muesli/releases/download/v{expected_artifact_version}/{app_name}-{expected_artifact_version}.dmg"
 if url != expected_url:
     raise SystemExit(f"ERROR: latest appcast URL is {url!r}, expected {expected_url!r}")
 

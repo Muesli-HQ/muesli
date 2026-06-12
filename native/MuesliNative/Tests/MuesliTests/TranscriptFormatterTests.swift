@@ -144,8 +144,8 @@ struct TranscriptFormatterTests {
 
     @Test("formatter passes through mic segments without text-based bleed filtering")
     func passesThoughMicSegmentsWithoutBleedFiltering() {
-        // Bleed detection is now handled upstream by MeetingBleedDetector
-        // (speaker-embedding comparison). The formatter passes all mic segments through.
+        // Capture/transcription owns source validity. The formatter passes all
+        // mic segments through without text-based filtering.
         let meetingStart = Date(timeIntervalSince1970: 0)
         let mic = [
             SpeechSegment(start: 1.0, end: 3.0, text: "can you hear me okay"),
@@ -165,8 +165,8 @@ struct TranscriptFormatterTests {
         #expect(result.contains("Others: can you hear me okay"))
     }
 
-    @Test("drops single-character meeting artifacts after consolidation")
-    func dropsSingleCharacterArtifacts() {
+    @Test("preserves short meeting replies after consolidation")
+    func preservesShortMeetingReplies() {
         let meetingStart = Date(timeIntervalSince1970: 0)
         let system = [
             SpeechSegment(start: 0.0, end: 0.15, text: "I"),
@@ -184,7 +184,7 @@ struct TranscriptFormatterTests {
             meetingStart: meetingStart
         )
 
-        #expect(!result.contains("Speaker 1: I"))
+        #expect(result.contains("Speaker 1: I"))
         #expect(result.contains("Speaker 2: mean to be honest this is working"))
     }
 

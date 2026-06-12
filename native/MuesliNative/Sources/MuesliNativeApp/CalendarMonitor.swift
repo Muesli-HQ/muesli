@@ -22,33 +22,55 @@ struct AvailableCalendar: Identifiable, Equatable {
 }
 
 final class CalendarMonitor {
+    private enum State {
+        case stopped
+        case requesting(Int)
+        case running(Int)
+    }
+
     private let store = EKEventStore()
     private var changeObserver: NSObjectProtocol?
+    private var generation = 0
+    private var state: State = .stopped
 
     /// Called when EventKit detects a calendar change (event added, moved, deleted).
     /// Delivered via NotificationCenter — immune to App Nap timer suspension.
     var onCalendarChanged: (() -> Void)?
 
     func start() {
+        guard case .stopped = state else { return }
+
+        generation += 1
+        let token = generation
+        state = .requesting(token)
+
         store.requestFullAccessToEvents { [weak self] granted, error in
-            if !granted {
-                fputs("[calendar] calendar access denied: \(error?.localizedDescription ?? "none")\n", stderr)
-                return
-            }
             DispatchQueue.main.async {
-                self?.registerForChanges()
+                guard let self else { return }
+                guard case .requesting(let activeToken) = self.state, activeToken == token else { return }
+
+                if !granted {
+                    self.state = .stopped
+                    fputs("[calendar] calendar access denied: \(error?.localizedDescription ?? "none")\n", stderr)
+                    return
+                }
+
+                self.registerForChanges(token: token)
+                self.state = .running(token)
             }
         }
     }
 
     func stop() {
-        if let changeObserver {
-            NotificationCenter.default.removeObserver(changeObserver)
-            self.changeObserver = nil
-        }
+        generation += 1
+        state = .stopped
+        removeObserver()
     }
 
-    private func registerForChanges() {
+    private func registerForChanges(token: Int) {
+        guard changeObserver == nil else { return }
+        guard case .requesting(let activeToken) = state, activeToken == token else { return }
+
         // EKEventStoreChangedNotification fires whenever any calendar event
         // is added, modified, or deleted — including synced changes from
         // Google Calendar, iCloud, Exchange, etc. This is push-based and
@@ -59,6 +81,13 @@ final class CalendarMonitor {
             queue: .main
         ) { [weak self] _ in
             self?.onCalendarChanged?()
+        }
+    }
+
+    private func removeObserver() {
+        if let changeObserver {
+            NotificationCenter.default.removeObserver(changeObserver)
+            self.changeObserver = nil
         }
     }
 

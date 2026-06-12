@@ -452,22 +452,6 @@ final class MeetingCandidateResolver {
             )
         }
 
-        if let foregroundBrowser = snapshot.runningApps.first(where: {
-            $0.bundleID == snapshot.foregroundBundleID && Self.browserApps[$0.bundleID] != nil
-        }), let appName = Self.browserApps[foregroundBrowser.bundleID] {
-            return candidate(
-                id: "browser:\(foregroundBrowser.bundleID)",
-                platform: .unknown,
-                appName: appName,
-                url: nil,
-                title: nil,
-                evidence: mediaEvidence(from: snapshot).union([.foregroundApp]),
-                sourceBundleID: foregroundBrowser.bundleID,
-                sourcePID: nil,
-                now: snapshot.now
-            )
-        }
-
         return nil
     }
 
@@ -498,6 +482,7 @@ final class MeetingCandidateResolver {
     ) -> AudioProcessActivity? {
         let candidates = processes.filter { process in
             guard process.bundleID != selfBundleID else { return false }
+            guard process.isRunningInput else { return false }
             guard Self.dedicatedApps[process.bundleID] != nil else { return false }
             if !Self.weakDedicatedAppBundleIDs.contains(process.bundleID) {
                 return true
@@ -522,6 +507,7 @@ final class MeetingCandidateResolver {
     ) -> (process: AudioProcessActivity, bundleID: String, appName: String)? {
         let candidates = processes.compactMap { process -> (process: AudioProcessActivity, bundleID: String, appName: String)? in
             guard process.bundleID != selfBundleID,
+                  process.isRunningInput,
                   let browserBundleID = browserBundleID(for: process.bundleID),
                   let appName = Self.browserApps[browserBundleID] else {
                 return nil
@@ -577,7 +563,7 @@ final class MeetingCandidateResolver {
     }
 
     private func hasMediaActivity(_ snapshot: MeetingSignalSnapshot) -> Bool {
-        snapshot.micActive || snapshot.cameraActive || !snapshot.audioInputProcesses.isEmpty
+        snapshot.micActive || snapshot.cameraActive || snapshot.audioInputProcesses.contains { $0.isRunningInput }
     }
 
     private func activeInputProcess(
@@ -585,7 +571,7 @@ final class MeetingCandidateResolver {
         in snapshot: MeetingSignalSnapshot
     ) -> AudioProcessActivity? {
         snapshot.audioInputProcesses.first {
-            $0.bundleID == bundleID || isHelperBundleID($0.bundleID, for: bundleID)
+            $0.isRunningInput && ($0.bundleID == bundleID || isHelperBundleID($0.bundleID, for: bundleID))
         }
     }
 

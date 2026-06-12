@@ -10,6 +10,13 @@ private struct MeetingDetectionAppOption: Identifiable {
     var id: String { bundleID }
 }
 
+private struct DictationMicrophoneOption: Identifiable {
+    let uid: String?
+    let label: String
+
+    var id: String { uid ?? "__automatic__" }
+}
+
 struct SettingsView: View {
     private enum PendingDataDestruction {
         case dictations
@@ -75,6 +82,7 @@ struct SettingsView: View {
     @State private var selectedPane: SettingsPane = .general
     @State private var downloadedBackendOptions: [BackendOption] = []
     @State private var downloadedPostProcOptions: [PostProcessorOption] = []
+    @State private var dictationInputDevices: [AudioInputDeviceInfo] = []
     @State private var permissionPollTimer: Timer?
     @State private var micGranted = false
     @State private var accessibilityGranted = false
@@ -124,6 +132,23 @@ struct SettingsView: View {
         appState.config.resolvedCohereLanguage
     }
 
+    private var dictationMicrophoneOptions: [DictationMicrophoneOption] {
+        var options = [DictationMicrophoneOption(uid: nil, label: "Automatic")]
+        options += dictationInputDevices.map { device in
+            DictationMicrophoneOption(uid: device.uid, label: device.name)
+        }
+        if let selectedUID = appState.config.dictationInputDeviceUID,
+           !options.contains(where: { $0.uid == selectedUID }) {
+            options.append(DictationMicrophoneOption(uid: selectedUID, label: "Selected microphone unavailable"))
+        }
+        return options
+    }
+
+    private var selectedDictationMicrophoneLabel: String {
+        let selectedUID = appState.config.dictationInputDeviceUID
+        return dictationMicrophoneOptions.first(where: { $0.uid == selectedUID })?.label ?? "Automatic"
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
@@ -139,6 +164,7 @@ struct SettingsView: View {
         .background(MuesliTheme.backgroundBase)
         .onAppear {
             refreshDownloadedModelOptions()
+            refreshDictationInputDevices()
             startPermissionPolling()
             if appState.selectedMeetingSummaryBackend == .openRouter {
                 loadOpenRouterFreeModelsIfNeeded()
@@ -152,6 +178,7 @@ struct SettingsView: View {
         .onChange(of: appState.selectedTab) { _, tab in
             if tab == .settings {
                 refreshDownloadedModelOptions()
+                refreshDictationInputDevices()
                 refreshPermissionStatuses()
             }
         }
@@ -196,6 +223,10 @@ struct SettingsView: View {
         controller.refreshMeetingTranscriptionSelectionForAvailability()
         downloadedBackendOptions = BackendOption.downloaded
         downloadedPostProcOptions = PostProcessorOption.downloaded
+    }
+
+    private func refreshDictationInputDevices() {
+        dictationInputDevices = controller.availableDictationInputDevices()
     }
 
     private func backendOptions(including selection: BackendOption) -> [BackendOption] {
@@ -378,6 +409,23 @@ struct SettingsView: View {
                     }
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow(
+                    "Microphone",
+                    description: "Automatic uses system input, or Mac mic with AirPods."
+                ) {
+                    let options = dictationMicrophoneOptions
+                    FixedWidthPopUp(
+                        selection: selectedDictationMicrophoneLabel,
+                        options: options.map(\.label),
+                        onSelectIndex: { index in
+                            guard index >= 0, index < options.count else { return }
+                            controller.selectDictationInputDeviceUID(options[index].uid)
+                            refreshDictationInputDevices()
+                        }
+                    )
+                    .frame(height: 24)
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("AI transcript cleanup") {
                     settingsSwitch(isOn: appState.config.enablePostProcessor) { newValue in
                         controller.setPostProcessorEnabled(newValue)
@@ -408,7 +456,20 @@ struct SettingsView: View {
                             .frame(width: controlWidth, alignment: .trailing)
                     }
                 }
+            }
+
+            settingsSection("Advanced") {
+                settingsRow("Pause media during dictation") {
+                    settingsSwitch(isOn: appState.config.pauseMediaDuringDictation) { newValue in
+                        controller.updateConfig { $0.pauseMediaDuringDictation = newValue }
+                    }
+                }
                 Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Mute system audio during dictation") {
+                    settingsSwitch(isOn: appState.config.muteSystemAudioDuringDictation) { newValue in
+                        controller.updateConfig { $0.muteSystemAudioDuringDictation = newValue }
+                    }
+                }
                 screenContextRow("App context")
             }
         }
@@ -548,6 +609,63 @@ struct SettingsView: View {
                             placeholder: "qwen3.5"
                         ) { val in controller.updateConfig { $0.ollamaModel = val } }
                     }
+                } else if appState.selectedMeetingSummaryBackend == .lmStudio {
+                    settingsRow("LM Studio URL", controlWidth: meetingControlWidth) {
+                        PastableTextField(
+                            text: appState.config.lmStudioURL,
+                            placeholder: "http://localhost:1234",
+                            onChange: { val in controller.updateConfig { $0.lmStudioURL = val } }
+                        )
+                        .frame(height: 22)
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Model", controlWidth: meetingControlWidth) {
+                        settingsModelTextField(
+                            currentModel: appState.config.lmStudioModel,
+                            placeholder: "Select a loaded LM Studio model"
+                        ) { val in controller.updateConfig { $0.lmStudioModel = val } }
+                    }
+                } else if appState.selectedMeetingSummaryBackend == .customLLM {
+                    settingsRow("API Format", controlWidth: meetingControlWidth) {
+                        settingsMenu(
+                            selection: CustomLLMFormat(rawValue: appState.config.customLLMFormat)?.label ?? CustomLLMFormat.openAI.label,
+                            options: CustomLLMFormat.allCases.map(\.label)
+                        ) { label in
+                            guard let format = CustomLLMFormat.allCases.first(where: { $0.label == label }) else { return }
+                            controller.updateConfig { $0.customLLMFormat = format.rawValue }
+                        }
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Endpoint", controlWidth: meetingControlWidth) {
+                        PastableTextField(
+                            text: appState.config.customLLMURL,
+                            placeholder: appState.config.customLLMFormat == CustomLLMFormat.anthropic.rawValue
+                                ? "https://api.anthropic.com"
+                                : "http://localhost:8080/v1",
+                            onChange: { val in controller.updateConfig { $0.customLLMURL = val } }
+                        )
+                        .frame(height: 22)
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("API Key", controlWidth: meetingControlWidth) {
+                        PastableSecureField(
+                            text: appState.config.customLLMAPIKey,
+                            placeholder: appState.config.customLLMFormat == CustomLLMFormat.anthropic.rawValue
+                                ? "Required for Anthropic API"
+                                : "Optional for local servers",
+                            onChange: { val in controller.updateConfig { $0.customLLMAPIKey = val } }
+                        )
+                        .frame(height: 22)
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Model", controlWidth: meetingControlWidth) {
+                        settingsModelTextField(
+                            currentModel: appState.config.customLLMModel,
+                            placeholder: appState.config.customLLMFormat == CustomLLMFormat.anthropic.rawValue
+                                ? "claude-3-5-sonnet-20241022"
+                                : "custom-model-id"
+                        ) { val in controller.updateConfig { $0.customLLMModel = val } }
+                    }
                 } else {
                     settingsRow("API Key", controlWidth: meetingControlWidth) {
                         PastableSecureField(
@@ -609,7 +727,22 @@ struct SettingsView: View {
                         controller.updateConfig { $0.showScheduledMeetingNotifications = newValue }
                     }
                 }
-                settingsDescription("Show notifications before meetings start based on your calendar.")
+                settingsDescription("Show notifications for calendar meetings with a join link.")
+
+                if appState.config.showScheduledMeetingNotifications {
+                    Divider().background(MuesliTheme.surfaceBorder)
+
+                    settingsRow("Reminder timing") {
+                        settingsMenu(
+                            selection: scheduledMeetingLeadTimeLabel(for: appState.config.scheduledMeetingNotificationLeadTime),
+                            options: ScheduledMeetingNotificationLeadTime.allCases.map(scheduledMeetingLeadTimeLabel(for:))
+                        ) { label in
+                            guard let leadTime = scheduledMeetingLeadTime(for: label) else { return }
+                            controller.updateConfig { $0.scheduledMeetingNotificationLeadTime = leadTime }
+                        }
+                    }
+                    settingsDescription("At start time avoids early calendar-only prompts before you join.")
+                }
 
                 Divider().background(MuesliTheme.surfaceBorder)
 
@@ -1347,6 +1480,34 @@ struct SettingsView: View {
         .frame(minHeight: 32)
     }
 
+    @ViewBuilder
+    private func settingsRow(
+        _ label: String,
+        description: String,
+        controlWidth rowControlWidth: CGFloat? = nil,
+        @ViewBuilder control: () -> some View
+    ) -> some View {
+        let width = rowControlWidth ?? controlWidth
+        HStack(alignment: .center, spacing: 20) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(label)
+                    .font(MuesliTheme.body())
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                Text(description)
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .layoutPriority(1)
+
+            Spacer(minLength: 0)
+
+            control()
+                .frame(width: width, alignment: .trailing)
+        }
+        .frame(minHeight: 44)
+    }
+
     private func settingsDescription(_ text: String) -> some View {
         Text(text)
             .font(MuesliTheme.caption())
@@ -1910,6 +2071,29 @@ struct SettingsView: View {
             assertionFailure("Unexpected recording save label: \(label)")
         }
         return policy
+    }
+
+    private func scheduledMeetingLeadTimeLabel(for leadTime: ScheduledMeetingNotificationLeadTime) -> String {
+        switch leadTime {
+        case .atStart:
+            return "At start time"
+        case .oneMinute:
+            return "1 min before"
+        case .threeMinutes:
+            return "3 min before"
+        case .fiveMinutes:
+            return "5 min before"
+        }
+    }
+
+    private func scheduledMeetingLeadTime(for label: String) -> ScheduledMeetingNotificationLeadTime? {
+        let leadTime = ScheduledMeetingNotificationLeadTime.allCases.first {
+            scheduledMeetingLeadTimeLabel(for: $0) == label
+        }
+        if leadTime == nil {
+            assertionFailure("Unexpected scheduled meeting notification lead time label: \(label)")
+        }
+        return leadTime
     }
 }
 

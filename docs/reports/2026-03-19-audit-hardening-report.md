@@ -8,7 +8,7 @@ description: >
 # March 19, 2026 Audit Hardening Report
 
 This report covers the hardening work done after auditing the repository
-hosted at `https://github.com/pHequals7/muesli`.
+hosted at `https://github.com/Muesli-HQ/muesli`.
 
 The review focused on the parts of the app where a bug would matter most:
 the SQLite query layer, live meeting transcription, system-audio startup,

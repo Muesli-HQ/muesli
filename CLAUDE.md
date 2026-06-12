@@ -4,7 +4,7 @@
 
 Local-first macOS app for **dictation** and **meeting transcription** on Apple Silicon. All speech-to-text runs on-device via CoreML/Neural Engine. Native Swift/AppKit — no Electron, no Python runtime, no cloud STT costs.
 
-**Status:** Live and public. Available at [GitHub Releases](https://github.com/pHequals7/muesli/releases). Signed, notarized, stapled.
+**Status:** Live and public. Available at [GitHub Releases](https://github.com/Muesli-HQ/muesli/releases). Signed, notarized, stapled.
 
 ## What It Does
 
@@ -38,14 +38,40 @@ Local-first macOS app for **dictation** and **meeting transcription** on Apple S
 MuesliDev uses bundle ID `com.muesli.dev` and stores data at `~/Library/Application Support/MuesliDev/`. Production data is never touched.
 
 ### SwiftPM build artifacts in worktrees
-SwiftPM writes build artifacts to `native/MuesliNative/.build` inside the active worktree by default. That can consume several GB per worktree. For worktree-heavy local testing, set `MUESLI_SWIFTPM_SCRATCH_PATH` when invoking `scripts/build_native_app.sh` directly or through helper scripts such as `scripts/dev-test.sh`:
+SwiftPM can write build artifacts to `native/MuesliNative/.build` inside the active worktree. That can consume several GB per worktree. Local scripts now resolve a shared SwiftPM scratch path through `scripts/muesli_spm_cache.sh`:
+
+- Explicit `MUESLI_SWIFTPM_SCRATCH_PATH` wins.
+- `MUESLI_SWIFTPM_SCRATCH_CHANNEL` overrides the channel segment under the resolved cache root.
+- `MUESLI_EXTERNAL_SPM_CACHE_ROOT` overrides the default `/Volumes/MuesliBuildCache/muesli-spm` external cache root.
+- If `/Volumes/MuesliBuildCache/muesli-spm` is mounted, scripts use that external APFS cache.
+- Otherwise scripts fall back to `~/Library/Caches/muesli-spm`.
+- `MUESLI_DISABLE_SWIFTPM_SCRATCH_PATH=1` intentionally opts out and uses SwiftPM's package-local `.build`; this takes precedence over all scratch path settings.
+
+The preferred local cache is an APFS sparse bundle stored on the external SSD at `/Volumes/eSSD/MuesliBuildCache.sparsebundle`. Mount it before build-heavy local work:
 
 ```bash
-MUESLI_SWIFTPM_SCRATCH_PATH="$HOME/Library/Caches/muesli-spm/dev" ./scripts/dev-test.sh
-MUESLI_SWIFTPM_SCRATCH_PATH="$HOME/Library/Caches/muesli-spm/preprod" ./scripts/build_native_app.sh release
+hdiutil attach /Volumes/eSSD/MuesliBuildCache.sparsebundle
 ```
 
-The build script passes that value to SwiftPM as `--scratch-path`, so multiple worktrees can reuse one scratch directory instead of each growing its own `.build`. Caveat: do not run concurrent builds from different worktrees into the same scratch path; use separate paths per channel, agent, or simultaneous build. Deleting a scratch path only removes rebuildable SwiftPM artifacts, not installed apps or app data.
+That sparse-bundle path is the maintainer's local SSD path. Contributors can substitute their own volume path or skip the attach step; scripts fall back to `~/Library/Caches/muesli-spm` when the external cache is not mounted.
+
+Default script channels:
+
+```bash
+./scripts/dev-test.sh                 # /Volumes/MuesliBuildCache/muesli-spm/worktrees/<worktree>/dev when mounted
+./scripts/build_native_app.sh release # /Volumes/MuesliBuildCache/muesli-spm/release when mounted
+./scripts/release-preprod.sh          # /Volumes/MuesliBuildCache/muesli-spm/preprod when mounted
+./scripts/release-alpha.sh            # /Volumes/MuesliBuildCache/muesli-spm/alpha when mounted
+```
+
+For parallel PR/worktree work, use isolated paths:
+
+```bash
+MUESLI_SWIFTPM_SCRATCH_PATH="/Volumes/MuesliBuildCache/muesli-spm/worktrees/pr182/dev" ./scripts/dev-test.sh
+swift test --package-path native/MuesliNative --scratch-path "/Volumes/MuesliBuildCache/muesli-spm/worktrees/pr182/test"
+```
+
+The build script passes the resolved path to SwiftPM as `--scratch-path`, so multiple worktrees do not each grow their own `.build`. Caveat: do not run concurrent builds from different worktrees into the same scratch path; use separate paths per channel, agent, or simultaneous build. Deleting a scratch path only removes rebuildable SwiftPM artifacts, not installed apps or app data. Set `MUESLI_DISABLE_SWIFTPM_SCRATCH_PATH=1` only when you intentionally want package-local `.build`.
 
 ### Tests
 ```bash

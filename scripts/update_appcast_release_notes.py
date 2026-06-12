@@ -43,7 +43,8 @@ def markdown_to_html(markdown: str) -> str:
             if not in_list:
                 output.append("<ul>")
                 in_list = True
-            output.append(f"<li>{inline_markdown(re.sub(r'^\d+\.\s+', '', stripped))}</li>")
+            item_text = re.sub(r"^\d+\.\s+", "", stripped)
+            output.append(f"<li>{inline_markdown(item_text)}</li>")
         else:
             close_list()
             output.append(f"<p>{inline_markdown(stripped)}</p>")
