@@ -205,8 +205,7 @@ private struct SearchDictationRow: View {
     }
 
     private func formatTime(_ raw: String) -> String {
-        let clean = raw.replacingOccurrences(of: "T", with: " ")
-        return clean.count > 16 ? String(clean.prefix(16)) : clean
+        StoredTimestampFormatting.displayDateTime(raw)
     }
 }
 
@@ -271,8 +270,7 @@ private struct SearchMeetingRow: View {
     }
 
     private func formatTime(_ raw: String) -> String {
-        let clean = raw.replacingOccurrences(of: "T", with: " ")
-        return clean.count > 16 ? String(clean.prefix(16)) : clean
+        StoredTimestampFormatting.displayDateTime(raw)
     }
 
     private func formatDuration(_ seconds: Double) -> String {

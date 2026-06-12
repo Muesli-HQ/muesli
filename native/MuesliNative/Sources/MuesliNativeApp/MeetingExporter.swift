@@ -334,8 +334,7 @@ struct MeetingExporter {
     }
 
     private static func formatExportDate(_ raw: String) -> String {
-        raw.replacingOccurrences(of: "T", with: " ")
-           .components(separatedBy: ".").first ?? raw
+        StoredTimestampFormatting.exportDateTime(raw)
     }
 
     private static func formatExportDuration(_ seconds: Double) -> String {

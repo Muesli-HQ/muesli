@@ -1418,11 +1418,7 @@ struct MeetingDetailView: View {
     }
 
     private func formatTime(_ raw: String) -> String {
-        let clean = raw.replacingOccurrences(of: "T", with: " ")
-        if clean.count > 16 {
-            return String(clean.prefix(16))
-        }
-        return clean
+        StoredTimestampFormatting.displayDateTime(raw)
     }
 
     private func formatDuration(_ seconds: Double) -> String {
