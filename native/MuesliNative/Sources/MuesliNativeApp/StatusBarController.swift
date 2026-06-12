@@ -62,15 +62,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             .first
 
         if let event = nextEvent {
-            let minutesUntil = Int(ceil(event.startDate.timeIntervalSince(now) / 60))
-            let truncatedTitle = event.title.count > 20
-                ? String(event.title.prefix(18)) + "…"
-                : event.title
-            if minutesUntil <= 60 {
-                statusItem.button?.title = " \(truncatedTitle) · \(formatTimeUntil(minutesUntil))"
-            } else {
-                statusItem.button?.title = " \(truncatedTitle)"
-            }
+            statusItem.button?.title = MenuBarMeetingTitleFormatter.title(
+                for: event.title,
+                startDate: event.startDate
+            )
         } else {
             statusItem.button?.title = ""
         }
