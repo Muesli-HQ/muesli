@@ -701,6 +701,12 @@ struct SettingsView: View {
                         controller.showMeetingTemplatesManager()
                     }
                 }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Speakers", controlWidth: meetingControlWidth) {
+                    actionButton("Manage Speakers…") {
+                        controller.showSpeakersManager()
+                    }
+                }
             }
 
             settingsSection("Recording") {

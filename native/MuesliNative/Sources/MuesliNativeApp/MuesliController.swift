@@ -2253,6 +2253,20 @@ final class MuesliController: NSObject {
         resummarize(meeting: meeting, using: templateSnapshot, completion: completion)
     }
 
+    /// Regenerate notes from a name-substituted transcript (the stored blob keeps
+    /// its `Speaker N`/`You` tokens). Only auto/confirmed names are substituted;
+    /// unmatched/suggested speakers stay `Speaker N`.
+    func updateNotesWithCorrectedNames(meeting: MeetingRecord, completion: @escaping (Result<Void, Error>) -> Void) {
+        let speakers = SpeakerNameResolver.speakerMap(from: meetingSpeakers(for: meeting.id))
+        let substituted = SpeakerNameSubstitution.substitute(
+            transcript: meeting.rawTranscript,
+            speakers: speakers,
+            userName: config.userName
+        )
+        let templateSnapshot = meetingTemplateSnapshot(for: meeting)
+        resummarize(meeting: meeting, using: templateSnapshot, transcriptOverride: substituted, completion: completion)
+    }
+
     func applyMeetingTemplate(id: String, to meeting: MeetingRecord, completion: @escaping (Result<Void, Error>) -> Void) {
         guard let templateSnapshot = MeetingTemplates.resolveExactSnapshot(
             id: id,
@@ -2267,6 +2281,7 @@ final class MuesliController: NSObject {
     private func resummarize(
         meeting: MeetingRecord,
         using templateSnapshot: MeetingTemplateSnapshot,
+        transcriptOverride: String? = nil,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         Task { [weak self] in
@@ -2274,7 +2289,7 @@ final class MuesliController: NSObject {
             let plan = MeetingResummarizationPolicy.plan(for: meeting)
             do {
                 let notes = try await MeetingSummaryClient.summarize(
-                    transcript: meeting.rawTranscript,
+                    transcript: transcriptOverride ?? meeting.rawTranscript,
                     meetingTitle: plan.promptTitle,
                     config: self.config,
                     template: templateSnapshot,
@@ -2382,6 +2397,9 @@ final class MuesliController: NSObject {
                         selectedTemplateKind: templateSnapshot.kind,
                         selectedTemplatePrompt: templateSnapshot.prompt
                     )
+                    // This path rewrites the blob without diarization labels, so any
+                    // prior cluster→name mapping is now stale — drop it.
+                    try? self.dictationStore.deleteMeetingSpeakers(for: meeting.id)
                 } catch {
                     throw MeetingRetranscriptionError.failedToSave(underlying: error)
                 }
@@ -2475,6 +2493,9 @@ final class MuesliController: NSObject {
     func updateMeetingTranscript(id: Int64, transcript: String) {
         do {
             try dictationStore.updateMeetingTranscript(id: id, rawTranscript: transcript)
+            // A manual edit can change/renumber `Speaker N` labels, so any captured
+            // cluster→name mapping is no longer guaranteed to align with the blob.
+            try? dictationStore.deleteMeetingSpeakers(for: id)
         } catch {
             fputs("[muesli-native] failed to update meeting transcript \(id): \(error)\n", stderr)
         }
@@ -3218,9 +3239,10 @@ final class MuesliController: NSObject {
         selectedTemplateID: String?,
         selectedTemplateName: String?,
         selectedTemplateKind: MeetingTemplateKind?,
-        selectedTemplatePrompt: String?
+        selectedTemplatePrompt: String?,
+        speakerClusters: [SpeakerCluster] = []
     ) throws -> Int64 {
-        try dictationStore.insertMeeting(
+        let meetingID = try dictationStore.insertMeeting(
             title: title,
             calendarEventID: calendarEventID,
             startTime: startTime,
@@ -3236,6 +3258,8 @@ final class MuesliController: NSObject {
             selectedTemplatePrompt: selectedTemplatePrompt,
             source: .audioImport
         )
+        persistMeetingSpeakers(speakerClusters, meetingID: meetingID)
+        return meetingID
     }
 
     func cancelMeetingPreparation() {
@@ -3953,7 +3977,173 @@ final class MuesliController: NSObject {
                 selectedTemplatePrompt: result.templateSnapshot.prompt
             )
         }
+        persistMeetingSpeakers(result.speakerClusters, meetingID: meetingID)
         return CompletedMeetingPersistenceResult(meetingID: meetingID, recordingSaveError: recordingSaveError)
+    }
+
+    /// The per-meeting speaker rows (cluster → resolved name/state), label-keyed
+    /// for the render-time overlay. Returns empty on any error or for pre-feature
+    /// meetings with no rows.
+    func meetingSpeakers(for meetingID: Int64) -> [MeetingSpeaker] {
+        (try? dictationStore.meetingSpeakers(for: meetingID)) ?? []
+    }
+
+    /// Name or correct a speaker in a meeting transcript (creates/refines a
+    /// voice profile when a voiceprint is present).
+    func renameMeetingSpeaker(meetingID: Int64, label: String, to newName: String) {
+        do {
+            try SpeakerNamingService(store: dictationStore).rename(meetingID: meetingID, label: label, to: newName)
+        } catch {
+            fputs("[muesli-native] rename speaker failed (\(meetingID)/\(label)): \(error)\n", stderr)
+        }
+        syncAppState()
+    }
+
+    /// Confirm a borderline recognition suggestion.
+    func confirmSuggestedSpeaker(meetingID: Int64, label: String) {
+        do {
+            try SpeakerNamingService(store: dictationStore).confirm(meetingID: meetingID, label: label)
+        } catch {
+            fputs("[muesli-native] confirm speaker failed (\(meetingID)/\(label)): \(error)\n", stderr)
+        }
+        syncAppState()
+    }
+
+    /// Reject a borderline recognition suggestion (returns to `Speaker N`).
+    func rejectSuggestedSpeaker(meetingID: Int64, label: String) {
+        do {
+            try SpeakerNamingService(store: dictationStore).reject(meetingID: meetingID, label: label)
+        } catch {
+            fputs("[muesli-native] reject speaker failed (\(meetingID)/\(label)): \(error)\n", stderr)
+        }
+        syncAppState()
+    }
+
+    // MARK: - Speakers library (voice profiles)
+
+    func speakerProfiles() -> [SpeakerProfile] {
+        (try? dictationStore.speakerProfiles()) ?? []
+    }
+
+    func renameSpeakerProfile(id: String, name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        do {
+            try dictationStore.renameSpeakerProfile(id: id, name: trimmed)
+        } catch {
+            fputs("[muesli-native] rename speaker profile failed (\(id)): \(error)\n", stderr)
+        }
+        syncAppState()
+    }
+
+    func mergeSpeakerProfiles(keepID: String, removeID: String) {
+        do {
+            // Fold the removed profile's voiceprint samples into the kept profile
+            // and recompute its centroid before deleting, so merging two profiles
+            // of the same person improves (not degrades) future recognition.
+            let profiles = try dictationStore.speakerProfiles()
+            if let keep = profiles.first(where: { $0.id == keepID }),
+               let remove = profiles.first(where: { $0.id == removeID }) {
+                // Fall back to the representative embedding when a profile has no
+                // retained raw samples, so the removed voiceprint still folds into
+                // the kept centroid (otherwise an embedding-only profile is lost).
+                var combined = rawSamples(of: keep) + rawSamples(of: remove)
+                let cap = SpeakerProfileRefiner.maxRawEmbeddings
+                if cap > 0, combined.count > cap {
+                    combined.removeFirst(combined.count - cap)
+                }
+                if let centroid = SpeakerClusterAggregator.representativeEmbedding(from: combined) {
+                    try dictationStore.upsertSpeakerProfile(
+                        id: keepID,
+                        name: keep.name,
+                        embedding: centroid,
+                        rawEmbeddings: combined,
+                        observationCount: keep.observationCount + remove.observationCount
+                    )
+                }
+            }
+            try dictationStore.mergeSpeakerProfiles(keepID: keepID, removeID: removeID)
+        } catch {
+            fputs("[muesli-native] merge speaker profiles failed (\(keepID)<-\(removeID)): \(error)\n", stderr)
+        }
+        syncAppState()
+    }
+
+    func deleteSpeakerProfile(id: String) {
+        do {
+            try dictationStore.deleteSpeakerProfile(id: id)
+        } catch {
+            fputs("[muesli-native] delete speaker profile failed (\(id)): \(error)\n", stderr)
+        }
+        syncAppState()
+    }
+
+    /// Retained voiceprint samples for a profile, falling back to the
+    /// representative embedding when no raw samples were kept (so merge/refine
+    /// never silently discards an embedding-only profile's voice).
+    private func rawSamples(of profile: SpeakerProfile) -> [[Float]] {
+        if !profile.rawEmbeddings.isEmpty { return profile.rawEmbeddings }
+        if profile.embedding.count == SpeakerClusterAggregator.embeddingDimension { return [profile.embedding] }
+        return []
+    }
+
+    func showSpeakersManager() {
+        appState.selectedTab = .meetings
+        appState.isSpeakersManagerPresented = true
+    }
+
+    /// Whether the one-time "voiceprints are stored locally" note still needs to
+    /// be shown (on first enrollment).
+    var shouldShowVoiceProfileNote: Bool {
+        !config.hasSeenVoiceProfileNote
+    }
+
+    func markVoiceProfileNoteSeen() {
+        guard !config.hasSeenVoiceProfileNote else { return }
+        updateConfig { $0.hasSeenVoiceProfileNote = true }
+    }
+
+    /// Persist the per-cluster voiceprints captured at stop into `meeting_speakers`
+    /// (replacing any prior rows so re-persist is idempotent), then run recognition
+    /// against the saved profile library. A failure here must never block meeting
+    /// persistence, so errors are logged and swallowed.
+    func persistMeetingSpeakers(_ clusters: [SpeakerCluster], meetingID: Int64) {
+        do {
+            // Atomic delete+insert so a mid-insert failure can't leave a partial set.
+            try dictationStore.replaceMeetingSpeakers(
+                meetingID: meetingID,
+                speakers: clusters.map { (label: $0.label, embedding: $0.embedding) }
+            )
+        } catch {
+            fputs("[muesli-native] failed to persist meeting speakers for \(meetingID): \(error)\n", stderr)
+            return
+        }
+        recognizeMeetingSpeakers(meetingID: meetingID)
+    }
+
+    /// Match this meeting's captured clusters against the saved profile library
+    /// and persist confidence-tiered names. Best-effort: failures (or a missing
+    /// diarizer/empty library) leave rows as `unmatched`, never crash.
+    func recognizeMeetingSpeakers(meetingID: Int64) {
+        do {
+            let speakers = try dictationStore.meetingSpeakers(for: meetingID)
+            guard !speakers.isEmpty else { return }
+            let profiles = try dictationStore.speakerProfiles()
+            guard !profiles.isEmpty else { return } // first-ever meeting: nothing to match
+            let clusters = speakers.map { SpeakerRecognizer.Cluster(label: $0.speakerLabel, embedding: $0.embedding) }
+            let results = SpeakerRecognizer.recognize(clusters: clusters, profiles: profiles)
+            for (speaker, result) in zip(speakers, results) where result.state != .unmatched {
+                try dictationStore.updateMeetingSpeaker(
+                    id: speaker.id,
+                    profileID: result.profileID,
+                    displayName: result.displayName,
+                    matchDistance: result.distance,
+                    matchState: result.state
+                )
+            }
+        } catch {
+            fputs("[muesli-native] speaker recognition failed for \(meetingID): \(error)\n", stderr)
+        }
     }
 
     private func liveMeetingTitle(id: Int64) -> String? {

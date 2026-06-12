@@ -193,6 +193,18 @@ struct MeetingsView: View {
                 onClose: { appState.isMeetingTemplatesManagerPresented = false }
             )
         }
+        .sheet(
+            isPresented: Binding(
+                get: { appState.isSpeakersManagerPresented },
+                set: { appState.isSpeakersManagerPresented = $0 }
+            )
+        ) {
+            SpeakersManagerView(
+                appState: appState,
+                controller: controller,
+                onClose: { appState.isSpeakersManagerPresented = false }
+            )
+        }
     }
 
     @ViewBuilder

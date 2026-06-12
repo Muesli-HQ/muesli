@@ -68,6 +68,17 @@ struct MeetingDetailView: View {
     @State private var showFolderPopover = false
     @State private var showNewFolderPrompt = false
     @State private var newFolderName = ""
+    /// Label → per-meeting speaker row, driving the render-time name overlay.
+    /// Refreshed on meeting change and after renames so the transcript re-renders
+    /// even though the stored transcript string is unchanged.
+    @State private var speakerMap: [String: MeetingSpeaker] = [:]
+    /// Set when a speaker name changes, enabling the "Update notes with corrected
+    /// names" affordance.
+    @State private var speakerNamesChanged = false
+    @State private var isUpdatingNotesWithNames = false
+    /// One-time "voiceprints are stored locally" disclosure, shown on first
+    /// enrollment.
+    @State private var showVoiceProfileNote = false
 
     init(
         meeting: MeetingRecord?,
@@ -89,6 +100,7 @@ struct MeetingDetailView: View {
         _loadedMeetingID = State(initialValue: meeting?.id)
         _pendingTemplateID = State(initialValue: initialTemplateID)
         _documentMode = State(initialValue: meeting.map(Self.defaultDocumentMode(for:)) ?? .notes)
+        _speakerMap = State(initialValue: Self.loadSpeakerMap(controller: controller, meeting: meeting))
     }
 
     var body: some View {
@@ -161,6 +173,17 @@ struct MeetingDetailView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Are you sure you want to delete this meeting? Saved notes, transcript, and any retained recording will be removed.")
+        }
+        .alert("Voice profile saved on this device", isPresented: $showVoiceProfileNote) {
+            Button("Manage Speakers…") {
+                controller.markVoiceProfileNoteSeen()
+                controller.showSpeakersManager()
+            }
+            Button("Got it", role: .cancel) {
+                controller.markVoiceProfileNoteSeen()
+            }
+        } message: {
+            Text("Naming a speaker saves a local voiceprint so Muesli can recognize them in future meetings. Voiceprints never leave this device and can be deleted anytime in the Speakers library.")
         }
     }
 
@@ -349,13 +372,24 @@ struct MeetingDetailView: View {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
                 contentToolbar(for: meeting)
 
+                if speakerNamesChanged, meeting.notesState != .missing {
+                    updateNotesBanner(for: meeting)
+                }
+
                 ZStack(alignment: .topLeading) {
                     MeetingNotesView(markdown: Self.notesContent(for: meeting))
                         .opacity(documentMode == .notes ? 1 : 0)
                         .allowsHitTesting(documentMode == .notes)
                         .accessibilityHidden(documentMode != .notes)
 
-                    MeetingTranscriptView(transcript: meeting.rawTranscript)
+                    MeetingTranscriptView(
+                        transcript: meeting.rawTranscript,
+                        speakerMap: speakerMap,
+                        userName: appState.config.userName,
+                        onRename: { label, name in renameSpeaker(meeting: meeting, label: label, to: name) },
+                        onConfirm: { label in confirmSpeaker(meeting: meeting, label: label) },
+                        onReject: { label in rejectSpeaker(meeting: meeting, label: label) }
+                    )
                         .opacity(documentMode == .transcript ? 1 : 0)
                         .allowsHitTesting(documentMode == .transcript)
                         .accessibilityHidden(documentMode != .transcript)
@@ -1393,6 +1427,8 @@ struct MeetingDetailView: View {
         }
         pendingTemplateID = meeting.map { controller.meetingTemplateSnapshot(for: $0).id } ?? controller.defaultMeetingTemplate().id
         if meetingChanged {
+            speakerMap = Self.loadSpeakerMap(controller: controller, meeting: meeting)
+            speakerNamesChanged = false
             documentMode = meeting.map(Self.defaultDocumentMode(for:)) ?? .notes
             isEditingNotes = false
             isEditingTranscript = false
@@ -1400,6 +1436,86 @@ struct MeetingDetailView: View {
             showNewFolderPrompt = false
             newFolderName = ""
         }
+    }
+
+    static func loadSpeakerMap(controller: MuesliController, meeting: MeetingRecord?) -> [String: MeetingSpeaker] {
+        guard let meeting else { return [:] }
+        return SpeakerNameResolver.speakerMap(from: controller.meetingSpeakers(for: meeting.id))
+    }
+
+    private func renameSpeaker(meeting: MeetingRecord, label: String, to newName: String) {
+        let shouldNote = controller.shouldShowVoiceProfileNote
+        let before = speakerMap
+        controller.renameMeetingSpeaker(meetingID: meeting.id, label: label, to: newName)
+        speakerMap = Self.loadSpeakerMap(controller: controller, meeting: meeting)
+        // Only offer "Update notes" when something actually changed — a blank
+        // rename is a no-op and shouldn't trigger a needless re-summary.
+        if speakerMap != before { speakerNamesChanged = true }
+        // Show the one-time disclosure only when a profile was actually enrolled.
+        if shouldNote, speakerMap[label]?.profileID != nil {
+            showVoiceProfileNote = true
+        }
+    }
+
+    private func confirmSpeaker(meeting: MeetingRecord, label: String) {
+        let shouldNote = controller.shouldShowVoiceProfileNote
+        let before = speakerMap
+        controller.confirmSuggestedSpeaker(meetingID: meeting.id, label: label)
+        speakerMap = Self.loadSpeakerMap(controller: controller, meeting: meeting)
+        if speakerMap != before { speakerNamesChanged = true }
+        if shouldNote, speakerMap[label]?.profileID != nil {
+            showVoiceProfileNote = true
+        }
+    }
+
+    @ViewBuilder
+    private func updateNotesBanner(for meeting: MeetingRecord) -> some View {
+        HStack(spacing: MuesliTheme.spacing8) {
+            Image(systemName: "person.text.rectangle")
+                .font(.system(size: 12))
+                .foregroundStyle(MuesliTheme.accent)
+            Text("Speaker names changed. Update the notes to use the corrected names?")
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textSecondary)
+            Spacer()
+            Button {
+                updateNotesWithCorrectedNames(meeting: meeting)
+            } label: {
+                HStack(spacing: 6) {
+                    if isUpdatingNotesWithNames {
+                        ProgressView().controlSize(.small)
+                    }
+                    Text(isUpdatingNotesWithNames ? "Updating…" : "Update notes")
+                        .font(.system(size: 12, weight: .medium))
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(isUpdatingNotesWithNames)
+            .foregroundStyle(MuesliTheme.accent)
+        }
+        .padding(.horizontal, MuesliTheme.spacing12)
+        .padding(.vertical, 8)
+        .background(MuesliTheme.accent.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        .padding(.horizontal, 40)
+    }
+
+    private func updateNotesWithCorrectedNames(meeting: MeetingRecord) {
+        guard !isUpdatingNotesWithNames else { return }
+        isUpdatingNotesWithNames = true
+        controller.updateNotesWithCorrectedNames(meeting: meeting) { result in
+            isUpdatingNotesWithNames = false
+            if case .success = result {
+                speakerNamesChanged = false
+            } else if case .failure = result {
+                summaryErrorMessage = "The notes could not be updated with the corrected names."
+            }
+        }
+    }
+
+    private func rejectSpeaker(meeting: MeetingRecord, label: String) {
+        controller.rejectSuggestedSpeaker(meetingID: meeting.id, label: label)
+        speakerMap = Self.loadSpeakerMap(controller: controller, meeting: meeting)
     }
 
     private func syncManualNotesState(with meeting: MeetingRecord?) {
@@ -1656,19 +1772,33 @@ struct TranscriptChatMessage: Identifiable, Equatable {
         guard !label.isEmpty, label.count <= 32 else { return false }
         if label.localizedCaseInsensitiveCompare("You") == .orderedSame { return true }
         if label.localizedCaseInsensitiveCompare("Others") == .orderedSame { return true }
-        if label.range(of: #"^Speaker\s+\d+$"#, options: [.regularExpression, .caseInsensitive]) != nil {
-            return true
-        }
-        return false
+        return SpeakerNameResolver.isSpeakerClusterLabel(label)
     }
 }
 
 private struct MeetingTranscriptView: View {
     let transcript: String
+    let speakerMap: [String: MeetingSpeaker]
+    let userName: String
+    var onRename: (String, String) -> Void = { _, _ in }
+    var onConfirm: (String) -> Void = { _ in }
+    var onReject: (String) -> Void = { _ in }
     @State private var messages: [TranscriptChatMessage]
 
-    init(transcript: String) {
+    init(
+        transcript: String,
+        speakerMap: [String: MeetingSpeaker],
+        userName: String,
+        onRename: @escaping (String, String) -> Void = { _, _ in },
+        onConfirm: @escaping (String) -> Void = { _ in },
+        onReject: @escaping (String) -> Void = { _ in }
+    ) {
         self.transcript = transcript
+        self.speakerMap = speakerMap
+        self.userName = userName
+        self.onRename = onRename
+        self.onConfirm = onConfirm
+        self.onReject = onReject
         _messages = State(initialValue: TranscriptChatMessage.messages(from: transcript))
     }
 
@@ -1683,7 +1813,19 @@ private struct MeetingTranscriptView: View {
                         .padding(MuesliTheme.spacing24)
                 } else {
                     ForEach(messages) { message in
-                        TranscriptChatBubble(message: message)
+                        // Resolve the display name at render time; the parsed
+                        // message keeps its raw `Speaker N`/`You` token so
+                        // `isUser` and re-parsing stay correct.
+                        TranscriptChatBubble(
+                            message: message,
+                            resolved: message.speaker.map {
+                                SpeakerNameResolver.resolve(label: $0, speakers: speakerMap, userName: userName)
+                            },
+                            speakerRow: message.speaker.flatMap { speakerMap[$0] },
+                            onRename: onRename,
+                            onConfirm: onConfirm,
+                            onReject: onReject
+                        )
                     }
                 }
             }
@@ -1700,6 +1842,24 @@ private struct MeetingTranscriptView: View {
 
 struct TranscriptChatBubble: View {
     let message: TranscriptChatMessage
+    var resolved: ResolvedSpeakerName?
+    var speakerRow: MeetingSpeaker?
+    var onRename: (String, String) -> Void = { _, _ in }
+    var onConfirm: (String) -> Void = { _ in }
+    var onReject: (String) -> Void = { _ in }
+
+    @State private var isRenaming = false
+    @State private var draftName = ""
+    @FocusState private var renameFocused: Bool
+
+    /// Only diarized clusters (`Speaker N` tokens) are renameable; `You`/`Others`
+    /// are not. The stored token stays `Speaker N` even after naming.
+    private var renameableLabel: String? {
+        guard let speaker = message.speaker,
+              SpeakerNameResolver.isSpeakerClusterLabel(speaker)
+        else { return nil }
+        return speaker
+    }
 
     var body: some View {
         HStack(alignment: .bottom, spacing: MuesliTheme.spacing8) {
@@ -1708,12 +1868,7 @@ struct TranscriptChatBubble: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                if let metadata = metadata {
-                    Text(metadata)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(MuesliTheme.textTertiary)
-                        .textSelection(.enabled)
-                }
+                metadataRow
                 Text(message.text)
                     .font(.system(size: 14))
                     .foregroundStyle(MuesliTheme.textPrimary)
@@ -1737,8 +1892,103 @@ struct TranscriptChatBubble: View {
         .frame(maxWidth: .infinity, alignment: message.isUser ? .trailing : .leading)
     }
 
+    @ViewBuilder
+    private var metadataRow: some View {
+        if isRenaming, let label = renameableLabel {
+            HStack(spacing: 4) {
+                TextField("Speaker name", text: $draftName)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11))
+                    .frame(maxWidth: 160)
+                    .focused($renameFocused)
+                    .onSubmit { commitRename(label: label) }
+                Button { commitRename(label: label) } label: {
+                    Image(systemName: "checkmark")
+                }
+                .buttonStyle(.plain)
+                Button { isRenaming = false } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
+            }
+            .font(.system(size: 10))
+            .foregroundStyle(MuesliTheme.textSecondary)
+        } else if let metadata = metadata {
+            HStack(spacing: 4) {
+                if let label = renameableLabel {
+                    Button { beginRename() } label: {
+                        Text(metadata)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Rename this speaker")
+                    .accessibilityLabel("Rename \(resolved?.display ?? label)")
+                } else {
+                    Text(metadata)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .textSelection(.enabled)
+                }
+                if resolved?.isAutoRecognized == true {
+                    // Distinguish an auto-recognized (unconfirmed) name from a
+                    // user-confirmed one so it can be verified before trust.
+                    Image(systemName: "wand.and.stars")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .help("Auto-recognized — confirm to verify")
+                }
+                suggestionChip
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var suggestionChip: some View {
+        if let label = renameableLabel,
+           speakerRow?.matchState == .suggested,
+           let candidate = speakerRow?.displayName, !candidate.isEmpty {
+            HStack(spacing: 2) {
+                Text("\(candidate)?")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(MuesliTheme.accent)
+                Button { onConfirm(label) } label: {
+                    Image(systemName: "checkmark.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .help("Confirm \(candidate)")
+                .accessibilityLabel("Confirm \(candidate)")
+                Button { onReject(label) } label: {
+                    Image(systemName: "xmark.circle")
+                }
+                .buttonStyle(.plain)
+                .help("Not \(candidate)")
+                .accessibilityLabel("Not \(candidate)")
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(MuesliTheme.accent.opacity(0.12))
+            .clipShape(Capsule())
+        }
+    }
+
+    private func beginRename() {
+        draftName = resolved?.display ?? message.speaker ?? ""
+        isRenaming = true
+        renameFocused = true
+    }
+
+    private func commitRename(label: String) {
+        let trimmed = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+        isRenaming = false
+        guard !trimmed.isEmpty else { return }
+        onRename(label, trimmed)
+    }
+
     private var metadata: String? {
-        switch (message.speaker, message.timestamp) {
+        // Prefer the resolved display name; fall back to the raw parsed label.
+        let speaker = resolved?.display ?? message.speaker
+        switch (speaker, message.timestamp) {
         case let (speaker?, timestamp?):
             return "\(speaker) \(timestamp)"
         case let (speaker?, nil):
