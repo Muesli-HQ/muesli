@@ -29,7 +29,7 @@
 ]]></description>
             <sparkle:version>0.7.0</sparkle:version>
             <sparkle:shortVersionString>0.7.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>10.13</sparkle:minimumSystemVersion>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
             <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.7.0/Muesli-0.7.0.dmg" length="73691616" type="application/octet-stream" sparkle:edSignature="PcVwwF7cnOdOH20cN95tUwDohLh4KfJ5Y5Hc+H95Uy2eGZQINvUK25HJCSCqecszxSovLonnmq2JcyBsXFWMDw=="/>
         </item>
