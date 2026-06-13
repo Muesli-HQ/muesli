@@ -874,7 +874,6 @@ final class MuesliController: NSObject {
             $0.backend == config.meetingSummaryBackend
         }) ?? .chatGPT
         statusBarController?.refresh()
-        statusBarController?.refreshIcon()
         indicator.refreshIcon()
         hotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
         computerUseHotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
@@ -2813,6 +2812,12 @@ final class MuesliController: NSObject {
         activeMeetingSession?.isPaused == true
     }
 
+    func isMeetingActivelyCapturing() -> Bool {
+        activeMeetingSession?.isRecording == true
+            && activeMeetingSession?.isPaused != true
+            && !isStoppingMeetingRecording
+    }
+
     private var meetingTerminationState: MeetingTerminationState {
         MeetingTerminationPolicy.state(
             isStarting: isStartingMeetingRecording,
@@ -4229,6 +4234,7 @@ final class MuesliController: NSObject {
         case .transcribing: status = "Transcribing"
         }
         statusBarController?.setStatus(status)
+        statusBarController?.refreshIcon()
         if !isDictationTestMode {
             if state == .preparing {
                 let workItem = DispatchWorkItem { [weak self] in
