@@ -41,9 +41,11 @@ enum PasteController {
     static func paste(
         text: String,
         pasteboard: NSPasteboard = .general,
-        simulatePasteAction: @escaping () -> Void = PasteController.simulatePaste
+        shortcut: PasteShortcut = .commandV,
+        simulatePasteAction: (() -> Void)? = nil
     ) {
         guard !text.isEmpty else { return }
+        let simulate = simulatePasteAction ?? { simulatePaste(shortcut: shortcut) }
 
         // Save current clipboard contents (all types) so we can restore after paste.
         let savedItems = saveClipboard(pasteboard)
@@ -53,7 +55,7 @@ enum PasteController {
         let pasteChangeCount = pasteboard.changeCount
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            simulatePasteAction()
+            simulate()
 
             // Restore the original clipboard contents after the receiving app has consumed the paste.
             DispatchQueue.main.asyncAfter(deadline: .now() + clipboardRestoreDelay) {
@@ -87,16 +89,25 @@ enum PasteController {
 
     // MARK: - Private
 
-    private static func simulatePaste() {
+    /// CGEvent modifier flags for the paste chord the user selected.
+    static func eventFlags(for shortcut: PasteShortcut) -> CGEventFlags {
+        switch shortcut {
+        case .commandV: return .maskCommand
+        case .commandShiftV: return [.maskCommand, .maskShift]
+        }
+    }
+
+    static func simulatePaste(shortcut: PasteShortcut = .commandV) {
         guard let source = CGEventSource(stateID: .combinedSessionState) else {
             fputs("[muesli-native] failed to create event source for paste\n", stderr)
             return
         }
         let keyCode: CGKeyCode = 9 // V
+        let flags = eventFlags(for: shortcut)
         let commandDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true)
-        commandDown?.flags = .maskCommand
+        commandDown?.flags = flags
         let commandUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
-        commandUp?.flags = .maskCommand
+        commandUp?.flags = flags
         commandDown?.post(tap: .cghidEventTap)
         commandUp?.post(tap: .cghidEventTap)
     }

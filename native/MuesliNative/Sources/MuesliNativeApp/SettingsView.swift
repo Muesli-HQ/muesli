@@ -470,6 +470,18 @@ struct SettingsView: View {
                         controller.updateConfig { $0.muteSystemAudioDuringDictation = newValue }
                     }
                 }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Paste shortcut") {
+                    settingsMenu(
+                        selection: appState.config.pasteShortcut.displayName,
+                        options: PasteShortcut.allCases.map(\.displayName)
+                    ) { label in
+                        if let choice = PasteShortcut.allCases.first(where: { $0.displayName == label }) {
+                            controller.updateConfig { $0.pasteShortcut = choice }
+                        }
+                    }
+                }
+                settingsDescription("Use ⌘⇧V for terminals or apps that remap ⌘V.")
                 screenContextRow("App context")
             }
         }
