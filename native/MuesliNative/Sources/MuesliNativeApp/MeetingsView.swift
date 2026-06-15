@@ -115,7 +115,7 @@ enum MeetingBrowserLogic {
         formatter.locale = locale
         formatter.timeZone = timeZone
         formatter.dateStyle = .medium
-        formatter.timeStyle = .short
+        formatter.timeStyle = .medium
         return formatter.string(from: date)
     }
 
