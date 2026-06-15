@@ -53,7 +53,7 @@ actor FluidAudioTranscriber {
             }
         }
         let manager = AsrManager(config: .default)
-        try await manager.initialize(models: models)
+        try await manager.loadModels(models)
         self.asrManager = manager
         self.loadedVersion = version
         fputs("[fluidaudio] models ready\n", stderr)
@@ -70,7 +70,8 @@ actor FluidAudioTranscriber {
     /// Transcribe a WAV file URL directly.
     func transcribe(wavURL: URL) async throws -> ASRResult {
         guard let asrManager else { throw TranscriberError.notLoaded }
-        return try await asrManager.transcribe(wavURL)
+        var decoderState = TdtDecoderState.make(decoderLayers: await asrManager.decoderLayerCount)
+        return try await asrManager.transcribe(wavURL, decoderState: &decoderState)
     }
 
     func shutdown() {
