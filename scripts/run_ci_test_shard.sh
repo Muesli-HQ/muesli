@@ -84,4 +84,5 @@ for filter in "${filters[@]}"; do
 done
 
 echo "Running ${shard} shard with ${#filters[@]} filters"
+"$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ensure_swift_testing_toolchain.sh"
 swift test "${args[@]}"
