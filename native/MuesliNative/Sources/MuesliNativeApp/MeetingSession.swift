@@ -92,6 +92,9 @@ struct MeetingSessionResult {
     let retainedRecordingError: Error?
     let systemRecordingURL: URL?
     let templateSnapshot: MeetingTemplateSnapshot
+    /// Per-diarized-cluster representative voiceprints captured at stop, for
+    /// persistence into `meeting_speakers` (empty when no diarization ran).
+    var speakerClusters: [SpeakerCluster] = []
 }
 
 enum MeetingProcessingStage {
@@ -466,6 +469,14 @@ final class MeetingSession {
             meetingStart: meetingStart
         )
 
+        // Capture one representative voiceprint per realized diarized cluster
+        // before the segments (and their embeddings) are discarded. Derived from
+        // the just-built blob so labels match exactly.
+        let speakerClusters = SpeakerClusterAggregator.aggregate(
+            diarizationSegments: protectedTranscriptInputs.diarizationSegments ?? [],
+            transcript: rawTranscript
+        )
+
         let generatedTitle: String
         onProgress?(.generatingTitle)
         if let liveTitle = await userEditedLiveTitle() {
@@ -542,7 +553,8 @@ final class MeetingSession {
             retainedRecordingURL: retainedRecordingURL,
             retainedRecordingError: retainedRecordingWriterError,
             systemRecordingURL: systemAudioURL,
-            templateSnapshot: templateSnapshot
+            templateSnapshot: templateSnapshot,
+            speakerClusters: speakerClusters
         )
     }
 

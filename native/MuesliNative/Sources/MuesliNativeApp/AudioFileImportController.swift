@@ -196,6 +196,7 @@ enum AudioFileImportController {
 
         // Run speaker diarization if available
         var diarizedTranscript = rawTranscript
+        var speakerClusters: [SpeakerCluster] = []
         if let diarizerManager = await transcriptionCoordinator.getDiarizerManager(),
            diarizerManager.isAvailable {
             progress("Identifying speakers...")
@@ -212,6 +213,11 @@ enum AudioFileImportController {
                         transcription: transcription,
                         diarizationSegments: diarizationResult.segments,
                         meetingStart: importedTranscriptTimelineStart()
+                    )
+                    // Capture voiceprints aligned to the labels realized in the blob.
+                    speakerClusters = SpeakerClusterAggregator.aggregate(
+                        diarizationSegments: diarizationResult.segments,
+                        transcript: diarizedTranscript
                     )
                 }
             } catch is CancellationError {
@@ -278,7 +284,8 @@ enum AudioFileImportController {
             selectedTemplateID: templateSnapshot.id,
             selectedTemplateName: templateSnapshot.name,
             selectedTemplateKind: templateSnapshot.kind,
-            selectedTemplatePrompt: templateSnapshot.prompt
+            selectedTemplatePrompt: templateSnapshot.prompt,
+            speakerClusters: speakerClusters
         )
 
         return ImportResult(
