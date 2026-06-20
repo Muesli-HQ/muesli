@@ -87,11 +87,6 @@ enum TranscriptCleanupClient {
             options: .regularExpression
         )
         result = result.replacingOccurrences(
-            of: #"(?im)^\s*(?:[#>*-]+\s*)?(?:\*\*|__)?(?:transcription|cleaned transcription|output|response)(?:\*\*|__)?\s*:\s*"#,
-            with: "",
-            options: .regularExpression
-        )
-        result = result.replacingOccurrences(
             of: #"\r\n?"#,
             with: "\n",
             options: .regularExpression

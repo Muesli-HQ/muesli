@@ -1071,6 +1071,8 @@ final class MuesliController: NSObject {
             $0.postProcessorBackend = TranscriptCleanupBackendOption.local.backend
             $0.activePostProcessorId = option.id
         }
+        selectedPostProcessorBackend = .local
+        appState.selectedPostProcessorBackend = .local
         appState.activePostProcessor = option
         guard config.enablePostProcessor else { return }
         Task { [weak self] in
@@ -1199,6 +1201,18 @@ final class MuesliController: NSObject {
         chatGPTAuth.signOut()
         if selectedMeetingSummaryBackend == .chatGPT {
             selectMeetingSummaryBackend(.openAI)
+        }
+        if selectedPostProcessorBackend == .chatGPT, config.enablePostProcessor {
+            if let localOption = PostProcessorOption.runtimeOption(id: config.activePostProcessorId) {
+                updateConfig {
+                    $0.postProcessorBackend = TranscriptCleanupBackendOption.local.backend
+                    $0.activePostProcessorId = localOption.id
+                }
+                appState.activePostProcessor = localOption
+            } else {
+                updateConfig { $0.enablePostProcessor = false }
+            }
+            preloadExperimentalTranscriptionFeatures()
         }
         syncAppState()
     }

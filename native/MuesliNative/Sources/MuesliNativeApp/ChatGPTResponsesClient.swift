@@ -67,20 +67,101 @@ enum ChatGPTResponsesClient {
                 let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { continue }
 
-            if let outputText = json["output_text"] as? String, !outputText.isEmpty {
-                fullText = outputText
-            }
-
             if let type = json["type"] as? String,
                type == "response.output_text.delta",
                let delta = json["delta"] as? String {
                 fullText += delta
+                continue
+            }
+
+            if let outputText = extractOutputText(from: json), !outputText.isEmpty {
+                fullText = outputText
             }
         }
 
         let trimmed = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
         fputs("[\(logCategory)] ChatGPT WHAM: collected \(trimmed.count) chars\n", stderr)
         return trimmed
+    }
+
+    static func extractOutputText(from payload: [String: Any]) -> String? {
+        if let outputText = payload["output_text"] as? String, !outputText.isEmpty {
+            return outputText
+        }
+        if let response = payload["response"] as? [String: Any],
+           let responseText = extractOutputText(from: response) {
+            return responseText
+        }
+        if let outputText = extractText(fromOutput: payload["output"]) {
+            return outputText
+        }
+        if let contentText = extractText(fromContent: payload["content"]) {
+            return contentText
+        }
+        return nil
+    }
+
+    private static func extractText(fromOutput output: Any?) -> String? {
+        guard let output else { return nil }
+        if let outputText = output as? String, !outputText.isEmpty {
+            return outputText
+        }
+        if let item = output as? [String: Any] {
+            return extractText(fromContent: item["content"]) ?? (item["text"] as? String)
+        }
+        if let items = output as? [[String: Any]] {
+            let parts = items.compactMap { item -> String? in
+                if let text = extractText(fromContent: item["content"]) {
+                    return text
+                }
+                if let text = item["text"] as? String, !text.isEmpty {
+                    return text
+                }
+                return nil
+            }
+            let joined = parts.joined(separator: "")
+            return joined.isEmpty ? nil : joined
+        }
+        return nil
+    }
+
+    private static func extractText(fromContent content: Any?) -> String? {
+        guard let content else { return nil }
+        if let text = content as? String, !text.isEmpty {
+            return text
+        }
+        if let item = content as? [String: Any] {
+            if let text = item["text"] as? String, !text.isEmpty {
+                return text
+            }
+            if let text = item["content"] as? String, !text.isEmpty {
+                return text
+            }
+            if let nested = item["text"] as? [String: Any],
+               let value = nested["value"] as? String,
+               !value.isEmpty {
+                return value
+            }
+        }
+        if let items = content as? [[String: Any]] {
+            let parts = items.compactMap { item -> String? in
+                if let text = item["text"] as? String, !text.isEmpty {
+                    return text
+                }
+                if let text = item["content"] as? String, !text.isEmpty {
+                    return text
+                }
+                if let nested = item["text"] as? [String: Any],
+                   let value = nested["value"] as? String,
+                   !value.isEmpty {
+                    return value
+                }
+                return nil
+            }
+            let joined = parts.joined(separator: "")
+            return joined.isEmpty ? nil : joined
+        }
+        return nil
     }
 
     private static func extractErrorMessage(from data: Data) -> String? {

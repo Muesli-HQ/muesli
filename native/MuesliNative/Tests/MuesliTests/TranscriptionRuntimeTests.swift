@@ -340,7 +340,7 @@ struct ChatGPTTranscriptCleanupOutputCleanerTests {
 
     @Test("strips one balanced wrapping quote pair")
     func stripsBalancedWrappingQuotes() {
-        let raw = "\"Okay, so I'm Ayush.\\n\\nThis is the second paragraph.\""
+        let raw = "\"Okay, so I'm Ayush.\n\nThis is the second paragraph.\""
         #expect(
             TranscriptCleanupClient.cleanChatGPTOutput(raw) ==
                 "Okay, so I'm Ayush.\n\nThis is the second paragraph."
@@ -349,10 +349,53 @@ struct ChatGPTTranscriptCleanupOutputCleanerTests {
 
     @Test("preserves paragraph breaks while normalizing spacing")
     func preservesParagraphBreaks() {
-        let raw = "Cleaned transcription: First sentence.  \\n\\n  Second sentence."
+        let raw = "First sentence.  \n\n  Second sentence."
         #expect(
             TranscriptCleanupClient.cleanChatGPTOutput(raw) ==
                 "First sentence.\n\nSecond sentence."
         )
+    }
+
+    @Test("preserves dictated labels")
+    func preservesDictatedLabels() {
+        #expect(
+            TranscriptCleanupClient.cleanChatGPTOutput("Output: increase the volume") ==
+                "Output: increase the volume"
+        )
+        #expect(
+            TranscriptCleanupClient.cleanChatGPTOutput("- Response: approved") ==
+                "- Response: approved"
+        )
+    }
+}
+
+@Suite("ChatGPT WHAM response parsing")
+struct ChatGPTResponsesClientParsingTests {
+
+    @Test("extracts nested final response output text")
+    func extractsNestedFinalResponseOutputText() {
+        let payload: [String: Any] = [
+            "type": "response.completed",
+            "response": [
+                "output": [
+                    [
+                        "type": "message",
+                        "content": [
+                            [
+                                "type": "output_text",
+                                "text": "Final nested text.",
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ]
+
+        #expect(ChatGPTResponsesClient.extractOutputText(from: payload) == "Final nested text.")
+    }
+
+    @Test("extracts top-level output text")
+    func extractsTopLevelOutputText() {
+        #expect(ChatGPTResponsesClient.extractOutputText(from: ["output_text": "Final text."]) == "Final text.")
     }
 }
