@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import AppKit
 import MuesliCore
 @testable import MuesliNativeApp
 
@@ -91,5 +92,81 @@ struct ClipboardCorrectionWatcherTests {
     func whitespaceOnly() {
         let result = ClipboardCorrectionWatcher.corrections(from: "hello   world", to: "hello world")
         #expect(result.isEmpty)
+    }
+
+    // MARK: - Event-driven instance flow
+
+    /// Use a uniquely-named pasteboard so tests never touch the real clipboard.
+    @MainActor
+    private func makeIsolated() -> (ClipboardCorrectionWatcher, NSPasteboard) {
+        let pb = NSPasteboard(name: NSPasteboard.Name("muesli.test.\(UUID().uuidString)"))
+        pb.clearContents()
+        return (ClipboardCorrectionWatcher(pasteboard: pb), pb)
+    }
+
+    @Test("check before any paste reports nothing")
+    @MainActor
+    func checkWithoutPaste() {
+        let (watcher, _) = makeIsolated()
+        var calls = 0
+        watcher.checkForCorrections { _ in calls += 1 }
+        #expect(calls == 0)
+    }
+
+    @Test("a corrected re-copy is captured at the next check")
+    @MainActor
+    func correctedRecopyCaptured() {
+        let (watcher, pb) = makeIsolated()
+        watcher.recordPaste("deploy to kubernetez now")
+        // User fixes the word and re-copies it.
+        pb.clearContents()
+        pb.setString("deploy to kubernetes now", forType: .string)
+
+        var captured: [SuggestedWordUpsert] = []
+        watcher.checkForCorrections { captured = $0 }
+        #expect(captured.count == 1)
+        #expect(captured.first?.word == "kubernetez")
+        #expect(captured.first?.replacement == "kubernetes")
+    }
+
+    @Test("an unchanged clipboard yields no corrections")
+    @MainActor
+    func unchangedClipboard() {
+        let (watcher, pb) = makeIsolated()
+        watcher.recordPaste("deploy to kubernetes now")
+        pb.clearContents()
+        pb.setString("deploy to kubernetes now", forType: .string)
+
+        var calls = 0
+        watcher.checkForCorrections { _ in calls += 1 }
+        #expect(calls == 0)
+    }
+
+    @Test("each paste is checked at most once")
+    @MainActor
+    func pendingConsumedAfterCheck() {
+        let (watcher, pb) = makeIsolated()
+        watcher.recordPaste("deploy to kubernetez now")
+        pb.clearContents()
+        pb.setString("deploy to kubernetes now", forType: .string)
+
+        var calls = 0
+        watcher.checkForCorrections { _ in calls += 1 }
+        watcher.checkForCorrections { _ in calls += 1 }   // nothing pending now
+        #expect(calls == 1)
+    }
+
+    @Test("cancel clears the pending paste so no correction is reported")
+    @MainActor
+    func cancelClearsPending() {
+        let (watcher, pb) = makeIsolated()
+        watcher.recordPaste("deploy to kubernetez now")
+        pb.clearContents()
+        pb.setString("deploy to kubernetes now", forType: .string)
+
+        watcher.cancel()
+        var calls = 0
+        watcher.checkForCorrections { _ in calls += 1 }
+        #expect(calls == 0)
     }
 }

@@ -2,61 +2,62 @@ import AppKit
 import Foundation
 import MuesliCore
 
-/// Opt-in watcher that learns dictionary corrections from the user's own edits.
+/// Opt-in learner of dictionary corrections from the user's own edits.
 ///
-/// After Muesli pastes a dictation, the user may fix a misspelled word, re-copy
-/// the corrected text, and paste it elsewhere. When that corrected text lands on
-/// the clipboard we diff it against what we pasted and extract word-level
-/// corrections as high-confidence suggestions.
+/// After Muesli pastes a dictation, the user may fix a misspelled word and
+/// re-copy the corrected text. We diff that corrected text against what we pasted
+/// and extract word-level corrections as high-confidence suggestions.
 ///
-/// This is **default-off** (`AppConfig.enableClipboardCorrectionTracking`):
-/// repeatedly reading `NSPasteboard` triggers a macOS "used the clipboard" notice
-/// and timer polling is unreliable under App Nap in an LSUIElement app. The
-/// watcher only samples for a bounded window immediately after our own paste, and
-/// it starts after `PasteController`'s clipboard-restore window so it never races
-/// or mis-reads the restore write as a user correction.
+/// This is **default-off** (`AppConfig.enableClipboardCorrectionTracking`).
+/// Detection is **event-driven, not polling**: AppKit exposes no clipboard-change
+/// notification, so rather than sampling `NSPasteboard` on a timer (unreliable
+/// under App Nap in this LSUIElement app, and it trips a macOS "used the
+/// clipboard" notice on every read), we remember the last pasted text and inspect
+/// the clipboard exactly **once** at the next natural event — the start of the
+/// following dictation. If the user re-copied a corrected version in the
+/// meantime, the single diff captures it; otherwise the heavy guards in
+/// `corrections(from:to:)` reject whatever unrelated text is on the clipboard.
+///
+/// Trade-off vs. polling: a correction is only learned if the user re-copies it
+/// before their next dictation. That covers the intended "fix it, copy it, move
+/// on" flow without any background timer or clipboard surveillance.
 @MainActor
 final class ClipboardCorrectionWatcher {
-    /// Begin sampling only after PasteController's 0.5s restore has happened.
-    private static let startDelay: TimeInterval = 0.8
-    private static let pollInterval: TimeInterval = 0.7
-    private static let maxPolls = 6
     /// Corrected text must be this similar to the pasted text overall — a real
     /// edit, not a different copy entirely.
     nonisolated private static let minOverallSimilarity = 0.7
 
     private let pasteboard: NSPasteboard
-    private var pollTask: Task<Void, Never>?
+    /// The text Muesli most recently pasted, awaiting a one-shot correction check
+    /// at the next dictation start. Consumed (set to nil) once checked.
+    private var pendingPastedText: String?
 
     init(pasteboard: NSPasteboard = .general) {
         self.pasteboard = pasteboard
     }
 
-    /// Watch for an edited version of `pastedText` and report corrections.
-    func watch(pastedText: String, onCorrections: @escaping ([SuggestedWordUpsert]) -> Void) {
-        pollTask?.cancel()
-        let baselineChangeCount = pasteboard.changeCount
-        pollTask = Task { [weak self] in
-            guard let self else { return }
-            try? await Task.sleep(nanoseconds: UInt64(Self.startDelay * 1_000_000_000))
-            for _ in 0..<Self.maxPolls {
-                if Task.isCancelled { return }
-                if self.pasteboard.changeCount != baselineChangeCount,
-                   let current = self.pasteboard.string(forType: .string) {
-                    let corrections = Self.corrections(from: pastedText, to: current)
-                    if !corrections.isEmpty {
-                        onCorrections(corrections)
-                    }
-                    return
-                }
-                try? await Task.sleep(nanoseconds: UInt64(Self.pollInterval * 1_000_000_000))
-            }
+    /// Remember the text we just pasted so the next dictation start can check
+    /// whether the user re-copied a corrected version of it.
+    func recordPaste(_ pastedText: String) {
+        pendingPastedText = pastedText
+    }
+
+    /// Inspect the clipboard once for an edited version of the last pasted text
+    /// and report any word-level corrections. Call at a natural event (e.g. the
+    /// next dictation start) — never on a timer. The pending text is consumed
+    /// whether or not a correction is found, so each paste is checked at most once.
+    func checkForCorrections(onCorrections: ([SuggestedWordUpsert]) -> Void) {
+        guard let pastedText = pendingPastedText else { return }
+        pendingPastedText = nil
+        guard let current = pasteboard.string(forType: .string) else { return }
+        let corrections = Self.corrections(from: pastedText, to: current)
+        if !corrections.isEmpty {
+            onCorrections(corrections)
         }
     }
 
     func cancel() {
-        pollTask?.cancel()
-        pollTask = nil
+        pendingPastedText = nil
     }
 
     // MARK: - Pure diff (testable)

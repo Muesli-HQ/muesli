@@ -591,6 +591,11 @@ final class MuesliController: NSObject {
         // the background after model warmup has settled.
         loadSuggestedWords()
         suggestionAnalysisLaunchTask = Task { [weak self] in
+            let activity = ProcessInfo.processInfo.beginActivity(
+                options: .userInitiatedAllowingIdleSystemSleep,
+                reason: "Suggested words analysis"
+            )
+            defer { ProcessInfo.processInfo.endActivity(activity) }
             try? await Task.sleep(nanoseconds: 5_000_000_000)
             guard !Task.isCancelled else { return }
             await self?.analyzeSuggestions()
@@ -1568,6 +1573,14 @@ final class MuesliController: NSObject {
     func scheduleSuggestionAnalysis() {
         suggestionAnalysisDebounceTask?.cancel()
         suggestionAnalysisDebounceTask = Task { [weak self] in
+            // Hold an activity assertion across the debounce so App Nap doesn't
+            // suspend the sleep in this LSUIElement app and leave the Suggested
+            // Words section stale until the user manually refreshes.
+            let activity = ProcessInfo.processInfo.beginActivity(
+                options: .userInitiatedAllowingIdleSystemSleep,
+                reason: "Suggested words analysis"
+            )
+            defer { ProcessInfo.processInfo.endActivity(activity) }
             try? await Task.sleep(nanoseconds: 30_000_000_000)
             guard !Task.isCancelled else { return }
             await self?.analyzeSuggestions()
@@ -1669,13 +1682,19 @@ final class MuesliController: NSObject {
         loadSuggestedWords()
     }
 
-    /// Opt-in: after pasting, watch for an edited version of the text returning to
-    /// the clipboard and persist any word-level corrections as suggestions.
+    /// Opt-in: remember the just-pasted text so the next dictation start can check
+    /// (event-driven, no polling) whether the user re-copied a corrected version.
     private func watchClipboardForCorrections(pastedText: String) {
         guard config.enableClipboardCorrectionTracking else { return }
+        clipboardCorrectionWatcher.recordPaste(pastedText)
+    }
+
+    /// Opt-in: at the start of a dictation, inspect the clipboard once for an
+    /// edited version of the previously pasted text and persist any corrections.
+    private func checkClipboardForCorrections() {
+        guard config.enableClipboardCorrectionTracking else { return }
         let store = dictationStore
-        clipboardCorrectionWatcher.watch(pastedText: pastedText) { [weak self] corrections in
-            guard !corrections.isEmpty else { return }
+        clipboardCorrectionWatcher.checkForCorrections { [weak self] corrections in
             try? store.upsertSuggestedWords(corrections)
             self?.loadSuggestedWords()
         }
@@ -5146,6 +5165,9 @@ final class MuesliController: NSObject {
     private func beginDictationOutput(mode: DictationOutputMode? = nil) {
         currentDictationOutputMode = mode ?? defaultDictationOutputMode
         appState.isVoiceNoteRecording = currentDictationOutputMode == .voiceNote
+        // Event-driven correction learning: the prior paste left a clipboard
+        // snapshot to compare; this start is the natural moment to check it.
+        checkClipboardForCorrections()
     }
 
     private func resetDictationOutputMode() {
