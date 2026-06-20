@@ -112,6 +112,10 @@ enum Qwen3PostProcessorOutputCleaner {
         guard !trimmed.isEmpty else { return true }
 
         let lower = trimmed.lowercased()
+        if isPlaceholderOutput(trimmed) {
+            return true
+        }
+
         let assistantMarkers = [
             "the user is asking",
             "**analysis:**",
@@ -138,6 +142,20 @@ enum Qwen3PostProcessorOutputCleaner {
         }
         return expansion > 2.0 && trimmed.count > 200
     }
+
+    private static func isPlaceholderOutput(_ text: String) -> Bool {
+        let normalized = text
+            .replacingOccurrences(of: "…", with: "...")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalized == "..." || normalized == ". . ." {
+            return true
+        }
+
+        let punctuationOnly = normalized.allSatisfy { character in
+            character.isWhitespace || ".…-_,;:!?()[]{}".contains(character)
+        }
+        return punctuationOnly && normalized.count <= 8
+    }
 }
 
 enum Qwen3PostProcessorConfig {
@@ -145,7 +163,7 @@ enum Qwen3PostProcessorConfig {
     static let envOverride = "MUESLI_QWEN3_POSTPROC_GGUF"
     static let legacyDirectoryEnvOverride = "MUESLI_QWEN3_POSTPROC_DIR"
     // Dictation-only cleanup cap. Keep bounded to avoid slow local inference; long dictations may be truncated by LLM.swift.
-    static let maxContextTokens: Int32 = 1024
+    static let maxContextTokens: Int32 = 8192
 
     static func formatInput(_ text: String, appContext: String? = nil) -> String {
         var parts = ""

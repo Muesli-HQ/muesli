@@ -484,7 +484,7 @@ struct PostProcessorOption: Identifiable, Equatable {
 
     You may: fix obvious misspellings, remove filler words (um, uh, like), apply 'scratch that' deletions, and format numbered or bullet lists when dictated.
 
-    Do not: paraphrase, reword, add words, remove meaningful words, change the meaning in any way, wrap the output in markdown, code fences, tags, labels, or commentary, or repeat the output more than once. Preserve the speaker's original phrasing.
+    Do not: paraphrase, reword, add words, remove meaningful words, change the meaning in any way, wrap the output in quotation marks, markdown, code fences, tags, labels, or commentary, or repeat the output more than once. Preserve the speaker's original phrasing.
     """
 }
 
@@ -768,7 +768,9 @@ struct AppConfig: Codable {
     var hiddenCalendarEventIDs: [String] = []
     var disabledCalendarIDs: [String] = []
     var enablePostProcessor: Bool = false
+    var postProcessorBackend: String = TranscriptCleanupBackendOption.local.backend
     var activePostProcessorId: String = PostProcessorOption.defaultOption.id
+    var postProcessorChatGPTModel: String = ""
     var postProcessorSystemPrompt: String = PostProcessorOption.defaultSystemPrompt
     var enableScreenContext: Bool = false
     var useCoreAudioTap: Bool = true
@@ -846,7 +848,9 @@ struct AppConfig: Codable {
         case hiddenCalendarEventIDs = "hidden_calendar_event_ids"
         case disabledCalendarIDs = "disabled_calendar_ids"
         case enablePostProcessor = "enable_post_processor"
+        case postProcessorBackend = "post_processor_backend"
         case activePostProcessorId = "active_post_processor_id"
+        case postProcessorChatGPTModel = "post_processor_chatgpt_model"
         case postProcessorSystemPrompt = "post_processor_system_prompt"
         case enableScreenContext = "enable_screen_context"
         case useCoreAudioTap = "use_core_audio_tap"
@@ -956,7 +960,11 @@ struct AppConfig: Codable {
         hiddenCalendarEventIDs = (try? c.decode([String].self, forKey: .hiddenCalendarEventIDs)) ?? defaults.hiddenCalendarEventIDs
         disabledCalendarIDs = (try? c.decode([String].self, forKey: .disabledCalendarIDs)) ?? defaults.disabledCalendarIDs
         enablePostProcessor = (try? c.decode(Bool.self, forKey: .enablePostProcessor)) ?? defaults.enablePostProcessor
+        postProcessorBackend = TranscriptCleanupBackendOption
+            .resolved(try? c.decode(String.self, forKey: .postProcessorBackend))
+            .backend
         activePostProcessorId = (try? c.decode(String.self, forKey: .activePostProcessorId)) ?? defaults.activePostProcessorId
+        postProcessorChatGPTModel = (try? c.decode(String.self, forKey: .postProcessorChatGPTModel)) ?? defaults.postProcessorChatGPTModel
         postProcessorSystemPrompt = (try? c.decode(String.self, forKey: .postProcessorSystemPrompt)) ?? defaults.postProcessorSystemPrompt
         enableScreenContext = (try? c.decode(Bool.self, forKey: .enableScreenContext)) ?? defaults.enableScreenContext
         useCoreAudioTap = (try? c.decode(Bool.self, forKey: .useCoreAudioTap)) ?? defaults.useCoreAudioTap

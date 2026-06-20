@@ -236,6 +236,7 @@ final class MuesliController: NSObject {
     private(set) var selectedBackend: BackendOption
     private(set) var selectedMeetingTranscriptionBackend: BackendOption
     private(set) var selectedMeetingSummaryBackend: MeetingSummaryBackendOption
+    private(set) var selectedPostProcessorBackend: TranscriptCleanupBackendOption
     private var activeMeetingSession: MeetingSession?
     private var activeMeetingID: Int64?
     private var activeMeetingAudioWarning: ActiveMeetingAudioWarning?
@@ -331,6 +332,7 @@ final class MuesliController: NSObject {
         self.selectedMeetingSummaryBackend = MeetingSummaryBackendOption.all.first(where: {
             $0.backend == loadedConfig.meetingSummaryBackend
         }) ?? .chatGPT
+        self.selectedPostProcessorBackend = TranscriptCleanupBackendOption.resolved(loadedConfig.postProcessorBackend)
         self.indicator = FloatingIndicatorController(configStore: configStore)
         ComputerUseCursorOverlay.shared.attachIndicator(self.indicator)
         super.init()
@@ -542,17 +544,10 @@ final class MuesliController: NSObject {
                 guard let self else { return }
                 let includesMeetings = self.config.resolvedOnboardingUseCase.includesMeetings
                 let ppOption = self.runtimePostProcessorOption()
-                if #available(macOS 15, *) {
-                    if let ppOption {
-                        await self.transcriptionCoordinator.setActivePostProcessor(
-                            option: ppOption,
-                            systemPrompt: self.config.postProcessorSystemPrompt
-                        )
-                    }
-                }
+                await self.configureTranscriptCleanupForRuntime(option: ppOption)
                 await self.transcriptionCoordinator.preload(
                     backend: self.selectedBackend,
-                    enablePostProcessor: self.config.enablePostProcessor && ppOption != nil,
+                    enablePostProcessor: self.canRunTranscriptCleanup(option: ppOption),
                     includeMeetingHelpers: includesMeetings
                 )
                 if includesMeetings, self.selectedMeetingTranscriptionBackend != self.selectedBackend {
@@ -718,6 +713,7 @@ final class MuesliController: NSObject {
         appState.selectedBackend = selectedBackend
         appState.selectedMeetingTranscriptionBackend = selectedMeetingTranscriptionBackend
         appState.selectedMeetingSummaryBackend = selectedMeetingSummaryBackend
+        appState.selectedPostProcessorBackend = selectedPostProcessorBackend
         appState.activePostProcessor = PostProcessorOption.resolve(id: config.activePostProcessorId)
         appState.config = config
         appState.isMeetingRecording = isMeetingRecording()
@@ -873,6 +869,7 @@ final class MuesliController: NSObject {
         selectedMeetingSummaryBackend = MeetingSummaryBackendOption.all.first(where: {
             $0.backend == config.meetingSummaryBackend
         }) ?? .chatGPT
+        selectedPostProcessorBackend = TranscriptCleanupBackendOption.resolved(config.postProcessorBackend)
         statusBarController?.refresh()
         statusBarController?.refreshIcon()
         indicator.refreshIcon()
@@ -891,6 +888,7 @@ final class MuesliController: NSObject {
         appState.selectedBackend = selectedBackend
         appState.selectedMeetingTranscriptionBackend = selectedMeetingTranscriptionBackend
         appState.selectedMeetingSummaryBackend = selectedMeetingSummaryBackend
+        appState.selectedPostProcessorBackend = selectedPostProcessorBackend
         appState.config = config
         appState.isChatGPTAuthenticated = chatGPTAuth.isAuthenticated
         syncCalendarMonitor()
@@ -956,17 +954,10 @@ final class MuesliController: NSObject {
                 }
             }
             let ppOption = self.runtimePostProcessorOption()
-            if #available(macOS 15, *) {
-                if let ppOption {
-                    await self.transcriptionCoordinator.setActivePostProcessor(
-                        option: ppOption,
-                        systemPrompt: self.config.postProcessorSystemPrompt
-                    )
-                }
-            }
+            await self.configureTranscriptCleanupForRuntime(option: ppOption)
             await self.transcriptionCoordinator.preload(
                 backend: option,
-                enablePostProcessor: self.config.enablePostProcessor && ppOption != nil,
+                enablePostProcessor: self.canRunTranscriptCleanup(option: ppOption),
                 includeMeetingHelpers: self.config.resolvedOnboardingUseCase.includesMeetings
             )
             await MainActor.run {
@@ -1013,7 +1004,7 @@ final class MuesliController: NSObject {
     }
 
     var isPostProcessorReady: Bool {
-        config.enablePostProcessor && runtimePostProcessorOption() != nil
+        canRunTranscriptCleanup(option: runtimePostProcessorOption())
     }
 
     @discardableResult
@@ -1030,11 +1021,31 @@ final class MuesliController: NSObject {
     }
 
     private func runtimePostProcessorOption() -> PostProcessorOption? {
-        PostProcessorOption.runtimeOption(id: config.activePostProcessorId)
+        guard selectedPostProcessorBackend == .local else { return nil }
+        return PostProcessorOption.runtimeOption(id: config.activePostProcessorId)
+    }
+
+    private func canRunTranscriptCleanup(option: PostProcessorOption?) -> Bool {
+        guard config.enablePostProcessor else { return false }
+        switch selectedPostProcessorBackend {
+        case .chatGPT:
+            return chatGPTAuth.isAuthenticated
+        default:
+            return option != nil
+        }
+    }
+
+    private func configureTranscriptCleanupForRuntime(option: PostProcessorOption? = nil) async {
+        await transcriptionCoordinator.configurePostProcessor(
+            backend: selectedPostProcessorBackend,
+            option: option ?? runtimePostProcessorOption(),
+            systemPrompt: config.postProcessorSystemPrompt,
+            chatGPTModel: config.postProcessorChatGPTModel
+        )
     }
 
     func setPostProcessorEnabled(_ enabled: Bool) {
-        if enabled {
+        if enabled, selectedPostProcessorBackend == .local {
             guard normalizePostProcessorSelectionForAvailability() != nil else {
                 updateConfig { $0.enablePostProcessor = false }
                 appState.selectedTab = .models
@@ -1047,33 +1058,24 @@ final class MuesliController: NSObject {
 
     func preloadExperimentalTranscriptionFeatures() {
         let ppOption = runtimePostProcessorOption()
-        let enabled = config.enablePostProcessor && ppOption != nil
-        let ppPrompt = config.postProcessorSystemPrompt
+        let enabled = canRunTranscriptCleanup(option: ppOption)
         Task { [weak self] in
             guard let self else { return }
-            if let ppOption, #available(macOS 15, *) {
-                await self.transcriptionCoordinator.setActivePostProcessor(
-                    option: ppOption,
-                    systemPrompt: ppPrompt
-                )
-            }
+            await self.configureTranscriptCleanupForRuntime(option: ppOption)
             await self.transcriptionCoordinator.preloadPostProcessorIfNeeded(enabled: enabled)
         }
     }
 
     func selectPostProcessor(_ option: PostProcessorOption) {
-        updateConfig { $0.activePostProcessorId = option.id }
+        updateConfig {
+            $0.postProcessorBackend = TranscriptCleanupBackendOption.local.backend
+            $0.activePostProcessorId = option.id
+        }
         appState.activePostProcessor = option
         guard config.enablePostProcessor else { return }
-        let systemPrompt = config.postProcessorSystemPrompt
         Task { [weak self] in
             guard let self else { return }
-            if #available(macOS 15, *) {
-                await self.transcriptionCoordinator.setActivePostProcessor(
-                    option: option,
-                    systemPrompt: systemPrompt
-                )
-            }
+            await self.configureTranscriptCleanupForRuntime(option: option)
         }
     }
 
@@ -1083,13 +1085,26 @@ final class MuesliController: NSObject {
         guard config.enablePostProcessor else { return }
         Task { [weak self] in
             guard let self else { return }
-            if let ppOption, #available(macOS 15, *) {
-                await self.transcriptionCoordinator.setActivePostProcessor(
-                    option: ppOption,
-                    systemPrompt: prompt
-                )
+            await self.configureTranscriptCleanupForRuntime(option: ppOption)
+        }
+    }
+
+    func selectPostProcessorBackend(_ option: TranscriptCleanupBackendOption) {
+        updateConfig { $0.postProcessorBackend = option.backend }
+        if option == .local, config.enablePostProcessor {
+            guard normalizePostProcessorSelectionForAvailability() != nil else {
+                updateConfig { $0.enablePostProcessor = false }
+                appState.selectedTab = .models
+                return
             }
         }
+        preloadExperimentalTranscriptionFeatures()
+    }
+
+    func updatePostProcessorChatGPTModel(_ model: String) {
+        updateConfig { $0.postProcessorChatGPTModel = model }
+        guard config.enablePostProcessor else { return }
+        preloadExperimentalTranscriptionFeatures()
     }
 
     func selectMeetingSummaryBackend(_ option: MeetingSummaryBackendOption) {
@@ -1165,11 +1180,14 @@ final class MuesliController: NSObject {
     }
 
     /// Returns nil on success, or an error message on failure.
-    func signInWithChatGPT() async -> String? {
+    func signInWithChatGPT(selectMeetingSummaryBackend shouldSelectMeetingSummaryBackend: Bool = true) async -> String? {
         do {
             try await chatGPTAuth.signIn()
-            selectMeetingSummaryBackend(.chatGPT)
+            if shouldSelectMeetingSummaryBackend {
+                selectMeetingSummaryBackend(.chatGPT)
+            }
             syncAppState()
+            preloadExperimentalTranscriptionFeatures()
             return nil
         } catch {
             fputs("[muesli-native] ChatGPT sign-in failed: \(error)\n", stderr)
@@ -5591,11 +5609,14 @@ final class MuesliController: NSObject {
             }
 
             do {
+                let ppOption = self.runtimePostProcessorOption()
+                await self.configureTranscriptCleanupForRuntime(option: ppOption)
+                let enableTranscriptCleanup = self.canRunTranscriptCleanup(option: ppOption)
                 let result = try await self.transcriptionCoordinator.transcribeDictation(
                     at: wavURL,
                     backend: transcriptionBackend,
                     cohereLanguage: transcriptionLanguage,
-                    enablePostProcessor: self.isPostProcessorReady,
+                    enablePostProcessor: enableTranscriptCleanup,
                     customWords: self.serializedCustomWords(),
                     appContext: promptContext
                 )

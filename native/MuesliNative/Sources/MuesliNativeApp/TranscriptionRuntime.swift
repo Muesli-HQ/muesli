@@ -58,6 +58,8 @@ actor TranscriptionCoordinator {
     private var postProcessorModelURL: URL = PostProcessorOption.defaultOption.modelURL
     private var postProcessorSystemPrompt: String = PostProcessorOption.defaultSystemPrompt
     private var postProcessorModelId: String = PostProcessorOption.defaultOption.id
+    private var postProcessorBackend: TranscriptCleanupBackendOption = .local
+    private var postProcessorChatGPTModel: String = TranscriptCleanupClient.defaultChatGPTModel
 
     @available(macOS 15, *)
     private var qwen3PostProcessor: Qwen3PostProcessor {
@@ -72,11 +74,32 @@ actor TranscriptionCoordinator {
 
     @available(macOS 15, *)
     func setActivePostProcessor(option: PostProcessorOption, systemPrompt: String) async {
-        postProcessorModelURL = option.modelURL
+        await configurePostProcessor(
+            backend: .local,
+            option: option,
+            systemPrompt: systemPrompt,
+            chatGPTModel: postProcessorChatGPTModel
+        )
+    }
+
+    func configurePostProcessor(
+        backend: TranscriptCleanupBackendOption,
+        option: PostProcessorOption?,
+        systemPrompt: String,
+        chatGPTModel: String
+    ) async {
+        postProcessorBackend = backend
         postProcessorSystemPrompt = systemPrompt
-        postProcessorModelId = option.id
-        if let existing = _qwen3PostProcessor as? Qwen3PostProcessor {
-            await existing.reconfigure(modelURL: option.modelURL, systemPrompt: systemPrompt)
+        postProcessorChatGPTModel = TranscriptCleanupClient.resolvedChatGPTModel(chatGPTModel)
+
+        if let option {
+            postProcessorModelURL = option.modelURL
+            postProcessorModelId = option.id
+            if #available(macOS 15, *), let existing = _qwen3PostProcessor as? Qwen3PostProcessor {
+                await existing.reconfigure(modelURL: option.modelURL, systemPrompt: systemPrompt)
+            }
+        } else if backend == .chatGPT {
+            postProcessorModelId = postProcessorChatGPTModel
         }
     }
 
@@ -236,7 +259,7 @@ actor TranscriptionCoordinator {
     }
 
     func preloadPostProcessorIfNeeded(enabled: Bool) async {
-        if enabled, #available(macOS 15, *) {
+        if enabled, postProcessorBackend == .local, #available(macOS 15, *) {
             do {
                 try await qwen3PostProcessor.prepare()
             } catch {
@@ -389,9 +412,18 @@ actor TranscriptionCoordinator {
             return nil
         }
         guard !result.text.isEmpty else {
-            Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor skipped: empty transcript")
+            Qwen3PostProcessorLogging.logVerbose("Post-processor skipped: empty transcript")
             return nil
         }
+
+        if postProcessorBackend == .chatGPT {
+            return await postProcessDictationWithChatGPT(
+                result,
+                backend: backend,
+                appContext: appContext
+            )
+        }
+
         guard #available(macOS 15, *) else {
             Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor skipped: requires macOS 15+")
             return nil
@@ -407,11 +439,31 @@ actor TranscriptionCoordinator {
             let trimmed = processed.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty, !Qwen3DeletionCueDetector.containsDeletionCue(result.text) {
                 Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor returned empty output in \(String(format: "%.1f", elapsedMs))ms; falling back")
+                TranscriptCleanupDebugLogger.append(
+                    status: "fallback_empty_output",
+                    cleanupBackend: postProcessorBackend,
+                    cleanupModel: postProcessorModelId,
+                    asrBackend: backend.backend,
+                    rawASRText: result.text,
+                    rawCleanupOutputText: processed,
+                    cleanupOutputText: trimmed,
+                    elapsedMs: elapsedMs
+                )
                 return nil
             }
             Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor applied to \(backend.label) in \(String(format: "%.1f", elapsedMs))ms (chars=\(trimmed.count))")
             Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor final output: \(trimmed)")
             logPostProcPair(raw: result.text, processed: trimmed, asr: backend.backend)
+            TranscriptCleanupDebugLogger.append(
+                status: "applied",
+                cleanupBackend: postProcessorBackend,
+                cleanupModel: postProcessorModelId,
+                asrBackend: backend.backend,
+                rawASRText: result.text,
+                rawCleanupOutputText: processed,
+                cleanupOutputText: trimmed,
+                elapsedMs: elapsedMs
+            )
             return SpeechTranscriptionResult(
                 text: trimmed,
                 // Original ASR segments describe pre-cleanup text. Keep them only for debug diagnostics.
@@ -419,6 +471,74 @@ actor TranscriptionCoordinator {
             )
         } catch {
             Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor failed, falling back: \(error)")
+            TranscriptCleanupDebugLogger.append(
+                status: "fallback_error",
+                cleanupBackend: postProcessorBackend,
+                cleanupModel: postProcessorModelId,
+                asrBackend: backend.backend,
+                rawASRText: result.text,
+                errorDescription: String(describing: error)
+            )
+            return nil
+        }
+    }
+
+    private func postProcessDictationWithChatGPT(
+        _ result: SpeechTranscriptionResult,
+        backend: BackendOption,
+        appContext: String?
+    ) async -> SpeechTranscriptionResult? {
+        do {
+            let start = CFAbsoluteTimeGetCurrent()
+            let cleanup = try await TranscriptCleanupClient.cleanWithChatGPT(
+                text: result.text,
+                systemPrompt: postProcessorSystemPrompt,
+                appContext: appContext,
+                model: postProcessorChatGPTModel
+            )
+            let elapsedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
+            let trimmed = cleanup.cleanedOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty, !Qwen3DeletionCueDetector.containsDeletionCue(result.text) {
+                Qwen3PostProcessorLogging.logVerbose("ChatGPT post-processor returned empty output in \(String(format: "%.1f", elapsedMs))ms; falling back")
+                TranscriptCleanupDebugLogger.append(
+                    status: "fallback_empty_output",
+                    cleanupBackend: postProcessorBackend,
+                    cleanupModel: postProcessorModelId,
+                    asrBackend: backend.backend,
+                    rawASRText: result.text,
+                    rawCleanupOutputText: cleanup.rawOutput,
+                    cleanupOutputText: trimmed,
+                    elapsedMs: elapsedMs
+                )
+                return nil
+            }
+            Qwen3PostProcessorLogging.logVerbose("ChatGPT post-processor applied to \(backend.label) in \(String(format: "%.1f", elapsedMs))ms (chars=\(trimmed.count))")
+            Qwen3PostProcessorLogging.logVerbose("ChatGPT post-processor final output: \(trimmed)")
+            logPostProcPair(raw: result.text, processed: trimmed, asr: backend.backend)
+            TranscriptCleanupDebugLogger.append(
+                status: "applied",
+                cleanupBackend: postProcessorBackend,
+                cleanupModel: postProcessorModelId,
+                asrBackend: backend.backend,
+                rawASRText: result.text,
+                rawCleanupOutputText: cleanup.rawOutput,
+                cleanupOutputText: trimmed,
+                elapsedMs: elapsedMs
+            )
+            return SpeechTranscriptionResult(
+                text: trimmed,
+                segments: Qwen3PostProcessorLogging.isVerboseEnabled && !trimmed.isEmpty ? result.segments : []
+            )
+        } catch {
+            Qwen3PostProcessorLogging.logVerbose("ChatGPT post-processor failed, falling back: \(error)")
+            TranscriptCleanupDebugLogger.append(
+                status: "fallback_error",
+                cleanupBackend: postProcessorBackend,
+                cleanupModel: postProcessorModelId,
+                asrBackend: backend.backend,
+                rawASRText: result.text,
+                errorDescription: String(describing: error)
+            )
             return nil
         }
     }

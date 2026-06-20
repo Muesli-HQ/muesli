@@ -214,6 +214,11 @@ struct ModelsView: View {
             .padding(.top, MuesliTheme.spacing8)
 
             VStack(spacing: MuesliTheme.spacing12) {
+                if appState.config.enablePostProcessor,
+                   appState.selectedPostProcessorBackend == .chatGPT {
+                    chatGPTPostProcCard
+                }
+
                 ForEach(PostProcessorOption.all) { option in
                     postProcModelCard(option)
                 }
@@ -223,9 +228,56 @@ struct ModelsView: View {
         }
     }
 
+    private var chatGPTPostProcCard: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+            HStack(alignment: .top, spacing: MuesliTheme.spacing12) {
+                brandLogo("openai-logo")
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                    HStack(spacing: MuesliTheme.spacing8) {
+                        Text("ChatGPT")
+                            .font(MuesliTheme.headline())
+                            .foregroundStyle(MuesliTheme.textPrimary)
+
+                        Text(resolvedChatGPTCleanupModelLabel)
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                    }
+
+                    Text("Uses your signed-in ChatGPT account for transcript cleanup.")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
+
+                Spacer()
+
+                Text("Active")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(MuesliTheme.success)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(MuesliTheme.success.opacity(0.15))
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+            }
+        }
+        .padding(MuesliTheme.spacing16)
+        .background(MuesliTheme.backgroundRaised)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+        .overlay(
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
+                .strokeBorder(MuesliTheme.accent.opacity(0.5), lineWidth: 1.5)
+        )
+    }
+
+    private var resolvedChatGPTCleanupModelLabel: String {
+        let model = TranscriptCleanupClient.resolvedChatGPTModel(appState.config.postProcessorChatGPTModel)
+        return SummaryModelPreset.chatGPTModels.first(where: { $0.id == model })?.label ?? model
+    }
+
     private func postProcModelCard(_ option: PostProcessorOption) -> some View {
         let isDownloaded = downloadedPostProcModels.contains(option.id)
-        let isActive = appState.activePostProcessor.id == option.id && isDownloaded
+        let isActive = appState.selectedPostProcessorBackend == .local
+            && appState.activePostProcessor.id == option.id
+            && isDownloaded
         let isDownloading = downloadingPostProcModels.contains(option.id)
         let progress = downloadProgressPostProc[option.id] ?? 0
 
@@ -774,7 +826,9 @@ struct ModelsView: View {
                         downloadProgressPostProc.removeValue(forKey: option.id)
                         downloadTasksPostProc.removeValue(forKey: option.id)
                     }
-                    if appState.config.enablePostProcessor && !appState.activePostProcessor.isDownloaded {
+                    if appState.config.enablePostProcessor,
+                       appState.selectedPostProcessorBackend == .local,
+                       !appState.activePostProcessor.isDownloaded {
                         controller.selectPostProcessor(option)
                         controller.preloadExperimentalTranscriptionFeatures()
                     }
@@ -884,7 +938,8 @@ struct ModelsView: View {
     }
 
     private func deletePostProcModel(_ option: PostProcessorOption) {
-        if appState.activePostProcessor.id == option.id {
+        if appState.selectedPostProcessorBackend == .local,
+           appState.activePostProcessor.id == option.id {
             let remainingDownloadedIDs = downloadedPostProcModels.subtracting([option.id])
             if let fallback = PostProcessorOption.firstDownloaded(excluding: option.id, downloadedIDs: remainingDownloadedIDs) {
                 controller.selectPostProcessor(fallback)

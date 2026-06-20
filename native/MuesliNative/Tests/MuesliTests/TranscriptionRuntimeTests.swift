@@ -321,4 +321,38 @@ struct Qwen3PostProcessingOutputCleanerTests {
             input: "um yeah"
         ))
     }
+
+    @Test("rejects placeholder ellipsis output")
+    func rejectsPlaceholderEllipsisOutput() {
+        #expect(Qwen3PostProcessorOutputCleaner.shouldFallbackToInput(
+            cleaned: "...",
+            input: "Please clean this real dictation."
+        ))
+        #expect(Qwen3PostProcessorOutputCleaner.shouldFallbackToInput(
+            cleaned: ". . .",
+            input: "Please clean this real dictation."
+        ))
+    }
+}
+
+@Suite("ChatGPT transcript cleanup output cleanup")
+struct ChatGPTTranscriptCleanupOutputCleanerTests {
+
+    @Test("strips one balanced wrapping quote pair")
+    func stripsBalancedWrappingQuotes() {
+        let raw = "\"Okay, so I'm Ayush.\\n\\nThis is the second paragraph.\""
+        #expect(
+            TranscriptCleanupClient.cleanChatGPTOutput(raw) ==
+                "Okay, so I'm Ayush.\n\nThis is the second paragraph."
+        )
+    }
+
+    @Test("preserves paragraph breaks while normalizing spacing")
+    func preservesParagraphBreaks() {
+        let raw = "Cleaned transcription: First sentence.  \\n\\n  Second sentence."
+        #expect(
+            TranscriptCleanupClient.cleanChatGPTOutput(raw) ==
+                "First sentence.\n\nSecond sentence."
+        )
+    }
 }

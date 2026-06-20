@@ -436,29 +436,56 @@ struct SettingsView: View {
                         controller.setPostProcessorEnabled(newValue)
                     }
                 }
-                if appState.config.enablePostProcessor && !downloadedPostProcOptions.isEmpty {
+                if appState.config.enablePostProcessor {
                     Divider().background(MuesliTheme.surfaceBorder)
-                    settingsRow("Cleanup model") {
-                        let selection = downloadedPostProcOptions.contains(where: { $0.id == appState.activePostProcessor.id })
-                            ? appState.activePostProcessor.label
-                            : (downloadedPostProcOptions.first?.label ?? "")
+                    settingsRow("Cleanup backend") {
                         settingsMenu(
-                            selection: selection,
-                            options: downloadedPostProcOptions.map(\.label)
+                            selection: appState.selectedPostProcessorBackend.label,
+                            options: TranscriptCleanupBackendOption.all.map(\.label)
                         ) { label in
-                            if let option = downloadedPostProcOptions.first(where: { $0.label == label }) {
-                                controller.selectPostProcessor(option)
+                            if let option = TranscriptCleanupBackendOption.all.first(where: { $0.label == label }) {
+                                controller.selectPostProcessorBackend(option)
                             }
                         }
                     }
-                } else if appState.config.enablePostProcessor {
-                    Divider().background(MuesliTheme.surfaceBorder)
-                    settingsRow("Cleanup model") {
-                        Text("Download a cleanup model in Models")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(MuesliTheme.textTertiary)
-                            .multilineTextAlignment(.trailing)
-                            .frame(width: controlWidth, alignment: .trailing)
+                    if appState.selectedPostProcessorBackend == .chatGPT {
+                        Divider().background(MuesliTheme.surfaceBorder)
+                        settingsRow("Account") {
+                            chatGPTAccountControl(selectMeetingSummaryBackend: false)
+                        }
+                        Divider().background(MuesliTheme.surfaceBorder)
+                        settingsRow("Cleanup model") {
+                            settingsModelMenu(
+                                currentModel: appState.config.postProcessorChatGPTModel,
+                                presets: SummaryModelPreset.chatGPTModels
+                            ) { model in
+                                controller.updatePostProcessorChatGPTModel(model)
+                            }
+                        }
+                    } else if !downloadedPostProcOptions.isEmpty {
+                        Divider().background(MuesliTheme.surfaceBorder)
+                        settingsRow("Cleanup model") {
+                            let selection = downloadedPostProcOptions.contains(where: { $0.id == appState.activePostProcessor.id })
+                                ? appState.activePostProcessor.label
+                                : (downloadedPostProcOptions.first?.label ?? "")
+                            settingsMenu(
+                                selection: selection,
+                                options: downloadedPostProcOptions.map(\.label)
+                            ) { label in
+                                if let option = downloadedPostProcOptions.first(where: { $0.label == label }) {
+                                    controller.selectPostProcessor(option)
+                                }
+                            }
+                        }
+                    } else {
+                        Divider().background(MuesliTheme.surfaceBorder)
+                        settingsRow("Cleanup model") {
+                            Text("Download a cleanup model in Models")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(MuesliTheme.textTertiary)
+                                .multilineTextAlignment(.trailing)
+                                .frame(width: controlWidth, alignment: .trailing)
+                        }
                     }
                 }
             }
@@ -490,7 +517,7 @@ struct SettingsView: View {
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Account", controlWidth: meetingControlWidth) {
-                    chatGPTAccountControl
+                    chatGPTAccountControl()
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Planner model", controlWidth: meetingControlWidth) {
@@ -572,7 +599,7 @@ struct SettingsView: View {
 
                 if appState.selectedMeetingSummaryBackend == .chatGPT {
                     settingsRow("Account", controlWidth: meetingControlWidth) {
-                        chatGPTAccountControl
+                        chatGPTAccountControl()
                     }
                     Divider().background(MuesliTheme.surfaceBorder)
                     settingsRow("Model", controlWidth: meetingControlWidth) {
@@ -954,7 +981,7 @@ struct SettingsView: View {
     }
 
     @ViewBuilder
-    private var chatGPTAccountControl: some View {
+    private func chatGPTAccountControl(selectMeetingSummaryBackend: Bool = true) -> some View {
         if appState.isChatGPTAuthenticated {
             Button {
                 controller.signOutChatGPT()
@@ -989,7 +1016,9 @@ struct SettingsView: View {
                     isSigningInChatGPT = true
                     chatGPTSignInError = nil
                     Task {
-                        let error = await controller.signInWithChatGPT()
+                        let error = await controller.signInWithChatGPT(
+                            selectMeetingSummaryBackend: selectMeetingSummaryBackend
+                        )
                         isSigningInChatGPT = false
                         chatGPTSignInError = error
                     }

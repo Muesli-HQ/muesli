@@ -68,18 +68,24 @@ struct FloatingIndicatorVisibilityTests {
     func postProcessorRoundTrip() throws {
         var config = AppConfig()
         config.enablePostProcessor = true
+        config.postProcessorBackend = TranscriptCleanupBackendOption.chatGPT.backend
+        config.postProcessorChatGPTModel = "gpt-5.4"
         config.activePostProcessorId = PostProcessorOption.finetunedV2.id
         let data = try JSONEncoder().encode(config)
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
         #expect(decoded.enablePostProcessor == true)
+        #expect(decoded.postProcessorBackend == TranscriptCleanupBackendOption.chatGPT.backend)
+        #expect(decoded.postProcessorChatGPTModel == "gpt-5.4")
         #expect(decoded.activePostProcessorId == PostProcessorOption.finetunedV2.id)
     }
 
     @Test("post processor decodes from snake_case JSON")
     func postProcessorSnakeCaseDecode() throws {
-        let json = #"{"enable_post_processor": true}"#
+        let json = #"{"enable_post_processor": true, "post_processor_backend": "chatgpt", "post_processor_chatgpt_model": "gpt-5.4"}"#
         let config = try JSONDecoder().decode(AppConfig.self, from: json.data(using: .utf8)!)
         #expect(config.enablePostProcessor == true)
+        #expect(config.postProcessorBackend == TranscriptCleanupBackendOption.chatGPT.backend)
+        #expect(config.postProcessorChatGPTModel == "gpt-5.4")
     }
 }
 
