@@ -30,6 +30,14 @@ struct DictionaryView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(MuesliTheme.backgroundBase)
+        // App Nap can suspend the background analysis timer in this LSUIElement
+        // app, so refresh suggestions whenever the user actually opens the
+        // Dictionary tab or brings the app forward. scheduleSuggestionAnalysis
+        // coalesces these with any in-flight run, so repeated focus is cheap.
+        .onAppear { controller.scheduleSuggestionAnalysis() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            controller.scheduleSuggestionAnalysis()
+        }
     }
 
     private var suggestedWordsSection: some View {

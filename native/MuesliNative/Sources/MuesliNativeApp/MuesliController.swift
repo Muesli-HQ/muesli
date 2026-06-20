@@ -184,7 +184,10 @@ final class MuesliController: NSObject {
     private let configStore = ConfigStore()
     private let dictationStore: DictationStore
     private var suggestionAnalysisLaunchTask: Task<Void, Never>?
-    private var suggestionAnalysisDebounceTask: Task<Void, Never>?
+    /// Timer-free serialiser for suggestion-analysis triggers (per-dictation,
+    /// tab-open/focus backstop, launch warmup, manual refresh). See the type doc
+    /// for why this coalesces instead of debouncing with `Task.sleep`.
+    private var suggestionAnalysisCoalescer = SuggestionAnalysisCoalescer()
     private let clipboardCorrectionWatcher = ClipboardCorrectionWatcher()
     private let meetingHookDispatcher: MeetingHookDispatching
     private let launchAtLoginCoordinator: LaunchAtLoginCoordinator
@@ -587,8 +590,11 @@ final class MuesliController: NSObject {
             PostInstallChecker.check()
         }
 
-        // Surface any previously-mined suggestions immediately, then refresh in
-        // the background after model warmup has settled.
+        // Surface any previously-mined suggestions immediately, then refresh once
+        // after model warmup has settled. The short delay only keeps launch-time
+        // work off the critical path — freshness no longer depends on it, since
+        // the Dictionary tab-open/focus backstop re-runs analysis on demand and
+        // App Nap can suspend this sleep in an LSUIElement app.
         loadSuggestedWords()
         suggestionAnalysisLaunchTask = Task { [weak self] in
             let activity = ProcessInfo.processInfo.beginActivity(
@@ -598,7 +604,7 @@ final class MuesliController: NSObject {
             defer { ProcessInfo.processInfo.endActivity(activity) }
             try? await Task.sleep(nanoseconds: 5_000_000_000)
             guard !Task.isCancelled else { return }
-            await self?.analyzeSuggestions()
+            self?.scheduleSuggestionAnalysis()
         }
     }
 
@@ -1568,22 +1574,22 @@ final class MuesliController: NSObject {
         }
     }
 
-    /// Coalesce frequent triggers (e.g. after each dictation) into one analysis
-    /// run, keeping the work off the dictation latency path.
+    /// Coalesce frequent triggers (e.g. after each dictation, plus the Dictionary
+    /// tab-open/focus backstop) into a serialised analysis run, keeping the work
+    /// off the dictation latency path.
+    ///
+    /// This is intentionally event-driven with no timer: in this LSUIElement app
+    /// App Nap can suspend `Task.sleep`, so a debounce sleep could leave Suggested
+    /// Words stale until a manual refresh. Instead each trigger either starts the
+    /// run or, if one is already in flight, requests a single rerun afterward so a
+    /// burst of dictations collapses into at most two passes over fresh data.
     func scheduleSuggestionAnalysis() {
-        suggestionAnalysisDebounceTask?.cancel()
-        suggestionAnalysisDebounceTask = Task { [weak self] in
-            // Hold an activity assertion across the debounce so App Nap doesn't
-            // suspend the sleep in this LSUIElement app and leave the Suggested
-            // Words section stale until the user manually refreshes.
-            let activity = ProcessInfo.processInfo.beginActivity(
-                options: .userInitiatedAllowingIdleSystemSleep,
-                reason: "Suggested words analysis"
-            )
-            defer { ProcessInfo.processInfo.endActivity(activity) }
-            try? await Task.sleep(nanoseconds: 30_000_000_000)
-            guard !Task.isCancelled else { return }
-            await self?.analyzeSuggestions()
+        guard suggestionAnalysisCoalescer.onTrigger() else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            repeat {
+                await self.analyzeSuggestions()
+            } while self.suggestionAnalysisCoalescer.onRunFinished()
         }
     }
 
