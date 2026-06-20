@@ -3,9 +3,8 @@ import MuesliCore
 
 struct AboutView: View {
     let appState: AppState
-    let controller: MuesliController
 
-    private let githubURL = "https://github.com/pHequals7/muesli"
+    private let githubURL = "https://github.com/Muesli-HQ/muesli"
     private let donateURL = "https://buymeacoffee.com/phequals7"
 
     private var version: String {
@@ -39,11 +38,11 @@ struct AboutView: View {
 
                     Divider().background(MuesliTheme.surfaceBorder)
 
-                    aboutRow("Check for Updates") {
-                        let action = updatePrimaryAction
-                        actionButton(action.title, icon: action.icon) {
-                            performUpdateAction(action)
-                        }
+                    aboutRow("Updates") {
+                        Text(updateRowGuidance)
+                            .font(MuesliTheme.callout())
+                            .foregroundStyle(MuesliTheme.textSecondary)
+                            .multilineTextAlignment(.trailing)
                     }
                 }
 
@@ -110,6 +109,11 @@ struct AboutView: View {
                     )
                     Divider().background(MuesliTheme.surfaceBorder)
                     acknowledgement(
+                        name: "LocalVQE by localai-org",
+                        description: "On-device acoustic echo cancellation powering cleaner meeting transcription."
+                    )
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    acknowledgement(
                         name: "WhisperKit by Argmax",
                         description: "Swift Whisper inference on CoreML/ANE powering the app's Whisper Small, Medium, and Large Turbo backends."
                     )
@@ -152,61 +156,20 @@ struct AboutView: View {
         let title: String
         let message: String
         let tint: Color
-        let action: UpdateBannerAction?
     }
 
-    private enum UpdateBannerAction {
-        case check
-        case install
-        case restartInstall
-        case retry
-
-        var title: String {
-            switch self {
-            case .check:
-                return "Check Now"
-            case .install:
-                return "Install Update"
-            case .restartInstall:
-                return "Restart & Install"
-            case .retry:
-                return "Try Again"
-            }
-        }
-
-        var icon: String {
-            switch self {
-            case .check:
-                return "arrow.triangle.2.circlepath"
-            case .install:
-                return "arrow.down.circle"
-            case .restartInstall:
-                return "arrow.clockwise.circle"
-            case .retry:
-                return "arrow.triangle.2.circlepath"
-            }
-        }
-    }
-
-    private var updatePrimaryAction: UpdateBannerAction {
+    private var updateRowGuidance: String {
         switch appState.sparkleUpdateStatus {
         case .available:
-            return .install
+            return "Use the menu bar icon > Check for Updates..."
         case .downloaded:
-            return .restartInstall
+            return "Use the menu bar updater to finish installation."
+        case .checking, .busy, .installing:
+            return "Checking..."
         case .failed:
-            return .retry
-        case .idle, .checking, .busy, .installing, .upToDate, .disabled:
-            return .check
-        }
-    }
-
-    private func performUpdateAction(_ action: UpdateBannerAction) {
-        switch action {
-        case .check, .retry:
-            controller.retryUpdateCheck()
-        case .install, .restartInstall:
-            controller.installAvailableUpdate()
+            return "Use the menu bar icon > Check for Updates..."
+        case .idle, .upToDate, .disabled:
+            return "Use the menu bar icon > Check for Updates..."
         }
     }
 
@@ -219,64 +182,56 @@ struct AboutView: View {
                 icon: "arrow.triangle.2.circlepath",
                 title: "Checking for updates",
                 message: "Muesli is checking the appcast for the latest version.",
-                tint: MuesliTheme.transcribing,
-                action: nil
+                tint: MuesliTheme.transcribing
             )
         case .busy(let message):
             return UpdateBanner(
                 icon: "clock.arrow.circlepath",
                 title: "Updater is busy",
                 message: message,
-                tint: MuesliTheme.transcribing,
-                action: nil
+                tint: MuesliTheme.transcribing
             )
         case .available(let version):
             return UpdateBanner(
                 icon: "exclamationmark.triangle.fill",
                 title: "Muesli \(version) is available",
-                message: "An update is available. Start the updater to download and install it.",
-                tint: MuesliTheme.transcribing,
-                action: .install
+                message: "An update is available. Use the menu bar icon > Check for Updates... to open the updater.",
+                tint: MuesliTheme.transcribing
             )
         case .downloaded(let version):
             return UpdateBanner(
                 icon: "exclamationmark.triangle.fill",
                 title: "Muesli \(version) is ready to install",
-                message: "Restart Muesli from here and Sparkle will finish installing the update automatically.",
-                tint: MuesliTheme.transcribing,
-                action: .restartInstall
+                message: "The update is downloaded. Use the menu bar updater to finish installation.",
+                tint: MuesliTheme.transcribing
             )
         case .installing(let version):
             return UpdateBanner(
                 icon: "arrow.down.circle.fill",
                 title: "Installing Muesli \(version)",
                 message: "Sparkle is preparing the update. Muesli may relaunch when installation finishes.",
-                tint: MuesliTheme.transcribing,
-                action: nil
+                tint: MuesliTheme.transcribing
             )
         case .upToDate:
             return UpdateBanner(
                 icon: "checkmark.circle.fill",
                 title: "Muesli is up to date",
                 message: "No newer version was found in the appcast.",
-                tint: MuesliTheme.success,
-                action: nil
+                tint: MuesliTheme.success
             )
         case .disabled(let message):
             return UpdateBanner(
                 icon: "minus.circle.fill",
                 title: "Updates are disabled",
                 message: message,
-                tint: MuesliTheme.textTertiary,
-                action: nil
+                tint: MuesliTheme.textTertiary
             )
         case .failed(let message):
             return UpdateBanner(
                 icon: "xmark.octagon.fill",
                 title: "Update check failed",
-                message: message,
-                tint: MuesliTheme.recording,
-                action: .retry
+                message: "\(message) Use the menu bar icon > Check for Updates... to try again.",
+                tint: MuesliTheme.recording
             )
         }
     }
@@ -300,12 +255,6 @@ struct AboutView: View {
             }
 
             Spacer(minLength: MuesliTheme.spacing16)
-
-            if let action = banner.action {
-                actionButton(action.title, icon: action.icon) {
-                    performUpdateAction(action)
-                }
-            }
         }
         .padding(MuesliTheme.spacing16)
         .background(banner.tint.opacity(0.14))

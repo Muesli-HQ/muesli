@@ -415,6 +415,171 @@ struct MeetingsNavigationTests {
         #expect(storedMeeting?.savedRecordingPath == nil)
     }
 
+    @Test("persistCompletedMeetingResult honors prompt recording save decision")
+    func persistCompletedMeetingResultHonorsPromptRecordingSaveDecision() async throws {
+        let store = try makeStore()
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            dictationStore: store
+        )
+        controller.updateConfig { $0.meetingRecordingSavePolicy = .prompt }
+
+        let retainedRecordingURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retained-\(UUID().uuidString)")
+            .appendingPathExtension("wav")
+        try Data("recording".utf8).write(to: retainedRecordingURL)
+
+        let result = MeetingSessionResult(
+            title: "Prompt Decision",
+            originalTitle: "Meeting",
+            calendarEventID: nil,
+            startTime: Date(),
+            endTime: Date().addingTimeInterval(30),
+            durationSeconds: 30,
+            rawTranscript: "Prompt decision transcript.",
+            formattedNotes: "## Summary\nPrompt decision notes.",
+            retainedRecordingURL: retainedRecordingURL,
+            retainedRecordingError: nil,
+            systemRecordingURL: nil,
+            templateSnapshot: MeetingTemplates.auto.snapshot
+        )
+
+        let persistenceResult = try controller.persistCompletedMeetingResult(
+            result,
+            recordingSaveDecision: false
+        )
+
+        let storedMeeting = try store.meeting(id: persistenceResult.meetingID)
+        #expect(storedMeeting?.rawTranscript == "Prompt decision transcript.")
+        #expect(storedMeeting?.savedRecordingPath == nil)
+        #expect(FileManager.default.fileExists(atPath: retainedRecordingURL.path) == false)
+    }
+
+    @Test("persistCompletedMeetingResult honors explicit recording save decision after policy drift")
+    func persistCompletedMeetingResultHonorsExplicitRecordingSaveDecisionAfterPolicyDrift() async throws {
+        let store = try makeStore()
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            dictationStore: store
+        )
+        controller.updateConfig { $0.meetingRecordingSavePolicy = .never }
+
+        let retainedRecordingURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("retained-policy-drift-\(UUID().uuidString)")
+            .appendingPathExtension("wav")
+        try Data("recording".utf8).write(to: retainedRecordingURL)
+
+        let result = MeetingSessionResult(
+            title: "Policy Drift",
+            originalTitle: "Meeting",
+            calendarEventID: nil,
+            startTime: Date(),
+            endTime: Date().addingTimeInterval(30),
+            durationSeconds: 30,
+            rawTranscript: "Policy drift transcript.",
+            formattedNotes: "## Summary\nPolicy drift notes.",
+            retainedRecordingURL: retainedRecordingURL,
+            retainedRecordingError: nil,
+            systemRecordingURL: nil,
+            templateSnapshot: MeetingTemplates.auto.snapshot
+        )
+
+        let persistenceResult = try controller.persistCompletedMeetingResult(
+            result,
+            recordingSaveDecision: true
+        )
+
+        let storedMeeting = try #require(try store.meeting(id: persistenceResult.meetingID))
+        let savedRecordingPath = try #require(storedMeeting.savedRecordingPath)
+        #expect(FileManager.default.fileExists(atPath: savedRecordingPath))
+        #expect(FileManager.default.fileExists(atPath: retainedRecordingURL.path) == false)
+    }
+
+    @Test("persistCompletedMeetingResult surfaces prompt policy retained recording failures without decision")
+    func persistCompletedMeetingResultSurfacesPromptPolicyRetainedRecordingFailuresWithoutDecision() async throws {
+        let store = try makeStore()
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            dictationStore: store
+        )
+        controller.updateConfig { $0.meetingRecordingSavePolicy = .prompt }
+
+        let result = MeetingSessionResult(
+            title: "Failed Retention",
+            originalTitle: "Meeting",
+            calendarEventID: nil,
+            startTime: Date(),
+            endTime: Date().addingTimeInterval(30),
+            durationSeconds: 30,
+            rawTranscript: "Retention failure transcript.",
+            formattedNotes: "## Summary\nRetention failure notes.",
+            retainedRecordingURL: nil,
+            retainedRecordingError: CocoaError(.fileWriteUnknown),
+            systemRecordingURL: nil,
+            templateSnapshot: MeetingTemplates.auto.snapshot
+        )
+
+        let persistenceResult = try controller.persistCompletedMeetingResult(result)
+
+        let storedMeeting = try #require(try store.meeting(id: persistenceResult.meetingID))
+        #expect(storedMeeting.savedRecordingPath == nil)
+        #expect(persistenceResult.recordingSaveError != nil)
+    }
+
+    @Test("persistCompletedMeetingResult surfaces retained recording failures after explicit save decision")
+    func persistCompletedMeetingResultSurfacesRetainedRecordingFailuresAfterExplicitSaveDecision() async throws {
+        let store = try makeStore()
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            dictationStore: store
+        )
+        controller.updateConfig { $0.meetingRecordingSavePolicy = .prompt }
+
+        let result = MeetingSessionResult(
+            title: "Explicit Save Failed Retention",
+            originalTitle: "Meeting",
+            calendarEventID: nil,
+            startTime: Date(),
+            endTime: Date().addingTimeInterval(30),
+            durationSeconds: 30,
+            rawTranscript: "Explicit save retention failure transcript.",
+            formattedNotes: "## Summary\nExplicit save retention failure notes.",
+            retainedRecordingURL: nil,
+            retainedRecordingError: CocoaError(.fileWriteUnknown),
+            systemRecordingURL: nil,
+            templateSnapshot: MeetingTemplates.auto.snapshot
+        )
+
+        let persistenceResult = try controller.persistCompletedMeetingResult(
+            result,
+            recordingSaveDecision: true
+        )
+
+        let storedMeeting = try #require(try store.meeting(id: persistenceResult.meetingID))
+        #expect(storedMeeting.savedRecordingPath == nil)
+        #expect(persistenceResult.recordingSaveError != nil)
+    }
+
     @Test("persistCompletedMeetingResult preserves user-edited live meeting title")
     func persistCompletedMeetingResultPreservesEditedLiveTitle() async throws {
         let store = try makeStore()
@@ -546,6 +711,32 @@ struct MeetingsNavigationTests {
 
         let meeting = try #require(try store.meeting(id: id))
         #expect(meeting.status == .failed)
+    }
+
+    @Test("startup recovery uses live transcript checkpoints before failing stale meetings")
+    func startupRecoveryUsesLiveTranscriptCheckpoints() throws {
+        let store = try makeStore()
+        let id = try store.createLiveMeeting(title: "Checkpoint Draft", calendarEventID: nil, startTime: Date())
+        try store.appendLiveTranscriptCheckpoints(meetingID: id, entries: [
+            LiveTranscriptCheckpointEntry(timestampLabel: "11:45:02", speaker: "Others", startSeconds: 2, endSeconds: 3, text: "The fallback transcript survived.")
+        ])
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            dictationStore: store
+        )
+
+        controller.recoverStaleLiveMeetings()
+
+        let meeting = try #require(try store.meeting(id: id))
+        #expect(meeting.status == .completed)
+        #expect(meeting.notesState == .rawTranscriptFallback)
+        #expect(meeting.rawTranscript == "[11:45:02] Others: The fallback transcript survived.")
+        #expect(try store.liveTranscriptCheckpointText(meetingID: id) == nil)
     }
 
     @Test("showMeetingTemplatesManager preserves current meetings context and presents manager")
@@ -685,6 +876,34 @@ struct MeetingBrowserLogicTests {
         )
 
         #expect(filtered.map(\.id) == [12, 11, 10])
+    }
+
+    @Test("formatStartTime converts UTC ISO timestamps to the requested timezone")
+    func formatStartTimeConvertsUTC() {
+        let timeZone = TimeZone(identifier: "America/Los_Angeles")!
+        guard let date = MeetingBrowserLogic.parseDate("2025-06-15T19:30:45Z") else {
+            Issue.record("Expected ISO timestamp to parse")
+            return
+        }
+
+        let formatted = MeetingBrowserLogic.formatStartTime(
+            "2025-06-15T19:30:45Z",
+            locale: Locale(identifier: "en_US"),
+            timeZone: timeZone
+        )
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+
+        #expect(components.year == 2025)
+        #expect(components.month == 6)
+        #expect(components.day == 15)
+        #expect(components.hour == 12)
+        #expect(components.minute == 30)
+        #expect(formatted.contains("Jun 15, 2025"))
+        #expect(formatted.contains("12:30"))
+        #expect(formatted.localizedCaseInsensitiveContains("PM"))
     }
 
     private static func isoDate(daysAgo: Int, now: Date, calendar: Calendar) -> String {

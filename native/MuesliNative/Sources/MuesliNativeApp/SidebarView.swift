@@ -42,19 +42,19 @@ struct SidebarView: View {
         switch appState.sparkleUpdateStatus {
         case .available:
             return UpdateCTA(
-                label: "Update Now",
+                label: "Update",
                 icon: "arrow.down",
                 foreground: updateCTAForeground,
                 accessibilityLabel: "Update available",
-                tooltip: "Open About to install the update"
+                tooltip: "Open About for update instructions"
             )
         case .downloaded:
             return UpdateCTA(
-                label: "Restart",
+                label: "Ready",
                 icon: "arrow.clockwise",
                 foreground: updateCTAForeground,
                 accessibilityLabel: "Update ready to install",
-                tooltip: "Open About to finish installing the update"
+                tooltip: "Open About for update instructions"
             )
         case .idle, .checking, .busy, .installing, .upToDate, .disabled, .failed:
             return nil
@@ -247,6 +247,7 @@ struct SidebarView: View {
                         Spacer(minLength: 0)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
 
@@ -273,10 +274,12 @@ struct SidebarView: View {
             }
             .padding(.horizontal, sidebarRowHorizontalPadding)
             .padding(.vertical, MuesliTheme.spacing8)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
                     .fill(isSelected ? MuesliTheme.surfaceSelected : Color.clear)
             )
+            .contentShape(Rectangle())
             .padding(.horizontal, sidebarRowOuterPadding)
 
             if meetingsExpanded {
@@ -424,10 +427,12 @@ struct SidebarView: View {
             }
             .padding(.horizontal, sidebarRowHorizontalPadding)
             .padding(.vertical, MuesliTheme.spacing8)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
                     .fill(isSelected ? MuesliTheme.surfaceSelected : Color.clear)
             )
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .padding(.horizontal, sidebarRowOuterPadding)
@@ -505,6 +510,7 @@ struct SidebarView: View {
         }
         .padding(.horizontal, sidebarRowHorizontalPadding)
         .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
                 .fill(isSelected ? MuesliTheme.surfaceSelected.opacity(0.6) : Color.clear)

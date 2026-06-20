@@ -66,12 +66,12 @@ Start a meeting recording → Muesli captures your mic (You) and system audio (O
 
 ### Download (recommended)
 
-Download the latest `.dmg` from [Releases](https://github.com/pHequals7/muesli/releases), open it, and drag Muesli to Applications — or double-click to install automatically.
+Download the latest `.dmg` from [Releases](https://github.com/Muesli-HQ/muesli/releases), open it, and drag Muesli to Applications — or double-click to install automatically.
 
 ### Homebrew
 
 ```bash
-brew tap pHequals7/muesli
+brew tap Muesli-HQ/muesli
 brew install --cask muesli
 ```
 
@@ -81,7 +81,7 @@ brew install --cask muesli
 
 ```bash
 # Clone
-git clone https://github.com/pHequals7/muesli.git
+git clone https://github.com/Muesli-HQ/muesli.git
 cd muesli
 
 # Build and install to /Applications
@@ -224,6 +224,8 @@ Important meeting fields:
 
 Cohere Transcribe is a 2B parameter model (#1 on Open ASR Leaderboard) running in mixed precision — FP16 FastConformer encoder on the Neural Engine with INT8 quantized decoders. Includes VAD-gated silence detection to prevent hallucination. Best for high-accuracy English dictation.
 
+Meeting echo cancellation uses the bundled LocalVQE `localvqe-v1.2-1.3M-f32.gguf` model by default, so users do not need to download an AEC model before their first meeting transcription. DTLN remains available as the fallback AEC path.
+
 Models download on demand from HuggingFace. Manage them from the **Models** tab in the dashboard.
 
 ---
@@ -269,7 +271,7 @@ Muesli needs these macOS permissions (guided during onboarding):
 Contributions welcome! To get started:
 
 ```bash
-git clone https://github.com/pHequals7/muesli.git
+git clone https://github.com/Muesli-HQ/muesli.git
 cd muesli
 swift build --package-path native/MuesliNative -c release
 swift test --package-path native/MuesliNative
@@ -299,6 +301,7 @@ If Muesli saves you time, consider supporting development:
 ## Acknowledgements
 
 - [FluidAudio](https://github.com/FluidInference/FluidAudio) — CoreML speech models for Apple devices (Parakeet TDT, Qwen3 ASR, Silero VAD, speaker diarization)
+- [localai-org/LocalVQE](https://github.com/localai-org/LocalVQE) — on-device acoustic echo cancellation for meeting transcription
 - [WhisperKit](https://github.com/argmaxinc/WhisperKit) — Swift Whisper inference on CoreML/ANE
 - [Core Audio](https://developer.apple.com/documentation/coreaudio) by Apple — system audio process taps
 - [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit) by Apple — system audio fallback capture
@@ -315,10 +318,10 @@ If Muesli saves you time, consider supporting development:
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=phequals7%2Fmuesli&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=phequals7/muesli&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=phequals7/muesli&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=phequals7/muesli&type=date&legend=top-left" />
- </picture>
+<a href="https://www.star-history.com/?repos=Muesli-HQ%2Fmuesli&type=date&legend=top-left">
+   <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Muesli-HQ/muesli&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Muesli-HQ/muesli&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Muesli-HQ/muesli&type=date&legend=top-left" />
+   </picture>
 </a>

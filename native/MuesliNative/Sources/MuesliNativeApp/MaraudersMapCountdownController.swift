@@ -12,14 +12,14 @@ final class MaraudersMapCountdownController {
     private var audioClipID: String = "bbc_world_news"
     private var customAudioPath: String?
     private var onStatusBarUpdate: ((String?) -> Void)?
-    private var onCountdownFinished: (((id: String, title: String)) -> Void)?
+    private var onCountdownFinished: (((id: String, title: String, startDate: Date)) -> Void)?
 
     func startMonitoring(
         eventProvider: @escaping () -> (id: String, title: String, startDate: Date)?,
         audioClipID: String,
         customAudioPath: String?,
         onStatusBarUpdate: @escaping (String?) -> Void,
-        onCountdownFinished: @escaping ((id: String, title: String)) -> Void
+        onCountdownFinished: @escaping ((id: String, title: String, startDate: Date)) -> Void
     ) {
         self.eventProvider = eventProvider
         self.audioClipID = audioClipID
@@ -89,7 +89,7 @@ final class MaraudersMapCountdownController {
             maybeTimer?.invalidate()
             SoundController.stopMaraudersMapClip()
             onStatusBarUpdate?(nil)
-            onCountdownFinished?((id: event.id, title: event.title))
+            onCountdownFinished?((id: event.id, title: event.title, startDate: event.startDate))
             activeEventID = nil
             startPolling()
             return

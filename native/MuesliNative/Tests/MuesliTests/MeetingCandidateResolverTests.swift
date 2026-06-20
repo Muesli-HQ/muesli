@@ -98,6 +98,40 @@ struct MeetingCandidateResolverTests {
         #expect(candidate?.evidence.contains(.audioInputProcess) == true)
     }
 
+    @Test("Meet URL with browser output-only helper does not claim audio input attribution")
+    func meetURLWithBrowserOutputOnlyHelperDoesNotClaimAudioInput() {
+        let candidate = resolver().resolve(snapshot(
+            micActive: false,
+            cameraActive: false,
+            browserMeetings: [
+                BrowserMeetingContext(
+                    bundleID: "com.google.Chrome",
+                    appName: "Chrome",
+                    pid: 1234,
+                    url: "meet.google.com/pwm-txwq-txy",
+                    normalizedID: "googleMeet:meet.google.com/pwm-txwq-txy",
+                    platform: .googleMeet,
+                    isFocused: true
+                ),
+            ],
+            audioInputProcesses: [
+                AudioProcessActivity(
+                    pid: 9876,
+                    bundleID: "com.google.Chrome.helper",
+                    appName: "Google Chrome Helper",
+                    isRunningInput: false,
+                    isRunningOutput: true
+                ),
+            ],
+            foregroundBundleID: "com.google.Chrome"
+        ))
+
+        #expect(candidate?.id == "googleMeet:meet.google.com/pwm-txwq-txy")
+        #expect(candidate?.sourcePID == 1234)
+        #expect(candidate?.evidence.contains(.audioInputProcess) == false)
+        #expect(candidate?.suppressionID == candidate?.id)
+    }
+
     @Test("Chrome Meet audio input resolves after transient foreground loss")
     func chromeMeetAudioInputResolvesAfterForegroundLoss() {
         let candidate = resolver().resolve(snapshot(
@@ -249,6 +283,89 @@ struct MeetingCandidateResolverTests {
         #expect(candidate?.appName == "Chrome")
         #expect(candidate?.sourceBundleID == "com.google.Chrome")
         #expect(candidate?.evidence.contains(.foregroundApp) == true)
+    }
+
+    @Test("foreground browser with global mic activity does not resolve without URL or input attribution")
+    func foregroundBrowserWithGlobalMicDoesNotResolve() {
+        let candidate = resolver().resolve(snapshot(
+            micActive: true,
+            cameraActive: false,
+            runningApps: [
+                RunningAppInfo(bundleID: "company.thebrowser.Browser", isActive: true),
+            ],
+            browserMeetings: [],
+            audioInputProcesses: [],
+            foregroundBundleID: "company.thebrowser.Browser"
+        ))
+
+        #expect(candidate == nil)
+    }
+
+    @Test("browser output-only process does not resolve without URL")
+    func browserOutputOnlyProcessDoesNotResolve() {
+        let candidate = resolver().resolve(snapshot(
+            micActive: false,
+            cameraActive: false,
+            audioInputProcesses: [
+                AudioProcessActivity(
+                    pid: 9876,
+                    bundleID: "company.thebrowser.Browser.helper",
+                    appName: "Arc Helper",
+                    isRunningInput: false,
+                    isRunningOutput: true
+                ),
+            ],
+            foregroundBundleID: "company.thebrowser.Browser"
+        ))
+
+        #expect(candidate == nil)
+    }
+
+    @Test("dedicated app output-only process does not resolve without URL")
+    func dedicatedAppOutputOnlyProcessDoesNotResolve() {
+        let candidate = resolver().resolve(snapshot(
+            micActive: false,
+            cameraActive: false,
+            runningApps: [
+                RunningAppInfo(bundleID: "us.zoom.xos", isActive: true),
+            ],
+            audioInputProcesses: [
+                AudioProcessActivity(
+                    pid: 4321,
+                    bundleID: "us.zoom.xos",
+                    appName: "Zoom",
+                    isRunningInput: false,
+                    isRunningOutput: true
+                ),
+            ],
+            foregroundBundleID: "us.zoom.xos"
+        ))
+
+        #expect(candidate == nil)
+    }
+
+    @Test("calendar plus output-only app process does not resolve without input activity")
+    func calendarPlusOutputOnlyAppProcessDoesNotResolve() {
+        let candidate = resolver().resolve(snapshot(
+            micActive: false,
+            cameraActive: false,
+            calendarEvent: CalendarEventContext(id: "evt-zoom", title: "Team sync"),
+            runningApps: [
+                RunningAppInfo(bundleID: "us.zoom.xos", isActive: true),
+            ],
+            audioInputProcesses: [
+                AudioProcessActivity(
+                    pid: 4321,
+                    bundleID: "us.zoom.xos",
+                    appName: "Zoom",
+                    isRunningInput: false,
+                    isRunningOutput: true
+                ),
+            ],
+            foregroundBundleID: "us.zoom.xos"
+        ))
+
+        #expect(candidate == nil)
     }
 
     @Test("synthetic browser audio PID is not exposed as source PID")

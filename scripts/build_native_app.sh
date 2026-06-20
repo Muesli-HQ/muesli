@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/muesli_spm_cache.sh"
 PACKAGE_DIR="$ROOT/native/MuesliNative"
 DIST_DIR="$ROOT/dist-native"
 INSTALL_DIR="${MUESLI_INSTALL_DIR:-/Applications}"
@@ -14,23 +15,32 @@ APP_BUNDLE_NAME="${MUESLI_APP_BUNDLE_NAME:-$APP_NAME.app}"
 APP_EXECUTABLE_NAME="${MUESLI_EXECUTABLE_NAME:-Muesli}"
 APP_SUPPORT_DIR_NAME="${MUESLI_SUPPORT_DIR_NAME:-$APP_DISPLAY_NAME}"
 BUNDLE_ID="${MUESLI_BUNDLE_ID:-com.muesli.app}"
-DEFAULT_APP_VERSION="0.6.7"
+DEFAULT_APP_VERSION="0.7.0"
 APP_VERSION="${MUESLI_BUILD_VERSION:-$DEFAULT_APP_VERSION}"
 APP_BUNDLE_VERSION="${MUESLI_BUNDLE_VERSION:-$APP_VERSION}"
 APP_SHORT_VERSION="${MUESLI_SHORT_VERSION:-$APP_VERSION}"
-SPARKLE_FEED_URL="${MUESLI_SPARKLE_FEED_URL-https://pHequals7.github.io/muesli/appcast.xml}"
+SPARKLE_FEED_URL="${MUESLI_SPARKLE_FEED_URL-https://muesli-hq.github.io/muesli/appcast.xml}"
 SPARKLE_EDKEY="${MUESLI_SPARKLE_EDKEY-ok9CQBJ3f0MJ2GXuGBubc6VyeWyb5exmqP2b9DceqH4=}"
 STAGED_APP_DIR="$DIST_DIR/$APP_BUNDLE_NAME"
 APP_DIR="$INSTALL_DIR/$APP_BUNDLE_NAME"
 DEFAULT_SIGN_IDENTITY="Developer ID Application: Pranav Hari Guruvayurappan (58W55QJ567)"
 SIGN_IDENTITY="${MUESLI_SIGN_IDENTITY:-$DEFAULT_SIGN_IDENTITY}"
 SKIP_SIGN="${MUESLI_SKIP_SIGN:-0}"
+CODESIGN_TIMESTAMP="${MUESLI_CODESIGN_TIMESTAMP:---timestamp}"
+if [[ "$CODESIGN_TIMESTAMP" == "none" ]]; then
+  CODESIGN_TIMESTAMP="--timestamp=none"
+fi
 
 SWIFT_BUILD_ARGS=(--package-path "$PACKAGE_DIR" -c "$BUILD_CONFIG")
-if [[ -n "${MUESLI_SWIFTPM_SCRATCH_PATH:-}" ]]; then
-  mkdir -p "$MUESLI_SWIFTPM_SCRATCH_PATH"
-  SWIFT_BUILD_ARGS+=(--scratch-path "$MUESLI_SWIFTPM_SCRATCH_PATH")
-  echo "Using SwiftPM scratch path: $MUESLI_SWIFTPM_SCRATCH_PATH"
+if ! muesli_spm_scratch_disabled; then
+  DEFAULT_SCRATCH_CHANNEL="release"
+  if [[ "$BUILD_CONFIG" == "debug" ]]; then
+    DEFAULT_SCRATCH_CHANNEL="$(muesli_worktree_spm_scratch_channel dev "$ROOT")"
+  fi
+  SWIFTPM_SCRATCH_PATH="$(muesli_resolve_spm_scratch_path "$DEFAULT_SCRATCH_CHANNEL")"
+  mkdir -p "$SWIFTPM_SCRATCH_PATH"
+  SWIFT_BUILD_ARGS+=(--scratch-path "$SWIFTPM_SCRATCH_PATH")
+  echo "Using SwiftPM scratch path: $SWIFTPM_SCRATCH_PATH"
 fi
 
 mkdir -p "$DIST_DIR"
@@ -79,6 +89,19 @@ for bundle in "$BIN_DIR"/*.bundle; do
   ditto "$bundle" "$STAGED_APP_DIR/Contents/Resources/$(basename "$bundle")"
 done
 
+# Bundle optional LocalVQE runtime if it has been built for local AEC testing.
+LOCALVQE_LIB_DIR="${MUESLI_LOCALVQE_LIB_DIR:-$ROOT/native/MuesliNative/LocalVQE/lib}"
+if [[ -d "$LOCALVQE_LIB_DIR" ]]; then
+  find "$LOCALVQE_LIB_DIR" -maxdepth 1 \( -name "liblocalvqe*.dylib" -o -name "libggml*.dylib" -o -name "libggml*.so" \) \( -type f -o -type l \) | while read -r dylib; do
+    cp -P "$dylib" "$STAGED_APP_DIR/Contents/MacOS/$(basename "$dylib")"
+  done
+fi
+LOCALVQE_MODEL_PATH="${MUESLI_LOCALVQE_MODEL_PATH:-$ROOT/native/MuesliNative/LocalVQE/models/localvqe-v1.2-1.3M-f32.gguf}"
+if [[ -f "$LOCALVQE_MODEL_PATH" ]]; then
+  mkdir -p "$STAGED_APP_DIR/Contents/Resources/Models/localvqe"
+  cp "$LOCALVQE_MODEL_PATH" "$STAGED_APP_DIR/Contents/Resources/Models/localvqe/localvqe-v1.2-1.3M-f32.gguf"
+fi
+
 # Bundle assets
 cp "$ROOT/assets/menu_m_template.png" "$STAGED_APP_DIR/Contents/Resources/menu_m_template.png"
 cp "$ROOT/assets/muesli.icns" "$STAGED_APP_DIR/Contents/Resources/muesli.icns"
@@ -122,6 +145,8 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
   <string>$APP_SUPPORT_DIR_NAME</string>
   <key>LSUIElement</key>
   <true/>
+  <key>LSMinimumSystemVersion</key>
+  <string>14.2</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>$APP_DISPLAY_NAME records microphone audio for dictation.</string>
   <key>NSInputMonitoringUsageDescription</key>
@@ -163,32 +188,42 @@ if [[ "$SKIP_SIGN" != "1" ]]; then
     if [[ "$(basename "$framework")" == "Sparkle.framework" ]]; then
       find "$framework" -type f -perm +111 | while read -r binary; do
         if file "$binary" | grep -q "Mach-O"; then
-          codesign --force --options runtime --timestamp \
+          codesign --force --options runtime "$CODESIGN_TIMESTAMP" \
             --sign "$SIGN_IDENTITY" "$binary"
         fi
       done
       find "$framework" -name "*.xpc" -type d | while read -r xpc; do
-        codesign --force --options runtime --timestamp \
+        codesign --force --options runtime "$CODESIGN_TIMESTAMP" \
           --sign "$SIGN_IDENTITY" "$xpc"
       done
       find "$framework" -name "*.app" -type d | while read -r app; do
-        codesign --force --options runtime --timestamp \
+        codesign --force --options runtime "$CODESIGN_TIMESTAMP" \
           --sign "$SIGN_IDENTITY" "$app"
       done
     fi
 
-    codesign --force --options runtime --timestamp \
+    codesign --force --options runtime "$CODESIGN_TIMESTAMP" \
       --sign "$SIGN_IDENTITY" \
       "$framework"
   done
 
-  codesign --force --options runtime --timestamp \
+  # Sign loose native runtime libraries loaded via dlopen. Hardened runtime
+  # library validation requires these to have the same Team ID as the app.
+  find "$APP_DIR/Contents/MacOS" -maxdepth 1 \( -name "liblocalvqe*.dylib" -o -name "libggml*.dylib" -o -name "libggml*.so" \) -type f | while read -r library; do
+    if file "$library" | grep -q "Mach-O"; then
+      codesign --force --options runtime "$CODESIGN_TIMESTAMP" \
+        --sign "$SIGN_IDENTITY" \
+        "$library"
+    fi
+  done
+
+  codesign --force --options runtime "$CODESIGN_TIMESTAMP" \
     --sign "$SIGN_IDENTITY" \
     "$APP_DIR/Contents/MacOS/muesli-cli"
 
   # Sign the app bundle with hardened runtime, secure timestamp, and entitlements
   ENTITLEMENTS="$ROOT/scripts/Muesli.entitlements"
-  codesign --force --options runtime --timestamp \
+  codesign --force --options runtime "$CODESIGN_TIMESTAMP" \
     --entitlements "$ENTITLEMENTS" \
     --sign "$SIGN_IDENTITY" \
     "$APP_DIR"

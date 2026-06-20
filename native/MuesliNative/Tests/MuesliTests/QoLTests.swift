@@ -285,7 +285,7 @@ struct MeetingChunkCollectorTests {
         let initialTask = Task<[SpeechSegment], Never> {
             [SpeechSegment(start: 1, end: 2, text: "first")]
         }
-        #expect(collector.add(initialTask))
+        #expect(collector.add(initialTask).registered)
 
         let initial = await collector.closeAndDrainSortedSegments()
         #expect(initial.map(\.text) == ["first"])
@@ -293,8 +293,25 @@ struct MeetingChunkCollectorTests {
         let lateTask = Task<[SpeechSegment], Never> {
             [SpeechSegment(start: 3, end: 4, text: "late")]
         }
-        #expect(!collector.add(lateTask))
+        #expect(!collector.add(lateTask).registered)
         lateTask.cancel()
+    }
+
+    @Test("collector retire returns false after drain closes collector")
+    func collectorRetireReturnsFalseAfterDrain() async {
+        let collector = MeetingChunkCollector()
+        let task = Task<[SpeechSegment], Never> {
+            try? await Task.sleep(for: .milliseconds(10))
+            return [SpeechSegment(start: 1, end: 2, text: "first")]
+        }
+        let registration = collector.add(task)
+        #expect(registration.registered)
+
+        let drained = await collector.closeAndDrainSortedSegments()
+        let retired = collector.retire(id: registration.retireID, segments: await task.value)
+
+        #expect(drained.map(\.text) == ["first"])
+        #expect(retired == false)
     }
 
     @Test("collector flattens timed segments from a single chunk and sorts them")

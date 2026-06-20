@@ -69,18 +69,18 @@ struct MeetingSignalRefreshPolicyTests {
         #expect(decision.refreshBrowserMeetings == true)
     }
 
-    @Test("AppleScript fallback is throttled per browser bundle")
-    func appleScriptFallbackIsThrottledPerBundle() {
+    @Test("active-tab fallback is throttled per browser bundle")
+    func activeTabFallbackIsThrottledPerBundle() {
         let policy = MeetingSignalRefreshPolicy()
         var state = MeetingSignalRefreshState()
-        state.lastAppleScriptAttemptAtByBundleID = [
+        state.lastActiveTabFallbackAttemptAtByBundleID = [
             "com.google.Chrome": now.addingTimeInterval(-10),
             "com.apple.Safari": now.addingTimeInterval(-16),
         ]
 
-        #expect(policy.allowsAppleScript(for: "com.google.Chrome", state: state, now: now) == false)
-        #expect(policy.allowsAppleScript(for: "com.apple.Safari", state: state, now: now) == true)
-        #expect(policy.allowsAppleScript(for: "com.brave.Browser", state: state, now: now) == true)
+        #expect(policy.allowsActiveTabFallbackProbe(for: "com.google.Chrome", state: state, now: now) == false)
+        #expect(policy.allowsActiveTabFallbackProbe(for: "com.apple.Safari", state: state, now: now) == true)
+        #expect(policy.allowsActiveTabFallbackProbe(for: "com.brave.Browser", state: state, now: now) == true)
     }
 
     @Test("suspicion expires back to idle after TTL")

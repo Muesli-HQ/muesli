@@ -5,7 +5,7 @@ Run `./scripts/release.sh [version]` — it automates steps 1-9 and is the only 
 Source of truth:
 - GitHub Releases hosts the official DMG binaries
 - GitHub Pages hosts the Sparkle appcast consumed by the app
-- `pHequals7/homebrew-muesli` mirrors the verified GitHub Release DMG via the personal tap cask
+- `Muesli-HQ/homebrew-muesli` mirrors the verified GitHub Release DMG via the Homebrew tap cask
 - Marketing surfaces may link to those assets, but they are not release authorities
 
 This checklist is for **verification** after the script runs, and for manual recovery if any step fails.
@@ -111,9 +111,9 @@ This checklist is for **verification** after the script runs, and for manual rec
 
 - [ ] **Fix appcast enclosure URLs to GitHub Releases** — `generate_appcast` writes GitHub Pages URLs. Replace with GitHub Releases URLs:
   ```
-  https://pHequals7.github.io/muesli/Muesli-X.Y.Z.dmg
+  https://muesli-hq.github.io/muesli/Muesli-X.Y.Z.dmg
   →
-  https://github.com/pHequals7/muesli/releases/download/vX.Y.Z/Muesli-X.Y.Z.dmg
+  https://github.com/Muesli-HQ/muesli/releases/download/vX.Y.Z/Muesli-X.Y.Z.dmg
   ```
 
 - [ ] **Remove delta entries** from appcast (deltas aren't hosted)
@@ -132,22 +132,22 @@ This checklist is for **verification** after the script runs, and for manual rec
   git push
   ```
 
-## Personal Tap
+## Homebrew Tap
 
-- [ ] **Update the personal Homebrew tap cask** in `pHequals7/homebrew-muesli`
+- [ ] **Update the Homebrew tap cask** in `Muesli-HQ/homebrew-muesli`
   - `Casks/m/muesli.rb` must point at the new version and the hosted GitHub Release SHA256
   - Commit message should be `muesli X.Y.Z`
   - The canonical release flow now automates this inside `scripts/release.sh`
 
 - [ ] **Verify the tap install path if the cask changed shape**
   ```bash
-  brew tap pHequals7/muesli
-  brew install --cask pHequals7/muesli/muesli
+  brew tap Muesli-HQ/muesli
+  brew install --cask Muesli-HQ/muesli/muesli
   ```
 
 ## Post-release
 
-- [ ] Verify GitHub Pages serves appcast: `curl -s https://phequals7.github.io/muesli/appcast.xml | head -5`
+- [ ] Verify GitHub Pages serves appcast: `curl -s https://muesli-hq.github.io/muesli/appcast.xml | head -5`
 - [ ] Verify the GitHub Release page exposes the DMG you just uploaded
 - [ ] Verify `docs/index.html` and `docs/llms.txt` point to the newly published GitHub Release DMG
 - [ ] Optional: install previous version and confirm Sparkle shows update prompt

@@ -1,4 +1,4 @@
-name: Claude Code Review (Same-Repo PRs Only)
+name: Claude Code Review
 
 on:
   pull_request:
@@ -12,10 +12,6 @@ on:
 
 jobs:
   claude-review:
-    # Fork PRs run in a more restricted GitHub auth context, which can block
-    # Claude's OIDC/token setup and turn review automation into noisy failures.
-    # Keep auto-review for maintainer-owned branches in this repo, and skip forks.
-    if: github.event.pull_request.head.repo.full_name == github.repository
     # Optional: Filter by PR author
     # if: |
     #   github.event.pull_request.user.login == 'external-contributor' ||
@@ -44,13 +40,14 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
+          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
           additional_permissions: |
             pull_requests: write
             issues: write
             checks: write
             actions: read
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
           use_sticky_comment: true
           track_progress: true
           display_report: true
-          show_full_output: true
+          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
+          # or https://code.claude.com/docs/en/cli-reference for available options

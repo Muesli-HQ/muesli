@@ -29,11 +29,6 @@ enum SparkleUpdateStatus: Equatable {
     case failed(message: String)
 }
 
-enum UserInitiatedUpdateAction: Equatable {
-    case presentStandardUpdater
-    case showBusy(message: String)
-}
-
 enum GoogleCalendarListLoadState: Equatable {
     case idle
     case loading
@@ -41,17 +36,9 @@ enum GoogleCalendarListLoadState: Equatable {
     case failed(String)
 }
 
-enum UpdateInteractionPolicy {
-    static let busyMessage = "Sparkle is still finishing the previous update check. Try again in a moment."
-
-    static func installAction(for status: SparkleUpdateStatus) -> UserInitiatedUpdateAction {
-        switch status {
-        case .checking, .busy, .installing:
-            return .showBusy(message: busyMessage)
-        case .idle, .available, .downloaded, .upToDate, .disabled, .failed:
-            return .presentStandardUpdater
-        }
-    }
+struct ActiveMeetingAudioWarning: Equatable {
+    let meetingID: Int64
+    let message: String
 }
 
 @MainActor
@@ -87,6 +74,9 @@ final class AppState {
     var isMeetingRecordingPaused: Bool = false
     var isMeetingStarting: Bool = false
     var meetingStartStatus: String?
+    var liveMeetingTranscript: String = ""
+    var liveMeetingTranscriptOwnerID: Int64? = nil
+    var activeMeetingAudioWarning: ActiveMeetingAudioWarning?
     var dictationState: DictationState = .idle
     var isVoiceNoteRecording: Bool = false
     var isChatGPTAuthenticated: Bool = false

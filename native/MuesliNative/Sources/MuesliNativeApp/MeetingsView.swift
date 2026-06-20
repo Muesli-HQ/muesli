@@ -103,6 +103,30 @@ enum MeetingBrowserLogic {
             ?? localParsers.lazy.compactMap { $0.date(from: raw) }.first
     }
 
+    static func formatStartTime(
+        _ raw: String,
+        locale: Locale = .current,
+        timeZone: TimeZone = .current
+    ) -> String {
+        guard let date = parseDate(raw) else {
+            return formatStartTimeFallback(raw)
+        }
+        let formatter = DateFormatter()
+        formatter.locale = locale
+        formatter.timeZone = timeZone
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .medium
+        return formatter.string(from: date)
+    }
+
+    private static func formatStartTimeFallback(_ raw: String) -> String {
+        let clean = raw.replacingOccurrences(of: "T", with: " ")
+        if clean.count > 16 {
+            return String(clean.prefix(16))
+        }
+        return clean
+    }
+
     private static let isoParsers: [ISO8601DateFormatter] = {
         let iso1 = ISO8601DateFormatter()
         iso1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -244,6 +268,19 @@ struct MeetingsView: View {
             .padding(.horizontal, 40)
             .padding(.vertical, 32)
             .frame(maxWidth: .infinity, alignment: .center)
+        }
+        .onDrop(of: ["public.file-url"], isTargeted: nil) { providers in
+            guard let provider = providers.first else { return false }
+            provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { item, _ in
+                guard let data = item as? Data,
+                      let urlString = String(data: data, encoding: .utf8),
+                      let url = URL(string: urlString) else { return }
+                guard AudioFileImportController.isSupportedFileURL(url) else { return }
+                DispatchQueue.main.async {
+                    controller.importAudioFileFromURL(url)
+                }
+            }
+            return true
         }
     }
 
@@ -547,6 +584,31 @@ struct MeetingsView: View {
             .buttonStyle(.plain)
             .disabled(appState.isMeetingRecording || appState.isMeetingStarting)
             .help("Start a quick meeting note")
+            .fixedSize()
+
+            Button {
+                controller.importAudioFile()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "square.and.arrow.down")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("Import Audio")
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(MuesliTheme.textPrimary)
+                .padding(.horizontal, MuesliTheme.spacing12)
+                .padding(.vertical, 8)
+                .background(MuesliTheme.surfacePrimary)
+                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                .overlay(
+                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                        .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(appState.isMeetingRecording || appState.isMeetingStarting)
+            .help("Import an audio file for offline transcription")
             .fixedSize()
 
             sortButton

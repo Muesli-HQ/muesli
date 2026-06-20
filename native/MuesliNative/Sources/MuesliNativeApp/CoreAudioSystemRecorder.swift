@@ -1,9 +1,11 @@
 import AppKit
 import Atomics
 import AudioToolbox
+import AVFoundation
 import CoreAudio
 import Foundation
 import MuesliCore
+import os
 
 /// Protocol for system audio capture backends (ScreenCaptureKit vs CoreAudio tap).
 protocol SystemAudioCapturing: AnyObject {
@@ -23,20 +25,21 @@ protocol SystemAudioCapturing: AnyObject {
 /// - No conflict with `CGWindowListCreateImage` (screenshot OCR works during meetings)
 /// - Doesn't require "Screen & System Audio Recording" permission for audio capture
 /// - Hardware-synchronized with mic input when used in an aggregate device
-final class CoreAudioSystemRecorder: SystemAudioCapturing {
+final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnosticsProviding {
     var onPCMSamples: (([Int16]) -> Void)?
 
     private var tapID: AudioObjectID = kAudioObjectUnknown
     private var aggregateDeviceID: AudioDeviceID = kAudioObjectUnknown
-    private var audioUnit: AudioUnit?
+    private var deviceIOProcID: AudioDeviceIOProcID?
+    private var deviceIOBlock: AudioDeviceIOBlock?
+    private let deviceIOQueue = DispatchQueue(label: "com.muesli.system-audio-tap.io", qos: .userInitiated)
     private let processingQueue = DispatchQueue(label: "com.muesli.system-audio-tap")
     private var defaultOutputDeviceListenerBlock: AudioObjectPropertyListenerBlock?
-    private var renderBuffer: UnsafeMutableRawPointer?
-    private var renderBufferCapacity = 0
 
     private var outputFile: FileHandle?
     private var outputURL: URL?
     private var totalBytesWritten = 0
+    private var activeCaptureGeneration: UInt64 = 0
     private let recordingFlag = ManagedAtomic(false)
     private let pausedFlag = ManagedAtomic(false)
     private(set) var isRecording: Bool {
@@ -49,11 +52,46 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing {
     }
 
     private static let targetSampleRate: Double = 16_000
-    private static let maxRenderFrames: UInt32 = 4096
 
     /// Source format from the tap (queried at setup time).
     private var sourceSampleRate: Double = 48_000
     private var sourceChannels: UInt32 = 2
+    private var sourceFormat = AudioStreamBasicDescription()
+    private var resampler: AVAudioConverter?
+    private var resamplerInputFormat: AVAudioFormat?
+    private var resamplerOutputFormat: AVAudioFormat?
+    private let diagnosticsLock = OSAllocatedUnfairLock(initialState: DiagnosticsState())
+
+    private struct DiagnosticsState {
+        var callbackCount = 0
+        var bufferCount = 0
+        var emptyBufferCount = 0
+        var unsupportedFormatCount = 0
+        var inputByteCount = 0
+        var bytesWritten = 0
+        var sourceSampleRate: Double = 0
+        var sourceChannels: UInt32 = 0
+        var preConversion = AudioSampleStats()
+        var postConversion = AudioSampleStats()
+    }
+
+    var diagnosticsSnapshot: SystemAudioCaptureDiagnosticsSnapshot {
+        diagnosticsLock.withLock { state in
+            SystemAudioCaptureDiagnosticsSnapshot(
+                backend: "CoreAudioTapIOProc",
+                callbackCount: state.callbackCount,
+                bufferCount: state.bufferCount,
+                emptyBufferCount: state.emptyBufferCount,
+                unsupportedFormatCount: state.unsupportedFormatCount,
+                inputByteCount: state.inputByteCount,
+                bytesWritten: state.bytesWritten,
+                sourceSampleRate: state.sourceSampleRate,
+                sourceChannels: state.sourceChannels,
+                preConversion: state.preConversion.snapshot(),
+                postConversion: state.postConversion.snapshot()
+            )
+        }
+    }
 
     deinit {
         if isRecording
@@ -76,7 +114,7 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing {
         guard let file = FileHandle(forWritingAtPath: url.path) else {
             throw RecorderError.fileCreationFailed
         }
-        file.write(WAVHeader.create(dataSize: 0))
+        file.write(WavWriter.header(dataSize: 0))
         outputFile = file
         outputURL = url
         totalBytesWritten = 0
@@ -85,7 +123,7 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing {
 
         do {
             try createTapAndAggregateDevice()
-            try setupAndStartAudioUnit()
+            try setupAndStartAudioDevice()
             installDefaultOutputDeviceListener()
             fputs("[system-audio] CoreAudio tap capture started\n", stderr)
         } catch {
@@ -102,12 +140,12 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing {
 
         removeDefaultOutputDeviceListener()
         processingQueue.sync {
-            teardownTapAndAudioUnit()
+            teardownTapAndAudioDevice()
             onPCMSamples = nil
         }
 
         if let file = outputFile {
-            let header = WAVHeader.create(dataSize: totalBytesWritten)
+            let header = WavWriter.header(dataSize: totalBytesWritten)
             file.seek(toFileOffset: 0)
             file.write(header)
             file.closeFile()
@@ -136,16 +174,11 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing {
     // MARK: - Tap + Aggregate Device Setup
 
     private func createTapAndAggregateDevice() throws {
-        // Tap the default output device directly rather than the stereo global mix.
-        // Native call clients (Zoom, Teams) route audio through private pipelines
-        // (virtual devices, custom AudioUnits for AEC/noise suppression) that bypass
-        // the system's stereo mix. A device-level tap captures all audio flowing
-        // through the output device regardless of which app or pipeline produces it.
-        guard let outputDevice = Self.defaultOutputDeviceTapTarget() else {
-            throw RecorderError.noDefaultOutputDevice
-        }
-        let tapDesc = Self.makeOutputDeviceTapDescription(
-            deviceUID: outputDevice.uid,
+        // Use the global stereo process mix. This is the closest CoreAudio tap
+        // equivalent to ScreenCaptureKit's "system audio" stream: all process
+        // output mixed to stereo, excluding Muesli itself. The previous
+        // device-stream tap could be valid but zero-filled on some routes.
+        let tapDesc = Self.makeGlobalTapDescription(
             excludingProcessID: Self.currentProcessAudioObjectID(),
             name: "Muesli System Audio Tap"
         )
@@ -164,15 +197,7 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing {
         // CATapDescription objects (passing objects crashes CoreAudio).
         let tapUIDString = tapDesc.uuid.uuidString
         let aggUID = "com.muesli.system-audio-tap-\(UUID().uuidString)"
-        let aggDesc: NSDictionary = [
-            kAudioAggregateDeviceNameKey: "Muesli System Audio",
-            kAudioAggregateDeviceUIDKey: aggUID,
-            kAudioAggregateDeviceIsPrivateKey: true,
-            kAudioAggregateDeviceTapListKey: [
-                [kAudioSubTapUIDKey: tapUIDString],
-            ],
-            kAudioAggregateDeviceTapAutoStartKey: true,
-        ]
+        let aggDesc = Self.makeAggregateDeviceDescription(tapUID: tapUIDString, aggregateUID: aggUID)
 
         status = AudioHardwareCreateAggregateDevice(aggDesc as CFDictionary, &aggregateDeviceID)
         guard status == noErr, aggregateDeviceID != kAudioObjectUnknown else {
@@ -181,213 +206,333 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing {
             throw RecorderError.aggregateDeviceCreationFailed(status)
         }
         fputs("[system-audio] aggregate device \(aggregateDeviceID) created (uid: \(aggUID))\n", stderr)
+
+        sourceFormat = try Self.audioTapStreamFormat(for: tapID)
+        sourceSampleRate = sourceFormat.mSampleRate
+        sourceChannels = sourceFormat.mChannelsPerFrame
+        diagnosticsLock.withLock { state in
+            state.sourceSampleRate = sourceSampleRate
+            state.sourceChannels = sourceChannels
+        }
+        fputs("[system-audio] tap format: \(sourceSampleRate)Hz, \(sourceChannels)ch, flags=\(sourceFormat.mFormatFlags), bytesPerFrame=\(sourceFormat.mBytesPerFrame)\n", stderr)
     }
 
-    static func makeOutputDeviceTapDescription(
-        deviceUID: String,
+    static func makeGlobalTapDescription(
         excludingProcessID: AudioObjectID?,
         name: String
     ) -> CATapDescription {
         let excludeList = excludingProcessID.map { [$0] } ?? []
-        // Default output devices expose the render stream we need at index 0 on supported macOS hardware.
-        let tapDesc = CATapDescription(excludingProcesses: excludeList, deviceUID: deviceUID, stream: 0)
+        let tapDesc = CATapDescription(stereoGlobalTapButExcludeProcesses: excludeList)
         tapDesc.name = name
+        tapDesc.isPrivate = true
+        tapDesc.muteBehavior = .unmuted
         return tapDesc
     }
 
-    private func setupAndStartAudioUnit() throws {
-        // Find AUHAL component
-        var componentDesc = AudioComponentDescription(
-            componentType: kAudioUnitType_Output,
-            componentSubType: kAudioUnitSubType_HALOutput,
-            componentManufacturer: kAudioUnitManufacturer_Apple,
-            componentFlags: 0,
-            componentFlagsMask: 0
-        )
-        guard let component = AudioComponentFindNext(nil, &componentDesc) else {
-            throw RecorderError.auhalNotFound
-        }
-
-        var au: AudioUnit?
-        try osCheck(AudioComponentInstanceNew(component, &au), "create AUHAL")
-        guard let au else { throw RecorderError.auhalNotFound }
-
-        do {
-            // Enable input (bus 1), disable output (bus 0) — input-only capture
-            var one: UInt32 = 1
-            var zero: UInt32 = 0
-            try osCheck(AudioUnitSetProperty(
-                au, kAudioOutputUnitProperty_EnableIO,
-                kAudioUnitScope_Input, 1, &one, Self.u32Size
-            ), "enable input")
-            try osCheck(AudioUnitSetProperty(
-                au, kAudioOutputUnitProperty_EnableIO,
-                kAudioUnitScope_Output, 0, &zero, Self.u32Size
-            ), "disable output")
-
-            // Point at the aggregate device
-            var devID = aggregateDeviceID
-            try osCheck(AudioUnitSetProperty(
-                au, kAudioOutputUnitProperty_CurrentDevice,
-                kAudioUnitScope_Global, 0, &devID,
-                UInt32(MemoryLayout<AudioDeviceID>.size)
-            ), "set device")
-
-            // Query the native input format from the tap
-            var nativeFormat = AudioStreamBasicDescription()
-            var fmtSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
-            try osCheck(AudioUnitGetProperty(
-                au, kAudioUnitProperty_StreamFormat,
-                kAudioUnitScope_Input, 1, &nativeFormat, &fmtSize
-            ), "get input format")
-
-            sourceSampleRate = nativeFormat.mSampleRate
-            sourceChannels = nativeFormat.mChannelsPerFrame
-            fputs("[system-audio] tap format: \(sourceSampleRate)Hz, \(sourceChannels)ch\n", stderr)
-            allocateRenderBuffer(for: sourceChannels)
-
-            // Request float32 interleaved on the output scope of bus 1
-            var outFormat = AudioStreamBasicDescription(
-                mSampleRate: sourceSampleRate,
-                mFormatID: kAudioFormatLinearPCM,
-                mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
-                mBytesPerPacket: sourceChannels * 4,
-                mFramesPerPacket: 1,
-                mBytesPerFrame: sourceChannels * 4,
-                mChannelsPerFrame: sourceChannels,
-                mBitsPerChannel: 32,
-                mReserved: 0
-            )
-            try osCheck(AudioUnitSetProperty(
-                au, kAudioUnitProperty_StreamFormat,
-                kAudioUnitScope_Output, 1, &outFormat, fmtSize
-            ), "set output format")
-
-            // Register input callback
-            var cb = AURenderCallbackStruct(
-                inputProc: Self.renderCallback,
-                inputProcRefCon: Unmanaged.passUnretained(self).toOpaque()
-            )
-            try osCheck(AudioUnitSetProperty(
-                au, kAudioOutputUnitProperty_SetInputCallback,
-                kAudioUnitScope_Global, 0, &cb,
-                UInt32(MemoryLayout<AURenderCallbackStruct>.size)
-            ), "set input callback")
-
-            try osCheck(AudioUnitInitialize(au), "initialize AUHAL")
-            try osCheck(AudioOutputUnitStart(au), "start AUHAL")
-        } catch {
-            AudioComponentInstanceDispose(au)
-            throw error
-        }
-
-        audioUnit = au
+    static func makeAggregateDeviceDescription(tapUID: String, aggregateUID: String) -> NSDictionary {
+        [
+            kAudioAggregateDeviceNameKey: "Muesli System Audio",
+            kAudioAggregateDeviceUIDKey: aggregateUID,
+            kAudioAggregateDeviceIsPrivateKey: true,
+            kAudioAggregateDeviceTapListKey: [
+                [
+                    kAudioSubTapUIDKey: tapUID,
+                    kAudioSubTapDriftCompensationKey: true,
+                ],
+            ],
+            kAudioAggregateDeviceTapAutoStartKey: true,
+        ]
     }
 
-    // MARK: - Render Callback (real-time audio thread)
+    private func setupAndStartAudioDevice() throws {
+        let format = sourceFormat
+        configureResampler(for: format)
+        activeCaptureGeneration &+= 1
+        let generation = activeCaptureGeneration
+        let block: AudioDeviceIOBlock = { [weak self] _, inputData, _, _, _ in
+            guard let self, self.isRecording, !self.isPaused else { return }
+            self.diagnosticsLock.withLock { $0.callbackCount += 1 }
 
-    private static let renderCallback: AURenderCallback = { (
-        inRefCon, ioActionFlags, inTimeStamp, inBusNumber, inNumberFrames, _
-    ) -> OSStatus in
-        let recorder = Unmanaged<CoreAudioSystemRecorder>.fromOpaque(inRefCon).takeUnretainedValue()
-        guard recorder.isRecording, let au = recorder.audioUnit else { return noErr }
+            let buffers = Self.copyAudioBuffers(from: inputData)
+            guard !buffers.isEmpty else {
+                self.diagnosticsLock.withLock { $0.emptyBufferCount += 1 }
+                return
+            }
+            self.diagnosticsLock.withLock { state in
+                state.bufferCount += buffers.count
+                state.inputByteCount += buffers.reduce(0) { $0 + $1.data.count }
+            }
 
-        let channels = Int(recorder.sourceChannels)
-        let byteSize = Int(inNumberFrames) * channels * MemoryLayout<Float>.size
-        guard let rawBuf = recorder.renderBuffer, byteSize <= recorder.renderBufferCapacity else {
-            return kAudio_ParamError
+            self.processingQueue.async { [weak self] in
+                guard let self, self.isRecording, !self.isPaused else { return }
+                guard self.activeCaptureGeneration == generation else { return }
+                self.processAudioBuffers(buffers, format: format)
+            }
         }
 
-        var bufferList = AudioBufferList(
-            mNumberBuffers: 1,
-            mBuffers: AudioBuffer(
-                mNumberChannels: UInt32(channels),
-                mDataByteSize: UInt32(byteSize),
-                mData: rawBuf
-            )
-        )
-
-        let status = AudioUnitRender(
-            au, ioActionFlags, inTimeStamp, inBusNumber, inNumberFrames, &bufferList
-        )
-        guard status == noErr else { return status }
-        guard !recorder.isPaused else { return noErr }
-
-        // Copy rendered data and dispatch off the audio thread for conversion + I/O
-        let data = Data(bytes: rawBuf, count: byteSize)
-
-        let frameCount = Int(inNumberFrames)
-        let srcRate = recorder.sourceSampleRate
-
-        recorder.processingQueue.async { [weak recorder] in
-            guard let recorder, recorder.isRecording, !recorder.isPaused else { return }
-            recorder.processAudioData(data, frameCount: frameCount, channels: channels, sourceRate: srcRate)
+        var procID: AudioDeviceIOProcID?
+        try osCheck(AudioDeviceCreateIOProcIDWithBlock(
+            &procID,
+            aggregateDeviceID,
+            deviceIOQueue,
+            block
+        ), "create aggregate IOProc")
+        guard let procID else {
+            throw RecorderError.deviceIOProcCreationFailed
         }
 
-        return noErr
+        deviceIOProcID = procID
+        deviceIOBlock = block
+
+        do {
+            try osCheck(AudioDeviceStart(aggregateDeviceID, procID), "start aggregate device")
+        } catch {
+            AudioDeviceDestroyIOProcID(aggregateDeviceID, procID)
+            deviceIOProcID = nil
+            deviceIOBlock = nil
+            throw error
+        }
     }
 
     // MARK: - Audio Processing (processing queue)
 
-    private func processAudioData(_ data: Data, frameCount: Int, channels: Int, sourceRate: Double) {
-        guard isRecording, !isPaused else { return }
-        data.withUnsafeBytes { rawBuffer in
-            let floatPtr = rawBuffer.bindMemory(to: Float.self)
+    private struct CapturedAudioBuffer {
+        let numberChannels: UInt32
+        let data: Data
+    }
 
-            // 1. Mix to mono
-            var mono = [Float](repeating: 0, count: frameCount)
-            if channels > 1 {
-                let scale = 1.0 / Float(channels)
-                for i in 0..<frameCount {
-                    var sum: Float = 0
-                    for ch in 0..<channels {
-                        sum += floatPtr[i * channels + ch]
-                    }
-                    mono[i] = sum * scale
-                }
-            } else {
-                for i in 0..<frameCount {
-                    mono[i] = floatPtr[i]
-                }
-            }
+    private static func copyAudioBuffers(from inputData: UnsafePointer<AudioBufferList>) -> [CapturedAudioBuffer] {
+        let bufferList = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData))
+        var buffers: [CapturedAudioBuffer] = []
+        buffers.reserveCapacity(bufferList.count)
 
-            // 2. Resample to 16 kHz and convert to Int16
-            let targetRate = Self.targetSampleRate
-            let int16Samples: [Int16]
-
-            if abs(sourceRate - targetRate) < 1.0 {
-                int16Samples = mono.map { Int16(max(-1.0, min(1.0, $0)) * 32767.0) }
-            } else {
-                let ratio = sourceRate / targetRate
-                let outputCount = Int(Double(frameCount) / ratio)
-                guard outputCount > 0 else { return }
-                var resampled = [Int16](repeating: 0, count: outputCount)
-                for i in 0..<outputCount {
-                    let srcPos = Double(i) * ratio
-                    let idx = Int(srcPos)
-                    let frac = Float(srcPos - Double(idx))
-                    let sample: Float
-                    if idx + 1 < frameCount {
-                        sample = mono[idx] * (1.0 - frac) + mono[idx + 1] * frac
-                    } else if idx < frameCount {
-                        sample = mono[idx]
-                    } else {
-                        sample = 0
-                    }
-                    resampled[i] = Int16(max(-1.0, min(1.0, sample)) * 32767.0)
-                }
-                int16Samples = resampled
-            }
-
-            // 3. Write WAV data + deliver callback
-            guard !int16Samples.isEmpty else { return }
-            let rawData = int16Samples.withUnsafeBufferPointer { buf in
-                Data(bytes: buf.baseAddress!, count: buf.count * MemoryLayout<Int16>.size)
-            }
-            outputFile?.write(rawData)
-            totalBytesWritten += rawData.count
-            onPCMSamples?(int16Samples)
+        for buffer in bufferList {
+            guard let data = buffer.mData, buffer.mDataByteSize > 0 else { continue }
+            buffers.append(CapturedAudioBuffer(
+                numberChannels: buffer.mNumberChannels,
+                data: Data(bytes: data, count: Int(buffer.mDataByteSize))
+            ))
         }
+
+        return buffers
+    }
+
+    private func processAudioBuffers(_ buffers: [CapturedAudioBuffer], format: AudioStreamBasicDescription) {
+        guard isRecording, !isPaused else { return }
+        guard let mono = mixToMonoFloat(buffers: buffers, format: format), !mono.isEmpty else { return }
+        diagnosticsLock.withLock { $0.preConversion.addFloats(mono) }
+
+        guard let int16Samples = resampleMonoFloatToInt16(mono, sourceSampleRate: format.mSampleRate) else {
+            diagnosticsLock.withLock { $0.unsupportedFormatCount += 1 }
+            return
+        }
+
+        guard !int16Samples.isEmpty else { return }
+        let rawData = int16Samples.withUnsafeBufferPointer { buf in
+            Data(bytes: buf.baseAddress!, count: buf.count * MemoryLayout<Int16>.size)
+        }
+        outputFile?.write(rawData)
+        totalBytesWritten += rawData.count
+        diagnosticsLock.withLock { state in
+            state.bytesWritten += rawData.count
+            state.postConversion.addInt16(int16Samples)
+        }
+        onPCMSamples?(int16Samples)
+    }
+
+    private func resampleMonoFloatToInt16(_ samples: [Float], sourceSampleRate: Double) -> [Int16]? {
+        guard !samples.isEmpty, sourceSampleRate > 0 else { return nil }
+
+        if abs(sourceSampleRate - Self.targetSampleRate) < 1.0 {
+            return samples.map { Int16(max(-1.0, min(1.0, $0)) * 32767.0) }
+        }
+
+        guard let converter = resampler,
+              let inputFormat = resamplerInputFormat,
+              let outputFormat = resamplerOutputFormat,
+              abs(inputFormat.sampleRate - sourceSampleRate) < 1.0
+        else {
+            return nil
+        }
+
+        let inputFrameCount = AVAudioFrameCount(samples.count)
+        guard let inputBuffer = AVAudioPCMBuffer(
+            pcmFormat: inputFormat,
+            frameCapacity: inputFrameCount
+        ), let inputChannel = inputBuffer.floatChannelData?[0] else {
+            return nil
+        }
+        inputBuffer.frameLength = inputFrameCount
+        inputChannel.update(from: samples, count: samples.count)
+
+        let ratio = Self.targetSampleRate / sourceSampleRate
+        let outputFrameCapacity = AVAudioFrameCount(max(1, Int(ceil(Double(samples.count) * ratio)) + 32))
+        guard let outputBuffer = AVAudioPCMBuffer(
+            pcmFormat: outputFormat,
+            frameCapacity: outputFrameCapacity
+        ) else {
+            return nil
+        }
+
+        var didProvideInput = false
+        let inputBlock: AVAudioConverterInputBlock = { _, status in
+            if didProvideInput {
+                status.pointee = .noDataNow
+                return nil
+            }
+            didProvideInput = true
+            status.pointee = .haveData
+            return inputBuffer
+        }
+
+        var conversionError: NSError?
+        let status = converter.convert(to: outputBuffer, error: &conversionError, withInputFrom: inputBlock)
+        guard status != .error, conversionError == nil, let outputChannel = outputBuffer.floatChannelData?[0] else {
+            if let conversionError {
+                fputs("[system-audio] AVAudioConverter failed: \(conversionError)\n", stderr)
+            }
+            return nil
+        }
+
+        let frameLength = Int(outputBuffer.frameLength)
+        guard frameLength > 0 else { return nil }
+        return (0..<frameLength).map { index in
+            Int16(max(-1.0, min(1.0, outputChannel[index])) * 32767.0)
+        }
+    }
+
+    private func configureResampler(for format: AudioStreamBasicDescription) {
+        resampler = nil
+        resamplerInputFormat = nil
+        resamplerOutputFormat = nil
+
+        guard abs(format.mSampleRate - Self.targetSampleRate) >= 1.0 else { return }
+        guard let inputFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: format.mSampleRate,
+            channels: 1,
+            interleaved: false
+        ), let outputFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: Self.targetSampleRate,
+            channels: 1,
+            interleaved: false
+        ), let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
+            diagnosticsLock.withLock { $0.unsupportedFormatCount += 1 }
+            fputs("[system-audio] failed to configure AVAudioConverter for \(format.mSampleRate)Hz\n", stderr)
+            return
+        }
+
+        resampler = converter
+        resamplerInputFormat = inputFormat
+        resamplerOutputFormat = outputFormat
+    }
+
+    private func mixToMonoFloat(
+        buffers: [CapturedAudioBuffer],
+        format: AudioStreamBasicDescription
+    ) -> [Float]? {
+        guard format.mFormatID == kAudioFormatLinearPCM else { return nil }
+
+        let flags = format.mFormatFlags
+        let isFloat = (flags & kAudioFormatFlagIsFloat) != 0
+        let isNonInterleaved = (flags & kAudioFormatFlagIsNonInterleaved) != 0
+        let bitsPerChannel = Int(format.mBitsPerChannel)
+        let channelCount = max(Int(format.mChannelsPerFrame), 1)
+
+        if isFloat, bitsPerChannel == 32 {
+            return mixFloatingPointBuffers(
+                buffers,
+                channelCount: channelCount,
+                isNonInterleaved: isNonInterleaved
+            )
+        }
+
+        if !isFloat, bitsPerChannel == 16 {
+            return mixInt16Buffers(
+                buffers,
+                channelCount: channelCount,
+                isNonInterleaved: isNonInterleaved
+            )
+        }
+
+        fputs("[system-audio] unsupported tap PCM format flags=\(flags) bits=\(bitsPerChannel)\n", stderr)
+        diagnosticsLock.withLock { $0.unsupportedFormatCount += 1 }
+        return nil
+    }
+
+    private func mixFloatingPointBuffers(
+        _ buffers: [CapturedAudioBuffer],
+        channelCount: Int,
+        isNonInterleaved: Bool
+    ) -> [Float]? {
+        var mono: [Float] = []
+        var channelsMixed = 0
+
+        for buffer in buffers {
+            let channels = isNonInterleaved ? max(Int(buffer.numberChannels), 1) : max(Int(buffer.numberChannels), channelCount)
+            let samples = buffer.data.withUnsafeBytes { rawBuffer in
+                Array(rawBuffer.bindMemory(to: Float.self))
+            }
+            guard !samples.isEmpty else { continue }
+
+            let frames = samples.count / channels
+            if mono.isEmpty {
+                mono = [Float](repeating: 0, count: frames)
+            }
+
+            let framesToMix = min(mono.count, frames)
+            for frame in 0..<framesToMix {
+                for channel in 0..<channels {
+                    mono[frame] += samples[frame * channels + channel]
+                }
+            }
+            channelsMixed += channels
+        }
+
+        guard channelsMixed > 0, !mono.isEmpty else { return nil }
+        let scale = 1.0 / Float(channelsMixed)
+        for index in mono.indices {
+            mono[index] *= scale
+        }
+        return mono
+    }
+
+    private func mixInt16Buffers(
+        _ buffers: [CapturedAudioBuffer],
+        channelCount: Int,
+        isNonInterleaved: Bool
+    ) -> [Float]? {
+        var mono: [Float] = []
+        var channelsMixed = 0
+
+        for buffer in buffers {
+            let channels = isNonInterleaved ? max(Int(buffer.numberChannels), 1) : max(Int(buffer.numberChannels), channelCount)
+            let samples = buffer.data.withUnsafeBytes { rawBuffer in
+                Array(rawBuffer.bindMemory(to: Int16.self))
+            }
+            guard !samples.isEmpty else { continue }
+
+            let frames = samples.count / channels
+            if mono.isEmpty {
+                mono = [Float](repeating: 0, count: frames)
+            }
+
+            let framesToMix = min(mono.count, frames)
+            for frame in 0..<framesToMix {
+                for channel in 0..<channels {
+                    mono[frame] += Float(samples[frame * channels + channel]) / 32768.0
+                }
+            }
+            channelsMixed += channels
+        }
+
+        guard channelsMixed > 0, !mono.isEmpty else { return nil }
+        let scale = 1.0 / Float(channelsMixed)
+        for index in mono.indices {
+            mono[index] *= scale
+        }
+        return mono
     }
 
     // MARK: - Permission
@@ -395,11 +540,8 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing {
     /// Check whether system audio capture permission (`kTCCServiceAudioCapture`)
     /// is granted by attempting to create a device tap on the default output device.
     static func checkSystemAudioPermission() -> Bool {
-        guard let outputDevice = defaultOutputDeviceTapTarget(),
-              let selfObjectID = currentProcessAudioObjectID()
-        else { return false }
-        let tapDesc = makeOutputDeviceTapDescription(
-            deviceUID: outputDevice.uid,
+        guard let selfObjectID = currentProcessAudioObjectID() else { return false }
+        let tapDesc = makeGlobalTapDescription(
             excludingProcessID: selfObjectID,
             name: "Muesli Permission Check"
         )
@@ -411,50 +553,6 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing {
             return true
         }
         return false
-    }
-
-    private struct OutputDeviceTapTarget {
-        let uid: String
-    }
-
-    private static func defaultOutputDeviceTapTarget() -> OutputDeviceTapTarget? {
-        guard let deviceID = defaultOutputDeviceID(),
-              let uid = deviceUID(for: deviceID)
-        else { return nil }
-        return OutputDeviceTapTarget(uid: uid)
-    }
-
-    /// Look up the default audio output device ID.
-    private static func defaultOutputDeviceID() -> AudioDeviceID? {
-        var deviceID: AudioDeviceID = 0
-        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        guard AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID
-        ) == noErr, deviceID != 0 else {
-            return nil
-        }
-        return deviceID
-    }
-
-    private static func deviceUID(for deviceID: AudioDeviceID) -> String? {
-        var uid: Unmanaged<CFString>?
-        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyDeviceUID,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        guard AudioObjectGetPropertyData(
-            deviceID, &address, 0, nil, &size, &uid
-        ) == noErr, let uid else {
-            return nil
-        }
-        return uid.takeRetainedValue() as String
     }
 
     /// Look up our process's AudioObjectID from the HAL process object list.
@@ -493,6 +591,21 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing {
             }
         }
         return nil
+    }
+
+    private static func audioTapStreamFormat(for tapID: AudioObjectID) throws -> AudioStreamBasicDescription {
+        var format = AudioStreamBasicDescription()
+        var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioTapPropertyFormat,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectGetPropertyData(tapID, &address, 0, nil, &size, &format)
+        guard status == noErr else {
+            throw RecorderError.tapFormatUnavailable(status)
+        }
+        return format
     }
 
     /// Trigger the macOS "System Audio Recording" permission dialog by briefly
@@ -620,15 +733,15 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing {
         guard isRecording else { return }
 
         fputs("[system-audio] default output device changed; rebuilding tap\n", stderr)
-        teardownTapAndAudioUnit()
+        teardownTapAndAudioDevice()
         guard isRecording else { return }
 
         do {
             try createTapAndAggregateDevice()
-            try setupAndStartAudioUnit()
+            try setupAndStartAudioDevice()
             fputs("[system-audio] CoreAudio tap capture restarted for default output device\n", stderr)
         } catch {
-            teardownTapAndAudioUnit()
+            teardownTapAndAudioDevice()
             isRecording = false
             isPaused = false
             onPCMSamples = nil
@@ -643,8 +756,9 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing {
         case noDefaultOutputDevice
         case tapCreationFailed(OSStatus)
         case aggregateDeviceCreationFailed(OSStatus)
-        case auhalNotFound
-        case auhalSetupFailed(String, OSStatus)
+        case coreAudioSetupFailed(String, OSStatus)
+        case deviceIOProcCreationFailed
+        case tapFormatUnavailable(OSStatus)
 
         var errorDescription: String? {
             switch self {
@@ -656,45 +770,34 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing {
                 return "Process tap creation failed (status: \(s))"
             case .aggregateDeviceCreationFailed(let s):
                 return "Aggregate device creation failed (status: \(s))"
-            case .auhalNotFound:
-                return "AUHAL audio component not found"
-            case .auhalSetupFailed(let step, let s):
-                return "AUHAL setup failed at '\(step)' (status: \(s))"
+            case .coreAudioSetupFailed(let step, let s):
+                return "CoreAudio setup failed at '\(step)' (status: \(s))"
+            case .deviceIOProcCreationFailed:
+                return "Could not create aggregate device IOProc"
+            case .tapFormatUnavailable(let s):
+                return "Could not read tap stream format (status: \(s))"
             }
         }
     }
 
-    private static let u32Size = UInt32(MemoryLayout<UInt32>.size)
-
     private func osCheck(_ status: OSStatus, _ label: String) throws {
         guard status == noErr else {
-            throw RecorderError.auhalSetupFailed(label, status)
+            throw RecorderError.coreAudioSetupFailed(label, status)
         }
     }
 
-    private func allocateRenderBuffer(for channels: UInt32) {
-        releaseRenderBuffer()
-        renderBufferCapacity = Int(Self.maxRenderFrames) * Int(channels) * MemoryLayout<Float>.size
-        renderBuffer = UnsafeMutableRawPointer.allocate(
-            byteCount: renderBufferCapacity,
-            alignment: MemoryLayout<Float>.alignment
-        )
-    }
+    private func teardownTapAndAudioDevice() {
+        activeCaptureGeneration &+= 1
+        resampler = nil
+        resamplerInputFormat = nil
+        resamplerOutputFormat = nil
 
-    private func releaseRenderBuffer() {
-        renderBuffer?.deallocate()
-        renderBuffer = nil
-        renderBufferCapacity = 0
-    }
-
-    private func teardownTapAndAudioUnit() {
-        if let au = audioUnit {
-            AudioOutputUnitStop(au)
-            AudioUnitUninitialize(au)
-            AudioComponentInstanceDispose(au)
+        if let procID = deviceIOProcID, aggregateDeviceID != kAudioObjectUnknown {
+            AudioDeviceStop(aggregateDeviceID, procID)
+            AudioDeviceDestroyIOProcID(aggregateDeviceID, procID)
         }
-        audioUnit = nil
-        releaseRenderBuffer()
+        deviceIOProcID = nil
+        deviceIOBlock = nil
 
         if aggregateDeviceID != kAudioObjectUnknown {
             AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
@@ -713,7 +816,7 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing {
         onPCMSamples = nil
 
         removeDefaultOutputDeviceListener()
-        teardownTapAndAudioUnit()
+        teardownTapAndAudioDevice()
 
         if let file = outputFile {
             file.closeFile()
@@ -727,30 +830,4 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing {
         totalBytesWritten = 0
     }
 
-    // MARK: - WAV Header
-
-    private enum WAVHeader {
-        static func create(dataSize: Int) -> Data {
-            let sampleRate = Int(CoreAudioSystemRecorder.targetSampleRate)
-            let channels = 1
-            let byteRate = sampleRate * channels * 16 / 8
-            let blockAlign = channels * 16 / 8
-
-            var header = Data()
-            header.append(contentsOf: "RIFF".utf8)
-            header.append(contentsOf: withUnsafeBytes(of: UInt32(36 + dataSize).littleEndian) { Array($0) })
-            header.append(contentsOf: "WAVE".utf8)
-            header.append(contentsOf: "fmt ".utf8)
-            header.append(contentsOf: withUnsafeBytes(of: UInt32(16).littleEndian) { Array($0) })
-            header.append(contentsOf: withUnsafeBytes(of: UInt16(1).littleEndian) { Array($0) })
-            header.append(contentsOf: withUnsafeBytes(of: UInt16(channels).littleEndian) { Array($0) })
-            header.append(contentsOf: withUnsafeBytes(of: UInt32(sampleRate).littleEndian) { Array($0) })
-            header.append(contentsOf: withUnsafeBytes(of: UInt32(byteRate).littleEndian) { Array($0) })
-            header.append(contentsOf: withUnsafeBytes(of: UInt16(blockAlign).littleEndian) { Array($0) })
-            header.append(contentsOf: withUnsafeBytes(of: UInt16(16).littleEndian) { Array($0) })
-            header.append(contentsOf: "data".utf8)
-            header.append(contentsOf: withUnsafeBytes(of: UInt32(dataSize).littleEndian) { Array($0) })
-            return header
-        }
-    }
 }

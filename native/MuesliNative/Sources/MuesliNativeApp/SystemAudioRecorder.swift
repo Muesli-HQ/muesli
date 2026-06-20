@@ -2,8 +2,9 @@ import AVFoundation
 import Foundation
 import ScreenCaptureKit
 import MuesliCore
+import os
 
-final class SystemAudioRecorder: NSObject, SCStreamOutput, SystemAudioCapturing {
+final class SystemAudioRecorder: NSObject, SCStreamOutput, SystemAudioCapturing, SystemAudioDiagnosticsProviding {
     var onPCMSamples: (([Int16]) -> Void)?
 
     private var stream: SCStream?
@@ -15,6 +16,38 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SystemAudioCapturing 
 
     private static let sampleRate: Double = 16_000
     private static let channels: Int = 1
+    private let diagnosticsLock = OSAllocatedUnfairLock(initialState: DiagnosticsState())
+
+    private struct DiagnosticsState {
+        var callbackCount = 0
+        var bufferCount = 0
+        var emptyBufferCount = 0
+        var unsupportedFormatCount = 0
+        var inputByteCount = 0
+        var bytesWritten = 0
+        var sourceSampleRate: Double = 0
+        var sourceChannels: UInt32 = 0
+        var preConversion = AudioSampleStats()
+        var postConversion = AudioSampleStats()
+    }
+
+    var diagnosticsSnapshot: SystemAudioCaptureDiagnosticsSnapshot {
+        diagnosticsLock.withLock { state in
+            SystemAudioCaptureDiagnosticsSnapshot(
+                backend: "ScreenCaptureKit",
+                callbackCount: state.callbackCount,
+                bufferCount: state.bufferCount,
+                emptyBufferCount: state.emptyBufferCount,
+                unsupportedFormatCount: state.unsupportedFormatCount,
+                inputByteCount: state.inputByteCount,
+                bytesWritten: state.bytesWritten,
+                sourceSampleRate: state.sourceSampleRate,
+                sourceChannels: state.sourceChannels,
+                preConversion: state.preConversion.snapshot(),
+                postConversion: state.postConversion.snapshot()
+            )
+        }
+    }
 
     override init() {
         super.init()
@@ -34,7 +67,7 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SystemAudioCapturing 
                 NSLocalizedDescriptionKey: "Could not open output file",
             ])
         }
-        file.write(Self.createWAVHeader(dataSize: 0))
+        file.write(WavWriter.header(dataSize: 0))
         outputFile = file
         outputURL = url
         totalBytesWritten = 0
@@ -87,7 +120,7 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SystemAudioCapturing 
 
         // Finalize WAV
         if let outputFile {
-            let header = Self.createWAVHeader(dataSize: totalBytesWritten)
+            let header = WavWriter.header(dataSize: totalBytesWritten)
             outputFile.seek(toFileOffset: 0)
             outputFile.write(header)
             outputFile.closeFile()
@@ -150,14 +183,27 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SystemAudioCapturing 
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .audio, isRecording, !isPaused else { return }
+        diagnosticsLock.withLock { $0.callbackCount += 1 }
 
-        guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
+        guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else {
+            diagnosticsLock.withLock { $0.emptyBufferCount += 1 }
+            return
+        }
         let length = CMBlockBufferGetDataLength(blockBuffer)
-        guard length > 0 else { return }
+        guard length > 0 else {
+            diagnosticsLock.withLock { $0.emptyBufferCount += 1 }
+            return
+        }
 
         // Get the audio format
         guard let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer) else { return }
         guard let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)?.pointee else { return }
+        diagnosticsLock.withLock { state in
+            state.bufferCount += 1
+            state.inputByteCount += length
+            state.sourceSampleRate = asbd.mSampleRate
+            state.sourceChannels = asbd.mChannelsPerFrame
+        }
 
         // Extract raw audio bytes
         var dataPointer: UnsafeMutablePointer<Int8>?
@@ -179,6 +225,8 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SystemAudioCapturing 
             }
 
             var int16Data = Data(count: outputSamples * 2)
+            var preConversion = [Float]()
+            preConversion.reserveCapacity(outputSamples)
             int16Data.withUnsafeMutableBytes { rawBuffer in
                 let int16Buffer = rawBuffer.bindMemory(to: Int16.self)
                 let channels = Int(asbd.mChannelsPerFrame)
@@ -194,49 +242,65 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SystemAudioCapturing 
                     } else {
                         sample = floatPointer[i]
                     }
+                    preConversion.append(sample)
                     // Clamp and convert to int16
                     let clamped = max(-1.0, min(1.0, sample))
                     int16Buffer[i] = Int16(clamped * 32767.0)
                 }
             }
+            let int16Samples = int16Data.withUnsafeBytes { rawBuffer in
+                Array(rawBuffer.bindMemory(to: Int16.self))
+            }
+            let bytesToWrite = int16Data.count
+            let preConversionSamples = preConversion
 
             outputFile?.write(int16Data)
-            totalBytesWritten += int16Data.count
-            onPCMSamples?(int16Data.withUnsafeBytes { rawBuffer in
-                Array(rawBuffer.bindMemory(to: Int16.self))
-            })
+            totalBytesWritten += bytesToWrite
+            diagnosticsLock.withLock { state in
+                state.bytesWritten += bytesToWrite
+                state.preConversion.addFloats(preConversionSamples)
+                state.postConversion.addInt16(int16Samples)
+            }
+            onPCMSamples?(int16Samples)
         } else {
-            // Already PCM int16, write directly
+            guard asbd.mFormatID == kAudioFormatLinearPCM,
+                  asbd.mBitsPerChannel == 16,
+                  abs(asbd.mSampleRate - Self.sampleRate) < 1.0,
+                  (asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved) == 0
+            else {
+                diagnosticsLock.withLock { $0.unsupportedFormatCount += 1 }
+                fputs("[system-audio] unsupported SCStream integer PCM format rate=\(asbd.mSampleRate) channels=\(asbd.mChannelsPerFrame) bits=\(asbd.mBitsPerChannel) flags=\(asbd.mFormatFlags)\n", stderr)
+                return
+            }
+
             let rawData = Data(bytes: dataPointer, count: length)
-            outputFile?.write(rawData)
-            totalBytesWritten += length
-            onPCMSamples?(rawData.withUnsafeBytes { rawBuffer in
+            let interleavedSamples = rawData.withUnsafeBytes { rawBuffer in
                 Array(rawBuffer.bindMemory(to: Int16.self))
-            })
+            }
+            let channels = max(Int(asbd.mChannelsPerFrame), 1)
+            let int16Samples: [Int16]
+            if channels == 1 {
+                int16Samples = interleavedSamples
+            } else {
+                let frameCount = interleavedSamples.count / channels
+                int16Samples = (0..<frameCount).map { frame in
+                    var sum = 0
+                    for channel in 0..<channels {
+                        sum += Int(interleavedSamples[frame * channels + channel])
+                    }
+                    return Int16(clamping: sum / channels)
+                }
+            }
+            let int16Data = int16Samples.withUnsafeBufferPointer { Data(buffer: $0) }
+            outputFile?.write(int16Data)
+            totalBytesWritten += int16Data.count
+            diagnosticsLock.withLock { state in
+                state.bytesWritten += int16Data.count
+                state.preConversion.addInt16(interleavedSamples)
+                state.postConversion.addInt16(int16Samples)
+            }
+            onPCMSamples?(int16Samples)
         }
-    }
-
-    // MARK: - WAV Header
-
-    private static func createWAVHeader(dataSize: Int) -> Data {
-        var header = Data()
-        let byteRate = Int(sampleRate) * channels * 16 / 8
-        let blockAlign = channels * 16 / 8
-
-        header.append(contentsOf: "RIFF".utf8)
-        header.append(contentsOf: withUnsafeBytes(of: UInt32(36 + dataSize).littleEndian) { Array($0) })
-        header.append(contentsOf: "WAVE".utf8)
-        header.append(contentsOf: "fmt ".utf8)
-        header.append(contentsOf: withUnsafeBytes(of: UInt32(16).littleEndian) { Array($0) })
-        header.append(contentsOf: withUnsafeBytes(of: UInt16(1).littleEndian) { Array($0) })
-        header.append(contentsOf: withUnsafeBytes(of: UInt16(channels).littleEndian) { Array($0) })
-        header.append(contentsOf: withUnsafeBytes(of: UInt32(sampleRate).littleEndian) { Array($0) })
-        header.append(contentsOf: withUnsafeBytes(of: UInt32(byteRate).littleEndian) { Array($0) })
-        header.append(contentsOf: withUnsafeBytes(of: UInt16(blockAlign).littleEndian) { Array($0) })
-        header.append(contentsOf: withUnsafeBytes(of: UInt16(16).littleEndian) { Array($0) })
-        header.append(contentsOf: "data".utf8)
-        header.append(contentsOf: withUnsafeBytes(of: UInt32(dataSize).littleEndian) { Array($0) })
-        return header
     }
 
     private func cleanupFailedStart() {

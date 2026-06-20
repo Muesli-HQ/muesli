@@ -157,7 +157,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
         menu.addItem(actionItem(title: "Settings…", action: #selector(MuesliController.openSettingsTab)))
-        menu.addItem(actionItem(title: "Check for Updates…", action: #selector(MuesliController.checkForUpdates)))
+        menu.addItem(checkForUpdatesItem())
         menu.addItem(.separator())
         menu.addItem(actionItem(title: "Quit", action: #selector(MuesliController.quitApp)))
     }
@@ -271,6 +271,17 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private func actionItem(title: String, action: Selector) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = controller
+        return item
+    }
+
+    private func checkForUpdatesItem() -> NSMenuItem {
+        let item = NSMenuItem(
+            title: "Check for Updates…",
+            action: #selector(MuesliController.checkForUpdates),
+            keyEquivalent: ""
+        )
+        item.target = controller
+        item.isEnabled = controller.updaterController != nil
         return item
     }
 }

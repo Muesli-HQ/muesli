@@ -15,8 +15,8 @@ enum TranscriptFormatter {
         diarizationSegments: [TimedSpeakerSegment]?,
         meetingStart: Date
     ) -> String {
-        // Bleed filtering is now handled upstream by MeetingBleedDetector
-        // (speaker-embedding comparison), not text-based heuristics.
+        // The formatter is intentionally source-agnostic: upstream capture decides
+        // which mic/system segments are valid, then this layer only labels/merges.
         let displayMicSegments = micSegments
         let taggedMic = displayMicSegments.map { TaggedSegment(segment: $0, speaker: "You") }
 
@@ -43,7 +43,7 @@ enum TranscriptFormatter {
         let tagged = (taggedMic + taggedSystem).sorted { $0.segment.start < $1.segment.start }
 
         // Consolidate consecutive segments from the same speaker into single lines
-        let consolidated = filterLowSignalSegments(consolidate(tagged))
+        let consolidated = consolidate(tagged)
 
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -98,40 +98,6 @@ enum TranscriptFormatter {
         ))
 
         return result
-    }
-
-    private static func filterLowSignalSegments(_ segments: [TaggedSegment]) -> [TaggedSegment] {
-        guard !segments.isEmpty else { return [] }
-
-        return segments.enumerated().compactMap { index, segment in
-            isLowSignalFragment(segment, at: index, in: segments) ? nil : segment
-        }
-    }
-
-    private static func isLowSignalFragment(
-        _ taggedSegment: TaggedSegment,
-        at index: Int,
-        in segments: [TaggedSegment]
-    ) -> Bool {
-        let normalized = normalizedText(taggedSegment.segment.text)
-        let compact = normalized.replacingOccurrences(of: " ", with: "")
-        let duration = max(taggedSegment.segment.end - taggedSegment.segment.start, 0)
-
-        if compact.isEmpty {
-            return true
-        }
-
-        if compact.count == 1 {
-            return true
-        }
-
-        guard compact.count <= 2, duration <= 0.45 else { return false }
-
-        return neighboringSegments(for: index, in: segments).contains { neighbor in
-            let neighborText = normalizedText(neighbor.segment.text).replacingOccurrences(of: " ", with: "")
-            guard neighborText.count >= 6 else { return false }
-            return temporalDistance(between: taggedSegment.segment, and: neighbor.segment) <= 0.35
-        }
     }
 
     /// Find the best-matching speaker for an ASR segment by time overlap with diarization segments.
@@ -204,92 +170,6 @@ enum TranscriptFormatter {
             return point - diarizationSegment.endTimeSeconds
         }
         return 0
-    }
-
-    private static func overlapDuration(
-        between lhs: SpeechSegment,
-        and rhs: SpeechSegment
-    ) -> TimeInterval {
-        max(0, min(lhs.end, rhs.end) - max(lhs.start, rhs.start))
-    }
-
-    private static func overlapCoverage(
-        of segment: SpeechSegment,
-        across otherSegments: [SpeechSegment]
-    ) -> Double {
-        let duration = max(segment.end - segment.start, 0.1)
-        let overlap = unionOverlapDuration(of: segment, across: otherSegments)
-        return overlap / duration
-    }
-
-    private static func unionOverlapDuration(
-        of segment: SpeechSegment,
-        across otherSegments: [SpeechSegment]
-    ) -> TimeInterval {
-        let clippedIntervals = otherSegments.compactMap { otherSegment -> (TimeInterval, TimeInterval)? in
-            let overlapStart = max(segment.start, otherSegment.start)
-            let overlapEnd = min(segment.end, otherSegment.end)
-            guard overlapEnd > overlapStart else { return nil }
-            return (overlapStart, overlapEnd)
-        }.sorted { lhs, rhs in
-            if lhs.0 == rhs.0 {
-                return lhs.1 < rhs.1
-            }
-            return lhs.0 < rhs.0
-        }
-
-        guard var current = clippedIntervals.first else { return 0 }
-        var total: TimeInterval = 0
-
-        for interval in clippedIntervals.dropFirst() {
-            if interval.0 <= current.1 {
-                current.1 = max(current.1, interval.1)
-            } else {
-                total += current.1 - current.0
-                current = interval
-            }
-        }
-
-        total += current.1 - current.0
-        return total
-    }
-
-    private static func temporalDistance(
-        between lhs: SpeechSegment,
-        and rhs: SpeechSegment
-    ) -> TimeInterval {
-        if overlapDuration(between: lhs, and: rhs) > 0 {
-            return 0
-        }
-        if lhs.end <= rhs.start {
-            return rhs.start - lhs.end
-        }
-        return lhs.start - rhs.end
-    }
-
-    private static func neighboringSegments(for index: Int, in segments: [TaggedSegment]) -> [TaggedSegment] {
-        var neighbors: [TaggedSegment] = []
-        if index > 0 {
-            neighbors.append(segments[index - 1])
-        }
-        if index + 1 < segments.count {
-            neighbors.append(segments[index + 1])
-        }
-        return neighbors
-    }
-
-    private static func normalizedText(_ text: String) -> String {
-        let lowercase = text.lowercased()
-        let replaced = lowercase.replacingOccurrences(
-            of: #"[^a-z0-9\s]"#,
-            with: " ",
-            options: .regularExpression
-        )
-        return replaced.replacingOccurrences(
-            of: #"\s+"#,
-            with: " ",
-            options: .regularExpression
-        ).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func appendText(_ lhs: String, _ rhs: String, gap: TimeInterval) -> String {

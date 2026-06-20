@@ -11,7 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let sparkleUpdateDelegate = SparkleUpdateDelegate()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        Self.installStandardEditMenu()
+        installStandardEditMenu()
 
         let telemetryConfig = TelemetryDeck.Config(appID: "7F2B7846-1CB5-4FE6-8ABC-56F217B06A86")
         TelemetryDeck.initialize(config: telemetryConfig)
@@ -29,7 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let updaterController = SPUStandardUpdaterController(
                     startingUpdater: true,
                     updaterDelegate: sparkleUpdateDelegate,
-                    userDriverDelegate: nil
+                    userDriverDelegate: sparkleUpdateDelegate
                 )
                 controller.updaterController = updaterController
                 self.updaterController = updaterController
@@ -63,11 +63,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return !feedURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private static func installStandardEditMenu() {
+    @objc func openPreferences(_ sender: Any?) {
+        controller?.openSettingsTab()
+    }
+
+    @objc func focusSearch(_ sender: Any?) {
+        controller?.focusSearchField()
+    }
+
+    private func installStandardEditMenu() {
         let mainMenu = NSMenu()
 
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu()
+        let settingsItem = NSMenuItem(
+            title: "Settings…",
+            action: #selector(AppDelegate.openPreferences(_:)),
+            keyEquivalent: ","
+        )
+        settingsItem.target = self
+        appMenu.addItem(settingsItem)
+        appMenu.addItem(.separator())
         appMenu.addItem(
             withTitle: "Quit \(AppIdentity.displayName)",
             action: #selector(NSApplication.terminate(_:)),
@@ -91,66 +107,91 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(withTitle: "Delete", action: #selector(NSText.delete(_:)), keyEquivalent: "")
         editMenu.addItem(.separator())
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenu.addItem(.separator())
+        let findItem = NSMenuItem(
+            title: "Find",
+            action: #selector(AppDelegate.focusSearch(_:)),
+            keyEquivalent: "f"
+        )
+        findItem.target = self
+        editMenu.addItem(findItem)
 
         editMenuItem.submenu = editMenu
         mainMenu.addItem(editMenuItem)
+
+        let windowMenuItem = NSMenuItem()
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(
+            withTitle: "Close Window",
+            action: #selector(NSWindow.performClose(_:)),
+            keyEquivalent: "w"
+        )
+        windowMenuItem.submenu = windowMenu
+        mainMenu.addItem(windowMenuItem)
+        NSApp.windowsMenu = windowMenu
+
         NSApp.mainMenu = mainMenu
     }
 }
 
 @MainActor
-final class SparkleUpdateDelegate: NSObject, SPUUpdaterDelegate {
+final class SparkleUpdateDelegate: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDelegate {
     weak var appState: AppState?
     private var lastPresentedAt: Date?
+    private var updateCycleGeneration = 0
 
     func updater(_ updater: SPUUpdater, mayPerform updateCheck: SPUUpdateCheck) throws {
+        updateCycleGeneration += 1
+        let generation = updateCycleGeneration
+        let restoreStatus = recoverableUpdateStatus(appState?.sparkleUpdateStatus ?? .idle)
         appState?.sparkleUpdateStatus = .checking
+        restoreStaleUpdateCheck(generation: generation, to: restoreStatus)
     }
 
     func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
-        appState?.sparkleUpdateStatus = .available(version: item.displayVersionString)
+        finishUpdateCheck(with: .available(version: item.displayVersionString))
     }
 
     func updaterDidNotFindUpdate(_ updater: SPUUpdater, error: Error) {
         let nsError = error as NSError
         if UpdateFailureGuidance.isNoUpdateError(nsError) {
-            appState?.sparkleUpdateStatus = .upToDate
+            finishUpdateCheck(with: .upToDate)
         } else {
-            appState?.sparkleUpdateStatus = .failed(message: nsError.localizedDescription)
+            finishUpdateCheck(with: .failed(message: nsError.localizedDescription))
         }
     }
 
     func updater(_ updater: SPUUpdater, didDownloadUpdate item: SUAppcastItem) {
-        appState?.sparkleUpdateStatus = .downloaded(version: item.displayVersionString)
+        finishUpdateCheck(with: .downloaded(version: item.displayVersionString))
     }
 
     func updater(_ updater: SPUUpdater, willInstallUpdate item: SUAppcastItem) {
-        appState?.sparkleUpdateStatus = .installing(version: item.displayVersionString)
+        finishUpdateCheck(with: .installing(version: item.displayVersionString))
     }
 
     func updater(_ updater: SPUUpdater, userDidMake choice: SPUUserUpdateChoice, forUpdate item: SUAppcastItem, state: SPUUserUpdateState) {
         switch choice {
         case .install:
-            appState?.sparkleUpdateStatus = .installing(version: item.displayVersionString)
+            finishUpdateCheck(with: .installing(version: item.displayVersionString))
         case .dismiss where state.stage == .downloaded:
-            appState?.sparkleUpdateStatus = .downloaded(version: item.displayVersionString)
+            finishUpdateCheck(with: .downloaded(version: item.displayVersionString))
         case .dismiss:
-            appState?.sparkleUpdateStatus = .available(version: item.displayVersionString)
+            finishUpdateCheck(with: .available(version: item.displayVersionString))
         case .skip:
-            appState?.sparkleUpdateStatus = .idle
+            finishUpdateCheck(with: .idle)
         @unknown default:
-            appState?.sparkleUpdateStatus = .available(version: item.displayVersionString)
+            finishUpdateCheck(with: .available(version: item.displayVersionString))
         }
     }
 
     func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
         let nsError = error as NSError
         if UpdateFailureGuidance.isNoUpdateError(nsError) {
-            appState?.sparkleUpdateStatus = .upToDate
+            finishUpdateCheck(with: .upToDate)
             return
         }
 
-        appState?.sparkleUpdateStatus = .failed(message: nsError.localizedDescription)
+        finishUpdateCheck(with: .failed(message: nsError.localizedDescription))
         guard UpdateFailureGuidance.shouldShowFallback(for: nsError) else { return }
 
         // Sparkle shows its own error alert first. Delay briefly so this
@@ -168,10 +209,46 @@ final class SparkleUpdateDelegate: NSObject, SPUUpdaterDelegate {
         // didAbortWithError is the primary error callback; this keeps the
         // final-cycle handler self-contained for any Sparkle path that ends here.
         if UpdateFailureGuidance.isNoUpdateError(nsError) {
-            appState?.sparkleUpdateStatus = .upToDate
+            finishUpdateCheck(with: .upToDate)
         } else {
-            appState?.sparkleUpdateStatus = .failed(message: nsError.localizedDescription)
+            finishUpdateCheck(with: .failed(message: nsError.localizedDescription))
         }
+    }
+
+    private func finishUpdateCheck(with status: SparkleUpdateStatus) {
+        updateCycleGeneration += 1
+        appState?.sparkleUpdateStatus = status
+    }
+
+    private func restoreStaleUpdateCheck(generation: Int, to restoreStatus: SparkleUpdateStatus) {
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            guard let self, self.updateCycleGeneration == generation else { return }
+            guard case .checking = self.appState?.sparkleUpdateStatus else { return }
+            self.finishUpdateCheck(with: restoreStatus)
+        }
+    }
+
+    private func recoverableUpdateStatus(_ status: SparkleUpdateStatus) -> SparkleUpdateStatus {
+        switch status {
+        case .checking, .busy:
+            return .idle
+        default:
+            return status
+        }
+    }
+
+    nonisolated func standardUserDriverWillHandleShowingUpdate(
+        _ handleShowingUpdate: Bool,
+        forUpdate update: SUAppcastItem,
+        state: SPUUserUpdateState
+    ) {
+        guard handleShowingUpdate else { return }
+        activateBeforeSparklePresentsUI()
+    }
+
+    nonisolated func standardUserDriverWillShowModalAlert() {
+        activateBeforeSparklePresentsUI()
     }
 
     private func showManualInstallGuidance() {
@@ -192,12 +269,38 @@ final class SparkleUpdateDelegate: NSObject, SPUUpdaterDelegate {
             NSWorkspace.shared.open(url)
         }
     }
+
+    private nonisolated func activateBeforeSparklePresentsUI() {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated {
+                Self.activateApplicationForSparkle()
+            }
+        } else {
+            // Sparkle calls this immediately before presenting update UI.
+            // Complete activation before returning so LSUIElement update
+            // prompts are ordered in front of the current app. This block only
+            // performs AppKit activation and does not wait on Sparkle work.
+            DispatchQueue.main.sync {
+                MainActor.assumeIsolated {
+                    Self.activateApplicationForSparkle()
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private static func activateApplicationForSparkle() {
+        // Sparkle UI is opened from an LSUIElement menu-bar app. This is a
+        // user-initiated update action, so use strong activation even though
+        // AppKit deprecated the argumented API on macOS 14.
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
 }
 
 enum UpdateFailureGuidance {
     private static let noUpdateErrorCode = 1001
 
-    static let downloadPageURLString = "https://phequals7.github.io/muesli/"
+    static let downloadPageURLString = "https://muesli-hq.github.io/muesli/"
 
     static let message = """
     Please quit Muesli, reopen it from Applications, and try the update once more.

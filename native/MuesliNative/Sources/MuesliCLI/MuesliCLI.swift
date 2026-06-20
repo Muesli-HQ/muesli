@@ -283,7 +283,7 @@ struct CommandSpecPayload: Encodable {
 }
 
 @main
-struct MuesliCLI: ParsableCommand {
+struct MuesliCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "muesli-cli",
         abstract: "Agent-friendly CLI for local Muesli meetings and dictations.",

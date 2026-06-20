@@ -30,14 +30,29 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/muesli_spm_cache.sh"
+PACKAGE_DIR="$ROOT/native/MuesliNative"
+SWIFTPM_SCRATCH_PATH=""
+SWIFT_TEST_ARGS=(--package-path "$PACKAGE_DIR")
+BUILD_ENV=()
+# The release channel is intentionally shared across worktrees. Do not run this
+# script concurrently from multiple worktrees unless you set an isolated
+# MUESLI_SWIFTPM_SCRATCH_PATH or MUESLI_SWIFTPM_SCRATCH_CHANNEL.
+if ! muesli_spm_scratch_disabled; then
+  SWIFTPM_SCRATCH_PATH="$(muesli_resolve_spm_scratch_path release)"
+  SWIFT_TEST_ARGS+=(--scratch-path "$SWIFTPM_SCRATCH_PATH")
+  BUILD_ENV+=(MUESLI_SWIFTPM_SCRATCH_PATH="$SWIFTPM_SCRATCH_PATH")
+else
+  BUILD_ENV+=(MUESLI_DISABLE_SWIFTPM_SCRATCH_PATH=1)
+fi
 PROFILE_NAME="${MUESLI_NOTARY_PROFILE:-MuesliNotary}"
 SIGN_IDENTITY="${MUESLI_SIGN_IDENTITY:-Developer ID Application: Pranav Hari Guruvayurappan (58W55QJ567)}"
 OUTPUT_DIR="$ROOT/dist-release"
 INSTALL_DIR="${MUESLI_RELEASE_INSTALL_DIR:-$OUTPUT_DIR/install-root}"
 APP_DIR="${MUESLI_RELEASE_APP_DIR:-$INSTALL_DIR/Muesli.app}"
-GENERATE_APPCAST="$ROOT/native/MuesliNative/.build/artifacts/sparkle/Sparkle/bin/generate_appcast"
+GENERATE_APPCAST="$(muesli_spm_artifacts_dir "$PACKAGE_DIR" "$SWIFTPM_SCRATCH_PATH")/sparkle/Sparkle/bin/generate_appcast"
 UPDATE_APPCAST_RELEASE_NOTES="$ROOT/scripts/update_appcast_release_notes.py"
-TAP_REPO="${MUESLI_TAP_REPO:-pHequals7/homebrew-muesli}"
+TAP_REPO="${MUESLI_TAP_REPO:-Muesli-HQ/homebrew-muesli}"
 TAP_CASK_REL_PATH="${MUESLI_TAP_CASK_REL_PATH:-Casks/m/muesli.rb}"
 SKIP_TAP_UPDATE="${MUESLI_SKIP_TAP_UPDATE:-0}"
 VERIFY_DIR=""
@@ -86,17 +101,12 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 
-if [[ ! -x "$GENERATE_APPCAST" ]]; then
-  echo "ERROR: generate_appcast not found at $GENERATE_APPCAST" >&2
-  exit 1
-fi
-
 if [[ ! -f "$UPDATE_APPCAST_RELEASE_NOTES" ]]; then
   echo "ERROR: update_appcast_release_notes.py not found at $UPDATE_APPCAST_RELEASE_NOTES" >&2
   exit 1
 fi
 
-DOWNLOAD_URL="https://github.com/pHequals7/muesli/releases/download/v${VERSION}/Muesli-${VERSION}.dmg"
+DOWNLOAD_URL="https://github.com/Muesli-HQ/muesli/releases/download/v${VERSION}/Muesli-${VERSION}.dmg"
 TAG="v${VERSION}"
 RELEASE_TITLE="Muesli ${VERSION}"
 RELEASE_NOTES="$(cat <<EOF
@@ -151,15 +161,29 @@ sed -i '' "s/^DEFAULT_APP_VERSION=.*/DEFAULT_APP_VERSION=\"${VERSION}\"/" "$ROOT
 
 # --- Step 1: Run tests ---
 echo "[1/13] Running tests..."
-swift test --package-path "$ROOT/native/MuesliNative"
+if [[ -n "$SWIFTPM_SCRATCH_PATH" ]]; then
+  mkdir -p "$SWIFTPM_SCRATCH_PATH"
+  echo "  SwiftPM scratch path: $SWIFTPM_SCRATCH_PATH"
+else
+  echo "  SwiftPM scratch path: package-local .build"
+fi
+swift test "${SWIFT_TEST_ARGS[@]}"
 echo "  Tests passed."
 
 # --- Step 2: Build and sign ---
 echo "[2/13] Building and signing..."
 rm -rf "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
-echo "y" | MUESLI_INSTALL_DIR="$INSTALL_DIR" "$ROOT/scripts/build_native_app.sh" > /dev/null 2>&1
+RELEASE_BUILD_ENV=(
+  MUESLI_INSTALL_DIR="$INSTALL_DIR"
+  "${BUILD_ENV[@]}"
+)
+echo "y" | env "${RELEASE_BUILD_ENV[@]}" "$ROOT/scripts/build_native_app.sh" > /dev/null 2>&1
 echo "  Installed to $APP_DIR"
+if [[ ! -x "$GENERATE_APPCAST" ]]; then
+  echo "ERROR: generate_appcast not found at $GENERATE_APPCAST" >&2
+  exit 1
+fi
 
 # Verify signature
 FLAGS=$(codesign -dvvv "$APP_DIR" 2>&1 | grep -o 'flags=0x[0-9a-f]*([^)]*)')
@@ -375,7 +399,7 @@ echo "[12/13] Updating appcast and release metadata..."
 "$GENERATE_APPCAST" "$OUTPUT_DIR" -o "$ROOT/docs/appcast.xml"
 
 # Point appcast enclosures at GitHub Releases, not GitHub Pages.
-perl -0pi -e 's{https://pHequals7\.github\.io/muesli/(Muesli-([0-9][0-9A-Za-z\.\-]*)\.dmg)}{"https://github.com/pHequals7/muesli/releases/download/v$2/$1"}ge' "$ROOT/docs/appcast.xml"
+perl -0pi -e 's{https://muesli-hq\.github\.io/muesli/(Muesli-([0-9][0-9A-Za-z\.\-]*)\.dmg)}{"https://github.com/Muesli-HQ/muesli/releases/download/v$2/$1"}ge' "$ROOT/docs/appcast.xml"
 
 # Delta artifacts are not hosted, so strip delta enclosures from the appcast.
 perl -0pi -e 's{^\h*<enclosure\b[^>]*\bsparkle:deltaFrom="[^"]*"[^>]*/>\n}{}mg' "$ROOT/docs/appcast.xml"
@@ -385,8 +409,8 @@ printf '%s\n' "$RELEASE_NOTES" | python3 "$UPDATE_APPCAST_RELEASE_NOTES" \
   --short-version "$VERSION"
 
 # Keep the marketing/docs surface aligned with the published GitHub Release.
-sed -i '' "s|https://github.com/pHequals7/muesli/releases/download/[^\"]*\\.dmg|$DOWNLOAD_URL|g" "$ROOT/docs/index.html"
-sed -i '' "s|https://github.com/pHequals7/muesli/releases/download/.*\\.dmg|$DOWNLOAD_URL|g" "$ROOT/docs/llms.txt"
+sed -i '' "s|https://github.com/Muesli-HQ/muesli/releases/download/[^\"]*\\.dmg|$DOWNLOAD_URL|g" "$ROOT/docs/index.html"
+sed -i '' "s|https://github.com/Muesli-HQ/muesli/releases/download/.*\\.dmg|$DOWNLOAD_URL|g" "$ROOT/docs/llms.txt"
 
 echo "  Verifying Sparkle update flow metadata..."
 "$ROOT/scripts/verify_update_flow.sh" \
