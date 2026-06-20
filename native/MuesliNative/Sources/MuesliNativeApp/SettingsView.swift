@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import SwiftUI
 import MuesliCore
@@ -179,8 +180,12 @@ struct SettingsView: View {
             if tab == .settings {
                 refreshDownloadedModelOptions()
                 refreshDictationInputDevices()
-                refreshPermissionStatuses()
+                refreshPermissionStatuses(refreshLaunchAtLogin: true)
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            guard appState.selectedTab == .settings else { return }
+            refreshPermissionStatuses(refreshLaunchAtLogin: true)
         }
         .onChange(of: appState.selectedBackend) { _, _ in
             refreshDownloadedModelOptions()
@@ -1376,7 +1381,7 @@ struct SettingsView: View {
     }
 
     private func startPermissionPolling() {
-        refreshPermissionStatuses()
+        refreshPermissionStatuses(refreshLaunchAtLogin: true)
         permissionPollTimer?.invalidate()
         let timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
             refreshPermissionStatuses()
@@ -1390,12 +1395,14 @@ struct SettingsView: View {
         permissionPollTimer = nil
     }
 
-    private func refreshPermissionStatuses() {
+    private func refreshPermissionStatuses(refreshLaunchAtLogin: Bool = false) {
         micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         accessibilityGranted = AXIsProcessTrusted()
         inputMonitoringGranted = CGPreflightListenEventAccess()
         screenRecordingGranted = CGPreflightScreenCaptureAccess()
-        controller.refreshLaunchAtLoginState()
+        if refreshLaunchAtLogin {
+            controller.refreshLaunchAtLoginState()
+        }
         if screenRecordingGranted && pendingScreenContextEnable {
             clearPendingScreenContextEnable()
             controller.updateConfig { $0.enableScreenContext = true }

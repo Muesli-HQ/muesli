@@ -252,17 +252,9 @@ struct MeetingListItemView: View {
     }
 
     private func formatMeta() -> String {
-        let time = formatTime(record.startTime)
+        let time = MeetingBrowserLogic.formatStartTime(record.startTime)
         let duration = formatDuration(record.durationSeconds)
         return "\(time)  \u{2022}  \(duration)"
-    }
-
-    private func formatTime(_ raw: String) -> String {
-        let clean = raw.replacingOccurrences(of: "T", with: " ")
-        if clean.count > 16 {
-            return String(clean.prefix(16))
-        }
-        return clean
     }
 
     private func formatDuration(_ seconds: Double) -> String {

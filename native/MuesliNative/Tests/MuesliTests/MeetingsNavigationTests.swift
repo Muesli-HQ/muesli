@@ -878,6 +878,34 @@ struct MeetingBrowserLogicTests {
         #expect(filtered.map(\.id) == [12, 11, 10])
     }
 
+    @Test("formatStartTime converts UTC ISO timestamps to the requested timezone")
+    func formatStartTimeConvertsUTC() {
+        let timeZone = TimeZone(identifier: "America/Los_Angeles")!
+        guard let date = MeetingBrowserLogic.parseDate("2025-06-15T19:30:45Z") else {
+            Issue.record("Expected ISO timestamp to parse")
+            return
+        }
+
+        let formatted = MeetingBrowserLogic.formatStartTime(
+            "2025-06-15T19:30:45Z",
+            locale: Locale(identifier: "en_US"),
+            timeZone: timeZone
+        )
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+
+        #expect(components.year == 2025)
+        #expect(components.month == 6)
+        #expect(components.day == 15)
+        #expect(components.hour == 12)
+        #expect(components.minute == 30)
+        #expect(formatted.contains("Jun 15, 2025"))
+        #expect(formatted.contains("12:30"))
+        #expect(formatted.localizedCaseInsensitiveContains("PM"))
+    }
+
     private static func isoDate(daysAgo: Int, now: Date, calendar: Calendar) -> String {
         let date = calendar.date(byAdding: .day, value: -daysAgo, to: now) ?? now
         let formatter = ISO8601DateFormatter()

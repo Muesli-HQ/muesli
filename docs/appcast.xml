@@ -6,6 +6,34 @@
         <language>en</language>
         <!-- Items are added by generate_appcast or the release script -->
         <item>
+            <title>0.7.0</title>
+            <pubDate>Thu, 11 Jun 2026 23:46:47 -0700</pubDate>
+            <description><![CDATA[
+<h2>Muesli 0.7.0</h2>
+<p>This release focuses on faster dictation start, more reliable meeting microphone capture, and the completed move to the Muesli HQ release/update infrastructure.</p>
+<h3>What's New</h3>
+<ul>
+<li>Faster dictation activation: dictation now uses the AudioQueue-backed recorder path by default for both Automatic and explicitly selected microphones, reducing hotkey-to-mic latency.</li>
+<li>Better microphone routing: Muesli now keeps dictation and meeting capture app-scoped where possible, honors your selected microphone, and avoids holding idle mic resources after dictation.</li>
+<li>More reliable meeting capture: meetings now choose a safer microphone route before recording starts, with health checks that can warn when the local mic path is silent or degraded.</li>
+<li>Live meeting transcript view: active meetings can show an incremental Live transcript, and checkpoint recovery can preserve partial transcript text if the app is interrupted.</li>
+<li>Fewer false meeting prompts: scheduled meeting and browser-audio detection have been tightened to avoid prompts from unrelated audio or stale meeting signals.</li>
+<li>Update infrastructure migration: Sparkle feeds, release assets, download links, and Homebrew metadata now use the Muesli-HQ organization paths.</li>
+</ul>
+<h3>Quality and Release Validation</h3>
+<ul>
+<li>Updated Sparkle to 2.9.3.</li>
+<li>Expanded tests around AudioQueue fallback, route-aware dictation, route-aware meeting mic capture, live transcript recovery, scheduled meeting notifications, VAD boundaries, and update-flow validation.</li>
+<li>Signed, notarized, stapled, and verified by Apple.</li>
+</ul>
+]]></description>
+            <sparkle:version>0.7.0</sparkle:version>
+            <sparkle:shortVersionString>0.7.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.7.0/Muesli-0.7.0.dmg" length="73691616" type="application/octet-stream" sparkle:edSignature="PcVwwF7cnOdOH20cN95tUwDohLh4KfJ5Y5Hc+H95Uy2eGZQINvUK25HJCSCqecszxSovLonnmq2JcyBsXFWMDw=="/>
+        </item>
+        <item>
             <title>0.6.9</title>
             <pubDate>Wed, 27 May 2026 23:34:28 +0530</pubDate>
             <description><![CDATA[
@@ -27,8 +55,7 @@
             <sparkle:minimumSystemVersion>10.13</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
             <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.6.9/Muesli-0.6.9.dmg" length="73446621" type="application/octet-stream" sparkle:edSignature="uK+zNpzCPytfT9O+1HvkhoHeh3VkhGF/GxLxu495eoAxwPMrxRrs83t5V7DozGoEry/9K6k7aLiZKLEg8/IQAA=="/>
-            <sparkle:deltas>
-            </sparkle:deltas>
+            <sparkle:deltas/>
         </item>
         <item>
             <title>0.6.8</title>
@@ -39,15 +66,6 @@
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
             <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.6.8/Muesli-0.6.8.dmg" length="73414000" type="application/octet-stream" sparkle:edSignature="cHC0J/iCNuFKxGQLWhT85JIQDEGcM5bodINux+x5XxGCJ90Nb7lXkT0/mW0t42SXx7S9tZ+5o2A6D5OITQ0DDA=="/>
             <sparkle:deltas/>
-        </item>
-        <item>
-            <title>0.6.7</title>
-            <pubDate>Mon, 11 May 2026 10:48:53 +0530</pubDate>
-            <sparkle:version>0.6.7</sparkle:version>
-            <sparkle:shortVersionString>0.6.7</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>10.13</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.6.7/Muesli-0.6.7.dmg" length="63371647" type="application/octet-stream" sparkle:edSignature="9MsAH/ykgy/odyEO11DpO0r1dyZTLIyCzouo7VKm4Zctr1ffMnc2le1JsnV2GIp+qMwUU9VWxYxvxzj0DC5XBA=="/>
         </item>
     </channel>
 </rss>

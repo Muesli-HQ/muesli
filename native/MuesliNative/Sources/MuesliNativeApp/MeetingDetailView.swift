@@ -1412,17 +1412,9 @@ struct MeetingDetailView: View {
     }
 
     private func formatMeta(_ meeting: MeetingRecord) -> String {
-        let time = formatTime(meeting.startTime)
+        let time = MeetingBrowserLogic.formatStartTime(meeting.startTime)
         let duration = formatDuration(meeting.durationSeconds)
         return "\(time)  \u{2022}  \(duration)  \u{2022}  \(meeting.wordCount) words"
-    }
-
-    private func formatTime(_ raw: String) -> String {
-        let clean = raw.replacingOccurrences(of: "T", with: " ")
-        if clean.count > 16 {
-            return String(clean.prefix(16))
-        }
-        return clean
     }
 
     private func formatDuration(_ seconds: Double) -> String {
