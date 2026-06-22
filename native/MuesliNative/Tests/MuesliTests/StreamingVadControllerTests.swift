@@ -24,6 +24,21 @@ private actor StreamingVadTestProbe {
     }
 }
 
+private final class StreamingVadBoundaryProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var countStorage = 0
+
+    var count: Int {
+        lock.withLock { countStorage }
+    }
+
+    func boundaryTriggered() {
+        lock.withLock {
+            countStorage += 1
+        }
+    }
+}
+
 @Suite("StreamingVadController", .serialized)
 struct StreamingVadControllerTests {
     @Test("serializes streaming VAD processing to a single in-flight chunk")
@@ -92,6 +107,7 @@ struct StreamingVadControllerTests {
     @Test("emits a chunk boundary when streaming VAD detects speech end")
     func emitsChunkBoundaryOnSpeechEnd() async throws {
         let probe = StreamingVadTestProbe()
+        let boundaryProbe = StreamingVadBoundaryProbe()
         let controller = StreamingVadController(
             minChunkDuration: 0,
             maxChunkDuration: 3600,
@@ -108,19 +124,19 @@ struct StreamingVadControllerTests {
         )
 
         controller.onChunkBoundary = {
-            Task { await probe.boundaryTriggered() }
+            boundaryProbe.boundaryTriggered()
         }
 
         controller.start()
         controller.processAudio([Float](repeating: 0, count: VadManager.chunkSize))
 
         let deadline = ContinuousClock.now + .seconds(3)
-        while await probe.boundaryCount < 1, ContinuousClock.now < deadline {
+        while boundaryProbe.count < 1, ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(20))
         }
         controller.stop()
 
-        #expect(await probe.boundaryCount == 1)
+        #expect(boundaryProbe.count == 1)
     }
 
     @Test("ignores stale VAD results after stop and restart")

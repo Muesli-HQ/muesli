@@ -210,6 +210,9 @@ struct MeetingListItemView: View {
     }
 
     private var sourceIndicator: AnyView? {
+        if let label = SyncOriginDisplay.badgeLabel(forMeetingSource: record.source) {
+            return AnyView(SyncOriginBadge(label: label))
+        }
         if isImportedAudio {
             return AnyView(sourceBadge(icon: "square.and.arrow.down", label: "Imported", help: "Imported audio"))
         }
@@ -252,17 +255,9 @@ struct MeetingListItemView: View {
     }
 
     private func formatMeta() -> String {
-        let time = formatTime(record.startTime)
+        let time = MeetingBrowserLogic.formatStartTime(record.startTime)
         let duration = formatDuration(record.durationSeconds)
         return "\(time)  \u{2022}  \(duration)"
-    }
-
-    private func formatTime(_ raw: String) -> String {
-        let clean = raw.replacingOccurrences(of: "T", with: " ")
-        if clean.count > 16 {
-            return String(clean.prefix(16))
-        }
-        return clean
     }
 
     private func formatDuration(_ seconds: Double) -> String {

@@ -24,7 +24,7 @@ struct BackendOptionTests {
 
     @Test("backend field is one of the known backends")
     func knownBackends() {
-        let known: Set<String> = ["fluidaudio", "whisper", "qwen", "nemotron", "canary", "cohere"]
+        let known: Set<String> = ["fluidaudio", "whisper", "qwen", "nemotron", "canary", "cohere", "sensevoice"]
         for option in BackendOption.all {
             #expect(known.contains(option.backend), "Unknown backend: \(option.backend)")
         }
@@ -64,6 +64,7 @@ struct BackendOptionTests {
         #expect(BackendOption.all.contains(.qwen3Asr))
         #expect(BackendOption.all.contains(.canaryQwen))
         #expect(BackendOption.all.contains(.cohereTranscribe))
+        #expect(BackendOption.all.contains(.senseVoiceSmall))
         #expect(BackendOption.all.contains(.nemotronStreaming))
     }
 
@@ -71,6 +72,13 @@ struct BackendOptionTests {
     func cohereBackend() {
         #expect(BackendOption.cohereTranscribe.backend == "cohere")
         #expect(BackendOption.cohereTranscribe.model.contains("cohere"))
+    }
+
+    @Test("SenseVoice uses native FluidAudio CoreML model")
+    func senseVoiceBackend() {
+        #expect(BackendOption.senseVoiceSmall.backend == "sensevoice")
+        #expect(BackendOption.senseVoiceSmall.model == "FluidInference/sensevoice-small-coreml")
+        #expect(BackendOption.senseVoiceSmall.description.contains("FluidAudio"))
     }
 
     @Test("Cohere is not in experimental list")
@@ -451,6 +459,10 @@ struct AppConfigTests {
         #expect(config.meetingHookEnabled == false)
         #expect(config.meetingHookPath.isEmpty)
         #expect(config.meetingHookTimeoutSeconds == 30)
+        #expect(config.contributionPromptNextWordCount == nil)
+        #expect(config.contributionPromptNextMeetingCount == nil)
+        #expect(config.contributionGitHubStarClicked == false)
+        #expect(config.contributionBuyMeCoffeeClicked == false)
     }
 
     @Test("JSON encode/decode round-trip")
@@ -492,6 +504,10 @@ struct AppConfigTests {
         config.customLLMAPIKey = "custom-key"
         config.customLLMModel = "custom-model"
         config.customLLMFormat = "anthropic"
+        config.contributionPromptNextWordCount = 31_000
+        config.contributionPromptNextMeetingCount = 75
+        config.contributionGitHubStarClicked = true
+        config.contributionBuyMeCoffeeClicked = false
 
         let data = try JSONEncoder().encode(config)
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
@@ -529,11 +545,17 @@ struct AppConfigTests {
         #expect(decoded.customLLMAPIKey == "custom-key")
         #expect(decoded.customLLMModel == "custom-model")
         #expect(decoded.customLLMFormat == "anthropic")
+        #expect(decoded.contributionPromptNextWordCount == 31_000)
+        #expect(decoded.contributionPromptNextMeetingCount == 75)
+        #expect(decoded.contributionGitHubStarClicked == true)
+        #expect(decoded.contributionBuyMeCoffeeClicked == false)
     }
 
     @Test("JSON coding keys use snake_case")
     func snakeCaseKeys() throws {
-        let config = AppConfig()
+        var config = AppConfig()
+        config.contributionPromptNextWordCount = 1_000
+        config.contributionPromptNextMeetingCount = 25
         let data = try JSONEncoder().encode(config)
         let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
 
@@ -564,6 +586,10 @@ struct AppConfigTests {
         #expect(json["meeting_hook_enabled"] != nil)
         #expect(json["meeting_hook_path"] != nil)
         #expect(json["meeting_hook_timeout_seconds"] != nil)
+        #expect(json["contribution_prompt_next_word_count"] != nil)
+        #expect(json["contribution_prompt_next_meeting_count"] != nil)
+        #expect(json["contribution_github_star_clicked"] != nil)
+        #expect(json["contribution_buy_me_coffee_clicked"] != nil)
         #expect(json["lmstudio_url"] != nil)
         #expect(json["lmstudio_model"] != nil)
         #expect(json["custom_llm_url"] != nil)

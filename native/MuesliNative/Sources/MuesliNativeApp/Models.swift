@@ -91,6 +91,15 @@ struct BackendOption: Equatable {
         recommended: false
     )
 
+    static let senseVoiceSmall = BackendOption(
+        backend: "sensevoice",
+        model: "FluidInference/sensevoice-small-coreml",
+        label: "SenseVoice Small",
+        sizeLabel: SenseVoiceTranscriber.downloadedModelSizeLabel,
+        description: "FunASR SenseVoiceSmall via FluidAudio. INT8 CoreML/ANE on macOS 14+, 50+ languages. Non-autoregressive with built-in punctuation.",
+        recommended: false
+    )
+
     // Default alias
     static let whisper = parakeetMultilingual
 
@@ -112,7 +121,7 @@ struct BackendOption: Equatable {
     )
 
     static let experimental: [BackendOption] = [
-        .qwen3Asr, .canaryQwen, .nemotronStreaming,
+        .senseVoiceSmall, .qwen3Asr, .canaryQwen, .nemotronStreaming,
     ]
 
     /// Models available for download and use.
@@ -178,6 +187,8 @@ struct BackendOption: Equatable {
             return CanaryQwenModelStore.isAvailableLocally()
         case "cohere":
             return CohereTranscribeModelStore.isAvailableLocally()
+        case "sensevoice":
+            return SenseVoiceTranscriber.isModelDownloaded()
         default:
             return false
         }
@@ -775,6 +786,12 @@ struct AppConfig: Codable {
     var meetingHookEnabled: Bool = false
     var meetingHookPath: String = ""
     var meetingHookTimeoutSeconds: Int = 30
+    var iCloudSyncEnabled: Bool = false
+    var showIOSCompanionPrompt: Bool = true
+    var contributionPromptNextWordCount: Int?
+    var contributionPromptNextMeetingCount: Int?
+    var contributionGitHubStarClicked: Bool = false
+    var contributionBuyMeCoffeeClicked: Bool = false
 
     enum CodingKeys: String, CodingKey {
         case dictationHotkey = "dictation_hotkey"
@@ -853,6 +870,12 @@ struct AppConfig: Codable {
         case meetingHookEnabled = "meeting_hook_enabled"
         case meetingHookPath = "meeting_hook_path"
         case meetingHookTimeoutSeconds = "meeting_hook_timeout_seconds"
+        case iCloudSyncEnabled = "icloud_sync_enabled"
+        case showIOSCompanionPrompt = "show_ios_companion_prompt"
+        case contributionPromptNextWordCount = "contribution_prompt_next_word_count"
+        case contributionPromptNextMeetingCount = "contribution_prompt_next_meeting_count"
+        case contributionGitHubStarClicked = "contribution_github_star_clicked"
+        case contributionBuyMeCoffeeClicked = "contribution_buy_me_coffee_clicked"
     }
 
     init() {}
@@ -896,6 +919,8 @@ struct AppConfig: Codable {
         mutedMeetingDetectionAppBundleIDs = (try? c.decode([String].self, forKey: .mutedMeetingDetectionAppBundleIDs)) ?? defaults.mutedMeetingDetectionAppBundleIDs
         meetingRecordingSavePolicy = (try? c.decode(MeetingRecordingSavePolicy.self, forKey: .meetingRecordingSavePolicy)) ?? defaults.meetingRecordingSavePolicy
         darkMode = (try? c.decode(Bool.self, forKey: .darkMode)) ?? defaults.darkMode
+        iCloudSyncEnabled = (try? c.decode(Bool.self, forKey: .iCloudSyncEnabled)) ?? defaults.iCloudSyncEnabled
+        showIOSCompanionPrompt = (try? c.decode(Bool.self, forKey: .showIOSCompanionPrompt)) ?? defaults.showIOSCompanionPrompt
         enableDoubleTapDictation = (try? c.decode(Bool.self, forKey: .enableDoubleTapDictation)) ?? defaults.enableDoubleTapDictation
         hotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(
             (try? c.decode(Int.self, forKey: .hotkeyTriggerThresholdMS)) ?? defaults.hotkeyTriggerThresholdMS
@@ -963,6 +988,10 @@ struct AppConfig: Codable {
         meetingHookEnabled = (try? c.decode(Bool.self, forKey: .meetingHookEnabled)) ?? defaults.meetingHookEnabled
         meetingHookPath = (try? c.decode(String.self, forKey: .meetingHookPath)) ?? defaults.meetingHookPath
         meetingHookTimeoutSeconds = (try? c.decode(Int.self, forKey: .meetingHookTimeoutSeconds)) ?? defaults.meetingHookTimeoutSeconds
+        contributionPromptNextWordCount = try? c.decode(Int.self, forKey: .contributionPromptNextWordCount)
+        contributionPromptNextMeetingCount = try? c.decode(Int.self, forKey: .contributionPromptNextMeetingCount)
+        contributionGitHubStarClicked = (try? c.decode(Bool.self, forKey: .contributionGitHubStarClicked)) ?? defaults.contributionGitHubStarClicked
+        contributionBuyMeCoffeeClicked = (try? c.decode(Bool.self, forKey: .contributionBuyMeCoffeeClicked)) ?? defaults.contributionBuyMeCoffeeClicked
     }
 
     var resolvedCohereLanguage: CohereTranscribeLanguage {

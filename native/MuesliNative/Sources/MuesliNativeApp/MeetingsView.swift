@@ -103,6 +103,30 @@ enum MeetingBrowserLogic {
             ?? localParsers.lazy.compactMap { $0.date(from: raw) }.first
     }
 
+    static func formatStartTime(
+        _ raw: String,
+        locale: Locale = .current,
+        timeZone: TimeZone = .current
+    ) -> String {
+        guard let date = parseDate(raw) else {
+            return formatStartTimeFallback(raw)
+        }
+        let formatter = DateFormatter()
+        formatter.locale = locale
+        formatter.timeZone = timeZone
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .medium
+        return formatter.string(from: date)
+    }
+
+    private static func formatStartTimeFallback(_ raw: String) -> String {
+        let clean = raw.replacingOccurrences(of: "T", with: " ")
+        if clean.count > 16 {
+            return String(clean.prefix(16))
+        }
+        return clean
+    }
+
     private static let isoParsers: [ISO8601DateFormatter] = {
         let iso1 = ISO8601DateFormatter()
         iso1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

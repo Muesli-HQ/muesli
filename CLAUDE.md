@@ -12,7 +12,7 @@ Local-first macOS app for **dictation** and **meeting transcription** on Apple S
 - **Meeting transcription:** Captures mic (You) + system audio (Others) → VAD-driven chunking → speaker diarization → AI-powered meeting notes
 - **Meeting export:** Export notes or transcript as PDF (paginated US Letter) or Markdown via `MeetingExporter.swift`
 - **Screen context:** Accessibility API captures app name + text around cursor for dictation context-awareness (opt-in, off by default)
-- **7 ASR models:** Parakeet v3/v2, Whisper Small/Medium/Large Turbo, Qwen3 ASR, Nemotron Streaming
+- **8 ASR models:** Parakeet v3/v2, Whisper Small/Medium/Large Turbo, Qwen3 ASR, Nemotron Streaming, SenseVoice Small
 - **3 summarization backends:** OpenAI API key, OpenRouter API key, ChatGPT OAuth (subscription-based)
 - **Camera-based meeting detection:** Requires mic + camera + recognized meeting app (camera alone won't trigger)
 - **Join & Record:** Extract meeting URLs from calendar events (Zoom, Meet, Teams, Webex, Chime, FaceTime), split button with "Join & Record" / "Join Only" / "Record Only", platform icons in notifications

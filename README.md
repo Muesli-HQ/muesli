@@ -217,6 +217,7 @@ Important meeting fields:
 | **Parakeet v3** (recommended) | FluidAudio | CoreML / Neural Engine | ~450 MB | 25 languages | ~0.13s |
 | Parakeet v2 | FluidAudio | CoreML / Neural Engine | ~450 MB | English only | ~0.13s |
 | **Cohere Transcribe 2B** | CoreML | FP16 encoder + INT8 decoder | ~3.8 GB | English | ~1s |
+| SenseVoice Small | FluidAudio | INT8 CoreML / Neural Engine | ~240 MB | 50+ languages | ~1s |
 | Qwen3 ASR | FluidAudio | CoreML / Neural Engine | ~1.3 GB | 52 languages | ~2-3s |
 | Whisper Small | WhisperKit | CoreML / Neural Engine | ~190 MB | English only | ~1-2s |
 | Whisper Medium | WhisperKit | CoreML / Neural Engine | ~1.5 GB | English only | ~2-3s |
@@ -250,7 +251,7 @@ Muesli needs these macOS permissions (guided during onboarding):
 | Component | Technology |
 |---|---|
 | App | Swift, AppKit, SwiftUI |
-| Primary ASR | [FluidAudio](https://github.com/FluidInference/FluidAudio) (Parakeet TDT + Qwen3 ASR on CoreML/ANE) |
+| Primary ASR | [FluidAudio](https://github.com/FluidInference/FluidAudio) (Parakeet TDT, SenseVoice Small, and Qwen3 ASR on CoreML/ANE) |
 | Cohere ASR | [Cohere Transcribe](https://huggingface.co/CohereLabs/cohere-transcribe-03-2026) (FP16 encoder + INT8 decoder on CoreML) |
 | Whisper ASR | [WhisperKit](https://github.com/argmaxinc/WhisperKit) (CoreML/ANE) |
 | Voice activity | Silero VAD via FluidAudio (streaming, event-driven) |

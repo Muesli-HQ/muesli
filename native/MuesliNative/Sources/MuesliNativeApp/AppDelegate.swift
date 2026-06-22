@@ -1,4 +1,5 @@
 import AppKit
+import CloudKit
 import Foundation
 import Sparkle
 import TelemetryDeck
@@ -36,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             self.controller = controller
             controller.start()
+            NSApplication.shared.registerForRemoteNotifications()
         } catch {
             let alert = NSAlert()
             alert.messageText = "\(AppIdentity.displayName) failed to start"
@@ -47,6 +49,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         controller?.shutdown()
+    }
+
+    func application(
+        _ application: NSApplication,
+        didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+    ) {
+        fputs("[muesli-native] registered for remote notifications\n", stderr)
+    }
+
+    func application(
+        _ application: NSApplication,
+        didFailToRegisterForRemoteNotificationsWithError error: Error
+    ) {
+        fputs("[muesli-native] failed to register for remote notifications: \(error)\n", stderr)
+    }
+
+    func application(_ application: NSApplication, didReceiveRemoteNotification userInfo: [String: Any]) {
+        controller?.handleICloudRemoteNotification(userInfo: userInfo)
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
