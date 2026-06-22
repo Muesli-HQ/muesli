@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import MuesliCore
 
 private enum MeetingDocumentMode: Hashable {
@@ -55,6 +56,7 @@ struct MeetingDetailView: View {
     @State private var pendingTemplateID: String
     @State private var documentMode: MeetingDocumentMode
     @State private var recordingMode: RecordingContentMode = .notes
+    @State private var showTimestamps: Bool = true
     @State private var titleSaveTask: DispatchWorkItem?
     @State private var notesSaveTask: DispatchWorkItem?
     @State private var transcriptSaveTask: DispatchWorkItem?
@@ -358,7 +360,7 @@ struct MeetingDetailView: View {
                         .allowsHitTesting(documentMode == .notes)
                         .accessibilityHidden(documentMode != .notes)
 
-                    MeetingTranscriptView(transcript: meeting.rawTranscript)
+                    MeetingTranscriptView(transcript: meeting.rawTranscript, showTimestamps: showTimestamps)
                         .opacity(documentMode == .transcript ? 1 : 0)
                         .allowsHitTesting(documentMode == .transcript)
                         .accessibilityHidden(documentMode != .transcript)
@@ -552,6 +554,53 @@ struct MeetingDetailView: View {
         }
     }
 
+    /// Export subtitles directly when the transcript already carries inline timestamps;
+    /// otherwise offer to Re-transcribe (which generates them) and auto-export on success.
+    private func exportSubtitlesOrOfferRetranscribe(for meeting: MeetingRecord) {
+        guard !isRetranscribing else { return }
+
+        if MeetingExporter.transcriptHasTimestamps(meeting.rawTranscript) {
+            MeetingExporter.exportSubtitles(meeting: meeting)
+            return
+        }
+
+        // Re-transcribe can only regenerate timestamps when a saved recording exists
+        // (controller.retranscribe early-returns otherwise). Don't offer a dead button.
+        let hasRecording = (meeting.savedRecordingPath?.isEmpty == false)
+        guard hasRecording else {
+            let alert = NSAlert()
+            alert.messageText = "No Timestamps"
+            alert.informativeText = "This transcript has no timestamps and no saved recording to regenerate them from."
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "No Timestamps Yet"
+        alert.informativeText = "This transcript doesn't have timestamps yet, which subtitles require. Re-transcribe to generate them, then export subtitles automatically."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Re-transcribe")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        guard !isRetranscribing else { return }
+        isRetranscribing = true
+        controller.retranscribe(meeting: meeting) { [meeting] result in
+            isRetranscribing = false
+            switch result {
+            case .success:
+                if let updated = controller.meeting(id: meeting.id) {
+                    syncLocalState(with: updated)
+                    MeetingExporter.exportSubtitles(meeting: updated)
+                }
+            case .failure(let error):
+                retranscriptionErrorMessage = error.localizedDescription
+            }
+        }
+    }
+
     @ViewBuilder
     private func templateMenu(for meeting: MeetingRecord, appliedTemplate: MeetingTemplateSnapshot) -> some View {
         Menu {
@@ -630,6 +679,17 @@ struct MeetingDetailView: View {
             Spacer()
 
             retranscribeAction(for: meeting)
+
+            if documentMode == .transcript,
+               MeetingExporter.transcriptHasTimestamps(meeting.rawTranscript) {
+                Button {
+                    showTimestamps.toggle()
+                } label: {
+                    Label(showTimestamps ? "Hide Timestamps" : "Show Timestamps",
+                          systemImage: showTimestamps ? "clock.fill" : "clock")
+                }
+                .help(showTimestamps ? "Hide timestamps" : "Show timestamps")
+            }
 
             Button(action: {
                 controller.copyToClipboard(activeCopyText(for: meeting))
@@ -797,6 +857,12 @@ struct MeetingDetailView: View {
                 MeetingExporter.export(meeting: meeting, content: .fullMeeting)
             } label: {
                 Label("Export Full Meeting", systemImage: "doc.on.doc")
+            }
+            Divider()
+            Button {
+                exportSubtitlesOrOfferRetranscribe(for: meeting)
+            } label: {
+                Label("Export Subtitles…", systemImage: "captions.bubble")
             }
         } label: {
             HStack(spacing: 6) {
@@ -1461,35 +1527,39 @@ private struct MarqueeTitleTextField: View {
     private let titleFont = Font.system(size: 30, weight: .bold)
 
     var body: some View {
-        ZStack(alignment: .leading) {
-            TextField("Meeting Title", text: $text)
-                .font(titleFont)
-                .foregroundStyle(MuesliTheme.textPrimary)
-                .textFieldStyle(.plain)
-                .lineLimit(1)
-                .opacity(shouldShowMarquee ? 0 : 1)
-                .focused($isTitleFocused)
-                .onSubmit(onSubmit)
-                .onChange(of: text) { _, _ in
-                    onTextChange()
-                    restartMarqueeIfNeeded()
-                }
-                .onChange(of: isTitleFocused) { _, _ in
-                    restartMarqueeIfNeeded()
-                }
-
-            Text(text.isEmpty ? "Meeting Title" : text)
-                .font(titleFont)
-                .fontWeight(.bold)
-                .foregroundStyle(MuesliTheme.textPrimary)
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-                .offset(x: marqueeOffset)
-                .opacity(shouldShowMarquee ? 1 : 0)
-                .allowsHitTesting(false)
-        }
-        .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
-        .clipped()
+        TextField("Meeting Title", text: $text)
+            .font(titleFont)
+            .foregroundStyle(MuesliTheme.textPrimary)
+            .textFieldStyle(.plain)
+            .lineLimit(1)
+            .opacity(shouldShowMarquee ? 0 : 1)
+            .focused($isTitleFocused)
+            .onSubmit(onSubmit)
+            .onChange(of: text) { _, _ in
+                onTextChange()
+                restartMarqueeIfNeeded()
+            }
+            .onChange(of: isTitleFocused) { _, _ in
+                restartMarqueeIfNeeded()
+            }
+            .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
+            // The scrolling marquee text is an overlay, not a ZStack sibling, so its
+            // `fixedSize` width does NOT drive the field's own layout width. As a
+            // sibling it forced the title to its full intrinsic width, overflowing the
+            // header and pushing the action toolbar off-screen for long titles.
+            // `.clipped()` keeps the overflowing marquee text within the field bounds.
+            .overlay(alignment: .leading) {
+                Text(text.isEmpty ? "Meeting Title" : text)
+                    .font(titleFont)
+                    .fontWeight(.bold)
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .offset(x: marqueeOffset)
+                    .opacity(shouldShowMarquee ? 1 : 0)
+                    .allowsHitTesting(false)
+            }
+            .clipped()
         .contentShape(Rectangle())
         .background(
             GeometryReader { proxy in
@@ -1660,10 +1730,12 @@ struct TranscriptChatMessage: Identifiable, Equatable {
 
 private struct MeetingTranscriptView: View {
     let transcript: String
+    let showTimestamps: Bool
     @State private var messages: [TranscriptChatMessage]
 
-    init(transcript: String) {
+    init(transcript: String, showTimestamps: Bool) {
         self.transcript = transcript
+        self.showTimestamps = showTimestamps
         _messages = State(initialValue: TranscriptChatMessage.messages(from: transcript))
     }
 
@@ -1678,7 +1750,7 @@ private struct MeetingTranscriptView: View {
                         .padding(MuesliTheme.spacing24)
                 } else {
                     ForEach(messages) { message in
-                        TranscriptChatBubble(message: message)
+                        TranscriptChatBubble(message: message, showTimestamps: showTimestamps)
                     }
                 }
             }
@@ -1695,6 +1767,7 @@ private struct MeetingTranscriptView: View {
 
 struct TranscriptChatBubble: View {
     let message: TranscriptChatMessage
+    var showTimestamps: Bool = true
 
     var body: some View {
         HStack(alignment: .bottom, spacing: MuesliTheme.spacing8) {
@@ -1733,13 +1806,14 @@ struct TranscriptChatBubble: View {
     }
 
     private var metadata: String? {
-        switch (message.speaker, message.timestamp) {
-        case let (speaker?, timestamp?):
-            return "\(speaker) \(timestamp)"
+        let timestamp = showTimestamps ? message.timestamp : nil
+        switch (message.speaker, timestamp) {
+        case let (speaker?, ts?):
+            return "\(speaker) \(ts)"
         case let (speaker?, nil):
             return speaker
-        case let (nil, timestamp?):
-            return timestamp
+        case let (nil, ts?):
+            return ts
         case (nil, nil):
             return nil
         }

@@ -182,37 +182,82 @@ enum AudioFileImportController {
         try Task.checkCancellation()
 
         progress("Transcribing audio...")
-        let transcription = try await transcriptionCoordinator.transcribeMeeting(
-            at: wavURL,
-            backend: backend,
-            cohereLanguage: config.resolvedCohereLanguage
-        )
-        let rawTranscript = transcription.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !rawTranscript.isEmpty else {
+        // Obtain VAD-timed segments so timestamps work for ALL backends, not just Parakeet.
+        var timedSegments: [SpeechSegment] = []
+        // Reused for diarization below to avoid a second full-file decode on the common path.
+        var resampledSamples: [Float]?
+        if let vadManager = await transcriptionCoordinator.getVadManager() {
+            do {
+                let samples = try AudioConverter().resampleAudioFile(wavURL)
+                resampledSamples = samples
+                timedSegments = try await VadTimedTranscriber.timedSegments(
+                    samples: samples,
+                    vadManager: vadManager
+                ) { sliceURL in
+                    try await transcriptionCoordinator.transcribeMeeting(
+                        at: sliceURL,
+                        backend: backend,
+                        cohereLanguage: config.resolvedCohereLanguage
+                    )
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // Best-effort timestamps: any failure in the VAD-timed pass falls
+                // back to the full-file (complete, untimed) path below. Drop any
+                // partial resample so diarization re-decodes cleanly.
+                fputs("[import] VAD-timed transcription failed, falling back to full-file: \(error)\n", stderr)
+                timedSegments = []
+                resampledSamples = nil
+            }
+        }
+
+        // Fallback: if VAD unavailable, single full-file transcription (untimed) as before.
+        let transcription: SpeechTranscriptionResult
+        let fallbackText: String
+        if timedSegments.isEmpty {
+            let whole = try await transcriptionCoordinator.transcribeMeeting(
+                at: wavURL,
+                backend: backend,
+                cohereLanguage: config.resolvedCohereLanguage
+            )
+            fallbackText = whole.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            transcription = whole
+        } else {
+            fallbackText = timedSegments.map(\.text).joined(separator: " ")
+            transcription = SpeechTranscriptionResult(text: fallbackText, segments: timedSegments)
+        }
+        guard !fallbackText.isEmpty else {
             throw ImportError.readError("No speech was transcribed from the selected audio file.")
         }
 
         try Task.checkCancellation()
 
         // Run speaker diarization if available
-        var diarizedTranscript = rawTranscript
+        var diarizedTranscript = InlineTranscriptFormatter.transcriptForStorage(
+            segments: timedSegments, multiSpeakerText: nil, fallbackText: fallbackText)
         if let diarizerManager = await transcriptionCoordinator.getDiarizerManager(),
            diarizerManager.isAvailable {
             progress("Identifying speakers...")
             do {
-                let converter = AudioConverter()
-                let samples = try converter.resampleAudioFile(wavURL)
+                // Reuse the VAD-path resample when present; only re-decode in the
+                // VAD-unavailable fallback (keeps behavior identical, one decode).
+                let samples = try resampledSamples ?? AudioConverter().resampleAudioFile(wavURL)
                 try Task.checkCancellation()
                 let diarizationResult = try diarizerManager.performCompleteDiarization(
                     samples,
                     sampleRate: 16000
                 )
                 if !diarizationResult.segments.isEmpty {
-                    diarizedTranscript = formatTranscriptWithSpeakers(
-                        transcription: transcription,
-                        diarizationSegments: diarizationResult.segments,
-                        meetingStart: importedTranscriptTimelineStart()
-                    )
+                    let speakerCount = Set(diarizationResult.segments.map(\.speakerId)).count
+                    if speakerCount > 1 {
+                        diarizedTranscript = formatTranscriptWithSpeakers(
+                            transcription: transcription,
+                            diarizationSegments: diarizationResult.segments,
+                            meetingStart: importedTranscriptTimelineStart()
+                        )
+                    }
+                    // single speaker: keep the inline-timestamped diarizedTranscript built above
                 }
             } catch is CancellationError {
                 throw CancellationError()

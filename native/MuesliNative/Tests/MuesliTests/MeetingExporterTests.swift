@@ -29,6 +29,18 @@ struct MeetingExporterTests {
         )
     }
 
+    // MARK: - Timestamp detection
+
+    @Test("transcriptHasTimestamps is true for an inline-timestamped transcript")
+    func transcriptHasTimestampsTrue() {
+        #expect(MeetingExporter.transcriptHasTimestamps("[00:00:00] hi"))
+    }
+
+    @Test("transcriptHasTimestamps is false for plain text")
+    func transcriptHasTimestampsFalse() {
+        #expect(!MeetingExporter.transcriptHasTimestamps("just some plain words with no timestamps"))
+    }
+
     // MARK: - Markdown composition
 
     @Test("Notes export includes metadata header and formatted notes")
@@ -241,5 +253,21 @@ struct MeetingExporterTests {
 
         let stem = name.replacingOccurrences(of: ".pdf", with: "")
         #expect(stem.count <= 50)
+    }
+
+    // MARK: - Subtitle export
+
+    @Test("builds SRT from a timestamped transcript")
+    func subtitleStringSRT() {
+        let raw = "[00:00:00] Hello there.\n[00:00:04] Goodbye now."
+        let out = MeetingExporter.subtitleString(transcript: raw, totalDuration: 6, isWallClock: false, format: .srt)
+        #expect(out?.contains("00:00:00,000 --> 00:00:04,000") == true)
+        #expect(out?.contains("Hello there.") == true)
+        #expect(out?.contains("00:00:04,000 --> 00:00:06,000") == true)
+    }
+
+    @Test("returns nil when transcript has no timestamps")
+    func subtitleStringNoTimestamps() {
+        #expect(MeetingExporter.subtitleString(transcript: "no markers here", totalDuration: 6, isWallClock: false, format: .srt) == nil)
     }
 }
