@@ -30,9 +30,9 @@ Support:    ~/Library/Application Support/MuesliDev
 Fixed lanes:
 
 ```text
-A -> MuesliDevA, com.muesli.dev.a, ~/Library/Application Support/MuesliDevA
-B -> MuesliDevB, com.muesli.dev.b, ~/Library/Application Support/MuesliDevB
-C -> MuesliDevC, com.muesli.dev.c, ~/Library/Application Support/MuesliDevC
+A -> MuesliDevA, com.muesli.dev.a, process MuesliDevA, ~/Library/Application Support/MuesliDevA
+B -> MuesliDevB, com.muesli.dev.b, process MuesliDevB, ~/Library/Application Support/MuesliDevB
+C -> MuesliDevC, com.muesli.dev.c, process MuesliDevC, ~/Library/Application Support/MuesliDevC
 ```
 
 ## Entitlement Modes

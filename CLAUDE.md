@@ -37,7 +37,7 @@ Local-first macOS app for **dictation** and **meeting transcription** on Apple S
 ./scripts/dev-seed-from-prod.sh               # Copy production DB/config into MuesliDev safely
 ```
 
-MuesliDev uses bundle ID `com.muesli.dev` and stores data at `~/Library/Application Support/MuesliDev/`. Named lanes use fixed identities: `MuesliDevA` / `com.muesli.dev.a` / `~/Library/Application Support/MuesliDevA`, then B and C with matching suffixes. Production data is never touched.
+MuesliDev uses bundle ID `com.muesli.dev` and stores data at `~/Library/Application Support/MuesliDev/`. Named lanes use fixed identities: `MuesliDevA` / `com.muesli.dev.a` / `~/Library/Application Support/MuesliDevA`, then B and C with matching suffixes. Named lane executable/process names also match the lane app name. Production data is never touched.
 
 Named lanes default to local-only signing through `scripts/MuesliLocalOnly.entitlements`, which omits iCloud and APNs entitlements for non-sync feature work. Use `--cloud-entitlements` only when the lane has a matching Apple Developer provisioning profile and the test actually needs iCloud/APNs behavior.
 
