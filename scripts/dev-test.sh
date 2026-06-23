@@ -28,7 +28,9 @@ Build and launch a local Muesli dev app.
 Options:
   --lane A|B|C            Build a fixed reusable dev lane: MuesliDevA/B/C.
   --local-only            Sign without iCloud/APNs entitlements.
+                          Alias: --without-cloud-entitlements.
   --cloud-entitlements    Sign with the default cloud entitlements file.
+                          Alias: --with-cloud-entitlements.
   --reset                 Reset onboarding only for the selected lane.
   --help                  Show this help text.
 
@@ -175,5 +177,9 @@ echo "  Data: $DEV_SUPPORT_DIR"
 echo "  DB: $DEV_SUPPORT_DIR/muesli.db"
 echo ""
 echo "Tips:"
-echo "  ./scripts/dev-test.sh --lane ${LANE:-A} --reset    # Re-run onboarding for a lane (keep data)"
-echo "  pkill -f $DEV_APP_NAME                         # Kill this dev app"
+if [[ -n "$LANE" ]]; then
+  echo "  ./scripts/dev-test.sh --lane $LANE --reset    # Re-run onboarding for this lane (keep data)"
+else
+  echo "  ./scripts/dev-test.sh --reset                 # Re-run onboarding (keep data)"
+fi
+echo "  pkill -f \"$DEV_APP\"                         # Kill this dev app"
