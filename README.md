@@ -317,6 +317,18 @@ If Muesli saves you time, consider supporting development:
 
 [MIT](LICENSE) — free and open source.
 
+---
+
+## Resources
+
+- [Apple Neural Engine speech-to-text on Mac](https://muesli.works/apple-neural-engine-speech-to-text-mac) — how Muesli uses Apple Silicon, CoreML, and local ASR for fast dictation.
+- [Local speech-to-text glossary](https://muesli.works/local-speech-to-text-glossary) — ASR, VAD, diarization, acoustic echo cancellation, Parakeet, Whisper, and Qwen3 ASR.
+- [Best dictation apps for Mac](https://muesli.works/best-dictation-apps-mac) — a practical comparison of Mac dictation tools.
+- [Offline dictation for Mac](https://muesli.works/offline-dictation-mac) — why local-first voice typing matters.
+- [Local meeting transcription for Mac](https://muesli.works/local-meeting-transcription-mac) — meeting notes without adding a bot.
+
+---
+
 ## Star History
 
 <a href="https://www.star-history.com/?repos=Muesli-HQ%2Fmuesli&type=date&legend=top-left">
