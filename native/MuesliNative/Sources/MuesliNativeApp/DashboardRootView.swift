@@ -17,6 +17,35 @@ struct DashboardRootView: View {
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 900, minHeight: 600)
         .preferredColorScheme(appState.config.darkMode ? .dark : .light)
+        .alert(
+            appState.contributionMilestonePrompt?.title ?? "Muesli milestone",
+            isPresented: Binding(
+                get: { appState.contributionMilestonePrompt != nil },
+                set: { if !$0 { controller.dismissContributionMilestonePrompt() } }
+            )
+        ) {
+            if appState.contributionMilestonePrompt?.showGitHubStar == true {
+                Button("Star on GitHub") {
+                    controller.openContributionMilestoneAction(.githubStar)
+                }
+            }
+            if appState.contributionMilestonePrompt?.showBuyMeCoffee == true {
+                Button("Buy Me a Coffee") {
+                    controller.openContributionMilestoneAction(.buyMeCoffee)
+                }
+            }
+            Button("Later", role: .cancel) {
+                controller.dismissContributionMilestonePrompt()
+            }
+        } message: {
+            Text(appState.contributionMilestonePrompt?.message ?? "")
+        }
+        .onAppear {
+            controller.recordContributionMilestonePromptSeen()
+        }
+        .onChange(of: appState.contributionMilestonePrompt?.id) { _, _ in
+            controller.recordContributionMilestonePromptSeen()
+        }
     }
 
     @ViewBuilder

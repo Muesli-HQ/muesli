@@ -28,7 +28,79 @@ public enum MeetingRecordingSavePolicy: String, Codable, CaseIterable, Sendable 
 
 public enum MeetingSource: String, Codable, Sendable {
     case meeting
+    case iOS = "ios"
     case audioImport = "audio_import"
+}
+
+public enum SyncTextRecordKind: String, Codable, Sendable {
+    case dictation
+    case meeting
+}
+
+public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
+    public let id: String
+    public let kind: SyncTextRecordKind
+    public var title: String?
+    public var text: String
+    public var speakerTranscript: String?
+    public var summaryText: String?
+    public var manualNotes: String?
+    public var source: String?
+    /// Platform origin for UI badges lives in `source`; this preserves the
+    /// local capture subtype such as dictation, cua, meeting, or audio_import.
+    public var localSource: String?
+    public var meetingStatus: MeetingStatus?
+    public var engineIdentifier: String?
+    public var createdAt: Date
+    public var updatedAt: Date
+    public var startedAt: Date?
+    public var endedAt: Date?
+    public var durationSeconds: Double
+    public var wordCount: Int
+    public var isDeleted: Bool
+    public var cloudChangeTag: String?
+
+    public init(
+        id: String,
+        kind: SyncTextRecordKind,
+        title: String? = nil,
+        text: String,
+        speakerTranscript: String? = nil,
+        summaryText: String? = nil,
+        manualNotes: String? = nil,
+        source: String? = nil,
+        localSource: String? = nil,
+        meetingStatus: MeetingStatus? = nil,
+        engineIdentifier: String? = nil,
+        createdAt: Date,
+        updatedAt: Date,
+        startedAt: Date? = nil,
+        endedAt: Date? = nil,
+        durationSeconds: Double,
+        wordCount: Int,
+        isDeleted: Bool = false,
+        cloudChangeTag: String? = nil
+    ) {
+        self.id = id
+        self.kind = kind
+        self.title = title
+        self.text = text
+        self.speakerTranscript = speakerTranscript
+        self.summaryText = summaryText
+        self.manualNotes = manualNotes
+        self.source = source
+        self.localSource = localSource
+        self.meetingStatus = meetingStatus
+        self.engineIdentifier = engineIdentifier
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.startedAt = startedAt
+        self.endedAt = endedAt
+        self.durationSeconds = durationSeconds
+        self.wordCount = wordCount
+        self.isDeleted = isDeleted
+        self.cloudChangeTag = cloudChangeTag
+    }
 }
 
 public struct LiveTranscriptCheckpointEntry: Sendable, Equatable {

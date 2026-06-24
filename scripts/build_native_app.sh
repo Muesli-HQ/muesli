@@ -26,6 +26,7 @@ APP_DIR="$INSTALL_DIR/$APP_BUNDLE_NAME"
 DEFAULT_SIGN_IDENTITY="Developer ID Application: Pranav Hari Guruvayurappan (58W55QJ567)"
 SIGN_IDENTITY="${MUESLI_SIGN_IDENTITY:-$DEFAULT_SIGN_IDENTITY}"
 SKIP_SIGN="${MUESLI_SKIP_SIGN:-0}"
+PROVISIONING_PROFILE="${MUESLI_PROVISIONING_PROFILE:-}"
 CODESIGN_TIMESTAMP="${MUESLI_CODESIGN_TIMESTAMP:---timestamp}"
 if [[ "$CODESIGN_TIMESTAMP" == "none" ]]; then
   CODESIGN_TIMESTAMP="--timestamp=none"
@@ -183,6 +184,14 @@ if [[ "$SKIP_SIGN" != "1" ]]; then
     exit 1
   fi
 
+  if [[ -n "$PROVISIONING_PROFILE" ]]; then
+    if [[ ! -f "$PROVISIONING_PROFILE" ]]; then
+      echo "Provisioning profile not found: $PROVISIONING_PROFILE" >&2
+      exit 1
+    fi
+    cp "$PROVISIONING_PROFILE" "$APP_DIR/Contents/embedded.provisionprofile"
+  fi
+
   # Sign all bundled frameworks, including nested Sparkle executables.
   find "$APP_DIR/Contents/MacOS" -maxdepth 1 -name "*.framework" -type d | while read -r framework; do
     if [[ "$(basename "$framework")" == "Sparkle.framework" ]]; then
@@ -222,11 +231,70 @@ if [[ "$SKIP_SIGN" != "1" ]]; then
     "$APP_DIR/Contents/MacOS/muesli-cli"
 
   # Sign the app bundle with hardened runtime, secure timestamp, and entitlements
-  ENTITLEMENTS="$ROOT/scripts/Muesli.entitlements"
+  ENTITLEMENTS="${MUESLI_ENTITLEMENTS:-$ROOT/scripts/Muesli.entitlements}"
+  CODESIGN_ENTITLEMENTS="$ENTITLEMENTS"
+  TEMP_ENTITLEMENTS=""
+  APS_ENVIRONMENT="${MUESLI_APS_ENVIRONMENT:-}"
+  PROFILE_PLIST=""
+  SIGN_TEMP_FILES=()
+  cleanup_sign_temp_files() {
+    local temp_file
+    for temp_file in "${SIGN_TEMP_FILES[@]:-}"; do
+      [[ -n "$temp_file" ]] && rm -f "$temp_file"
+    done
+  }
+  trap cleanup_sign_temp_files EXIT
+  if [[ -n "$PROVISIONING_PROFILE" ]]; then
+    PROFILE_PLIST="$(mktemp "${TMPDIR:-/tmp}/muesli-profile.XXXXXX.plist")"
+    SIGN_TEMP_FILES+=("$PROFILE_PLIST")
+    if security cms -D -i "$PROVISIONING_PROFILE" > "$PROFILE_PLIST" 2>/dev/null; then
+      if [[ -z "$APS_ENVIRONMENT" ]]; then
+        APS_ENVIRONMENT="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.aps-environment' "$PROFILE_PLIST" 2>/dev/null || true)"
+        if [[ -z "$APS_ENVIRONMENT" ]]; then
+          APS_ENVIRONMENT="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:aps-environment' "$PROFILE_PLIST" 2>/dev/null || true)"
+        fi
+      fi
+    fi
+  fi
+
+  if [[ -n "$APS_ENVIRONMENT" || -n "$PROFILE_PLIST" ]]; then
+    TEMP_ENTITLEMENTS="$(mktemp "${TMPDIR:-/tmp}/muesli-entitlements.XXXXXX.plist")"
+    SIGN_TEMP_FILES+=("$TEMP_ENTITLEMENTS")
+    cp "$ENTITLEMENTS" "$TEMP_ENTITLEMENTS"
+    copy_profile_string_entitlement() {
+      local key="$1"
+      local value
+      [[ -n "$PROFILE_PLIST" ]] || return 0
+      value="$(/usr/libexec/PlistBuddy -c "Print :Entitlements:$key" "$PROFILE_PLIST" 2>/dev/null || true)"
+      [[ -n "$value" ]] || return 0
+      if ! /usr/libexec/PlistBuddy -c "Set :$key $value" "$TEMP_ENTITLEMENTS" 2>/dev/null; then
+        /usr/libexec/PlistBuddy -c "Add :$key string $value" "$TEMP_ENTITLEMENTS"
+      fi
+    }
+    copy_profile_string_entitlement "com.apple.application-identifier"
+    copy_profile_string_entitlement "application-identifier"
+    copy_profile_string_entitlement "com.apple.developer.team-identifier"
+    if [[ -n "$APS_ENVIRONMENT" ]]; then
+      if ! /usr/libexec/PlistBuddy -c "Set :com.apple.developer.aps-environment $APS_ENVIRONMENT" "$TEMP_ENTITLEMENTS" 2>/dev/null; then
+        /usr/libexec/PlistBuddy -c "Add :com.apple.developer.aps-environment string $APS_ENVIRONMENT" "$TEMP_ENTITLEMENTS"
+      fi
+    fi
+    CODESIGN_ENTITLEMENTS="$TEMP_ENTITLEMENTS"
+    if [[ -n "$APS_ENVIRONMENT" ]]; then
+      echo "Using APNs entitlement: com.apple.developer.aps-environment=$APS_ENVIRONMENT"
+    fi
+  fi
   codesign --force --options runtime "$CODESIGN_TIMESTAMP" \
-    --entitlements "$ENTITLEMENTS" \
+    --entitlements "$CODESIGN_ENTITLEMENTS" \
     --sign "$SIGN_IDENTITY" \
     "$APP_DIR"
+  if [[ -n "$PROFILE_PLIST" ]]; then
+    rm -f "$PROFILE_PLIST"
+  fi
+  if [[ -n "$TEMP_ENTITLEMENTS" ]]; then
+    rm -f "$TEMP_ENTITLEMENTS"
+  fi
+  trap - EXIT
 
   # Deep-verify entire bundle — fail fast if any component has an invalid signature
   echo "Verifying deep signature..."

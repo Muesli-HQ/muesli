@@ -210,6 +210,9 @@ struct MeetingListItemView: View {
     }
 
     private var sourceIndicator: AnyView? {
+        if let label = SyncOriginDisplay.badgeLabel(forMeetingSource: record.source) {
+            return AnyView(SyncOriginBadge(label: label))
+        }
         if isImportedAudio {
             return AnyView(sourceBadge(icon: "square.and.arrow.down", label: "Imported", help: "Imported audio"))
         }

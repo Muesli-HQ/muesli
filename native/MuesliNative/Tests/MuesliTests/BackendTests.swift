@@ -46,6 +46,36 @@ struct FluidAudioTranscriberTests {
     }
 }
 
+@Suite("SenseVoiceTranscriber")
+struct SenseVoiceTranscriberTests {
+
+    @Test("sensevoice model uses FluidAudio CoreML repo")
+    func senseVoiceModel() {
+        #expect(BackendOption.senseVoiceSmall.backend == "sensevoice")
+        #expect(BackendOption.senseVoiceSmall.model.contains("FluidInference"))
+        #expect(BackendOption.senseVoiceSmall.model.contains("sensevoice"))
+    }
+
+    @Test("sensevoice stays experimental")
+    func senseVoiceExperimental() {
+        #expect(BackendOption.experimental.contains(.senseVoiceSmall))
+        #expect(!BackendOption.onboarding.contains(.senseVoiceSmall))
+    }
+
+    @Test("sensevoice cache path uses FluidAudio model store")
+    func senseVoiceCachePath() {
+        #expect(SenseVoiceTranscriber.cacheRelativePath == "Library/Application Support/FluidAudio/Models/sensevoice-small-coreml")
+        #expect(SenseVoiceTranscriber.cacheDirectory().path.hasSuffix(SenseVoiceTranscriber.cacheRelativePath))
+    }
+
+    @Test("sensevoice metadata reflects INT8 download footprint")
+    func senseVoiceInt8DownloadMetadata() {
+        #expect(SenseVoiceTranscriber.downloadedModelSizeLabel == "~240 MB")
+        #expect(BackendOption.senseVoiceSmall.sizeLabel == SenseVoiceTranscriber.downloadedModelSizeLabel)
+        #expect(BackendOption.senseVoiceSmall.description.contains("INT8"))
+    }
+}
+
 @Suite("NemotronStreamingTranscriber")
 struct NemotronStreamingTranscriberTests {
 
@@ -71,6 +101,7 @@ struct BackendCoverageTests {
             .mapValues(\.count)
         #expect(backendCounts["fluidaudio"]! >= 2, "FluidAudio should have at least 2 models")
         #expect(backendCounts["whisper"]! >= 1, "Whisper should have at least 1 model")
+        #expect(backendCounts["sensevoice"]! >= 1, "SenseVoice should have at least 1 model")
         // Nemotron excluded from .all until RNNT decode is validated
         // #expect(backendCounts["nemotron"]! >= 1)
     }
