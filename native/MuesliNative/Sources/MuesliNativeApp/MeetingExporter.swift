@@ -12,6 +12,10 @@ struct MeetingExporter {
 
     static let mdType = UTType(filenameExtension: "md") ?? .plainText
     static let pdfType = UTType.pdf
+    static let srtType = UTType(filenameExtension: "srt") ?? .plainText
+    static let vttType = UTType(filenameExtension: "vtt") ?? .plainText
+
+    enum SubtitleFormat { case srt, vtt }
 
     static func export(meeting: MeetingRecord, content: MeetingExportContent) {
         DispatchQueue.main.async {
@@ -34,6 +38,87 @@ struct MeetingExporter {
                 }
             }
         }
+    }
+
+    // MARK: - Subtitle export
+
+    /// True when the transcript contains at least one inline [HH:MM:SS] / [MM:SS] line.
+    static func transcriptHasTimestamps(_ transcript: String) -> Bool {
+        !TranscriptTimestampParser.parse(transcript).isEmpty
+    }
+
+    /// Pure string builder — returns nil when the transcript carries no inline timestamps.
+    /// `isWallClock` is true for live recordings (markers are time-of-day and must
+    /// be rebased to media time 0) and false for imports (markers are already
+    /// elapsed media time and must be left untouched).
+    /// `wallClockOrigin` is the live meeting's start time-of-day in seconds — the
+    /// rebase anchor that preserves leading silence; nil falls back to the first marker.
+    static func subtitleString(transcript: String, totalDuration: Double, isWallClock: Bool, wallClockOrigin: Double? = nil, format: SubtitleFormat) -> String? {
+        let lines = TranscriptTimestampParser.parse(transcript)
+        guard !lines.isEmpty else { return nil }
+        let cues = SubtitleSegmenter.cues(from: lines, totalDuration: totalDuration, isWallClock: isWallClock, wallClockOrigin: wallClockOrigin)
+        switch format {
+        case .srt: return SubtitleBuilder.srt(cues: cues)
+        case .vtt: return SubtitleBuilder.vtt(cues: cues)
+        }
+    }
+
+    static func exportSubtitles(meeting: MeetingRecord) {
+        // Imports store elapsed media time; live recordings store wall-clock.
+        let isWallClock = meeting.source != .audioImport
+        // Rebase live cues against the meeting's START time-of-day so leading
+        // silence is preserved (first spoken marker is not the recording start).
+        let wallClockOrigin: Double? = isWallClock
+            ? MeetingBrowserLogic.parseDate(meeting.startTime).map {
+                $0.timeIntervalSince(Calendar.current.startOfDay(for: $0))
+            }
+            : nil
+        DispatchQueue.main.async {
+            // Default to SRT; the accessory popup lets the user switch to VTT.
+            guard subtitleString(transcript: meeting.rawTranscript,
+                                 totalDuration: meeting.durationSeconds,
+                                 isWallClock: isWallClock,
+                                 wallClockOrigin: wallClockOrigin, format: .srt) != nil else {
+                showError("No Timestamps",
+                          "This transcript has no timestamps yet. Use Re-transcribe to generate them, then export subtitles.")
+                return
+            }
+            let panel = NSSavePanel()
+            // Bare stem (no extension): `allowedContentTypes` supplies the extension.
+            // Putting ".srt" here too makes NSSavePanel append a second one (".srt.srt").
+            panel.nameFieldStringValue = suggestedSubtitleStem(meeting: meeting)
+            panel.allowedContentTypes = [srtType]
+            panel.canCreateDirectories = true
+
+            let picker = SubtitleFormatAccessory(panel: panel)
+            panel.accessoryView = picker.view
+
+            presentSavePanel(panel) { url in
+                let format: SubtitleFormat = picker.selectedFormat
+                guard let text = subtitleString(transcript: meeting.rawTranscript,
+                                                totalDuration: meeting.durationSeconds,
+                                                isWallClock: isWallClock,
+                                                wallClockOrigin: wallClockOrigin, format: format) else {
+                    showError("Export Failed", "Could not build subtitles.")
+                    return
+                }
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do {
+                        try text.write(to: url, atomically: true, encoding: .utf8)
+                        DispatchQueue.main.async { NSWorkspace.shared.open(url) }
+                    } catch {
+                        DispatchQueue.main.async { showError("Export Failed", error.localizedDescription) }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Base filename WITHOUT extension. The NSSavePanel's `allowedContentTypes`
+    /// appends the chosen subtitle extension, so this must not include one.
+    static func suggestedSubtitleStem(meeting: MeetingRecord) -> String {
+        let base = (suggestedFilename(meeting: meeting, content: .transcript) as NSString).deletingPathExtension
+        return base.hasSuffix("-transcript") ? String(base.dropLast("-transcript".count)) : base
     }
 
     // MARK: - Markdown composition
@@ -409,5 +494,51 @@ private class ExportFormatAccessory: NSObject {
             panel.allowedContentTypes = [MeetingExporter.mdType]
             panel.nameFieldStringValue = "\(stem).md"
         }
+    }
+}
+
+// MARK: - Subtitle format picker accessory
+
+private class SubtitleFormatAccessory: NSObject {
+    let view: NSView
+    private let popup: NSPopUpButton
+    private weak var panel: NSSavePanel?
+
+    var selectedFormat: MeetingExporter.SubtitleFormat {
+        popup.indexOfSelectedItem == 0 ? .srt : .vtt
+    }
+
+    init(panel: NSSavePanel) {
+        self.panel = panel
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 32))
+
+        let label = NSTextField(labelWithString: "Format:")
+        label.font = .systemFont(ofSize: 13)
+        label.frame = NSRect(x: 0, y: 6, width: 55, height: 20)
+
+        let button = NSPopUpButton(frame: NSRect(x: 60, y: 2, width: 190, height: 28), pullsDown: false)
+        button.addItems(withTitles: ["SRT", "WebVTT"])
+        button.selectItem(at: 0)
+
+        container.addSubview(label)
+        container.addSubview(button)
+
+        self.popup = button
+        self.view = container
+
+        super.init()
+
+        button.target = self
+        button.action = #selector(formatChanged)
+    }
+
+    @objc private func formatChanged() {
+        guard let panel else { return }
+        // Keep the name field as a bare stem; `allowedContentTypes` supplies the
+        // extension. Re-adding ".srt"/".vtt" here would double it (".srt.srt").
+        let stem = (panel.nameFieldStringValue as NSString).deletingPathExtension
+        panel.allowedContentTypes = [selectedFormat == .srt ? MeetingExporter.srtType : MeetingExporter.vttType]
+        panel.nameFieldStringValue = stem
     }
 }

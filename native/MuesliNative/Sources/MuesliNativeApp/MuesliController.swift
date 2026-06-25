@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import CloudKit
 import CoreAudio
+import FluidAudio
 import Foundation
 import Sparkle
 import TelemetryDeck
@@ -3216,15 +3217,59 @@ final class MuesliController: NSObject {
                     enablePostProcessor: false,
                     includeMeetingHelpers: true
                 )
-                let transcription = try await self.transcriptionCoordinator.transcribeMeeting(
-                    at: recordingURL,
-                    backend: backend,
-                    cohereLanguage: self.config.resolvedCohereLanguage
-                )
-                let rawTranscript = transcription.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !rawTranscript.isEmpty else {
+                // Obtain VAD-timed segments so timestamps work for ALL backends, not just Parakeet.
+                var timedSegments: [SpeechSegment] = []
+                if let vadManager = await self.transcriptionCoordinator.getVadManager() {
+                    do {
+                        let samples = try AudioConverter().resampleAudioFile(recordingURL)
+                        timedSegments = try await VadTimedTranscriber.timedSegments(
+                            samples: samples,
+                            vadManager: vadManager
+                        ) { sliceURL in
+                            try await self.transcriptionCoordinator.transcribeMeeting(
+                                at: sliceURL,
+                                backend: backend,
+                                cohereLanguage: self.config.resolvedCohereLanguage
+                            )
+                        }
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        // Best-effort timestamps: fall back to the full-file
+                        // (complete, untimed) path below on any VAD-timed failure.
+                        fputs("[retranscribe] VAD-timed transcription failed, falling back to full-file: \(error)\n", stderr)
+                        timedSegments = []
+                    }
+                }
+
+                // Fallback: if VAD unavailable, single full-file transcription (untimed) as before.
+                let flatText: String
+                if timedSegments.isEmpty {
+                    let whole = try await self.transcriptionCoordinator.transcribeMeeting(
+                        at: recordingURL,
+                        backend: backend,
+                        cohereLanguage: self.config.resolvedCohereLanguage
+                    )
+                    flatText = whole.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                } else {
+                    flatText = timedSegments.map(\.text).joined(separator: " ")
+                }
+                guard !flatText.isEmpty else {
                     throw MeetingRetranscriptionError.emptyTranscript
                 }
+                // Live recordings store WALL-CLOCK markers (TranscriptFormatter.merge
+                // anchors at the real meeting start). Re-transcription must match so
+                // subtitle export — which rebases by meeting source — stays correct;
+                // otherwise a live meeting whose first speech starts minutes in would
+                // get its cues shifted to 0. Imports keep elapsed markers (offset 0).
+                let liveClockOffset: Double = {
+                    guard meeting.source != .audioImport,
+                          let start = MeetingBrowserLogic.parseDate(meeting.startTime) else { return 0 }
+                    return start.timeIntervalSince(Calendar.current.startOfDay(for: start))
+                }()
+                let rawTranscript = InlineTranscriptFormatter.transcriptForStorage(
+                    segments: timedSegments, multiSpeakerText: nil, fallbackText: flatText,
+                    startOffsetSeconds: liveClockOffset)
 
                 let templateSnapshot = MeetingTemplates.snapshot(
                     for: meeting,
