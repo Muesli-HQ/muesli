@@ -2679,6 +2679,7 @@ final class MuesliController: NSObject {
         let script = """
         sleep 1
         /usr/bin/tccutil reset "$1" "$2" >/dev/null 2>&1 || true
+        /usr/bin/osascript -e "display notification \\"Permission reset. Reopening Muesli to grant fresh.\\" with title \\"Muesli\\"" >/dev/null 2>&1 || true
         sleep 1
         /usr/bin/open -- "$3"
         """
