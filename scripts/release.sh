@@ -21,6 +21,9 @@ set -euo pipefail
 #
 # Prerequisites:
 #   - Developer ID cert in keychain
+#   - Production provisioning profile for com.muesli.app when CloudKit
+#     entitlements are enabled:
+#       MUESLI_PROVISIONING_PROFILE=/path/to/profile.provisionprofile
 #   - Notary profile stored: xcrun notarytool store-credentials MuesliNotary
 #   - gh CLI authenticated
 #
@@ -47,6 +50,7 @@ else
 fi
 PROFILE_NAME="${MUESLI_NOTARY_PROFILE:-MuesliNotary}"
 SIGN_IDENTITY="${MUESLI_SIGN_IDENTITY:-Developer ID Application: Pranav Hari Guruvayurappan (58W55QJ567)}"
+PROVISIONING_PROFILE="${MUESLI_PROVISIONING_PROFILE:-}"
 OUTPUT_DIR="$ROOT/dist-release"
 INSTALL_DIR="${MUESLI_RELEASE_INSTALL_DIR:-$OUTPUT_DIR/install-root}"
 APP_DIR="${MUESLI_RELEASE_APP_DIR:-$INSTALL_DIR/Muesli.app}"
@@ -103,6 +107,17 @@ fi
 
 if [[ ! -f "$UPDATE_APPCAST_RELEASE_NOTES" ]]; then
   echo "ERROR: update_appcast_release_notes.py not found at $UPDATE_APPCAST_RELEASE_NOTES" >&2
+  exit 1
+fi
+
+if [[ -z "$PROVISIONING_PROFILE" ]]; then
+  echo "ERROR: stable release builds require MUESLI_PROVISIONING_PROFILE." >&2
+  echo "Use the production provisioning profile for bundle ID com.muesli.app with CloudKit container iCloud.com.mueslihq.muesli." >&2
+  exit 1
+fi
+
+if [[ ! -f "$PROVISIONING_PROFILE" ]]; then
+  echo "ERROR: provisioning profile not found: $PROVISIONING_PROFILE" >&2
   exit 1
 fi
 
@@ -176,9 +191,14 @@ rm -rf "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
 RELEASE_BUILD_ENV=(
   MUESLI_INSTALL_DIR="$INSTALL_DIR"
+  MUESLI_PROVISIONING_PROFILE="$PROVISIONING_PROFILE"
+  MUESLI_SIGN_IDENTITY="$SIGN_IDENTITY"
   "${BUILD_ENV[@]}"
 )
-echo "y" | env "${RELEASE_BUILD_ENV[@]}" "$ROOT/scripts/build_native_app.sh" > /dev/null 2>&1
+echo "  Bundle ID: com.muesli.app"
+echo "  Profile:   $PROVISIONING_PROFILE"
+echo "  Identity:  $SIGN_IDENTITY"
+echo "y" | env "${RELEASE_BUILD_ENV[@]}" "$ROOT/scripts/build_native_app.sh" > /dev/null
 echo "  Installed to $APP_DIR"
 if [[ ! -x "$GENERATE_APPCAST" ]]; then
   echo "ERROR: generate_appcast not found at $GENERATE_APPCAST" >&2

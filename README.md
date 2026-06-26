@@ -217,6 +217,7 @@ Important meeting fields:
 | **Parakeet v3** (recommended) | FluidAudio | CoreML / Neural Engine | ~450 MB | 25 languages | ~0.13s |
 | Parakeet v2 | FluidAudio | CoreML / Neural Engine | ~450 MB | English only | ~0.13s |
 | **Cohere Transcribe 2B** | CoreML | FP16 encoder + INT8 decoder | ~3.8 GB | English | ~1s |
+| SenseVoice Small | FluidAudio | INT8 CoreML / Neural Engine | ~240 MB | 50+ languages | ~1s |
 | Qwen3 ASR | FluidAudio | CoreML / Neural Engine | ~1.3 GB | 52 languages | ~2-3s |
 | Whisper Small | WhisperKit | CoreML / Neural Engine | ~190 MB | English only | ~1-2s |
 | Whisper Medium | WhisperKit | CoreML / Neural Engine | ~1.5 GB | English only | ~2-3s |
@@ -250,7 +251,7 @@ Muesli needs these macOS permissions (guided during onboarding):
 | Component | Technology |
 |---|---|
 | App | Swift, AppKit, SwiftUI |
-| Primary ASR | [FluidAudio](https://github.com/FluidInference/FluidAudio) (Parakeet TDT + Qwen3 ASR on CoreML/ANE) |
+| Primary ASR | [FluidAudio](https://github.com/FluidInference/FluidAudio) (Parakeet TDT, SenseVoice Small, and Qwen3 ASR on CoreML/ANE) |
 | Cohere ASR | [Cohere Transcribe](https://huggingface.co/CohereLabs/cohere-transcribe-03-2026) (FP16 encoder + INT8 decoder on CoreML) |
 | Whisper ASR | [WhisperKit](https://github.com/argmaxinc/WhisperKit) (CoreML/ANE) |
 | Voice activity | Silero VAD via FluidAudio (streaming, event-driven) |
@@ -300,6 +301,18 @@ If Muesli saves you time, consider supporting development:
 
 ## Acknowledgements
 
+Muesli has been possible because of the generosity of companies such as:
+
+<p>
+  <a href="https://www.greptile.com"><img src="assets/sponsors/greptile.svg" alt="Greptile" height="44" /></a>
+  &nbsp;&nbsp;&nbsp;
+  <a href="https://openai.com/codex/"><img src="assets/OpenAI_Logo.svg.png" alt="OpenAI Codex" height="44" /></a>
+  &nbsp;&nbsp;&nbsp;
+  <a href="https://telemetrydeck.com"><img src="assets/sponsors/telemetrydeck.svg" alt="TelemetryDeck" height="44" /></a>
+  &nbsp;&nbsp;&nbsp;
+  <a href="https://www.coderabbit.ai"><img src="assets/sponsors/coderabbit.svg" alt="CodeRabbit" height="44" /></a>
+</p>
+
 - [FluidAudio](https://github.com/FluidInference/FluidAudio) — CoreML speech models for Apple devices (Parakeet TDT, Qwen3 ASR, Silero VAD, speaker diarization)
 - [localai-org/LocalVQE](https://github.com/localai-org/LocalVQE) — on-device acoustic echo cancellation for meeting transcription
 - [WhisperKit](https://github.com/argmaxinc/WhisperKit) — Swift Whisper inference on CoreML/ANE
@@ -315,6 +328,18 @@ If Muesli saves you time, consider supporting development:
 ## License
 
 [MIT](LICENSE) — free and open source.
+
+---
+
+## Resources
+
+- [Apple Neural Engine speech-to-text on Mac](https://muesli.works/apple-neural-engine-speech-to-text-mac) — how Muesli uses Apple Silicon, CoreML, and local ASR for fast dictation.
+- [Local speech-to-text glossary](https://muesli.works/local-speech-to-text-glossary) — ASR, VAD, diarization, acoustic echo cancellation, Parakeet, Whisper, and Qwen3 ASR.
+- [Best dictation apps for Mac](https://muesli.works/best-dictation-apps-mac) — a practical comparison of Mac dictation tools.
+- [Offline dictation for Mac](https://muesli.works/offline-dictation-mac) — why local-first voice typing matters.
+- [Local meeting transcription for Mac](https://muesli.works/local-meeting-transcription-mac) — meeting notes without adding a bot.
+
+---
 
 ## Star History
 

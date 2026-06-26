@@ -6,6 +6,32 @@
         <language>en</language>
         <!-- Items are added by scripts/release-preprod.sh -->
         <item>
+            <title>0.7.1-preprod.1</title>
+            <pubDate>Fri, 26 Jun 2026 01:24:05 -0700</pubDate>
+            <description><![CDATA[
+<h2>MuesliPreprod 0.7.1-preprod.1</h2>
+<p>Pre-production build for validating the Sparkle update flow before a stable release.</p>
+<h3>Install</h3>
+<ul>
+<li>Download <code>MuesliPreprod-0.7.1-preprod.1.dmg</code></li>
+<li>Open the DMG and drag MuesliPreprod to Applications</li>
+<li>Launch MuesliPreprod from Applications</li>
+</ul>
+<h3>Notes</h3>
+<ul>
+<li>Installs alongside production Muesli.</li>
+<li>Stores data separately in <code>~/Library/Application Support/MuesliPreprod/</code>.</li>
+<li>Uses the pre-production Sparkle feed: <code>https://muesli-hq.github.io/muesli/appcast-preprod.xml</code>.</li>
+<li>Does not update the production appcast, public download page, or Homebrew tap.</li>
+</ul>
+]]></description>
+            <sparkle:version>7001001</sparkle:version>
+            <sparkle:shortVersionString>0.7.1-preprod.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.7.1-preprod.1/MuesliPreprod-0.7.1-preprod.1.dmg" length="70083841" type="application/octet-stream" sparkle:edSignature="GAgPwgF8sUXhKczie0Ph0iZd4lKqCxSky+7buvLsrR98mSewVyRnnUOlBHzegMu3rK5k8H05/8YwP0ghqwLXBA=="/>
+        </item>
+        <item>
             <title>0.7.0-preprod.1</title>
             <pubDate>Thu, 11 Jun 2026 11:27:00 -0700</pubDate>
             <description><![CDATA[

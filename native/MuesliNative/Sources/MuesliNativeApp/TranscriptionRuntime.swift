@@ -21,6 +21,7 @@ actor TranscriptionCoordinator {
     private var _qwen3PostProcessor: Any?
     private var _canaryQwenTranscriber: Any?
     private var _cohereTranscriber: Any?
+    private let senseVoiceTranscriber = SenseVoiceTranscriber()
     private var vadManager: VadManager?
     private var diarizerManager: DiarizerManager?
     private var activeBackend: String?
@@ -226,6 +227,8 @@ actor TranscriptionCoordinator {
                     NSLocalizedDescriptionKey: "Cohere Transcribe requires macOS 15 or later.",
                 ])
             }
+        case "sensevoice":
+            try await senseVoiceTranscriber.loadModels(progress: progress)
         default:
             throw NSError(domain: "MuesliTranscriptionRuntime", code: 5, userInfo: [
                 NSLocalizedDescriptionKey: "Unknown transcription backend: \(backend.backend)",
@@ -341,6 +344,7 @@ actor TranscriptionCoordinator {
     func shutdown() async {
         await fluidTranscriber.shutdown()
         await whisperTranscriber.shutdown()
+        await senseVoiceTranscriber.shutdown()
         if #available(macOS 15, *) {
             await nemotronTranscriber.shutdown()
             await qwen3Transcriber.shutdown()
@@ -451,6 +455,8 @@ actor TranscriptionCoordinator {
             return try await transcribeWithCanaryQwen(url: url)
         case "cohere":
             return try await transcribeWithCohere(url: url, language: cohereLanguage)
+        case "sensevoice":
+            return try await transcribeWithSenseVoice(url: url)
         default:
             return try await transcribeWithFluidAudio(url: url)
         }
@@ -502,6 +508,20 @@ actor TranscriptionCoordinator {
                 NSLocalizedDescriptionKey: "Qwen3 ASR requires macOS 15 or later.",
             ])
         }
+    }
+
+    // MARK: - SenseVoiceSmall (FunASR via FluidAudio/CoreML)
+
+    private func transcribeWithSenseVoice(url: URL) async throws -> SpeechTranscriptionResult {
+        fputs("[muesli-native] transcribing with SenseVoice: \(url.lastPathComponent)\n", stderr)
+        let result = try await senseVoiceTranscriber.transcribe(wavURL: url)
+        fputs("[muesli-native] SenseVoice result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
+        let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return SpeechTranscriptionResult(
+            text: text,
+            // FluidAudio's SenseVoice API returns plain text only, so timestamped segments are not available here.
+            segments: text.isEmpty ? [] : [SpeechSegment(start: 0, end: 0, text: text)]
+        )
     }
 
     private func transcribeWithCanaryQwen(url: URL) async throws -> SpeechTranscriptionResult {

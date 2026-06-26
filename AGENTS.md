@@ -38,6 +38,20 @@ swift test --package-path native/MuesliNative --scratch-path "/Volumes/MuesliBui
 
 Caveat: do not run concurrent builds from different worktrees into the same scratch path. Use separate paths per channel, agent, or simultaneous build, such as `worktrees/pr182/dev`, `worktrees/pr188/dev`, or `agent-1`.
 
+## Parallel Dev Lanes
+
+Use fixed lanes when testing multiple worktrees side by side:
+
+```bash
+./scripts/dev-test.sh --lane A
+./scripts/dev-test.sh --lane B
+./scripts/dev-test.sh --lane C
+```
+
+Named lanes install as `/Applications/MuesliDevA.app`, `/Applications/MuesliDevB.app`, and `/Applications/MuesliDevC.app`, with matching bundle IDs `com.muesli.dev.a`, `com.muesli.dev.b`, and `com.muesli.dev.c`. Each lane has its own support directory under `~/Library/Application Support/`.
+
+Named lanes default to local-only signing, which omits iCloud and APNs entitlements for feature work that does not test sync or push behavior. Use `--cloud-entitlements` only for lanes that have matching Apple Developer profiles and need iCloud/APNs behavior.
+
 Deleting a scratch path only removes rebuildable SwiftPM artifacts. It does not delete installed app bundles or app data under `~/Library/Application Support/`.
 
 For direct SwiftPM test runs, pass the scratch path yourself:

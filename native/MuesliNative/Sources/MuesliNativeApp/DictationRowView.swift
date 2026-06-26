@@ -16,6 +16,10 @@ struct DictationRowView: View {
         record.source == "cua"
     }
 
+    private var syncOriginBadgeLabel: String? {
+        SyncOriginDisplay.badgeLabel(forDictationSource: record.source)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: MuesliTheme.spacing20) {
@@ -35,6 +39,10 @@ struct DictationRowView: View {
                                 .padding(.vertical, 2)
                                 .background(MuesliTheme.accentSubtle)
                                 .clipShape(RoundedRectangle(cornerRadius: 4))
+                        }
+
+                        if let syncOriginBadgeLabel {
+                            SyncOriginBadge(label: syncOriginBadgeLabel)
                         }
 
                         Text(record.rawText)

@@ -197,6 +197,9 @@ struct MeetingDetailView: View {
                         Text(formatMeta(meeting))
                             .font(MuesliTheme.callout())
                             .foregroundStyle(MuesliTheme.textSecondary)
+                        if let label = SyncOriginDisplay.badgeLabel(forMeetingSource: meeting.source) {
+                            SyncOriginBadge(label: label)
+                        }
                         templateChip(for: appliedTemplate)
                     }
 

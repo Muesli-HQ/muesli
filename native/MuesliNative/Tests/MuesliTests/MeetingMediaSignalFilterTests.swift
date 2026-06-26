@@ -77,7 +77,7 @@ struct MeetingMediaSignalFilterTests {
             cameraActive: false,
             audioInputProcesses: [
                 audioProcess(bundleID: selfBundleID, appName: "Muesli"),
-                audioProcess(bundleID: "com.microsoft.teams2", appName: "Teams"),
+                audioProcess(bundleID: "com.microsoft.teams2", appName: "Teams", isRunningOutput: true),
             ],
             sensorAttributions: sensorAttributions(micBundleIDs: [selfBundleID, "com.microsoft.teams2"]),
             selfBundleID: selfBundleID

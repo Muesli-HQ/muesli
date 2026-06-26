@@ -17,12 +17,47 @@ This checklist is for **verification** after the script runs, and for manual rec
 - [ ] Version bumped in `scripts/build_native_app.sh` (CFBundleVersion + CFBundleShortVersionString)
 - [ ] No uncommitted changes (`git status` clean)
 
+## Signing Profiles
+
+Muesli's default entitlements include CloudKit (`iCloud.com.mueslihq.muesli`). Any cloud-entitled build must be signed with a provisioning profile whose app identifier matches the bundle ID and whose certificate matches the signing identity.
+
+- [ ] Dev lane `MuesliDev` / `com.muesli.dev`
+  - Use profile: `../muesli-ios/secrets/mueslimacosdevcloudkitcommueslidev.provisionprofile`
+  - Use identity: `Apple Development: Pranav Hari Guruvayurappan (59WTZW55XG)`
+  - Use `MUESLI_CODESIGN_TIMESTAMP=none`
+  - `scripts/dev-test.sh --cloud-entitlements` auto-selects these values when that local profile exists
+
+- [ ] Named dev lanes `com.muesli.dev.a/b/c`
+  - Default to local-only entitlements and do not need a CloudKit profile
+  - If running with `--cloud-entitlements`, provide a lane-specific profile and matching Apple Development identity
+
+- [ ] Preprod `MuesliPreprod` / `com.muesli.preprod`
+  - Export `MUESLI_PROVISIONING_PROFILE=/path/to/com.muesli.preprod.profile`
+  - Maintainer local profile: `../muesli-ios/secrets/mueslimacospreproddeveloperidcloudkit.provisionprofile`
+  - Use the Developer ID release identity unless intentionally overriding `MUESLI_SIGN_IDENTITY`
+  - Verify the embedded profile carries `iCloud.com.mueslihq.muesli`
+
+- [ ] Stable `Muesli` / `com.muesli.app`
+  - Export `MUESLI_PROVISIONING_PROFILE=/path/to/com.muesli.app.profile`
+  - Maintainer local profile: `../muesli-ios/secrets/mueslimacosproductiondeveloperidcloudkit.provisionprofile`
+  - Use `Developer ID Application: Pranav Hari Guruvayurappan (58W55QJ567)`
+  - Final app and DMG must be notarized, stapled, and accepted by Gatekeeper
+
+If launch fails with `No matching profile found`, the embedded profile, bundle ID, entitlements, or signing identity do not match.
+
 ## Build & Sign
 
 - [ ] `scripts/build_native_app.sh` completes without error
 - [ ] App installed to `/Applications/Muesli.app`
 - [ ] Verify signature: `codesign -dvvv /Applications/Muesli.app 2>&1 | grep "Authority"`
   - Must show `Developer ID Application: Pranav Hari Guruvayurappan (58W55QJ567)`
+- [ ] Verify effective entitlements:
+  ```bash
+  codesign -d --entitlements :- /Applications/Muesli.app | plutil -p -
+  ```
+  - Must show CloudKit container `iCloud.com.mueslihq.muesli`
+  - Must show CloudKit environment `Production`
+  - Must show APNs environment `production` when using the production Developer ID CloudKit profile
 
 ## Notarize & Staple (CRITICAL ORDER)
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Muesli Dev Build Lanes"
+  short_description: "Build local Muesli dev lanes safely across worktrees."
+  default_prompt: "Use the Muesli dev build lanes workflow for local-only or signed dev app builds across multiple worktrees."

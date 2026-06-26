@@ -91,6 +91,15 @@ struct BackendOption: Equatable {
         recommended: false
     )
 
+    static let senseVoiceSmall = BackendOption(
+        backend: "sensevoice",
+        model: "FluidInference/sensevoice-small-coreml",
+        label: "SenseVoice Small",
+        sizeLabel: SenseVoiceTranscriber.downloadedModelSizeLabel,
+        description: "FunASR SenseVoiceSmall via FluidAudio. INT8 CoreML/ANE on macOS 14+, 50+ languages. Non-autoregressive with built-in punctuation.",
+        recommended: false
+    )
+
     // Default alias
     static let whisper = parakeetMultilingual
 
@@ -112,7 +121,7 @@ struct BackendOption: Equatable {
     )
 
     static let experimental: [BackendOption] = [
-        .qwen3Asr, .canaryQwen, .nemotronStreaming,
+        .senseVoiceSmall, .qwen3Asr, .canaryQwen, .nemotronStreaming,
     ]
 
     /// Models available for download and use.
@@ -178,6 +187,8 @@ struct BackendOption: Equatable {
             return CanaryQwenModelStore.isAvailableLocally()
         case "cohere":
             return CohereTranscribeModelStore.isAvailableLocally()
+        case "sensevoice":
+            return SenseVoiceTranscriber.isModelDownloaded()
         default:
             return false
         }
@@ -532,6 +543,95 @@ struct CustomWord: Codable, Equatable, Identifiable {
     }
 }
 
+struct DictionarySuggestion: Codable, Equatable, Identifiable, Sendable {
+    let id: UUID
+    var observed: String
+    var replacement: String
+    var appContext: String
+    var occurrenceCount: Int = 1
+    var createdAt: String = DictionarySuggestion.timestamp()
+    var lastSeenAt: String = DictionarySuggestion.timestamp()
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case observed
+        case replacement
+        case appContext = "app_context"
+        case occurrenceCount = "occurrence_count"
+        case createdAt = "created_at"
+        case lastSeenAt = "last_seen_at"
+    }
+
+    init(
+        id: UUID = UUID(),
+        observed: String,
+        replacement: String,
+        appContext: String = "",
+        occurrenceCount: Int = 1,
+        createdAt: String = DictionarySuggestion.timestamp(),
+        lastSeenAt: String = DictionarySuggestion.timestamp()
+    ) {
+        self.id = id
+        self.observed = observed
+        self.replacement = replacement
+        self.appContext = appContext
+        self.occurrenceCount = max(occurrenceCount, 1)
+        self.createdAt = createdAt
+        self.lastSeenAt = lastSeenAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
+        observed = try c.decode(String.self, forKey: .observed)
+        replacement = try c.decode(String.self, forKey: .replacement)
+        appContext = (try? c.decode(String.self, forKey: .appContext)) ?? ""
+        occurrenceCount = max((try? c.decode(Int.self, forKey: .occurrenceCount)) ?? 1, 1)
+        createdAt = (try? c.decode(String.self, forKey: .createdAt)) ?? DictionarySuggestion.timestamp()
+        lastSeenAt = (try? c.decode(String.self, forKey: .lastSeenAt)) ?? DictionarySuggestion.timestamp()
+    }
+
+    var key: String {
+        Self.key(observed: observed, replacement: replacement)
+    }
+
+    var customWord: CustomWord {
+        // Auto-learned corrections come from one observed edit pair, so keep
+        // them stricter than manually configured words to avoid broad rewrites.
+        CustomWord(word: observed, replacement: replacement, matchingThreshold: 0.92)
+    }
+
+    var appDisplayName: String {
+        let name = appContext
+            .split(separator: "|", omittingEmptySubsequences: false)
+            .first
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return name.isEmpty ? appContext : name
+    }
+
+    static func key(observed: String, replacement: String) -> String {
+        "\(normalize(observed))->\(normalize(replacement))"
+    }
+
+    static func timestamp() -> String {
+        iso8601Lock.lock()
+        defer { iso8601Lock.unlock() }
+        return iso8601.string(from: Date())
+    }
+
+    private static let iso8601 = ISO8601DateFormatter()
+    private static let iso8601Lock = NSLock()
+
+    private static func normalize(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+            .lowercased()
+    }
+}
+
 enum IndicatorAnchor: String, Codable, CaseIterable {
     case topLeading = "top_leading"
     case topCenter = "top_center"
@@ -755,6 +855,9 @@ struct AppConfig: Codable {
     var customWords: [CustomWord] = [
         CustomWord(word: "muesli", replacement: "muesli"),
     ]
+    var dictionarySuggestions: [DictionarySuggestion] = []
+    var dismissedDictionarySuggestionKeys: [String] = []
+    var enableDictionaryCorrectionPrompts: Bool = false
     var folderOrder: [Int64] = []
     var soundEnabled: Bool = true
     var pauseMediaDuringDictation: Bool = false
@@ -775,6 +878,12 @@ struct AppConfig: Codable {
     var meetingHookEnabled: Bool = false
     var meetingHookPath: String = ""
     var meetingHookTimeoutSeconds: Int = 30
+    var iCloudSyncEnabled: Bool = false
+    var showIOSCompanionPrompt: Bool = true
+    var contributionPromptNextWordCount: Int?
+    var contributionPromptNextMeetingCount: Int?
+    var contributionGitHubStarClicked: Bool = false
+    var contributionBuyMeCoffeeClicked: Bool = false
 
     enum CodingKeys: String, CodingKey {
         case dictationHotkey = "dictation_hotkey"
@@ -833,6 +942,9 @@ struct AppConfig: Codable {
         case userName = "user_name"
         case customMeetingTemplates = "custom_meeting_templates"
         case customWords = "custom_words"
+        case dictionarySuggestions = "dictionary_suggestions"
+        case dismissedDictionarySuggestionKeys = "dismissed_dictionary_suggestion_keys"
+        case enableDictionaryCorrectionPrompts = "enable_dictionary_correction_prompts"
         case folderOrder = "folder_order"
         case soundEnabled = "sound_enabled"
         case pauseMediaDuringDictation = "pause_media_during_dictation"
@@ -853,6 +965,12 @@ struct AppConfig: Codable {
         case meetingHookEnabled = "meeting_hook_enabled"
         case meetingHookPath = "meeting_hook_path"
         case meetingHookTimeoutSeconds = "meeting_hook_timeout_seconds"
+        case iCloudSyncEnabled = "icloud_sync_enabled"
+        case showIOSCompanionPrompt = "show_ios_companion_prompt"
+        case contributionPromptNextWordCount = "contribution_prompt_next_word_count"
+        case contributionPromptNextMeetingCount = "contribution_prompt_next_meeting_count"
+        case contributionGitHubStarClicked = "contribution_github_star_clicked"
+        case contributionBuyMeCoffeeClicked = "contribution_buy_me_coffee_clicked"
     }
 
     init() {}
@@ -896,6 +1014,8 @@ struct AppConfig: Codable {
         mutedMeetingDetectionAppBundleIDs = (try? c.decode([String].self, forKey: .mutedMeetingDetectionAppBundleIDs)) ?? defaults.mutedMeetingDetectionAppBundleIDs
         meetingRecordingSavePolicy = (try? c.decode(MeetingRecordingSavePolicy.self, forKey: .meetingRecordingSavePolicy)) ?? defaults.meetingRecordingSavePolicy
         darkMode = (try? c.decode(Bool.self, forKey: .darkMode)) ?? defaults.darkMode
+        iCloudSyncEnabled = (try? c.decode(Bool.self, forKey: .iCloudSyncEnabled)) ?? defaults.iCloudSyncEnabled
+        showIOSCompanionPrompt = (try? c.decode(Bool.self, forKey: .showIOSCompanionPrompt)) ?? defaults.showIOSCompanionPrompt
         enableDoubleTapDictation = (try? c.decode(Bool.self, forKey: .enableDoubleTapDictation)) ?? defaults.enableDoubleTapDictation
         hotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(
             (try? c.decode(Int.self, forKey: .hotkeyTriggerThresholdMS)) ?? defaults.hotkeyTriggerThresholdMS
@@ -943,6 +1063,9 @@ struct AppConfig: Codable {
         userName = (try? c.decode(String.self, forKey: .userName)) ?? defaults.userName
         customMeetingTemplates = (try? c.decode([CustomMeetingTemplate].self, forKey: .customMeetingTemplates)) ?? defaults.customMeetingTemplates
         customWords = (try? c.decode([CustomWord].self, forKey: .customWords)) ?? defaults.customWords
+        dictionarySuggestions = (try? c.decode([DictionarySuggestion].self, forKey: .dictionarySuggestions)) ?? defaults.dictionarySuggestions
+        dismissedDictionarySuggestionKeys = (try? c.decode([String].self, forKey: .dismissedDictionarySuggestionKeys)) ?? defaults.dismissedDictionarySuggestionKeys
+        enableDictionaryCorrectionPrompts = (try? c.decode(Bool.self, forKey: .enableDictionaryCorrectionPrompts)) ?? defaults.enableDictionaryCorrectionPrompts
         folderOrder = (try? c.decode([Int64].self, forKey: .folderOrder)) ?? defaults.folderOrder
         soundEnabled = (try? c.decode(Bool.self, forKey: .soundEnabled)) ?? defaults.soundEnabled
         pauseMediaDuringDictation = (try? c.decode(Bool.self, forKey: .pauseMediaDuringDictation)) ?? defaults.pauseMediaDuringDictation
@@ -963,6 +1086,10 @@ struct AppConfig: Codable {
         meetingHookEnabled = (try? c.decode(Bool.self, forKey: .meetingHookEnabled)) ?? defaults.meetingHookEnabled
         meetingHookPath = (try? c.decode(String.self, forKey: .meetingHookPath)) ?? defaults.meetingHookPath
         meetingHookTimeoutSeconds = (try? c.decode(Int.self, forKey: .meetingHookTimeoutSeconds)) ?? defaults.meetingHookTimeoutSeconds
+        contributionPromptNextWordCount = try? c.decode(Int.self, forKey: .contributionPromptNextWordCount)
+        contributionPromptNextMeetingCount = try? c.decode(Int.self, forKey: .contributionPromptNextMeetingCount)
+        contributionGitHubStarClicked = (try? c.decode(Bool.self, forKey: .contributionGitHubStarClicked)) ?? defaults.contributionGitHubStarClicked
+        contributionBuyMeCoffeeClicked = (try? c.decode(Bool.self, forKey: .contributionBuyMeCoffeeClicked)) ?? defaults.contributionBuyMeCoffeeClicked
     }
 
     var resolvedCohereLanguage: CohereTranscribeLanguage {
