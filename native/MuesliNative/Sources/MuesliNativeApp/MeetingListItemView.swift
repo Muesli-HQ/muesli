@@ -5,6 +5,8 @@ struct MeetingListItemView: View {
     let record: MeetingRecord
     let isSelected: Bool
     let folders: [MeetingFolder]
+    private let folderByID: [Int64: MeetingFolder]
+    private let folderIDsWithChildren: Set<Int64>
     let onSelect: () -> Void
     let onMove: (Int64?) -> Void
     let onCreateFolderAndMove: ((String) -> Void)?
@@ -15,9 +17,38 @@ struct MeetingListItemView: View {
     @State private var showNewFolderPrompt = false
     @State private var newFolderName = ""
 
+    init(
+        record: MeetingRecord,
+        isSelected: Bool,
+        folders: [MeetingFolder],
+        onSelect: @escaping () -> Void,
+        onMove: @escaping (Int64?) -> Void,
+        onCreateFolderAndMove: ((String) -> Void)?,
+        onDelete: (() -> Void)?
+    ) {
+        self.record = record
+        self.isSelected = isSelected
+        self.folders = folders
+        self.folderByID = Dictionary(uniqueKeysWithValues: folders.map { ($0.id, $0) })
+        self.folderIDsWithChildren = Set(folders.compactMap(\.parentID))
+        self.onSelect = onSelect
+        self.onMove = onMove
+        self.onCreateFolderAndMove = onCreateFolderAndMove
+        self.onDelete = onDelete
+    }
+
     private var currentFolderName: String? {
         guard let fid = record.folderID else { return nil }
-        return folders.first(where: { $0.id == fid })?.name
+        guard let folder = folderByID[fid] else { return nil }
+        // Build breadcrumb path: "Grandparent / Parent / Folder"
+        var parts: [String] = [folder.name]
+        var current = folder.parentID
+        var seen: Set<Int64> = [folder.id]
+        while let pid = current, let parent = folderByID[pid], seen.insert(pid).inserted {
+            parts.insert(parent.name, at: 0)
+            current = parent.parentID
+        }
+        return parts.joined(separator: " / ")
     }
 
     var body: some View {
@@ -99,6 +130,17 @@ struct MeetingListItemView: View {
 
     // MARK: - Folder menu button
 
+    private func folderBreadcrumb(_ folder: MeetingFolder) -> String {
+        var parts: [String] = [folder.name]
+        var current = folder.parentID
+        var seen: Set<Int64> = [folder.id]
+        while let pid = current, let parent = folderByID[pid], seen.insert(pid).inserted {
+            parts.insert(parent.name, at: 0)
+            current = parent.parentID
+        }
+        return parts.joined(separator: " / ")
+    }
+
     @ViewBuilder
     private var folderMenuButton: some View {
         Button {
@@ -124,7 +166,12 @@ struct MeetingListItemView: View {
                 }
                 Divider().padding(.vertical, 4)
                 ForEach(folders) { folder in
-                    folderPopoverRow(icon: "folder", label: folder.name, isActive: record.folderID == folder.id) {
+                    let hasChildren = folderIDsWithChildren.contains(folder.id)
+                    folderPopoverRow(
+                        icon: hasChildren ? "folder.fill" : "folder",
+                        label: folderBreadcrumb(folder),
+                        isActive: record.folderID == folder.id
+                    ) {
                         onMove(folder.id)
                         showFolderPopover = false
                     }

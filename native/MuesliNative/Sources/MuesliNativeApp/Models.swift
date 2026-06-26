@@ -543,6 +543,95 @@ struct CustomWord: Codable, Equatable, Identifiable {
     }
 }
 
+struct DictionarySuggestion: Codable, Equatable, Identifiable, Sendable {
+    let id: UUID
+    var observed: String
+    var replacement: String
+    var appContext: String
+    var occurrenceCount: Int = 1
+    var createdAt: String = DictionarySuggestion.timestamp()
+    var lastSeenAt: String = DictionarySuggestion.timestamp()
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case observed
+        case replacement
+        case appContext = "app_context"
+        case occurrenceCount = "occurrence_count"
+        case createdAt = "created_at"
+        case lastSeenAt = "last_seen_at"
+    }
+
+    init(
+        id: UUID = UUID(),
+        observed: String,
+        replacement: String,
+        appContext: String = "",
+        occurrenceCount: Int = 1,
+        createdAt: String = DictionarySuggestion.timestamp(),
+        lastSeenAt: String = DictionarySuggestion.timestamp()
+    ) {
+        self.id = id
+        self.observed = observed
+        self.replacement = replacement
+        self.appContext = appContext
+        self.occurrenceCount = max(occurrenceCount, 1)
+        self.createdAt = createdAt
+        self.lastSeenAt = lastSeenAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
+        observed = try c.decode(String.self, forKey: .observed)
+        replacement = try c.decode(String.self, forKey: .replacement)
+        appContext = (try? c.decode(String.self, forKey: .appContext)) ?? ""
+        occurrenceCount = max((try? c.decode(Int.self, forKey: .occurrenceCount)) ?? 1, 1)
+        createdAt = (try? c.decode(String.self, forKey: .createdAt)) ?? DictionarySuggestion.timestamp()
+        lastSeenAt = (try? c.decode(String.self, forKey: .lastSeenAt)) ?? DictionarySuggestion.timestamp()
+    }
+
+    var key: String {
+        Self.key(observed: observed, replacement: replacement)
+    }
+
+    var customWord: CustomWord {
+        // Auto-learned corrections come from one observed edit pair, so keep
+        // them stricter than manually configured words to avoid broad rewrites.
+        CustomWord(word: observed, replacement: replacement, matchingThreshold: 0.92)
+    }
+
+    var appDisplayName: String {
+        let name = appContext
+            .split(separator: "|", omittingEmptySubsequences: false)
+            .first
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return name.isEmpty ? appContext : name
+    }
+
+    static func key(observed: String, replacement: String) -> String {
+        "\(normalize(observed))->\(normalize(replacement))"
+    }
+
+    static func timestamp() -> String {
+        iso8601Lock.lock()
+        defer { iso8601Lock.unlock() }
+        return iso8601.string(from: Date())
+    }
+
+    private static let iso8601 = ISO8601DateFormatter()
+    private static let iso8601Lock = NSLock()
+
+    private static func normalize(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+            .lowercased()
+    }
+}
+
 enum IndicatorAnchor: String, Codable, CaseIterable {
     case topLeading = "top_leading"
     case topCenter = "top_center"
@@ -766,6 +855,9 @@ struct AppConfig: Codable {
     var customWords: [CustomWord] = [
         CustomWord(word: "muesli", replacement: "muesli"),
     ]
+    var dictionarySuggestions: [DictionarySuggestion] = []
+    var dismissedDictionarySuggestionKeys: [String] = []
+    var enableDictionaryCorrectionPrompts: Bool = false
     var folderOrder: [Int64] = []
     var soundEnabled: Bool = true
     var pauseMediaDuringDictation: Bool = false
@@ -850,6 +942,9 @@ struct AppConfig: Codable {
         case userName = "user_name"
         case customMeetingTemplates = "custom_meeting_templates"
         case customWords = "custom_words"
+        case dictionarySuggestions = "dictionary_suggestions"
+        case dismissedDictionarySuggestionKeys = "dismissed_dictionary_suggestion_keys"
+        case enableDictionaryCorrectionPrompts = "enable_dictionary_correction_prompts"
         case folderOrder = "folder_order"
         case soundEnabled = "sound_enabled"
         case pauseMediaDuringDictation = "pause_media_during_dictation"
@@ -968,6 +1063,9 @@ struct AppConfig: Codable {
         userName = (try? c.decode(String.self, forKey: .userName)) ?? defaults.userName
         customMeetingTemplates = (try? c.decode([CustomMeetingTemplate].self, forKey: .customMeetingTemplates)) ?? defaults.customMeetingTemplates
         customWords = (try? c.decode([CustomWord].self, forKey: .customWords)) ?? defaults.customWords
+        dictionarySuggestions = (try? c.decode([DictionarySuggestion].self, forKey: .dictionarySuggestions)) ?? defaults.dictionarySuggestions
+        dismissedDictionarySuggestionKeys = (try? c.decode([String].self, forKey: .dismissedDictionarySuggestionKeys)) ?? defaults.dismissedDictionarySuggestionKeys
+        enableDictionaryCorrectionPrompts = (try? c.decode(Bool.self, forKey: .enableDictionaryCorrectionPrompts)) ?? defaults.enableDictionaryCorrectionPrompts
         folderOrder = (try? c.decode([Int64].self, forKey: .folderOrder)) ?? defaults.folderOrder
         soundEnabled = (try? c.decode(Bool.self, forKey: .soundEnabled)) ?? defaults.soundEnabled
         pauseMediaDuringDictation = (try? c.decode(Bool.self, forKey: .pauseMediaDuringDictation)) ?? defaults.pauseMediaDuringDictation

@@ -6,6 +6,7 @@ private enum DictionaryRowMetrics {
     static let thresholdWidth: CGFloat = 76
     static let actionButtonSize: CGFloat = 24
     static let actionsWidth: CGFloat = actionButtonSize * 2 + MuesliTheme.spacing8
+    static let suggestionPageSize = 10
 }
 
 struct DictionaryView: View {
@@ -16,17 +17,35 @@ struct DictionaryView: View {
     @State private var newWord = ""
     @State private var newReplacement = ""
     @State private var newThreshold = 0.85
+    @State private var isShowingAccessibilityPrompt = false
+    @State private var suggestionPage = 0
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
                 header
+                if !appState.config.dictionarySuggestions.isEmpty {
+                    suggestionList
+                }
                 wordList
             }
             .padding(MuesliTheme.spacing32)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(MuesliTheme.backgroundBase)
+        .onAppear {
+            controller.reconcilePendingDictionaryCorrectionAccessibilityEnable()
+        }
+        .alert("Enable Accessibility?", isPresented: $isShowingAccessibilityPrompt) {
+            Button("Cancel", role: .cancel) {
+                controller.cancelDictionaryCorrectionAccessibilityEnableRequest()
+            }
+            Button("Enable") {
+                controller.requestDictionaryCorrectionAccessibilityEnable()
+            }
+        } message: {
+            Text("Dictionary suggestions briefly read focused app text via Accessibility after dictation. Grant access, then relaunch Muesli to turn suggestions on.")
+        }
     }
 
     private var header: some View {
@@ -36,6 +55,17 @@ struct DictionaryView: View {
                     .font(MuesliTheme.title1())
                     .foregroundStyle(MuesliTheme.textPrimary)
                 Spacer()
+                Toggle(
+                    "Dictionary suggestions",
+                    isOn: Binding(
+                        get: { appState.config.enableDictionaryCorrectionPrompts },
+                        set: { handleDictionaryCorrectionPromptsToggle($0) }
+                    )
+                )
+                .toggleStyle(.switch)
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textSecondary)
+                .help("Briefly reads focused app text after dictation to detect corrections.")
                 Button {
                     isAdding = true
                     newWord = ""
@@ -64,6 +94,103 @@ struct DictionaryView: View {
                 .font(MuesliTheme.body())
                 .foregroundStyle(MuesliTheme.textSecondary)
         }
+    }
+
+    private func handleDictionaryCorrectionPromptsToggle(_ enabled: Bool) {
+        if controller.setDictionaryCorrectionPromptsFromToggle(enabled) == .needsAccessibilityPermission {
+            isShowingAccessibilityPrompt = true
+        }
+    }
+
+    private var suggestionList: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Suggested Corrections")
+                        .font(MuesliTheme.headline())
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                    Text("Corrections Muesli noticed by briefly reading focused app text after dictation.")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, MuesliTheme.spacing16)
+            .padding(.vertical, MuesliTheme.spacing12)
+
+            Divider().background(MuesliTheme.surfaceBorder)
+
+            ForEach(visibleDictionarySuggestions) { suggestion in
+                DictionarySuggestionRow(suggestion: suggestion, controller: controller)
+                Divider().background(MuesliTheme.surfaceBorder)
+            }
+
+            if suggestionPageCount > 1 {
+                suggestionPaginationControls
+            }
+        }
+        .background(MuesliTheme.backgroundRaised)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+        .overlay(
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
+                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+        )
+    }
+
+    private var visibleDictionarySuggestions: [DictionarySuggestion] {
+        let suggestions = appState.config.dictionarySuggestions
+        guard !suggestions.isEmpty else { return [] }
+        let startIndex = boundedSuggestionPage * DictionaryRowMetrics.suggestionPageSize
+        let endIndex = min(startIndex + DictionaryRowMetrics.suggestionPageSize, suggestions.count)
+        return Array(suggestions[startIndex..<endIndex])
+    }
+
+    private var suggestionPageCount: Int {
+        let count = appState.config.dictionarySuggestions.count
+        guard count > 0 else { return 0 }
+        return (count + DictionaryRowMetrics.suggestionPageSize - 1) / DictionaryRowMetrics.suggestionPageSize
+    }
+
+    private var boundedSuggestionPage: Int {
+        min(max(suggestionPage, 0), max(suggestionPageCount - 1, 0))
+    }
+
+    private var suggestionRangeText: String {
+        let count = appState.config.dictionarySuggestions.count
+        guard count > 0 else { return "" }
+        let start = boundedSuggestionPage * DictionaryRowMetrics.suggestionPageSize + 1
+        let end = min(start + DictionaryRowMetrics.suggestionPageSize - 1, count)
+        return "\(start)-\(end) of \(count)"
+    }
+
+    private var suggestionPaginationControls: some View {
+        HStack(spacing: MuesliTheme.spacing8) {
+            Text(suggestionRangeText)
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textTertiary)
+
+            Spacer()
+
+            DictionaryIconButton(
+                systemName: "chevron.left",
+                label: "Previous suggestions",
+                tint: MuesliTheme.textSecondary,
+                isDisabled: boundedSuggestionPage == 0
+            ) {
+                suggestionPage = max(boundedSuggestionPage - 1, 0)
+            }
+
+            DictionaryIconButton(
+                systemName: "chevron.right",
+                label: "Next suggestions",
+                tint: MuesliTheme.textSecondary,
+                isDisabled: boundedSuggestionPage >= suggestionPageCount - 1
+            ) {
+                suggestionPage = min(boundedSuggestionPage + 1, max(suggestionPageCount - 1, 0))
+            }
+        }
+        .padding(.horizontal, MuesliTheme.spacing16)
+        .padding(.vertical, MuesliTheme.spacing8)
     }
 
     private var wordList: some View {
@@ -175,6 +302,60 @@ struct DictionaryView: View {
         }
         .padding(.horizontal, MuesliTheme.spacing16)
         .padding(.vertical, MuesliTheme.spacing12)
+    }
+}
+
+private struct DictionarySuggestionRow: View {
+    let suggestion: DictionarySuggestion
+    let controller: MuesliController
+
+    var body: some View {
+        HStack(spacing: MuesliTheme.spacing8) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: MuesliTheme.spacing8) {
+                    Text(suggestion.observed)
+                        .font(MuesliTheme.body())
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                        .lineLimit(1)
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                    Text(suggestion.replacement)
+                        .font(MuesliTheme.body())
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                        .lineLimit(1)
+                }
+                Text(detailText)
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            DictionaryIconButton(
+                systemName: "checkmark",
+                label: "Add correction",
+                tint: MuesliTheme.accent
+            ) {
+                controller.acceptDictionarySuggestion(id: suggestion.id)
+            }
+            DictionaryIconButton(
+                systemName: "xmark",
+                label: "Dismiss correction",
+                tint: MuesliTheme.textTertiary
+            ) {
+                controller.dismissDictionarySuggestion(id: suggestion.id)
+            }
+        }
+        .padding(.horizontal, MuesliTheme.spacing16)
+        .padding(.vertical, MuesliTheme.spacing12)
+    }
+
+    private var detailText: String {
+        var parts = ["Seen \(suggestion.occurrenceCount)x"]
+        if !suggestion.appDisplayName.isEmpty {
+            parts.append(suggestion.appDisplayName)
+        }
+        return parts.joined(separator: " | ")
     }
 }
 

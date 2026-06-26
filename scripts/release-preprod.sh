@@ -13,6 +13,10 @@ set -euo pipefail
 #   - Support dir: ~/Library/Application Support/MuesliPreprod
 #   - Sparkle feed: https://muesli-hq.github.io/muesli/appcast-preprod.xml
 #
+# Required signing environment:
+#   MUESLI_PROVISIONING_PROFILE=/path/to/com.muesli.preprod.profile
+#   MUESLI_SIGN_IDENTITY="Developer ID Application: ... (TEAMID)"
+#
 # Usage: ./scripts/release-preprod.sh [version]
 #   e.g. ./scripts/release-preprod.sh 0.6.3-preprod.1
 #   If no version is given, auto-increments from the next stable patch base.
@@ -37,6 +41,7 @@ else
 fi
 PROFILE_NAME="${MUESLI_NOTARY_PROFILE:-MuesliNotary}"
 SIGN_IDENTITY="${MUESLI_SIGN_IDENTITY:-Developer ID Application: Pranav Hari Guruvayurappan (58W55QJ567)}"
+PROVISIONING_PROFILE="${MUESLI_PROVISIONING_PROFILE:-}"
 APP_NAME="MuesliPreprod"
 BUNDLE_ID="com.muesli.preprod"
 SUPPORT_DIR_NAME="MuesliPreprod"
@@ -105,6 +110,17 @@ if [[ ! -f "$UPDATE_APPCAST_RELEASE_NOTES" ]]; then
   exit 1
 fi
 
+if [[ -z "$PROVISIONING_PROFILE" ]]; then
+  echo "ERROR: preprod release builds require MUESLI_PROVISIONING_PROFILE." >&2
+  echo "Use the provisioning profile for bundle ID $BUNDLE_ID with CloudKit container iCloud.com.mueslihq.muesli." >&2
+  exit 1
+fi
+
+if [[ ! -f "$PROVISIONING_PROFILE" ]]; then
+  echo "ERROR: provisioning profile not found: $PROVISIONING_PROFILE" >&2
+  exit 1
+fi
+
 TAG="v${VERSION}"
 DMG_PATH="$OUTPUT_DIR/${APP_NAME}-${VERSION}.dmg"
 RELEASE_TITLE="${APP_NAME} ${VERSION}"
@@ -166,7 +182,11 @@ PREPROD_BUILD_ENV=(
   MUESLI_SUPPORT_DIR_NAME="$SUPPORT_DIR_NAME"
   MUESLI_SPARKLE_FEED_URL="$PREPROD_FEED_URL"
   MUESLI_SIGN_IDENTITY="$SIGN_IDENTITY"
+  MUESLI_PROVISIONING_PROFILE="$PROVISIONING_PROFILE"
 )
+echo "  Bundle ID: $BUNDLE_ID"
+echo "  Profile:   $PROVISIONING_PROFILE"
+echo "  Identity:  $SIGN_IDENTITY"
 env "${PREPROD_BUILD_ENV[@]}" "$ROOT/scripts/build_native_app.sh" > /dev/null
 echo "  Installed to $APP_DIR"
 if [[ ! -x "$GENERATE_APPCAST" ]]; then

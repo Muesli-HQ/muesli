@@ -347,11 +347,13 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
 public struct MeetingFolder: Identifiable, Codable, Sendable {
     public let id: Int64
     public var name: String
+    public let parentID: Int64?
     public let createdAt: String
 
-    public init(id: Int64, name: String, createdAt: String) {
+    public init(id: Int64, name: String, parentID: Int64? = nil, createdAt: String) {
         self.id = id
         self.name = name
+        self.parentID = parentID
         self.createdAt = createdAt
     }
 }

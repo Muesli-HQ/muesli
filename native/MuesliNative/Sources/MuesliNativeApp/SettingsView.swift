@@ -81,6 +81,7 @@ struct SettingsView: View {
     @State private var googleCalSignInError: String?
     @State private var isSigningInGoogleCal = false
     @State private var pendingDataDestruction: PendingDataDestruction?
+    @State private var isShowingDictionaryAccessibilityPrompt = false
     @State private var isPreviewingClip = false
     @State private var selectedPane: SettingsPane = .general
     @State private var downloadedBackendOptions: [BackendOption] = []
@@ -225,6 +226,19 @@ struct SettingsView: View {
         } message: {
             Text(pendingDataDestruction?.message ?? "")
         }
+        .alert(
+            "Enable Accessibility?",
+            isPresented: $isShowingDictionaryAccessibilityPrompt
+        ) {
+            Button("Cancel", role: .cancel) {
+                controller.cancelDictionaryCorrectionAccessibilityEnableRequest()
+            }
+            Button("Enable") {
+                controller.requestDictionaryCorrectionAccessibilityEnable()
+            }
+        } message: {
+            Text("Dictionary suggestions briefly read focused app text via Accessibility after dictation. Grant access, then relaunch Muesli to turn suggestions on.")
+        }
     }
 
     private func refreshDownloadedModelOptions() {
@@ -256,10 +270,13 @@ struct SettingsView: View {
     ]
 
     private var screenContextDescription: String {
-        if screenRecordingGranted {
-            return "Adds nearby app text and meeting OCR context. Processed on-device."
+        if !accessibilityGranted {
+            return "Grant Accessibility, then toggle again if needed."
         }
-        return "Requires Screen Recording. Adds nearby app text and meeting OCR context."
+        if !screenRecordingGranted {
+            return "Adds nearby app text for post-processing. Screen Recording enables OCR context."
+        }
+        return "Adds nearby app text and OCR context. Processed on-device."
     }
 
     @ViewBuilder
@@ -543,6 +560,16 @@ struct SettingsView: View {
                     settingsSwitch(isOn: appState.config.enablePostProcessor) { newValue in
                         controller.setPostProcessorEnabled(newValue)
                     }
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow(
+                    "Dictionary suggestions",
+                    description: "Suggest words after corrections by briefly reading focused app text via Accessibility."
+                ) {
+                    settingsSwitch(isOn: appState.config.enableDictionaryCorrectionPrompts) { newValue in
+                        handleDictionaryCorrectionPromptsToggle(newValue)
+                    }
+                    .help("Briefly reads focused app text after dictation to detect corrections.")
                 }
                 if appState.config.enablePostProcessor && !downloadedPostProcOptions.isEmpty {
                     Divider().background(MuesliTheme.surfaceBorder)
@@ -1436,7 +1463,7 @@ struct SettingsView: View {
 
     @ViewBuilder
     private func screenContextControl(width: CGFloat? = nil) -> some View {
-        if screenRecordingGranted {
+        if accessibilityGranted {
             settingsSwitch(isOn: appState.config.enableScreenContext) { newValue in
                 handleScreenContextToggle(newValue)
             }
@@ -1457,29 +1484,33 @@ struct SettingsView: View {
         }
     }
 
-    private func handleScreenContextToggle(_ enabled: Bool) {
+    @discardableResult
+    private func handleScreenContextToggle(_ enabled: Bool) -> Bool {
         guard enabled else {
             clearPendingScreenContextEnable()
             controller.updateConfig { $0.enableScreenContext = false }
-            return
+            return false
         }
 
-        guard CGPreflightScreenCaptureAccess() else {
-            controller.updateConfig { $0.enableScreenContext = false }
+        guard accessibilityGranted else {
             pendingScreenContextEnable = true
             pendingScreenContextRequestedAt = Date().timeIntervalSince1970
-            let granted = CGRequestScreenCaptureAccess()
-            screenRecordingGranted = CGPreflightScreenCaptureAccess()
-            if granted || screenRecordingGranted {
+            let granted = controller.requestScreenContextEnable()
+            accessibilityGranted = AXIsProcessTrusted()
+            if granted || accessibilityGranted {
                 clearPendingScreenContextEnable()
-                controller.updateConfig { $0.enableScreenContext = true }
             }
-            return
+            return granted || accessibilityGranted
         }
 
-        screenRecordingGranted = true
         clearPendingScreenContextEnable()
-        controller.updateConfig { $0.enableScreenContext = true }
+        return controller.requestScreenContextEnable()
+    }
+
+    private func handleDictionaryCorrectionPromptsToggle(_ enabled: Bool) {
+        if controller.setDictionaryCorrectionPromptsFromToggle(enabled) == .needsAccessibilityPermission {
+            isShowingDictionaryAccessibilityPrompt = true
+        }
     }
 
     private func startPermissionPolling() {
@@ -1500,19 +1531,21 @@ struct SettingsView: View {
     private func refreshPermissionStatuses(refreshLaunchAtLogin: Bool = false) {
         micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         accessibilityGranted = AXIsProcessTrusted()
+        controller.reconcilePendingDictionaryCorrectionAccessibilityEnable()
         inputMonitoringGranted = CGPreflightListenEventAccess()
         screenRecordingGranted = CGPreflightScreenCaptureAccess()
         if refreshLaunchAtLogin {
             controller.refreshLaunchAtLoginState()
         }
-        if screenRecordingGranted && pendingScreenContextEnable {
-            clearPendingScreenContextEnable()
-            controller.updateConfig { $0.enableScreenContext = true }
+        if accessibilityGranted && pendingScreenContextEnable {
+            if controller.requestScreenContextEnable() {
+                clearPendingScreenContextEnable()
+            }
         }
-        if !screenRecordingGranted && isPendingScreenContextGrantExpired {
+        if !accessibilityGranted && isPendingScreenContextGrantExpired {
             clearPendingScreenContextEnable()
         }
-        if !screenRecordingGranted && appState.config.enableScreenContext {
+        if !accessibilityGranted && appState.config.enableScreenContext {
             clearPendingScreenContextEnable()
             controller.updateConfig { $0.enableScreenContext = false }
         }

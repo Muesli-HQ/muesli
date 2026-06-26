@@ -26,16 +26,20 @@ Local-first macOS app for **dictation** and **meeting transcription** on Apple S
 ./scripts/build_native_app.sh
 ```
 
-### Dev/test build (isolated, unsigned)
+### Dev/test build (isolated from production)
 ```bash
-./scripts/dev-test.sh                  # Build MuesliDev.app (separate bundle ID, separate data)
-./scripts/dev-test.sh --clean          # Wipe dev data, fresh onboarding
-./scripts/dev-test.sh --reset          # Re-run onboarding, keep dev data
-./scripts/dev-seed-from-prod.sh        # Copy production DB/config into MuesliDev safely
-./scripts/dev-reset-permissions.sh     # Reset macOS privacy permissions for MuesliDev
+./scripts/dev-test.sh                         # Build MuesliDev.app (separate bundle ID, separate data)
+./scripts/dev-test.sh --lane A                # Build MuesliDevA.app for a parallel worktree
+./scripts/dev-test.sh --lane B                # Build MuesliDevB.app for another parallel worktree
+./scripts/dev-test.sh --lane A --local-only   # Explicitly omit iCloud/APNs entitlements
+./scripts/dev-test.sh --lane A --reset        # Re-run onboarding for lane A, keep lane data
+./scripts/dev-test.sh --reset                 # Re-run onboarding for default MuesliDev, keep data
+./scripts/dev-seed-from-prod.sh               # Copy production DB/config into MuesliDev safely
 ```
 
-MuesliDev uses bundle ID `com.muesli.dev` and stores data at `~/Library/Application Support/MuesliDev/`. Production data is never touched.
+MuesliDev uses bundle ID `com.muesli.dev` and stores data at `~/Library/Application Support/MuesliDev/`. Named lanes use fixed identities: `MuesliDevA` / `com.muesli.dev.a` / `~/Library/Application Support/MuesliDevA`, then B and C with matching suffixes. Named lane executable/process names also match the lane app name. Production data is never touched.
+
+Named lanes default to local-only signing through `scripts/MuesliLocalOnly.entitlements`, which omits iCloud and APNs entitlements for non-sync feature work. Use `--cloud-entitlements` only when the lane has a matching Apple Developer provisioning profile and the test actually needs iCloud/APNs behavior.
 
 ### SwiftPM build artifacts in worktrees
 SwiftPM can write build artifacts to `native/MuesliNative/.build` inside the active worktree. That can consume several GB per worktree. Local scripts now resolve a shared SwiftPM scratch path through `scripts/muesli_spm_cache.sh`:
@@ -73,6 +77,17 @@ swift test --package-path native/MuesliNative --scratch-path "/Volumes/MuesliBui
 
 The build script passes the resolved path to SwiftPM as `--scratch-path`, so multiple worktrees do not each grow their own `.build`. Caveat: do not run concurrent builds from different worktrees into the same scratch path; use separate paths per channel, agent, or simultaneous build. Deleting a scratch path only removes rebuildable SwiftPM artifacts, not installed apps or app data. Set `MUESLI_DISABLE_SWIFTPM_SCRATCH_PATH=1` only when you intentionally want package-local `.build`.
 
+### Parallel dev lanes
+Use fixed lanes for concurrent local testing instead of creating branch-named app identities:
+
+```bash
+./scripts/dev-test.sh --lane A
+./scripts/dev-test.sh --lane B
+./scripts/dev-test.sh --lane C
+```
+
+Each lane installs a separate app bundle under `/Applications/`, keeps a separate support directory under `~/Library/Application Support/`, and has a separate macOS permission identity. Grant permissions once per lane. Do not copy or reset TCC permissions unless explicitly testing permission prompts.
+
 ### Tests
 ```bash
 swift test --package-path native/MuesliNative    # 396 tests across 65 suites
@@ -80,12 +95,17 @@ swift test --package-path native/MuesliNative    # 396 tests across 65 suites
 
 ### Onboarding testing
 ```bash
-# Reset onboarding flag without losing data:
-python3 -c "import json; p='$HOME/Library/Application Support/MuesliDev/config.json'; c=json.load(open(p)); c['has_completed_onboarding']=False; json.dump(c,open(p,'w'),indent=2)"
-# Reset macOS permissions:
+# Reset onboarding without losing data:
+./scripts/dev-test.sh --reset
+./scripts/dev-test.sh --lane A --reset
+
+# Reset macOS permissions only when intentionally re-granting TCC:
 ./scripts/dev-reset-permissions.sh
+./scripts/dev-reset-permissions.sh --bundle-id com.muesli.dev.a --process-name MuesliDevA --app-path /Applications/MuesliDevA.app
+
 # Then:
 ./scripts/dev-test.sh
+./scripts/dev-test.sh --lane A
 ```
 Note: config JSON uses snake_case keys (`has_completed_onboarding`, not `hasCompletedOnboarding`).
 

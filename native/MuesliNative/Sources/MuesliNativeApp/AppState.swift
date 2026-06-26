@@ -58,6 +58,7 @@ final class AppState {
     var meetingRows: [MeetingRecord] = []
     var totalMeetingCount: Int = 0
     var meetingCountsByFolder: [Int64: Int] = [:]
+    var directMeetingCountsByFolder: [Int64: Int] = [:]
     var selectedMeetingID: Int64?
     var selectedMeetingRecord: MeetingRecord?
     var folders: [MeetingFolder] = []
