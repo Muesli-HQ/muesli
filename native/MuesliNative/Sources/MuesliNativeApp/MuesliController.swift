@@ -2664,34 +2664,35 @@ final class MuesliController: NSObject {
     /// reset; the spawned shell then relaunches Muesli once we're gone.
     /// On relaunch the old TCC row is gone, so macOS surfaces a fresh
     /// permission prompt and the new grant binds to the current binary.
-    func resetTCCPermissionAndQuit(service: String) {
+    @discardableResult
+    func resetTCCPermissionAndQuit(service: String) -> Bool {
         guard let bundleID = Bundle.main.bundleIdentifier else {
             fputs("[muesli-native] tccutil reset: no bundle identifier\n", stderr)
-            return
+            return false
         }
         let bundlePath = Bundle.main.bundleURL.path
-        DispatchQueue.main.async {
-            let shell = Process()
-            shell.executableURL = URL(fileURLWithPath: "/bin/sh")
-            // sleep so Muesli fully exits → reset the permission → sleep
-            // briefly to let TCC settle → relaunch the app. Detached so
-            // it survives our exit.
-            let script = """
-            sleep 1
-            /usr/bin/tccutil reset "$1" "$2" >/dev/null 2>&1 || true
-            sleep 1
-            /usr/bin/open -- "$3"
-            """
-            shell.arguments = ["-c", script, "--", service, bundleID, bundlePath]
-            do {
-                try shell.run()
-            } catch {
-                fputs("[muesli-native] tccutil reset spawn failed: \(error)\n", stderr)
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                exit(0)
-            }
+        let shell = Process()
+        shell.executableURL = URL(fileURLWithPath: "/bin/sh")
+        // sleep so Muesli fully exits → reset the permission → sleep
+        // briefly to let TCC settle → relaunch the app. Detached so
+        // it survives our exit.
+        let script = """
+        sleep 1
+        /usr/bin/tccutil reset "$1" "$2" >/dev/null 2>&1 || true
+        sleep 1
+        /usr/bin/open -- "$3"
+        """
+        shell.arguments = ["-c", script, "--", service, bundleID, bundlePath]
+        do {
+            try shell.run()
+        } catch {
+            fputs("[muesli-native] tccutil reset spawn failed: \(error)\n", stderr)
+            return false
         }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            exit(0)
+        }
+        return true
     }
 
     // MARK: - Dictation Test Mode (onboarding)

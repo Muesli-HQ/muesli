@@ -1003,7 +1003,9 @@ struct OnboardingView: View {
         guard !isResettingStalePermission else { return }
         isResettingStalePermission = true
         saveProgress(atStep: currentStep)
-        controller.resetTCCPermissionAndQuit(service: service)
+        if !controller.resetTCCPermissionAndQuit(service: service) {
+            isResettingStalePermission = false
+        }
     }
 
     private func systemSettingsPane(for permissionIndex: Int) -> String {
@@ -1192,8 +1194,7 @@ struct OnboardingView: View {
 
     /// Map a permission step name to the `tccutil` service identifier used
     /// for `tccutil reset <Service> <bundleID>`. Returns nil for permissions
-    /// that don't have a tccutil-resettable entry (e.g. Microphone is granted
-    /// via in-app prompt and rarely goes stale through System Settings churn).
+    /// that don't have a known tccutil-resettable entry.
     private func tccutilService(for permissionName: String) -> String? {
         switch permissionName {
         case "Microphone": return "Microphone"
