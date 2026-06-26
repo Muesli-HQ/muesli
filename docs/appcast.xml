@@ -6,6 +6,64 @@
         <language>en</language>
         <!-- Items are added by generate_appcast or the release script -->
         <item>
+            <title>0.7.1</title>
+            <pubDate>Fri, 26 Jun 2026 02:25:12 -0700</pubDate>
+            <description><![CDATA[
+<h2>Muesli 0.7.1</h2>
+<p>Muesli now learns from your corrections. When you fix a dictated word in the app you were typing into, Muesli can suggest adding that correction to your personal dictionary, so future dictations handle names, places, acronyms, and domain-specific terms more reliably.</p>
+<h3>What is new</h3>
+<ul>
+<li>Dictionary suggestions from corrected dictation: After a dictation, Muesli can detect when you corrected the text in-place and suggest adding that word or phrase to your dictionary. Suggestions are opt-in, require Accessibility permission, and can be accepted or ignored from a lightweight prompt or from the Dictionary view.</li>
+<li>Better dictionary management: Dictionary entries now support tuned matching thresholds, improved phrase handling, and a clearer review surface for pending suggestions.</li>
+<li>Nested meeting folders: Meetings can now be organized in a folder hierarchy, with recursive counts, stable ordering, and search/navigation improvements.</li>
+<li>iPhone sync onboarding: Added onboarding handoff for the iPhone sync path and CloudKit-backed device identity work.</li>
+<li>More transcription options: Added SenseVoice as an optional local transcription backend and updated FluidAudio to 0.15.1 for newer local ASR capabilities.</li>
+<li>More reliable meeting detection: Meeting prompts now require stronger full-duplex evidence, reducing false positives from unrelated browser or app audio.</li>
+<li>Media pause fix: Pause-media-during-dictation now preserves media that was already paused before dictation starts.</li>
+</ul>
+<h3>Release quality</h3>
+<ul>
+<li>Hardened production signing/profile checks for CloudKit/APNs builds.</li>
+<li>Validated the preprod Sparkle update path from 0.7.0-preprod.1 to 0.7.1-preprod.1.</li>
+<li>Expanded tests across dictionary suggestions, storage/search, meeting detection, media handling, release signing, and update-flow metadata.</li>
+<li>Signed, notarized, stapled, and verified by Apple.</li>
+</ul>
+]]></description>
+            <sparkle:version>0.7.1</sparkle:version>
+            <sparkle:shortVersionString>0.7.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.7.1/Muesli-0.7.1.dmg" length="70087020" type="application/octet-stream" sparkle:edSignature="du0g2qkGP0pib0PF6Nfp8nErOIt6F2nWNzQggsEOcDUx7ZKqhDTD0HbjEgKbdQBNyXTRnEbi0xEe9raRrdXtDg=="/>
+        </item>
+        <item>
+            <title>0.7.0</title>
+            <pubDate>Thu, 11 Jun 2026 23:46:47 -0700</pubDate>
+            <description><![CDATA[
+<h2>Muesli 0.7.0</h2>
+<p>This release focuses on faster dictation start, more reliable meeting microphone capture, and the completed move to the Muesli HQ release/update infrastructure.</p>
+<h3>What's New</h3>
+<ul>
+<li>Faster dictation activation: dictation now uses the AudioQueue-backed recorder path by default for both Automatic and explicitly selected microphones, reducing hotkey-to-mic latency.</li>
+<li>Better microphone routing: Muesli now keeps dictation and meeting capture app-scoped where possible, honors your selected microphone, and avoids holding idle mic resources after dictation.</li>
+<li>More reliable meeting capture: meetings now choose a safer microphone route before recording starts, with health checks that can warn when the local mic path is silent or degraded.</li>
+<li>Live meeting transcript view: active meetings can show an incremental Live transcript, and checkpoint recovery can preserve partial transcript text if the app is interrupted.</li>
+<li>Fewer false meeting prompts: scheduled meeting and browser-audio detection have been tightened to avoid prompts from unrelated audio or stale meeting signals.</li>
+<li>Update infrastructure migration: Sparkle feeds, release assets, download links, and Homebrew metadata now use the Muesli-HQ organization paths.</li>
+</ul>
+<h3>Quality and Release Validation</h3>
+<ul>
+<li>Updated Sparkle to 2.9.3.</li>
+<li>Expanded tests around AudioQueue fallback, route-aware dictation, route-aware meeting mic capture, live transcript recovery, scheduled meeting notifications, VAD boundaries, and update-flow validation.</li>
+<li>Signed, notarized, stapled, and verified by Apple.</li>
+</ul>
+]]></description>
+            <sparkle:version>0.7.0</sparkle:version>
+            <sparkle:shortVersionString>0.7.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.7.0/Muesli-0.7.0.dmg" length="73691616" type="application/octet-stream" sparkle:edSignature="PcVwwF7cnOdOH20cN95tUwDohLh4KfJ5Y5Hc+H95Uy2eGZQINvUK25HJCSCqecszxSovLonnmq2JcyBsXFWMDw=="/>
+        </item>
+        <item>
             <title>0.6.9</title>
             <pubDate>Wed, 27 May 2026 23:34:28 +0530</pubDate>
             <description><![CDATA[
@@ -27,8 +85,7 @@
             <sparkle:minimumSystemVersion>10.13</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
             <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.6.9/Muesli-0.6.9.dmg" length="73446621" type="application/octet-stream" sparkle:edSignature="uK+zNpzCPytfT9O+1HvkhoHeh3VkhGF/GxLxu495eoAxwPMrxRrs83t5V7DozGoEry/9K6k7aLiZKLEg8/IQAA=="/>
-            <sparkle:deltas>
-            </sparkle:deltas>
+            <sparkle:deltas/>
         </item>
         <item>
             <title>0.6.8</title>
@@ -39,15 +96,6 @@
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
             <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.6.8/Muesli-0.6.8.dmg" length="73414000" type="application/octet-stream" sparkle:edSignature="cHC0J/iCNuFKxGQLWhT85JIQDEGcM5bodINux+x5XxGCJ90Nb7lXkT0/mW0t42SXx7S9tZ+5o2A6D5OITQ0DDA=="/>
             <sparkle:deltas/>
-        </item>
-        <item>
-            <title>0.6.7</title>
-            <pubDate>Mon, 11 May 2026 10:48:53 +0530</pubDate>
-            <sparkle:version>0.6.7</sparkle:version>
-            <sparkle:shortVersionString>0.6.7</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>10.13</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.6.7/Muesli-0.6.7.dmg" length="63371647" type="application/octet-stream" sparkle:edSignature="9MsAH/ykgy/odyEO11DpO0r1dyZTLIyCzouo7VKm4Zctr1ffMnc2le1JsnV2GIp+qMwUU9VWxYxvxzj0DC5XBA=="/>
         </item>
     </channel>
 </rss>

@@ -166,7 +166,7 @@ private struct SearchDictationRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: MuesliTheme.spacing12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(formatTime(record.timestamp))
+                Text(MeetingBrowserLogic.formatStartTime(record.timestamp))
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textTertiary)
                 snippetText(from: record.rawText, highlighting: query)
@@ -204,10 +204,6 @@ private struct SearchDictationRow: View {
         .onTapGesture(perform: onCopy)
     }
 
-    private func formatTime(_ raw: String) -> String {
-        let clean = raw.replacingOccurrences(of: "T", with: " ")
-        return clean.count > 16 ? String(clean.prefix(16)) : clean
-    }
 }
 
 // MARK: - Meeting Row
@@ -226,7 +222,7 @@ private struct SearchMeetingRow: View {
                 .foregroundStyle(MuesliTheme.textPrimary)
                 .lineLimit(1)
             HStack(spacing: MuesliTheme.spacing8) {
-                Text(formatTime(record.startTime))
+                Text(MeetingBrowserLogic.formatStartTime(record.startTime))
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textTertiary)
                 Text("\u{2022}")
@@ -268,11 +264,6 @@ private struct SearchMeetingRow: View {
             return MeetingPreviewText.plainText(from: record.rawTranscript)
         }
         return ""
-    }
-
-    private func formatTime(_ raw: String) -> String {
-        let clean = raw.replacingOccurrences(of: "T", with: " ")
-        return clean.count > 16 ? String(clean.prefix(16)) : clean
     }
 
     private func formatDuration(_ seconds: Double) -> String {
