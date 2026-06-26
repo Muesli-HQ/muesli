@@ -957,7 +957,10 @@ struct OnboardingView: View {
         }
         .frame(maxWidth: .infinity)
         .onAppear { startPermissionPolling() }
-        .onDisappear { stopPermissionPolling() }
+        .onDisappear {
+            stopPermissionPolling()
+            resetStalePermissionHint()
+        }
     }
 
     private func permissionButtonTitle(for permissionName: String, isConfirmingGrant: Bool) -> String {
@@ -1096,6 +1099,11 @@ struct OnboardingView: View {
     private func stopPermissionPolling() {
         permissionPollTimer?.invalidate()
         permissionPollTimer = nil
+    }
+
+    private func resetStalePermissionHint() {
+        permissionGrantingStartedAt = nil
+        showStalePermissionHint = false
     }
 
     private func refreshPermissions() {
