@@ -43,3 +43,22 @@ enum OnboardingFlow {
         useCase == .meetings ? .meetings : .dictations
     }
 }
+
+enum OnboardingStalePermissionHintPolicy {
+    static func shouldShowHint(
+        now: Date,
+        startedAt: Date?,
+        grantingPermissionName: String?,
+        nativePermissionPromptName: String?,
+        alreadyShown: Bool,
+        delay: TimeInterval
+    ) -> Bool {
+        guard !alreadyShown,
+              let startedAt,
+              grantingPermissionName != nil,
+              nativePermissionPromptName == nil else {
+            return false
+        }
+        return now.timeIntervalSince(startedAt) >= delay
+    }
+}

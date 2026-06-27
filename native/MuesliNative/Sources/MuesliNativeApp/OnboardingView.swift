@@ -759,9 +759,13 @@ struct OnboardingView: View {
     /// successful transcription before meeting-specific permissions appear.
     private var permissionSteps: [(icon: String, name: String, description: String, granted: Bool, action: () -> Void)] {
         var steps: [(String, String, String, Bool, () -> Void)] = [
-            ("mic.fill", "Microphone", "Record audio for voice notes, dictation, and meetings", micGranted, {
-                AVCaptureDevice.requestAccess(for: .audio) { _ in }
-            })
+            (
+                "mic.fill",
+                "Microphone",
+                "Record audio for voice notes, dictation, and meetings",
+                micGranted,
+                requestMicrophonePermission
+            )
         ]
         if selectedUseCase.includesPushToTalk {
             if selectedUseCase.includesDictation {
@@ -974,9 +978,27 @@ struct OnboardingView: View {
         nativePermissionPromptName == permissionName
     }
 
-    private func requestAccessibilityPermission() {
-        nativePermissionPromptName = "Accessibility"
+    private func beginNativePermissionPrompt(_ permissionName: String) {
+        nativePermissionPromptName = permissionName
+        permissionGrantingStartedAt = nil
+        showStalePermissionHint = false
         controller.prepareOnboardingForNativePermissionPrompt()
+    }
+
+    private func requestMicrophonePermission() {
+        beginNativePermissionPrompt("Microphone")
+        AVCaptureDevice.requestAccess(for: .audio) { _ in
+            Task { @MainActor in
+                if nativePermissionPromptName == "Microphone" {
+                    nativePermissionPromptName = nil
+                }
+                refreshPermissions()
+            }
+        }
+    }
+
+    private func requestAccessibilityPermission() {
+        beginNativePermissionPrompt("Accessibility")
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
@@ -1117,12 +1139,19 @@ struct OnboardingView: View {
             return
         }
 
+        let now = Date()
         if let startedAt = permissionGrantingStartedAt,
            let granting = grantingPermissionName,
-           !showStalePermissionHint,
-           Date().timeIntervalSince(startedAt) >= Self.stalePermissionHintDelay {
+           OnboardingStalePermissionHintPolicy.shouldShowHint(
+               now: now,
+               startedAt: startedAt,
+               grantingPermissionName: granting,
+               nativePermissionPromptName: nativePermissionPromptName,
+               alreadyShown: showStalePermissionHint,
+               delay: Self.stalePermissionHintDelay
+           ) {
             showStalePermissionHint = true
-            fputs("[onboarding] stale-permission hint shown for \(granting) after \(Int(Date().timeIntervalSince(startedAt)))s\n", stderr)
+            fputs("[onboarding] stale-permission hint shown for \(granting) after \(Int(now.timeIntervalSince(startedAt)))s\n", stderr)
         }
     }
 

@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import MuesliNativeApp
 
@@ -65,5 +66,74 @@ struct OnboardingFlowTests {
         #expect(OnboardingFlow.completionTab(for: .voiceNotes) == .dictations)
         #expect(OnboardingFlow.completionTab(for: .dictation) == .dictations)
         #expect(OnboardingFlow.completionTab(for: .dictationAndMeetings) == .dictations)
+    }
+
+    @Test("stale permission hint waits for elapsed settings time")
+    func stalePermissionHintWaitsForElapsedSettingsTime() {
+        let startedAt = Date(timeIntervalSinceReferenceDate: 100)
+
+        #expect(!OnboardingStalePermissionHintPolicy.shouldShowHint(
+            now: startedAt.addingTimeInterval(29),
+            startedAt: startedAt,
+            grantingPermissionName: "Microphone",
+            nativePermissionPromptName: nil,
+            alreadyShown: false,
+            delay: 30
+        ))
+
+        #expect(OnboardingStalePermissionHintPolicy.shouldShowHint(
+            now: startedAt.addingTimeInterval(30),
+            startedAt: startedAt,
+            grantingPermissionName: "Microphone",
+            nativePermissionPromptName: nil,
+            alreadyShown: false,
+            delay: 30
+        ))
+    }
+
+    @Test("stale permission hint is suppressed while native prompt is visible")
+    func stalePermissionHintSuppressesNativePromptWait() {
+        let startedAt = Date(timeIntervalSinceReferenceDate: 100)
+
+        #expect(!OnboardingStalePermissionHintPolicy.shouldShowHint(
+            now: startedAt.addingTimeInterval(45),
+            startedAt: startedAt,
+            grantingPermissionName: "Microphone",
+            nativePermissionPromptName: "Microphone",
+            alreadyShown: false,
+            delay: 30
+        ))
+    }
+
+    @Test("stale permission hint requires active grant attempt")
+    func stalePermissionHintRequiresActiveGrantAttempt() {
+        let startedAt = Date(timeIntervalSinceReferenceDate: 100)
+
+        #expect(!OnboardingStalePermissionHintPolicy.shouldShowHint(
+            now: startedAt.addingTimeInterval(45),
+            startedAt: nil,
+            grantingPermissionName: "Microphone",
+            nativePermissionPromptName: nil,
+            alreadyShown: false,
+            delay: 30
+        ))
+
+        #expect(!OnboardingStalePermissionHintPolicy.shouldShowHint(
+            now: startedAt.addingTimeInterval(45),
+            startedAt: startedAt,
+            grantingPermissionName: nil,
+            nativePermissionPromptName: nil,
+            alreadyShown: false,
+            delay: 30
+        ))
+
+        #expect(!OnboardingStalePermissionHintPolicy.shouldShowHint(
+            now: startedAt.addingTimeInterval(45),
+            startedAt: startedAt,
+            grantingPermissionName: "Microphone",
+            nativePermissionPromptName: nil,
+            alreadyShown: true,
+            delay: 30
+        ))
     }
 }
