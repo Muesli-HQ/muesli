@@ -230,6 +230,47 @@ struct MeetingNotificationControllerTests {
         ) == nil)
     }
 
+    @Test("Auto-record claims recently started meetings within the catch-up window")
+    func autoRecordClaimsRecentlyStartedMeetingsWithinCatchUpWindow() {
+        let now = Date(timeIntervalSinceReferenceDate: 4_000)
+        let meetingURL = URL(string: "https://meet.google.com/abc-defg-hij")!
+        let justStarted = unifiedCalendarEvent(id: "just", startDate: now.addingTimeInterval(-30), meetingURL: meetingURL)
+        let recentlyStarted = unifiedCalendarEvent(id: "recent", startDate: now.addingTimeInterval(-4 * 60), meetingURL: meetingURL)
+        let longAgo = unifiedCalendarEvent(id: "old", startDate: now.addingTimeInterval(-6 * 60), meetingURL: meetingURL)
+        let future = unifiedCalendarEvent(id: "future", startDate: now.addingTimeInterval(60), meetingURL: meetingURL)
+        let noLink = unifiedCalendarEvent(id: "no-link", startDate: now.addingTimeInterval(-30), meetingURL: nil)
+
+        let candidates = ScheduledMeetingNotificationPolicy.autoRecordCandidates(
+            from: [longAgo, future, recentlyStarted, justStarted, noLink],
+            now: now,
+            hiddenEventIDs: []
+        )
+
+        // Recently started (<= 5 min) joinable meetings are claimed and sorted by start; older/future/no-link are not.
+        #expect(candidates.map(\.id) == ["recent", "just"])
+    }
+
+    @Test("Auto-record wake candidates are upcoming joinable events within the horizon")
+    func autoRecordWakeCandidatesAreUpcomingJoinableWithinHorizon() {
+        let now = Date(timeIntervalSinceReferenceDate: 5_000)
+        let meetingURL = URL(string: "https://teams.microsoft.com/l/meetup-join/abc")!
+        let soon = unifiedCalendarEvent(id: "soon", startDate: now.addingTimeInterval(5 * 60), meetingURL: meetingURL)
+        let later = unifiedCalendarEvent(id: "later", startDate: now.addingTimeInterval(3 * 60 * 60), meetingURL: meetingURL)
+        let started = unifiedCalendarEvent(id: "started", startDate: now.addingTimeInterval(-30), meetingURL: meetingURL)
+        let beyondHorizon = unifiedCalendarEvent(id: "beyond", startDate: now.addingTimeInterval(20 * 60 * 60), meetingURL: meetingURL)
+        let noLink = unifiedCalendarEvent(id: "no-link", startDate: now.addingTimeInterval(10 * 60), meetingURL: nil)
+        let hidden = unifiedCalendarEvent(id: "hidden", startDate: now.addingTimeInterval(8 * 60), meetingURL: meetingURL)
+        let allDay = unifiedCalendarEvent(id: "all-day", startDate: now.addingTimeInterval(8 * 60), isAllDay: true, meetingURL: meetingURL)
+
+        let candidates = ScheduledMeetingNotificationPolicy.autoRecordWakeCandidates(
+            from: [later, soon, started, beyondHorizon, noLink, hidden, allDay],
+            now: now,
+            hiddenEventIDs: ["hidden"]
+        )
+
+        #expect(candidates.map(\.id) == ["soon", "later"])
+    }
+
     private func unifiedCalendarEvent(
         id: String,
         startDate: Date,

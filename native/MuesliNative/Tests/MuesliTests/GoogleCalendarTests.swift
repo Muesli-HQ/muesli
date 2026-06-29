@@ -167,6 +167,26 @@ struct GoogleCalendarTests {
         #expect(url == nil)
     }
 
+    @Test("CalendarMonitor unwraps a Teams URL from a Microsoft Safe Links wrapper")
+    func unwrapsSafeLinksTeamsURL() {
+        // Outlook/Exchange rewrites the join link through Safe Links; the real
+        // Teams URL is percent-encoded in the `url` query parameter (and the
+        // surrounding `&` are HTML-escaped as `&amp;` in the HTML body).
+        let html = """
+        <a href="https://nam12.safelinks.protection.outlook.com/?url=https%3A%2F%2Fteams.microsoft.com%2Fl%2Fmeetup-join%2F19%253ameeting_abc%2540thread.v2%2F0%3Fcontext%3D%257b%2522Tid%2522%253a%2522x%2522%257d&amp;data=05%7C01&amp;reserved=0">Click here to join the meeting</a>
+        """
+        let url = CalendarMonitor.findMeetingURL(in: html)
+        #expect(url?.host == "teams.microsoft.com")
+        #expect(url?.absoluteString.hasPrefix("https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc%40thread.v2/0") == true)
+    }
+
+    @Test("CalendarMonitor normalizes &amp; in an HTML-escaped meeting URL")
+    func normalizesAmpEntityInMeetingURL() {
+        let html = "Join: https://teams.microsoft.com/l/meetup-join/19%3ameeting_x%40thread.v2/0?context=%7b%7d&amp;anon=true"
+        let url = CalendarMonitor.findMeetingURL(in: html)
+        #expect(url?.absoluteString == "https://teams.microsoft.com/l/meetup-join/19%3ameeting_x%40thread.v2/0?context=%7b%7d&anon=true")
+    }
+
     // MARK: - Merge & dedup
 
     @Test("merges EventKit and Google events without duplicates")

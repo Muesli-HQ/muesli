@@ -250,6 +250,8 @@ final class MuesliController: NSObject {
     private var meetingStartingNowTimers = [String: Timer]()
     private var notifiedUpcomingEventIDs = Set<String>()
     private var autoRecordedCalendarEventIDs = Set<String>()
+    private var autoRecordTimers = [String: Timer]()
+    private var autoRecordWakeActivity: NSObjectProtocol?
     private var meetingFeatureMonitorsAllowed = false
     private var meetingDetectionMonitorStarted = false
 
@@ -676,6 +678,7 @@ final class MuesliController: NSObject {
         meetingStartingNowTimers.removeAll()
         notifiedUpcomingEventIDs.removeAll()
         autoRecordedCalendarEventIDs.removeAll()
+        cancelAllAutoRecordWakes()
         meetingFeatureMonitorsAllowed = false
         disarmMeetingAutoStop()
         meetingMonitor.stop()
@@ -986,6 +989,7 @@ final class MuesliController: NSObject {
         appState.isChatGPTAuthenticated = chatGPTAuth.isAuthenticated
         syncCalendarMonitor()
         syncMeetingDetectionMonitor()
+        syncAutoRecordWakes()
         updateMeetingNotificationVisibility()
         syncDictationRecorderWarmup(intent: .idlePrewarm(.configChange))
         if !wasICloudSyncEnabled && config.iCloudSyncEnabled {
@@ -1863,6 +1867,8 @@ final class MuesliController: NSObject {
 
         appState.upcomingCalendarEvents = ekEvents
 
+        syncAutoRecordWakes()
+
         // Prune hidden IDs for events that no longer exist in the calendar
         let currentEventIDs = Set(ekEvents.map(\.id))
         let staleIDs = appState.hiddenCalendarEventIDs.subtracting(currentEventIDs)
@@ -1933,6 +1939,118 @@ final class MuesliController: NSObject {
         selectCurrentOrNearbyCachedCalendarEvent(from: appState.upcomingCalendarEvents)
     }
 
+    /// Start auto-recording for a calendar event if it has not already been
+    /// claimed and no recording is in flight. Shared by the start-time poll and
+    /// the per-event wake timers so both honour the same dedup set.
+    @discardableResult
+    private func autoRecordEventIfNeeded(_ event: UnifiedCalendarEvent) -> Bool {
+        let key = notificationKey(id: event.id, startDate: event.startDate)
+        guard !autoRecordedCalendarEventIDs.contains(key) else { return false }
+        guard !isMeetingRecording(), !isStartingMeetingRecording else { return false }
+        // Claim on attempt: auto-record fires at most once per event. A failed
+        // start surfaces its own error and the user can record manually; we do
+        // not retry, to avoid re-prompting every poll within the catch-up window.
+        autoRecordedCalendarEventIDs.insert(key)
+        startMeetingRecording(
+            title: event.title,
+            calendarEventID: event.id,
+            openDocument: true,
+            endDate: event.endDate,
+            autoStopSource: event.meetingURL.flatMap { MeetingAutoStopSource(meetingURL: $0) }
+        )
+        return true
+    }
+
+    /// Schedule a one-shot wake at each upcoming joinable event's start time so
+    /// auto-record fires reliably instead of depending on the App Nap–throttled
+    /// 60s poll (which only the change-driven `EKEventStoreChanged` path and a
+    /// suspendable `Timer` feed). A process-activity assertion is held while any
+    /// wake is pending so the timers themselves are not coalesced away by App
+    /// Nap. Reconciled on every calendar refresh and config change.
+    private func syncAutoRecordWakes() {
+        guard meetingFeatureMonitorsAllowed, config.autoRecordMeetings else {
+            cancelAllAutoRecordWakes()
+            return
+        }
+
+        let now = Date()
+        let candidates = ScheduledMeetingNotificationPolicy.autoRecordWakeCandidates(
+            from: appState.upcomingCalendarEvents,
+            now: now,
+            hiddenEventIDs: appState.hiddenCalendarEventIDs
+        )
+
+        var liveKeys = Set<String>()
+        for event in candidates {
+            let key = notificationKey(id: event.id, startDate: event.startDate)
+            liveKeys.insert(key)
+            guard !autoRecordedCalendarEventIDs.contains(key), autoRecordTimers[key] == nil else { continue }
+
+            let delay = max(event.startDate.timeIntervalSince(now), 0)
+            let eventID = event.id
+            let startDate = event.startDate
+            autoRecordTimers[key] = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.autoRecordTimers.removeValue(forKey: key)
+                    self.fireAutoRecordWake(eventID: eventID, startDate: startDate)
+                    self.updateAutoRecordWakeActivity()
+                }
+            }
+        }
+
+        // Drop timers for events that were moved (new composite key), cancelled, or hidden.
+        for (key, timer) in autoRecordTimers where !liveKeys.contains(key) {
+            timer.invalidate()
+            autoRecordTimers.removeValue(forKey: key)
+        }
+
+        updateAutoRecordWakeActivity()
+    }
+
+    private func fireAutoRecordWake(eventID: String, startDate: Date) {
+        // Re-validate against current state: a wake delayed by sleep or timer
+        // coalescing must still pass the same catch-up policy as the poll path,
+        // so it never records a meeting that already ended or is long past start.
+        guard config.autoRecordMeetings,
+              !isMeetingRecording(),
+              !isStartingMeetingRecording,
+              let event = ScheduledMeetingNotificationPolicy.startingNowCandidate(
+                from: appState.upcomingCalendarEvents,
+                eventID: eventID,
+                startDate: startDate,
+                hiddenEventIDs: appState.hiddenCalendarEventIDs
+              ),
+              ScheduledMeetingNotificationPolicy.shouldAutoRecordNow(
+                for: event,
+                now: Date(),
+                hiddenEventIDs: appState.hiddenCalendarEventIDs
+              ) else { return }
+        autoRecordEventIfNeeded(event)
+    }
+
+    private func cancelAllAutoRecordWakes() {
+        autoRecordTimers.values.forEach { $0.invalidate() }
+        autoRecordTimers.removeAll()
+        updateAutoRecordWakeActivity()
+    }
+
+    /// Hold an App Nap opt-out while wakes are pending, release it when none are.
+    /// Allows idle system sleep so the Mac can still sleep normally between meetings.
+    private func updateAutoRecordWakeActivity() {
+        if autoRecordTimers.isEmpty {
+            if let activity = autoRecordWakeActivity {
+                ProcessInfo.processInfo.endActivity(activity)
+                autoRecordWakeActivity = nil
+            }
+        } else if autoRecordWakeActivity == nil {
+            autoRecordWakeActivity = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiatedAllowingIdleSystemSleep],
+                reason: "Waiting to auto-record scheduled meetings"
+            )
+        }
+    }
+
     private func startMeetingFeatureMonitors(includeMaraudersMap: Bool) {
         if includeMaraudersMap, config.maraudersMapUnlocked {
             startMaraudersMapMonitoring()
@@ -1999,18 +2117,7 @@ final class MuesliController: NSObject {
                 now: now,
                 hiddenEventIDs: appState.hiddenCalendarEventIDs
             )
-            for event in autoRecordCandidates {
-                let key = notificationKey(id: event.id, startDate: event.startDate)
-                guard !autoRecordedCalendarEventIDs.contains(key) else { continue }
-                autoRecordedCalendarEventIDs.insert(key)
-
-                startMeetingRecording(
-                    title: event.title,
-                    calendarEventID: event.id,
-                    openDocument: true,
-                    endDate: event.endDate,
-                    autoStopSource: event.meetingURL.flatMap { MeetingAutoStopSource(meetingURL: $0) }
-                )
+            for event in autoRecordCandidates where autoRecordEventIfNeeded(event) {
                 return
             }
         }

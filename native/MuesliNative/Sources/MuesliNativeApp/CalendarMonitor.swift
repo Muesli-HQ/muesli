@@ -221,7 +221,8 @@ final class CalendarMonitor {
         let patterns = [
             "https://[a-z0-9.-]*zoom\\.us/j/[^\\s\"<>]+",
             "https://meet\\.google\\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}[^\\s\"<>]*",
-            "https://teams\\.microsoft\\.com/l/meetup-join/[^\\s\"<>]+",
+            // Teams: classic `/l/meetup-join/` deep links and newer `/meet/` join links.
+            "https://teams\\.microsoft\\.com/(?:l/meetup-join|meet)/[^\\s\"<>]+",
             "https://[a-z0-9.-]*webex\\.com/[^\\s\"<>]+/j\\.php[^\\s\"<>]*",
             "https://[a-z0-9.-]*chime\\.aws/[^\\s\"<>]+",
             "https://facetime\\.apple\\.com/join[^\\s\"<>]*",
@@ -229,10 +230,21 @@ final class CalendarMonitor {
         return try? NSRegularExpression(pattern: "(\(patterns.joined(separator: "|")))", options: .caseInsensitive)
     }()
 
+    /// Microsoft Safe Links (Defender for Office 365) rewrites every link in
+    /// Outlook/Exchange invites to `https://<tenant>.safelinks.protection.outlook.com/?url=<encoded original>`,
+    /// hiding the real join link inside a percent-encoded `url` query parameter.
+    private static let safeLinksPattern: NSRegularExpression? = {
+        try? NSRegularExpression(
+            pattern: "https://[a-z0-9.-]*safelinks\\.protection\\.outlook\\.com/[^\\s\"<>]+",
+            options: .caseInsensitive
+        )
+    }()
+
     static func extractMeetingURL(from event: EKEvent) -> URL? {
-        // 1. Explicit event URL (set by calendar provider)
-        if let url = event.url, isMeetingURL(url) {
-            return url
+        // 1. Explicit event URL (set by calendar provider), possibly Safe Links–wrapped.
+        if let url = event.url {
+            if isMeetingURL(url) { return url }
+            if let unwrapped = findMeetingURL(in: url.absoluteString) { return unwrapped }
         }
 
         // 2. Search location field
@@ -240,7 +252,7 @@ final class CalendarMonitor {
             return url
         }
 
-        // 3. Search notes/description
+        // 3. Search notes/description (often HTML for Exchange/Outlook)
         if let notes = event.notes, let url = findMeetingURL(in: notes) {
             return url
         }
@@ -255,11 +267,45 @@ final class CalendarMonitor {
     }
 
     static func findMeetingURL(in text: String) -> URL? {
+        // Exchange/Outlook bodies are frequently HTML, where `&` in a join link's
+        // query string is escaped as `&amp;`; normalize so the captured URL stays valid.
+        let normalized = text.replacingOccurrences(of: "&amp;", with: "&")
+
+        if let url = firstMeetingURL(in: normalized) {
+            return url
+        }
+
+        // Fall back to unwrapping a Safe Links wrapper and matching the real target.
+        if let target = firstSafeLinksTarget(in: normalized),
+           let url = firstMeetingURL(in: target) {
+            return url
+        }
+
+        return nil
+    }
+
+    private static func firstMeetingURL(in text: String) -> URL? {
         guard let regex = meetingURLPattern else { return nil }
         let range = NSRange(text.startIndex..., in: text)
         guard let match = regex.firstMatch(in: text, range: range) else { return nil }
         guard let matchRange = Range(match.range, in: text) else { return nil }
         return URL(string: String(text[matchRange]))
+    }
+
+    /// Returns the percent-decoded `url` target of the first Safe Links wrapper in `text`, if any.
+    private static func firstSafeLinksTarget(in text: String) -> String? {
+        guard let regex = safeLinksPattern else { return nil }
+        let range = NSRange(text.startIndex..., in: text)
+        guard let match = regex.firstMatch(in: text, range: range),
+              let matchRange = Range(match.range, in: text) else { return nil }
+        let safeLink = String(text[matchRange])
+        // `URLComponents.queryItems` percent-decodes values, restoring the original join URL.
+        guard let components = URLComponents(string: safeLink),
+              let target = components.queryItems?.first(where: { $0.name.lowercased() == "url" })?.value,
+              !target.isEmpty else {
+            return nil
+        }
+        return target
     }
 
 }
