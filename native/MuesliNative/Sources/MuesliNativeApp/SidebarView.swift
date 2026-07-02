@@ -412,30 +412,30 @@ struct SidebarView: View {
         let wordMilestone = ContributionSocialShare.completedWordMilestone(
             totalWords: appState.dictationStats.totalWords
         )
-        VStack(alignment: .leading, spacing: 2) {
-            Text("Spread the Word")
-                .font(.system(size: 11, weight: .semibold, design: .rounded))
-                .foregroundStyle(MuesliTheme.textTertiary)
-                .padding(.horizontal, sidebarRowHorizontalPadding)
-                .padding(.bottom, 2)
+        if wordMilestone != nil {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Spread the Word")
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .padding(.horizontal, sidebarRowHorizontalPadding)
+                    .padding(.bottom, 2)
 
-            socialShareRow(
-                imageName: "x-logo",
-                fallbackIcon: "bubble.left.and.bubble.right.fill",
-                label: "Tweet about Muesli",
-                isEnabled: wordMilestone != nil,
-                action: { controller.openContributionSidebarShare(.tweetAboutMuesli) }
-            )
-            socialShareRow(
-                imageName: "linkedin-logo",
-                fallbackIcon: "person.crop.square.fill",
-                label: "Post on LinkedIn",
-                isEnabled: wordMilestone != nil,
-                action: { controller.openContributionSidebarShare(.postOnLinkedIn) }
-            )
+                socialShareRow(
+                    imageName: "x-logo",
+                    fallbackIcon: "bubble.left.and.bubble.right.fill",
+                    label: "Tweet about Muesli",
+                    action: { controller.openContributionSidebarShare(.tweetAboutMuesli) }
+                )
+                socialShareRow(
+                    imageName: "linkedin-logo",
+                    fallbackIcon: "person.crop.square.fill",
+                    label: "Post on LinkedIn",
+                    action: { controller.openContributionSidebarShare(.postOnLinkedIn) }
+                )
+            }
+            .padding(.horizontal, sidebarRowOuterPadding)
+            .padding(.bottom, MuesliTheme.spacing8)
         }
-        .padding(.horizontal, sidebarRowOuterPadding)
-        .padding(.bottom, MuesliTheme.spacing8)
     }
 
     @ViewBuilder
@@ -443,7 +443,6 @@ struct SidebarView: View {
         imageName: String,
         fallbackIcon: String,
         label: String,
-        isEnabled: Bool,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -452,7 +451,7 @@ struct SidebarView: View {
                     .frame(width: sidebarIconColumnWidth, height: sidebarIconColumnWidth, alignment: .center)
                 Text(label)
                     .font(MuesliTheme.callout())
-                    .foregroundStyle(isEnabled ? MuesliTheme.textSecondary : MuesliTheme.textTertiary.opacity(0.55))
+                    .foregroundStyle(MuesliTheme.textSecondary)
                     .lineLimit(1)
                 Spacer(minLength: 0)
             }
@@ -462,9 +461,7 @@ struct SidebarView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(!isEnabled)
-        .opacity(isEnabled ? 1 : 0.55)
-        .help(isEnabled ? label : "Reach 1,000 dictated words to share your Muesli milestone.")
+        .help(label)
     }
 
     @ViewBuilder
