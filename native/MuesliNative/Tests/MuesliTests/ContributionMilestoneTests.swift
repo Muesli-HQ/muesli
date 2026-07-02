@@ -204,6 +204,9 @@ struct ContributionMilestoneTests {
         #expect(wordPrompt?.showBuyMeCoffee == false)
         #expect(wordPrompt?.showTweetAboutMuesli == true)
         #expect(wordPrompt?.showPostOnLinkedIn == true)
+        #expect(wordPrompt?.message.contains("sharing your milestone") == true)
+        #expect(wordPrompt?.message.contains("GitHub star") == false)
+        #expect(wordPrompt?.message.contains("coffee") == false)
 
         let prompt = ContributionMilestonePolicy.prompt(
             kind: .meetings,
