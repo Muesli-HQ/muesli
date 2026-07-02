@@ -538,6 +538,8 @@ struct AppConfigTests {
         #expect(config.contributionPromptNextMeetingCount == nil)
         #expect(config.contributionGitHubStarClicked == false)
         #expect(config.contributionBuyMeCoffeeClicked == false)
+        #expect(config.contributionTweetClicked == false)
+        #expect(config.contributionLinkedInClicked == false)
         #expect(config.upcomingMeetingsDayCount == UpcomingMeetingsWindow.defaultDayCount)
         #expect(config.hiddenCalendarEventSourceHints.isEmpty)
     }
@@ -586,6 +588,8 @@ struct AppConfigTests {
         config.contributionPromptNextMeetingCount = 75
         config.contributionGitHubStarClicked = true
         config.contributionBuyMeCoffeeClicked = false
+        config.contributionTweetClicked = true
+        config.contributionLinkedInClicked = false
         config.upcomingMeetingsDayCount = UpcomingMeetingsWindow.today.dayCount
         config.hiddenCalendarEventSourceHints = [
             "ek-event-1": UnifiedCalendarEvent.CalendarSource.eventKit.rawValue,
@@ -633,6 +637,8 @@ struct AppConfigTests {
         #expect(decoded.contributionPromptNextMeetingCount == 75)
         #expect(decoded.contributionGitHubStarClicked == true)
         #expect(decoded.contributionBuyMeCoffeeClicked == false)
+        #expect(decoded.contributionTweetClicked == true)
+        #expect(decoded.contributionLinkedInClicked == false)
         #expect(decoded.upcomingMeetingsDayCount == UpcomingMeetingsWindow.today.dayCount)
         #expect(decoded.hiddenCalendarEventSourceHints == config.hiddenCalendarEventSourceHints)
     }
@@ -677,6 +683,8 @@ struct AppConfigTests {
         #expect(json["contribution_prompt_next_meeting_count"] != nil)
         #expect(json["contribution_github_star_clicked"] != nil)
         #expect(json["contribution_buy_me_coffee_clicked"] != nil)
+        #expect(json["contribution_tweet_clicked"] != nil)
+        #expect(json["contribution_linkedin_clicked"] != nil)
         #expect(json["lmstudio_url"] != nil)
         #expect(json["lmstudio_model"] != nil)
         #expect(json["custom_llm_url"] != nil)

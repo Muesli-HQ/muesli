@@ -34,6 +34,16 @@ struct DashboardRootView: View {
                     controller.openContributionMilestoneAction(.buyMeCoffee)
                 }
             }
+            if appState.contributionMilestonePrompt?.showTweetAboutMuesli == true {
+                Button("Tweet about Muesli") {
+                    controller.openContributionMilestoneAction(.tweetAboutMuesli)
+                }
+            }
+            if appState.contributionMilestonePrompt?.showPostOnLinkedIn == true {
+                Button("Post about Muesli on LinkedIn") {
+                    controller.openContributionMilestoneAction(.postOnLinkedIn)
+                }
+            }
             Button("Later", role: .cancel) {
                 controller.dismissContributionMilestonePrompt()
             }

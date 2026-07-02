@@ -1002,7 +1002,9 @@ final class MuesliController: NSObject {
             total: totalWords,
             intervalKind: .dictationWords,
             githubStarClicked: config.contributionGitHubStarClicked,
-            buyMeCoffeeClicked: config.contributionBuyMeCoffeeClicked
+            buyMeCoffeeClicked: config.contributionBuyMeCoffeeClicked,
+            tweetClicked: config.contributionTweetClicked,
+            linkedInClicked: config.contributionLinkedInClicked
         )
         let resolvedNextMeetingMilestone = ContributionMilestonePolicy.resolvedNextMilestone(
             storedNextMilestone: config.contributionPromptNextMeetingCount,
@@ -1026,6 +1028,8 @@ final class MuesliController: NSObject {
             nextMilestone: resolvedNextWordMilestone,
             githubStarClicked: config.contributionGitHubStarClicked,
             buyMeCoffeeClicked: config.contributionBuyMeCoffeeClicked,
+            tweetClicked: config.contributionTweetClicked,
+            linkedInClicked: config.contributionLinkedInClicked,
             dismissedThisLaunch: contributionMilestonePromptDismissedThisLaunch
         ) ?? ContributionMilestonePolicy.prompt(
             kind: .meetings,
@@ -1045,6 +1049,8 @@ final class MuesliController: NSObject {
             "count": "\(prompt.count)",
             "github_star_clicked": "\(config.contributionGitHubStarClicked)",
             "buy_me_coffee_clicked": "\(config.contributionBuyMeCoffeeClicked)",
+            "tweet_clicked": "\(config.contributionTweetClicked)",
+            "linkedin_clicked": "\(config.contributionLinkedInClicked)",
         ])
     }
 
@@ -1072,7 +1078,11 @@ final class MuesliController: NSObject {
 
     func openContributionMilestoneAction(_ action: ContributionMilestoneAction) {
         guard let prompt = appState.contributionMilestonePrompt else { return }
-        NSWorkspace.shared.open(action.url)
+        if action == .tweetAboutMuesli || action == .postOnLinkedIn {
+            openContributionSocialAction(action, wordCount: prompt.count)
+        } else {
+            NSWorkspace.shared.open(action.url)
+        }
         // CTA clicks intentionally dismiss for this launch; any remaining CTA can reappear next launch.
         contributionMilestonePromptDismissedThisLaunch = true
         TelemetryDeck.signal("contribution_prompt_action_clicked", parameters: [
@@ -1087,16 +1097,66 @@ final class MuesliController: NSObject {
                 config.contributionGitHubStarClicked = true
             case .buyMeCoffee:
                 config.contributionBuyMeCoffeeClicked = true
+            case .tweetAboutMuesli:
+                config.contributionTweetClicked = true
+            case .postOnLinkedIn:
+                config.contributionLinkedInClicked = true
             }
             if config.contributionGitHubStarClicked && config.contributionBuyMeCoffeeClicked {
-                config.contributionPromptNextWordCount = nil
                 config.contributionPromptNextMeetingCount = nil
+            }
+            if config.contributionGitHubStarClicked && config.contributionBuyMeCoffeeClicked &&
+                config.contributionTweetClicked && config.contributionLinkedInClicked {
+                config.contributionPromptNextWordCount = nil
             }
         }
         refreshContributionMilestonePrompt(
             totalWords: appState.dictationStats.totalWords,
             totalMeetings: appState.meetingStats.totalMeetings
         )
+    }
+
+    func openContributionSidebarShare(_ action: ContributionMilestoneAction) {
+        guard let wordCount = ContributionSocialShare.completedWordMilestone(
+            totalWords: appState.dictationStats.totalWords
+        ) else { return }
+        openContributionSocialAction(action, wordCount: wordCount)
+        updateConfig { config in
+            switch action {
+            case .tweetAboutMuesli:
+                config.contributionTweetClicked = true
+            case .postOnLinkedIn:
+                config.contributionLinkedInClicked = true
+            case .githubStar, .buyMeCoffee:
+                break
+            }
+            if config.contributionGitHubStarClicked && config.contributionBuyMeCoffeeClicked &&
+                config.contributionTweetClicked && config.contributionLinkedInClicked {
+                config.contributionPromptNextWordCount = nil
+            }
+        }
+        refreshContributionMilestonePrompt(
+            totalWords: appState.dictationStats.totalWords,
+            totalMeetings: appState.meetingStats.totalMeetings
+        )
+        TelemetryDeck.signal("contribution_sidebar_share_clicked", parameters: [
+            "action": action.rawValue,
+            "count": "\(wordCount)",
+        ])
+    }
+
+    private func openContributionSocialAction(_ action: ContributionMilestoneAction, wordCount: Int) {
+        switch action {
+        case .tweetAboutMuesli:
+            NSWorkspace.shared.open(ContributionSocialShare.tweetURL(wordCount: wordCount))
+        case .postOnLinkedIn:
+            let message = ContributionSocialShare.message(wordCount: wordCount)
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(message, forType: .string)
+            NSWorkspace.shared.open(ContributionSocialShare.linkedInURL(wordCount: wordCount))
+        case .githubStar, .buyMeCoffee:
+            NSWorkspace.shared.open(action.url)
+        }
     }
 
     func performICloudSync() {
