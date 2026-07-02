@@ -1080,8 +1080,8 @@ final class MuesliController: NSObject {
         guard let prompt = appState.contributionMilestonePrompt else { return }
         if action == .tweetAboutMuesli || action == .postOnLinkedIn {
             openContributionSocialAction(action, wordCount: prompt.count)
-        } else {
-            NSWorkspace.shared.open(action.url)
+        } else if let supportURL = action.supportURL {
+            NSWorkspace.shared.open(supportURL)
         }
         // CTA clicks intentionally dismiss for this launch; any remaining CTA can reappear next launch.
         contributionMilestonePromptDismissedThisLaunch = true
@@ -1155,7 +1155,7 @@ final class MuesliController: NSObject {
             NSPasteboard.general.setString(message, forType: .string)
             NSWorkspace.shared.open(ContributionSocialShare.linkedInURL(wordCount: wordCount))
         case .githubStar, .buyMeCoffee:
-            NSWorkspace.shared.open(action.url)
+            assertionFailure("Support contribution actions should open through supportURL.")
         }
     }
 

@@ -6,14 +6,14 @@ enum ContributionMilestoneAction: String, CaseIterable {
     case tweetAboutMuesli = "tweet_about_muesli"
     case postOnLinkedIn = "post_on_linkedin"
 
-    var url: URL {
+    var supportURL: URL? {
         switch self {
         case .githubStar:
             return URL(string: "https://github.com/Muesli-HQ/muesli")!
         case .buyMeCoffee:
             return URL(string: "https://buymeacoffee.com/phequals7")!
         case .tweetAboutMuesli, .postOnLinkedIn:
-            return ContributionSocialShare.muesliURL
+            return nil
         }
     }
 }
