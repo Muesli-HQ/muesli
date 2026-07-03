@@ -176,6 +176,32 @@ struct MeetingAutoStopPolicyTests {
         }
     }
 
+    @Test("signal loss prompt can reappear after source recovery when not dismissed")
+    func signalLossPromptCanReappearAfterSourceRecoveryWhenNotDismissed() {
+        var state = MeetingSignalLossPromptState()
+
+        #expect(state.canPresentPrompt)
+        state.markPromptPresented()
+        #expect(!state.canPresentPrompt)
+
+        state.markSourceRecovered()
+        #expect(state.canPresentPrompt)
+    }
+
+    @Test("user dismissed signal loss prompt stays suppressed for recording")
+    func userDismissedSignalLossPromptStaysSuppressedForRecording() {
+        var state = MeetingSignalLossPromptState()
+
+        state.markPromptPresented()
+        state.markDismissedByUser()
+        state.markSourceRecovered()
+
+        #expect(!state.canPresentPrompt)
+
+        state.resetForRecording()
+        #expect(state.canPresentPrompt)
+    }
+
     @Test("tracker waits for a recording-time observation before auto-stopping")
     func trackerWaitsForRecordingTimeObservationBeforeAutoStopping() {
         var tracker = MeetingAutoStopTracker()
