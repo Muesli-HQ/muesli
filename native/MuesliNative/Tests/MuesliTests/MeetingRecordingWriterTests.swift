@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Testing
 @testable import MuesliNativeApp
@@ -42,25 +43,50 @@ struct MeetingRecordingWriterTests {
         #expect(samples == [1000, 3000, 5000, 7000])
     }
 
-    @Test("persistTemporaryRecording moves the temp wav into the meeting recordings directory with a slugged name")
-    func persistTemporaryRecordingMovesFile() throws {
+    @Test("persistTemporaryRecording moves the temp wav when WAV is selected")
+    func persistTemporaryRecordingMovesWAVFile() async throws {
         let writer = try MeetingRecordingWriter()
         writer.appendSystem([1200, -800, 400])
         let tempURL = try #require(writer.stop())
         let supportDirectory = makeTemporaryDirectory()
         let startedAt = Date(timeIntervalSince1970: 1_711_000_000)
 
-        let savedURL = try MeetingRecordingWriter.persistTemporaryRecording(
+        let savedURL = try await MeetingRecordingWriter.persistTemporaryRecordingAsync(
             from: tempURL,
             meetingTitle: "Weekly Product Sync! With Very Long Title Extra Words",
             startedAt: startedAt,
-            supportDirectory: supportDirectory
+            supportDirectory: supportDirectory,
+            fileFormat: .wav
         )
 
         #expect(FileManager.default.fileExists(atPath: tempURL.path) == false)
         #expect(savedURL.deletingLastPathComponent().lastPathComponent == "meeting-recordings")
         #expect(savedURL.lastPathComponent.hasSuffix("-weekly-product-sync-with-very-long.wav"))
         #expect(try readMonoPCM16WAVSamples(from: savedURL) == [1200, -800, 400])
+    }
+
+    @Test("persistTemporaryRecording transcodes to M4A by default")
+    func persistTemporaryRecordingTranscodesToM4AByDefault() async throws {
+        let writer = try MeetingRecordingWriter()
+        writer.appendSystem(Array(repeating: Int16(1200), count: 16_000))
+        let tempURL = try #require(writer.stop())
+        let supportDirectory = makeTemporaryDirectory()
+        let startedAt = Date(timeIntervalSince1970: 1_711_000_000)
+
+        let savedURL = try await MeetingRecordingWriter.persistTemporaryRecordingAsync(
+            from: tempURL,
+            meetingTitle: "Weekly Product Sync",
+            startedAt: startedAt,
+            supportDirectory: supportDirectory
+        )
+
+        #expect(FileManager.default.fileExists(atPath: tempURL.path) == false)
+        #expect(savedURL.pathExtension == "m4a")
+        #expect(savedURL.deletingLastPathComponent().lastPathComponent == "meeting-recordings")
+        #expect(savedURL.lastPathComponent.hasSuffix("-weekly-product-sync.m4a"))
+
+        let file = try AVAudioFile(forReading: savedURL)
+        #expect(file.length > 0)
     }
 
     private func makeTemporaryDirectory() -> URL {

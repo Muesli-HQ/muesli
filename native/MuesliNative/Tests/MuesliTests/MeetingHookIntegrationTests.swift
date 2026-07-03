@@ -13,7 +13,10 @@ struct MeetingHookIntegrationTests {
         let spy = MeetingHookDispatcherSpy()
         let controller = makeController(store: store, dispatcher: spy)
 
-        let persistence = try controller.persistCompletedMeetingResultAndDispatchHook(makeMeetingResult())
+        let persistence = try controller.persistCompletedMeetingResultAndDispatchHook(
+            makeMeetingResult(),
+            preparedRecordingSave: .none
+        )
 
         #expect(spy.invocations.count == 1)
         #expect(spy.invocations.first?.meetingID == persistence.meetingID)
@@ -26,7 +29,10 @@ struct MeetingHookIntegrationTests {
         let spy = MeetingHookDispatcherSpy()
         let controller = makeController(store: store, dispatcher: spy)
 
-        let persistence = try controller.persistCompletedMeetingResultAndDispatchHook(makeMeetingResult(calendarEventID: "event-123"))
+        let persistence = try controller.persistCompletedMeetingResultAndDispatchHook(
+            makeMeetingResult(calendarEventID: "event-123"),
+            preparedRecordingSave: .none
+        )
 
         let invocation = try #require(spy.invocations.first)
         #expect(invocation.meetingID == persistence.meetingID)
@@ -40,7 +46,10 @@ struct MeetingHookIntegrationTests {
         let controller = makeController(store: store, dispatcher: spy)
         let result = makeMeetingResult()
 
-        _ = try controller.persistCompletedMeetingResultAndDispatchHook(result)
+        _ = try controller.persistCompletedMeetingResultAndDispatchHook(
+            result,
+            preparedRecordingSave: .none
+        )
 
         let invocation = try #require(spy.invocations.first)
         #expect(invocation.completedAt == result.endTime)
@@ -58,7 +67,10 @@ struct MeetingHookIntegrationTests {
             $0.meetingHookTimeoutSeconds = 1
         }
 
-        let persistence = try controller.persistCompletedMeetingResultAndDispatchHook(makeMeetingResult())
+        let persistence = try controller.persistCompletedMeetingResultAndDispatchHook(
+            makeMeetingResult(),
+            preparedRecordingSave: .none
+        )
 
         #expect(try store.meeting(id: persistence.meetingID) != nil)
     }
@@ -82,7 +94,8 @@ struct MeetingHookIntegrationTests {
 
         #expect(throws: Error.self) {
             try controller.persistCompletedMeetingResultAndDispatchHook(
-                makeMeetingResult(calendarEventID: "duplicate-event")
+                makeMeetingResult(calendarEventID: "duplicate-event"),
+                preparedRecordingSave: .none
             )
         }
         #expect(spy.invocations.isEmpty)

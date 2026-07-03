@@ -506,6 +506,8 @@ struct AppConfigTests {
         #expect(config.showMeetingDetectionNotification == true)
         #expect(config.mutedMeetingDetectionAppBundleIDs.isEmpty)
         #expect(config.openAIAPIKey.isEmpty)
+        #expect(config.meetingRecordingFileFormat == MeetingRecordingFileFormat.m4a.rawValue)
+        #expect(config.resolvedMeetingRecordingFileFormat == .m4a)
         #expect(config.openRouterAPIKey.isEmpty)
         #expect(config.ollamaURL == "http://localhost:11434")
         #expect(config.ollamaModel == "qwen3.5")
@@ -534,6 +536,12 @@ struct AppConfigTests {
         #expect(config.meetingHookEnabled == false)
         #expect(config.meetingHookPath.isEmpty)
         #expect(config.meetingHookTimeoutSeconds == 30)
+        #expect(config.autoExportMarkdownEnabled == false)
+        #expect(config.autoExportMarkdownFolderPath.isEmpty)
+        #expect(config.autoExportMarkdownContent == MeetingExportContent.notes.rawValue)
+        #expect(config.resolvedAutoExportMarkdownContent == .notes)
+        #expect(config.autoExportFileFormat == MeetingAutoExportFileFormat.markdown.rawValue)
+        #expect(config.resolvedAutoExportFileFormat == .markdown)
         #expect(config.contributionPromptNextWordCount == nil)
         #expect(config.contributionPromptNextMeetingCount == nil)
         #expect(config.contributionGitHubStarClicked == false)
@@ -555,6 +563,7 @@ struct AppConfigTests {
         config.indicASRLanguage = IndicASRLanguage.tamil.rawValue
         config.defaultMeetingTemplateID = "weekly-team-meeting"
         config.meetingRecordingSavePolicy = .always
+        config.meetingRecordingFileFormat = MeetingRecordingFileFormat.wav.rawValue
         config.customMeetingTemplates = [
             CustomMeetingTemplate(
                 id: "tmpl_123",
@@ -566,6 +575,10 @@ struct AppConfigTests {
         config.meetingHookEnabled = true
         config.meetingHookPath = "/tmp/meeting-hook.sh"
         config.meetingHookTimeoutSeconds = 45
+        config.autoExportMarkdownEnabled = true
+        config.autoExportMarkdownFolderPath = "/tmp/muesli-auto-export"
+        config.autoExportMarkdownContent = MeetingExportContent.fullMeeting.rawValue
+        config.autoExportFileFormat = MeetingAutoExportFileFormat.markdownAndPDF.rawValue
         config.showScheduledMeetingNotifications = false
         config.scheduledMeetingNotificationLeadTime = .threeMinutes
         config.showMeetingDetectionNotification = false
@@ -607,12 +620,20 @@ struct AppConfigTests {
         #expect(decoded.indicASRLanguage == IndicASRLanguage.tamil.rawValue)
         #expect(decoded.defaultMeetingTemplateID == "weekly-team-meeting")
         #expect(decoded.meetingRecordingSavePolicy == .always)
+        #expect(decoded.meetingRecordingFileFormat == MeetingRecordingFileFormat.wav.rawValue)
+        #expect(decoded.resolvedMeetingRecordingFileFormat == .wav)
         #expect(decoded.customMeetingTemplates.count == 1)
         #expect(decoded.customMeetingTemplates.first?.name == "Customer Follow-Up")
         #expect(decoded.customMeetingTemplates.first?.icon == "dollarsign.circle")
         #expect(decoded.meetingHookEnabled == true)
         #expect(decoded.meetingHookPath == "/tmp/meeting-hook.sh")
         #expect(decoded.meetingHookTimeoutSeconds == 45)
+        #expect(decoded.autoExportMarkdownEnabled == true)
+        #expect(decoded.autoExportMarkdownFolderPath == "/tmp/muesli-auto-export")
+        #expect(decoded.autoExportMarkdownContent == MeetingExportContent.fullMeeting.rawValue)
+        #expect(decoded.resolvedAutoExportMarkdownContent == .fullMeeting)
+        #expect(decoded.autoExportFileFormat == MeetingAutoExportFileFormat.markdownAndPDF.rawValue)
+        #expect(decoded.resolvedAutoExportFileFormat == .markdownAndPDF)
         #expect(decoded.showScheduledMeetingNotifications == false)
         #expect(decoded.scheduledMeetingNotificationLeadTime == .threeMinutes)
         #expect(decoded.showMeetingDetectionNotification == false)
@@ -672,6 +693,7 @@ struct AppConfigTests {
         #expect(json["user_name"] != nil)
         #expect(json["default_meeting_template_id"] != nil)
         #expect(json["meeting_recording_save_policy"] != nil)
+        #expect(json["meeting_recording_file_format"] != nil)
         #expect(json["show_scheduled_meeting_notifications"] != nil)
         #expect(json["show_meeting_detection_notification"] != nil)
         #expect(json["muted_meeting_detection_app_bundle_ids"] != nil)
@@ -679,6 +701,10 @@ struct AppConfigTests {
         #expect(json["meeting_hook_enabled"] != nil)
         #expect(json["meeting_hook_path"] != nil)
         #expect(json["meeting_hook_timeout_seconds"] != nil)
+        #expect(json["auto_export_markdown_enabled"] != nil)
+        #expect(json["auto_export_markdown_folder_path"] != nil)
+        #expect(json["auto_export_markdown_content"] != nil)
+        #expect(json["auto_export_file_format"] != nil)
         #expect(json["contribution_prompt_next_word_count"] != nil)
         #expect(json["contribution_prompt_next_meeting_count"] != nil)
         #expect(json["contribution_github_star_clicked"] != nil)
@@ -709,6 +735,8 @@ struct AppConfigTests {
         #expect(config.upcomingMeetingsDayCount == UpcomingMeetingsWindow.threeDays.dayCount)
         #expect(config.hiddenCalendarEventSourceHints.isEmpty)
         #expect(config.meetingRecordingSavePolicy == .never)
+        #expect(config.meetingRecordingFileFormat == MeetingRecordingFileFormat.m4a.rawValue)
+        #expect(config.resolvedMeetingRecordingFileFormat == .m4a)
         #expect(config.showScheduledMeetingNotifications == true)
         #expect(config.showMeetingDetectionNotification == true)
         #expect(config.mutedMeetingDetectionAppBundleIDs.isEmpty)
@@ -725,6 +753,12 @@ struct AppConfigTests {
         #expect(config.meetingHookEnabled == false)
         #expect(config.meetingHookPath.isEmpty)
         #expect(config.meetingHookTimeoutSeconds == 30)
+        #expect(config.autoExportMarkdownEnabled == false)
+        #expect(config.autoExportMarkdownFolderPath.isEmpty)
+        #expect(config.autoExportMarkdownContent == MeetingExportContent.notes.rawValue)
+        #expect(config.resolvedAutoExportMarkdownContent == .notes)
+        #expect(config.autoExportFileFormat == MeetingAutoExportFileFormat.markdown.rawValue)
+        #expect(config.resolvedAutoExportFileFormat == .markdown)
         #expect(config.lmStudioURL == "http://localhost:1234")
         #expect(config.lmStudioModel.isEmpty)
         #expect(config.customLLMURL.isEmpty)

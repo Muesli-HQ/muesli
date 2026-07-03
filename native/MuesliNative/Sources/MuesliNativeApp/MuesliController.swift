@@ -148,6 +148,28 @@ struct CompletedMeetingPersistenceResult {
     let recordingSaveError: MeetingLifecycleError?
 }
 
+struct MeetingRecordingSaveRequest: Sendable {
+    let tempURL: URL
+    let meetingTitle: String
+    let startedAt: Date
+    let supportDirectory: URL
+    let fileFormat: MeetingRecordingFileFormat
+}
+
+enum MeetingRecordingSavePlan {
+    case none
+    case discard(tempURL: URL)
+    case save(MeetingRecordingSaveRequest)
+    case failed(MeetingLifecycleError)
+}
+
+struct PreparedMeetingRecordingSave {
+    let path: String?
+    let error: MeetingLifecycleError?
+
+    static let none = PreparedMeetingRecordingSave(path: nil, error: nil)
+}
+
 private final class DictationLatencyLogWriter: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.muesli.dictation-latency-log")
     private let url: URL
@@ -213,6 +235,7 @@ final class MuesliController: NSObject {
     private let configStore = ConfigStore()
     private let dictationStore: DictationStore
     private let meetingHookDispatcher: MeetingHookDispatching
+    private let meetingMarkdownAutoExporter: MeetingMarkdownAutoExporting
     private let launchAtLoginCoordinator: LaunchAtLoginCoordinator
     let transcriptionCoordinator = TranscriptionCoordinator()
     private let hotkeyMonitor = HotkeyMonitor()
@@ -351,6 +374,7 @@ final class MuesliController: NSObject {
         runtime: RuntimePaths,
         dictationStore: DictationStore? = nil,
         meetingHookDispatcher: MeetingHookDispatching = MeetingHookRunner(),
+        meetingMarkdownAutoExporter: MeetingMarkdownAutoExporting = MeetingMarkdownAutoExporter(),
         launchAtLoginManager: LaunchAtLoginManaging = SystemLaunchAtLoginManager(),
         audioDuckingController: AudioDuckingManaging = AudioDuckingController(),
         dictationAudioRoutingController: DictationAudioRouting = DictationAudioRouteController()
@@ -361,6 +385,7 @@ final class MuesliController: NSObject {
             databaseURL: MuesliPaths.defaultDatabaseURL(appName: AppIdentity.supportDirectoryName)
         )
         self.meetingHookDispatcher = meetingHookDispatcher
+        self.meetingMarkdownAutoExporter = meetingMarkdownAutoExporter
         self.launchAtLoginCoordinator = LaunchAtLoginCoordinator(manager: launchAtLoginManager)
         self.audioDuckingController = audioDuckingController
         self.dictationAudioRoutingController = dictationAudioRoutingController
@@ -5108,11 +5133,15 @@ final class MuesliController: NSObject {
                     self.setMeetingProcessingStatus("Finalizing")
                 }
                 let recordingSaveDecision = await self.recordingSaveDecision(for: result)
+                let preparedRecordingSave = await self.prepareMeetingRecordingSave(
+                    for: result,
+                    saveDecision: recordingSaveDecision
+                )
                 let persistenceResult = try await MainActor.run {
                     try self.persistCompletedMeetingResultAndDispatchHook(
                         result,
                         existingMeetingID: liveMeetingID,
-                        recordingSaveDecision: recordingSaveDecision
+                        preparedRecordingSave: preparedRecordingSave
                     )
                 }
                 completedMeetingID = persistenceResult.meetingID
@@ -5182,21 +5211,11 @@ final class MuesliController: NSObject {
     func persistCompletedMeetingResult(
         _ result: MeetingSessionResult,
         existingMeetingID: Int64? = nil,
-        recordingSaveDecision: Bool? = nil
+        preparedRecordingSave: PreparedMeetingRecordingSave
     ) throws -> CompletedMeetingPersistenceResult {
         let meetingID: Int64
-        var savedRecordingPath: String?
-        var recordingSaveError: MeetingLifecycleError?
-        do {
-            savedRecordingPath = try persistMeetingRecordingIfNeeded(
-                for: result,
-                saveDecision: recordingSaveDecision
-            )
-        } catch let error as MeetingLifecycleError {
-            recordingSaveError = error
-        } catch {
-            recordingSaveError = .failedToSaveRecording(underlying: error)
-        }
+        let savedRecordingPath = preparedRecordingSave.path
+        let recordingSaveError = preparedRecordingSave.error
 
         if let existingMeetingID {
             let persistedTitle = completedLiveMeetingTitle(for: result, existingMeetingID: existingMeetingID)
@@ -5272,18 +5291,35 @@ final class MuesliController: NSObject {
     func persistCompletedMeetingResultAndDispatchHook(
         _ result: MeetingSessionResult,
         existingMeetingID: Int64? = nil,
-        recordingSaveDecision: Bool? = nil
+        preparedRecordingSave: PreparedMeetingRecordingSave
     ) throws -> CompletedMeetingPersistenceResult {
         let persistenceResult = try persistCompletedMeetingResult(
             result,
             existingMeetingID: existingMeetingID,
-            recordingSaveDecision: recordingSaveDecision
+            preparedRecordingSave: preparedRecordingSave
         )
         meetingHookDispatcher.dispatchCompletedMeetingHook(
             meetingID: persistenceResult.meetingID,
             completedAt: result.endTime,
             config: config
         )
+        if config.autoExportMarkdownEnabled {
+            do {
+                if let record = try dictationStore.meeting(id: persistenceResult.meetingID) {
+                    meetingMarkdownAutoExporter.exportIfConfigured(meeting: record, config: config)
+                } else {
+                    meetingMarkdownAutoExporter.recordMeetingLookupFailure(
+                        meetingID: persistenceResult.meetingID,
+                        error: nil
+                    )
+                }
+            } catch {
+                meetingMarkdownAutoExporter.recordMeetingLookupFailure(
+                    meetingID: persistenceResult.meetingID,
+                    error: error
+                )
+            }
+        }
         return persistenceResult
     }
 
@@ -5347,10 +5383,10 @@ final class MuesliController: NSObject {
         )
     }
 
-    private func persistMeetingRecordingIfNeeded(
+    private func meetingRecordingSavePlan(
         for result: MeetingSessionResult,
         saveDecision: Bool? = nil
-    ) throws -> String? {
+    ) -> MeetingRecordingSavePlan {
         let shouldSave: Bool
         if let saveDecision {
             shouldSave = saveDecision
@@ -5367,29 +5403,63 @@ final class MuesliController: NSObject {
 
         guard shouldSave else {
             if let retainedRecordingURL = result.retainedRecordingURL {
-                try? FileManager.default.removeItem(at: retainedRecordingURL)
+                return .discard(tempURL: retainedRecordingURL)
             }
-            return nil
+            return .none
         }
 
         if let retainedRecordingError = result.retainedRecordingError {
-            throw MeetingLifecycleError.failedToSaveRecording(underlying: retainedRecordingError)
+            return .failed(.failedToSaveRecording(underlying: retainedRecordingError))
         }
 
         guard let retainedRecordingURL = result.retainedRecordingURL else {
-            return nil
+            return .none
         }
 
-        do {
-            let outputURL = try MeetingRecordingWriter.persistTemporaryRecording(
-                from: retainedRecordingURL,
-                meetingTitle: result.title,
-                startedAt: result.startTime,
-                supportDirectory: AppIdentity.supportDirectoryURL
-            )
-            return outputURL.path
-        } catch {
-            throw MeetingLifecycleError.failedToSaveRecording(underlying: error)
+        return .save(MeetingRecordingSaveRequest(
+            tempURL: retainedRecordingURL,
+            meetingTitle: result.title,
+            startedAt: result.startTime,
+            supportDirectory: AppIdentity.supportDirectoryURL,
+            fileFormat: config.resolvedMeetingRecordingFileFormat
+        ))
+    }
+
+    func prepareMeetingRecordingSave(
+        for result: MeetingSessionResult,
+        saveDecision: Bool? = nil
+    ) async -> PreparedMeetingRecordingSave {
+        let plan = meetingRecordingSavePlan(for: result, saveDecision: saveDecision)
+        return await Self.prepareMeetingRecordingSave(plan)
+    }
+
+    private nonisolated static func prepareMeetingRecordingSave(
+        _ plan: MeetingRecordingSavePlan
+    ) async -> PreparedMeetingRecordingSave {
+        switch plan {
+        case .none:
+            return PreparedMeetingRecordingSave(path: nil, error: nil)
+        case .discard(let tempURL):
+            try? FileManager.default.removeItem(at: tempURL)
+            return PreparedMeetingRecordingSave(path: nil, error: nil)
+        case .failed(let error):
+            return PreparedMeetingRecordingSave(path: nil, error: error)
+        case .save(let request):
+            do {
+                let outputURL = try await MeetingRecordingWriter.persistTemporaryRecordingAsync(
+                    from: request.tempURL,
+                    meetingTitle: request.meetingTitle,
+                    startedAt: request.startedAt,
+                    supportDirectory: request.supportDirectory,
+                    fileFormat: request.fileFormat
+                )
+                return PreparedMeetingRecordingSave(path: outputURL.path, error: nil)
+            } catch {
+                return PreparedMeetingRecordingSave(
+                    path: nil,
+                    error: .failedToSaveRecording(underlying: error)
+                )
+            }
         }
     }
 

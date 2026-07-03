@@ -99,6 +99,7 @@ struct SettingsView: View {
     @State private var openRouterFreeModels: [SummaryModelPreset] = []
     @State private var isLoadingOpenRouterFreeModels = false
     @State private var openRouterFreeModelsError: String?
+    @State private var hasRefreshedMeetingCalendarSources = false
 
     // Uniform width for all right-side controls
     private let controlWidth: CGFloat = 220
@@ -894,6 +895,58 @@ struct SettingsView: View {
                         controller.updateConfig { $0.meetingRecordingSavePolicy = policy }
                     }
                 }
+                if appState.config.meetingRecordingSavePolicy != .never {
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Recording format") {
+                        settingsMenu(
+                            selection: appState.config.resolvedMeetingRecordingFileFormat.displayName,
+                            options: MeetingRecordingFileFormat.allCases.map(recordingFileFormatLabel(for:))
+                        ) { label in
+                            guard let format = recordingFileFormat(for: label) else { return }
+                            controller.updateConfig { $0.meetingRecordingFileFormat = format.rawValue }
+                        }
+                    }
+                    settingsDescription("M4A is recommended for smaller files. WAV is lossless and uses more storage.")
+                }
+            }
+
+            settingsSection("Auto Export") {
+                settingsRow("Auto-export meetings") {
+                    settingsSwitch(isOn: appState.config.autoExportMarkdownEnabled) { newValue in
+                        controller.updateConfig { $0.autoExportMarkdownEnabled = newValue }
+                    }
+                }
+                if appState.config.autoExportMarkdownEnabled {
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Destination folder") {
+                        autoExportFolderPicker
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Content") {
+                        settingsMenu(
+                            selection: appState.config.resolvedAutoExportMarkdownContent.displayName,
+                            options: MeetingExportContent.allCases.map(\.displayName)
+                        ) { label in
+                            guard let index = MeetingExportContent.allCases.firstIndex(where: { $0.displayName == label }) else { return }
+                            let content = MeetingExportContent.allCases[index]
+                            controller.updateConfig { $0.autoExportMarkdownContent = content.rawValue }
+                        }
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("File format") {
+                        settingsMenu(
+                            selection: appState.config.resolvedAutoExportFileFormat.displayName,
+                            options: MeetingAutoExportFileFormat.allCases.map(\.displayName)
+                        ) { label in
+                            guard let format = MeetingAutoExportFileFormat.allCases.first(where: { $0.displayName == label }) else { return }
+                            controller.updateConfig { $0.autoExportFileFormat = format.rawValue }
+                        }
+                    }
+                }
+                Text("Automatically saves each completed meeting to the chosen folder in the selected format.")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .padding(.horizontal, MuesliTheme.spacing16)
             }
 
             settingsSection("Meeting Notifications") {
@@ -977,8 +1030,7 @@ struct SettingsView: View {
             .padding(.top, MuesliTheme.spacing8)
         }
         .onAppear {
-            controller.refreshAvailableEventKitCalendars()
-            Task { await controller.refreshGoogleCalendarList() }
+            refreshMeetingCalendarSourcesIfNeeded()
         }
     }
 
@@ -1366,6 +1418,32 @@ struct SettingsView: View {
         presentOpenPanel(panel) { url in
             controller.updateConfig { $0.meetingHookPath = url.standardizedFileURL.path }
         }
+    }
+
+    private func pickAutoExportFolder() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose a folder for exported notes"
+        panel.prompt = "Choose Folder"
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = preferredAutoExportDirectoryURL()
+
+        presentOpenPanel(panel) { url in
+            controller.updateConfig { $0.autoExportMarkdownFolderPath = url.standardizedFileURL.path }
+        }
+    }
+
+    private func preferredAutoExportDirectoryURL() -> URL {
+        let configuredPath = appState.config.autoExportMarkdownFolderPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !configuredPath.isEmpty {
+            let configuredURL = URL(fileURLWithPath: configuredPath).standardizedFileURL
+            if FileManager.default.fileExists(atPath: configuredURL.path) {
+                return configuredURL
+            }
+        }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents", isDirectory: true)
     }
 
     private func preferredMeetingHookDirectoryURL() -> URL {
@@ -1996,6 +2074,13 @@ struct SettingsView: View {
         }
     }
 
+    private func refreshMeetingCalendarSourcesIfNeeded() {
+        guard !hasRefreshedMeetingCalendarSources else { return }
+        hasRefreshedMeetingCalendarSources = true
+        controller.refreshAvailableEventKitCalendars()
+        Task { await controller.refreshGoogleCalendarList() }
+    }
+
     private func updateDisabledCalendar(_ calendarID: String, isDisabled: Bool) {
         controller.updateConfig { config in
             var disabled = Set(config.disabledCalendarIDs)
@@ -2007,6 +2092,79 @@ struct SettingsView: View {
             config.disabledCalendarIDs = disabled.sorted()
         }
         Task { await controller.refreshUpcomingCalendarEvents() }
+    }
+
+    @ViewBuilder
+    private var autoExportFolderPicker: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "folder")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(MuesliTheme.textTertiary)
+
+                if appState.config.autoExportMarkdownFolderPath.isEmpty {
+                    Text("Choose a folder…")
+                        .font(.system(size: 12))
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .lineLimit(1)
+                } else {
+                    Text(appState.config.autoExportMarkdownFolderPath)
+                        .font(.system(size: 12))
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 28)
+            .background(MuesliTheme.surfacePrimary)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            .overlay(
+                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+            )
+            .help(appState.config.autoExportMarkdownFolderPath.isEmpty ? "No destination folder selected" : appState.config.autoExportMarkdownFolderPath)
+
+            if !appState.config.autoExportMarkdownFolderPath.isEmpty {
+                Button {
+                    controller.updateConfig { $0.autoExportMarkdownFolderPath = "" }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                        .frame(width: 28, height: 28)
+                        .background(MuesliTheme.surfacePrimary)
+                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear destination folder")
+                .help("Clear destination folder")
+            }
+
+            Button {
+                pickAutoExportFolder()
+            } label: {
+                Image(systemName: "folder.badge.plus")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                    .frame(width: 28, height: 28)
+                    .background(MuesliTheme.surfacePrimary)
+                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                            .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                    )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Choose destination folder")
+            .help("Choose destination folder")
+        }
     }
 
     @ViewBuilder
@@ -2285,6 +2443,18 @@ struct SettingsView: View {
             assertionFailure("Unexpected recording save label: \(label)")
         }
         return policy
+    }
+
+    private func recordingFileFormatLabel(for format: MeetingRecordingFileFormat) -> String {
+        format.displayName
+    }
+
+    private func recordingFileFormat(for label: String) -> MeetingRecordingFileFormat? {
+        let format = MeetingRecordingFileFormat.allCases.first { recordingFileFormatLabel(for: $0) == label }
+        if format == nil {
+            assertionFailure("Unexpected recording file format label: \(label)")
+        }
+        return format
     }
 
     private func scheduledMeetingLeadTimeLabel(for leadTime: ScheduledMeetingNotificationLeadTime) -> String {
