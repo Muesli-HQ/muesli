@@ -5888,7 +5888,8 @@ final class MuesliController: NSObject {
                 self.stopMeetingRecording()
             },
             onDismiss: { [weak self] in
-                self?.meetingSignalLossPromptState.markDismissedByUser()
+                guard let self, self.activeMeetingID == meetingID else { return }
+                self.meetingSignalLossPromptState.markDismissedByUser()
             },
             onAutoDismiss: { [weak self] in
                 guard let self else { return }
