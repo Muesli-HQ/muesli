@@ -5893,9 +5893,9 @@ final class MuesliController: NSObject {
             },
             onAutoDismiss: { [weak self] in
                 guard let self else { return }
+                guard self.activeMeetingID == meetingID else { return }
                 self.meetingSignalLossPromptState.markAutoDismissed()
                 guard response == .autoStopAfterWarning else { return }
-                guard self.activeMeetingID == meetingID else { return }
                 fputs("[meeting] auto-stopping recording after meeting source disappeared and warning timed out\n", stderr)
                 self.stopMeetingRecording()
             }
