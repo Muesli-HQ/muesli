@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import MuesliNativeApp
@@ -32,6 +33,21 @@ struct MeetingNotificationControllerTests {
     func autoDismissCallbackSkippedWhenPausedDuringFadeOut() {
         #expect(MeetingNotificationController.firesAutoDismissCallbackAfterFade(wasDismissPaused: false))
         #expect(!MeetingNotificationController.firesAutoDismissCallbackAfterFade(wasDismissPaused: true))
+    }
+
+    @Test("Single-action prompts use available text width")
+    @MainActor
+    func singleActionPromptsUseAvailableTextWidth() {
+        let subtitle = "Still recording. Stop if the meeting ended." as NSString
+        let subtitleWidth = subtitle.size(withAttributes: [.font: NSFont.systemFont(ofSize: 11)]).width
+        let cardWidth = MeetingNotificationController.singleActionCardWidth(
+            requiredTextWidth: subtitleWidth,
+            textX: 14
+        )
+        let textWidth = MeetingNotificationController.singleActionTextWidth(cardWidth: cardWidth, textX: 14)
+
+        #expect(cardWidth > 344)
+        #expect(textWidth >= subtitleWidth)
     }
 
     @Test("Completion notification can show during recording but not over prompts")
