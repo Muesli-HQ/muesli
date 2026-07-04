@@ -91,6 +91,7 @@ struct SettingsView: View {
     @State private var dictationInputDevices: [AudioInputDeviceInfo] = []
     @State private var permissionPollTimer: Timer?
     @State private var isEditingCleanupPrompt = false
+    @State private var isCleanupPromptManagerPresented = false
     @State private var editedCleanupPrompt = ""
     @State private var cleanupPromptName = ""
     @State private var micGranted = false
@@ -271,6 +272,13 @@ struct SettingsView: View {
             }
         } message: {
             Text("Dictionary suggestions briefly read focused app text via Accessibility after dictation. Grant access, then relaunch Muesli to turn suggestions on.")
+        }
+        .sheet(isPresented: $isCleanupPromptManagerPresented) {
+            TranscriptCleanupPromptsManagerView(
+                appState: appState,
+                controller: controller,
+                onClose: { isCleanupPromptManagerPresented = false }
+            )
         }
     }
 
@@ -844,6 +852,9 @@ struct SettingsView: View {
 
                 HStack {
                     Spacer()
+                    compactActionButton("Manage Presets…", systemImage: "slider.horizontal.3") {
+                        isCleanupPromptManagerPresented = true
+                    }
                     compactActionButton("Edit Prompt", systemImage: "pencil") {
                         editedCleanupPrompt = appState.config.postProcessorSystemPrompt
                         cleanupPromptName = selectedCleanupPromptName
