@@ -2,6 +2,9 @@ import Foundation
 
 enum TranscriptCleanupDebugLogger {
     private static let logEnv = "MUESLI_LOG_TRANSCRIPT_CLEANUP_DEBUG"
+    private static let maxLoggedTextCharacters = 4_000
+    private static let maxLogFileBytes: UInt64 = 5 * 1024 * 1024
+    private static let writeQueue = DispatchQueue(label: "MuesliNative.TranscriptCleanupDebugLogger")
 
     struct Entry: Encodable {
         let ts: String
@@ -38,10 +41,10 @@ enum TranscriptCleanupDebugLogger {
             cleanupBackend: cleanupBackend.backend,
             cleanupModel: cleanupModel,
             asrBackend: asrBackend,
-            appContextText: appContextText,
-            rawASRText: rawASRText,
-            rawCleanupOutputText: rawCleanupOutputText,
-            cleanupOutputText: cleanupOutputText,
+            appContextText: appContextText.map(bounded),
+            rawASRText: bounded(rawASRText),
+            rawCleanupOutputText: rawCleanupOutputText.map(bounded),
+            cleanupOutputText: cleanupOutputText.map(bounded),
             errorDescription: errorDescription,
             elapsedMs: elapsedMs
         )
@@ -54,16 +57,33 @@ enum TranscriptCleanupDebugLogger {
     }
 
     private static func append(_ entry: Entry, to logURL: URL) {
-        guard var data = try? JSONEncoder().encode(entry) else { return }
-        data.append(0x0A)
-        try? FileManager.default.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if FileManager.default.fileExists(atPath: logURL.path),
-           let fh = try? FileHandle(forWritingTo: logURL) {
-            defer { try? fh.close() }
-            fh.seekToEndOfFile()
-            fh.write(data)
-        } else {
-            try? data.write(to: logURL, options: .atomic)
+        writeQueue.sync {
+            guard var data = try? JSONEncoder().encode(entry) else { return }
+            data.append(0x0A)
+            try? FileManager.default.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            rotateIfNeeded(logURL)
+            if FileManager.default.fileExists(atPath: logURL.path),
+               let fh = try? FileHandle(forWritingTo: logURL) {
+                defer { try? fh.close() }
+                fh.seekToEndOfFile()
+                fh.write(data)
+            } else {
+                try? data.write(to: logURL, options: .atomic)
+            }
         }
+    }
+
+    private static func bounded(_ text: String) -> String {
+        guard text.count > maxLoggedTextCharacters else { return text }
+        return "\(text.prefix(maxLoggedTextCharacters))...[truncated]"
+    }
+
+    private static func rotateIfNeeded(_ logURL: URL) {
+        guard
+            let attributes = try? FileManager.default.attributesOfItem(atPath: logURL.path),
+            let size = attributes[.size] as? UInt64,
+            size > maxLogFileBytes
+        else { return }
+        try? FileManager.default.removeItem(at: logURL)
     }
 }

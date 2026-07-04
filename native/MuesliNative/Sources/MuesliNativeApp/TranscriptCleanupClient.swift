@@ -95,8 +95,11 @@ enum TranscriptCleanupClient {
                 && MeetingSummaryClient.resolveLMStudioURL(config: cleanupConfig(config, model: model)) != nil
         case .some(.customLLM):
             let model = configuredModel(for: backend, config: config)
+            let format = CustomLLMFormat(rawValue: config.customLLMFormat) ?? .openAI
             let key = config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            return !model.isEmpty && (!MeetingSummaryClient.customLLMRequiresAPIKey(config: config) || !key.isEmpty)
+            return !model.isEmpty
+                && resolveConfiguredCustomLLMURL(config: config, format: format) != nil
+                && (!MeetingSummaryClient.customLLMRequiresAPIKey(config: config) || !key.isEmpty)
         case nil:
             return true
         default:
@@ -160,7 +163,7 @@ enum TranscriptCleanupClient {
             )
         case .customLLM:
             let format = CustomLLMFormat(rawValue: config.customLLMFormat) ?? .openAI
-            guard let requestURL = MeetingSummaryClient.resolveCustomLLMURL(config: config, format: format) else {
+            guard let requestURL = resolveConfiguredCustomLLMURL(config: config, format: format) else {
                 throw TranscriptCleanupError.missingConfiguration("Invalid custom URL: \(config.customLLMURL)")
             }
             switch format {
@@ -231,6 +234,13 @@ enum TranscriptCleanupClient {
         var copy = config
         copy.lmStudioModel = model
         return copy
+    }
+
+    private static func resolveConfiguredCustomLLMURL(config: AppConfig, format: CustomLLMFormat) -> URL? {
+        guard !config.customLLMURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return MeetingSummaryClient.resolveCustomLLMURL(config: config, format: format)
     }
 
     private static func cleanWithOpenAI(

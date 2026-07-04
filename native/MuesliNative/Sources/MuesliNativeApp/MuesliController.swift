@@ -1355,6 +1355,10 @@ final class MuesliController: NSObject {
         bridgeDiscoveryTriggered: Bool = false
     ) {
         guard config.iCloudSyncEnabled else { return }
+        guard MuesliICloudSyncEngine.hasRequiredEntitlement else {
+            disableICloudSyncForUnavailableEntitlement()
+            return
+        }
         enableICloudPersistentSync()
         if bridgeDiscoveryTriggered {
             bridgeDiscoveryPending = true
@@ -1380,6 +1384,10 @@ final class MuesliController: NSObject {
             }
             appState.iCloudBridgeState = .notConfigured
             appState.iCloudBridgeMessage = nil
+            return
+        }
+        guard MuesliICloudSyncEngine.hasRequiredEntitlement else {
+            disableICloudSyncForUnavailableEntitlement()
             return
         }
         guard iCloudSyncTask == nil else {
@@ -1529,9 +1537,6 @@ final class MuesliController: NSObject {
     }
 
     private func disableICloudSyncForUnavailableEntitlement() {
-        if config.iCloudSyncEnabled {
-            updateConfig { $0.iCloudSyncEnabled = false }
-        }
         cancelActiveICloudSyncTask()
         iCloudSyncDebounceTask?.cancel()
         iCloudSyncDebounceTask = nil
@@ -1567,6 +1572,11 @@ final class MuesliController: NSObject {
             return
         }
         if !config.iCloudSyncEnabled {
+            appState.iCloudBridgeState = .notConfigured
+            appState.iCloudBridgeMessage = nil
+            return
+        }
+        if !MuesliICloudSyncEngine.hasRequiredEntitlement {
             appState.iCloudBridgeState = .notConfigured
             appState.iCloudBridgeMessage = nil
             return
@@ -6819,7 +6829,9 @@ final class MuesliController: NSObject {
     private func captureDictationContextAsync() {
         guard shouldCaptureDictationContext else { return }
         let traceID = dictationLatencyTraceID
-        let includeScreenOCR = config.enableDictationOCRContext && CGPreflightScreenCaptureAccess()
+        let includeScreenOCR = config.enableDictationOCRContext
+            && !isMeetingRecording()
+            && CGPreflightScreenCaptureAccess()
         markDictationLatency("context_capture_enqueue")
         Task.detached(priority: .utility) { [weak self, traceID, includeScreenOCR] in
             guard AXIsProcessTrusted() else { return }

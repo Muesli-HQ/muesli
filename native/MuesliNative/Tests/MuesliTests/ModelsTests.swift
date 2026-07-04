@@ -604,6 +604,52 @@ struct AppConfigTests {
         ))
     }
 
+    @Test("Custom LLM cleanup readiness requires model and explicit valid URL")
+    func customLLMCleanupReadinessRequiresModelAndExplicitValidURL() {
+        let backend = TranscriptCleanupBackendOption.hosted(.customLLM)
+        var config = AppConfig()
+        config.postProcessorCustomLLMModel = "cleanup-model"
+
+        #expect(!TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+
+        config.customLLMURL = "not a url"
+
+        #expect(!TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+
+        config.customLLMURL = "http://localhost:8080"
+
+        #expect(TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+
+        config.customLLMFormat = CustomLLMFormat.anthropic.rawValue
+        config.customLLMAPIKey = ""
+
+        #expect(!TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+
+        config.customLLMAPIKey = "sk-ant-test"
+
+        #expect(TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+    }
+
     @Test("OpenRouter cleanup key falls back to environment")
     func openRouterCleanupKeyFallsBackToEnvironment() {
         var config = AppConfig()
