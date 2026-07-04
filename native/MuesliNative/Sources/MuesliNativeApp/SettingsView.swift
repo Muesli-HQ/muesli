@@ -307,25 +307,42 @@ struct SettingsView: View {
         ("1e1e2e", "Dark"),
     ]
 
-    private var screenContextDescription: String {
+    private func screenContextDescription(includesScreenOCR: Bool) -> String {
         if !accessibilityGranted {
             return "Grant Accessibility, then toggle again if needed."
         }
-        if !screenRecordingGranted {
+        if includesScreenOCR, !screenRecordingGranted {
             return "Adds nearby app text for post-processing. Screen Recording enables OCR context."
         }
-        return "Adds nearby app text and OCR context. Processed on-device."
+        if includesScreenOCR {
+            return "Adds nearby app text and OCR context."
+        }
+        return "Adds nearby app text for post-processing."
+    }
+
+    private var dictationOCRContextDescription: String {
+        if !appState.config.enableScreenContext {
+            return "Turn on App context first."
+        }
+        if !screenRecordingGranted {
+            return "Grant Screen Recording to add visible screen OCR text."
+        }
+        return "Adds visible screen OCR text. Cloud cleanup may send this text to the selected provider."
     }
 
     @ViewBuilder
-    private func screenContextRow(_ title: String, controlWidth rowControlWidth: CGFloat? = nil) -> some View {
+    private func screenContextRow(
+        _ title: String,
+        includesScreenOCR: Bool = false,
+        controlWidth rowControlWidth: CGFloat? = nil
+    ) -> some View {
         let width = rowControlWidth ?? controlWidth
         HStack(alignment: .top, spacing: 20) {
             VStack(alignment: .leading, spacing: 6) {
                 Text(title)
                     .font(MuesliTheme.body())
                     .foregroundStyle(MuesliTheme.textPrimary)
-                Text(screenContextDescription)
+                Text(screenContextDescription(includesScreenOCR: includesScreenOCR))
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textTertiary)
                     .lineLimit(2)
@@ -338,6 +355,32 @@ struct SettingsView: View {
             ZStack(alignment: .trailing) {
                 Color.clear.frame(width: width, height: 1)
                 screenContextControl(width: width)
+            }
+        }
+        .frame(minHeight: 52)
+    }
+
+    @ViewBuilder
+    private var dictationOCRContextRow: some View {
+        let width = controlWidth
+        HStack(alignment: .top, spacing: 20) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Screen OCR context")
+                    .font(MuesliTheme.body())
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                Text(dictationOCRContextDescription)
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .layoutPriority(1)
+
+            Spacer(minLength: 20)
+
+            ZStack(alignment: .trailing) {
+                Color.clear.frame(width: width, height: 1)
+                dictationOCRContextControl(width: width)
             }
         }
         .frame(minHeight: 52)
@@ -991,7 +1034,10 @@ struct SettingsView: View {
                         controller.updateConfig { $0.muteSystemAudioDuringDictation = newValue }
                     }
                 }
+                Divider().background(MuesliTheme.surfaceBorder)
                 screenContextRow("App context")
+                Divider().background(MuesliTheme.surfaceBorder)
+                dictationOCRContextRow
             }
         }
     }
@@ -1039,7 +1085,7 @@ struct SettingsView: View {
     private var meetingsSettingsPane: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
             settingsSection("Meeting Context") {
-                screenContextRow("Meeting context")
+                screenContextRow("Meeting context", includesScreenOCR: true)
             }
 
             settingsSection("Meeting Notes") {
@@ -1772,11 +1818,42 @@ struct SettingsView: View {
         }
     }
 
+    @ViewBuilder
+    private func dictationOCRContextControl(width: CGFloat? = nil) -> some View {
+        if !appState.config.enableScreenContext {
+            settingsSwitch(isOn: false) { _ in }
+                .frame(width: width, alignment: .trailing)
+                .disabled(true)
+        } else if screenRecordingGranted {
+            settingsSwitch(isOn: appState.config.enableDictationOCRContext) { newValue in
+                controller.updateConfig { $0.enableDictationOCRContext = newValue }
+            }
+            .frame(width: width, alignment: .trailing)
+        } else {
+            Button {
+                _ = CGRequestScreenCaptureAccess()
+                refreshPermissionStatuses()
+            } label: {
+                Text("Grant")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(MuesliTheme.accent)
+                    .frame(width: width)
+                    .frame(minHeight: 32)
+                    .background(MuesliTheme.accentSubtle)
+                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
     @discardableResult
     private func handleScreenContextToggle(_ enabled: Bool) -> Bool {
         guard enabled else {
             clearPendingScreenContextEnable()
-            controller.updateConfig { $0.enableScreenContext = false }
+            controller.updateConfig {
+                $0.enableScreenContext = false
+                $0.enableDictationOCRContext = false
+            }
             return false
         }
 
@@ -1835,7 +1912,13 @@ struct SettingsView: View {
         }
         if !accessibilityGranted && appState.config.enableScreenContext {
             clearPendingScreenContextEnable()
-            controller.updateConfig { $0.enableScreenContext = false }
+            controller.updateConfig {
+                $0.enableScreenContext = false
+                $0.enableDictationOCRContext = false
+            }
+        }
+        if (!appState.config.enableScreenContext || !screenRecordingGranted) && appState.config.enableDictationOCRContext {
+            controller.updateConfig { $0.enableDictationOCRContext = false }
         }
         controller.reclassifyVoiceNotesAsDictationIfReady(
             microphoneGranted: micGranted,

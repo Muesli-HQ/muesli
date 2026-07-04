@@ -545,6 +545,8 @@ struct AppConfigTests {
         #expect(config.postProcessorCustomLLMModel.isEmpty)
         #expect(config.activeTranscriptCleanupPromptId == TranscriptCleanupPrompts.defaultID)
         #expect(config.customTranscriptCleanupPrompts.isEmpty)
+        #expect(config.enableScreenContext == false)
+        #expect(config.enableDictationOCRContext == false)
         #expect(config.dictationHotkey == .default)
         #expect(config.computerUseHotkey == .computerUseDefault)
         #expect(config.enableComputerUseHotkey == false)
@@ -681,6 +683,8 @@ struct AppConfigTests {
             )
         ]
         config.postProcessorSystemPrompt = "Preserve labels and quotes."
+        config.enableScreenContext = true
+        config.enableDictationOCRContext = true
         config.contributionPromptNextWordCount = 31_000
         config.contributionPromptNextMeetingCount = 75
         config.contributionGitHubStarClicked = true
@@ -749,6 +753,8 @@ struct AppConfigTests {
         #expect(decoded.customTranscriptCleanupPrompts.count == 1)
         #expect(decoded.customTranscriptCleanupPrompts.first?.name == "Strict Dictation")
         #expect(decoded.postProcessorSystemPrompt == "Preserve labels and quotes.")
+        #expect(decoded.enableScreenContext == true)
+        #expect(decoded.enableDictationOCRContext == true)
         #expect(decoded.contributionPromptNextWordCount == 31_000)
         #expect(decoded.contributionPromptNextMeetingCount == 75)
         #expect(decoded.contributionGitHubStarClicked == true)
@@ -821,6 +827,23 @@ struct AppConfigTests {
         #expect(json["post_processor_custom_llm_model"] != nil)
         #expect(json["active_transcript_cleanup_prompt_id"] != nil)
         #expect(json["custom_transcript_cleanup_prompts"] != nil)
+        #expect(json["enable_screen_context"] != nil)
+        #expect(json["enable_dictation_ocr_context"] != nil)
+    }
+
+    @Test("decodes screen context flags from snake_case")
+    func decodesScreenContextFlagsFromSnakeCase() throws {
+        let json = """
+        {
+            "enable_screen_context": true,
+            "enable_dictation_ocr_context": true
+        }
+        """
+        let data = json.data(using: .utf8)!
+        let config = try JSONDecoder().decode(AppConfig.self, from: data)
+
+        #expect(config.enableScreenContext == true)
+        #expect(config.enableDictationOCRContext == true)
     }
 
     @Test("decodes with missing fields using defaults")
@@ -872,6 +895,8 @@ struct AppConfigTests {
         #expect(config.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
         #expect(config.activeTranscriptCleanupPromptId == TranscriptCleanupPrompts.defaultID)
         #expect(config.customTranscriptCleanupPrompts.isEmpty)
+        #expect(config.enableScreenContext == false)
+        #expect(config.enableDictationOCRContext == false)
     }
 
     @Test("unknown cleanup backend resolves to local")
