@@ -614,6 +614,18 @@ actor TranscriptionCoordinator {
                 text: trimmed,
                 segments: Qwen3PostProcessorLogging.isVerboseEnabled && !trimmed.isEmpty ? result.segments : []
             )
+        } catch TranscriptCleanupError.rejectedOutput {
+            Qwen3PostProcessorLogging.logVerbose("\(postProcessorSnapshot.backend.label) post-processor output rejected, falling back")
+            TranscriptCleanupDebugLogger.append(
+                status: "fallback_rejected_output",
+                cleanupBackend: postProcessorSnapshot.backend,
+                cleanupModel: postProcessorSnapshot.modelId,
+                asrBackend: backend.backend,
+                appContextText: appContext,
+                rawASRText: result.text,
+                errorDescription: TranscriptCleanupError.rejectedOutput.localizedDescription
+            )
+            return nil
         } catch {
             Qwen3PostProcessorLogging.logVerbose("\(postProcessorSnapshot.backend.label) post-processor failed, falling back: \(error)")
             TranscriptCleanupDebugLogger.append(

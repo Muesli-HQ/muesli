@@ -331,6 +331,16 @@ struct Qwen3PostProcessingOutputCleanerTests {
         }
     }
 
+    @Test("accepts short legitimate cleanup output")
+    func acceptsShortLegitimateCleanupOutput() {
+        for cleaned in ["OK.", "Sure.", "No."] {
+            #expect(!Qwen3PostProcessorOutputCleaner.shouldFallbackToInput(
+                cleaned: cleaned,
+                input: "okay sounds good"
+            ))
+        }
+    }
+
     @Test("hosted cleanup sanitizer preserves dictated labels and quotes")
     func hostedCleanupSanitizerPreservesLabelsAndQuotes() {
         let raw = """

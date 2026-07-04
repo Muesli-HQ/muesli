@@ -120,9 +120,34 @@ struct MeetingSummaryClientTests {
         }
     }
 
+    @Test("ChatGPT WHAM parser ignores heartbeat stream payloads")
+    func chatGPTWHAMParserIgnoresHeartbeatPayloads() throws {
+        #expect(try ChatGPTResponsesClient.decodeStreamPayload("ping", httpStatus: 200) == nil)
+    }
+
     @Test("ChatGPT WHAM parser ignores blank stream payloads")
     func chatGPTWHAMParserIgnoresBlankStreamPayloads() throws {
         #expect(try ChatGPTResponsesClient.decodeStreamPayload("   ", httpStatus: 200) == nil)
+    }
+
+    @Test("ChatGPT WHAM parser ignores valid unknown stream events")
+    func chatGPTWHAMParserIgnoresValidUnknownStreamEvents() throws {
+        var deltaText = "partial"
+        var finalText = ""
+        let decoded = try ChatGPTResponsesClient.decodeStreamPayload(
+            #"{"type":"response.created","response":{"id":"resp_1"}}"#,
+            httpStatus: 200
+        )
+        let payload = try #require(decoded)
+
+        ChatGPTResponsesClient.applyStreamPayload(
+            payload,
+            deltaText: &deltaText,
+            finalText: &finalText
+        )
+
+        #expect(deltaText == "partial")
+        #expect(finalText.isEmpty)
     }
 
     @Test("ChatGPT WHAM parser prefers final output over streamed deltas")

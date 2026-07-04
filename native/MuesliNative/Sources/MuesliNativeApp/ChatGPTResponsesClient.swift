@@ -88,9 +88,11 @@ enum ChatGPTResponsesClient {
     }
 
     static func decodeStreamPayload(_ jsonString: String, httpStatus: Int) throws -> [String: Any]? {
-        guard !jsonString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        let trimmed = jsonString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if shouldIgnoreNonJSONStreamPayload(trimmed) { return nil }
         guard
-            let data = jsonString.data(using: .utf8),
+            let data = trimmed.data(using: .utf8),
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
             throw ChatGPTResponsesError.backendFailed(
@@ -99,6 +101,15 @@ enum ChatGPTResponsesClient {
             )
         }
         return json
+    }
+
+    private static func shouldIgnoreNonJSONStreamPayload(_ payload: String) -> Bool {
+        switch payload.lowercased() {
+        case "ping", "heartbeat", "keep-alive":
+            return true
+        default:
+            return false
+        }
     }
 
     static func extractOutputText(from payload: [String: Any]) -> String? {
