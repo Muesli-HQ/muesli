@@ -17,10 +17,13 @@ enum DictationContextCapture {
 
     /// Captures focused app name + text context via Accessibility API, with optional
     /// on-device OCR when Screen Recording permission is already granted.
-    static func capture(includeScreenOCR: Bool) async -> DictationContext {
+    static func capture(
+        includeScreenOCR: Bool,
+        shouldCaptureScreenOCR: (@Sendable () async -> Bool)? = nil
+    ) async -> DictationContext {
         let base = capture()
         guard includeScreenOCR, CGPreflightScreenCaptureAccess() else { return base }
-        let screenContext = await ScreenContextCapture.captureVisibleScreen()
+        let screenContext = await ScreenContextCapture.captureVisibleScreen(shouldCapture: shouldCaptureScreenOCR)
         let ocrText = screenContext?.ocrText.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !ocrText.isEmpty else { return base }
         return DictationContext(
@@ -193,8 +196,8 @@ enum ScreenContextCapture {
 
     /// Captures the frontmost app window and runs on-device OCR. The screenshot itself
     /// is not persisted or sent to cleanup backends; only recognized text is used.
-    static func captureVisibleScreen() async -> ScreenContext? {
-        await captureFrontmostWindow(logLabel: "dictation OCR")
+    static func captureVisibleScreen(shouldCapture: (@Sendable () async -> Bool)? = nil) async -> ScreenContext? {
+        await captureFrontmostWindow(logLabel: "dictation OCR", shouldCapture: shouldCapture)
     }
 
     /// Captures a screenshot of the focused window and runs on-device OCR.
@@ -203,7 +206,10 @@ enum ScreenContextCapture {
         await captureFrontmostWindow(logLabel: "meeting OCR")
     }
 
-    private static func captureFrontmostWindow(logLabel: String) async -> ScreenContext? {
+    private static func captureFrontmostWindow(
+        logLabel: String,
+        shouldCapture: (@Sendable () async -> Bool)? = nil
+    ) async -> ScreenContext? {
         guard CGPreflightScreenCaptureAccess() else { return nil }
         let app = NSWorkspace.shared.frontmostApplication
         let appName = app?.localizedName ?? "Unknown"
@@ -218,6 +224,9 @@ enum ScreenContextCapture {
         })
         guard let windowID = appWindow?[kCGWindowNumber] as? CGWindowID else {
             fputs("[muesli-native] screen context: no window found for \(appName)\n", stderr)
+            return nil
+        }
+        if let shouldCapture, !(await shouldCapture()) {
             return nil
         }
         guard let image = CGWindowListCreateImage(

@@ -1887,8 +1887,9 @@ final class MuesliController: NSObject {
             guard let index = $0.customTranscriptCleanupPrompts.firstIndex(where: { $0.id == id }) else { return }
             $0.customTranscriptCleanupPrompts[index].name = trimmedName
             $0.customTranscriptCleanupPrompts[index].prompt = trimmedPrompt
-            $0.activeTranscriptCleanupPromptId = id
-            $0.postProcessorSystemPrompt = trimmedPrompt
+            if $0.activeTranscriptCleanupPromptId == id {
+                $0.postProcessorSystemPrompt = trimmedPrompt
+            }
         }
         preloadExperimentalTranscriptionFeatures()
     }
@@ -6826,6 +6827,14 @@ final class MuesliController: NSObject {
         config.enableScreenContext && config.enablePostProcessor && !isDictationTestMode
     }
 
+    @MainActor
+    private func shouldContinueDictationOCRContextCapture(traceID: UUID?) -> Bool {
+        dictationLatencyTraceID == traceID
+            && shouldCaptureDictationContext
+            && dictationState == .recording
+            && !isMeetingRecording()
+    }
+
     private func captureDictationContextAsync() {
         guard shouldCaptureDictationContext else { return }
         let traceID = dictationLatencyTraceID
@@ -6835,7 +6844,12 @@ final class MuesliController: NSObject {
         markDictationLatency("context_capture_enqueue")
         Task.detached(priority: .utility) { [weak self, traceID, includeScreenOCR] in
             guard AXIsProcessTrusted() else { return }
-            let context = await DictationContextCapture.capture(includeScreenOCR: includeScreenOCR)
+            let context = await DictationContextCapture.capture(
+                includeScreenOCR: includeScreenOCR,
+                shouldCaptureScreenOCR: { [weak self] in
+                    await self?.shouldContinueDictationOCRContextCapture(traceID: traceID) ?? false
+                }
+            )
             await MainActor.run { [weak self, traceID] in
                 guard let self,
                       self.dictationLatencyTraceID == traceID,

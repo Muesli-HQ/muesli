@@ -604,6 +604,34 @@ struct AppConfigTests {
         ))
     }
 
+    @Test("Ollama cleanup readiness requires valid URL")
+    func ollamaCleanupReadinessRequiresValidURL() {
+        let backend = TranscriptCleanupBackendOption.hosted(.ollama)
+        var config = AppConfig()
+
+        #expect(TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+
+        config.ollamaURL = "not a url"
+
+        #expect(!TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+
+        config.ollamaURL = "http://localhost:11434"
+
+        #expect(TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+    }
+
     @Test("Custom LLM cleanup readiness requires model and explicit valid URL")
     func customLLMCleanupReadinessRequiresModelAndExplicitValidURL() {
         let backend = TranscriptCleanupBackendOption.hosted(.customLLM)
@@ -969,7 +997,7 @@ struct AppConfigTests {
         let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
 
         #expect(config.activeTranscriptCleanupPromptId == TranscriptCleanupPrompts.defaultID)
-        #expect(config.postProcessorSystemPrompt == "Legacy user-edited cleanup prompt")
+        #expect(config.postProcessorSystemPrompt == PostProcessorOption.defaultSystemPrompt)
         #expect(
             TranscriptCleanupPrompts
                 .resolve(id: config.activeTranscriptCleanupPromptId, custom: config.customTranscriptCleanupPrompts)

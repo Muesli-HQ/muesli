@@ -93,6 +93,13 @@ actor TranscriptionCoordinator {
     private var postProcessorBackend: TranscriptCleanupBackendOption = .local
     private var postProcessorConfig: AppConfig = AppConfig()
 
+    private struct PostProcessorSnapshot {
+        let backend: TranscriptCleanupBackendOption
+        let systemPrompt: String
+        let modelId: String
+        let config: AppConfig
+    }
+
     @available(macOS 15, *)
     private var qwen3PostProcessor: Qwen3PostProcessor {
         if _qwen3PostProcessor == nil {
@@ -143,7 +150,7 @@ actor TranscriptionCoordinator {
         let asr: String
     }
 
-    private func logPostProcPair(raw: String, processed: String, asr: String) {
+    private func logPostProcPair(raw: String, processed: String, model: String, asr: String) {
         guard Qwen3PostProcessorLogging.isPairLoggingEnabled else { return }
         let logURL = AppIdentity.supportDirectoryURL.appendingPathComponent("postproc-pairs.jsonl")
         let iso8601 = ISO8601DateFormatter()
@@ -153,7 +160,7 @@ actor TranscriptionCoordinator {
             ts: ts,
             raw: raw,
             processed: processed,
-            model: postProcessorModelId,
+            model: model,
             asr: asr
         )
         guard var data = try? JSONEncoder().encode(entry) else { return }
@@ -318,6 +325,15 @@ actor TranscriptionCoordinator {
         }
     }
 
+    private func currentPostProcessorSnapshot() -> PostProcessorSnapshot {
+        PostProcessorSnapshot(
+            backend: postProcessorBackend,
+            systemPrompt: postProcessorSystemPrompt,
+            modelId: postProcessorModelId,
+            config: postProcessorConfig
+        )
+    }
+
     func transcribeDictation(
         at url: URL,
         backend: BackendOption,
@@ -327,6 +343,7 @@ actor TranscriptionCoordinator {
         customWords: [[String: Any]] = [],
         appContext: String? = nil
     ) async throws -> SpeechTranscriptionResult {
+        let postProcessorSnapshot = currentPostProcessorSnapshot()
         // Qwen3 post-processing is intentionally dictation-only. Meeting transcription should keep raw backend/Parakeet output.
         // Cohere decodes hallucinated text from silence — skip if VAD detects no speech
         if backend.backend == "cohere", let vadManager {
@@ -350,6 +367,7 @@ actor TranscriptionCoordinator {
             result,
             backend: backend,
             enabled: enablePostProcessor,
+            postProcessorSnapshot: postProcessorSnapshot,
             appContext: appContext
         ) ?? removeFillersWithLogging(result)
         let final = applyCustomWords(result, customWords: customWords)
@@ -462,6 +480,7 @@ actor TranscriptionCoordinator {
         _ result: SpeechTranscriptionResult,
         backend: BackendOption,
         enabled: Bool,
+        postProcessorSnapshot: PostProcessorSnapshot,
         appContext: String? = nil
     ) async -> SpeechTranscriptionResult? {
         guard enabled else {
@@ -476,10 +495,11 @@ actor TranscriptionCoordinator {
             Qwen3PostProcessorLogging.logVerbose("Post-processor skipped: empty transcript")
             return nil
         }
-        if !postProcessorBackend.isLocal {
+        if !postProcessorSnapshot.backend.isLocal {
             return await postProcessDictationWithHostedBackend(
                 result,
                 backend: backend,
+                postProcessorSnapshot: postProcessorSnapshot,
                 appContext: appContext
             )
         }
@@ -500,8 +520,8 @@ actor TranscriptionCoordinator {
                 Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor returned empty output in \(String(format: "%.1f", elapsedMs))ms; falling back")
                 TranscriptCleanupDebugLogger.append(
                     status: "fallback_empty_output",
-                    cleanupBackend: postProcessorBackend,
-                    cleanupModel: postProcessorModelId,
+                    cleanupBackend: postProcessorSnapshot.backend,
+                    cleanupModel: postProcessorSnapshot.modelId,
                     asrBackend: backend.backend,
                     appContextText: appContext,
                     rawASRText: result.text,
@@ -513,11 +533,11 @@ actor TranscriptionCoordinator {
             }
             Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor applied to \(backend.label) in \(String(format: "%.1f", elapsedMs))ms (chars=\(trimmed.count))")
             Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor final output: \(trimmed)")
-            logPostProcPair(raw: result.text, processed: trimmed, asr: backend.backend)
+            logPostProcPair(raw: result.text, processed: trimmed, model: postProcessorSnapshot.modelId, asr: backend.backend)
             TranscriptCleanupDebugLogger.append(
                 status: "applied",
-                cleanupBackend: postProcessorBackend,
-                cleanupModel: postProcessorModelId,
+                cleanupBackend: postProcessorSnapshot.backend,
+                cleanupModel: postProcessorSnapshot.modelId,
                 asrBackend: backend.backend,
                 appContextText: appContext,
                 rawASRText: result.text,
@@ -534,8 +554,8 @@ actor TranscriptionCoordinator {
             Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor failed, falling back: \(error)")
             TranscriptCleanupDebugLogger.append(
                 status: "fallback_error",
-                cleanupBackend: postProcessorBackend,
-                cleanupModel: postProcessorModelId,
+                cleanupBackend: postProcessorSnapshot.backend,
+                cleanupModel: postProcessorSnapshot.modelId,
                 asrBackend: backend.backend,
                 appContextText: appContext,
                 rawASRText: result.text,
@@ -548,24 +568,25 @@ actor TranscriptionCoordinator {
     private func postProcessDictationWithHostedBackend(
         _ result: SpeechTranscriptionResult,
         backend: BackendOption,
+        postProcessorSnapshot: PostProcessorSnapshot,
         appContext: String?
     ) async -> SpeechTranscriptionResult? {
         do {
             let start = CFAbsoluteTimeGetCurrent()
             let cleanup = try await TranscriptCleanupClient.clean(
                 text: result.text,
-                systemPrompt: postProcessorSystemPrompt,
+                systemPrompt: postProcessorSnapshot.systemPrompt,
                 appContext: appContext,
-                backend: postProcessorBackend,
-                config: postProcessorConfig
+                backend: postProcessorSnapshot.backend,
+                config: postProcessorSnapshot.config
             )
             let elapsedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
             let trimmed = cleanup.cleanedOutput.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty, !Qwen3DeletionCueDetector.containsDeletionCue(result.text) {
-                Qwen3PostProcessorLogging.logVerbose("\(postProcessorBackend.label) post-processor returned empty output in \(String(format: "%.1f", elapsedMs))ms; falling back")
+                Qwen3PostProcessorLogging.logVerbose("\(postProcessorSnapshot.backend.label) post-processor returned empty output in \(String(format: "%.1f", elapsedMs))ms; falling back")
                 TranscriptCleanupDebugLogger.append(
                     status: "fallback_empty_output",
-                    cleanupBackend: postProcessorBackend,
+                    cleanupBackend: postProcessorSnapshot.backend,
                     cleanupModel: cleanup.model,
                     asrBackend: backend.backend,
                     appContextText: appContext,
@@ -576,11 +597,11 @@ actor TranscriptionCoordinator {
                 )
                 return nil
             }
-            Qwen3PostProcessorLogging.logVerbose("\(postProcessorBackend.label) post-processor applied to \(backend.label) in \(String(format: "%.1f", elapsedMs))ms (chars=\(trimmed.count))")
-            logPostProcPair(raw: result.text, processed: trimmed, asr: backend.backend)
+            Qwen3PostProcessorLogging.logVerbose("\(postProcessorSnapshot.backend.label) post-processor applied to \(backend.label) in \(String(format: "%.1f", elapsedMs))ms (chars=\(trimmed.count))")
+            logPostProcPair(raw: result.text, processed: trimmed, model: cleanup.model, asr: backend.backend)
             TranscriptCleanupDebugLogger.append(
                 status: "applied",
-                cleanupBackend: postProcessorBackend,
+                cleanupBackend: postProcessorSnapshot.backend,
                 cleanupModel: cleanup.model,
                 asrBackend: backend.backend,
                 appContextText: appContext,
@@ -594,11 +615,11 @@ actor TranscriptionCoordinator {
                 segments: Qwen3PostProcessorLogging.isVerboseEnabled && !trimmed.isEmpty ? result.segments : []
             )
         } catch {
-            Qwen3PostProcessorLogging.logVerbose("\(postProcessorBackend.label) post-processor failed, falling back: \(error)")
+            Qwen3PostProcessorLogging.logVerbose("\(postProcessorSnapshot.backend.label) post-processor failed, falling back: \(error)")
             TranscriptCleanupDebugLogger.append(
                 status: "fallback_error",
-                cleanupBackend: postProcessorBackend,
-                cleanupModel: postProcessorModelId,
+                cleanupBackend: postProcessorSnapshot.backend,
+                cleanupModel: postProcessorSnapshot.modelId,
                 asrBackend: backend.backend,
                 appContextText: appContext,
                 rawASRText: result.text,

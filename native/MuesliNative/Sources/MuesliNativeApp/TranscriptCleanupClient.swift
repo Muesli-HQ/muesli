@@ -88,7 +88,7 @@ enum TranscriptCleanupClient {
             return !config.openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 || ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"] != nil
         case .some(.ollama):
-            return true
+            return resolveConfiguredOllamaURL(config: config) != nil
         case .some(.lmStudio):
             let model = configuredModel(for: backend, config: config)
             return !model.isEmpty
@@ -285,10 +285,9 @@ enum TranscriptCleanupClient {
         model: String,
         config: AppConfig
     ) async throws -> String {
-        let rawURL = config.ollamaURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        let baseURL = rawURL.isEmpty ? defaultOllamaBaseURL : URL(string: rawURL)
+        let baseURL = resolveConfiguredOllamaURL(config: config)
         guard let baseURL else {
-            throw TranscriptCleanupError.missingConfiguration("Invalid Ollama URL: \(rawURL)")
+            throw TranscriptCleanupError.missingConfiguration("Invalid Ollama URL: \(config.ollamaURL)")
         }
         let chatURL = baseURL.appendingPathComponent("api/chat")
         let body: [String: Any] = [
@@ -317,6 +316,22 @@ enum TranscriptCleanupClient {
             throw TranscriptCleanupError.emptyResponse("Ollama")
         }
         return text
+    }
+
+    private static func resolveConfiguredOllamaURL(config: AppConfig) -> URL? {
+        let rawURL = config.ollamaURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawURL.isEmpty else { return defaultOllamaBaseURL }
+        guard
+            let url = URL(string: rawURL),
+            let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+            let scheme = components.scheme?.lowercased(),
+            scheme == "http" || scheme == "https",
+            let host = components.host,
+            !host.isEmpty
+        else {
+            return nil
+        }
+        return url
     }
 
     private static func cleanWithChatCompletions(
