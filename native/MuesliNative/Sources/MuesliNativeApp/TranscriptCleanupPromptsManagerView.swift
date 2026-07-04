@@ -9,7 +9,7 @@ struct TranscriptCleanupPromptsManagerView: View {
     @State private var editingPromptID: String?
     @State private var draftPromptName = ""
     @State private var draftPrompt = ""
-    @State private var showNameValidationError = false
+    @State private var nameValidationMessage: String?
     @State private var showPromptValidationError = false
     @State private var promptToDelete: CustomTranscriptCleanupPrompt?
 
@@ -248,17 +248,17 @@ struct TranscriptCleanupPromptsManagerView: View {
                     .overlay {
                         RoundedRectangle(cornerRadius: 6)
                             .strokeBorder(
-                                showNameValidationError ? MuesliTheme.recording.opacity(0.75) : .clear,
+                                nameValidationMessage == nil ? .clear : MuesliTheme.recording.opacity(0.75),
                                 lineWidth: 1
                             )
                     }
                     .onChange(of: draftPromptName) { _, newValue in
                         if !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            showNameValidationError = false
+                            nameValidationMessage = nil
                         }
                     }
-                if showNameValidationError {
-                    Text("Enter a preset name.")
+                if let nameValidationMessage {
+                    Text(nameValidationMessage)
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.recording)
                 }
@@ -318,14 +318,14 @@ struct TranscriptCleanupPromptsManagerView: View {
         isCreatingPrompt = true
         editingPromptID = nil
         draftPromptName = ""
-        draftPrompt = appState.config.postProcessorSystemPrompt
+        draftPrompt = ""
         clearValidationErrors()
     }
 
     private func beginDuplicatingPrompt(name: String, prompt: String) {
         isCreatingPrompt = true
         editingPromptID = nil
-        draftPromptName = "Copy of \(name)"
+        draftPromptName = suggestedUniqueName(for: "\(name) Copy")
         draftPrompt = prompt
         clearValidationErrors()
     }
@@ -349,9 +349,14 @@ struct TranscriptCleanupPromptsManagerView: View {
     private func savePromptEditor() {
         let trimmedName = draftPromptName.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedPrompt = draftPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        showNameValidationError = trimmedName.isEmpty
+        nameValidationMessage = nil
         showPromptValidationError = trimmedPrompt.isEmpty
-        guard !trimmedName.isEmpty, !trimmedPrompt.isEmpty else { return }
+        if trimmedName.isEmpty {
+            nameValidationMessage = "Enter a preset name."
+        } else if presetNameExists(trimmedName, excludingID: editingPromptID) {
+            nameValidationMessage = "Use a unique preset name."
+        }
+        guard nameValidationMessage == nil, !trimmedPrompt.isEmpty else { return }
 
         if let editingPromptID {
             controller.updateTranscriptCleanupPrompt(
@@ -373,8 +378,39 @@ struct TranscriptCleanupPromptsManagerView: View {
     }
 
     private func clearValidationErrors() {
-        showNameValidationError = false
+        nameValidationMessage = nil
         showPromptValidationError = false
+    }
+
+    private func presetNameExists(_ name: String, excludingID: String?) -> Bool {
+        let normalizedName = normalizedPresetName(name)
+        if builtInPresets.contains(where: { normalizedPresetName($0.name) == normalizedName }) {
+            return true
+        }
+        return customPresets.contains { preset in
+            preset.id != excludingID && normalizedPresetName(preset.name) == normalizedName
+        }
+    }
+
+    private func suggestedUniqueName(for baseName: String) -> String {
+        let trimmedBase = baseName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallbackBase = trimmedBase.isEmpty ? "Custom Cleanup" : trimmedBase
+        if !presetNameExists(fallbackBase, excludingID: nil) {
+            return fallbackBase
+        }
+        for suffix in 2...99 {
+            let candidate = "\(fallbackBase) \(suffix)"
+            if !presetNameExists(candidate, excludingID: nil) {
+                return candidate
+            }
+        }
+        return "\(fallbackBase) \(UUID().uuidString.prefix(4))"
+    }
+
+    private func normalizedPresetName(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .lowercased()
     }
 
     private func actionButton(

@@ -90,10 +90,7 @@ struct SettingsView: View {
     @State private var downloadedPostProcOptions: [PostProcessorOption] = []
     @State private var dictationInputDevices: [AudioInputDeviceInfo] = []
     @State private var permissionPollTimer: Timer?
-    @State private var isEditingCleanupPrompt = false
     @State private var isCleanupPromptManagerPresented = false
-    @State private var editedCleanupPrompt = ""
-    @State private var cleanupPromptName = ""
     @State private var micGranted = false
     @State private var accessibilityGranted = false
     @State private var inputMonitoringGranted = false
@@ -777,89 +774,28 @@ struct SettingsView: View {
                     onSelectIndex: { index in
                         guard index >= 0, index < cleanupPromptPresets.count else { return }
                         controller.selectTranscriptCleanupPrompt(id: cleanupPromptPresets[index].id)
-                        editedCleanupPrompt = cleanupPromptPresets[index].prompt
-                        cleanupPromptName = cleanupPromptPresets[index].name
                     }
                 )
                 .frame(height: 24)
             }
 
-            if isEditingCleanupPrompt {
-                TextEditor(text: $editedCleanupPrompt)
-                    .font(.system(size: 12, design: .monospaced))
-                    .frame(minHeight: 150)
-                    .scrollContentBackground(.hidden)
-                    .padding(10)
-                    .background(MuesliTheme.surfacePrimary.opacity(0.7))
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                            .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-                    )
+            Text(appState.config.postProcessorSystemPrompt)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(MuesliTheme.textSecondary)
+                .lineLimit(4)
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(MuesliTheme.surfacePrimary.opacity(0.7))
+                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                .overlay(
+                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                        .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                )
 
-                HStack(spacing: MuesliTheme.spacing8) {
-                    PastableTextField(
-                        text: cleanupPromptName,
-                        placeholder: "Preset name",
-                        onChange: { cleanupPromptName = $0 }
-                    )
-                    .frame(width: meetingControlWidth, height: 24)
-
-                    Spacer(minLength: MuesliTheme.spacing12)
-
-                    compactActionButton("Save as Preset") {
-                        controller.createTranscriptCleanupPrompt(
-                            name: cleanupPromptName,
-                            prompt: editedCleanupPrompt
-                        )
-                        isEditingCleanupPrompt = false
-                    }
-
-                    if let active = cleanupPromptPresets.first(where: { $0.id == appState.config.activeTranscriptCleanupPromptId }),
-                       active.isCustom {
-                        compactActionButton("Update Preset") {
-                            controller.updateTranscriptCleanupPrompt(
-                                id: active.id,
-                                name: cleanupPromptName,
-                                prompt: editedCleanupPrompt
-                            )
-                            isEditingCleanupPrompt = false
-                        }
-
-                        compactActionButton("Delete", role: .destructive) {
-                            controller.deleteTranscriptCleanupPrompt(id: active.id)
-                            isEditingCleanupPrompt = false
-                        }
-                    }
-
-                    compactActionButton("Cancel") {
-                        isEditingCleanupPrompt = false
-                    }
-                }
-            } else {
-                Text(appState.config.postProcessorSystemPrompt)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(MuesliTheme.textSecondary)
-                    .lineLimit(4)
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(MuesliTheme.surfacePrimary.opacity(0.7))
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                            .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-                    )
-
-                HStack {
-                    Spacer()
-                    compactActionButton("Manage Presets…", systemImage: "slider.horizontal.3") {
-                        isCleanupPromptManagerPresented = true
-                    }
-                    compactActionButton("Edit Prompt", systemImage: "pencil") {
-                        editedCleanupPrompt = appState.config.postProcessorSystemPrompt
-                        cleanupPromptName = selectedCleanupPromptName
-                        isEditingCleanupPrompt = true
-                    }
+            HStack {
+                Spacer()
+                compactActionButton("Manage Presets…", systemImage: "slider.horizontal.3") {
+                    isCleanupPromptManagerPresented = true
                 }
             }
         }
