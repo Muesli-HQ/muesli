@@ -656,8 +656,6 @@ struct SettingsView: View {
                     hostedCleanupSettings(for: appState.selectedPostProcessorBackend)
                 }
 
-                Divider().background(MuesliTheme.surfaceBorder)
-                cleanupPromptSettings
             }
 
             meetingSummarySettingsSection
@@ -767,7 +765,7 @@ struct SettingsView: View {
 
     private var cleanupPromptSettings: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
-            settingsRow("Prompt preset", controlWidth: meetingControlWidth) {
+            settingsRow("Cleanup preset", controlWidth: meetingControlWidth) {
                 FixedWidthPopUp(
                     selection: selectedCleanupPromptName,
                     options: cleanupPromptPresets.map(\.name),
@@ -967,6 +965,8 @@ struct SettingsView: View {
                         controller.setPostProcessorEnabled(newValue)
                     }
                 }
+                Divider().background(MuesliTheme.surfaceBorder)
+                cleanupPromptSettings
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow(
                     "Dictionary suggestions",
