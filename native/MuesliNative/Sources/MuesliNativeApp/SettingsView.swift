@@ -325,9 +325,9 @@ struct SettingsView: View {
             return "Turn on App context first."
         }
         if !screenRecordingGranted {
-            return "Grant Screen Recording to add visible screen OCR text."
+            return "Grant Screen Recording to add frontmost-window OCR text."
         }
-        return "Adds visible screen OCR text. Cloud cleanup may send this text to the selected provider."
+        return "Adds frontmost-window OCR text. Cloud cleanup may send this text to the selected provider."
     }
 
     @ViewBuilder

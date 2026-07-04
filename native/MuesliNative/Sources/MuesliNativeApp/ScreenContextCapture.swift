@@ -191,42 +191,20 @@ struct ScreenContext {
 
 enum ScreenContextCapture {
 
-    /// Captures the visible screen and runs on-device OCR. The screenshot itself
+    /// Captures the frontmost app window and runs on-device OCR. The screenshot itself
     /// is not persisted or sent to cleanup backends; only recognized text is used.
     static func captureVisibleScreen() async -> ScreenContext? {
-        guard CGPreflightScreenCaptureAccess() else { return nil }
-        let app = NSWorkspace.shared.frontmostApplication
-        let appName = app?.localizedName ?? "Unknown"
-        let bundleID = app?.bundleIdentifier ?? ""
-
-        guard let image = CGWindowListCreateImage(
-            .infinite,
-            .optionOnScreenOnly,
-            kCGNullWindowID,
-            [.bestResolution, .boundsIgnoreFraming]
-        ) else {
-            fputs("[muesli-native] screen context: visible screen capture failed\n", stderr)
-            return nil
-        }
-
-        do {
-            let text = try await ocrImage(image)
-            fputs("[muesli-native] screen context: captured \(text.count) visible-screen OCR chars from \(appName)\n", stderr)
-            return ScreenContext(
-                appName: appName,
-                bundleID: bundleID,
-                ocrText: text,
-                capturedAt: Date()
-            )
-        } catch {
-            fputs("[muesli-native] screen context: visible-screen OCR failed: \(error)\n", stderr)
-            return nil
-        }
+        await captureFrontmostWindow(logLabel: "dictation OCR")
     }
 
     /// Captures a screenshot of the focused window and runs on-device OCR.
     /// Used for meeting context only — heavier than AX but provides visual content.
     static func captureOnce() async -> ScreenContext? {
+        await captureFrontmostWindow(logLabel: "meeting OCR")
+    }
+
+    private static func captureFrontmostWindow(logLabel: String) async -> ScreenContext? {
+        guard CGPreflightScreenCaptureAccess() else { return nil }
         let app = NSWorkspace.shared.frontmostApplication
         let appName = app?.localizedName ?? "Unknown"
         let bundleID = app?.bundleIdentifier ?? ""
@@ -254,7 +232,7 @@ enum ScreenContextCapture {
 
         do {
             let text = try await ocrImage(image)
-            fputs("[muesli-native] screen context: captured \(text.count) chars from \(appName)\n", stderr)
+            fputs("[muesli-native] screen context: captured \(text.count) \(logLabel) chars from \(appName)\n", stderr)
             return ScreenContext(
                 appName: appName,
                 bundleID: bundleID,
@@ -262,7 +240,7 @@ enum ScreenContextCapture {
                 capturedAt: Date()
             )
         } catch {
-            fputs("[muesli-native] screen context: OCR failed: \(error)\n", stderr)
+            fputs("[muesli-native] screen context: \(logLabel) failed: \(error)\n", stderr)
             return nil
         }
     }
