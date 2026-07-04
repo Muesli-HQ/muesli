@@ -89,7 +89,9 @@ enum TranscriptCleanupClient {
         case .some(.ollama):
             return true
         case .some(.lmStudio):
-            return !configuredModel(for: backend, config: config).isEmpty
+            let model = configuredModel(for: backend, config: config)
+            return !model.isEmpty
+                && MeetingSummaryClient.resolveLMStudioURL(config: cleanupConfig(config, model: model)) != nil
         case .some(.customLLM):
             let model = configuredModel(for: backend, config: config)
             let key = config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -13,6 +13,7 @@ enum ChatGPTResponsesError: LocalizedError {
 
 enum ChatGPTResponsesClient {
     private static let whamURL = URL(string: "https://chatgpt.com/backend-api/wham/responses")!
+    private static let requestTimeout: TimeInterval = 120
 
     static func respond(
         systemPrompt: String,
@@ -33,6 +34,7 @@ enum ChatGPTResponsesClient {
         ]
 
         var request = URLRequest(url: whamURL)
+        request.timeoutInterval = requestTimeout
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -53,7 +55,8 @@ enum ChatGPTResponsesClient {
             throw ChatGPTResponsesError.backendFailed(statusCode: httpStatus, message: message)
         }
 
-        var fullText = ""
+        var deltaText = ""
+        var finalText = ""
         for try await line in bytes.lines {
             guard line.hasPrefix("data: ") else { continue }
             let jsonString = String(line.dropFirst(6))
@@ -63,19 +66,28 @@ enum ChatGPTResponsesClient {
                 let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { continue }
 
-            if let delta = extractOutputTextDelta(from: json) {
-                fullText += delta
-                continue
-            }
-
-            if let outputText = extractOutputText(from: json), !outputText.isEmpty {
-                fullText = outputText
-            }
+            applyStreamPayload(json, deltaText: &deltaText, finalText: &finalText)
         }
 
+        let fullText = accumulatedOutputText(deltaText: deltaText, finalText: finalText)
         let trimmed = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
         fputs("[\(logCategory)] ChatGPT WHAM: collected \(trimmed.count) chars\n", stderr)
         return trimmed
+    }
+
+    static func applyStreamPayload(_ payload: [String: Any], deltaText: inout String, finalText: inout String) {
+        if let delta = extractOutputTextDelta(from: payload) {
+            deltaText += delta
+            return
+        }
+
+        if let outputText = extractOutputText(from: payload), !outputText.isEmpty {
+            finalText = outputText
+        }
+    }
+
+    static func accumulatedOutputText(deltaText: String, finalText: String) -> String {
+        finalText.isEmpty ? deltaText : finalText
     }
 
     static func extractOutputText(from payload: [String: Any]) -> String? {

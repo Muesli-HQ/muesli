@@ -1810,19 +1810,6 @@ final class MuesliController: NSObject {
         }
     }
 
-    func updatePostProcessorSystemPrompt(_ prompt: String) {
-        updateConfig {
-            $0.postProcessorSystemPrompt = prompt
-            $0.activeTranscriptCleanupPromptId = TranscriptCleanupPrompts.defaultID
-        }
-        let ppOption = runtimePostProcessorOption()
-        guard config.enablePostProcessor else { return }
-        Task { [weak self] in
-            guard let self else { return }
-            await self.configureTranscriptCleanupForRuntime(option: ppOption)
-        }
-    }
-
     func selectPostProcessorBackend(_ option: TranscriptCleanupBackendOption) {
         updateConfig { $0.postProcessorBackend = option.backend }
         selectedPostProcessorBackend = option

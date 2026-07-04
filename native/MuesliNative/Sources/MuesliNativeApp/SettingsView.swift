@@ -703,10 +703,17 @@ struct SettingsView: View {
                 .frame(height: 22)
             }
             Divider().background(MuesliTheme.surfaceBorder)
-            settingsRow("Cleanup model", controlWidth: meetingControlWidth) {
+            settingsRow("Model preset", controlWidth: meetingControlWidth) {
                 settingsModelMenu(
                     currentModel: appState.config.postProcessorOpenRouterModel,
                     presets: SummaryModelPreset.openRouterModels
+                ) { controller.updatePostProcessorModel($0, for: backend) }
+            }
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("Custom model ID", controlWidth: meetingControlWidth) {
+                settingsModelTextField(
+                    currentModel: appState.config.postProcessorOpenRouterModel,
+                    placeholder: "provider/model"
                 ) { controller.updatePostProcessorModel($0, for: backend) }
             }
             keyStatusRow(key: appState.config.openRouterAPIKey)

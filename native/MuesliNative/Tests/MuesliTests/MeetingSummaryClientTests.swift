@@ -113,6 +113,35 @@ struct MeetingSummaryClientTests {
         #expect(ChatGPTResponsesClient.extractOutputTextDelta(from: payload) == "streamed text")
     }
 
+    @Test("ChatGPT WHAM parser prefers final output over streamed deltas")
+    func chatGPTWHAMParserPrefersFinalOutputOverDeltas() {
+        var deltaText = ""
+        var finalText = ""
+
+        ChatGPTResponsesClient.applyStreamPayload(
+            [
+                "type": "response.output_text.delta",
+                "delta": "partial ",
+            ],
+            deltaText: &deltaText,
+            finalText: &finalText
+        )
+        ChatGPTResponsesClient.applyStreamPayload(
+            [
+                "type": "response.completed",
+                "response": [
+                    "output_text": "final cleaned text",
+                ],
+            ],
+            deltaText: &deltaText,
+            finalText: &finalText
+        )
+
+        #expect(deltaText == "partial ")
+        #expect(finalText == "final cleaned text")
+        #expect(ChatGPTResponsesClient.accumulatedOutputText(deltaText: deltaText, finalText: finalText) == "final cleaned text")
+    }
+
     @Test("ChatGPT WHAM parser reads nested final response payload")
     func chatGPTWHAMParserReadsNestedFinalResponsePayload() {
         let payload: [String: Any] = [

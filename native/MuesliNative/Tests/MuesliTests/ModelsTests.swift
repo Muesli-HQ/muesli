@@ -580,6 +580,28 @@ struct AppConfigTests {
         #expect(config.hiddenCalendarEventSourceHints.isEmpty)
     }
 
+    @Test("LM Studio cleanup readiness requires model and valid URL")
+    func lmStudioCleanupReadinessRequiresModelAndValidURL() {
+        let backend = TranscriptCleanupBackendOption.hosted(.lmStudio)
+        var config = AppConfig()
+        config.postProcessorLMStudioModel = "local-cleanup-model"
+        config.lmStudioURL = "not a url"
+
+        #expect(!TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+
+        config.lmStudioURL = "http://localhost:1234"
+
+        #expect(TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+    }
+
     @Test("JSON encode/decode round-trip")
     func jsonRoundTrip() throws {
         var config = AppConfig()
