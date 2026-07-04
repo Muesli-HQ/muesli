@@ -163,11 +163,16 @@ enum Qwen3PostProcessorConfig {
     static let legacyDirectoryEnvOverride = "MUESLI_QWEN3_POSTPROC_DIR"
     // Dictation-only cleanup cap. Keep bounded to avoid slow local inference; long dictations may be truncated by LLM.swift.
     static let maxContextTokens: Int32 = 1024
+    static let defaultAppContextCharacterLimit = 1_200
 
-    static func formatInput(_ text: String, appContext: String? = nil) -> String {
+    static func formatInput(
+        _ text: String,
+        appContext: String? = nil,
+        maxAppContextCharacters: Int = defaultAppContextCharacterLimit
+    ) -> String {
         var parts = ""
         if let appContext, !appContext.isEmpty {
-            parts += "<APP-CONTEXT>\n\(String(appContext.prefix(1200)))\n</APP-CONTEXT>\n\n"
+            parts += "<APP-CONTEXT>\n\(String(appContext.prefix(maxAppContextCharacters)))\n</APP-CONTEXT>\n\n"
         }
         parts += "<USER-INPUT>\n\(text)\n</USER-INPUT>"
         return parts

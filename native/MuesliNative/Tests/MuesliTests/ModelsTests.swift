@@ -909,7 +909,40 @@ struct AppConfigTests {
     @Test("default cleanup prompt explains app context")
     func defaultCleanupPromptExplainsAppContext() {
         #expect(PostProcessorOption.defaultSystemPrompt.contains("<APP-CONTEXT>"))
+        #expect(PostProcessorOption.defaultSystemPrompt.contains("OCR screen text"))
         #expect(PostProcessorOption.defaultSystemPrompt.contains("Never copy app context into the output"))
+    }
+
+    @Test("dictation app context prompt includes OCR text")
+    func dictationAppContextPromptIncludesOCRText() {
+        let ocrText = String(repeating: "a", count: 3_200) + "tail"
+        let context = DictationContext(
+            appName: "Notes",
+            bundleID: "com.apple.Notes",
+            documentContext: "Project Apollo",
+            selectedText: "Mercury",
+            url: "https://example.com",
+            ocrText: ocrText
+        )
+        let prompt = DictationContextCapture.formatForPrompt(context)
+
+        #expect(prompt.contains("App: Notes (https://example.com)"))
+        #expect(prompt.contains("Document context: Project Apollo"))
+        #expect(prompt.contains("Selected text: Mercury"))
+        #expect(prompt.contains("OCR screen text: "))
+        #expect(prompt.contains("tail"))
+    }
+
+    @Test("post processor input caps app context")
+    func postProcessorInputCapsAppContext() {
+        let prompt = Qwen3PostProcessorConfig.formatInput(
+            "hello",
+            appContext: String(repeating: "a", count: 20),
+            maxAppContextCharacters: 5
+        )
+
+        #expect(prompt.contains("<APP-CONTEXT>\naaaaa\n</APP-CONTEXT>"))
+        #expect(prompt.contains("<USER-INPUT>\nhello\n</USER-INPUT>"))
     }
 
     @Test("hosted cleanup augments custom prompts when app context is present")
@@ -921,6 +954,7 @@ struct AppConfigTests {
 
         #expect(prompt.contains("Preserve the user's words."))
         #expect(prompt.contains("<APP-CONTEXT>"))
+        #expect(prompt.contains("OCR screen text"))
     }
 
     @Test("hosted cleanup does not duplicate app context guidance")

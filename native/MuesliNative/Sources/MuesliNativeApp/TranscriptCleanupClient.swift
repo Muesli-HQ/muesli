@@ -32,6 +32,7 @@ enum TranscriptCleanupClient {
     private static let defaultOllamaBaseURL = URL(string: "http://localhost:11434")!
     private static let requestTimeout: TimeInterval = 120
     private static let defaultMaxOutputTokens = 1000
+    private static let hostedAppContextCharacterLimit = 5_000
 
     static func defaultModel(for backend: TranscriptCleanupBackendOption) -> String {
         switch backend.llmBackend {
@@ -115,7 +116,11 @@ enum TranscriptCleanupClient {
         }
 
         let model = configuredModel(for: backend, config: config)
-        let userPrompt = Qwen3PostProcessorConfig.formatInput(text, appContext: appContext)
+        let userPrompt = Qwen3PostProcessorConfig.formatInput(
+            text,
+            appContext: appContext,
+            maxAppContextCharacters: hostedAppContextCharacterLimit
+        )
         let effectiveSystemPrompt = systemPromptWithAppContextGuidance(systemPrompt, appContext: appContext)
         let raw: String
 
@@ -212,7 +217,7 @@ enum TranscriptCleanupClient {
         return systemPrompt + "\n\n" + appContextGuidance
     }
 
-    private static let appContextGuidance = "The user input may include an <APP-CONTEXT> section with focused app, document, URL, or selected-text context. Use it only to resolve obvious transcription errors, names, acronyms, and formatting intent. Never copy app context into the output unless the user dictated it."
+    private static let appContextGuidance = "The user input may include an <APP-CONTEXT> section with focused app, document, URL, selected text, or OCR screen text. Use it only to resolve obvious transcription errors, names, acronyms, and formatting intent. Never copy app context into the output unless the user dictated it."
 
     static func resolvedOpenRouterAPIKey(
         config: AppConfig,

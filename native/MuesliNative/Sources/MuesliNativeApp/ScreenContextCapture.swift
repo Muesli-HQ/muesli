@@ -2,7 +2,7 @@ import AppKit
 import ApplicationServices
 import Vision
 
-// MARK: - Dictation context (Accessibility API — deterministic, low-token)
+// MARK: - Dictation context (Accessibility + optional on-device OCR)
 
 struct DictationContext {
     let appName: String
@@ -10,9 +10,28 @@ struct DictationContext {
     let documentContext: String
     let selectedText: String
     let url: String?
+    let ocrText: String
 }
 
 enum DictationContextCapture {
+
+    /// Captures focused app name + text context via Accessibility API, with optional
+    /// on-device OCR when Screen Recording permission is already granted.
+    static func capture(includeScreenOCR: Bool) async -> DictationContext {
+        let base = capture()
+        guard includeScreenOCR, CGPreflightScreenCaptureAccess() else { return base }
+        let screenContext = await ScreenContextCapture.captureVisibleScreen()
+        let ocrText = screenContext?.ocrText.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !ocrText.isEmpty else { return base }
+        return DictationContext(
+            appName: base.appName,
+            bundleID: base.bundleID,
+            documentContext: base.documentContext,
+            selectedText: base.selectedText,
+            url: base.url,
+            ocrText: ocrText
+        )
+    }
 
     /// Captures focused app name + text context via Accessibility API.
     /// Lightweight and deterministic — no screenshots, no OCR.
@@ -38,7 +57,8 @@ enum DictationContextCapture {
             bundleID: bundleID,
             documentContext: docContext,
             selectedText: selectedText,
-            url: url
+            url: url,
+            ocrText: ""
         )
     }
 
@@ -53,6 +73,9 @@ enum DictationContextCapture {
         }
         if !ctx.selectedText.isEmpty {
             parts += "\nSelected text: \(ctx.selectedText)"
+        }
+        if !ctx.ocrText.isEmpty {
+            parts += "\nOCR screen text: \(ctx.ocrText)"
         }
         return parts
     }
@@ -167,6 +190,39 @@ struct ScreenContext {
 }
 
 enum ScreenContextCapture {
+
+    /// Captures the visible screen and runs on-device OCR. The screenshot itself
+    /// is not persisted or sent to cleanup backends; only recognized text is used.
+    static func captureVisibleScreen() async -> ScreenContext? {
+        guard CGPreflightScreenCaptureAccess() else { return nil }
+        let app = NSWorkspace.shared.frontmostApplication
+        let appName = app?.localizedName ?? "Unknown"
+        let bundleID = app?.bundleIdentifier ?? ""
+
+        guard let image = CGWindowListCreateImage(
+            .infinite,
+            .optionOnScreenOnly,
+            kCGNullWindowID,
+            [.bestResolution, .boundsIgnoreFraming]
+        ) else {
+            fputs("[muesli-native] screen context: visible screen capture failed\n", stderr)
+            return nil
+        }
+
+        do {
+            let text = try await ocrImage(image)
+            fputs("[muesli-native] screen context: captured \(text.count) visible-screen OCR chars from \(appName)\n", stderr)
+            return ScreenContext(
+                appName: appName,
+                bundleID: bundleID,
+                ocrText: text,
+                capturedAt: Date()
+            )
+        } catch {
+            fputs("[muesli-native] screen context: visible-screen OCR failed: \(error)\n", stderr)
+            return nil
+        }
+    }
 
     /// Captures a screenshot of the focused window and runs on-device OCR.
     /// Used for meeting context only — heavier than AX but provides visual content.

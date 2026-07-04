@@ -6819,11 +6819,12 @@ final class MuesliController: NSObject {
     private func captureDictationContextAsync() {
         guard shouldCaptureDictationContext else { return }
         let traceID = dictationLatencyTraceID
+        let includeScreenOCR = CGPreflightScreenCaptureAccess()
         markDictationLatency("context_capture_enqueue")
-        DispatchQueue.global(qos: .utility).async { [weak self, traceID] in
+        Task.detached(priority: .utility) { [weak self, traceID, includeScreenOCR] in
             guard AXIsProcessTrusted() else { return }
-            let context = DictationContextCapture.capture()
-            DispatchQueue.main.async { [weak self, traceID] in
+            let context = await DictationContextCapture.capture(includeScreenOCR: includeScreenOCR)
+            await MainActor.run { [weak self, traceID] in
                 guard let self,
                       self.dictationLatencyTraceID == traceID,
                       self.shouldCaptureDictationContext,
