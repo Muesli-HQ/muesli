@@ -602,6 +602,24 @@ struct AppConfigTests {
         ))
     }
 
+    @Test("OpenRouter cleanup key falls back to environment")
+    func openRouterCleanupKeyFallsBackToEnvironment() {
+        var config = AppConfig()
+        config.openRouterAPIKey = ""
+
+        #expect(TranscriptCleanupClient.resolvedOpenRouterAPIKey(
+            config: config,
+            environment: ["OPENROUTER_API_KEY": "sk-or-env"]
+        ) == "sk-or-env")
+
+        config.openRouterAPIKey = " sk-or-config "
+
+        #expect(TranscriptCleanupClient.resolvedOpenRouterAPIKey(
+            config: config,
+            environment: ["OPENROUTER_API_KEY": "sk-or-env"]
+        ) == "sk-or-config")
+    }
+
     @Test("JSON encode/decode round-trip")
     func jsonRoundTrip() throws {
         var config = AppConfig()

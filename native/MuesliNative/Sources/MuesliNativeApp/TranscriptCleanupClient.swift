@@ -129,10 +129,11 @@ enum TranscriptCleanupClient {
         case .openAI:
             raw = try await cleanWithOpenAI(systemPrompt: systemPrompt, userPrompt: userPrompt, model: model, config: config)
         case .openRouter:
+            let apiKey = resolvedOpenRouterAPIKey(config: config)
             raw = try await cleanWithChatCompletions(
                 backend: "OpenRouter",
                 requestURL: openRouterURL,
-                apiKey: config.openRouterAPIKey,
+                apiKey: apiKey,
                 systemPrompt: systemPrompt,
                 userPrompt: userPrompt,
                 model: model
@@ -200,6 +201,14 @@ enum TranscriptCleanupClient {
         result = result.replacingOccurrences(of: #"[ \t]*\n[ \t]*"#, with: "\n", options: .regularExpression)
         result = result.replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func resolvedOpenRouterAPIKey(
+        config: AppConfig,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String {
+        let key = config.openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        return key.isEmpty ? (environment["OPENROUTER_API_KEY"] ?? "") : key
     }
 
     private static func cleanupConfig(_ config: AppConfig, model: String) -> AppConfig {
