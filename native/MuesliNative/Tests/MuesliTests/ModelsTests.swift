@@ -906,6 +906,33 @@ struct AppConfigTests {
         )
     }
 
+    @Test("default cleanup prompt explains app context")
+    func defaultCleanupPromptExplainsAppContext() {
+        #expect(PostProcessorOption.defaultSystemPrompt.contains("<APP-CONTEXT>"))
+        #expect(PostProcessorOption.defaultSystemPrompt.contains("Never copy app context into the output"))
+    }
+
+    @Test("hosted cleanup augments custom prompts when app context is present")
+    func hostedCleanupAugmentsCustomPromptsWhenAppContextIsPresent() {
+        let prompt = TranscriptCleanupClient.systemPromptWithAppContextGuidance(
+            "Preserve the user's words.",
+            appContext: "App: Notes"
+        )
+
+        #expect(prompt.contains("Preserve the user's words."))
+        #expect(prompt.contains("<APP-CONTEXT>"))
+    }
+
+    @Test("hosted cleanup does not duplicate app context guidance")
+    func hostedCleanupDoesNotDuplicateAppContextGuidance() {
+        let prompt = TranscriptCleanupClient.systemPromptWithAppContextGuidance(
+            PostProcessorOption.defaultSystemPrompt,
+            appContext: "App: Notes"
+        )
+
+        #expect(prompt == PostProcessorOption.defaultSystemPrompt)
+    }
+
     @Test("unsupported ChatGPT model selections fall back to default")
     func unsupportedChatGPTModelSelectionsFallBackToDefault() throws {
         let json = """

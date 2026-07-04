@@ -116,30 +116,31 @@ enum TranscriptCleanupClient {
 
         let model = configuredModel(for: backend, config: config)
         let userPrompt = Qwen3PostProcessorConfig.formatInput(text, appContext: appContext)
+        let effectiveSystemPrompt = systemPromptWithAppContextGuidance(systemPrompt, appContext: appContext)
         let raw: String
 
         switch llmBackend {
         case .chatGPT:
             raw = try await ChatGPTResponsesClient.respond(
-                systemPrompt: systemPrompt,
+                systemPrompt: effectiveSystemPrompt,
                 userPrompt: userPrompt,
                 model: model,
                 logCategory: "postproc"
             )
         case .openAI:
-            raw = try await cleanWithOpenAI(systemPrompt: systemPrompt, userPrompt: userPrompt, model: model, config: config)
+            raw = try await cleanWithOpenAI(systemPrompt: effectiveSystemPrompt, userPrompt: userPrompt, model: model, config: config)
         case .openRouter:
             let apiKey = resolvedOpenRouterAPIKey(config: config)
             raw = try await cleanWithChatCompletions(
                 backend: "OpenRouter",
                 requestURL: openRouterURL,
                 apiKey: apiKey,
-                systemPrompt: systemPrompt,
+                systemPrompt: effectiveSystemPrompt,
                 userPrompt: userPrompt,
                 model: model
             )
         case .ollama:
-            raw = try await cleanWithOllama(systemPrompt: systemPrompt, userPrompt: userPrompt, model: model, config: config)
+            raw = try await cleanWithOllama(systemPrompt: effectiveSystemPrompt, userPrompt: userPrompt, model: model, config: config)
         case .lmStudio:
             guard let requestURL = MeetingSummaryClient.resolveLMStudioURL(config: cleanupConfig(config, model: model)) else {
                 throw TranscriptCleanupError.missingConfiguration("Invalid LM Studio URL: \(config.lmStudioURL)")
@@ -148,7 +149,7 @@ enum TranscriptCleanupClient {
                 backend: "LM Studio",
                 requestURL: requestURL,
                 apiKey: "",
-                systemPrompt: systemPrompt,
+                systemPrompt: effectiveSystemPrompt,
                 userPrompt: userPrompt,
                 model: model
             )
@@ -163,7 +164,7 @@ enum TranscriptCleanupClient {
                     backend: "Custom LLM",
                     requestURL: requestURL,
                     apiKey: config.customLLMAPIKey,
-                    systemPrompt: systemPrompt,
+                    systemPrompt: effectiveSystemPrompt,
                     userPrompt: userPrompt,
                     model: model
                 )
@@ -171,7 +172,7 @@ enum TranscriptCleanupClient {
                 raw = try await cleanWithAnthropic(
                     requestURL: requestURL,
                     apiKey: config.customLLMAPIKey,
-                    systemPrompt: systemPrompt,
+                    systemPrompt: effectiveSystemPrompt,
                     userPrompt: userPrompt,
                     model: model
                 )
@@ -202,6 +203,16 @@ enum TranscriptCleanupClient {
         result = result.replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    static func systemPromptWithAppContextGuidance(_ systemPrompt: String, appContext: String?) -> String {
+        guard let appContext, !appContext.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return systemPrompt
+        }
+        guard !systemPrompt.contains("<APP-CONTEXT>") else { return systemPrompt }
+        return systemPrompt + "\n\n" + appContextGuidance
+    }
+
+    private static let appContextGuidance = "The user input may include an <APP-CONTEXT> section with focused app, document, URL, or selected-text context. Use it only to resolve obvious transcription errors, names, acronyms, and formatting intent. Never copy app context into the output unless the user dictated it."
 
     static func resolvedOpenRouterAPIKey(
         config: AppConfig,

@@ -9,6 +9,7 @@ enum TranscriptCleanupDebugLogger {
         let cleanupBackend: String
         let cleanupModel: String
         let asrBackend: String
+        let appContextText: String?
         let rawASRText: String
         let rawCleanupOutputText: String?
         let cleanupOutputText: String?
@@ -21,6 +22,7 @@ enum TranscriptCleanupDebugLogger {
         cleanupBackend: TranscriptCleanupBackendOption,
         cleanupModel: String,
         asrBackend: String,
+        appContextText: String? = nil,
         rawASRText: String,
         rawCleanupOutputText: String? = nil,
         cleanupOutputText: String? = nil,
@@ -36,6 +38,7 @@ enum TranscriptCleanupDebugLogger {
             cleanupBackend: cleanupBackend.backend,
             cleanupModel: cleanupModel,
             asrBackend: asrBackend,
+            appContextText: appContextText,
             rawASRText: rawASRText,
             rawCleanupOutputText: rawCleanupOutputText,
             cleanupOutputText: cleanupOutputText,

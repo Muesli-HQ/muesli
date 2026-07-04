@@ -503,6 +503,7 @@ actor TranscriptionCoordinator {
                     cleanupBackend: postProcessorBackend,
                     cleanupModel: postProcessorModelId,
                     asrBackend: backend.backend,
+                    appContextText: appContext,
                     rawASRText: result.text,
                     rawCleanupOutputText: processed,
                     cleanupOutputText: trimmed,
@@ -518,6 +519,7 @@ actor TranscriptionCoordinator {
                 cleanupBackend: postProcessorBackend,
                 cleanupModel: postProcessorModelId,
                 asrBackend: backend.backend,
+                appContextText: appContext,
                 rawASRText: result.text,
                 rawCleanupOutputText: processed,
                 cleanupOutputText: trimmed,
@@ -535,6 +537,7 @@ actor TranscriptionCoordinator {
                 cleanupBackend: postProcessorBackend,
                 cleanupModel: postProcessorModelId,
                 asrBackend: backend.backend,
+                appContextText: appContext,
                 rawASRText: result.text,
                 errorDescription: String(describing: error)
             )
@@ -565,6 +568,7 @@ actor TranscriptionCoordinator {
                     cleanupBackend: postProcessorBackend,
                     cleanupModel: cleanup.model,
                     asrBackend: backend.backend,
+                    appContextText: appContext,
                     rawASRText: result.text,
                     rawCleanupOutputText: cleanup.rawOutput,
                     cleanupOutputText: trimmed,
@@ -579,6 +583,7 @@ actor TranscriptionCoordinator {
                 cleanupBackend: postProcessorBackend,
                 cleanupModel: cleanup.model,
                 asrBackend: backend.backend,
+                appContextText: appContext,
                 rawASRText: result.text,
                 rawCleanupOutputText: cleanup.rawOutput,
                 cleanupOutputText: trimmed,
@@ -595,6 +600,7 @@ actor TranscriptionCoordinator {
                 cleanupBackend: postProcessorBackend,
                 cleanupModel: postProcessorModelId,
                 asrBackend: backend.backend,
+                appContextText: appContext,
                 rawASRText: result.text,
                 errorDescription: String(describing: error)
             )
