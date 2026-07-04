@@ -113,6 +113,18 @@ struct MeetingSummaryClientTests {
         #expect(ChatGPTResponsesClient.extractOutputTextDelta(from: payload) == "streamed text")
     }
 
+    @Test("ChatGPT WHAM parser rejects malformed stream payloads")
+    func chatGPTWHAMParserRejectsMalformedStreamPayloads() {
+        #expect(throws: ChatGPTResponsesError.self) {
+            _ = try ChatGPTResponsesClient.decodeStreamPayload("{", httpStatus: 200)
+        }
+    }
+
+    @Test("ChatGPT WHAM parser ignores blank stream payloads")
+    func chatGPTWHAMParserIgnoresBlankStreamPayloads() throws {
+        #expect(try ChatGPTResponsesClient.decodeStreamPayload("   ", httpStatus: 200) == nil)
+    }
+
     @Test("ChatGPT WHAM parser prefers final output over streamed deltas")
     func chatGPTWHAMParserPrefersFinalOutputOverDeltas() {
         var deltaText = ""

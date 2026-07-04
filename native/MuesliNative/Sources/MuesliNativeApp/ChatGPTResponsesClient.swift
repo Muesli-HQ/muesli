@@ -61,10 +61,7 @@ enum ChatGPTResponsesClient {
             guard line.hasPrefix("data: ") else { continue }
             let jsonString = String(line.dropFirst(6))
             if jsonString == "[DONE]" { break }
-            guard
-                let data = jsonString.data(using: .utf8),
-                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            else { continue }
+            guard let json = try decodeStreamPayload(jsonString, httpStatus: httpStatus) else { continue }
 
             applyStreamPayload(json, deltaText: &deltaText, finalText: &finalText)
         }
@@ -88,6 +85,20 @@ enum ChatGPTResponsesClient {
 
     static func accumulatedOutputText(deltaText: String, finalText: String) -> String {
         finalText.isEmpty ? deltaText : finalText
+    }
+
+    static func decodeStreamPayload(_ jsonString: String, httpStatus: Int) throws -> [String: Any]? {
+        guard !jsonString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        guard
+            let data = jsonString.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            throw ChatGPTResponsesError.backendFailed(
+                statusCode: httpStatus,
+                message: "Malformed ChatGPT stream payload."
+            )
+        }
+        return json
     }
 
     static func extractOutputText(from payload: [String: Any]) -> String? {
