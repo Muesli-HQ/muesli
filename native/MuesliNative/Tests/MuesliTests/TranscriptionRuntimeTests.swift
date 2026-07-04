@@ -320,4 +320,32 @@ struct Qwen3PostProcessingOutputCleanerTests {
             input: "um yeah"
         ))
     }
+
+    @Test("rejects placeholder punctuation cleanup output")
+    func rejectsPlaceholderPunctuationCleanupOutput() {
+        for cleaned in ["...", ". . .", "---", "??"] {
+            #expect(Qwen3PostProcessorOutputCleaner.shouldFallbackToInput(
+                cleaned: cleaned,
+                input: "Please send the update to Priyanka."
+            ))
+        }
+    }
+
+    @Test("hosted cleanup sanitizer preserves dictated labels and quotes")
+    func hostedCleanupSanitizerPreservesLabelsAndQuotes() {
+        let raw = """
+        Subject: "Muesli launch notes"
+
+        Body: Ask Priyanka to review the "AI Models" settings copy.
+        """
+
+        let cleaned = TranscriptCleanupClient.cleanOutput(raw)
+
+        #expect(cleaned.contains(#"Subject: "Muesli launch notes""#))
+        #expect(cleaned.contains(#"Body: Ask Priyanka to review the "AI Models" settings copy."#))
+        #expect(!Qwen3PostProcessorOutputCleaner.shouldFallbackToInput(
+            cleaned: cleaned,
+            input: #"Subject quote Muesli launch notes body ask Priyanka to review the quote AI Models quote settings copy"#
+        ))
+    }
 }

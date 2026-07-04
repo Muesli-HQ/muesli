@@ -21,8 +21,6 @@ struct ModelsView: View {
     @State private var downloadedPostProcModels: Set<String> = []
     @State private var downloadTasksPostProc: [String: Task<Void, Never>] = [:]
     @State private var postProcModelToDelete: PostProcessorOption?
-    @State private var isEditingSystemPrompt: Bool = false
-    @State private var editedSystemPrompt: String
 
     init(appState: AppState, controller: MuesliController) {
         self.appState = appState
@@ -32,7 +30,6 @@ struct ModelsView: View {
         _selectedParakeetModel = State(initialValue: BackendOption.parakeetFamily.contains(active) ? active.model : BackendOption.parakeetMultilingual.model)
         _selectedWhisperModel = State(initialValue: BackendOption.whisperFamily.contains(active) ? active.model : BackendOption.whisperSmall.model)
         _showExperimental = State(initialValue: false)
-        _editedSystemPrompt = State(initialValue: appState.config.postProcessorSystemPrompt)
     }
 
     var body: some View {
@@ -238,8 +235,6 @@ struct ModelsView: View {
                     postProcModelCard(option)
                 }
             }
-
-            systemPromptCard
         }
     }
 
@@ -354,101 +349,6 @@ struct ModelsView: View {
         .overlay(
             RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
                 .strokeBorder(isActive ? MuesliTheme.accent.opacity(0.5) : MuesliTheme.surfaceBorder, lineWidth: isActive ? 1.5 : 1)
-        )
-    }
-
-    private var systemPromptCard: some View {
-        VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
-            HStack {
-                VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                    Text("System Prompt")
-                        .font(MuesliTheme.headline())
-                        .foregroundStyle(MuesliTheme.textPrimary)
-                    Text("Controls how the model cleans up transcriptions. Applies to the active post-processor model.")
-                        .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.textSecondary)
-                }
-                Spacer()
-                if !isEditingSystemPrompt {
-                    Button("Edit") {
-                        editedSystemPrompt = appState.config.postProcessorSystemPrompt
-                        isEditingSystemPrompt = true
-                    }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(MuesliTheme.accent)
-                    .padding(.horizontal, MuesliTheme.spacing12)
-                    .padding(.vertical, 4)
-                    .background(MuesliTheme.accentSubtle)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                }
-            }
-
-            if isEditingSystemPrompt {
-                TextEditor(text: $editedSystemPrompt)
-                    .font(.system(size: 12, design: .monospaced))
-                    .frame(minHeight: 120)
-                    .scrollContentBackground(.hidden)
-                    .padding(8)
-                    .background(MuesliTheme.surfacePrimary)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                            .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-                    )
-
-                HStack(spacing: MuesliTheme.spacing8) {
-                    Button("Save") {
-                        controller.updatePostProcessorSystemPrompt(editedSystemPrompt)
-                        isEditingSystemPrompt = false
-                    }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(MuesliTheme.accent)
-                    .padding(.horizontal, MuesliTheme.spacing12)
-                    .padding(.vertical, 4)
-                    .background(MuesliTheme.accentSubtle)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-
-                    Button("Cancel") {
-                        isEditingSystemPrompt = false
-                    }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(MuesliTheme.textSecondary)
-                    .padding(.horizontal, MuesliTheme.spacing12)
-                    .padding(.vertical, 4)
-                    .background(MuesliTheme.surfacePrimary)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-
-                    Button("Reset to Default") {
-                        editedSystemPrompt = PostProcessorOption.defaultSystemPrompt
-                    }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(MuesliTheme.textTertiary)
-                    .padding(.horizontal, MuesliTheme.spacing12)
-                    .padding(.vertical, 4)
-                    .background(MuesliTheme.surfacePrimary)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                }
-            } else {
-                Text(appState.config.postProcessorSystemPrompt)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(MuesliTheme.textSecondary)
-                    .lineLimit(6)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(MuesliTheme.surfacePrimary)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-            }
-        }
-        .padding(MuesliTheme.spacing16)
-        .background(MuesliTheme.backgroundRaised)
-        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
-        .overlay(
-            RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
-                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
         )
     }
 

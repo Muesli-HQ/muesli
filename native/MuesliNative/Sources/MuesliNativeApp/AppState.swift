@@ -75,6 +75,7 @@ final class AppState {
     var selectedBackend: BackendOption = .whisper
     var selectedMeetingTranscriptionBackend: BackendOption = .whisper
     var selectedMeetingSummaryBackend: MeetingSummaryBackendOption = .chatGPT
+    var selectedPostProcessorBackend: TranscriptCleanupBackendOption = .local
     var activePostProcessor: PostProcessorOption = PostProcessorOption.defaultOption
     var config: AppConfig = AppConfig()
     var launchAtLoginRegistrationState: LaunchAtLoginRegistrationState = .disabled

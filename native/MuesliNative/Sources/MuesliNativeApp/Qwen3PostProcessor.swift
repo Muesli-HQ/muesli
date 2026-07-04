@@ -112,6 +112,10 @@ enum Qwen3PostProcessorOutputCleaner {
         guard !trimmed.isEmpty else { return true }
 
         let lower = trimmed.lowercased()
+        if isPlaceholderOutput(trimmed) {
+            return true
+        }
+
         let assistantMarkers = [
             "the user is asking",
             "**analysis:**",
@@ -137,6 +141,19 @@ enum Qwen3PostProcessorOutputCleaner {
             return expansion > 2.5 && trimmed.count > 150
         }
         return expansion > 2.0 && trimmed.count > 200
+    }
+
+    private static func isPlaceholderOutput(_ text: String) -> Bool {
+        let normalized = text
+            .replacingOccurrences(of: "…", with: "...")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalized == "..." || normalized == ". . ." {
+            return true
+        }
+        let punctuationOnly = normalized.allSatisfy { character in
+            character.isWhitespace || ".…-_,;:!?()[]{}".contains(character)
+        }
+        return punctuationOnly && normalized.count <= 8
     }
 }
 

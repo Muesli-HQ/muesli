@@ -332,7 +332,26 @@ struct SummaryModelPresetTests {
     @Test("OpenAI presets have valid model IDs")
     func openAIModels() {
         #expect(!SummaryModelPreset.openAIModels.isEmpty)
+        #expect(SummaryModelPreset.openAIModels.first?.id == "gpt-5.4-mini")
+        #expect(SummaryModelPreset.openAIModels.contains { $0.id == "gpt-5.5" })
+        #expect(SummaryModelPreset.openAIModels.contains { $0.id == "chat-latest" })
         for preset in SummaryModelPreset.openAIModels {
+            #expect(!preset.id.isEmpty)
+            #expect(!preset.label.isEmpty)
+        }
+    }
+
+    @Test("ChatGPT presets include supported fast options")
+    func chatGPTModels() {
+        #expect(!SummaryModelPreset.chatGPTModels.isEmpty)
+        #expect(SummaryModelPreset.chatGPTModels.first?.id == "gpt-5.4-mini")
+        #expect(SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.5" })
+        #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.4-nano" })
+        #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "chat-latest" })
+        #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.4" })
+        #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.2" })
+        #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-4o" })
+        for preset in SummaryModelPreset.chatGPTModels {
             #expect(!preset.id.isEmpty)
             #expect(!preset.label.isEmpty)
         }
@@ -517,6 +536,15 @@ struct AppConfigTests {
         #expect(config.customLLMAPIKey.isEmpty)
         #expect(config.customLLMModel.isEmpty)
         #expect(config.customLLMFormat == "openai")
+        #expect(config.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
+        #expect(config.postProcessorChatGPTModel.isEmpty)
+        #expect(config.postProcessorOpenAIModel.isEmpty)
+        #expect(config.postProcessorOpenRouterModel.isEmpty)
+        #expect(config.postProcessorOllamaModel.isEmpty)
+        #expect(config.postProcessorLMStudioModel.isEmpty)
+        #expect(config.postProcessorCustomLLMModel.isEmpty)
+        #expect(config.activeTranscriptCleanupPromptId == TranscriptCleanupPrompts.defaultID)
+        #expect(config.customTranscriptCleanupPrompts.isEmpty)
         #expect(config.dictationHotkey == .default)
         #expect(config.computerUseHotkey == .computerUseDefault)
         #expect(config.enableComputerUseHotkey == false)
@@ -597,6 +625,22 @@ struct AppConfigTests {
         config.customLLMAPIKey = "custom-key"
         config.customLLMModel = "custom-model"
         config.customLLMFormat = "anthropic"
+        config.postProcessorBackend = TranscriptCleanupBackendOption.hosted(.openRouter).backend
+        config.postProcessorChatGPTModel = "gpt-5.4-mini"
+        config.postProcessorOpenAIModel = "gpt-5.4-mini"
+        config.postProcessorOpenRouterModel = "openrouter/test-model"
+        config.postProcessorOllamaModel = "qwen3.5"
+        config.postProcessorLMStudioModel = "lmstudio-loaded"
+        config.postProcessorCustomLLMModel = "custom-cleanup"
+        config.activeTranscriptCleanupPromptId = "cleanup_custom_1"
+        config.customTranscriptCleanupPrompts = [
+            CustomTranscriptCleanupPrompt(
+                id: "cleanup_custom_1",
+                name: "Strict Dictation",
+                prompt: "Preserve labels and quotes."
+            )
+        ]
+        config.postProcessorSystemPrompt = "Preserve labels and quotes."
         config.contributionPromptNextWordCount = 31_000
         config.contributionPromptNextMeetingCount = 75
         config.contributionGitHubStarClicked = true
@@ -654,6 +698,17 @@ struct AppConfigTests {
         #expect(decoded.customLLMAPIKey == "custom-key")
         #expect(decoded.customLLMModel == "custom-model")
         #expect(decoded.customLLMFormat == "anthropic")
+        #expect(decoded.postProcessorBackend == "openrouter")
+        #expect(decoded.postProcessorChatGPTModel == "gpt-5.4-mini")
+        #expect(decoded.postProcessorOpenAIModel == "gpt-5.4-mini")
+        #expect(decoded.postProcessorOpenRouterModel == "openrouter/test-model")
+        #expect(decoded.postProcessorOllamaModel == "qwen3.5")
+        #expect(decoded.postProcessorLMStudioModel == "lmstudio-loaded")
+        #expect(decoded.postProcessorCustomLLMModel == "custom-cleanup")
+        #expect(decoded.activeTranscriptCleanupPromptId == "cleanup_custom_1")
+        #expect(decoded.customTranscriptCleanupPrompts.count == 1)
+        #expect(decoded.customTranscriptCleanupPrompts.first?.name == "Strict Dictation")
+        #expect(decoded.postProcessorSystemPrompt == "Preserve labels and quotes.")
         #expect(decoded.contributionPromptNextWordCount == 31_000)
         #expect(decoded.contributionPromptNextMeetingCount == 75)
         #expect(decoded.contributionGitHubStarClicked == true)
@@ -717,6 +772,15 @@ struct AppConfigTests {
         #expect(json["custom_llm_api_key"] != nil)
         #expect(json["custom_llm_model"] != nil)
         #expect(json["custom_llm_format"] != nil)
+        #expect(json["post_processor_backend"] != nil)
+        #expect(json["post_processor_chatgpt_model"] != nil)
+        #expect(json["post_processor_openai_model"] != nil)
+        #expect(json["post_processor_openrouter_model"] != nil)
+        #expect(json["post_processor_ollama_model"] != nil)
+        #expect(json["post_processor_lmstudio_model"] != nil)
+        #expect(json["post_processor_custom_llm_model"] != nil)
+        #expect(json["active_transcript_cleanup_prompt_id"] != nil)
+        #expect(json["custom_transcript_cleanup_prompts"] != nil)
     }
 
     @Test("decodes with missing fields using defaults")
@@ -765,6 +829,55 @@ struct AppConfigTests {
         #expect(config.customLLMAPIKey.isEmpty)
         #expect(config.customLLMModel.isEmpty)
         #expect(config.customLLMFormat == "openai")
+        #expect(config.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
+        #expect(config.activeTranscriptCleanupPromptId == TranscriptCleanupPrompts.defaultID)
+        #expect(config.customTranscriptCleanupPrompts.isEmpty)
+    }
+
+    @Test("unknown cleanup backend resolves to local")
+    func unknownCleanupBackendResolvesToLocal() throws {
+        let json = """
+        {
+          "post_processor_backend": "future_provider"
+        }
+        """
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
+        #expect(TranscriptCleanupBackendOption.resolved(config.postProcessorBackend) == .local)
+    }
+
+    @Test("missing cleanup prompt preset falls back to built-in default")
+    func missingCleanupPromptPresetFallsBackToDefault() throws {
+        let json = """
+        {
+          "active_transcript_cleanup_prompt_id": "deleted-preset",
+          "post_processor_system_prompt": "Legacy user-edited cleanup prompt"
+        }
+        """
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.activeTranscriptCleanupPromptId == TranscriptCleanupPrompts.defaultID)
+        #expect(config.postProcessorSystemPrompt == "Legacy user-edited cleanup prompt")
+        #expect(
+            TranscriptCleanupPrompts
+                .resolve(id: config.activeTranscriptCleanupPromptId, custom: config.customTranscriptCleanupPrompts)
+                .prompt == PostProcessorOption.defaultSystemPrompt
+        )
+    }
+
+    @Test("unsupported ChatGPT model selections fall back to default")
+    func unsupportedChatGPTModelSelectionsFallBackToDefault() throws {
+        let json = """
+        {
+          "chatgpt_model": "chat-latest",
+          "post_processor_chatgpt_model": "gpt-5.4-nano"
+        }
+        """
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.chatGPTModel.isEmpty)
+        #expect(config.postProcessorChatGPTModel.isEmpty)
     }
 
     @Test("legacy completed onboarding enables meetings when use case is missing")

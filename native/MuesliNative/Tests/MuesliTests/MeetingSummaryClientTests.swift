@@ -94,6 +94,70 @@ struct MeetingSummaryClientTests {
         #expect(prompt.contains("- User typed decision"))
     }
 
+    @Test("ChatGPT WHAM parser reads top-level output text")
+    func chatGPTWHAMParserReadsTopLevelOutputText() {
+        let payload: [String: Any] = [
+            "output_text": "Cleaned dictation text",
+        ]
+
+        #expect(ChatGPTResponsesClient.extractOutputText(from: payload) == "Cleaned dictation text")
+    }
+
+    @Test("ChatGPT WHAM parser reads streaming deltas")
+    func chatGPTWHAMParserReadsStreamingDeltas() {
+        let payload: [String: Any] = [
+            "type": "response.output_text.delta",
+            "delta": "streamed text",
+        ]
+
+        #expect(ChatGPTResponsesClient.extractOutputTextDelta(from: payload) == "streamed text")
+    }
+
+    @Test("ChatGPT WHAM parser reads nested final response payload")
+    func chatGPTWHAMParserReadsNestedFinalResponsePayload() {
+        let payload: [String: Any] = [
+            "type": "response.completed",
+            "response": [
+                "output": [
+                    [
+                        "content": [
+                            [
+                                "type": "output_text",
+                                "text": [
+                                    "value": "Nested final response text",
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ]
+
+        #expect(ChatGPTResponsesClient.extractOutputText(from: payload) == "Nested final response text")
+    }
+
+    @Test("ChatGPT WHAM parser reads output content text")
+    func chatGPTWHAMParserReadsOutputContentText() {
+        let payload: [String: Any] = [
+            "output": [
+                [
+                    "content": [
+                        [
+                            "type": "output_text",
+                            "text": "Part one ",
+                        ],
+                        [
+                            "type": "output_text",
+                            "text": "part two",
+                        ],
+                    ],
+                ],
+            ],
+        ]
+
+        #expect(ChatGPTResponsesClient.extractOutputText(from: payload) == "Part one part two")
+    }
+
     @Test("final notes retain manual notes verbatim")
     func finalNotesRetainManualNotesVerbatim() {
         let result = MeetingSummaryClient.notesByRetainingManualNotes(
