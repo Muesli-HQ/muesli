@@ -1861,9 +1861,9 @@ struct ComputerUsePlannerRuntimeTests {
         #expect(executeCalls == 1)
     }
 
-    @Test("target mismatch blocks finish")
+    @Test("target mismatch allows finish")
     @MainActor
-    func targetMismatchBlocksFinish() async {
+    func targetMismatchAllowsFinish() async {
         let runtime = ComputerUsePlannerRuntime(
             config: AppConfig(),
             observe: { _, _, _ in
@@ -1881,10 +1881,6 @@ struct ComputerUsePlannerRuntimeTests {
                 switch request.step {
                 case 1:
                     return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish, reason: "done"))
-                case 2:
-                    #expect(request.priorOutcomes.last?.status == "target_mismatch")
-                    #expect(request.priorOutcomes.last?.message.contains("Cannot run finish") == true)
-                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .fail, reason: "Need matched window before finish."))
                 default:
                     Issue.record("unexpected planner step \(request.step)")
                     return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .fail, reason: "Unexpected step."))
@@ -1895,8 +1891,8 @@ struct ComputerUsePlannerRuntimeTests {
 
         let result = await runtime.run(command: "finish target")
 
-        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.failed)
-        #expect(result.message == "Need matched window before finish.")
+        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.done)
+        #expect(result.message == "done")
     }
 
     @Test("text action blocks finish when screenshot was not OCR verified")

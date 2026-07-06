@@ -1267,7 +1267,7 @@ final class ComputerUsePlannerRuntime {
     }
 
     private func requiresMatchedWindow(for tool: ComputerUseToolName) -> Bool {
-        if tool == .fail {
+        if tool == .finish || tool == .fail {
             return false
         }
         return ComputerUseToolRegistry.executionContract(for: tool).requiresMatchedVisualTarget
