@@ -54,6 +54,7 @@ final class ComputerUsePlannerRuntime {
         .scroll,
         .openNewBrowserTab,
         .navigateActiveBrowserTab,
+        .launchApp,
         .finish,
         .fail,
     ]
@@ -317,14 +318,15 @@ final class ComputerUsePlannerRuntime {
                     let details = unverifiedTextWrites
                         .map { "\($0.toolSummary) from step \($0.step)" }
                         .joined(separator: "; ")
-                    let warning = "Finish accepted with unverified text evidence: \(details). The planner chose to finish without focused/selected text or model-requested OCR confirming every write."
+                    let warning = "Finish blocked because text write evidence is unverified: \(details). Refresh state, use recognize_screenshot_text if visible text is needed, or fail with the reason if the write cannot be confirmed."
                     traceEvents.append(traceEvent(
-                        kind: "finish_warning",
-                        title: "Finish warning",
+                        kind: "failed",
+                        title: "Text write unverified",
                         body: warning,
-                        status: "warning",
+                        status: "failed",
                         step: step
                     ))
+                    return .init(status: .failed, message: warning, traceEvents: traceEvents)
                 }
                 onStatus("Done")
                 if finishIndicatesFailure(message) {
@@ -387,13 +389,13 @@ final class ComputerUsePlannerRuntime {
                         observation: beforeObservation,
                         delta: nil
                     ))
-                    traceEvents.append(traceEvent(kind: "failed", title: "Failed", body: result.message, status: "failed", step: step))
-                    return .init(status: .failed, message: result.message, traceEvents: traceEvents)
+                    traceEvents.append(traceEvent(kind: "failed", title: "Failed", body: outcomeMessage, status: "failed", step: step))
+                    return .init(status: .failed, message: outcomeMessage, traceEvents: traceEvents)
                 }
                 onStatus("Observing screen")
                 observation = observe(registry, true, currentTarget)
                 traceEvents.append(observationEvent(observation, step: step, currentTarget: currentTarget))
-                let feedback = observationToolFeedback(
+                let observationFeedback = observationToolFeedback(
                     before: beforeObservation,
                     after: observation,
                     toolCall: toolCall,
@@ -404,36 +406,36 @@ final class ComputerUsePlannerRuntime {
                     step: step,
                     toolCall: toolCall,
                     result: result,
-                    message: feedback.message,
+                    message: observationFeedback.message,
                     observation: observation,
                     delta: nil
                 ))
-                if let feedback = readOnlyOrientationLoopFeedback(
+                if let orientationFeedback = readOnlyOrientationLoopFeedback(
                     toolCall: toolCall,
                     observation: observation,
                     streak: &readOnlyOrientationStreak
                 ) {
-                    if !feedback.shouldStop {
+                    if !orientationFeedback.shouldStop {
                         forceActionOnlyTools = true
                     }
                     priorResults.append(readOnlyOrientationOutcome(
                         step: step,
                         toolCall: toolCall,
-                        message: feedback.message,
+                        message: orientationFeedback.message,
                         observation: observation
                     ))
                     traceEvents.append(traceEvent(
-                        kind: feedback.shouldStop ? "no_progress" : "planner_repair",
-                        title: feedback.shouldStop ? "No progress" : "Action required",
-                        body: feedback.message,
-                        status: feedback.shouldStop ? "no_progress" : "repair",
+                        kind: orientationFeedback.shouldStop ? "no_progress" : "planner_repair",
+                        title: orientationFeedback.shouldStop ? "No progress" : "Action required",
+                        body: orientationFeedback.message,
+                        status: orientationFeedback.shouldStop ? "no_progress" : "repair",
                         step: step
                     ))
-                    if feedback.shouldStop {
-                        return .init(status: .noProgress, message: feedback.message, traceEvents: traceEvents)
+                    if orientationFeedback.shouldStop {
+                        return .init(status: .noProgress, message: orientationFeedback.message, traceEvents: traceEvents)
                     }
                 }
-                if let blocked = feedback.blocked {
+                if let blocked = observationFeedback.blocked {
                     traceEvents.append(traceEvent(kind: "no_progress", title: "No progress", body: blocked, status: "no_progress", step: step))
                     return .init(status: .noProgress, message: blocked, traceEvents: traceEvents)
                 }
@@ -505,6 +507,9 @@ final class ComputerUsePlannerRuntime {
                         observation: observation,
                         streak: &readOnlyOrientationStreak
                     ) {
+                        if !feedback.shouldStop {
+                            forceActionOnlyTools = true
+                        }
                         priorResults.append(readOnlyOrientationOutcome(
                             step: step,
                             toolCall: toolCall,

@@ -177,7 +177,11 @@ enum ComputerUseClickDriver {
                 processID: processID,
                 windowID: windowID,
                 button: request.button == .right ? .right : .left,
-                clickCount: request.clicks
+                clickCount: request.clicks,
+                useOffscreenActivationPrimer: shouldUseOffscreenActivationPrimer(
+                    processID: processID,
+                    label: request.label
+                )
             )
             let diagnostics = Diagnostics(
                 route: preferredBackgroundRoute,
@@ -297,6 +301,17 @@ enum ComputerUseClickDriver {
     private static func cleanedLabel(_ label: String?) -> String {
         let trimmed = label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? "point" : trimmed
+    }
+
+    private static func shouldUseOffscreenActivationPrimer(processID: pid_t, label: String?) -> Bool {
+        guard let bundleID = NSRunningApplication(processIdentifier: processID)?.bundleIdentifier,
+              bundleID == "com.google.Chrome"
+        else { return false }
+        let normalizedLabel = ComputerUseElementCandidate.normalizedText(label ?? "")
+        return normalizedLabel.contains("youtube")
+            || normalizedLabel.contains("video")
+            || normalizedLabel.contains("media")
+            || normalizedLabel.contains("play")
     }
 
     private static func axBool(_ element: AXUIElement, _ attribute: String) -> Bool? {

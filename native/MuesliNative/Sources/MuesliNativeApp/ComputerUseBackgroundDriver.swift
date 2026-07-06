@@ -10,6 +10,8 @@ enum ComputerUseBackgroundDriver {
         case right
     }
 
+    static var focusWithoutRaiseForTests: ((pid_t, CGWindowID) -> Bool)?
+
     @discardableResult
     static func postKeyEvent(_ event: CGEvent, to processID: pid_t, attachAuthMessage: Bool = true) -> Bool {
         if SkyLightBridge.postToPid(processID, event: event, attachAuthMessage: attachAuthMessage) {
@@ -22,6 +24,9 @@ enum ComputerUseBackgroundDriver {
     @discardableResult
     static func focusWithoutRaise(processID: pid_t, windowID: CGWindowID?) -> Bool {
         guard let windowID, windowID > 0 else { return false }
+        if let focusWithoutRaiseForTests {
+            return focusWithoutRaiseForTests(processID, windowID)
+        }
         return FocusWithoutRaise.activate(targetPID: processID, windowID: windowID)
     }
 
@@ -31,7 +36,8 @@ enum ComputerUseBackgroundDriver {
         processID: pid_t,
         windowID: CGWindowID?,
         button: MouseButton = .left,
-        clickCount: Int = 1
+        clickCount: Int = 1,
+        useOffscreenActivationPrimer: Bool = false
     ) -> Bool {
         let clampedCount = max(1, min(clickCount, 2))
         if let windowID, windowID > 0 {
@@ -50,8 +56,6 @@ enum ComputerUseBackgroundDriver {
             )
         }
 
-        // Chromium-style primer: a moved event plus an off-screen click opens
-        // the renderer user-activation gate without hitting page content.
         _ = postMouseMove(
             at: point,
             windowLocalPoint: windowLocalPoint(point, windowID: windowID),
@@ -59,16 +63,21 @@ enum ComputerUseBackgroundDriver {
             windowID: windowID
         )
         usleep(15_000)
-        let offscreen = CGPoint(x: -1, y: -1)
-        _ = postMousePair(
-            at: offscreen,
-            windowLocalPoint: offscreen,
-            processID: processID,
-            windowID: windowID,
-            type: (.leftMouseDown, .leftMouseUp),
-            clickState: 1
-        )
-        usleep(100_000)
+        if useOffscreenActivationPrimer {
+            // Chromium-style primer: an off-screen click can open the renderer
+            // user-activation gate. Keep it opt-in so one model click maps to
+            // one delivered click for generic apps.
+            let offscreen = CGPoint(x: -1, y: -1)
+            _ = postMousePair(
+                at: offscreen,
+                windowLocalPoint: offscreen,
+                processID: processID,
+                windowID: windowID,
+                type: (.leftMouseDown, .leftMouseUp),
+                clickState: 1
+            )
+            usleep(100_000)
+        }
 
         var ok = true
         for index in 1...clampedCount {

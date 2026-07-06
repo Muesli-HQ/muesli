@@ -203,7 +203,19 @@ enum ComputerUseBrowserAutomation {
     private static func openNewTabInBackground(processID: pid_t, windowID: CGWindowID?) async -> ComputerUseExecutionResult {
         let priorFrontmost = NSWorkspace.shared.frontmostApplication
         if let windowID {
-            _ = ComputerUseBackgroundDriver.focusWithoutRaise(processID: processID, windowID: windowID)
+            guard ComputerUseBackgroundDriver.focusWithoutRaise(processID: processID, windowID: windowID) else {
+                return .failed(
+                    "Could not focus target browser window_id \(windowID) without raising it; quiet new-tab creation was not posted.",
+                    transaction: browserTransaction(
+                        path: "browser_background_cmd_t",
+                        posted: false,
+                        effect: .blocked,
+                        processID: Int(processID),
+                        windowID: Int(windowID),
+                        warning: "Target browser window could not be focused without raising, so Cmd-T was not posted."
+                    )
+                )
+            }
         }
         guard postKey("t", modifiers: .maskCommand, processID: processID, attachAuthMessage: false) else {
             return .failed(
@@ -242,7 +254,20 @@ enum ComputerUseBrowserAutomation {
     private static func navigateInBackground(url: String, processID: pid_t, windowID: CGWindowID?) async -> ComputerUseExecutionResult {
         let priorFrontmost = NSWorkspace.shared.frontmostApplication
         if let windowID {
-            _ = ComputerUseBackgroundDriver.focusWithoutRaise(processID: processID, windowID: windowID)
+            guard ComputerUseBackgroundDriver.focusWithoutRaise(processID: processID, windowID: windowID) else {
+                return .failed(
+                    "Could not focus target browser window_id \(windowID) without raising it; quiet navigation was not posted.",
+                    transaction: browserTransaction(
+                        path: "browser_background_cmd_l_paste_enter",
+                        posted: false,
+                        effect: .blocked,
+                        processID: Int(processID),
+                        windowID: Int(windowID),
+                        requestedURL: url,
+                        warning: "Target browser window could not be focused without raising, so navigation keys were not posted."
+                    )
+                )
+            }
         }
         guard postKey("l", modifiers: .maskCommand, processID: processID, attachAuthMessage: false) else {
             return .failed(
@@ -267,7 +292,20 @@ enum ComputerUseBrowserAutomation {
             return .failed(error.localizedDescription)
         }
         if let windowID {
-            _ = ComputerUseBackgroundDriver.focusWithoutRaise(processID: processID, windowID: windowID)
+            guard ComputerUseBackgroundDriver.focusWithoutRaise(processID: processID, windowID: windowID) else {
+                return .failed(
+                    "Target browser window_id \(windowID) lost quiet focus before URL paste; navigation was stopped.",
+                    transaction: browserTransaction(
+                        path: "browser_background_cmd_l_paste_enter",
+                        posted: false,
+                        effect: .blocked,
+                        processID: Int(processID),
+                        windowID: Int(windowID),
+                        requestedURL: url,
+                        warning: "Target browser window could not be refocused without raising before URL paste."
+                    )
+                )
+            }
         }
         PasteController.paste(text: url, processID: processID)
         restoreFrontmost(priorFrontmost, targetProcessID: processID)
@@ -279,7 +317,20 @@ enum ComputerUseBrowserAutomation {
             return .failed(error.localizedDescription)
         }
         if let windowID {
-            _ = ComputerUseBackgroundDriver.focusWithoutRaise(processID: processID, windowID: windowID)
+            guard ComputerUseBackgroundDriver.focusWithoutRaise(processID: processID, windowID: windowID) else {
+                return .failed(
+                    "Target browser window_id \(windowID) lost quiet focus before Enter; navigation was stopped.",
+                    transaction: browserTransaction(
+                        path: "browser_background_cmd_l_paste_enter",
+                        posted: false,
+                        effect: .blocked,
+                        processID: Int(processID),
+                        windowID: Int(windowID),
+                        requestedURL: url,
+                        warning: "Target browser window could not be refocused without raising before Enter."
+                    )
+                )
+            }
         }
         guard postKey("enter", processID: processID) else {
             return .failed(

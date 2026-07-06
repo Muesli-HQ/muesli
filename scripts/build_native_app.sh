@@ -155,6 +155,8 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
   <string>$APP_DISPLAY_NAME records microphone audio for dictation.</string>
   <key>NSInputMonitoringUsageDescription</key>
   <string>$APP_DISPLAY_NAME monitors keyboard events to trigger push-to-talk dictation.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>$APP_DISPLAY_NAME controls browser tabs during computer use commands.</string>
   <key>NSAudioCaptureUsageDescription</key>
   <string>$APP_DISPLAY_NAME captures system audio from other applications during meeting recordings.</string>
   <key>NSScreenCaptureUsageDescription</key>

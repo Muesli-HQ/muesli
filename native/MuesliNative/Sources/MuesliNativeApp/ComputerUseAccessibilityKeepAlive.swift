@@ -80,6 +80,9 @@ enum ComputerUseAccessibilityKeepAlive {
         var observer: AXObserver?
         guard AXObserverCreate(processID, computerUseAccessibilityNoopCallback, &observer) == .success,
               let observer else {
+            lock.lock()
+            observerPIDs.remove(processID)
+            lock.unlock()
             return false
         }
 

@@ -221,6 +221,27 @@ struct ComputerUseExecutorTests {
         #expect(capturedCommand == .navigate(url: "https://docs.new", processID: 1234, windowID: 88))
     }
 
+    @Test("quiet browser navigation fails before posting when target window cannot be focused")
+    func quietBrowserNavigationFailsBeforePostingWhenTargetWindowCannotBeFocused() async {
+        ComputerUseBackgroundDriver.focusWithoutRaiseForTests = { _, _ in false }
+        defer { ComputerUseBackgroundDriver.focusWithoutRaiseForTests = nil }
+
+        let result = await ComputerUseBrowserAutomation.navigate(
+            appBundleID: "com.google.Chrome",
+            windowIndex: nil,
+            tabIndex: nil,
+            url: "https://docs.new",
+            allowActivation: false,
+            processID: 1234,
+            windowID: 88
+        )
+
+        #expect(result.status == .failed)
+        #expect(result.message.contains("quiet navigation was not posted"))
+        #expect(result.transaction?.posted == false)
+        #expect(result.transaction?.effect == .blocked)
+    }
+
     @Test("navigate URL validates tab hints before targeting")
     func navigateURLValidatesTabHintsBeforeTargeting() {
         let script = ComputerUseBrowserAutomation.navigateScript(

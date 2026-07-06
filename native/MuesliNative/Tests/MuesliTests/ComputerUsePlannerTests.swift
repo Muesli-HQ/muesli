@@ -739,6 +739,7 @@ struct ComputerUsePlannerRuntimeTests {
                     #expect(message.contains("finish/fail"))
                     #expect(request.availableTools?.contains(.click) == true)
                     #expect(request.availableTools?.contains(.pasteText) == true)
+                    #expect(request.availableTools?.contains(.launchApp) == true)
                     #expect(request.availableTools?.contains(.finish) == true)
                     #expect(request.availableTools?.contains(.fail) == true)
                     #expect(request.availableTools?.contains(.getWindowState) == false)
@@ -775,6 +776,57 @@ struct ComputerUsePlannerRuntimeTests {
 
         #expect(result.status == ComputerUsePlannerRuntimeResult.Status.done)
         #expect(result.message == "handled repair")
+        #expect(result.traceEvents.contains { $0.kind == "planner_repair" && $0.title == "Action required" })
+    }
+
+    @Test("list-only orientation loop restricts next turn to action tools")
+    @MainActor
+    func listOnlyOrientationLoopRestrictsNextTurnToActionTools() async {
+        let runtime = ComputerUsePlannerRuntime(
+            config: AppConfig(),
+            maxSteps: 10,
+            observe: { _, _, _ in
+                Self.observation(
+                    appName: "Google Chrome",
+                    bundleID: "com.google.Chrome",
+                    processID: 40712,
+                    windowID: 93801,
+                    windowTitle: "Home / X",
+                    screenshot: Self.screenshot()
+                )
+            },
+            plan: { request in
+                if request.priorOutcomes.last?.status == "read_only_loop" {
+                    #expect(request.availableTools?.contains(.click) == true)
+                    #expect(request.availableTools?.contains(.launchApp) == true)
+                    #expect(request.availableTools?.contains(.listWindows) == false)
+                    #expect(request.availableTools?.contains(.listBrowserTabs) == false)
+                    #expect(!request.toolCatalog.contains("Tool: list_windows"))
+                    #expect(!request.toolCatalog.contains("Tool: list_browser_tabs"))
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish, reason: "handled list-only repair"))
+                }
+                if request.step.isMultiple(of: 2) {
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .listBrowserTabs, appBundleID: "com.google.Chrome"))
+                }
+                return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .listWindows, appBundleID: "com.google.Chrome"))
+            },
+            execute: { toolCall, _ in
+                switch toolCall.tool {
+                case .listWindows:
+                    return .executed("93801: Google Chrome - Home / X")
+                case .listBrowserTabs:
+                    return .executed("No browser tabs")
+                default:
+                    Issue.record("unexpected execution of \(toolCall.tool)")
+                    return .executed("unexpected")
+                }
+            }
+        )
+
+        let result = await runtime.run(command: "post a tweet")
+
+        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.done)
+        #expect(result.message == "handled list-only repair")
         #expect(result.traceEvents.contains { $0.kind == "planner_repair" && $0.title == "Action required" })
     }
 
@@ -841,9 +893,9 @@ struct ComputerUsePlannerRuntimeTests {
         #expect(result.traceEvents.contains { $0.kind == "planner_repair" && $0.title == "Planner schema repair" })
     }
 
-    @Test("ignored read-only orientation repair stops as no progress")
+    @Test("ignored read-only orientation repair rejects masked tool")
     @MainActor
-    func ignoredReadOnlyOrientationRepairStopsAsNoProgress() async {
+    func ignoredReadOnlyOrientationRepairRejectsMaskedTool() async {
         let runtime = ComputerUsePlannerRuntime(
             config: AppConfig(),
             maxSteps: 20,
@@ -866,10 +918,10 @@ struct ComputerUsePlannerRuntimeTests {
 
         let result = await runtime.run(command: "post a tweet")
 
-        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.noProgress)
-        #expect(result.message.contains("No concrete action has been taken"))
+        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.failed)
+        #expect(result.message.contains("list_windows is not available in this planner turn"))
         #expect(result.traceEvents.contains { $0.kind == "planner_repair" && $0.title == "Action required" })
-        #expect(result.traceEvents.contains { $0.kind == "no_progress" && $0.title == "No progress" })
+        #expect(result.traceEvents.contains { $0.kind == "failed" && $0.title == "Planner failed" })
     }
 
     @Test("stops after one repeated no-op tool call")
@@ -1399,9 +1451,9 @@ struct ComputerUsePlannerRuntimeTests {
         #expect(result.status == ComputerUsePlannerRuntimeResult.Status.done)
     }
 
-    @Test("pre-existing focused text leaves completion decision to planner")
+    @Test("pre-existing focused text blocks unverified finish")
     @MainActor
-    func preExistingFocusedTextLeavesCompletionDecisionToPlanner() async {
+    func preExistingFocusedTextBlocksUnverifiedFinish() async {
         let requestedText = "hello from computer use"
         let runtime = ComputerUsePlannerRuntime(
             config: AppConfig(),
@@ -1434,9 +1486,9 @@ struct ComputerUsePlannerRuntimeTests {
 
         let result = await runtime.run(command: "write hello")
 
-        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.done)
-        #expect(result.message == "done")
-        #expect(result.traceEvents.contains { $0.kind == "finish_warning" })
+        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.failed)
+        #expect(result.message.contains("Finish blocked because text write evidence is unverified"))
+        #expect(result.traceEvents.contains { $0.title == "Text write unverified" })
     }
 
     @Test("post-only OCR can verify text absent from pre-action visible evidence")
@@ -1567,9 +1619,9 @@ struct ComputerUsePlannerRuntimeTests {
         #expect(result.message == "done")
     }
 
-    @Test("post-only OCR uncertainty is warning-only when planner finishes")
+    @Test("post-only OCR uncertainty blocks unverified finish")
     @MainActor
-    func postOnlyOCRUncertaintyIsWarningOnlyWhenPlannerFinishes() async {
+    func postOnlyOCRUncertaintyBlocksUnverifiedFinish() async {
         let requestedText = "hello from computer use"
         let runtime = ComputerUsePlannerRuntime(
             config: AppConfig(),
@@ -1604,14 +1656,14 @@ struct ComputerUsePlannerRuntimeTests {
 
         let result = await runtime.run(command: "write hello")
 
-        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.done)
-        #expect(result.message == "done")
-        #expect(result.traceEvents.contains { $0.kind == "finish_warning" })
+        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.failed)
+        #expect(result.message.contains("Finish blocked because text write evidence is unverified"))
+        #expect(result.traceEvents.contains { $0.title == "Text write unverified" })
     }
 
-    @Test("unrelated element text leaves completion decision to planner")
+    @Test("unrelated element text blocks unverified finish")
     @MainActor
-    func unrelatedElementTextLeavesCompletionDecisionToPlanner() async {
+    func unrelatedElementTextBlocksUnverifiedFinish() async {
         let requestedText = "hello from computer use"
         var observeCount = 0
         let runtime = ComputerUsePlannerRuntime(
@@ -1648,14 +1700,14 @@ struct ComputerUsePlannerRuntimeTests {
 
         let result = await runtime.run(command: "write hello")
 
-        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.done)
-        #expect(result.message == "done")
-        #expect(result.traceEvents.contains { $0.kind == "finish_warning" })
+        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.failed)
+        #expect(result.message.contains("Finish blocked because text write evidence is unverified"))
+        #expect(result.traceEvents.contains { $0.title == "Text write unverified" })
     }
 
-    @Test("later verified text write does not block finish for earlier pending write")
+    @Test("later verified text write does not hide earlier pending write")
     @MainActor
-    func laterVerifiedTextWriteDoesNotBlockFinishForEarlierPendingWrite() async {
+    func laterVerifiedTextWriteDoesNotHideEarlierPendingWrite() async {
         var observeCount = 0
         let runtime = ComputerUsePlannerRuntime(
             config: AppConfig(),
@@ -1701,9 +1753,9 @@ struct ComputerUsePlannerRuntimeTests {
 
         let result = await runtime.run(command: "write two snippets")
 
-        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.done)
-        #expect(result.message == "done")
-        #expect(result.traceEvents.contains { $0.kind == "finish_warning" && $0.body.contains("step 1") })
+        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.failed)
+        #expect(result.message.contains("Finish blocked because text write evidence is unverified"))
+        #expect(result.message.contains("step 1"))
     }
 
     @Test("target mismatch blocks current-window mutation")
@@ -1847,9 +1899,9 @@ struct ComputerUsePlannerRuntimeTests {
         #expect(result.message == "Need matched window before finish.")
     }
 
-    @Test("text action leaves screenshot completion decision to planner")
+    @Test("text action blocks finish when screenshot was not OCR verified")
     @MainActor
-    func textActionLeavesScreenshotCompletionDecisionToPlanner() async {
+    func textActionBlocksFinishWhenScreenshotWasNotOCRVerified() async {
         let requestedText = """
         Computer Use as the Future of Human-Computer Interaction
 
@@ -1890,8 +1942,8 @@ struct ComputerUsePlannerRuntimeTests {
 
         let result = await runtime.run(command: "write about computer use")
 
-        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.done)
-        #expect(result.traceEvents.contains { $0.kind == "finish_warning" })
+        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.failed)
+        #expect(result.message.contains("Finish blocked because text write evidence is unverified"))
     }
 
     @Test("runtime exposes screenshot OCR text after OCR tool")
@@ -1992,9 +2044,9 @@ struct ComputerUsePlannerRuntimeTests {
         #expect(result.status == ComputerUsePlannerRuntimeResult.Status.done)
     }
 
-    @Test("text action UI change without requested text allows planner finish")
+    @Test("text action UI change without requested text blocks unverified finish")
     @MainActor
-    func textActionUIChangeWithoutRequestedTextAllowsPlannerFinish() async {
+    func textActionUIChangeWithoutRequestedTextBlocksUnverifiedFinish() async {
         var observeCount = 0
         let runtime = ComputerUsePlannerRuntime(
             config: AppConfig(),
@@ -2024,9 +2076,9 @@ struct ComputerUsePlannerRuntimeTests {
 
         let result = await runtime.run(command: "write hello")
 
-        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.done)
-        #expect(result.message == "done")
-        #expect(result.traceEvents.contains { $0.kind == "finish_warning" })
+        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.failed)
+        #expect(result.message.contains("Finish blocked because text write evidence is unverified"))
+        #expect(result.traceEvents.contains { $0.title == "Text write unverified" })
     }
 
     @Test("changed action clears previous unchanged action counts")
