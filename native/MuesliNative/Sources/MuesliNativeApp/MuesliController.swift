@@ -6921,13 +6921,15 @@ final class MuesliController: NSObject {
             }
             if let currentSessionID = computerUseAudioSessionManager.currentSessionID,
                currentSessionID != eventSessionID {
-                fputs("[cua] discarding superseded stopped wav while a newer CUA session is active\n", stderr)
+                fputs("[cua] transcribing stopped wav with shared UI updates suppressed because a newer CUA session is active\n", stderr)
+                let startedAt = pendingComputerUseStopStartedAt ?? Date()
                 pendingComputerUseStopSessionID = nil
                 pendingComputerUseStopStartedAt = nil
-                if let wavURL {
-                    fputs("[cua] cleaned up superseded wav: \(wavURL.lastPathComponent)\n", stderr)
-                    try? FileManager.default.removeItem(at: wavURL)
-                }
+                finishComputerUseAudioStop(
+                    wavURL: wavURL,
+                    startedAt: startedAt,
+                    allowSharedStateUpdates: false
+                )
                 break
             }
             let startedAt = pendingComputerUseStopStartedAt ?? computerUseCommandStartedAt ?? Date()

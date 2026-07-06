@@ -242,6 +242,53 @@ struct ComputerUseExecutorTests {
         #expect(result.transaction?.effect == .blocked)
     }
 
+    @Test("quiet press key fails before posting when target window cannot be focused")
+    @MainActor
+    func quietPressKeyFailsBeforePostingWhenTargetWindowCannotBeFocused() async {
+        ComputerUseBackgroundDriver.focusWithoutRaiseForTests = { _, _ in false }
+        defer { ComputerUseBackgroundDriver.focusWithoutRaiseForTests = nil }
+
+        let result = await ComputerUseToolExecutor.execute(
+            ComputerUseToolCall(
+                tool: .pressKey,
+                processID: 1234,
+                windowID: 88,
+                key: "enter"
+            ),
+            registry: nil,
+            interactionMode: .quiet
+        )
+
+        #expect(result.status == .failed)
+        #expect(result.message.contains("key was not posted"))
+        #expect(result.transaction?.posted == false)
+        #expect(result.transaction?.effect == .blocked)
+    }
+
+    @Test("quiet scroll fails before posting when target window cannot be focused")
+    @MainActor
+    func quietScrollFailsBeforePostingWhenTargetWindowCannotBeFocused() async {
+        ComputerUseBackgroundDriver.focusWithoutRaiseForTests = { _, _ in false }
+        defer { ComputerUseBackgroundDriver.focusWithoutRaiseForTests = nil }
+
+        let result = await ComputerUseToolExecutor.execute(
+            ComputerUseToolCall(
+                tool: .scroll,
+                processID: 1234,
+                windowID: 88,
+                direction: .down,
+                pages: 1
+            ),
+            registry: nil,
+            interactionMode: .quiet
+        )
+
+        #expect(result.status == .failed)
+        #expect(result.message.contains("scroll was not posted"))
+        #expect(result.transaction?.posted == false)
+        #expect(result.transaction?.effect == .blocked)
+    }
+
     @Test("navigate URL validates tab hints before targeting")
     func navigateURLValidatesTabHintsBeforeTargeting() {
         let script = ComputerUseBrowserAutomation.navigateScript(

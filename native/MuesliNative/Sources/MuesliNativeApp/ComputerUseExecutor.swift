@@ -496,9 +496,39 @@ enum ComputerUseToolExecutor {
            let resolvedProcessID,
            let windowID = toolCall.windowID,
            windowID > 0 {
-            _ = ComputerUseBackgroundDriver.focusWithoutRaise(
+            guard ComputerUseBackgroundDriver.focusWithoutRaise(
                 processID: resolvedProcessID,
                 windowID: CGWindowID(windowID)
+            ) else {
+                return .failed(
+                    "Could not focus target window \(windowID) without raising it; key was not posted. Refresh state before pressing keys.",
+                    transaction: ComputerUseActionTransaction(
+                        path: "pid_key_events",
+                        posted: false,
+                        verified: false,
+                        effect: .blocked,
+                        targetStable: false,
+                        processID: Int(resolvedProcessID),
+                        windowID: windowID,
+                        escalationHint: "Refresh target state and retry with the current process_id/window_id, or switch Computer Use to direct control.",
+                        warning: "Quiet key dispatch was blocked before posting because the target window could not be focused."
+                    )
+                )
+            }
+        } else if allowBackgroundDispatch, let resolvedProcessID {
+            return .failed(
+                "Quiet key dispatch requires window_id with process_id \(resolvedProcessID) so the key is scoped to a specific window.",
+                transaction: ComputerUseActionTransaction(
+                    path: "pid_key_events",
+                    posted: false,
+                    verified: false,
+                    effect: .blocked,
+                    targetStable: false,
+                    processID: Int(resolvedProcessID),
+                    windowID: toolCall.windowID,
+                    escalationHint: "Refresh target state and retry with process_id and window_id from the latest observation.",
+                    warning: "Quiet key dispatch was blocked before posting because window_id was missing."
+                )
             )
         }
         let flags = cgFlags(for: command.modifiers)
@@ -704,8 +734,37 @@ enum ComputerUseToolExecutor {
         processID: pid_t,
         windowID: CGWindowID?
     ) -> ComputerUseExecutionResult {
-        if let windowID {
-            _ = ComputerUseBackgroundDriver.focusWithoutRaise(processID: processID, windowID: windowID)
+        guard let windowID, windowID > 0 else {
+            return .failed(
+                "Background scroll requires window_id so the scroll key is scoped to a specific window.",
+                transaction: ComputerUseActionTransaction(
+                    path: "pid_key_scroll",
+                    posted: false,
+                    verified: false,
+                    effect: .blocked,
+                    targetStable: false,
+                    processID: Int(processID),
+                    windowID: windowID.map(Int.init),
+                    escalationHint: "Refresh target state and retry with process_id/window_id from the latest observation.",
+                    warning: "Background scroll was blocked before posting because window_id was missing."
+                )
+            )
+        }
+        guard ComputerUseBackgroundDriver.focusWithoutRaise(processID: processID, windowID: windowID) else {
+            return .failed(
+                "Could not focus target window \(windowID) without raising it; scroll was not posted.",
+                transaction: ComputerUseActionTransaction(
+                    path: "pid_key_scroll",
+                    posted: false,
+                    verified: false,
+                    effect: .blocked,
+                    targetStable: false,
+                    processID: Int(processID),
+                    windowID: Int(windowID),
+                    escalationHint: "Refresh target state and retry with the current process_id/window_id, or switch Computer Use to direct control.",
+                    warning: "Background scroll was blocked before posting because the target window could not be focused."
+                )
+            )
         }
         let repeats = max(1, min(8, Int(pages.rounded(.up))))
         let key = backgroundScrollKey(direction: direction, pages: pages)
@@ -720,7 +779,7 @@ enum ComputerUseToolExecutor {
                         effect: .blocked,
                         targetStable: true,
                         processID: Int(processID),
-                        windowID: windowID.map(Int.init),
+                        windowID: Int(windowID),
                         escalationHint: "Refresh target state and retry with a valid process_id/window_id or use direct-control scroll.",
                         warning: "Scroll key was not posted."
                     )
@@ -736,7 +795,7 @@ enum ComputerUseToolExecutor {
                 effect: .unverifiable,
                 targetStable: true,
                 processID: Int(processID),
-                windowID: windowID.map(Int.init),
+                windowID: Int(windowID),
                 escalationHint: "Inspect the post-action screenshot/AX state; if the viewport did not move, choose another scroll target or route.",
                 warning: "Scroll keys were posted, but this does not prove the viewport consumed them."
             )
@@ -1120,9 +1179,7 @@ enum ComputerUseToolExecutor {
             allowClickFallback: allowAppActivation
         ) {
             if case let .failure(message) = elementResult {
-                if !backgroundTextEntry || explicitElement == nil {
-                    return .failed(message)
-                }
+                return .failed(message)
             }
             if case .cancelled = elementResult {
                 return .cancelled()
@@ -1220,9 +1277,37 @@ enum ComputerUseToolExecutor {
            backgroundTextEntry,
            let windowID = toolCall.windowID,
            windowID > 0 {
-            _ = ComputerUseBackgroundDriver.focusWithoutRaise(
+            guard ComputerUseBackgroundDriver.focusWithoutRaise(
                 processID: processID,
                 windowID: CGWindowID(windowID)
+            ) else {
+                return .failed(
+                    "Could not focus target window \(windowID) without raising it; text was not posted.",
+                    transaction: textEntryTransaction(
+                        path: mode.transactionPath,
+                        posted: false,
+                        text: text,
+                        toolCall: toolCall,
+                        processID: processID,
+                        effect: .blocked,
+                        targetStable: false,
+                        warning: "Quiet text entry was blocked before posting because the target window could not be focused."
+                    )
+                )
+            }
+        } else if backgroundTextEntry, let processID {
+            return .failed(
+                "Quiet text entry requires window_id with process_id \(processID) before fallback typing or paste can be posted.",
+                transaction: textEntryTransaction(
+                    path: mode.transactionPath,
+                    posted: false,
+                    text: text,
+                    toolCall: toolCall,
+                    processID: processID,
+                    effect: .blocked,
+                    targetStable: false,
+                    warning: "Quiet text entry was blocked before posting because window_id was missing."
+                )
             )
         }
         if backgroundTextEntry,
@@ -1252,7 +1337,7 @@ enum ComputerUseToolExecutor {
         }
         switch mode {
         case .keyboard:
-            if !backgroundTextEntry,
+            if (!backgroundTextEntry || explicitElement != nil),
                let failure = validateFocusedTextEntryFallbackTarget(targetElement, app: app, mode: mode) {
                 return failure
             }
@@ -1265,7 +1350,7 @@ enum ComputerUseToolExecutor {
                 return .failed(error.localizedDescription)
             }
         case .paste:
-            if !backgroundTextEntry,
+            if (!backgroundTextEntry || explicitElement != nil),
                let failure = validateFocusedTextEntryFallbackTarget(targetElement, app: app, mode: mode) {
                 return failure
             }
@@ -1274,7 +1359,8 @@ enum ComputerUseToolExecutor {
                 text: text,
                 processID: processID,
                 beforePasteAction: {
-                    guard backgroundTextEntry || validateFocusedTextEntryFallbackTarget(targetElement, app: app, mode: mode) == nil else {
+                    guard (backgroundTextEntry && explicitElement == nil)
+                        || validateFocusedTextEntryFallbackTarget(targetElement, app: app, mode: mode) == nil else {
                         return false
                     }
                     pasteWasPosted = true
@@ -1321,14 +1407,16 @@ enum ComputerUseToolExecutor {
         text: String,
         toolCall: ComputerUseToolCall,
         processID: pid_t?,
-        effect: ComputerUseActionEffect
+        effect: ComputerUseActionEffect,
+        targetStable: Bool = true,
+        warning: String? = nil
     ) -> ComputerUseActionTransaction {
         ComputerUseActionTransaction(
             path: path,
             posted: posted,
             verified: false,
             effect: effect,
-            targetStable: true,
+            targetStable: targetStable,
             processID: processID.map(Int.init),
             windowID: toolCall.windowID,
             elementID: toolCall.elementID,
@@ -1337,9 +1425,9 @@ enum ComputerUseToolExecutor {
             escalationHint: posted
                 ? "Inspect the post-action screenshot/AX state; if the text is absent, partial, or duplicated, refocus the editable target and retry paste_text."
                 : "Refresh target state and choose the editable field again before retrying text entry.",
-            warning: posted
+            warning: warning ?? (posted
                 ? "Text input was posted, but this path cannot prove the web/editor surface consumed it."
-                : "Text input was not posted."
+                : "Text input was not posted.")
         )
     }
 
