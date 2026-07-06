@@ -6086,6 +6086,7 @@ final class MuesliController: NSObject {
     }
 
     private func handleComputerUsePrepare() {
+        guard ensureComputerUseMeetingPipelineAvailable() else { return }
         guard canPrepareComputerUseCommand else { return }
         guard ensureComputerUseScreenRecordingPermission() else { return }
         fputs("[cua] prepare\n", stderr)
@@ -6101,6 +6102,7 @@ final class MuesliController: NSObject {
     }
 
     private func handleComputerUseStart() {
+        guard ensureComputerUseMeetingPipelineAvailable() else { return }
         guard canStartComputerUseCommand else { return }
         guard ensureComputerUseScreenRecordingPermission() else {
             computerUseHotkeyMonitor.cancelToggleMode()
@@ -6125,8 +6127,9 @@ final class MuesliController: NSObject {
     }
 
     private func handleComputerUseToggleStart() {
-        guard canStartComputerUseCommand else {
+        guard ensureComputerUseMeetingPipelineAvailable(), canStartComputerUseCommand else {
             computerUseHotkeyMonitor.cancelToggleMode()
+            indicator.isToggleDictation = false
             return
         }
         guard ensureComputerUseScreenRecordingPermission() else {
@@ -6297,7 +6300,7 @@ final class MuesliController: NSObject {
     }
 
     private var canPrepareComputerUseCommand: Bool {
-        !isMeetingRecording()
+        !isMeetingPipelineActiveForComputerUse
             && !isDictationTestMode
             && dictationStartedAt == nil
             && computerUseCommandStartedAt == nil
@@ -6306,12 +6309,30 @@ final class MuesliController: NSObject {
     }
 
     private var canStartComputerUseCommand: Bool {
-        !isMeetingRecording()
+        !isMeetingPipelineActiveForComputerUse
             && !isDictationTestMode
             && dictationStartedAt == nil
             && computerUseCommandStartedAt == nil
             && !isNemotron35Streaming
             && (dictationState == .idle || dictationState == .preparing)
+    }
+
+    private var isMeetingPipelineActiveForComputerUse: Bool {
+        activeMeetingSession != nil
+            || isStartingMeetingRecording
+            || isMeetingRecording()
+            || backgroundMeetingProcessingCount > 0
+    }
+
+    private func ensureComputerUseMeetingPipelineAvailable() -> Bool {
+        guard !isMeetingPipelineActiveForComputerUse else {
+            fputs("[cua] blocked start: meeting transcription pipeline active\n", stderr)
+            computerUseHotkeyMonitor.cancelToggleMode()
+            indicator.isToggleDictation = false
+            indicator.showWarning("Computer Use unavailable during meetings", icon: "!", duration: 4.0)
+            return false
+        }
+        return true
     }
 
     private func ensureComputerUseScreenRecordingPermission() -> Bool {

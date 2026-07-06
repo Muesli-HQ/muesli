@@ -209,7 +209,6 @@ private enum FocusWithoutRaise {
 
         let targetOK = targetPSN.withUnsafeMutableBytes { raw in
             SkyLightBridge.getProcessPSN(forWindowID: windowID, into: raw.baseAddress!)
-                || SkyLightBridge.getProcessPSN(forPID: targetPID, into: raw.baseAddress!)
         }
         guard targetOK else { return false }
 
