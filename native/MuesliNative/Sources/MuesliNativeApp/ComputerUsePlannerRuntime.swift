@@ -981,10 +981,15 @@ final class ComputerUsePlannerRuntime {
         guard ocrCount > 0 else {
             return nil
         }
-        guard let preActionOCRSampleCount = pending.preActionOCRSampleCount else {
-            return nil
+        let newOCRCount: Int
+        if let preActionOCRSampleCount = pending.preActionOCRSampleCount {
+            newOCRCount = ocrCount - preActionOCRSampleCount
+        } else {
+            guard pending.visibleEvidenceCountBefore == 0 else {
+                return nil
+            }
+            newOCRCount = ocrCount
         }
-        let newOCRCount = ocrCount - preActionOCRSampleCount
         guard newOCRCount > 0 else {
             return nil
         }

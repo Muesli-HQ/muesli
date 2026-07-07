@@ -441,7 +441,28 @@ enum ComputerUseObservationCapture {
         let windowFrame = window.flatMap(rect) ?? targetWindowFrame
         let resolvedTargetWindowID = matchedTargetWindow == nil ? nil : target?.windowID
         let windowID = resolvedTargetWindowID ?? window.flatMap(axWindowID) ?? matchedWindowID(for: app, frame: windowFrame)
-        let screenshot = includeScreenshot ? captureScreenshot(for: app, targetWindowID: windowID, fallbackFrame: windowFrame) : nil
+        let screenshot: ComputerUseScreenshotObservation?
+        if includeScreenshot {
+            if target?.windowID != nil {
+                screenshot = resolvedTargetWindowID.flatMap {
+                    captureScreenshot(
+                        for: app,
+                        targetWindowID: $0,
+                        fallbackFrame: windowFrame,
+                        allowWindowFallback: false
+                    )
+                }
+            } else {
+                screenshot = captureScreenshot(
+                    for: app,
+                    targetWindowID: windowID,
+                    fallbackFrame: windowFrame,
+                    allowWindowFallback: true
+                )
+            }
+        } else {
+            screenshot = nil
+        }
         registry.registerScreenshot(screenshot)
         let focusedElementSnapshot = focusedElementSnapshot(requiredPID: app.processIdentifier)
         let focusedElement = focusedElementSnapshot?.observation
@@ -766,7 +787,8 @@ enum ComputerUseObservationCapture {
     private static func captureScreenshot(
         for app: NSRunningApplication,
         targetWindowID: Int?,
-        fallbackFrame: CGRect?
+        fallbackFrame: CGRect?,
+        allowWindowFallback: Bool
     ) -> ComputerUseScreenshotObservation? {
         guard CGPreflightScreenCaptureAccess() else { return nil }
         let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[CFString: Any]] ?? []
@@ -779,7 +801,7 @@ enum ComputerUseObservationCapture {
         let appWindow: [CFString: Any]?
         if let targetWindowID {
             appWindow = appWindows.first { ($0[kCGWindowNumber] as? Int) == targetWindowID }
-                ?? preferredScreenshotWindow(from: appWindows, fallbackFrame: fallbackFrame)
+                ?? (allowWindowFallback ? preferredScreenshotWindow(from: appWindows, fallbackFrame: fallbackFrame) : nil)
         } else {
             appWindow = preferredScreenshotWindow(from: appWindows, fallbackFrame: fallbackFrame)
         }
@@ -798,6 +820,8 @@ enum ComputerUseObservationCapture {
            !shouldUseDisplayFallbackForScreenshot(width: image.width, height: image.height, frame: frame) {
             return screenshotObservation(image: image, frame: frame)
         }
+
+        guard allowWindowFallback else { return nil }
 
         guard let displayFrame = displayFrame(containing: fallbackFrame),
               let image = CGWindowListCreateImage(

@@ -1726,6 +1726,44 @@ struct ComputerUsePlannerRuntimeTests {
         #expect(result.message == "done")
     }
 
+    @Test("post-only OCR can verify text absent from pre-action visible evidence")
+    @MainActor
+    func postOnlyOCRCanVerifyTextAbsentFromPreActionVisibleEvidence() async {
+        let requestedText = "hello from computer use"
+        let runtime = ComputerUsePlannerRuntime(
+            config: AppConfig(),
+            observe: { _, _, _ in
+                Self.observation(screenshot: Self.screenshot(id: "after"))
+            },
+            plan: { request in
+                switch request.step {
+                case 1:
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(
+                        tool: .pasteText,
+                        text: requestedText
+                    ))
+                case 2:
+                    #expect(request.priorOutcomes.last?.verificationStatus == .unchanged)
+                    #expect(request.priorOutcomes.last?.message.contains("AX did not expose newly confirmed requested text") == true)
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .recognizeScreenshotText, screenshotID: "after"))
+                case 3:
+                    #expect(request.latestWindowState.screenshotOCRText == requestedText)
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish, reason: "done"))
+                default:
+                    Issue.record("unexpected planner step \(request.step)")
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .fail, reason: "Unexpected step."))
+                }
+            },
+            execute: { _, _ in .executed("Pasted text") },
+            recognizeScreenshotText: { _ in requestedText }
+        )
+
+        let result = await runtime.run(command: "write hello")
+
+        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.done)
+        #expect(result.message == "done")
+    }
+
     @Test("post-only OCR uncertainty blocks unverified finish")
     @MainActor
     func postOnlyOCRUncertaintyBlocksUnverifiedFinish() async {
