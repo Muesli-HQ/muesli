@@ -41,7 +41,9 @@ enum ComputerUseBackgroundDriver {
     ) -> Bool {
         let clampedCount = max(1, min(clickCount, 2))
         if let windowID, windowID > 0 {
-            _ = FocusWithoutRaise.activate(targetPID: processID, windowID: windowID)
+            guard focusWithoutRaise(processID: processID, windowID: windowID) else {
+                return false
+            }
             usleep(50_000)
         }
 

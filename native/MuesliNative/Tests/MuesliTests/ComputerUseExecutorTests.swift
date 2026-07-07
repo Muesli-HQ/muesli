@@ -423,6 +423,42 @@ struct ComputerUseExecutorTests {
         #expect(result.message.contains("window_id"))
     }
 
+    @Test("quiet coordinate click fails before posting when target window cannot be focused")
+    @MainActor
+    func quietCoordinateClickFailsBeforePostingWhenTargetWindowCannotBeFocused() async {
+        let registry = ComputerUseElementRegistry()
+        registry.registerScreenshot(ComputerUseScreenshotObservation(
+            screenshotID: "latest-shot",
+            width: 100,
+            height: 80,
+            windowFrame: ComputerUseRect(x: 10, y: 20, width: 100, height: 80),
+            scaleX: 1,
+            scaleY: 1,
+            imageDataURL: nil
+        ))
+        ComputerUseBackgroundDriver.focusWithoutRaiseForTests = { _, _ in false }
+        defer { ComputerUseBackgroundDriver.focusWithoutRaiseForTests = nil }
+
+        let result = await ComputerUseToolExecutor.execute(
+            ComputerUseToolCall(
+                tool: .clickPoint,
+                processID: 1234,
+                windowID: 88,
+                screenshotID: "latest-shot",
+                label: "Docs editor",
+                x: 20,
+                y: 30
+            ),
+            registry: registry,
+            interactionMode: .quiet
+        )
+
+        #expect(result.status == .failed)
+        #expect(result.message.contains("Background click could not be posted"))
+        #expect(result.transaction?.posted == false)
+        #expect(result.transaction?.effect == .blocked)
+    }
+
     @Test("quiet YouTube result click uses window scoped route diagnostics")
     @MainActor
     func quietYouTubeResultClickUsesWindowScopedRouteDiagnostics() async {
