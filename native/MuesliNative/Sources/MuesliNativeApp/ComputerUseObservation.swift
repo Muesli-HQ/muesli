@@ -434,7 +434,11 @@ enum ComputerUseObservationCapture {
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
         ComputerUseAccessibilityKeepAlive.assertForSnapshot(processID: app.processIdentifier, root: axApp)
         let targetWindowFrame = targetWindowFrame(for: target, app: app)
-        let matchedTargetWindow = targetWindow(in: axApp, targetFrame: targetWindowFrame)
+        let matchedTargetWindow = targetWindow(
+            in: axApp,
+            targetWindowID: target?.windowID,
+            targetFrame: targetWindowFrame
+        )
         let window = matchedTargetWindow ?? focusedWindow(in: axApp)
         let root = window ?? axApp
         let windowTitle = window.map { axString($0, kAXTitleAttribute) } ?? ""
@@ -645,12 +649,19 @@ enum ComputerUseObservationCapture {
         return (element as! AXUIElement)
     }
 
-    private static func targetWindow(in axApp: AXUIElement, targetFrame: CGRect?) -> AXUIElement? {
-        guard let targetFrame, targetFrame.width > 0, targetFrame.height > 0 else { return nil }
+    private static func targetWindow(
+        in axApp: AXUIElement,
+        targetWindowID: Int?,
+        targetFrame: CGRect?
+    ) -> AXUIElement? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &value) == .success,
               let windows = value as? [AXUIElement]
         else { return nil }
+        if let targetWindowID, targetWindowID > 0 {
+            return windows.first { axWindowID($0) == targetWindowID }
+        }
+        guard let targetFrame, targetFrame.width > 0, targetFrame.height > 0 else { return nil }
         let targetArea = targetFrame.area
         return windows
             .compactMap { window -> (AXUIElement, CGFloat)? in
