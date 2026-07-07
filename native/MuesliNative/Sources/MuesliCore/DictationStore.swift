@@ -864,6 +864,10 @@ public final class DictationStore {
         let persistedEvents = events.map { $0.redactedForPersistence() }
         let data = try encoder.encode(persistedEvents)
         let traceJSON = String(data: data, encoding: .utf8) ?? "[]"
+        let persistedFinalMessage = ComputerUseTraceEvent.persistedFinalMessage(
+            status: finalStatus,
+            message: finalMessage
+        )
 
         var existenceCheck: OpaquePointer?
         guard sqlite3_prepare_v2(
@@ -893,7 +897,7 @@ public final class DictationStore {
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, dictationID)
         sqlite3_bind_text(statement, 2, (finalStatus as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(statement, 3, (finalMessage as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 3, (persistedFinalMessage as NSString).utf8String, -1, nil)
         sqlite3_bind_text(statement, 4, (traceJSON as NSString).utf8String, -1, nil)
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)

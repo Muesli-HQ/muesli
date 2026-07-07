@@ -1210,19 +1210,19 @@ enum ComputerUseToolExecutor {
         )
         let targetElement: AXUIElement?
         if let explicitElement {
-            if isTextEntryTarget(explicitElement) {
-                if !backgroundTextEntry {
-                    guard let focusedElement,
-                          elementsAppearSame(explicitElement, focusedElement) else {
-                        return .failed("No focused editable text target: focused element no longer matches requested text target. Refresh state before using \(mode.toolName).")
-                    }
-                }
-                targetElement = explicitElement
-            } else if let focusedElement {
-                targetElement = focusedElement
-            } else {
-                return .failed("No focused editable text target: requested element is not an editable text target and no target-process text receiver is focused. Refresh state and choose an editable field before using \(mode.toolName).")
+            switch explicitTextTargetResolution(explicitElementIsEditable: isTextEntryTarget(explicitElement)) {
+            case .failure(let message):
+                return .failed(message)
+            case .success:
+                break
             }
+            if !backgroundTextEntry {
+                guard let focusedElement,
+                      elementsAppearSame(explicitElement, focusedElement) else {
+                    return .failed("No focused editable text target: focused element no longer matches requested text target. Refresh state before using \(mode.toolName).")
+                }
+            }
+            targetElement = explicitElement
         } else {
             targetElement = focusedElement
         }
@@ -2102,6 +2102,22 @@ enum ComputerUseToolExecutor {
 
     private static func isTextEntryTarget(_ element: AXUIElement) -> Bool {
         isEditableTextElement(element) || isWebEditorSurface(element)
+    }
+
+    enum ExplicitTextTargetResolution: Equatable {
+        case success
+        case failure(String)
+    }
+
+    static func explicitTextTargetResolutionForTests(explicitElementIsEditable: Bool) -> ExplicitTextTargetResolution {
+        explicitTextTargetResolution(explicitElementIsEditable: explicitElementIsEditable)
+    }
+
+    private static func explicitTextTargetResolution(explicitElementIsEditable: Bool) -> ExplicitTextTargetResolution {
+        guard explicitElementIsEditable else {
+            return .failure("No focused editable text target: requested element is not an editable text target. Refresh state and choose an editable field before using text entry.")
+        }
+        return .success
     }
 
     private static func shouldPlaceCaretBeforeBackgroundTextEntry(

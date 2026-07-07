@@ -2594,19 +2594,22 @@ struct DictationStoreTests {
         #expect(row.id == dictationID)
         #expect(row.source == "cua")
         #expect(row.computerUseTrace?.finalStatus == "done")
+        #expect(row.computerUseTrace?.finalMessage == "Computer Use completed.")
         #expect(row.computerUseTrace?.events == events.map { $0.redactedForPersistence() })
         #expect(row.computerUseTrace?.events.allSatisfy { $0.debugPayload == nil } == true)
         let persistedBodies = row.computerUseTrace?.events.map(\.body).joined(separator: "\n") ?? ""
         #expect(!persistedBodies.contains("private document text"))
+        #expect(!persistedBodies.contains("Done: open Google Chrome"))
         #expect(persistedBodies.contains("[redacted: Model output body omitted from persisted Computer Use trace]"))
         #expect(persistedBodies.contains("[redacted: Executing body omitted from persisted Computer Use trace]"))
         #expect(persistedBodies.contains("[redacted: Tool result body omitted from persisted Computer Use trace]"))
-        #expect(persistedBodies.contains("Done: open Google Chrome"))
+        #expect(persistedBodies.contains("[redacted: Final output body omitted from persisted Computer Use trace]"))
         #expect(try store.searchDictations(query: "private document text").isEmpty)
+        #expect(try store.searchDictations(query: "Done: open Google Chrome").isEmpty)
     }
 
-    @Test("searchDictations matches computer use trace text")
-    func searchDictationsMatchesComputerUseTrace() throws {
+    @Test("searchDictations does not index redacted computer use trace text")
+    func searchDictationsDoesNotIndexRedactedComputerUseTraceText() throws {
         let store = try makeStore()
         let now = Date()
         let dictationID = try store.insertDictation(
@@ -2625,10 +2628,13 @@ struct DictationStoreTests {
             ]
         )
 
-        let results = try store.searchDictations(query: "Chrome")
+        let traceResults = try store.searchDictations(query: "Chrome")
+        let commandResults = try store.searchDictations(query: "browser thing")
 
-        #expect(results.map(\.id).contains(dictationID))
-        #expect(results.first(where: { $0.id == dictationID })?.computerUseTrace?.finalStatus == "done")
+        #expect(traceResults.isEmpty)
+        #expect(commandResults.map(\.id).contains(dictationID))
+        #expect(commandResults.first(where: { $0.id == dictationID })?.computerUseTrace?.finalStatus == "done")
+        #expect(commandResults.first(where: { $0.id == dictationID })?.computerUseTrace?.finalMessage == "Computer Use completed.")
     }
 
     @Test("insertComputerUseTrace replaces existing trace atomically")
@@ -2658,8 +2664,8 @@ struct DictationStoreTests {
 
         let row = try #require(try store.dictation(id: dictationID))
         #expect(row.computerUseTrace?.finalStatus == "done")
-        #expect(row.computerUseTrace?.finalMessage == "New")
-        #expect(row.computerUseTrace?.events.map(\.body) == ["New"])
+        #expect(row.computerUseTrace?.finalMessage == "Computer Use completed.")
+        #expect(row.computerUseTrace?.events.map(\.body) == ["[redacted: Final output body omitted from persisted Computer Use trace]"])
     }
 
     @Test("deleteDictation removes computer use trace")

@@ -246,22 +246,28 @@ public struct ComputerUseTraceEvent: Identifiable, Codable, Equatable, Sendable 
         )
     }
 
-    private var bodyForPersistence: String {
-        if preservesBodyForPersistence {
-            return body
+    public static func persistedFinalMessage(status: String, message: String) -> String {
+        let normalizedStatus = status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch normalizedStatus {
+        case "done":
+            return "Computer Use completed."
+        case "failed":
+            return "Computer Use failed."
+        case "cancelled":
+            return "Computer Use cancelled."
+        case "timed_out":
+            return "Computer Use stopped after safety limit."
+        case "no_progress":
+            return "Computer Use stopped after no progress."
+        case "needs_confirmation":
+            return "Computer Use needs confirmation."
+        default:
+            return normalizedStatus.isEmpty ? "Computer Use ended." : "Computer Use ended with status: \(normalizedStatus)."
         }
-        return "[redacted: \(title) body omitted from persisted Computer Use trace]"
     }
 
-    private var preservesBodyForPersistence: Bool {
-        switch kind {
-        case "finish", "cancelled", "timed_out", "no_progress":
-            return true
-        case "failed":
-            return title == "Final output"
-        default:
-            return false
-        }
+    private var bodyForPersistence: String {
+        return "[redacted: \(title) body omitted from persisted Computer Use trace]"
     }
 }
 

@@ -31,6 +31,19 @@ struct ComputerUseExecutorTests {
         #expect(ComputerUseToolExecutor.scrollDeltas(direction: .right, pages: 1).horizontal > 0)
     }
 
+    @Test("explicit text targets must be editable")
+    @MainActor
+    func explicitTextTargetsMustBeEditable() {
+        #expect(ComputerUseToolExecutor.explicitTextTargetResolutionForTests(explicitElementIsEditable: true) == .success)
+        let result = ComputerUseToolExecutor.explicitTextTargetResolutionForTests(explicitElementIsEditable: false)
+        guard case .failure(let message) = result else {
+            Issue.record("expected explicit non-editable target to fail")
+            return
+        }
+        #expect(message.contains("requested element is not an editable text target"))
+        #expect(message.contains("Refresh state"))
+    }
+
     @Test("element click fails stale snapshot instead of falling through")
     @MainActor
     func elementClickFailsStaleSnapshot() async {
