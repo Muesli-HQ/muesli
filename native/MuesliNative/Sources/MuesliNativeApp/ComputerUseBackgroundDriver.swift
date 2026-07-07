@@ -15,11 +15,7 @@ enum ComputerUseBackgroundDriver {
 
     @discardableResult
     static func postKeyEvent(_ event: CGEvent, to processID: pid_t, attachAuthMessage: Bool = true) -> Bool {
-        if SkyLightBridge.postToPid(processID, event: event, attachAuthMessage: attachAuthMessage) {
-            return true
-        }
-        event.postToPid(processID)
-        return true
+        SkyLightBridge.postToPid(processID, event: event, attachAuthMessage: attachAuthMessage)
     }
 
     @discardableResult
@@ -112,10 +108,7 @@ enum ComputerUseBackgroundDriver {
             return false
         }
         stampMouseEvent(event, point: point, windowLocalPoint: windowLocalPoint, processID: processID, windowID: windowID, clickState: 0)
-        return SkyLightBridge.postToPid(processID, event: event, attachAuthMessage: false) || {
-            event.postToPid(processID)
-            return true
-        }()
+        return SkyLightBridge.postToPid(processID, event: event, attachAuthMessage: false)
     }
 
     private static func postMousePair(
@@ -132,11 +125,9 @@ enum ComputerUseBackgroundDriver {
         stampMouseEvent(down, point: point, windowLocalPoint: windowLocalPoint, processID: processID, windowID: windowID, clickState: clickState)
         stampMouseEvent(up, point: point, windowLocalPoint: windowLocalPoint, processID: processID, windowID: windowID, clickState: clickState)
         let downPosted = SkyLightBridge.postToPid(processID, event: down, attachAuthMessage: false)
-        if !downPosted { down.postToPid(processID) }
         usleep(1_000)
         let upPosted = SkyLightBridge.postToPid(processID, event: up, attachAuthMessage: false)
-        if !upPosted { up.postToPid(processID) }
-        return true
+        return downPosted && upPosted
     }
 
     private static func makeMouseEvent(_ type: NSEvent.EventType, at point: CGPoint, windowID: CGWindowID?, clickCount: Int) -> CGEvent? {

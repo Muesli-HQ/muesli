@@ -6387,9 +6387,10 @@ final class MuesliController: NSObject {
                   self.isCurrentComputerUseCommandTask(id: commandTaskID) else { return }
             self.presentComputerUseFloatingStatus(status)
         } observe: { registry, includeScreenshot, target in
-            ComputerUseObservationCapture.capture(
+            let includeSafeScreenshot = includeScreenshot && !self.isMeetingPipelineActiveForComputerUse
+            return ComputerUseObservationCapture.capture(
                 registry: registry,
-                includeScreenshot: includeScreenshot,
+                includeScreenshot: includeSafeScreenshot,
                 target: target,
                 allowTargetActivation: allowComputerUseTargetActivation
             )
@@ -6942,12 +6943,15 @@ final class MuesliController: NSObject {
             }
             if let currentSessionID = computerUseAudioSessionManager.currentSessionID,
                currentSessionID != eventSessionID {
-                fputs("[cua] discarding stopped wav because a newer CUA session is active\n", stderr)
+                fputs("[cua] finishing stopped wav with shared UI suppressed because a newer CUA session is active\n", stderr)
+                let startedAt = pendingComputerUseStopStartedAt ?? Date()
                 pendingComputerUseStopSessionID = nil
                 pendingComputerUseStopStartedAt = nil
-                if let wavURL {
-                    try? FileManager.default.removeItem(at: wavURL)
-                }
+                finishComputerUseAudioStop(
+                    wavURL: wavURL,
+                    startedAt: startedAt,
+                    allowSharedStateUpdates: false
+                )
                 break
             }
             let startedAt = pendingComputerUseStopStartedAt ?? computerUseCommandStartedAt ?? Date()

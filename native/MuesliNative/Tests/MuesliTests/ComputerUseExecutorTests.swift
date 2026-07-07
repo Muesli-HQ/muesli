@@ -148,8 +148,8 @@ struct ComputerUseExecutorTests {
         #expect(result.status == .executed)
     }
 
-    @Test("quiet browser tab activation requires process id")
-    func quietBrowserTabActivationRequiresProcessID() async {
+    @Test("quiet browser tab activation requires direct control")
+    func quietBrowserTabActivationRequiresDirectControl() async {
         ComputerUseBrowserAutomation.runAppleScriptForTests = { _ in
             Issue.record("Quiet browser tab activation should not use unscoped AppleScript mutation")
             return ""
@@ -164,28 +164,7 @@ struct ComputerUseExecutorTests {
         )
 
         #expect(result.status == .needsConfirmation)
-    }
-
-    @Test("quiet browser tab activation routes to target process")
-    func quietBrowserTabActivationRoutesToTargetProcess() async {
-        var capturedCommand: ComputerUseBrowserAutomation.BackgroundBrowserCommand?
-        ComputerUseBrowserAutomation.runBackgroundCommandForTests = { command in
-            capturedCommand = command
-            return .executed("background routed")
-        }
-        defer { ComputerUseBrowserAutomation.runBackgroundCommandForTests = nil }
-
-        let result = await ComputerUseBrowserAutomation.activateTab(
-            appBundleID: "com.google.Chrome",
-            windowIndex: 2,
-            tabIndex: 3,
-            allowActivation: false,
-            processID: 1234,
-            windowID: 88
-        )
-
-        #expect(result.status == .executed)
-        #expect(capturedCommand == .activateTab(processID: 1234, windowID: 88, tabIndex: 3))
+        #expect(result.message.contains("not window_id scoped"))
     }
 
     @Test("browser automation preserves cancellation")
@@ -312,26 +291,6 @@ struct ComputerUseExecutorTests {
 
         #expect(result == false)
         #expect(focusWasAttempted == false)
-    }
-
-    @Test("quiet browser tab activation fails before posting when target window cannot be focused")
-    func quietBrowserTabActivationFailsBeforePostingWhenTargetWindowCannotBeFocused() async {
-        ComputerUseBackgroundDriver.focusWithoutRaiseForTests = { _, _ in false }
-        defer { ComputerUseBackgroundDriver.focusWithoutRaiseForTests = nil }
-
-        let result = await ComputerUseBrowserAutomation.activateTab(
-            appBundleID: "com.google.Chrome",
-            windowIndex: 2,
-            tabIndex: 3,
-            allowActivation: false,
-            processID: 1234,
-            windowID: 88
-        )
-
-        #expect(result.status == .failed)
-        #expect(result.message.contains("quiet tab activation was not posted"))
-        #expect(result.transaction?.posted == false)
-        #expect(result.transaction?.effect == .blocked)
     }
 
     @Test("quiet press key fails before posting when target window cannot be focused")
