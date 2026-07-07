@@ -1532,6 +1532,49 @@ struct ComputerUsePlannerRuntimeTests {
         #expect(result.message == "done")
     }
 
+    @Test("duplicate text samples require independent evidence")
+    @MainActor
+    func duplicateTextSamplesRequireIndependentEvidence() async {
+        let sharedPrefix = "computer use is useful and exciting because it can help people move faster with context today"
+        let firstText = "\(sharedPrefix) first detail"
+        let secondText = "\(sharedPrefix) second detail"
+        var observeCount = 0
+        let runtime = ComputerUsePlannerRuntime(
+            config: AppConfig(),
+            observe: { _, _, _ in
+                observeCount += 1
+                if observeCount == 1 {
+                    return Self.observation(screenshot: Self.screenshot(id: "before"))
+                }
+                return Self.observation(screenshot: Self.screenshot(id: "after"))
+            },
+            plan: { request in
+                switch request.step {
+                case 1:
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .pasteText, text: firstText))
+                case 2:
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .pasteText, text: secondText))
+                case 3:
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .recognizeScreenshotText, screenshotID: "after"))
+                case 4:
+                    #expect(request.latestWindowState.screenshotOCRText == sharedPrefix)
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish, reason: "done"))
+                default:
+                    Issue.record("unexpected planner step \(request.step)")
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .fail, reason: "Unexpected step."))
+                }
+            },
+            execute: { _, _ in .executed("Pasted text") },
+            recognizeScreenshotText: { _ in sharedPrefix }
+        )
+
+        let result = await runtime.run(command: "write duplicate prefix twice")
+
+        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.failed)
+        #expect(result.message.contains("Finish blocked because text write evidence is unverified"))
+        #expect(result.message.contains("from step 2"))
+    }
+
     @Test("quiet mode marks non-frontmost target window as usable")
     @MainActor
     func quietModeMarksNonFrontmostTargetWindowAsUsable() async {
@@ -1807,9 +1850,9 @@ struct ComputerUsePlannerRuntimeTests {
         #expect(executeCalls == 0)
     }
 
-    @Test("target mismatch allows app scoped browser mutation")
+    @Test("target mismatch blocks app scoped browser mutation")
     @MainActor
-    func targetMismatchAllowsAppScopedBrowserMutation() async {
+    func targetMismatchBlocksAppScopedBrowserMutation() async {
         var executeCalls = 0
         var observeCalls = 0
         let runtime = ComputerUsePlannerRuntime(
@@ -1841,8 +1884,9 @@ struct ComputerUsePlannerRuntimeTests {
                     ))
                 case 2:
                     #expect(request.priorOutcomes.last?.tool == .navigateActiveBrowserTab)
-                    #expect(request.priorOutcomes.last?.status == "executed")
-                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish, reason: "navigated"))
+                    #expect(request.priorOutcomes.last?.status == "target_mismatch")
+                    #expect(request.priorOutcomes.last?.message.contains("Cannot run navigate_active_browser_tab") == true)
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .fail, reason: "Need matched window."))
                 default:
                     Issue.record("unexpected planner step \(request.step)")
                     return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .fail, reason: "Unexpected step."))
@@ -1856,14 +1900,14 @@ struct ComputerUsePlannerRuntimeTests {
 
         let result = await runtime.run(command: "open example")
 
-        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.done)
-        #expect(result.message == "navigated")
-        #expect(executeCalls == 1)
+        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.failed)
+        #expect(result.message == "Need matched window.")
+        #expect(executeCalls == 0)
     }
 
-    @Test("target mismatch allows finish")
+    @Test("target mismatch blocks finish")
     @MainActor
-    func targetMismatchAllowsFinish() async {
+    func targetMismatchBlocksFinish() async {
         let runtime = ComputerUsePlannerRuntime(
             config: AppConfig(),
             observe: { _, _, _ in
@@ -1881,6 +1925,10 @@ struct ComputerUsePlannerRuntimeTests {
                 switch request.step {
                 case 1:
                     return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish, reason: "done"))
+                case 2:
+                    #expect(request.priorOutcomes.last?.status == "target_mismatch")
+                    #expect(request.priorOutcomes.last?.message.contains("Cannot run finish") == true)
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .fail, reason: "Need matched window."))
                 default:
                     Issue.record("unexpected planner step \(request.step)")
                     return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .fail, reason: "Unexpected step."))
@@ -1891,8 +1939,8 @@ struct ComputerUsePlannerRuntimeTests {
 
         let result = await runtime.run(command: "finish target")
 
-        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.done)
-        #expect(result.message == "done")
+        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.failed)
+        #expect(result.message == "Need matched window.")
     }
 
     @Test("text action blocks finish when screenshot was not OCR verified")

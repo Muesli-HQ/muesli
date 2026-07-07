@@ -148,6 +148,7 @@ final class ComputerUsePlannerRuntime {
         var forceActionOnlyTools = false
         var screenshotOCRTextByID: [String: String] = [:]
         var pendingUnverifiedTextWrites: [PendingUnverifiedTextWrite] = []
+        var consumedTextWriteEvidenceKeys = Set<String>()
         let maxInvalidToolCallRepairs = 2
         // The harness keeps target state scoped and marks each tool with its execution
         // contract. Deeper Codex/trycua-style work still needs pid-routed pointer
@@ -179,13 +180,12 @@ final class ComputerUsePlannerRuntime {
                 for: observation,
                 screenshotOCRTextByID: &screenshotOCRTextByID
             )
-            pendingUnverifiedTextWrites.removeAll { pending in
-                unverifiedTextWriteEvidenceSource(
-                    pending,
-                    observation: observation,
-                    screenshotOCRTextByID: screenshotOCRTextByID
-                ) != nil
-            }
+            pendingUnverifiedTextWrites = unresolvedPendingUnverifiedTextWrites(
+                pendingUnverifiedTextWrites,
+                observation: observation,
+                screenshotOCRTextByID: screenshotOCRTextByID,
+                consumedEvidenceKeys: &consumedTextWriteEvidenceKeys
+            )
             let request = ComputerUsePlannerRequest(
                 command: command,
                 step: step,
@@ -307,13 +307,12 @@ final class ComputerUsePlannerRuntime {
             switch toolCall.tool {
             case .finish:
                 let message = toolCall.reason?.isEmpty == false ? toolCall.reason! : "Done"
-                let unverifiedTextWrites = pendingUnverifiedTextWrites.filter { pending in
-                    unverifiedTextWriteEvidenceSource(
-                        pending,
-                        observation: observation,
-                        screenshotOCRTextByID: screenshotOCRTextByID
-                    ) == nil
-                }
+                let unverifiedTextWrites = unresolvedPendingUnverifiedTextWrites(
+                    pendingUnverifiedTextWrites,
+                    observation: observation,
+                    screenshotOCRTextByID: screenshotOCRTextByID,
+                    consumedEvidenceKeys: &consumedTextWriteEvidenceKeys
+                )
                 if !unverifiedTextWrites.isEmpty {
                     let details = unverifiedTextWrites
                         .map { "\($0.toolSummary) from step \($0.step)" }
@@ -977,6 +976,32 @@ final class ComputerUsePlannerRuntime {
         return "screenshot OCR text not present in pre-action visible evidence"
     }
 
+    private func unresolvedPendingUnverifiedTextWrites(
+        _ pending: [PendingUnverifiedTextWrite],
+        observation: ComputerUseObservation,
+        screenshotOCRTextByID: [String: String],
+        consumedEvidenceKeys: inout Set<String>
+    ) -> [PendingUnverifiedTextWrite] {
+        var unresolved: [PendingUnverifiedTextWrite] = []
+        for write in pending {
+            guard let source = unverifiedTextWriteEvidenceSource(
+                write,
+                observation: observation,
+                screenshotOCRTextByID: screenshotOCRTextByID
+            ) else {
+                unresolved.append(write)
+                continue
+            }
+            let evidenceKey = "\(source)|\(write.sample)"
+            if consumedEvidenceKeys.contains(evidenceKey) {
+                unresolved.append(write)
+            } else {
+                consumedEvidenceKeys.insert(evidenceKey)
+            }
+        }
+        return unresolved
+    }
+
     private func textVerificationSample(_ text: String) -> String? {
         let tokens = ComputerUseElementCandidate.normalizedText(text)
             .split(separator: " ")
@@ -1267,8 +1292,14 @@ final class ComputerUsePlannerRuntime {
     }
 
     private func requiresMatchedWindow(for tool: ComputerUseToolName) -> Bool {
-        if tool == .finish || tool == .fail {
+        if tool == .fail {
             return false
+        }
+        if tool == .finish {
+            return true
+        }
+        if ComputerUseToolInvocation(tool: tool).isMutating {
+            return true
         }
         return ComputerUseToolRegistry.executionContract(for: tool).requiresMatchedVisualTarget
     }
