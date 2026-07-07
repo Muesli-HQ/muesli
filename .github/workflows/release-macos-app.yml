@@ -73,14 +73,37 @@ jobs:
           chmod +x "$APP_DIR/Contents/MacOS/Muesli"
           chmod +x "$APP_DIR/Contents/MacOS/muesli-cli"
 
-          # Bundle Sparkle framework (rpath is @loader_path, so it goes next to the binary)
-          if [ -d "$BIN_DIR/Sparkle.framework" ]; then
-            ditto "$BIN_DIR/Sparkle.framework" "$APP_DIR/Contents/MacOS/Sparkle.framework"
-          fi
+          # Bundle every SwiftPM-linked framework (rpath is @loader_path, so they go next to
+          # the binary). This includes Sparkle.framework AND llama.framework — the latter is
+          # required by the LLM.swift dependency, and the app crashes on launch with
+          # "Library not loaded: @rpath/llama.framework/..." when it is missing.
+          for framework in "$BIN_DIR"/*.framework; do
+            [ -d "$framework" ] || continue
+            ditto "$framework" "$APP_DIR/Contents/MacOS/$(basename "$framework")"
+          done
 
-          cp assets/menu_m_template.png "$APP_DIR/Contents/Resources/"
-          cp assets/muesli.icns "$APP_DIR/Contents/Resources/"
-          [ -d assets/fonts ] && cp -R assets/fonts "$APP_DIR/Contents/Resources/fonts"
+          # Bundle SPM resource bundles (CoreML models, privacy manifests, etc.).
+          for bundle in "$BIN_DIR"/*.bundle; do
+            [ -d "$bundle" ] || continue
+            ditto "$bundle" "$APP_DIR/Contents/Resources/$(basename "$bundle")"
+          done
+
+          # Bundle UI assets (mirrors scripts/build_native_app.sh).
+          cp assets/menu_m_template.png "$APP_DIR/Contents/Resources/menu_m_template.png"
+          cp assets/muesli.icns "$APP_DIR/Contents/Resources/muesli.icns"
+          cp assets/zoom-app.png "$APP_DIR/Contents/Resources/zoom-app.png"
+          cp "assets/Google_Meet_icon_(2020).svg.png" "$APP_DIR/Contents/Resources/google-meet.png"
+          cp "assets/Microsoft_Office_Teams_(2025–present).svg.png" "$APP_DIR/Contents/Resources/teams.png"
+          cp "assets/Slack_icon_2019.svg.png" "$APP_DIR/Contents/Resources/slack.png"
+          cp "assets/Nvidia_logo.svg.png" "$APP_DIR/Contents/Resources/nvidia-logo.png"
+          cp "assets/OpenAI_Logo.svg.png" "$APP_DIR/Contents/Resources/openai-logo.png"
+          cp assets/cohere.png "$APP_DIR/Contents/Resources/cohere-logo.png"
+          cp "assets/Qwen_logo.svg.png" "$APP_DIR/Contents/Resources/qwen-logo.png"
+          cp assets/AI4Bharat_logo.png "$APP_DIR/Contents/Resources/ai4bharat-logo.png"
+          cp assets/x-logo.png "$APP_DIR/Contents/Resources/x-logo.png"
+          cp assets/linkedin-logo.png "$APP_DIR/Contents/Resources/linkedin-logo.png"
+          [ -d assets/fonts ] && ditto assets/fonts "$APP_DIR/Contents/Resources/fonts"
+          [ -d assets/audio ] && ditto assets/audio "$APP_DIR/Contents/Resources/audio"
 
           VERSION="${{ steps.meta.outputs.version }}"
 
