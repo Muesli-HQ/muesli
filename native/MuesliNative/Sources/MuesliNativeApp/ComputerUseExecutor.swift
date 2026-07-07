@@ -331,55 +331,6 @@ enum ComputerUseToolExecutor {
         }
     }
 
-    private static func matchedWindowID(processID: pid_t, frame: CGRect) -> Int? {
-        if let axWindow = containingWindowForID(ofProcessID: processID, frame: frame),
-           axWindow > 0 {
-            return Int(axWindow)
-        }
-        let matchedWindow = windowInfos(appBundleID: "")
-            .filter { $0.processID == Int(processID) }
-            .first { info in
-                guard let candidateFrame = info.frame else { return false }
-                return framesApproximatelyMatch(CGRect(
-                    x: candidateFrame.x,
-                    y: candidateFrame.y,
-                    width: candidateFrame.width,
-                    height: candidateFrame.height
-                ), frame)
-            }
-        return matchedWindow?.windowID
-    }
-
-    private static func containingWindowForID(ofProcessID processID: pid_t, frame: CGRect) -> CGWindowID? {
-        let app = AXUIElementCreateApplication(processID)
-        guard let window = windowMatchingFrame(in: app, frame: frame) else { return nil }
-        var windowID = CGWindowID(0)
-        guard AXWindowIDResolver.getWindowID(window, &windowID), windowID > 0 else {
-            return nil
-        }
-        return windowID
-    }
-
-    private static func windowMatchingFrame(in axApp: AXUIElement, frame: CGRect) -> AXUIElement? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &value) == .success,
-              let windows = value as? [AXUIElement] else {
-            return nil
-        }
-        return windows.first { window in
-            guard let candidateFrame = rect(of: window) else { return false }
-            return framesApproximatelyMatch(candidateFrame, frame)
-        }
-    }
-
-    private static func framesApproximatelyMatch(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
-        let tolerance: CGFloat = 8
-        return abs(lhs.origin.x - rhs.origin.x) <= tolerance
-            && abs(lhs.origin.y - rhs.origin.y) <= tolerance
-            && abs(lhs.size.width - rhs.size.width) <= tolerance
-            && abs(lhs.size.height - rhs.size.height) <= tolerance
-    }
-
     private static func openApp(
         named rawName: String,
         allowActivation: Bool = true
@@ -1109,18 +1060,16 @@ enum ComputerUseToolExecutor {
 
     private static func windowMismatchMessage(for element: AXUIElement, toolCall: ComputerUseToolCall) -> String? {
         guard let requestedWindowID = toolCall.windowID, requestedWindowID > 0 else { return nil }
-        guard let elementProcessID = Self.processID(of: element) else {
-            return "Could not validate window_id \(requestedWindowID) for element target because the element process is unavailable. Refresh state before using this element."
-        }
-        guard let windowElement = containingWindow(of: element),
-              let windowFrame = rect(of: windowElement) else {
+        guard let windowElement = containingWindow(of: element) else {
             return "Could not validate window_id \(requestedWindowID) for element target because its containing window is unavailable. Refresh state before using this element."
         }
-        guard let matchedWindowID = matchedWindowID(processID: elementProcessID, frame: windowFrame) else {
+        var actualWindowID = CGWindowID(0)
+        guard AXWindowIDResolver.getWindowID(windowElement, &actualWindowID),
+              actualWindowID > 0 else {
             return "Could not validate window_id \(requestedWindowID) for element target. Refresh state before using this element."
         }
-        guard matchedWindowID == requestedWindowID else {
-            return "Stale window_id \(requestedWindowID); element target is in window_id \(matchedWindowID). Refresh state before using this element."
+        guard Int(actualWindowID) == requestedWindowID else {
+            return "Stale window_id \(requestedWindowID); element target is in window_id \(actualWindowID). Refresh state before using this element."
         }
         return nil
     }

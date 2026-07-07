@@ -6186,8 +6186,7 @@ final class MuesliController: NSObject {
     private func finishComputerUseAudioStop(
         wavURL stoppedWavURL: URL?,
         startedAt: Date,
-        allowSharedStateUpdates: Bool = true,
-        executeCommand: Bool = true
+        allowSharedStateUpdates: Bool = true
     ) {
         if allowSharedStateUpdates {
             markComputerUseLatency("stop_finished")
@@ -6266,10 +6265,6 @@ final class MuesliController: NSObject {
                 await MainActor.run {
                     self.scheduleICloudSyncAfterLocalChange()
                 }
-                guard executeCommand else {
-                    fputs("[cua] saved superseded command transcript without planner execution\n", stderr)
-                    return
-                }
                 await self.handleComputerUseCommand(
                     transcript: text,
                     dictationID: dictationID,
@@ -6309,6 +6304,7 @@ final class MuesliController: NSObject {
             && !isDictationTestMode
             && dictationStartedAt == nil
             && computerUseCommandStartedAt == nil
+            && pendingComputerUseStopSessionID == nil
             && !isNemotron35Streaming
             && dictationState == .idle
     }
@@ -6318,6 +6314,7 @@ final class MuesliController: NSObject {
             && !isDictationTestMode
             && dictationStartedAt == nil
             && computerUseCommandStartedAt == nil
+            && pendingComputerUseStopSessionID == nil
             && !isNemotron35Streaming
             && (dictationState == .idle || dictationState == .preparing)
     }
@@ -6946,20 +6943,6 @@ final class MuesliController: NSObject {
                 }
                 break
             }
-            if let currentSessionID = computerUseAudioSessionManager.currentSessionID,
-               currentSessionID != eventSessionID {
-                fputs("[cua] finishing stopped wav with shared UI suppressed because a newer CUA session is active\n", stderr)
-                let startedAt = pendingComputerUseStopStartedAt ?? Date()
-                pendingComputerUseStopSessionID = nil
-                pendingComputerUseStopStartedAt = nil
-                finishComputerUseAudioStop(
-                    wavURL: wavURL,
-                    startedAt: startedAt,
-                    allowSharedStateUpdates: false,
-                    executeCommand: false
-                )
-                break
-            }
             let startedAt = pendingComputerUseStopStartedAt ?? computerUseCommandStartedAt ?? Date()
             pendingComputerUseStopSessionID = nil
             pendingComputerUseStopStartedAt = nil
@@ -6973,7 +6956,13 @@ final class MuesliController: NSObject {
             break
         case .cancelled:
             break
-        case .failed(_, let error):
+        case .failed(let eventSessionID, let error):
+            if let eventSessionID,
+               let currentSessionID = computerUseAudioSessionManager.currentSessionID,
+               currentSessionID != eventSessionID {
+                fputs("[cua] ignoring stale failed event\n", stderr)
+                break
+            }
             fputs("[cua] recorder session failed: \(error)\n", stderr)
             computerUseCommandStartedAt = nil
             computerUseCommandPreparedAt = nil
