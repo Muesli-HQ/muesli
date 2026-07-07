@@ -861,7 +861,7 @@ public final class DictationStore {
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        let persistedEvents = events.map { $0.removingDebugPayload() }
+        let persistedEvents = events.map { $0.redactedForPersistence() }
         let data = try encoder.encode(persistedEvents)
         let traceJSON = String(data: data, encoding: .utf8) ?? "[]"
 

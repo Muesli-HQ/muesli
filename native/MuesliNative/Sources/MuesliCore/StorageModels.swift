@@ -233,6 +233,36 @@ public struct ComputerUseTraceEvent: Identifiable, Codable, Equatable, Sendable 
             timestamp: timestamp
         )
     }
+
+    public func redactedForPersistence() -> ComputerUseTraceEvent {
+        ComputerUseTraceEvent(
+            id: id,
+            kind: kind,
+            title: title,
+            body: bodyForPersistence,
+            status: status,
+            step: step,
+            timestamp: timestamp
+        )
+    }
+
+    private var bodyForPersistence: String {
+        if preservesBodyForPersistence {
+            return body
+        }
+        return "[redacted: \(title) body omitted from persisted Computer Use trace]"
+    }
+
+    private var preservesBodyForPersistence: Bool {
+        switch kind {
+        case "finish", "cancelled", "timed_out", "no_progress":
+            return true
+        case "failed":
+            return title == "Final output"
+        default:
+            return false
+        }
+    }
 }
 
 public struct MeetingRecord: Identifiable, Codable, Sendable {

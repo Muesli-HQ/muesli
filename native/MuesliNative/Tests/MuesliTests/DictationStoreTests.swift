@@ -2548,7 +2548,7 @@ struct DictationStoreTests {
                 id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
                 kind: "model_output",
                 title: "Model output",
-                body: #"{"tool":"open_app","app_name":"Google Chrome"}"#,
+                body: #"{"tool":"paste_text","text":"private document text"}"#,
                 status: "planned",
                 step: 1,
                 timestamp: "2026-05-05T00:00:00Z",
@@ -2556,12 +2556,30 @@ struct DictationStoreTests {
             ),
             ComputerUseTraceEvent(
                 id: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!,
+                kind: "tool_call",
+                title: "Executing",
+                body: #"paste_text {"text":"private document text"}"#,
+                status: "executing",
+                step: 1,
+                timestamp: "2026-05-05T00:00:00Z"
+            ),
+            ComputerUseTraceEvent(
+                id: UUID(uuidString: "00000000-0000-0000-0000-000000000003")!,
+                kind: "tool_result",
+                title: "Tool result",
+                body: "Pasted private document text",
+                status: "executed",
+                step: 1,
+                timestamp: "2026-05-05T00:00:01Z"
+            ),
+            ComputerUseTraceEvent(
+                id: UUID(uuidString: "00000000-0000-0000-0000-000000000004")!,
                 kind: "finish",
                 title: "Final output",
                 body: "Done: open Google Chrome",
                 status: "done",
                 step: 1,
-                timestamp: "2026-05-05T00:00:01Z"
+                timestamp: "2026-05-05T00:00:02Z"
             ),
         ]
 
@@ -2576,8 +2594,15 @@ struct DictationStoreTests {
         #expect(row.id == dictationID)
         #expect(row.source == "cua")
         #expect(row.computerUseTrace?.finalStatus == "done")
-        #expect(row.computerUseTrace?.events == events.map { $0.removingDebugPayload() })
+        #expect(row.computerUseTrace?.events == events.map { $0.redactedForPersistence() })
         #expect(row.computerUseTrace?.events.allSatisfy { $0.debugPayload == nil } == true)
+        let persistedBodies = row.computerUseTrace?.events.map(\.body).joined(separator: "\n") ?? ""
+        #expect(!persistedBodies.contains("private document text"))
+        #expect(persistedBodies.contains("[redacted: Model output body omitted from persisted Computer Use trace]"))
+        #expect(persistedBodies.contains("[redacted: Executing body omitted from persisted Computer Use trace]"))
+        #expect(persistedBodies.contains("[redacted: Tool result body omitted from persisted Computer Use trace]"))
+        #expect(persistedBodies.contains("Done: open Google Chrome"))
+        #expect(try store.searchDictations(query: "private document text").isEmpty)
     }
 
     @Test("searchDictations matches computer use trace text")

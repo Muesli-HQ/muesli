@@ -475,6 +475,23 @@ enum ComputerUseToolExecutor {
             return .unsupported("Unsupported key \(command.key)")
         }
 
+        if allowBackgroundDispatch, !(toolCall.processID.map { $0 > 0 } ?? false) {
+            return .failed(
+                "Quiet key dispatch requires process_id and window_id from the latest target state; key was not posted.",
+                transaction: ComputerUseActionTransaction(
+                    path: "pid_key_events",
+                    posted: false,
+                    verified: false,
+                    effect: .blocked,
+                    targetStable: false,
+                    processID: nil,
+                    windowID: toolCall.windowID,
+                    escalationHint: "Refresh target state and retry press_key with process_id and window_id, or switch Computer Use to direct control.",
+                    warning: "Quiet key dispatch was blocked before posting because process_id was missing."
+                )
+            )
+        }
+
         let resolvedProcessID: pid_t?
         if let suppliedProcessID = toolCall.processID, suppliedProcessID > 0 {
             let expectedProcessID = pid_t(suppliedProcessID)

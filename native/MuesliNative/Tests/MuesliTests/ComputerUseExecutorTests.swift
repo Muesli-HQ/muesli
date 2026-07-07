@@ -265,6 +265,25 @@ struct ComputerUseExecutorTests {
         #expect(result.transaction?.effect == .blocked)
     }
 
+    @Test("quiet press key without process id fails before posting")
+    @MainActor
+    func quietPressKeyWithoutProcessIDFailsBeforePosting() async {
+        let result = await ComputerUseToolExecutor.execute(
+            ComputerUseToolCall(
+                tool: .pressKey,
+                windowID: 88,
+                key: "enter"
+            ),
+            registry: nil,
+            interactionMode: .quiet
+        )
+
+        #expect(result.status == .failed)
+        #expect(result.message.contains("requires process_id and window_id"))
+        #expect(result.transaction?.posted == false)
+        #expect(result.transaction?.effect == .blocked)
+    }
+
     @Test("quiet scroll fails before posting when target window cannot be focused")
     @MainActor
     func quietScrollFailsBeforePostingWhenTargetWindowCannotBeFocused() async {
