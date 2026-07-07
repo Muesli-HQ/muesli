@@ -203,7 +203,9 @@ enum ComputerUseToolExecutor {
                     appBundleID: toolCall.canonicalBundleID,
                     windowIndex: toolCall.windowIndex ?? 1,
                     tabIndex: toolCall.tabIndex ?? 1,
-                    allowActivation: interactionMode == .direct
+                    allowActivation: interactionMode == .direct,
+                    processID: toolCall.processID.map(pid_t.init),
+                    windowID: toolCall.windowID.map(CGWindowID.init)
                 )
             }
         case .openNewBrowserTab:

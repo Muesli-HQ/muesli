@@ -9,6 +9,7 @@ enum ComputerUseBrowserAutomation {
     enum BackgroundBrowserCommand: Equatable {
         case openNewTab(processID: Int, windowID: Int?)
         case navigate(url: String, processID: Int, windowID: Int?)
+        case activateTab(processID: Int, windowID: Int, tabIndex: Int)
     }
 
     static func listTabs(appBundleID: String) async -> ComputerUseExecutionResult {
@@ -46,9 +47,37 @@ enum ComputerUseBrowserAutomation {
         }
     }
 
-    static func activateTab(appBundleID: String, windowIndex: Int, tabIndex: Int, allowActivation: Bool = true) async -> ComputerUseExecutionResult {
+    static func activateTab(
+        appBundleID: String,
+        windowIndex: Int,
+        tabIndex: Int,
+        allowActivation: Bool = true,
+        processID: pid_t? = nil,
+        windowID: CGWindowID? = nil
+    ) async -> ComputerUseExecutionResult {
         guard supportsBrowser(appBundleID) else {
             return .unsupported("Browser tools currently support Google Chrome only")
+        }
+        if !allowActivation {
+            guard let processID, processID > 0 else {
+                return .needsConfirmation("Quiet tab activation requires process_id and window_id from the latest browser window state. Refresh get_window_state for the browser before switching tabs.")
+            }
+            guard let windowID, windowID > 0 else {
+                return .needsConfirmation("Quiet tab activation requires a nonzero window_id from the latest browser window state. Refresh get_window_state for the browser before switching tabs.")
+            }
+            if let runBackgroundCommandForTests {
+                return await runBackgroundCommandForTests(.activateTab(
+                    processID: Int(processID),
+                    windowID: Int(windowID),
+                    tabIndex: max(1, tabIndex)
+                ))
+            }
+            return await activateTabInBackground(
+                appBundleID: appBundleID,
+                tabIndex: max(1, tabIndex),
+                processID: processID,
+                windowID: windowID
+            )
         }
         let activationLine = allowActivation ? "  activate\n" : ""
         let windowOrderingLine = allowActivation ? "  set index of window \(max(1, windowIndex)) to 1\n" : ""
@@ -366,6 +395,70 @@ enum ComputerUseBrowserAutomation {
                 warning: "Navigation keystrokes were posted, but this does not prove the page loaded or became usable."
             )
         )
+    }
+
+    private static func activateTabInBackground(
+        appBundleID: String,
+        tabIndex: Int,
+        processID: pid_t,
+        windowID: CGWindowID
+    ) async -> ComputerUseExecutionResult {
+        let priorFrontmost = NSWorkspace.shared.frontmostApplication
+        guard ComputerUseBackgroundDriver.focusWithoutRaise(processID: processID, windowID: windowID) else {
+            return .failed(
+                "Could not focus target browser window_id \(windowID) without raising it; quiet tab activation was not posted.",
+                transaction: browserTransaction(
+                    path: "browser_background_activate_tab",
+                    posted: false,
+                    effect: .blocked,
+                    processID: Int(processID),
+                    windowID: Int(windowID),
+                    warning: "Target browser window could not be focused without raising, so tab activation was not posted."
+                )
+            )
+        }
+        let script = """
+        tell application id "\(appleScriptString(appBundleID))"
+          if (count of windows) is 0 then return "No browser window is available for quiet tab activation"
+          set targetWindow to front window
+          if \(tabIndex) > (count of tabs of targetWindow) then return "Requested tab is not available in target window"
+          set active tab index of targetWindow to \(tabIndex)
+          return ""
+        end tell
+        """
+        do {
+            let output = try await runAppleScript(script)
+            restoreFrontmost(priorFrontmost, targetProcessID: processID)
+            if output.contains("No browser window is available") || output.contains("Requested tab is not available") {
+                return .failed(
+                    output,
+                    transaction: browserTransaction(
+                        path: "browser_background_activate_tab",
+                        posted: false,
+                        effect: .blocked,
+                        processID: Int(processID),
+                        windowID: Int(windowID),
+                        warning: "The target browser window did not expose the requested tab."
+                    )
+                )
+            }
+            return .executed(
+                "Activated browser tab \(tabIndex) in target window",
+                transaction: browserTransaction(
+                    path: "browser_background_activate_tab",
+                    posted: true,
+                    effect: .unverifiable,
+                    processID: Int(processID),
+                    windowID: Int(windowID),
+                    warning: "Quiet tab activation was posted to the validated browser window, but this does not prove the page is ready."
+                )
+            )
+        } catch is CancellationError {
+            return .cancelled()
+        } catch {
+            restoreFrontmost(priorFrontmost, targetProcessID: processID)
+            return .failed(browserScriptError(error))
+        }
     }
 
     private static func browserTransaction(

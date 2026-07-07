@@ -63,9 +63,14 @@ final class ComputerUsePlannerRuntime {
         let sample: String
         let toolSummary: String
         let step: Int
-        let sampleWasInTextEvidenceBefore: Bool
-        let sampleWasVisibleBefore: Bool
-        let preActionOCRText: String?
+        let textEvidenceCountBefore: Int
+        let visibleEvidenceCountBefore: Int
+        let preActionOCRSampleCount: Int?
+    }
+
+    private struct TextWriteEvidenceMatch {
+        let source: String
+        let availableCount: Int
     }
 
     private struct ReadOnlyOrientationStreak {
@@ -148,7 +153,7 @@ final class ComputerUsePlannerRuntime {
         var forceActionOnlyTools = false
         var screenshotOCRTextByID: [String: String] = [:]
         var pendingUnverifiedTextWrites: [PendingUnverifiedTextWrite] = []
-        var consumedTextWriteEvidenceKeys = Set<String>()
+        var consumedTextWriteEvidenceCounts: [String: Int] = [:]
         let maxInvalidToolCallRepairs = 2
         // The harness keeps target state scoped and marks each tool with its execution
         // contract. Deeper Codex/trycua-style work still needs pid-routed pointer
@@ -184,7 +189,7 @@ final class ComputerUsePlannerRuntime {
                 pendingUnverifiedTextWrites,
                 observation: observation,
                 screenshotOCRTextByID: screenshotOCRTextByID,
-                consumedEvidenceKeys: &consumedTextWriteEvidenceKeys
+                consumedEvidenceCounts: &consumedTextWriteEvidenceCounts
             )
             let request = ComputerUsePlannerRequest(
                 command: command,
@@ -311,7 +316,7 @@ final class ComputerUsePlannerRuntime {
                     pendingUnverifiedTextWrites,
                     observation: observation,
                     screenshotOCRTextByID: screenshotOCRTextByID,
-                    consumedEvidenceKeys: &consumedTextWriteEvidenceKeys
+                    consumedEvidenceCounts: &consumedTextWriteEvidenceCounts
                 )
                 if !unverifiedTextWrites.isEmpty {
                     let details = unverifiedTextWrites
@@ -936,55 +941,75 @@ final class ComputerUsePlannerRuntime {
             return
         }
         let preActionOCRText = before.screenshot.flatMap { screenshotOCRTextByID[$0.screenshotID] }
+        let textEvidenceBefore = textWriteEvidenceCorpus(before)
+        let visibleEvidenceBefore = observationTextCorpus(before)
+        let preActionOCRSampleCount = preActionOCRText.map {
+            sampleOccurrenceCount(sample, in: ComputerUseElementCandidate.normalizedText($0))
+        }
         pending.append(PendingUnverifiedTextWrite(
             sample: sample,
             toolSummary: toolCall.summary,
             step: step,
-            sampleWasInTextEvidenceBefore: textWriteEvidenceCorpus(before).contains(sample),
-            sampleWasVisibleBefore: observationTextCorpus(before).contains(sample),
-            preActionOCRText: preActionOCRText
+            textEvidenceCountBefore: sampleOccurrenceCount(sample, in: textEvidenceBefore),
+            visibleEvidenceCountBefore: sampleOccurrenceCount(sample, in: visibleEvidenceBefore),
+            preActionOCRSampleCount: preActionOCRSampleCount
         ))
     }
 
-    private func unverifiedTextWriteEvidenceSource(
+    private func unverifiedTextWriteEvidenceMatch(
         _ pending: PendingUnverifiedTextWrite,
         observation: ComputerUseObservation,
         screenshotOCRTextByID: [String: String]
-    ) -> String? {
-        if !pending.sampleWasInTextEvidenceBefore,
-           textWriteEvidenceCorpus(observation).contains(pending.sample) {
-            return "focused text or selected text"
+    ) -> TextWriteEvidenceMatch? {
+        let textEvidenceCount = sampleOccurrenceCount(
+            pending.sample,
+            in: textWriteEvidenceCorpus(observation)
+        )
+        let newTextEvidenceCount = textEvidenceCount - pending.textEvidenceCountBefore
+        if newTextEvidenceCount > 0 {
+            return TextWriteEvidenceMatch(
+                source: "focused text or selected text",
+                availableCount: newTextEvidenceCount
+            )
         }
         guard let screenshotID = observation.screenshot?.screenshotID,
               let ocrText = screenshotOCRTextByID[screenshotID] else {
             return nil
         }
         let normalizedOCR = ComputerUseElementCandidate.normalizedText(ocrText)
-        guard normalizedOCR.contains(pending.sample) else {
+        let ocrCount = sampleOccurrenceCount(pending.sample, in: normalizedOCR)
+        guard ocrCount > 0 else {
             return nil
         }
-        if let preActionOCRText = pending.preActionOCRText {
-            let normalizedPreActionOCR = ComputerUseElementCandidate.normalizedText(preActionOCRText)
-            guard !normalizedPreActionOCR.contains(pending.sample) else {
+        if let preActionOCRSampleCount = pending.preActionOCRSampleCount {
+            let newOCRCount = ocrCount - preActionOCRSampleCount
+            guard newOCRCount > 0 else {
                 return nil
             }
-            return "new screenshot OCR text"
+            return TextWriteEvidenceMatch(
+                source: "new screenshot OCR text",
+                availableCount: newOCRCount
+            )
         }
-        guard !pending.sampleWasVisibleBefore else {
+        let newVisibleEvidenceCount = ocrCount - pending.visibleEvidenceCountBefore
+        guard newVisibleEvidenceCount > 0 else {
             return nil
         }
-        return "screenshot OCR text not present in pre-action visible evidence"
+        return TextWriteEvidenceMatch(
+            source: "screenshot OCR text not present in pre-action visible evidence",
+            availableCount: newVisibleEvidenceCount
+        )
     }
 
     private func unresolvedPendingUnverifiedTextWrites(
         _ pending: [PendingUnverifiedTextWrite],
         observation: ComputerUseObservation,
         screenshotOCRTextByID: [String: String],
-        consumedEvidenceKeys: inout Set<String>
+        consumedEvidenceCounts: inout [String: Int]
     ) -> [PendingUnverifiedTextWrite] {
         var unresolved: [PendingUnverifiedTextWrite] = []
         for write in pending {
-            guard let source = unverifiedTextWriteEvidenceSource(
+            guard let evidence = unverifiedTextWriteEvidenceMatch(
                 write,
                 observation: observation,
                 screenshotOCRTextByID: screenshotOCRTextByID
@@ -992,14 +1017,31 @@ final class ComputerUsePlannerRuntime {
                 unresolved.append(write)
                 continue
             }
-            let evidenceKey = "\(source)|\(write.sample)"
-            if consumedEvidenceKeys.contains(evidenceKey) {
+            let evidenceKey = "\(evidence.source)|\(write.sample)"
+            let consumedCount = consumedEvidenceCounts[evidenceKey, default: 0]
+            if consumedCount >= evidence.availableCount {
                 unresolved.append(write)
             } else {
-                consumedEvidenceKeys.insert(evidenceKey)
+                consumedEvidenceCounts[evidenceKey] = consumedCount + 1
             }
         }
         return unresolved
+    }
+
+    private func sampleOccurrenceCount(_ sample: String, in corpus: String) -> Int {
+        guard !sample.isEmpty, !corpus.isEmpty else { return 0 }
+        var count = 0
+        var searchStart = corpus.startIndex
+        while searchStart < corpus.endIndex,
+              let range = corpus.range(
+                of: sample,
+                options: [],
+                range: searchStart..<corpus.endIndex
+              ) {
+            count += 1
+            searchStart = range.upperBound
+        }
+        return count
     }
 
     private func textVerificationSample(_ text: String) -> String? {

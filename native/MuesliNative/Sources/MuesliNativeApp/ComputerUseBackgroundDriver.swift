@@ -11,6 +11,7 @@ enum ComputerUseBackgroundDriver {
     }
 
     static var focusWithoutRaiseForTests: ((pid_t, CGWindowID) -> Bool)?
+    static var windowOwnerPIDForTests: ((CGWindowID) -> pid_t?)?
 
     @discardableResult
     static func postKeyEvent(_ event: CGEvent, to processID: pid_t, attachAuthMessage: Bool = true) -> Bool {
@@ -24,6 +25,9 @@ enum ComputerUseBackgroundDriver {
     @discardableResult
     static func focusWithoutRaise(processID: pid_t, windowID: CGWindowID?) -> Bool {
         guard let windowID, windowID > 0 else { return false }
+        guard windowBelongsToProcess(windowID: windowID, processID: processID) else {
+            return false
+        }
         if let focusWithoutRaiseForTests {
             return focusWithoutRaiseForTests(processID, windowID)
         }
@@ -194,6 +198,25 @@ enum ComputerUseBackgroundDriver {
               let bounds = info[kCGWindowBounds] as? [String: Any]
         else { return nil }
         return CGRect(dictionaryRepresentation: bounds as CFDictionary)
+    }
+
+    private static func windowBelongsToProcess(windowID: CGWindowID, processID: pid_t) -> Bool {
+        guard let ownerPID = windowOwnerPID(windowID: windowID) else {
+            return false
+        }
+        return ownerPID == processID
+    }
+
+    private static func windowOwnerPID(windowID: CGWindowID) -> pid_t? {
+        if let windowOwnerPIDForTests {
+            return windowOwnerPIDForTests(windowID)
+        }
+        let options: CGWindowListOption = [.optionIncludingWindow]
+        guard let infos = CGWindowListCopyWindowInfo(options, windowID) as? [[CFString: Any]],
+              let info = infos.first,
+              let owner = info[kCGWindowOwnerPID] as? NSNumber
+        else { return nil }
+        return pid_t(owner.int32Value)
     }
 }
 

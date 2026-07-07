@@ -1451,6 +1451,59 @@ struct ComputerUsePlannerRuntimeTests {
         #expect(result.status == ComputerUsePlannerRuntimeResult.Status.done)
     }
 
+    @Test("duplicate unverified writes require distinct text evidence")
+    @MainActor
+    func duplicateUnverifiedWritesRequireDistinctTextEvidence() async {
+        let requestedText = "repeat phrase"
+        var observeCount = 0
+        let runtime = ComputerUsePlannerRuntime(
+            config: AppConfig(),
+            observe: { _, _, _ in
+                observeCount += 1
+                return Self.observation(
+                    stateID: "state-\(observeCount)",
+                    screenshot: Self.screenshot(id: "after")
+                )
+            },
+            plan: { request in
+                switch request.step {
+                case 1:
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(
+                        tool: .pasteText,
+                        text: requestedText
+                    ))
+                case 2:
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(
+                        tool: .typeText,
+                        text: requestedText
+                    ))
+                case 3:
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(
+                        tool: .recognizeScreenshotText,
+                        screenshotID: "after"
+                    ))
+                case 4:
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(
+                        tool: .finish,
+                        reason: "done"
+                    ))
+                default:
+                    Issue.record("unexpected planner step \(request.step)")
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(
+                        tool: .fail,
+                        reason: "Unexpected step."
+                    ))
+                }
+            },
+            execute: { _, _ in .executed("Pasted text") },
+            recognizeScreenshotText: { _ in "\(requestedText) \(requestedText)" }
+        )
+
+        let result = await runtime.run(command: "write the same phrase twice")
+
+        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.done)
+    }
+
     @Test("pre-existing focused text blocks unverified finish")
     @MainActor
     func preExistingFocusedTextBlocksUnverifiedFinish() async {
