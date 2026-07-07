@@ -5,6 +5,11 @@ import Foundation
 private let computerUseAccessibilityNoopCallback: AXObserverCallback = { _, _, _, _ in }
 
 enum ComputerUseAccessibilityKeepAlive {
+    private struct AssertionFailure {
+        var retryAfter: Date
+        var attempts: Int
+    }
+
     private typealias RemoteAddNotificationFn = @convention(c) (
         AXObserver,
         AXUIElement,
@@ -14,9 +19,11 @@ enum ComputerUseAccessibilityKeepAlive {
 
     private static let lock = NSLock()
     private static var assertedPIDs = Set<pid_t>()
-    private static var nonAssertablePIDs = Set<pid_t>()
+    private static var assertionFailures: [pid_t: AssertionFailure] = [:]
     private static var observerPIDs = Set<pid_t>()
     private static var observers: [pid_t: AXObserver] = [:]
+    private static let assertionRetryBaseDelay: TimeInterval = 0.5
+    private static let assertionRetryMaxDelay: TimeInterval = 8.0
 
     private static let remoteAddNotification: RemoteAddNotificationFn? = {
         guard let symbol = dlsym(
@@ -38,10 +45,13 @@ enum ComputerUseAccessibilityKeepAlive {
     }
 
     private static func assertAccessibilityAttributes(processID: pid_t, root: AXUIElement) -> Bool {
+        let now = Date()
         lock.lock()
-        if nonAssertablePIDs.contains(processID) {
+        if let failure = assertionFailures[processID],
+           failure.retryAfter > now {
+            let alreadyAsserted = assertedPIDs.contains(processID)
             lock.unlock()
-            return false
+            return alreadyAsserted
         }
         lock.unlock()
 
@@ -60,12 +70,22 @@ enum ComputerUseAccessibilityKeepAlive {
         defer { lock.unlock() }
         if manual == .success || enhanced == .success {
             assertedPIDs.insert(processID)
+            assertionFailures.removeValue(forKey: processID)
             return true
         }
-        if !assertedPIDs.contains(processID) {
-            nonAssertablePIDs.insert(processID)
+        guard !assertedPIDs.contains(processID) else {
+            return true
         }
-        return assertedPIDs.contains(processID)
+        let attempts = min((assertionFailures[processID]?.attempts ?? 0) + 1, 6)
+        let delay = min(
+            assertionRetryMaxDelay,
+            assertionRetryBaseDelay * pow(2.0, Double(attempts - 1))
+        )
+        assertionFailures[processID] = AssertionFailure(
+            retryAfter: Date().addingTimeInterval(delay),
+            attempts: attempts
+        )
+        return false
     }
 
     private static func registerObserverIfNeeded(processID: pid_t) -> Bool {
