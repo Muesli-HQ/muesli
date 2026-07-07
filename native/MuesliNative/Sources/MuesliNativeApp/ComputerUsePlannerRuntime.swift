@@ -981,23 +981,16 @@ final class ComputerUsePlannerRuntime {
         guard ocrCount > 0 else {
             return nil
         }
-        if let preActionOCRSampleCount = pending.preActionOCRSampleCount {
-            let newOCRCount = ocrCount - preActionOCRSampleCount
-            guard newOCRCount > 0 else {
-                return nil
-            }
-            return TextWriteEvidenceMatch(
-                source: "new screenshot OCR text",
-                availableCount: newOCRCount
-            )
+        guard let preActionOCRSampleCount = pending.preActionOCRSampleCount else {
+            return nil
         }
-        let newVisibleEvidenceCount = ocrCount - pending.visibleEvidenceCountBefore
-        guard newVisibleEvidenceCount > 0 else {
+        let newOCRCount = ocrCount - preActionOCRSampleCount
+        guard newOCRCount > 0 else {
             return nil
         }
         return TextWriteEvidenceMatch(
-            source: "screenshot OCR text not present in pre-action visible evidence",
-            availableCount: newVisibleEvidenceCount
+            source: "new screenshot OCR text",
+            availableCount: newOCRCount
         )
     }
 
@@ -1014,6 +1007,14 @@ final class ComputerUsePlannerRuntime {
                 observation: observation,
                 screenshotOCRTextByID: screenshotOCRTextByID
             ) else {
+                if consumeResidualOCRTextEvidence(
+                    write,
+                    observation: observation,
+                    screenshotOCRTextByID: screenshotOCRTextByID,
+                    consumedEvidenceCounts: &consumedEvidenceCounts
+                ) {
+                    continue
+                }
                 unresolved.append(write)
                 continue
             }
@@ -1026,6 +1027,33 @@ final class ComputerUsePlannerRuntime {
             }
         }
         return unresolved
+    }
+
+    private func consumeResidualOCRTextEvidence(
+        _ pending: PendingUnverifiedTextWrite,
+        observation: ComputerUseObservation,
+        screenshotOCRTextByID: [String: String],
+        consumedEvidenceCounts: inout [String: Int]
+    ) -> Bool {
+        guard pending.preActionOCRSampleCount == nil,
+              let screenshotID = observation.screenshot?.screenshotID,
+              let ocrText = screenshotOCRTextByID[screenshotID] else {
+            return false
+        }
+        let evidenceKey = "new screenshot OCR text|\(pending.sample)"
+        let consumedCount = consumedEvidenceCounts[evidenceKey, default: 0]
+        guard consumedCount > 0 else {
+            return false
+        }
+        let ocrCount = sampleOccurrenceCount(
+            pending.sample,
+            in: ComputerUseElementCandidate.normalizedText(ocrText)
+        )
+        guard consumedCount < ocrCount else {
+            return false
+        }
+        consumedEvidenceCounts[evidenceKey] = consumedCount + 1
+        return true
     }
 
     private func sampleOccurrenceCount(_ sample: String, in corpus: String) -> Int {

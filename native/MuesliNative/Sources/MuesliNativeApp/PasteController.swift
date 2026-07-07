@@ -43,9 +43,13 @@ enum PasteController {
         pasteboard: NSPasteboard = .general,
         processID: pid_t? = nil,
         beforePasteAction: (() -> Bool)? = nil,
-        simulatePasteAction: (() -> Void)? = nil
+        simulatePasteAction: (() -> Bool)? = nil,
+        completion: ((Bool) -> Void)? = nil
     ) {
-        guard !text.isEmpty else { return }
+        guard !text.isEmpty else {
+            completion?(false)
+            return
+        }
 
         // Save current clipboard contents (all types) so we can restore after paste.
         let savedItems = saveClipboard(pasteboard)
@@ -58,19 +62,43 @@ enum PasteController {
             if beforePasteAction?() == false {
                 guard pasteboard.changeCount == pasteChangeCount else { return }
                 restoreClipboard(pasteboard, from: savedItems)
+                completion?(false)
                 return
             }
+            let posted: Bool
             if let simulatePasteAction {
-                simulatePasteAction()
+                posted = simulatePasteAction()
             } else {
-                simulatePaste(processID: processID)
+                posted = simulatePaste(processID: processID)
             }
+            completion?(posted)
 
             // Restore the original clipboard contents after the receiving app has consumed the paste.
             DispatchQueue.main.asyncAfter(deadline: .now() + clipboardRestoreDelay) {
                 guard pasteboard.changeCount == pasteChangeCount else { return }
                 restoreClipboard(pasteboard, from: savedItems)
             }
+        }
+    }
+
+    static func pasteAndWait(
+        text: String,
+        pasteboard: NSPasteboard = .general,
+        processID: pid_t? = nil,
+        beforePasteAction: (() -> Bool)? = nil,
+        simulatePasteAction: (() -> Bool)? = nil
+    ) async -> Bool {
+        await withCheckedContinuation { continuation in
+            paste(
+                text: text,
+                pasteboard: pasteboard,
+                processID: processID,
+                beforePasteAction: beforePasteAction,
+                simulatePasteAction: simulatePasteAction,
+                completion: { posted in
+                    continuation.resume(returning: posted)
+                }
+            )
         }
     }
 
@@ -98,18 +126,19 @@ enum PasteController {
 
     // MARK: - Private
 
-    private static func simulatePaste(processID: pid_t? = nil) {
+    private static func simulatePaste(processID: pid_t? = nil) -> Bool {
         guard let source = CGEventSource(stateID: .combinedSessionState) else {
             fputs("[muesli-native] failed to create event source for paste\n", stderr)
-            return
+            return false
         }
         let keyCode: CGKeyCode = 9 // V
         let commandDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true)
         commandDown?.flags = .maskCommand
         let commandUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
         commandUp?.flags = .maskCommand
-        post(commandDown, processID: processID)
-        post(commandUp, processID: processID)
+        let postedDown = post(commandDown, processID: processID)
+        let postedUp = post(commandUp, processID: processID)
+        return postedDown && postedUp
     }
 
     private static func postPhysicalKey(source: CGEventSource, keyCode: CGKeyCode, flags: CGEventFlags, processID: pid_t?) {
@@ -118,8 +147,8 @@ enum PasteController {
         else { return }
         keyDown.flags = flags
         keyUp.flags = flags
-        post(keyDown, processID: processID)
-        post(keyUp, processID: processID)
+        _ = post(keyDown, processID: processID)
+        _ = post(keyUp, processID: processID)
     }
 
     private static func postUnicodeCharacter(source: CGEventSource, char: Character, processID: pid_t?) {
@@ -130,17 +159,18 @@ enum PasteController {
             else { return }
             keyDown.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: buf.baseAddress)
             keyUp.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: buf.baseAddress)
-            post(keyDown, processID: processID)
-            post(keyUp, processID: processID)
+            _ = post(keyDown, processID: processID)
+            _ = post(keyUp, processID: processID)
         }
     }
 
-    private static func post(_ event: CGEvent?, processID: pid_t?) {
-        guard let event else { return }
+    private static func post(_ event: CGEvent?, processID: pid_t?) -> Bool {
+        guard let event else { return false }
         if let processID, processID > 0 {
-            _ = ComputerUseBackgroundDriver.postKeyEvent(event, to: processID)
+            return ComputerUseBackgroundDriver.postKeyEvent(event, to: processID)
         } else {
             event.post(tap: .cghidEventTap)
+            return true
         }
     }
 

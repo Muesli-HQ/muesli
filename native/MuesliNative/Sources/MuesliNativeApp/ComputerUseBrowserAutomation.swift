@@ -317,8 +317,32 @@ enum ComputerUseBrowserAutomation {
                 )
             }
         }
-        PasteController.paste(text: url, processID: processID)
+        let pastePosted = await PasteController.pasteAndWait(
+            text: url,
+            processID: processID,
+            beforePasteAction: {
+                guard let windowID else { return true }
+                return ComputerUseBackgroundDriver.focusWithoutRaise(
+                    processID: processID,
+                    windowID: windowID
+                )
+            }
+        )
         restoreFrontmost(priorFrontmost, targetProcessID: processID)
+        guard pastePosted else {
+            return .failed(
+                "Could not post background URL paste to browser process \(processID).",
+                transaction: browserTransaction(
+                    path: "browser_background_cmd_l_paste_enter",
+                    posted: false,
+                    effect: .blocked,
+                    processID: Int(processID),
+                    windowID: windowID.map(Int.init),
+                    requestedURL: url,
+                    warning: "URL paste was not posted to the browser process."
+                )
+            )
+        }
         do {
             try await Task.sleep(nanoseconds: 250_000_000)
         } catch is CancellationError {

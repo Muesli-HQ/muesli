@@ -1462,27 +1462,32 @@ struct ComputerUsePlannerRuntimeTests {
                 observeCount += 1
                 return Self.observation(
                     stateID: "state-\(observeCount)",
-                    screenshot: Self.screenshot(id: "after")
+                    screenshot: Self.screenshot(id: observeCount == 1 ? "before" : "after")
                 )
             },
             plan: { request in
                 switch request.step {
                 case 1:
                     return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(
-                        tool: .pasteText,
-                        text: requestedText
+                        tool: .recognizeScreenshotText,
+                        screenshotID: "before"
                     ))
                 case 2:
                     return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(
-                        tool: .typeText,
+                        tool: .pasteText,
                         text: requestedText
                     ))
                 case 3:
                     return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(
+                        tool: .typeText,
+                        text: requestedText
+                    ))
+                case 4:
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(
                         tool: .recognizeScreenshotText,
                         screenshotID: "after"
                     ))
-                case 4:
+                case 5:
                     return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(
                         tool: .finish,
                         reason: "done"
@@ -1496,7 +1501,9 @@ struct ComputerUsePlannerRuntimeTests {
                 }
             },
             execute: { _, _ in .executed("Pasted text") },
-            recognizeScreenshotText: { _ in "\(requestedText) \(requestedText)" }
+            recognizeScreenshotText: { screenshot in
+                screenshot?.screenshotID == "before" ? "" : "\(requestedText) \(requestedText)"
+            }
         )
 
         let result = await runtime.run(command: "write the same phrase twice")
@@ -1544,9 +1551,9 @@ struct ComputerUsePlannerRuntimeTests {
         #expect(result.traceEvents.contains { $0.title == "Text write unverified" })
     }
 
-    @Test("post-only OCR can verify text absent from pre-action visible evidence")
+    @Test("OCR baseline can verify text absent from pre-action visible evidence")
     @MainActor
-    func postOnlyOCRCanVerifyTextAbsentFromPreActionVisibleEvidence() async {
+    func ocrBaselineCanVerifyTextAbsentFromPreActionVisibleEvidence() async {
         let requestedText = "hello from computer use"
         var observeCount = 0
         let runtime = ComputerUsePlannerRuntime(
@@ -1561,13 +1568,15 @@ struct ComputerUsePlannerRuntimeTests {
             plan: { request in
                 switch request.step {
                 case 1:
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .recognizeScreenshotText, screenshotID: "before"))
+                case 2:
                     return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(
                         tool: .pasteText,
                         text: requestedText
                     ))
-                case 2:
-                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .recognizeScreenshotText, screenshotID: "after"))
                 case 3:
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .recognizeScreenshotText, screenshotID: "after"))
+                case 4:
                     #expect(request.latestWindowState.screenshotOCRText == requestedText)
                     return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish, reason: "done"))
                 default:
@@ -1576,7 +1585,9 @@ struct ComputerUsePlannerRuntimeTests {
                 }
             },
             execute: { _, _ in .executed("Pasted text") },
-            recognizeScreenshotText: { _ in requestedText }
+            recognizeScreenshotText: { screenshot in
+                screenshot?.screenshotID == "before" ? "" : requestedText
+            }
         )
 
         let result = await runtime.run(command: "write hello")

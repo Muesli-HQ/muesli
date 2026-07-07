@@ -6186,7 +6186,8 @@ final class MuesliController: NSObject {
     private func finishComputerUseAudioStop(
         wavURL stoppedWavURL: URL?,
         startedAt: Date,
-        allowSharedStateUpdates: Bool = true
+        allowSharedStateUpdates: Bool = true,
+        executeCommand: Bool = true
     ) {
         if allowSharedStateUpdates {
             markComputerUseLatency("stop_finished")
@@ -6264,6 +6265,10 @@ final class MuesliController: NSObject {
                 )
                 await MainActor.run {
                     self.scheduleICloudSyncAfterLocalChange()
+                }
+                guard executeCommand else {
+                    fputs("[cua] saved superseded command transcript without planner execution\n", stderr)
+                    return
                 }
                 await self.handleComputerUseCommand(
                     transcript: text,
@@ -6950,7 +6955,8 @@ final class MuesliController: NSObject {
                 finishComputerUseAudioStop(
                     wavURL: wavURL,
                     startedAt: startedAt,
-                    allowSharedStateUpdates: false
+                    allowSharedStateUpdates: false,
+                    executeCommand: false
                 )
                 break
             }

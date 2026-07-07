@@ -70,7 +70,7 @@ struct PasteControllerTests {
         pasteboard.clearContents()
         pasteboard.setString("original", forType: .string)
 
-        PasteController.paste(text: "", pasteboard: pasteboard, simulatePasteAction: {})
+        PasteController.paste(text: "", pasteboard: pasteboard, simulatePasteAction: { true })
 
         #expect(pasteboard.string(forType: .string) == "original")
     }
@@ -81,7 +81,7 @@ struct PasteControllerTests {
         pasteboard.clearContents()
         pasteboard.setString("original", forType: .string)
 
-        PasteController.paste(text: "dictated text", pasteboard: pasteboard, simulatePasteAction: {})
+        PasteController.paste(text: "dictated text", pasteboard: pasteboard, simulatePasteAction: { true })
 
         // Immediately after paste(), the clipboard holds the dictation text
         // (restoration happens asynchronously after ~500ms)
@@ -96,7 +96,7 @@ struct PasteControllerTests {
         pasteboard.clearContents()
         pasteboard.setString("user-copied-text", forType: .string)
 
-        PasteController.paste(text: "dictated text", pasteboard: pasteboard, simulatePasteAction: {})
+        PasteController.paste(text: "dictated text", pasteboard: pasteboard, simulatePasteAction: { true })
 
         let restored = await waitForClipboardString(in: pasteboard, expected: "user-copied-text")
 
@@ -114,7 +114,7 @@ struct PasteControllerTests {
             text: "dictated text",
             pasteboard: pasteboard,
             beforePasteAction: { false },
-            simulatePasteAction: { didPostPaste = true }
+            simulatePasteAction: { didPostPaste = true; return true }
         )
 
         let restored = await waitForClipboardString(in: pasteboard, expected: "original")
@@ -123,12 +123,28 @@ struct PasteControllerTests {
         #expect(didPostPaste == false)
     }
 
+    @Test("pasteAndWait reports failed post")
+    func pasteAndWaitReportsFailedPost() async throws {
+        let pasteboard = makePasteboard()
+        pasteboard.clearContents()
+        pasteboard.setString("original", forType: .string)
+
+        let posted = await PasteController.pasteAndWait(
+            text: "dictated text",
+            pasteboard: pasteboard,
+            simulatePasteAction: { false }
+        )
+
+        #expect(posted == false)
+        _ = await waitForClipboardString(in: pasteboard, expected: "original")
+    }
+
     @Test("paste restores empty clipboard state")
     func pasteRestoresEmptyClipboard() async throws {
         let pasteboard = makePasteboard()
         pasteboard.clearContents()
 
-        PasteController.paste(text: "dictated text", pasteboard: pasteboard, simulatePasteAction: {})
+        PasteController.paste(text: "dictated text", pasteboard: pasteboard, simulatePasteAction: { true })
 
         let restored = await waitForClipboardString(in: pasteboard, expected: nil)
 
@@ -150,7 +166,7 @@ struct PasteControllerTests {
         let countBefore = pasteboard.pasteboardItems?.count ?? 0
         #expect(countBefore == 2)
 
-        PasteController.paste(text: "dictated text", pasteboard: pasteboard, simulatePasteAction: {})
+        PasteController.paste(text: "dictated text", pasteboard: pasteboard, simulatePasteAction: { true })
 
         let (countAfter, texts) = await waitForClipboardItems(
             in: pasteboard,
@@ -168,7 +184,7 @@ struct PasteControllerTests {
         pasteboard.clearContents()
         pasteboard.setString("original", forType: .string)
 
-        PasteController.paste(text: "dictated text", pasteboard: pasteboard, simulatePasteAction: {})
+        PasteController.paste(text: "dictated text", pasteboard: pasteboard, simulatePasteAction: { true })
         try await Task.sleep(nanoseconds: 100_000_000)
 
         pasteboard.clearContents()

@@ -1373,8 +1373,7 @@ enum ComputerUseToolExecutor {
                let failure = validateFocusedTextEntryFallbackTarget(targetElement, app: app, mode: mode) {
                 return failure
             }
-            var pasteWasPosted = false
-            PasteController.paste(
+            let pasteWasPosted = await PasteController.pasteAndWait(
                 text: text,
                 processID: processID,
                 beforePasteAction: {
@@ -1382,7 +1381,6 @@ enum ComputerUseToolExecutor {
                         || validateFocusedTextEntryFallbackTarget(targetElement, app: app, mode: mode) == nil else {
                         return false
                     }
-                    pasteWasPosted = true
                     return true
                 }
             )
@@ -1395,7 +1393,7 @@ enum ComputerUseToolExecutor {
             }
             guard pasteWasPosted else {
                 return .failed(
-                    "No focused editable text target: focused element changed before paste_text posted. Refresh state and choose the editable field again.",
+                    "paste_text was not posted: the focused editable target changed or scoped background paste delivery failed. Refresh state and choose the editable field again.",
                     transaction: textEntryTransaction(
                         path: mode.transactionPath,
                         posted: false,
