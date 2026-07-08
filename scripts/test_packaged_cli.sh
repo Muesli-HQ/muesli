@@ -9,6 +9,7 @@ APP_PATH="$INSTALL_ROOT/$APP_BUNDLE_NAME"
 APP_BIN="$APP_PATH/Contents/MacOS/Muesli"
 CLI_BIN="$APP_PATH/Contents/MacOS/muesli-cli"
 SPEC_OUTPUT="$INSTALL_ROOT/muesli-cli-spec.json"
+TRANSCRIBE_HELP_OUTPUT="$INSTALL_ROOT/muesli-cli-transcribe-help.txt"
 
 cleanup() {
   rm -rf "$INSTALL_ROOT"
@@ -37,10 +38,17 @@ if [[ ! -x "$CLI_BIN" ]]; then
 fi
 
 "$CLI_BIN" spec > "$SPEC_OUTPUT"
+"$CLI_BIN" transcribe --help > "$TRANSCRIBE_HELP_OUTPUT"
 
 if ! grep -q '"command" : "muesli-cli spec"' "$SPEC_OUTPUT"; then
   echo "Packaged CLI did not return the expected spec payload." >&2
   cat "$SPEC_OUTPUT" >&2
+  exit 1
+fi
+
+if ! grep -q 'USAGE: muesli-cli transcribe' "$TRANSCRIBE_HELP_OUTPUT"; then
+  echo "Packaged CLI did not return transcribe help." >&2
+  cat "$TRANSCRIBE_HELP_OUTPUT" >&2
   exit 1
 fi
 

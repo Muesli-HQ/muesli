@@ -182,6 +182,13 @@ If launch fails with `No matching profile found`, the embedded profile, bundle I
   brew install --cask muesli
   ```
 
+- [ ] **Verify the Homebrew CLI alias when the cask exposes the bundled binary**
+  ```bash
+  brew install muesli
+  command -v muesli
+  muesli transcribe --help
+  ```
+
 ## Post-release
 
 - [ ] Verify GitHub Pages serves appcast: `curl -s https://muesli-hq.github.io/muesli/appcast.xml | head -5`

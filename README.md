@@ -112,8 +112,9 @@ Muesli bundles an agent-friendly local CLI inside the app bundle:
 
 - Installed path: `/Applications/Muesli.app/Contents/MacOS/muesli-cli`
 - Dev path: `native/MuesliNative/.build/arm64-apple-macosx/debug/muesli-cli`
+- Future Homebrew alias: `muesli` once the official cask exposes the bundled binary as a command
 
-The CLI is designed for coding agents such as Codex and Claude Code. It exposes meetings, dictations, raw transcripts, and stored notes as stable JSON so an agent can analyze them with its own model and write notes back without requiring a user-supplied OpenAI or OpenRouter key.
+The CLI is designed for coding agents such as Codex and Claude Code. It exposes meetings, dictations, raw transcripts, stored notes, and local audio-file transcription. Existing data commands return stable JSON so an agent can analyze them with its own model and write notes back without requiring a user-supplied OpenAI or OpenRouter key. `transcribe` prints plain transcript text by default so it works naturally in shell pipelines.
 
 ### What agents should do
 
@@ -125,18 +126,26 @@ The CLI is designed for coding agents such as Codex and Claude Code. It exposes 
    ```bash
    /Applications/Muesli.app/Contents/MacOS/muesli-cli spec
    ```
-3. List recent meetings or dictations:
+3. Transcribe a local audio file:
+   ```bash
+   /Applications/Muesli.app/Contents/MacOS/muesli-cli transcribe file.mp3
+   ```
+   Homebrew users should eventually be able to use:
+   ```bash
+   muesli transcribe file.mp3
+   ```
+4. List recent meetings or dictations:
    ```bash
    /Applications/Muesli.app/Contents/MacOS/muesli-cli meetings list --limit 10
    /Applications/Muesli.app/Contents/MacOS/muesli-cli dictations list --limit 10
    ```
-4. Fetch a full record:
+5. Fetch a full record:
    ```bash
    /Applications/Muesli.app/Contents/MacOS/muesli-cli meetings get 125
    /Applications/Muesli.app/Contents/MacOS/muesli-cli dictations get 42
    ```
-5. Summarize or analyze locally in the agent.
-6. Write improved meeting notes back:
+6. Summarize or analyze locally in the agent.
+7. Write improved meeting notes back:
    ```bash
    cat notes.md | /Applications/Muesli.app/Contents/MacOS/muesli-cli meetings update-notes 125 --stdin
    ```
@@ -145,15 +154,75 @@ The CLI is designed for coding agents such as Codex and Claude Code. It exposes 
 
 - `muesli-cli spec`
 - `muesli-cli info`
+- `muesli-cli transcribe <file> [--format text|json|markdown] [--model parakeet-v3|parakeet-v2] [--summarize] [--save-meeting] [--title TITLE] [--output PATH]`
 - `muesli-cli meetings list [--limit N] [--folder-id ID]`
 - `muesli-cli meetings get <id>`
 - `muesli-cli meetings update-notes <id> (--stdin | --file <path>)`
 - `muesli-cli dictations list [--limit N]`
 - `muesli-cli dictations get <id>`
 
+### Audio transcription
+
+Supported input files: `.mp3`, `.mp4`, `.m4a`, and `.wav`.
+
+Default output is transcript text only:
+
+```bash
+muesli-cli transcribe interview.mp3
+```
+
+Agent-friendly JSON output uses the normal CLI envelope:
+
+```bash
+muesli-cli transcribe interview.m4a --format json
+```
+
+```json
+{
+  "ok": true,
+  "command": "muesli-cli transcribe",
+  "data": {
+    "transcript": "Raw transcript text...",
+    "summary": null,
+    "durationSeconds": 123.4,
+    "wordCount": 420,
+    "model": "parakeet-v3",
+    "warnings": [],
+    "savedMeetingID": null,
+    "title": "interview"
+  },
+  "meta": {
+    "schemaVersion": 1,
+    "generatedAt": "2026-07-08T00:00:00Z",
+    "dbPath": "/Users/example/Library/Application Support/Muesli/muesli.db",
+    "warnings": []
+  }
+}
+```
+
+Generate markdown notes with the configured API/local summary backend when available:
+
+```bash
+muesli-cli transcribe interview.mp4 --summarize --format markdown --output notes.md
+```
+
+`--summarize` uses configured OpenAI, OpenRouter, Ollama, LM Studio, or Custom LLM settings. If the configured backend is unavailable in headless CLI mode, Muesli keeps the transcript and reports a warning instead of discarding the transcription.
+
+Save the import into Muesli as `source = audio_import`:
+
+```bash
+muesli-cli transcribe interview.wav --save-meeting --title "Customer Interview"
+```
+
+Direct app-bundle fallback path:
+
+```bash
+/Applications/Muesli.app/Contents/MacOS/muesli-cli transcribe file.mp3
+```
+
 ### JSON contract
 
-All CLI commands return JSON on stdout.
+Data commands return JSON on stdout. `transcribe` returns plain text by default; pass `--format json` to use the envelope below.
 
 Success shape:
 
@@ -209,6 +278,7 @@ Important meeting fields:
 ### Notes for agent authors
 
 - The CLI is JSON-first and intended to be machine-consumed.
+- `transcribe` is text-first by default; use `--format json` for structured agent workflows.
 - `formattedNotes` is the only write-back surface in v1.
 - `rawTranscript` is read-only and should be treated as source material.
 - If `notesState` is `missing` or `raw_transcript_fallback`, agents should prefer summarizing from `rawTranscript`.

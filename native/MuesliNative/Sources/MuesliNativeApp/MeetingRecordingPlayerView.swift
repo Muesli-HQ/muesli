@@ -91,6 +91,174 @@ private struct RecordingWaveformData: Equatable {
     }
 }
 
+enum RecordingWaveformCacheFiles {
+    enum SweepResult: Equatable {
+        case completed(removed: Int)
+        case skipped
+    }
+
+    static func cacheURL(
+        for recordingURL: URL,
+        supportDirectory: URL = AppIdentity.supportDirectoryURL,
+        fileManager: FileManager = .default,
+        createDirectory: Bool = true
+    ) throws -> URL {
+        let cacheKey = try cacheKey(for: recordingURL, fileManager: fileManager)
+        return try cacheURL(
+            for: cacheKey,
+            supportDirectory: supportDirectory,
+            fileManager: fileManager,
+            createDirectory: createDirectory
+        )
+    }
+
+    static func removeCachedWaveform(
+        for recordingURL: URL,
+        supportDirectory: URL = AppIdentity.supportDirectoryURL,
+        fileManager: FileManager = .default
+    ) throws {
+        let url = try cacheURL(
+            for: recordingURL,
+            supportDirectory: supportDirectory,
+            fileManager: fileManager,
+            createDirectory: false
+        )
+        try removeCachedWaveform(at: url, fileManager: fileManager)
+    }
+
+    static func removeCachedWaveform(at url: URL, fileManager: FileManager = .default) throws {
+        guard fileManager.fileExists(atPath: url.path) else { return }
+        try fileManager.removeItem(at: url)
+    }
+
+    static func removeAllCachedWaveforms(
+        supportDirectory: URL = AppIdentity.supportDirectoryURL,
+        fileManager: FileManager = .default
+    ) throws {
+        let directory = cacheDirectory(supportDirectory: supportDirectory)
+        guard fileManager.fileExists(atPath: directory.path) else { return }
+        try fileManager.removeItem(at: directory)
+    }
+
+    @discardableResult
+    static func removeLegacyJSONWaveformCaches(
+        supportDirectory: URL = AppIdentity.supportDirectoryURL,
+        fileManager: FileManager = .default,
+        logger: ((String) -> Void)? = { fputs("\($0)\n", stderr) }
+    ) -> SweepResult {
+        let directory = cacheDirectory(supportDirectory: supportDirectory)
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return .completed(removed: 0)
+        }
+
+        var removed = 0
+        for entry in entries where entry.pathExtension.lowercased() == "json" {
+            do {
+                try fileManager.removeItem(at: entry)
+                removed += 1
+            } catch {
+                continue
+            }
+        }
+        if removed > 0 {
+            logger?("[muesli-native] cleaned up \(removed) legacy waveform JSON cache file\(removed == 1 ? "" : "s")")
+        }
+        return .completed(removed: removed)
+    }
+
+    @discardableResult
+    static func sweepOrphanedCachedWaveforms(
+        retainedRecordingURLs: [URL],
+        supportDirectory: URL = AppIdentity.supportDirectoryURL,
+        fileManager: FileManager = .default,
+        logger: ((String) -> Void)? = { fputs("\($0)\n", stderr) }
+    ) -> SweepResult {
+        let directory = cacheDirectory(supportDirectory: supportDirectory)
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return .completed(removed: 0)
+        }
+        guard let retainedCachePaths = retainedCachePaths(
+            for: retainedRecordingURLs,
+            supportDirectory: supportDirectory,
+            fileManager: fileManager
+        ) else {
+            return .skipped
+        }
+
+        var removed = 0
+        for entry in entries where entry.pathExtension.lowercased() == "mwf" {
+            let cachePath = entry.standardizedFileURL.path
+            guard !retainedCachePaths.contains(cachePath) else { continue }
+            do {
+                try fileManager.removeItem(at: entry)
+                removed += 1
+            } catch {
+                continue
+            }
+        }
+        if removed > 0 {
+            logger?("[muesli-native] cleaned up \(removed) orphaned waveform cache file\(removed == 1 ? "" : "s")")
+        }
+        return .completed(removed: removed)
+    }
+
+    static func cacheDirectory(supportDirectory: URL = AppIdentity.supportDirectoryURL) -> URL {
+        supportDirectory.appendingPathComponent("waveform-cache", isDirectory: true)
+    }
+
+    private static func retainedCachePaths(
+        for recordingURLs: [URL],
+        supportDirectory: URL,
+        fileManager: FileManager
+    ) -> Set<String>? {
+        var paths = Set<String>()
+        for recordingURL in recordingURLs where fileManager.fileExists(atPath: recordingURL.path) {
+            do {
+                let cacheURL = try cacheURL(
+                    for: recordingURL,
+                    supportDirectory: supportDirectory,
+                    fileManager: fileManager,
+                    createDirectory: false
+                )
+                paths.insert(cacheURL.standardizedFileURL.path)
+            } catch {
+                return nil
+            }
+        }
+        return paths
+    }
+
+    private static func cacheKey(for url: URL, fileManager: FileManager) throws -> String {
+        let attributes = try fileManager.attributesOfItem(atPath: url.path)
+        let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+        let modified = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        return "\(url.path)|\(size)|\(modified)"
+    }
+
+    private static func cacheURL(
+        for cacheKey: String,
+        supportDirectory: URL,
+        fileManager: FileManager,
+        createDirectory: Bool
+    ) throws -> URL {
+        let directory = cacheDirectory(supportDirectory: supportDirectory)
+        if createDirectory {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        let digest = SHA256.hash(data: Data(cacheKey.utf8))
+        let filename = digest.map { String(format: "%02x", $0) }.joined() + ".mwf"
+        return directory.appendingPathComponent(filename)
+    }
+}
+
 private actor RecordingWaveformCache {
     static let shared = RecordingWaveformCache()
 
@@ -98,12 +266,12 @@ private actor RecordingWaveformCache {
     private let fileManager = FileManager.default
 
     func waveform(for url: URL) throws -> RecordingWaveformData {
-        let cacheKey = try cacheKey(for: url)
+        let cacheURL = try RecordingWaveformCacheFiles.cacheURL(for: url, fileManager: fileManager)
+        let cacheKey = cacheURL.path
         if let cached = memory[cacheKey] {
             return cached
         }
 
-        let cacheURL = try cacheURL(for: cacheKey)
         if let data = try? Data(contentsOf: cacheURL),
            let cached = RecordingWaveformData.decodeCacheData(data) {
             memory[cacheKey] = cached
@@ -114,22 +282,6 @@ private actor RecordingWaveformCache {
         memory[cacheKey] = waveform
         persist(waveform, to: cacheURL)
         return waveform
-    }
-
-    private func cacheKey(for url: URL) throws -> String {
-        let attributes = try fileManager.attributesOfItem(atPath: url.path)
-        let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
-        let modified = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-        return "\(url.path)|\(size)|\(modified)"
-    }
-
-    private func cacheURL(for cacheKey: String) throws -> URL {
-        let directory = AppIdentity.supportDirectoryURL
-            .appendingPathComponent("waveform-cache", isDirectory: true)
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        let digest = SHA256.hash(data: Data(cacheKey.utf8))
-        let filename = digest.map { String(format: "%02x", $0) }.joined() + ".mwf"
-        return directory.appendingPathComponent(filename)
     }
 
     private func persist(_ waveform: RecordingWaveformData, to cacheURL: URL) {
