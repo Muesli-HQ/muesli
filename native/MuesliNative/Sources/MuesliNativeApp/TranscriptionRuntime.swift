@@ -55,6 +55,21 @@ actor TranscriptionCoordinator {
         return transcriber
     }
 
+    /// Parakeet model set for display-only meeting partials: loads the already-
+    /// downloaded v3 models (shared CoreML instances with regular transcription)
+    /// but never downloads them. Returns nil when the models aren't on disk or
+    /// loading fails — callers fall back to the Nemotron partials engine.
+    func getLoadedParakeetModelsIfDownloaded() async -> AsrModels? {
+        guard BackendOption.parakeetMultilingual.isDownloaded else { return nil }
+        do {
+            try await fluidTranscriber.loadModels(version: .v3)
+            return await fluidTranscriber.currentLoadedModels()
+        } catch {
+            fputs("[meeting-partials] parakeet load for live partials failed: \(error)\n", stderr)
+            return nil
+        }
+    }
+
     /// The Nemotron 3.5 streaming transcriber for display-only meeting partials.
     /// Partials never force a fresh ANE-resident load: the transcriber is used
     /// only when this session already created it (Nemotron is the selected

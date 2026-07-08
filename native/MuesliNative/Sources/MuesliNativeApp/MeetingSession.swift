@@ -301,93 +301,127 @@ final class MeetingSession {
         setupStreamingPartialsIfAvailable()
     }
 
-    /// Display-only streaming partials (#99): attach per-source sessions when
-    /// the Nemotron 3.5 streaming model is already on disk. Loading happens off
-    /// the start path so meeting start is never delayed; sessions attach when
-    /// ready. If recording ends first they are simply never fed.
+    /// Display-only streaming partials (#99): attach per-source engine sessions
+    /// when a suitable model is already on disk (never downloads). Loading
+    /// happens off the start path so meeting start is never delayed; sessions
+    /// attach when ready. If recording ends first they are simply never fed.
+    ///
+    /// Engine priority: Parakeet sliding-window (~1s hypothesis updates with
+    /// corrections; the default onboarding model, and it shares the already
+    /// loaded CoreML instances) → Nemotron 3.5 RNN-T (~2.2s bursts, broader
+    /// language coverage) → none (live view behaves exactly as before).
     private func setupStreamingPartialsIfAvailable() {
         guard config.enableLiveStreamingPartials else { return }
-        guard #available(macOS 15, *) else { return }
         Task { [weak self] in
             guard let self else { return }
-            guard let transcriber = await self.transcriptionCoordinator.getLoadedNemotron35TranscriberIfDownloaded() else { return }
-            let chunkSamples = transcriber.chunkSamples
-            let stillRecording = self.chunkRotationQueue.sync { self.isRecording }
-            guard stillRecording else { return }
-            let mic = MeetingStreamingPartialSession(transcriber: transcriber, chunkSamples: chunkSamples, label: "You")
-            mic.onPartialUpdate = { [weak self] text in self?.onPartialTranscript?("You", text) }
-            let system = MeetingStreamingPartialSession(transcriber: transcriber, chunkSamples: chunkSamples, label: "Others")
-            system.onPartialUpdate = { [weak self] text in self?.onPartialTranscript?("Others", text) }
-            let installed = self.partialSessionsStorage.withLock { s -> Bool in
-                guard !s.isShutDown else { return false }
-                s.mic = mic
-                s.system = system
-                return true
-            }
-            guard installed else {
-                // Teardown won the race — stop the never-installed sessions.
-                mic.stop()
-                system.stop()
-                return
-            }
-            fputs("[meeting-partials] streaming partials active (chunkSamples=\(chunkSamples))\n", stderr)
+            if await self.setupParakeetPartials() { return }
+            await self.setupNemotronPartials()
         }
     }
 
-    @available(macOS 15, *)
-    private func micPartialSession() -> MeetingStreamingPartialSession? {
-        partialSessionsStorage.withLock { $0.mic as? MeetingStreamingPartialSession }
+    /// Install freshly created sessions unless teardown already ran; losers of
+    /// the race stop themselves so nothing leaks.
+    private func installPartialSessions(mic: MeetingPartialStreaming, system: MeetingPartialStreaming) -> Bool {
+        let installed = partialSessionsStorage.withLock { s -> Bool in
+            guard !s.isShutDown else { return false }
+            s.mic = mic
+            s.system = system
+            return true
+        }
+        if !installed {
+            mic.stop()
+            system.stop()
+        }
+        return installed
     }
 
-    @available(macOS 15, *)
-    private func systemPartialSession() -> MeetingStreamingPartialSession? {
-        partialSessionsStorage.withLock { $0.system as? MeetingStreamingPartialSession }
+    private func setupParakeetPartials() async -> Bool {
+        guard let models = await transcriptionCoordinator.getLoadedParakeetModelsIfDownloaded() else { return false }
+        let stillRecording = chunkRotationQueue.sync { self.isRecording }
+        guard stillRecording else { return true }
+        do {
+            let mic = try await Self.makeParakeetPartialSession(models: models, source: .microphone, label: "You")
+            mic.onPartialUpdate = { [weak self] text in self?.onPartialTranscript?("You", text) }
+            let system = try await Self.makeParakeetPartialSession(models: models, source: .system, label: "Others")
+            system.onPartialUpdate = { [weak self] text in self?.onPartialTranscript?("Others", text) }
+            guard installPartialSessions(mic: mic, system: system) else { return true }
+            fputs("[meeting-partials] parakeet sliding-window partials active\n", stderr)
+            return true
+        } catch {
+            fputs("[meeting-partials] parakeet partials failed to start: \(error)\n", stderr)
+            return false
+        }
+    }
+
+    private static func makeParakeetPartialSession(
+        models: AsrModels,
+        source: AudioSource,
+        label: String
+    ) async throws -> ParakeetSlidingWindowPartialSession {
+        let manager = SlidingWindowAsrManager(config: .streaming)
+        try await manager.loadModels(models)
+        let session = ParakeetSlidingWindowPartialSession(manager: manager, source: source, label: label)
+        try await session.start()
+        return session
+    }
+
+    private func setupNemotronPartials() async {
+        guard #available(macOS 15, *) else { return }
+        guard let transcriber = await transcriptionCoordinator.getLoadedNemotron35TranscriberIfDownloaded() else { return }
+        let chunkSamples = transcriber.chunkSamples
+        let stillRecording = chunkRotationQueue.sync { self.isRecording }
+        guard stillRecording else { return }
+        let mic = MeetingStreamingPartialSession(transcriber: transcriber, chunkSamples: chunkSamples, label: "You")
+        mic.onPartialUpdate = { [weak self] text in self?.onPartialTranscript?("You", text) }
+        let system = MeetingStreamingPartialSession(transcriber: transcriber, chunkSamples: chunkSamples, label: "Others")
+        system.onPartialUpdate = { [weak self] text in self?.onPartialTranscript?("Others", text) }
+        guard installPartialSessions(mic: mic, system: system) else { return }
+        fputs("[meeting-partials] nemotron streaming partials active (chunkSamples=\(chunkSamples))\n", stderr)
+    }
+
+    private func micPartialSession() -> MeetingPartialStreaming? {
+        partialSessionsStorage.withLock { $0.mic as? MeetingPartialStreaming }
+    }
+
+    private func systemPartialSession() -> MeetingPartialStreaming? {
+        partialSessionsStorage.withLock { $0.system as? MeetingPartialStreaming }
     }
 
     private func feedMicPartialSession(_ samples: [Float]) {
-        guard #available(macOS 15, *) else { return }
         micPartialSession()?.enqueue(samples)
     }
 
     private func feedSystemPartialSession(_ samples: [Float]) {
-        guard #available(macOS 15, *) else { return }
         systemPartialSession()?.enqueue(samples)
     }
 
     private func markMicPartialBoundary() {
-        guard #available(macOS 15, *) else { return }
         micPartialSession()?.markSegmentBoundary()
     }
 
     private func markSystemPartialBoundary() {
-        guard #available(macOS 15, *) else { return }
         systemPartialSession()?.markSegmentBoundary()
     }
 
     private func commitMicPartialSegment() {
-        guard #available(macOS 15, *) else { return }
         micPartialSession()?.commitSegment()
     }
 
     private func commitSystemPartialSegment() {
-        guard #available(macOS 15, *) else { return }
         systemPartialSession()?.commitSegment()
     }
 
     private func suspendPartialSessions() {
-        guard #available(macOS 15, *) else { return }
         micPartialSession()?.suspend()
         systemPartialSession()?.suspend()
     }
 
     private func resumePartialSessions() {
-        guard #available(macOS 15, *) else { return }
         micPartialSession()?.resume()
         systemPartialSession()?.resume()
     }
 
     private func stopPartialSessions() {
-        guard #available(macOS 15, *) else { return }
         let sessions = partialSessionsStorage.withLock { s -> (Any?, Any?) in
             let taken = (s.mic, s.system)
             s.mic = nil
@@ -395,8 +429,8 @@ final class MeetingSession {
             s.isShutDown = true
             return taken
         }
-        (sessions.0 as? MeetingStreamingPartialSession)?.stop()
-        (sessions.1 as? MeetingStreamingPartialSession)?.stop()
+        (sessions.0 as? MeetingPartialStreaming)?.stop()
+        (sessions.1 as? MeetingPartialStreaming)?.stop()
     }
 
     func pause() {

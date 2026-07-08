@@ -6,6 +6,7 @@ import MuesliCore
 /// running on Apple's Neural Engine (ANE) via CoreML.
 actor FluidAudioTranscriber {
     private var asrManager: AsrManager?
+    private var loadedModels: AsrModels?
     private var loadedVersion: AsrModelVersion?
 
     enum TranscriberError: Error, LocalizedError {
@@ -55,8 +56,16 @@ actor FluidAudioTranscriber {
         let manager = AsrManager(config: .default)
         try await manager.loadModels(models)
         self.asrManager = manager
+        self.loadedModels = models
         self.loadedVersion = version
         fputs("[fluidaudio] models ready\n", stderr)
+    }
+
+    /// The loaded model set, for consumers that share the CoreML instances
+    /// instead of loading their own copy (e.g. sliding-window streaming
+    /// partials). nil until `loadModels` has succeeded.
+    func currentLoadedModels() -> AsrModels? {
+        loadedModels
     }
 
     private static func formatMegabytes(_ bytes: Int64) -> String {
@@ -76,6 +85,7 @@ actor FluidAudioTranscriber {
 
     func shutdown() {
         asrManager = nil
+        loadedModels = nil
         loadedVersion = nil
     }
 }

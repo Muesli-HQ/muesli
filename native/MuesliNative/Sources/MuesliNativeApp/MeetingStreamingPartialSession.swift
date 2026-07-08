@@ -1,6 +1,25 @@
 import Foundation
 import os
 
+/// Engine-agnostic surface MeetingSession drives for display-only streaming
+/// partials. Implementations: `MeetingStreamingPartialSession` (Nemotron
+/// RNN-T) and `ParakeetSlidingWindowPartialSession` (FluidAudio sliding
+/// window). All methods must be cheap and thread-safe; inference happens on
+/// implementation-owned background tasks.
+protocol MeetingPartialStreaming: AnyObject {
+    /// Called with the current provisional tail text on a background thread.
+    /// An empty string clears the tail.
+    var onPartialUpdate: ((String) -> Void)? { get set }
+    func enqueue(_ samples: [Float])
+    /// A VAD chunk rotated — the tail accumulated so far belongs to it.
+    func markSegmentBoundary()
+    /// The rotated chunk's committed caption landed.
+    func commitSegment()
+    func suspend()
+    func resume()
+    func stop()
+}
+
 /// Display-only streaming partials for one meeting audio source ("You" or "Others").
 ///
 /// Fed the same 16 kHz float samples the source's VAD consumes (on
@@ -16,7 +35,7 @@ import os
 /// logs once, clears its tail, and goes dormant; the committed path is never
 /// affected.
 @available(macOS 15, *)
-final class MeetingStreamingPartialSession {
+final class MeetingStreamingPartialSession: MeetingPartialStreaming {
     /// Called with the current provisional tail text on a background thread.
     /// An empty string clears the tail.
     var onPartialUpdate: ((String) -> Void)?
