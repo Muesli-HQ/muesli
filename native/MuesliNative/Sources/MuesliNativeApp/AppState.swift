@@ -75,6 +75,7 @@ final class AppState {
     var selectedBackend: BackendOption = .whisper
     var selectedMeetingTranscriptionBackend: BackendOption = .whisper
     var selectedMeetingSummaryBackend: MeetingSummaryBackendOption = .chatGPT
+    var selectedPostProcessorBackend: TranscriptCleanupBackendOption = .local
     var activePostProcessor: PostProcessorOption = PostProcessorOption.defaultOption
     var config: AppConfig = AppConfig()
     var launchAtLoginRegistrationState: LaunchAtLoginRegistrationState = .disabled
@@ -123,6 +124,7 @@ final class AppState {
     var iCloudLastSyncSummary: String?
     var iCloudLastSyncedAt: Date?
     var contributionMilestonePrompt: ContributionMilestonePrompt?
+    var pendingDiagnosticIncident: DiagnosticIncident?
     var modelPreparationTitle: String?
     var modelPreparationDetail: String?
     var modelPreparationProgress: Double?

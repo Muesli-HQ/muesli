@@ -859,6 +859,30 @@ struct MeetingsNavigationTests {
         #expect(controller.appState.config.meetingTranscriptionModel == BackendOption.whisperLargeTurbo.model)
     }
 
+    @Test("updateConfig persists normalized meeting transcription backend")
+    func updateConfigPersistsNormalizedMeetingTranscriptionBackend() {
+        let controller = makeController()
+        let originalConfig = controller.config
+        defer {
+            controller.updateConfig { config in
+                config = originalConfig
+            }
+        }
+
+        controller.updateConfig {
+            $0.sttBackend = BackendOption.parakeetMultilingual.backend
+            $0.sttModel = BackendOption.parakeetMultilingual.model
+            $0.meetingTranscriptionBackend = BackendOption.nemotron35Multilingual.backend
+            $0.meetingTranscriptionModel = BackendOption.nemotron35Multilingual.model
+        }
+
+        #expect(controller.appState.selectedMeetingTranscriptionBackend.supportsMeetingTranscription)
+        #expect(controller.appState.config.meetingTranscriptionBackend != BackendOption.nemotron35Multilingual.backend)
+        #expect(controller.appState.config.meetingTranscriptionModel != BackendOption.nemotron35Multilingual.model)
+        #expect(controller.config.meetingTranscriptionBackend == controller.appState.selectedMeetingTranscriptionBackend.backend)
+        #expect(controller.config.meetingTranscriptionModel == controller.appState.selectedMeetingTranscriptionBackend.model)
+    }
+
     private func makeMeeting(
         id: Int64,
         title: String,

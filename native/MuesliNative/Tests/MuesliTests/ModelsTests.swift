@@ -25,7 +25,7 @@ struct BackendOptionTests {
 
     @Test("backend field is one of the known backends")
     func knownBackends() {
-        let known: Set<String> = ["fluidaudio", "whisper", "qwen", "nemotron35", "canary", "cohere", "indicasr", "sensevoice"]
+        let known: Set<String> = ["fluidaudio", "whisper", "qwen", "nemotron35", "cohere", "indicasr", "sensevoice"]
         for option in BackendOption.all {
             #expect(known.contains(option.backend), "Unknown backend: \(option.backend)")
         }
@@ -67,7 +67,6 @@ struct BackendOptionTests {
         #expect(BackendOption.all.contains(.whisperMedium))
         #expect(BackendOption.all.contains(.whisperLargeTurbo))
         #expect(BackendOption.all.contains(.qwen3Asr))
-        #expect(BackendOption.all.contains(.canaryQwen))
         #expect(BackendOption.all.contains(.cohereTranscribe))
         #expect(BackendOption.all.contains(.indicASR))
         #expect(BackendOption.all.contains(.senseVoiceSmall))
@@ -166,6 +165,14 @@ struct BackendOptionTests {
     func streamingDictationBackends() {
         let streaming = BackendOption.all.filter(\.isStreamingDictationBackend)
         #expect(streaming == [.nemotron35Multilingual])
+    }
+
+    @Test("streaming dictation models are excluded from meeting transcription")
+    func streamingDictationModelsAreExcludedFromMeetingTranscription() {
+        #expect(!BackendOption.nemotron35Multilingual.supportsMeetingTranscription)
+        #expect(BackendOption.parakeetMultilingual.supportsMeetingTranscription)
+        #expect(BackendOption.whisperLargeTurbo.supportsMeetingTranscription)
+        #expect(!BackendOption.downloadedMeetingTranscription.contains(.nemotron35Multilingual))
     }
 
     @Test("Whisper models use WhisperKit CoreML identifiers")
@@ -332,7 +339,26 @@ struct SummaryModelPresetTests {
     @Test("OpenAI presets have valid model IDs")
     func openAIModels() {
         #expect(!SummaryModelPreset.openAIModels.isEmpty)
+        #expect(SummaryModelPreset.openAIModels.first?.id == "gpt-5.4-mini")
+        #expect(SummaryModelPreset.openAIModels.contains { $0.id == "gpt-5.5" })
+        #expect(SummaryModelPreset.openAIModels.contains { $0.id == "chat-latest" })
         for preset in SummaryModelPreset.openAIModels {
+            #expect(!preset.id.isEmpty)
+            #expect(!preset.label.isEmpty)
+        }
+    }
+
+    @Test("ChatGPT presets include supported fast options")
+    func chatGPTModels() {
+        #expect(!SummaryModelPreset.chatGPTModels.isEmpty)
+        #expect(SummaryModelPreset.chatGPTModels.first?.id == "gpt-5.4-mini")
+        #expect(SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.5" })
+        #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.4-nano" })
+        #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "chat-latest" })
+        #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.4" })
+        #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.2" })
+        #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-4o" })
+        for preset in SummaryModelPreset.chatGPTModels {
             #expect(!preset.id.isEmpty)
             #expect(!preset.label.isEmpty)
         }
@@ -509,6 +535,7 @@ struct AppConfigTests {
         #expect(config.meetingRecordingFileFormat == MeetingRecordingFileFormat.m4a.rawValue)
         #expect(config.resolvedMeetingRecordingFileFormat == .m4a)
         #expect(config.openRouterAPIKey.isEmpty)
+        #expect(config.meetingSummaryRetryCount == MeetingSummaryRetryPolicy.defaultRetryCount)
         #expect(config.ollamaURL == "http://localhost:11434")
         #expect(config.ollamaModel == "qwen3.5")
         #expect(config.lmStudioURL == "http://localhost:1234")
@@ -517,6 +544,17 @@ struct AppConfigTests {
         #expect(config.customLLMAPIKey.isEmpty)
         #expect(config.customLLMModel.isEmpty)
         #expect(config.customLLMFormat == "openai")
+        #expect(config.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
+        #expect(config.postProcessorChatGPTModel.isEmpty)
+        #expect(config.postProcessorOpenAIModel.isEmpty)
+        #expect(config.postProcessorOpenRouterModel.isEmpty)
+        #expect(config.postProcessorOllamaModel.isEmpty)
+        #expect(config.postProcessorLMStudioModel.isEmpty)
+        #expect(config.postProcessorCustomLLMModel.isEmpty)
+        #expect(config.activeTranscriptCleanupPromptId == TranscriptCleanupPrompts.defaultID)
+        #expect(config.customTranscriptCleanupPrompts.isEmpty)
+        #expect(config.enableScreenContext == false)
+        #expect(config.enableDictationOCRContext == false)
         #expect(config.dictationHotkey == .default)
         #expect(config.computerUseHotkey == .computerUseDefault)
         #expect(config.enableComputerUseHotkey == false)
@@ -550,6 +588,120 @@ struct AppConfigTests {
         #expect(config.contributionLinkedInClicked == false)
         #expect(config.upcomingMeetingsDayCount == UpcomingMeetingsWindow.defaultDayCount)
         #expect(config.hiddenCalendarEventSourceHints.isEmpty)
+    }
+
+    @Test("LM Studio cleanup readiness requires model and valid URL")
+    func lmStudioCleanupReadinessRequiresModelAndValidURL() {
+        let backend = TranscriptCleanupBackendOption.hosted(.lmStudio)
+        var config = AppConfig()
+        config.postProcessorLMStudioModel = "local-cleanup-model"
+        config.lmStudioURL = "not a url"
+
+        #expect(!TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+
+        config.lmStudioURL = "http://localhost:1234"
+
+        #expect(TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+    }
+
+    @Test("Ollama cleanup readiness requires valid URL")
+    func ollamaCleanupReadinessRequiresValidURL() {
+        let backend = TranscriptCleanupBackendOption.hosted(.ollama)
+        var config = AppConfig()
+
+        #expect(TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+
+        config.ollamaURL = "not a url"
+
+        #expect(!TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+
+        config.ollamaURL = "http://localhost:11434"
+
+        #expect(TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+    }
+
+    @Test("Custom LLM cleanup readiness requires model and explicit valid URL")
+    func customLLMCleanupReadinessRequiresModelAndExplicitValidURL() {
+        let backend = TranscriptCleanupBackendOption.hosted(.customLLM)
+        var config = AppConfig()
+        config.postProcessorCustomLLMModel = "cleanup-model"
+
+        #expect(!TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+
+        config.customLLMURL = "not a url"
+
+        #expect(!TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+
+        config.customLLMURL = "http://localhost:8080"
+
+        #expect(TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+
+        config.customLLMFormat = CustomLLMFormat.anthropic.rawValue
+        config.customLLMAPIKey = ""
+
+        #expect(!TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+
+        config.customLLMAPIKey = "sk-ant-test"
+
+        #expect(TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+    }
+
+    @Test("OpenRouter cleanup key falls back to environment")
+    func openRouterCleanupKeyFallsBackToEnvironment() {
+        var config = AppConfig()
+        config.openRouterAPIKey = ""
+
+        #expect(TranscriptCleanupClient.resolvedOpenRouterAPIKey(
+            config: config,
+            environment: ["OPENROUTER_API_KEY": "sk-or-env"]
+        ) == "sk-or-env")
+
+        config.openRouterAPIKey = " sk-or-config "
+
+        #expect(TranscriptCleanupClient.resolvedOpenRouterAPIKey(
+            config: config,
+            environment: ["OPENROUTER_API_KEY": "sk-or-env"]
+        ) == "sk-or-config")
     }
 
     @Test("JSON encode/decode round-trip")
@@ -597,6 +749,25 @@ struct AppConfigTests {
         config.customLLMAPIKey = "custom-key"
         config.customLLMModel = "custom-model"
         config.customLLMFormat = "anthropic"
+        config.meetingSummaryRetryCount = 5
+        config.postProcessorBackend = TranscriptCleanupBackendOption.hosted(.openRouter).backend
+        config.postProcessorChatGPTModel = "gpt-5.4-mini"
+        config.postProcessorOpenAIModel = "gpt-5.4-mini"
+        config.postProcessorOpenRouterModel = "openrouter/test-model"
+        config.postProcessorOllamaModel = "qwen3.5"
+        config.postProcessorLMStudioModel = "lmstudio-loaded"
+        config.postProcessorCustomLLMModel = "custom-cleanup"
+        config.activeTranscriptCleanupPromptId = "cleanup_custom_1"
+        config.customTranscriptCleanupPrompts = [
+            CustomTranscriptCleanupPrompt(
+                id: "cleanup_custom_1",
+                name: "Strict Dictation",
+                prompt: "Preserve labels and quotes."
+            )
+        ]
+        config.postProcessorSystemPrompt = "Preserve labels and quotes."
+        config.enableScreenContext = true
+        config.enableDictationOCRContext = true
         config.contributionPromptNextWordCount = 31_000
         config.contributionPromptNextMeetingCount = 75
         config.contributionGitHubStarClicked = true
@@ -654,6 +825,20 @@ struct AppConfigTests {
         #expect(decoded.customLLMAPIKey == "custom-key")
         #expect(decoded.customLLMModel == "custom-model")
         #expect(decoded.customLLMFormat == "anthropic")
+        #expect(decoded.meetingSummaryRetryCount == 5)
+        #expect(decoded.postProcessorBackend == "openrouter")
+        #expect(decoded.postProcessorChatGPTModel == "gpt-5.4-mini")
+        #expect(decoded.postProcessorOpenAIModel == "gpt-5.4-mini")
+        #expect(decoded.postProcessorOpenRouterModel == "openrouter/test-model")
+        #expect(decoded.postProcessorOllamaModel == "qwen3.5")
+        #expect(decoded.postProcessorLMStudioModel == "lmstudio-loaded")
+        #expect(decoded.postProcessorCustomLLMModel == "custom-cleanup")
+        #expect(decoded.activeTranscriptCleanupPromptId == "cleanup_custom_1")
+        #expect(decoded.customTranscriptCleanupPrompts.count == 1)
+        #expect(decoded.customTranscriptCleanupPrompts.first?.name == "Strict Dictation")
+        #expect(decoded.postProcessorSystemPrompt == "Preserve labels and quotes.")
+        #expect(decoded.enableScreenContext == true)
+        #expect(decoded.enableDictationOCRContext == true)
         #expect(decoded.contributionPromptNextWordCount == 31_000)
         #expect(decoded.contributionPromptNextMeetingCount == 75)
         #expect(decoded.contributionGitHubStarClicked == true)
@@ -726,6 +911,33 @@ struct AppConfigTests {
         #expect(json["custom_llm_api_key"] != nil)
         #expect(json["custom_llm_model"] != nil)
         #expect(json["custom_llm_format"] != nil)
+        #expect(json["meeting_summary_retry_count"] != nil)
+        #expect(json["post_processor_backend"] != nil)
+        #expect(json["post_processor_chatgpt_model"] != nil)
+        #expect(json["post_processor_openai_model"] != nil)
+        #expect(json["post_processor_openrouter_model"] != nil)
+        #expect(json["post_processor_ollama_model"] != nil)
+        #expect(json["post_processor_lmstudio_model"] != nil)
+        #expect(json["post_processor_custom_llm_model"] != nil)
+        #expect(json["active_transcript_cleanup_prompt_id"] != nil)
+        #expect(json["custom_transcript_cleanup_prompts"] != nil)
+        #expect(json["enable_screen_context"] != nil)
+        #expect(json["enable_dictation_ocr_context"] != nil)
+    }
+
+    @Test("decodes screen context flags from snake_case")
+    func decodesScreenContextFlagsFromSnakeCase() throws {
+        let json = """
+        {
+            "enable_screen_context": true,
+            "enable_dictation_ocr_context": true
+        }
+        """
+        let data = json.data(using: .utf8)!
+        let config = try JSONDecoder().decode(AppConfig.self, from: data)
+
+        #expect(config.enableScreenContext == true)
+        #expect(config.enableDictationOCRContext == true)
     }
 
     @Test("decodes with missing fields using defaults")
@@ -774,6 +986,134 @@ struct AppConfigTests {
         #expect(config.customLLMAPIKey.isEmpty)
         #expect(config.customLLMModel.isEmpty)
         #expect(config.customLLMFormat == "openai")
+        #expect(config.meetingSummaryRetryCount == MeetingSummaryRetryPolicy.defaultRetryCount)
+        #expect(config.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
+        #expect(config.activeTranscriptCleanupPromptId == TranscriptCleanupPrompts.defaultID)
+        #expect(config.customTranscriptCleanupPrompts.isEmpty)
+        #expect(config.enableScreenContext == false)
+        #expect(config.enableDictationOCRContext == false)
+    }
+
+    @Test("meeting summary retry count is clamped on decode")
+    func meetingSummaryRetryCountIsClampedOnDecode() throws {
+        let negativeConfig = try JSONDecoder().decode(
+            AppConfig.self,
+            from: Data(#"{"meeting_summary_retry_count": -3}"#.utf8)
+        )
+        let excessiveConfig = try JSONDecoder().decode(
+            AppConfig.self,
+            from: Data(#"{"meeting_summary_retry_count": 99}"#.utf8)
+        )
+
+        #expect(negativeConfig.meetingSummaryRetryCount == 0)
+        #expect(excessiveConfig.meetingSummaryRetryCount == MeetingSummaryRetryPolicy.maximumRetryCount)
+    }
+
+    @Test("unknown cleanup backend resolves to local")
+    func unknownCleanupBackendResolvesToLocal() throws {
+        let json = """
+        {
+          "post_processor_backend": "future_provider"
+        }
+        """
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
+        #expect(TranscriptCleanupBackendOption.resolved(config.postProcessorBackend) == .local)
+    }
+
+    @Test("missing cleanup prompt preset falls back to built-in default")
+    func missingCleanupPromptPresetFallsBackToDefault() throws {
+        let json = """
+        {
+          "active_transcript_cleanup_prompt_id": "deleted-preset",
+          "post_processor_system_prompt": "Legacy user-edited cleanup prompt"
+        }
+        """
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.activeTranscriptCleanupPromptId == TranscriptCleanupPrompts.defaultID)
+        #expect(config.postProcessorSystemPrompt == PostProcessorOption.defaultSystemPrompt)
+        #expect(
+            TranscriptCleanupPrompts
+                .resolve(id: config.activeTranscriptCleanupPromptId, custom: config.customTranscriptCleanupPrompts)
+                .prompt == PostProcessorOption.defaultSystemPrompt
+        )
+    }
+
+    @Test("default cleanup prompt explains app context")
+    func defaultCleanupPromptExplainsAppContext() {
+        #expect(PostProcessorOption.defaultSystemPrompt.contains("<APP-CONTEXT>"))
+        #expect(PostProcessorOption.defaultSystemPrompt.contains("OCR screen text"))
+        #expect(PostProcessorOption.defaultSystemPrompt.contains("Never copy app context into the output"))
+    }
+
+    @Test("dictation app context prompt includes OCR text")
+    func dictationAppContextPromptIncludesOCRText() {
+        let ocrText = String(repeating: "a", count: 3_200) + "tail"
+        let context = DictationContext(
+            appName: "Notes",
+            bundleID: "com.apple.Notes",
+            documentContext: "Project Apollo",
+            selectedText: "Mercury",
+            url: "https://example.com",
+            ocrText: ocrText
+        )
+        let prompt = DictationContextCapture.formatForPrompt(context)
+
+        #expect(prompt.contains("App: Notes (https://example.com)"))
+        #expect(prompt.contains("Document context: Project Apollo"))
+        #expect(prompt.contains("Selected text: Mercury"))
+        #expect(prompt.contains("OCR screen text: "))
+        #expect(prompt.contains("tail"))
+    }
+
+    @Test("post processor input caps app context")
+    func postProcessorInputCapsAppContext() {
+        let prompt = Qwen3PostProcessorConfig.formatInput(
+            "hello",
+            appContext: String(repeating: "a", count: 20),
+            maxAppContextCharacters: 5
+        )
+
+        #expect(prompt.contains("<APP-CONTEXT>\naaaaa\n</APP-CONTEXT>"))
+        #expect(prompt.contains("<USER-INPUT>\nhello\n</USER-INPUT>"))
+    }
+
+    @Test("hosted cleanup augments custom prompts when app context is present")
+    func hostedCleanupAugmentsCustomPromptsWhenAppContextIsPresent() {
+        let prompt = TranscriptCleanupClient.systemPromptWithAppContextGuidance(
+            "Preserve the user's words.",
+            appContext: "App: Notes"
+        )
+
+        #expect(prompt.contains("Preserve the user's words."))
+        #expect(prompt.contains("<APP-CONTEXT>"))
+        #expect(prompt.contains("OCR screen text"))
+    }
+
+    @Test("hosted cleanup does not duplicate app context guidance")
+    func hostedCleanupDoesNotDuplicateAppContextGuidance() {
+        let prompt = TranscriptCleanupClient.systemPromptWithAppContextGuidance(
+            PostProcessorOption.defaultSystemPrompt,
+            appContext: "App: Notes"
+        )
+
+        #expect(prompt == PostProcessorOption.defaultSystemPrompt)
+    }
+
+    @Test("unsupported ChatGPT model selections fall back to default")
+    func unsupportedChatGPTModelSelectionsFallBackToDefault() throws {
+        let json = """
+        {
+          "chatgpt_model": "chat-latest",
+          "post_processor_chatgpt_model": "gpt-5.4-nano"
+        }
+        """
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.chatGPTModel.isEmpty)
+        #expect(config.postProcessorChatGPTModel.isEmpty)
     }
 
     @Test("legacy completed onboarding enables meetings when use case is missing")

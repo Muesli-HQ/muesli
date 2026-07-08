@@ -75,9 +75,11 @@ Download the latest `.dmg` from [Releases](https://github.com/Muesli-HQ/muesli/r
 ### Homebrew
 
 ```bash
-brew tap Muesli-HQ/muesli
 brew install --cask muesli
 ```
+
+Current Homebrew also resolves `brew install muesli` to the official cask; the
+`--cask` form is shown to make the app install explicit.
 
 ### Build from source
 

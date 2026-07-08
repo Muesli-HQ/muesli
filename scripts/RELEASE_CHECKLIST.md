@@ -5,7 +5,7 @@ Run `./scripts/release.sh [version]` — it automates steps 1-9 and is the only 
 Source of truth:
 - GitHub Releases hosts the official DMG binaries
 - GitHub Pages hosts the Sparkle appcast consumed by the app
-- `Muesli-HQ/homebrew-muesli` mirrors the verified GitHub Release DMG via the Homebrew tap cask
+- The official `Homebrew/homebrew-cask` cask tracks the verified GitHub Release DMG
 - Marketing surfaces may link to those assets, but they are not release authorities
 
 This checklist is for **verification** after the script runs, and for manual recovery if any step fails.
@@ -16,6 +16,7 @@ This checklist is for **verification** after the script runs, and for manual rec
 - [ ] `swift test --package-path native/MuesliNative` — all tests pass
 - [ ] Version bumped in `scripts/build_native_app.sh` (CFBundleVersion + CFBundleShortVersionString)
 - [ ] No uncommitted changes (`git status` clean)
+- [ ] Homebrew installed and updated enough to run post-release `brew livecheck --cask muesli`
 
 ## Signing Profiles
 
@@ -167,17 +168,18 @@ If launch fails with `No matching profile found`, the embedded profile, bundle I
   git push
   ```
 
-## Homebrew Tap
+## Homebrew Cask
 
-- [ ] **Update the Homebrew tap cask** in `Muesli-HQ/homebrew-muesli`
-  - `Casks/m/muesli.rb` must point at the new version and the hosted GitHub Release SHA256
-  - Commit message should be `muesli X.Y.Z`
-  - The canonical release flow now automates this inside `scripts/release.sh`
+- [ ] **Verify the official Homebrew cask autobump path**
+  - The canonical release flow runs `brew livecheck --cask muesli` after the GitHub Release is published
+  - It also runs `brew bump --cask --no-pull-requests muesli` to confirm BrewTestBot owns update PRs
+  - Homebrew's BrewTestBot owns official cask bump PRs for `muesli` and opens them automatically about every 3 hours
+  - If a PR does not appear after the next autobump cycle, investigate livecheck/autobump rather than using `brew bump-cask-pr`
+  - Set `MUESLI_SKIP_HOMEBREW_CHECK=1` only when intentionally skipping the release-time livecheck
 
-- [ ] **Verify the tap install path if the cask changed shape**
+- [ ] **Verify the official cask install path if the cask changed shape**
   ```bash
-  brew tap Muesli-HQ/muesli
-  brew install --cask Muesli-HQ/muesli/muesli
+  brew install --cask muesli
   ```
 
 ## Post-release

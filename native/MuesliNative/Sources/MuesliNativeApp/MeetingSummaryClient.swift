@@ -20,11 +20,108 @@ enum MeetingSummaryError: LocalizedError {
     }
 }
 
+enum MeetingSummaryRetryPolicy {
+    static let defaultRetryCount = 3
+    static let maximumRetryCount = 5
+
+    static func clampedRetryCount(_ count: Int) -> Int {
+        min(max(count, 0), maximumRetryCount)
+    }
+
+    static func shouldRetry(_ error: Error) -> Bool {
+        if error is CancellationError {
+            return false
+        }
+
+        guard let summaryError = error as? MeetingSummaryError else {
+            return false
+        }
+
+        switch summaryError {
+        case .requestFailed(let backend, let underlying):
+            if isPermanentRequestFailure(underlying) {
+                return false
+            }
+            if isLocalBackend(backend), isLocalEndpointUnavailable(underlying) {
+                return false
+            }
+            return true
+        case .emptyResponse:
+            return true
+        case .backendFailed(_, let statusCode, _):
+            guard let statusCode else { return false }
+            return isTransientHTTPStatus(statusCode)
+        }
+    }
+
+    static func effectiveRetryCount(configuredCount: Int, after error: Error) -> Int {
+        let retryCount = clampedRetryCount(configuredCount)
+        guard retryCount > 0, shouldRetry(error) else { return 0 }
+        guard let summaryError = error as? MeetingSummaryError else { return 0 }
+
+        switch summaryError {
+        case .requestFailed(let backend, _),
+             .emptyResponse(let backend),
+             .backendFailed(let backend, _, _):
+            if isLocalBackend(backend) {
+                return min(retryCount, 1)
+            }
+            return retryCount
+        }
+    }
+
+    private static func isPermanentRequestFailure(_ error: Error) -> Bool {
+        if error is CancellationError || error is ChatGPTAuthError {
+            return true
+        }
+
+        guard let urlError = error as? URLError else {
+            return false
+        }
+        switch urlError.code {
+        case .badURL, .unsupportedURL, .cancelled:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func isLocalBackend(_ backend: String) -> Bool {
+        let normalized = backend.lowercased()
+        return normalized == MeetingSummaryBackendOption.ollama.backend
+            || normalized == MeetingSummaryBackendOption.lmStudio.backend
+            || normalized == "lm studio"
+    }
+
+    private static func isLocalEndpointUnavailable(_ error: Error) -> Bool {
+        guard let urlError = error as? URLError else {
+            return false
+        }
+        switch urlError.code {
+        case .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func isTransientHTTPStatus(_ statusCode: Int) -> Bool {
+        statusCode == 408
+            || statusCode == 409
+            || statusCode == 425
+            || statusCode == 429
+            || (500..<600).contains(statusCode)
+    }
+
+    static func retryDelay(forAttempt attempt: Int) -> TimeInterval {
+        min(pow(2.0, Double(max(attempt - 1, 0))), 8.0)
+    }
+}
+
 enum MeetingSummaryClient {
     private static let logger = Logger(subsystem: "com.muesli.native", category: "MeetingSummary")
     private static let openAIURL = URL(string: "https://api.openai.com/v1/responses")!
     private static let openRouterURL = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
-    private static let whamURL = URL(string: "https://chatgpt.com/backend-api/wham/responses")!
     private static let defaultOllamaBaseURL = URL(string: "http://localhost:11434")!
     private static let defaultLMStudioBaseURL = URL(string: "http://localhost:1234")!
     private static let defaultOpenAIModel = "gpt-5.4-mini"
@@ -61,6 +158,55 @@ enum MeetingSummaryClient {
         existingNotes: String? = nil,
         manualNotesToRetain: String? = nil,
         visualContext: String? = nil
+    ) async throws -> String {
+        try await withSummaryRetries(maxRetries: config.meetingSummaryRetryCount) {
+            try await summarizeOnce(
+                transcript: transcript,
+                meetingTitle: meetingTitle,
+                config: config,
+                template: template,
+                existingNotes: existingNotes,
+                manualNotesToRetain: manualNotesToRetain,
+                visualContext: visualContext
+            )
+        }
+    }
+
+    static func withSummaryRetries(
+        maxRetries: Int,
+        sleep: (TimeInterval) async throws -> Void = { delay in
+            try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+        },
+        operation: () async throws -> String
+    ) async throws -> String {
+        let retryCount = MeetingSummaryRetryPolicy.clampedRetryCount(maxRetries)
+        var attempt = 0
+        while true {
+            do {
+                return try await operation()
+            } catch {
+                let effectiveRetryCount = MeetingSummaryRetryPolicy.effectiveRetryCount(
+                    configuredCount: retryCount,
+                    after: error
+                )
+                guard attempt < effectiveRetryCount else {
+                    throw error
+                }
+                attempt += 1
+                fputs("[summary] retrying summary generation after failure (\(attempt)/\(effectiveRetryCount)): \(error.localizedDescription)\n", stderr)
+                try await sleep(MeetingSummaryRetryPolicy.retryDelay(forAttempt: attempt))
+            }
+        }
+    }
+
+    private static func summarizeOnce(
+        transcript: String,
+        meetingTitle: String,
+        config: AppConfig,
+        template: MeetingTemplateSnapshot,
+        existingNotes: String?,
+        manualNotesToRetain: String?,
+        visualContext: String?
     ) async throws -> String {
         let backend = (config.meetingSummaryBackend.isEmpty ? MeetingSummaryBackendOption.chatGPT.backend : config.meetingSummaryBackend).lowercased()
         let generatedNotes: String
@@ -423,7 +569,7 @@ enum MeetingSummaryClient {
     ) async throws -> String {
         do {
             let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes)
-            let text = try await callWHAM(
+            let text = try await ChatGPTResponsesClient.respond(
                 systemPrompt: instructions,
                 userPrompt: summaryUserPrompt(
                     transcript: transcript,
@@ -432,12 +578,13 @@ enum MeetingSummaryClient {
                     manualNotes: manualNotes,
                     visualContext: visualContext
                 ),
-                model: config.chatGPTModel.isEmpty ? defaultChatGPTModel : config.chatGPTModel
+                model: config.chatGPTModel.isEmpty ? defaultChatGPTModel : config.chatGPTModel,
+                logCategory: "summary"
             )
-            if let text, !text.isEmpty {
-                return text
+            guard !text.isEmpty else {
+                throw MeetingSummaryError.emptyResponse(backend: "ChatGPT")
             }
-            throw MeetingSummaryError.emptyResponse(backend: "ChatGPT")
+            return text
         } catch {
             fputs("[summary] ChatGPT summarization failed: \(error)\n", stderr)
             throw summaryRequestError(backend: "ChatGPT", error: error)
@@ -745,72 +892,6 @@ enum MeetingSummaryClient {
         }
     }
 
-    /// Call the WHAM streaming API and collect the full response text.
-    private static func callWHAM(systemPrompt: String, userPrompt: String, model: String) async throws -> String? {
-        let (token, accountId) = try await ChatGPTAuthManager.shared.validAccessToken()
-
-        let body: [String: Any] = [
-            "model": model,
-            "store": false,
-            "stream": true,
-            "instructions": systemPrompt,
-            "input": [
-                [
-                    "role": "user",
-                    "content": [
-                        ["type": "input_text", "text": userPrompt],
-                    ],
-                ] as [String: Any],
-            ],
-        ]
-        // Note: WHAM does not support max_output_tokens
-
-        var request = URLRequest(url: whamURL)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        if !accountId.isEmpty {
-            request.setValue(accountId, forHTTPHeaderField: "ChatGPT-Account-Id")
-        }
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-
-        let (bytes, response) = try await URLSession.shared.bytes(for: request)
-        let httpStatus = (response as? HTTPURLResponse)?.statusCode ?? 0
-
-        guard httpStatus == 200 else {
-            // Collect error body
-            var errorData = Data()
-            for try await byte in bytes { errorData.append(byte) }
-            let message = extractErrorMessage(from: errorData) ?? String(data: errorData, encoding: .utf8) ?? "(unknown)"
-            fputs("[summary] ChatGPT WHAM: HTTP \(httpStatus): \(String(message.prefix(500)))\n", stderr)
-            throw MeetingSummaryError.backendFailed(backend: "ChatGPT", statusCode: httpStatus, message: message)
-        }
-
-        // Parse SSE stream: collect text deltas from response.output_text.delta events
-        var fullText = ""
-        for try await line in bytes.lines {
-            guard line.hasPrefix("data: ") else { continue }
-            let jsonStr = String(line.dropFirst(6))
-            if jsonStr == "[DONE]" { break }
-            guard let data = jsonStr.data(using: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-
-            // Check for output_text.done with full text
-            if let outputText = json["output_text"] as? String, !outputText.isEmpty {
-                fullText = outputText
-            }
-
-            // Check for streaming delta
-            if let type = json["type"] as? String, type == "response.output_text.delta",
-               let delta = json["delta"] as? String {
-                fullText += delta
-            }
-        }
-
-        fputs("[summary] ChatGPT WHAM: collected \(fullText.count) chars\n", stderr)
-        return fullText.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     private static func extractOpenAIText(from payload: [String: Any]) -> String? {
         if let outputText = payload["output_text"] as? String, !outputText.isEmpty {
             return outputText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -872,6 +953,12 @@ enum MeetingSummaryClient {
     private static func summaryRequestError(backend: String, error: Error) -> Error {
         if error is MeetingSummaryError {
             return error
+        }
+        if let error = error as? ChatGPTResponsesError {
+            switch error {
+            case let .backendFailed(statusCode, message):
+                return MeetingSummaryError.backendFailed(backend: backend, statusCode: statusCode, message: message)
+            }
         }
         return MeetingSummaryError.requestFailed(backend: backend, underlying: error)
     }
@@ -1154,13 +1241,15 @@ enum MeetingSummaryClient {
     private static func generateTitleWithChatGPT(transcript: String, config: AppConfig) async -> String? {
         do {
             let model = config.chatGPTModel.isEmpty ? defaultChatGPTModel : config.chatGPTModel
-            let result = try await callWHAM(
+            let result = try await ChatGPTResponsesClient.respond(
                 systemPrompt: titleInstructions,
                 userPrompt: transcript,
-                model: model
+                model: model,
+                logCategory: "summary"
             )
-            let title = result?.trimmingCharacters(in: .whitespacesAndNewlines.union(.init(charactersIn: "\"")))
-            fputs("[summary] ChatGPT generated title: \(title ?? "(nil)")\n", stderr)
+            let title = result.trimmingCharacters(in: .whitespacesAndNewlines.union(.init(charactersIn: "\"")))
+            guard !title.isEmpty else { return nil }
+            fputs("[summary] ChatGPT generated title: \(title)\n", stderr)
             return title
         } catch {
             fputs("[summary] ChatGPT title generation failed: \(error)\n", stderr)

@@ -1,6 +1,7 @@
 import CloudKit
 import Foundation
 import MuesliCore
+import Security
 
 struct ICloudSyncKindCounts: Equatable {
     private(set) var dictations = 0
@@ -282,6 +283,27 @@ final class MuesliICloudSyncEngine {
     private let defaults: UserDefaults
     private static let dirtyUploadBatchSize = 200
     private static let maxDirtyUploadBatchesPerSync = 50
+
+    static var hasRequiredEntitlement: Bool {
+        guard
+            let task = SecTaskCreateFromSelf(nil),
+            let value = SecTaskCopyValueForEntitlement(
+                task,
+                "com.apple.developer.icloud-container-identifiers" as CFString,
+                nil
+            )
+        else {
+            return false
+        }
+
+        if let containers = value as? [String] {
+            return containers.contains(Schema.containerIdentifier)
+        }
+        if let container = value as? String {
+            return container == Schema.containerIdentifier
+        }
+        return false
+    }
 
     init(
         container: CKContainer = CKContainer(identifier: Schema.containerIdentifier),

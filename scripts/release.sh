@@ -17,7 +17,7 @@ set -euo pipefail
 #   7. Re-download the hosted DMG from GitHub Releases and verify that exact file
 #   8. Update downstream release surfaces from the verified hosted DMG:
 #      - GitHub Pages appcast + landing-page metadata
-#      - Personal Homebrew tap cask
+#      - Official Homebrew cask livecheck/autobump verification
 #
 # Prerequisites:
 #   - Developer ID cert in keychain
@@ -26,6 +26,7 @@ set -euo pipefail
 #       MUESLI_PROVISIONING_PROFILE=/path/to/profile.provisionprofile
 #   - Notary profile stored: xcrun notarytool store-credentials MuesliNotary
 #   - gh CLI authenticated
+#   - Homebrew installed for post-release cask livecheck/autobump verification
 #
 # Usage: ./scripts/release.sh [version]
 #   e.g.: ./scripts/release.sh 0.5.0
@@ -56,12 +57,11 @@ INSTALL_DIR="${MUESLI_RELEASE_INSTALL_DIR:-$OUTPUT_DIR/install-root}"
 APP_DIR="${MUESLI_RELEASE_APP_DIR:-$INSTALL_DIR/Muesli.app}"
 GENERATE_APPCAST="$(muesli_spm_artifacts_dir "$PACKAGE_DIR" "$SWIFTPM_SCRATCH_PATH")/sparkle/Sparkle/bin/generate_appcast"
 UPDATE_APPCAST_RELEASE_NOTES="$ROOT/scripts/update_appcast_release_notes.py"
-TAP_REPO="${MUESLI_TAP_REPO:-Muesli-HQ/homebrew-muesli}"
-TAP_CASK_REL_PATH="${MUESLI_TAP_CASK_REL_PATH:-Casks/m/muesli.rb}"
-SKIP_TAP_UPDATE="${MUESLI_SKIP_TAP_UPDATE:-0}"
+HOMEBREW_CASK="${MUESLI_HOMEBREW_CASK:-muesli}"
+SKIP_HOMEBREW_CHECK="${MUESLI_SKIP_HOMEBREW_CHECK:-0}"
 VERIFY_DIR=""
 HOSTED_MOUNT_POINT=""
-TAP_WORK_DIR=""
+HOMEBREW_CHECK_STATUS="skipped"
 
 cleanup() {
   if [[ -n "$HOSTED_MOUNT_POINT" ]]; then
@@ -69,9 +69,6 @@ cleanup() {
   fi
   if [[ -n "$VERIFY_DIR" && -d "$VERIFY_DIR" ]]; then
     rm -rf "$VERIFY_DIR"
-  fi
-  if [[ -n "$TAP_WORK_DIR" && -d "$TAP_WORK_DIR" ]]; then
-    rm -rf "$TAP_WORK_DIR"
   fi
 }
 
@@ -138,33 +135,24 @@ Signed, notarized, and stapled by Apple.
 EOF
 )"
 
-update_personal_tap() {
-  if [[ "$SKIP_TAP_UPDATE" == "1" ]]; then
-    echo "  Skipping personal tap update because MUESLI_SKIP_TAP_UPDATE=1."
+verify_homebrew_autobump() {
+  if [[ "$SKIP_HOMEBREW_CHECK" == "1" ]]; then
+    echo "  Skipping official Homebrew cask livecheck because MUESLI_SKIP_HOMEBREW_CHECK=1."
+    HOMEBREW_CHECK_STATUS="skipped"
     return 0
   fi
 
-  TAP_WORK_DIR="$(mktemp -d)"
-  echo "  Cloning $TAP_REPO..."
-  gh repo clone "$TAP_REPO" "$TAP_WORK_DIR" -- --quiet
-
-  local cask_path="$TAP_WORK_DIR/$TAP_CASK_REL_PATH"
-  if [[ ! -f "$cask_path" ]]; then
-    echo "ERROR: Personal tap cask not found at $TAP_CASK_REL_PATH in $TAP_REPO." >&2
-    return 1
+  echo "  Verifying official Homebrew cask livecheck for ${HOMEBREW_CASK}..."
+  HOMEBREW_CHECK_STATUS="verified"
+  if ! brew livecheck --cask "$HOMEBREW_CASK"; then
+    echo "  WARNING: Homebrew livecheck failed; check ${HOMEBREW_CASK} manually." >&2
+    HOMEBREW_CHECK_STATUS="warning"
   fi
-
-  perl -0pi -e 's/version "[^"]+"/version "'"$VERSION"'"/; s/sha256 "[^"]+"/sha256 "'"$HOSTED_SHA"'"/' "$cask_path"
-
-  git -C "$TAP_WORK_DIR" add "$TAP_CASK_REL_PATH"
-  if git -C "$TAP_WORK_DIR" diff --cached --quiet; then
-    echo "  Personal tap already points at v${VERSION}."
-    return 0
+  if ! brew bump --cask --no-pull-requests "$HOMEBREW_CASK"; then
+    echo "  WARNING: Homebrew autobump verification failed; check ${HOMEBREW_CASK} manually." >&2
+    HOMEBREW_CHECK_STATUS="warning"
   fi
-
-  git -C "$TAP_WORK_DIR" commit -m "muesli ${VERSION}"
-  git -C "$TAP_WORK_DIR" push origin HEAD
-  echo "  Personal tap updated: https://github.com/$TAP_REPO"
+  echo "  BrewTestBot should open ${HOMEBREW_CASK} version bump PRs automatically."
 }
 
 echo "=== Muesli Release v${VERSION} ==="
@@ -448,9 +436,9 @@ else
   echo "  Pushed appcast and landing-page updates to main."
 fi
 
-# --- Step 13: Update the personal Homebrew tap from the verified hosted DMG ---
-echo "[13/13] Updating personal Homebrew tap..."
-update_personal_tap
+# --- Step 13: Verify the official Homebrew cask can see the new release ---
+echo "[13/13] Verifying official Homebrew cask livecheck..."
+verify_homebrew_autobump
 
 echo ""
 echo "=== Release complete ==="
@@ -458,6 +446,9 @@ echo "  Version: ${VERSION}"
 echo "  DMG: $DMG_PATH"
 echo "  Release: $RELEASE_URL"
 echo "  Hosted asset verified."
-if [[ "$SKIP_TAP_UPDATE" != "1" ]]; then
-  echo "  Personal tap: https://github.com/$TAP_REPO"
+if [[ "$HOMEBREW_CHECK_STATUS" == "verified" ]]; then
+  echo "  Homebrew cask livecheck verified for ${HOMEBREW_CASK}."
+  echo "  Watch Homebrew/homebrew-cask for the BrewTestBot autobump PR."
+elif [[ "$HOMEBREW_CHECK_STATUS" == "warning" ]]; then
+  echo "  Homebrew cask verification had warnings; check ${HOMEBREW_CASK} manually."
 fi
