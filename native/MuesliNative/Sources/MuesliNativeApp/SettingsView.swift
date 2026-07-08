@@ -54,7 +54,6 @@ struct SettingsView: View {
     private enum SettingsPane: String, CaseIterable, Identifiable {
         case general
         case sync
-        case aiModels
         case dictation
         case computerUse
         case meetings
@@ -66,7 +65,6 @@ struct SettingsView: View {
             switch self {
             case .general: return "General"
             case .sync: return "Sync"
-            case .aiModels: return "AI Models"
             case .dictation: return "Dictation"
             case .computerUse: return "Computer Use"
             case .meetings: return "Meetings"
@@ -106,7 +104,7 @@ struct SettingsView: View {
 
     // Uniform width for standard right-side controls.
     private let controlWidth: CGFloat = 220
-    // Wider controls keep model/provider selections visually consistent in AI Models.
+    // Wider controls keep model/provider selections visually consistent in Settings.
     private let meetingControlWidth: CGFloat = 275
     private let iOSCompanionURL = IPhoneBridgeLinks.installURL
     private let screenContextGrantIntentTimeout: TimeInterval = 15 * 60
@@ -128,7 +126,7 @@ struct SettingsView: View {
     }
 
     private var meetingBackendOptions: [BackendOption] {
-        downloadedBackendOptions
+        downloadedBackendOptions.filter(\.supportsMeetingTranscription)
     }
 
     private var selectedMeetingBackendLabel: String {
@@ -150,7 +148,7 @@ struct SettingsView: View {
     private var cleanupBackendDescription: String {
         if appState.selectedPostProcessorBackend == .local {
             return downloadedPostProcOptions.isEmpty
-                ? "Download a cleanup model in Models to refine dictations on this Mac."
+                ? "Download a cleanup model from Models to refine dictations on this Mac."
                 : "Refines dictated text on this Mac."
         }
         return "Sends dictated text to \(appState.selectedPostProcessorBackend.label) and may add latency."
@@ -410,8 +408,6 @@ struct SettingsView: View {
             generalSettingsPane
         case .sync:
             syncSettingsPane
-        case .aiModels:
-            aiModelsSettingsPane
         case .dictation:
             dictationSettingsPane
         case .computerUse:
@@ -596,113 +592,132 @@ struct SettingsView: View {
         }
     }
 
-    private var aiModelsSettingsPane: some View {
-        VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
-            settingsSection("Speech Recognition") {
-                settingsRow("Dictation model", controlWidth: meetingControlWidth) {
-                    settingsMenu(
-                        selection: appState.selectedBackend.label,
-                        options: dictationBackendOptions.map(\.label)
-                    ) { label in
-                        if let option = dictationBackendOptions.first(where: { $0.label == label }) {
-                            controller.selectBackend(option)
-                        }
+    private var dictationModelSettingsSection: some View {
+        settingsSection("Speech Recognition") {
+            settingsRow("Dictation model", controlWidth: meetingControlWidth) {
+                settingsMenu(
+                    selection: appState.selectedBackend.label,
+                    options: dictationBackendOptions.map(\.label)
+                ) { label in
+                    if let option = dictationBackendOptions.first(where: { $0.label == label }) {
+                        controller.selectBackend(option)
                     }
                 }
+            }
+            if appState.selectedBackend.backend == BackendOption.cohereTranscribe.backend {
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Meeting model", controlWidth: meetingControlWidth) {
-                    if meetingBackendOptions.isEmpty {
-                        Text("No downloaded models")
-                            .font(MuesliTheme.body())
-                            .foregroundStyle(MuesliTheme.textTertiary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
-                        settingsMenu(
-                            selection: selectedMeetingBackendLabel,
-                            options: meetingBackendOptions.map(\.label)
-                        ) { label in
-                            if let option = meetingBackendOptions.first(where: { $0.label == label }) {
-                                controller.selectMeetingTranscriptionBackend(option)
-                            }
-                        }
-                    }
-                }
-                if appState.selectedBackend.backend == BackendOption.cohereTranscribe.backend
-                    || appState.selectedMeetingTranscriptionBackend.backend == BackendOption.cohereTranscribe.backend {
-                    Divider().background(MuesliTheme.surfaceBorder)
-                    settingsRow("Cohere language", controlWidth: meetingControlWidth) {
-                        settingsMenu(
-                            selection: selectedCohereLanguage.label,
-                            options: CohereTranscribeLanguage.allCases.map(\.label)
-                        ) { label in
-                            guard let language = CohereTranscribeLanguage.allCases.first(where: { $0.label == label }) else { return }
-                            controller.selectCohereLanguage(language)
-                        }
-                    }
-                }
-                if appState.selectedBackend.backend == BackendOption.indicASR.backend
-                    || appState.selectedMeetingTranscriptionBackend.backend == BackendOption.indicASR.backend {
-                    Divider().background(MuesliTheme.surfaceBorder)
-                    settingsRow("Indic language", controlWidth: meetingControlWidth) {
-                        FixedWidthPopUp(
-                            selection: selectedIndicASRLanguage.label,
-                            options: IndicASRLanguage.allCases.map(\.label),
-                            onSelectIndex: { index in
-                                guard index >= 0, index < IndicASRLanguage.allCases.count else { return }
-                                controller.selectIndicASRLanguage(IndicASRLanguage.allCases[index])
-                            }
-                        )
-                        .frame(height: 24)
-                    }
+                settingsRow("Cohere language", controlWidth: meetingControlWidth) {
+                    cohereLanguageMenu
                 }
             }
-
-            settingsSection("Dictation Cleanup") {
-                settingsRow(
-                    "Cleanup backend",
-                    description: cleanupBackendDescription,
-                    controlWidth: meetingControlWidth
-                ) {
-                    settingsMenu(
-                        selection: appState.selectedPostProcessorBackend.label,
-                        options: TranscriptCleanupBackendOption.all.map(\.label)
-                    ) { label in
-                        if let option = TranscriptCleanupBackendOption.all.first(where: { $0.label == label }) {
-                            controller.selectPostProcessorBackend(option)
-                        }
-                    }
+            if appState.selectedBackend.backend == BackendOption.indicASR.backend {
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Indic language", controlWidth: meetingControlWidth) {
+                    indicLanguageMenu
                 }
-                if appState.selectedPostProcessorBackend == .local {
-                    Divider().background(MuesliTheme.surfaceBorder)
-                    settingsRow("Cleanup model", controlWidth: meetingControlWidth) {
-                        if downloadedPostProcOptions.isEmpty {
-                            Text("Download a cleanup model in Models")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(MuesliTheme.textTertiary)
-                                .multilineTextAlignment(.trailing)
-                                .frame(width: meetingControlWidth, alignment: .trailing)
-                        } else {
-                            let selection = downloadedPostProcOptions.contains(where: { $0.id == appState.activePostProcessor.id })
-                                ? appState.activePostProcessor.label
-                                : (downloadedPostProcOptions.first?.label ?? "")
-                            settingsMenu(
-                                selection: selection,
-                                options: downloadedPostProcOptions.map(\.label)
-                            ) { label in
-                                if let option = downloadedPostProcOptions.first(where: { $0.label == label }) {
-                                    controller.selectPostProcessor(option)
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    hostedCleanupSettings(for: appState.selectedPostProcessorBackend)
-                }
-
             }
-
-            meetingSummarySettingsSection
         }
+    }
+
+    private var meetingTranscriptionSettingsSection: some View {
+        settingsSection("Transcription") {
+            settingsRow("Meeting model", controlWidth: meetingControlWidth) {
+                if meetingBackendOptions.isEmpty {
+                    Text("No downloaded models")
+                        .font(MuesliTheme.body())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    settingsMenu(
+                        selection: selectedMeetingBackendLabel,
+                        options: meetingBackendOptions.map(\.label)
+                    ) { label in
+                        if let option = meetingBackendOptions.first(where: { $0.label == label }) {
+                            controller.selectMeetingTranscriptionBackend(option)
+                        }
+                    }
+                }
+            }
+            if appState.selectedMeetingTranscriptionBackend.backend == BackendOption.cohereTranscribe.backend {
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Cohere language", controlWidth: meetingControlWidth) {
+                    cohereLanguageMenu
+                }
+            }
+            if appState.selectedMeetingTranscriptionBackend.backend == BackendOption.indicASR.backend {
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Indic language", controlWidth: meetingControlWidth) {
+                    indicLanguageMenu
+                }
+            }
+        }
+    }
+
+    private var dictationCleanupSettingsSection: some View {
+        settingsSection("Dictation Cleanup") {
+            settingsRow(
+                "Cleanup backend",
+                description: cleanupBackendDescription,
+                controlWidth: meetingControlWidth
+            ) {
+                settingsMenu(
+                    selection: appState.selectedPostProcessorBackend.label,
+                    options: TranscriptCleanupBackendOption.all.map(\.label)
+                ) { label in
+                    if let option = TranscriptCleanupBackendOption.all.first(where: { $0.label == label }) {
+                        controller.selectPostProcessorBackend(option)
+                    }
+                }
+            }
+            if appState.selectedPostProcessorBackend == .local {
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Cleanup model", controlWidth: meetingControlWidth) {
+                    if downloadedPostProcOptions.isEmpty {
+                        Text("Download a cleanup model from Models")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: meetingControlWidth, alignment: .trailing)
+                    } else {
+                        let selection = downloadedPostProcOptions.contains(where: { $0.id == appState.activePostProcessor.id })
+                            ? appState.activePostProcessor.label
+                            : (downloadedPostProcOptions.first?.label ?? "")
+                        settingsMenu(
+                            selection: selection,
+                            options: downloadedPostProcOptions.map(\.label)
+                        ) { label in
+                            if let option = downloadedPostProcOptions.first(where: { $0.label == label }) {
+                                controller.selectPostProcessor(option)
+                            }
+                        }
+                    }
+                }
+            } else {
+                hostedCleanupSettings(for: appState.selectedPostProcessorBackend)
+            }
+        }
+    }
+
+    private var cohereLanguageMenu: some View {
+        settingsMenu(
+            selection: selectedCohereLanguage.label,
+            options: CohereTranscribeLanguage.allCases.map(\.label)
+        ) { label in
+            guard let language = CohereTranscribeLanguage.allCases.first(where: { $0.label == label }) else { return }
+            controller.selectCohereLanguage(language)
+        }
+    }
+
+    private var indicLanguageMenu: some View {
+        FixedWidthPopUp(
+            selection: selectedIndicASRLanguage.label,
+            options: IndicASRLanguage.allCases.map(\.label),
+            onSelectIndex: { index in
+                guard index >= 0, index < IndicASRLanguage.allCases.count else { return }
+                controller.selectIndicASRLanguage(IndicASRLanguage.allCases[index])
+            }
+        )
+        .frame(height: 24)
     }
 
     @ViewBuilder
@@ -985,6 +1000,8 @@ struct SettingsView: View {
 
     private var dictationSettingsPane: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
+            dictationModelSettingsSection
+
             settingsSection("Transcription") {
                 settingsRow(
                     "Microphone",
@@ -1021,6 +1038,8 @@ struct SettingsView: View {
                     .help("Briefly reads focused app text after dictation to detect corrections.")
                 }
             }
+
+            dictationCleanupSettingsSection
 
             settingsSection("Advanced") {
                 settingsRow("Pause media during dictation") {
@@ -1084,9 +1103,13 @@ struct SettingsView: View {
 
     private var meetingsSettingsPane: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
+            meetingTranscriptionSettingsSection
+
             settingsSection("Meeting Context") {
                 screenContextRow("Meeting context", includesScreenOCR: true)
             }
+
+            meetingSummarySettingsSection
 
             settingsSection("Meeting Notes") {
                 settingsRow("Default template", controlWidth: meetingControlWidth) {

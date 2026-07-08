@@ -140,12 +140,21 @@ struct BackendOption: Equatable {
         all.filter { $0.isDownloaded }
     }
 
+    /// Models that can keep up with post-meeting and imported recording transcription.
+    static var downloadedMeetingTranscription: [BackendOption] {
+        downloaded.filter(\.supportsMeetingTranscription)
+    }
+
     static func resolve(backend: String, model: String) -> BackendOption? {
         all.first { $0.backend == backend && $0.model == model }
     }
 
     var isStreamingDictationBackend: Bool {
         backend == "nemotron35"
+    }
+
+    var supportsMeetingTranscription: Bool {
+        !isStreamingDictationBackend
     }
 
     static func resolveDownloaded(
@@ -955,6 +964,7 @@ struct AppConfig: Codable {
     var mutedMeetingDetectionAppBundleIDs: [String] = []
     var meetingRecordingSavePolicy: MeetingRecordingSavePolicy = .never
     var meetingRecordingFileFormat: String = MeetingRecordingFileFormat.m4a.rawValue
+    var waveformCacheOrphanCleanupMigrationApplied: Bool = false
     var darkMode: Bool = true
     var enableDoubleTapDictation: Bool = true
     var hotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
@@ -1066,6 +1076,7 @@ struct AppConfig: Codable {
         case mutedMeetingDetectionAppBundleIDs = "muted_meeting_detection_app_bundle_ids"
         case meetingRecordingSavePolicy = "meeting_recording_save_policy"
         case meetingRecordingFileFormat = "meeting_recording_file_format"
+        case waveformCacheOrphanCleanupMigrationApplied = "waveform_cache_orphan_cleanup_migration_applied"
         case darkMode = "dark_mode"
         case enableDoubleTapDictation = "enable_double_tap_dictation"
         case hotkeyTriggerThresholdMS = "hotkey_trigger_threshold_ms"
@@ -1199,6 +1210,9 @@ struct AppConfig: Codable {
             ?? defaults.meetingRecordingFileFormat
         meetingRecordingFileFormat = MeetingRecordingFileFormat(rawValue: decodedMeetingRecordingFileFormat)?.rawValue
             ?? defaults.meetingRecordingFileFormat
+        waveformCacheOrphanCleanupMigrationApplied =
+            (try? c.decode(Bool.self, forKey: .waveformCacheOrphanCleanupMigrationApplied))
+            ?? defaults.waveformCacheOrphanCleanupMigrationApplied
         darkMode = (try? c.decode(Bool.self, forKey: .darkMode)) ?? defaults.darkMode
         iCloudSyncEnabled = (try? c.decode(Bool.self, forKey: .iCloudSyncEnabled)) ?? defaults.iCloudSyncEnabled
         showIOSCompanionPrompt = (try? c.decode(Bool.self, forKey: .showIOSCompanionPrompt)) ?? defaults.showIOSCompanionPrompt

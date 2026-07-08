@@ -167,6 +167,14 @@ struct BackendOptionTests {
         #expect(streaming == [.nemotron35Multilingual])
     }
 
+    @Test("streaming dictation models are excluded from meeting transcription")
+    func streamingDictationModelsAreExcludedFromMeetingTranscription() {
+        #expect(!BackendOption.nemotron35Multilingual.supportsMeetingTranscription)
+        #expect(BackendOption.parakeetMultilingual.supportsMeetingTranscription)
+        #expect(BackendOption.whisperLargeTurbo.supportsMeetingTranscription)
+        #expect(!BackendOption.downloadedMeetingTranscription.contains(.nemotron35Multilingual))
+    }
+
     @Test("Whisper models use WhisperKit CoreML identifiers")
     func whisperKitModels() {
         // WhisperKit models use short variant names, not ggml- prefixed binaries

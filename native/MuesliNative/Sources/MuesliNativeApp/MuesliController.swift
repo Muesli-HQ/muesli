@@ -232,7 +232,7 @@ final class MuesliController: NSObject {
     private static let dictionaryCorrectionAccessibilityIntentTimeout: TimeInterval = 24 * 60 * 60
 
     private let runtime: RuntimePaths
-    private let configStore = ConfigStore()
+    private let configStore: ConfigStore
     private let dictationStore: DictationStore
     private let meetingHookDispatcher: MeetingHookDispatching
     private let meetingMarkdownAutoExporter: MeetingMarkdownAutoExporting
@@ -380,12 +380,14 @@ final class MuesliController: NSObject {
     init(
         runtime: RuntimePaths,
         dictationStore: DictationStore? = nil,
+        configStore: ConfigStore = ConfigStore(),
         meetingHookDispatcher: MeetingHookDispatching = MeetingHookRunner(),
         meetingMarkdownAutoExporter: MeetingMarkdownAutoExporting = MeetingMarkdownAutoExporter(),
         launchAtLoginManager: LaunchAtLoginManaging = SystemLaunchAtLoginManager(),
         audioDuckingController: AudioDuckingManaging = AudioDuckingController(),
         dictationAudioRoutingController: DictationAudioRouting = DictationAudioRouteController()
     ) {
+        self.configStore = configStore
         let loadedConfig = configStore.load()
         self.runtime = runtime
         self.dictationStore = dictationStore ?? DictationStore(
@@ -412,7 +414,10 @@ final class MuesliController: NSObject {
             config: loadedConfig,
             dictationBackend: self.selectedBackend,
             downloadedOptions: BackendOption.downloaded
-        ) ?? configuredMeetingBackend ?? self.selectedBackend
+        ) ?? Self.fallbackMeetingTranscriptionBackend(
+            configured: configuredMeetingBackend,
+            dictationBackend: self.selectedBackend
+        )
         self.selectedMeetingSummaryBackend = MeetingSummaryBackendOption.all.first(where: {
             $0.backend == loadedConfig.meetingSummaryBackend
         }) ?? .chatGPT
@@ -462,6 +467,7 @@ final class MuesliController: NSObject {
             named: "muesli-meeting-recordings",
             logDescription: "leftover temp meeting recording files"
         )
+        cleanupHistoricalMeetingWaveformCacheFilesIfNeeded()
 
         hotkeyMonitor.onArm = { [weak self] in self?.handleArm() }
         hotkeyMonitor.onPrepare = { [weak self] in self?.handlePrepare() }
@@ -922,12 +928,27 @@ final class MuesliController: NSObject {
         dictationBackend: BackendOption,
         downloadedOptions: [BackendOption] = BackendOption.downloaded
     ) -> BackendOption? {
-        BackendOption.resolveDownloaded(
+        let meetingOptions = downloadedOptions.filter(\.supportsMeetingTranscription)
+        let fallback = dictationBackend.supportsMeetingTranscription ? dictationBackend : nil
+        return BackendOption.resolveDownloaded(
             backend: config.meetingTranscriptionBackend,
             model: config.meetingTranscriptionModel,
-            fallback: dictationBackend,
-            downloadedOptions: downloadedOptions
+            fallback: fallback,
+            downloadedOptions: meetingOptions
         )
+    }
+
+    private static func fallbackMeetingTranscriptionBackend(
+        configured: BackendOption?,
+        dictationBackend: BackendOption
+    ) -> BackendOption {
+        if let configured, configured.supportsMeetingTranscription {
+            return configured
+        }
+        if dictationBackend.supportsMeetingTranscription {
+            return dictationBackend
+        }
+        return BackendOption.all.first(where: \.supportsMeetingTranscription) ?? .whisper
     }
 
     @discardableResult
@@ -943,10 +964,13 @@ final class MuesliController: NSObject {
             dictationBackend: dictationBackend,
             downloadedOptions: downloadedOptions
         ) else {
-            selectedMeetingTranscriptionBackend = BackendOption.resolve(
-                backend: config.meetingTranscriptionBackend,
-                model: config.meetingTranscriptionModel
-            ) ?? dictationBackend
+            selectedMeetingTranscriptionBackend = Self.fallbackMeetingTranscriptionBackend(
+                configured: BackendOption.resolve(
+                    backend: config.meetingTranscriptionBackend,
+                    model: config.meetingTranscriptionModel
+                ),
+                dictationBackend: dictationBackend
+            )
             appState.selectedMeetingTranscriptionBackend = selectedMeetingTranscriptionBackend
             appState.config = config
             return nil
@@ -992,14 +1016,26 @@ final class MuesliController: NSObject {
         let hotkeyTriggerThresholdChanged = config.hotkeyTriggerThresholdMS != previousHotkeyTriggerThresholdMS
             || config.computerUseHotkeyTriggerThresholdMS != previousComputerUseHotkeyTriggerThresholdMS
             || config.meetingRecordingHotkeyTriggerThresholdMS != previousMeetingRecordingHotkeyTriggerThresholdMS
-        configStore.save(config)
         MuesliTheme.accentOverrideHex = config.recordingColorHex == "1e1e2e" ? nil : config.recordingColorHex
         selectedBackend = BackendOption.all.first(where: {
             $0.backend == config.sttBackend && $0.model == config.sttModel
         }) ?? .whisper
-        selectedMeetingTranscriptionBackend = BackendOption.all.first(where: {
+        let configuredMeetingTranscriptionBackend = BackendOption.all.first(where: {
             $0.backend == config.meetingTranscriptionBackend && $0.model == config.meetingTranscriptionModel
-        }) ?? selectedBackend
+        })
+        selectedMeetingTranscriptionBackend = Self.availableMeetingTranscriptionBackend(
+            config: config,
+            dictationBackend: selectedBackend
+        ) ?? Self.fallbackMeetingTranscriptionBackend(
+            configured: configuredMeetingTranscriptionBackend,
+            dictationBackend: selectedBackend
+        )
+        if config.meetingTranscriptionBackend != selectedMeetingTranscriptionBackend.backend ||
+            config.meetingTranscriptionModel != selectedMeetingTranscriptionBackend.model {
+            config.meetingTranscriptionBackend = selectedMeetingTranscriptionBackend.backend
+            config.meetingTranscriptionModel = selectedMeetingTranscriptionBackend.model
+        }
+        configStore.save(config)
         selectedMeetingSummaryBackend = MeetingSummaryBackendOption.all.first(where: {
             $0.backend == config.meetingSummaryBackend
         }) ?? .chatGPT
@@ -1708,6 +1744,14 @@ final class MuesliController: NSObject {
     }
 
     func selectMeetingTranscriptionBackend(_ option: BackendOption, requireDownloaded: Bool = true) {
+        guard option.supportsMeetingTranscription else {
+            presentErrorAlert(
+                title: "Meeting model unavailable",
+                message: "\(option.label) is optimized for dictation and cannot be used for meeting transcription."
+            )
+            normalizeMeetingTranscriptionSelectionForAvailability()
+            return
+        }
         guard !requireDownloaded || option.isDownloaded else {
             presentErrorAlert(
                 title: "Meeting model unavailable",
@@ -3959,10 +4003,12 @@ final class MuesliController: NSObject {
         do {
             // Delete the retained file first so a failed file removal does not orphan
             // user-visible recording data after the meeting row disappears.
-            if let savedRecordingPath = meeting.savedRecordingPath {
+            if let savedRecordingPath = meeting.savedRecordingPath,
+               try shouldDeleteSavedMeetingRecording(at: savedRecordingPath, excluding: id) {
                 try deleteSavedMeetingRecording(at: savedRecordingPath)
             }
             try dictationStore.deleteMeeting(id: id)
+            cleanupOrphanedMeetingWaveformCacheFiles()
             scheduleICloudSyncAfterLocalChange()
         } catch let error as MeetingLifecycleError {
             presentErrorAlert(title: "Couldn't Delete Meeting", message: error.localizedDescription)
@@ -4030,11 +4076,12 @@ final class MuesliController: NSObject {
         }
 
         do {
+            try? clearSavedMeetingWaveformCache()
             try clearSavedMeetingRecordingsDirectory()
         } catch {
             presentErrorAlert(
                 title: "Couldn't Clear Meeting History",
-                message: "Saved meeting recordings could not be deleted, so meeting history was left in place. \(error.localizedDescription)"
+                message: "Saved meeting audio files could not be deleted, so meeting history was left in place. \(error.localizedDescription)"
             )
             return
         }
@@ -5617,7 +5664,7 @@ final class MuesliController: NSObject {
             tempURL: retainedRecordingURL,
             meetingTitle: result.title,
             startedAt: result.startTime,
-            supportDirectory: AppIdentity.supportDirectoryURL,
+            supportDirectory: configStore.supportDirectory(),
             fileFormat: config.resolvedMeetingRecordingFileFormat
         ))
     }
@@ -5687,22 +5734,91 @@ final class MuesliController: NSObject {
         }
     }
 
+    func cleanupHistoricalMeetingWaveformCacheFilesIfNeeded() {
+        guard !config.waveformCacheOrphanCleanupMigrationApplied else { return }
+        guard cleanupOrphanedMeetingWaveformCacheFiles() else { return }
+        guard cleanupLegacyJSONMeetingWaveformCacheFiles() else { return }
+        config.waveformCacheOrphanCleanupMigrationApplied = true
+        appState.config = config
+        configStore.save(config)
+    }
+
+    @discardableResult
+    private func cleanupOrphanedMeetingWaveformCacheFiles() -> Bool {
+        let meetings: [MeetingRecord]
+        do {
+            meetings = try dictationStore.recentMeetings(limit: nil)
+        } catch {
+            return false
+        }
+        let recordingURLs = meetings.compactMap { savedRecordingURL(from: $0.savedRecordingPath) }
+        let result = RecordingWaveformCacheFiles.sweepOrphanedCachedWaveforms(
+            retainedRecordingURLs: recordingURLs,
+            supportDirectory: configStore.supportDirectory()
+        )
+        if case .skipped = result {
+            return false
+        }
+        return true
+    }
+
+    private func cleanupLegacyJSONMeetingWaveformCacheFiles() -> Bool {
+        let result = RecordingWaveformCacheFiles.removeLegacyJSONWaveformCaches(
+            supportDirectory: configStore.supportDirectory()
+        )
+        if case .skipped = result {
+            return false
+        }
+        return true
+    }
+
     private func clearSavedMeetingRecordingsDirectory() throws {
-        let recordingsDirectory = AppIdentity.supportDirectoryURL
+        let recordingsDirectory = configStore.supportDirectory()
             .appendingPathComponent("meeting-recordings", isDirectory: true)
         guard FileManager.default.fileExists(atPath: recordingsDirectory.path) else { return }
         try FileManager.default.removeItem(at: recordingsDirectory)
     }
 
+    private func clearSavedMeetingWaveformCache() throws {
+        try RecordingWaveformCacheFiles.removeAllCachedWaveforms(
+            supportDirectory: configStore.supportDirectory()
+        )
+    }
+
     private func deleteSavedMeetingRecording(at path: String) throws {
-        let url = URL(fileURLWithPath: path)
+        guard let url = savedRecordingURL(from: path) else { return }
         guard FileManager.default.fileExists(atPath: url.path) else { return }
 
         do {
+            // Waveform cache is derived data; recording deletion must still proceed if cache cleanup fails.
+            try? RecordingWaveformCacheFiles.removeCachedWaveform(
+                for: url,
+                supportDirectory: configStore.supportDirectory()
+            )
             try FileManager.default.removeItem(at: url)
         } catch {
             throw MeetingLifecycleError.failedToDeleteRecording(underlying: error)
         }
+    }
+
+    private func shouldDeleteSavedMeetingRecording(at path: String, excluding meetingID: Int64) throws -> Bool {
+        guard let url = savedRecordingURL(from: path) else { return false }
+        let targetPath = url.standardizedFileURL.path
+        let meetings = try dictationStore.recentMeetings(limit: nil)
+        return !meetings.contains { meeting in
+            guard meeting.id != meetingID,
+                  let otherURL = savedRecordingURL(from: meeting.savedRecordingPath) else {
+                return false
+            }
+            return otherURL.standardizedFileURL.path == targetPath
+        }
+    }
+
+    private func savedRecordingURL(from path: String?) -> URL? {
+        guard let path else { return nil }
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return URL(fileURLWithPath: trimmed)
     }
 
     @MainActor
