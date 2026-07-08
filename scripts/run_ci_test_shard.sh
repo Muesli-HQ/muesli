@@ -62,7 +62,7 @@ case "${shard}" in
       MeetingRecordingWriterTests
       MeetingResumePolicyTests
       MeetingStreamingPartialSessionTests
-      ParakeetSlidingWindowPartialSessionTests
+      ParakeetEouPartialSessionTests
       MeetingSummaryClientTests
       MeetingsNavigationTests
       MeetingBrowserLogicTests

@@ -55,17 +55,32 @@ actor TranscriptionCoordinator {
         return transcriber
     }
 
-    /// Parakeet model set for display-only meeting partials: loads the already-
-    /// downloaded v3 models (shared CoreML instances with regular transcription)
-    /// but never downloads them. Returns nil when the models aren't on disk or
-    /// loading fails — callers fall back to the Nemotron partials engine.
-    func getLoadedParakeetModelsIfDownloaded() async -> AsrModels? {
-        guard BackendOption.parakeetMultilingual.isDownloaded else { return nil }
+    /// On-disk location of the Parakeet EOU 160ms streaming model (FluidAudio's
+    /// default cache layout, shared across app identities like other models).
+    static var parakeetEouModelDirectory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("FluidAudio/Models/parakeet-eou-streaming/160ms", isDirectory: true)
+    }
+
+    static var isParakeetEouModelDownloaded: Bool {
+        FileManager.default.fileExists(
+            atPath: parakeetEouModelDirectory.appendingPathComponent("streaming_encoder.mlmodelc/coremldata.bin").path
+        )
+    }
+
+    /// A loaded Parakeet EOU 160ms streaming manager for display-only meeting
+    /// partials: loads models already on disk but never downloads them. Each
+    /// call returns a fresh manager (the engine holds per-stream decode state,
+    /// so mic and system need one each). Returns nil when the model isn't
+    /// downloaded or loading fails — callers fall back to the Nemotron engine.
+    func getLoadedParakeetEouManagerIfDownloaded() async -> (any StreamingAsrManager)? {
+        guard Self.isParakeetEouModelDownloaded else { return nil }
         do {
-            try await fluidTranscriber.loadModels(version: .v3)
-            return await fluidTranscriber.currentLoadedModels()
+            let manager = StreamingEouAsrManager(chunkSize: .ms160)
+            try await manager.loadModels(from: Self.parakeetEouModelDirectory)
+            return manager
         } catch {
-            fputs("[meeting-partials] parakeet load for live partials failed: \(error)\n", stderr)
+            fputs("[meeting-partials] parakeet EOU load for live partials failed: \(error)\n", stderr)
             return nil
         }
     }

@@ -306,15 +306,14 @@ final class MeetingSession {
     /// happens off the start path so meeting start is never delayed; sessions
     /// attach when ready. If recording ends first they are simply never fed.
     ///
-    /// Engine priority: Parakeet sliding-window (~1s hypothesis updates with
-    /// corrections; the default onboarding model, and it shares the already
-    /// loaded CoreML instances) → Nemotron 3.5 RNN-T (~2.2s bursts, broader
-    /// language coverage) → none (live view behaves exactly as before).
+    /// Engine priority: Parakeet EOU 120M streaming (160ms chunks — near
+    /// word-level latency; English) → Nemotron 3.5 RNN-T (~2.2s bursts,
+    /// broader language coverage) → none (live view behaves exactly as before).
     private func setupStreamingPartialsIfAvailable() {
         guard config.enableLiveStreamingPartials else { return }
         Task { [weak self] in
             guard let self else { return }
-            if await self.setupParakeetPartials() { return }
+            if await self.setupParakeetEouPartials() { return }
             await self.setupNemotronPartials()
         }
     }
@@ -335,34 +334,22 @@ final class MeetingSession {
         return installed
     }
 
-    private func setupParakeetPartials() async -> Bool {
-        guard let models = await transcriptionCoordinator.getLoadedParakeetModelsIfDownloaded() else { return false }
+    private func setupParakeetEouPartials() async -> Bool {
+        guard TranscriptionCoordinator.isParakeetEouModelDownloaded else { return false }
+        guard let micManager = await transcriptionCoordinator.getLoadedParakeetEouManagerIfDownloaded(),
+              let systemManager = await transcriptionCoordinator.getLoadedParakeetEouManagerIfDownloaded()
+        else { return false }
         let stillRecording = chunkRotationQueue.sync { self.isRecording }
         guard stillRecording else { return true }
-        do {
-            let mic = try await Self.makeParakeetPartialSession(models: models, source: .microphone, label: "You")
-            mic.onPartialUpdate = { [weak self] text in self?.onPartialTranscript?("You", text) }
-            let system = try await Self.makeParakeetPartialSession(models: models, source: .system, label: "Others")
-            system.onPartialUpdate = { [weak self] text in self?.onPartialTranscript?("Others", text) }
-            guard installPartialSessions(mic: mic, system: system) else { return true }
-            fputs("[meeting-partials] parakeet sliding-window partials active\n", stderr)
-            return true
-        } catch {
-            fputs("[meeting-partials] parakeet partials failed to start: \(error)\n", stderr)
-            return false
-        }
-    }
-
-    private static func makeParakeetPartialSession(
-        models: AsrModels,
-        source: AudioSource,
-        label: String
-    ) async throws -> ParakeetSlidingWindowPartialSession {
-        let manager = SlidingWindowAsrManager(config: .streaming)
-        try await manager.loadModels(models)
-        let session = ParakeetSlidingWindowPartialSession(manager: manager, source: source, label: label)
-        try await session.start()
-        return session
+        let mic = ParakeetEouPartialSession(manager: micManager, label: "You")
+        mic.onPartialUpdate = { [weak self] text in self?.onPartialTranscript?("You", text) }
+        await mic.start()
+        let system = ParakeetEouPartialSession(manager: systemManager, label: "Others")
+        system.onPartialUpdate = { [weak self] text in self?.onPartialTranscript?("Others", text) }
+        await system.start()
+        guard installPartialSessions(mic: mic, system: system) else { return true }
+        fputs("[meeting-partials] parakeet EOU streaming partials active (160ms chunks)\n", stderr)
+        return true
     }
 
     private func setupNemotronPartials() async {
