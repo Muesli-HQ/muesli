@@ -175,15 +175,14 @@ final class MeetingSession {
     /// Display-only streaming partial for a source ("You"/"Others", tail text).
     /// Empty text clears the source's tail. Called on a background thread.
     var onPartialTranscript: ((String, String) -> Void)?
-    /// Streaming partial sessions (macOS 15+), type-erased because stored
-    /// properties cannot be availability-gated. Lock-guarded: assigned from an
-    /// async setup Task, fed on chunkRotationQueue, committed from
-    /// chunk-completion Tasks. `isShutDown` closes the async-setup race: once
-    /// teardown ran, a setup Task that finishes late must not install sessions
-    /// that nothing would ever stop.
+    /// Streaming partial sessions. Lock-guarded: assigned from an async setup
+    /// Task, fed on chunkRotationQueue, committed from chunk-completion Tasks.
+    /// `isShutDown` closes the async-setup race: once teardown ran, a setup
+    /// Task that finishes late must not install sessions that nothing would
+    /// ever stop.
     private struct PartialSessionsStorage {
-        var mic: Any?
-        var system: Any?
+        var mic: MeetingPartialStreaming?
+        var system: MeetingPartialStreaming?
         var isShutDown = false
     }
     private let partialSessionsStorage = OSAllocatedUnfairLock(initialState: PartialSessionsStorage())
@@ -367,11 +366,11 @@ final class MeetingSession {
     }
 
     private func micPartialSession() -> MeetingPartialStreaming? {
-        partialSessionsStorage.withLock { $0.mic as? MeetingPartialStreaming }
+        partialSessionsStorage.withLock { $0.mic }
     }
 
     private func systemPartialSession() -> MeetingPartialStreaming? {
-        partialSessionsStorage.withLock { $0.system as? MeetingPartialStreaming }
+        partialSessionsStorage.withLock { $0.system }
     }
 
     private func feedMicPartialSession(_ samples: [Float]) {
@@ -409,15 +408,15 @@ final class MeetingSession {
     }
 
     private func stopPartialSessions() {
-        let sessions = partialSessionsStorage.withLock { s -> (Any?, Any?) in
+        let sessions = partialSessionsStorage.withLock { s -> (MeetingPartialStreaming?, MeetingPartialStreaming?) in
             let taken = (s.mic, s.system)
             s.mic = nil
             s.system = nil
             s.isShutDown = true
             return taken
         }
-        (sessions.0 as? MeetingPartialStreaming)?.stop()
-        (sessions.1 as? MeetingPartialStreaming)?.stop()
+        sessions.0?.stop()
+        sessions.1?.stop()
     }
 
     func pause() {
