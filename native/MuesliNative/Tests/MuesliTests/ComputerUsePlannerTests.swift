@@ -6,36 +6,41 @@ import Testing
 
 @Suite("Computer Use tool registry")
 struct ComputerUseToolRegistryTests {
-    @Test("emits schemas and descriptions for every tool")
-    func emitsSchemasAndDescriptions() {
-        #expect(ComputerUseToolRegistry.definitions.count == ComputerUseToolName.allCases.count - 1)
-        #expect(ComputerUseToolRegistry.definition(for: .click) == nil)
-        for definition in ComputerUseToolRegistry.definitions {
+    @Test("advertises only intent-level tools")
+    func advertisesOnlyIntentLevelTools() {
+        let advertised = ComputerUseToolRegistry.modelFacingTools
+        #expect(advertised == [.launchApp, .getWindowState, .click, .pasteText, .pressKey, .scroll, .finish, .fail])
+        #expect(ComputerUseToolRegistry.definition(for: .click) != nil)
+
+        for tool in advertised {
+            let definition = ComputerUseToolRegistry.definition(for: tool)
+            #expect(definition != nil)
+            guard let definition else { continue }
             #expect(!definition.description.isEmpty)
             #expect(definition.schema.type == "object")
             #expect(definition.schema.additionalProperties == false)
             #expect(definition.schema.required.contains("tool"))
             #expect(definition.schema.properties["tool"]?.enumValues == [definition.name.rawValue])
         }
+
         let docs = ComputerUseToolRegistry.promptDocumentation()
-        #expect(docs.contains("Tool: get_app_state"))
         #expect(docs.contains("Tool: get_window_state"))
-        #expect(docs.contains("Tool: click_element"))
-        #expect(docs.contains("Tool: click_point"))
-        #expect(!docs.contains("Tool: click\n"))
-        #expect(docs.contains("Tool: perform_secondary_action"))
-        #expect(docs.contains("Tool: open_new_browser_tab"))
-        #expect(docs.contains("Tool: navigate_active_browser_tab"))
-        #expect(docs.contains("Tool: page_query_dom"))
+        #expect(docs.contains("Tool: click\n"))
+        #expect(docs.contains("Tool: paste_text"))
+        #expect(!docs.contains("Tool: click_element"))
+        #expect(!docs.contains("Tool: type_text"))
+        #expect(!docs.contains("Tool: page_query_dom"))
     }
 
     @Test("emits native tool definitions")
     func emitsNativeToolDefinitions() {
         let tools = ComputerUseToolRegistry.nativeToolDefinitions()
 
-        #expect(tools.count == ComputerUseToolRegistry.definitions.count)
+        #expect(tools.count == ComputerUseToolRegistry.modelFacingTools.count)
         #expect(JSONSerialization.isValidJSONObject(tools))
-        #expect(!tools.contains { ($0["name"] as? String) == "click" })
+        #expect(tools.contains { ($0["name"] as? String) == "click" })
+        #expect(!tools.contains { ($0["name"] as? String) == "click_element" })
+        #expect(!tools.contains { ($0["name"] as? String) == "hotkey" })
         let launch = tools.first { ($0["name"] as? String) == "launch_app" }
         #expect(launch?["type"] as? String == "function")
         let parameters = launch?["parameters"] as? [String: Any]
@@ -43,28 +48,25 @@ struct ComputerUseToolRegistryTests {
         #expect(properties?["tool"] == nil)
         #expect(properties?["app_name"] != nil)
 
-        let hotkey = tools.first { ($0["name"] as? String) == "hotkey" }
-        let hotkeyParameters = hotkey?["parameters"] as? [String: Any]
-        let hotkeyProperties = hotkeyParameters?["properties"] as? [String: Any]
-        let modifiers = hotkeyProperties?["modifiers"] as? [String: Any]
+        let pressKey = tools.first { ($0["name"] as? String) == "press_key" }
+        let pressKeyParameters = pressKey?["parameters"] as? [String: Any]
+        let pressKeyProperties = pressKeyParameters?["properties"] as? [String: Any]
+        let modifiers = pressKeyProperties?["modifiers"] as? [String: Any]
         let modifierItems = modifiers?["items"] as? [String: Any]
         #expect(modifierItems?["enum"] as? [String] == ComputerUseKeyModifier.allCases.map(\.rawValue))
     }
 
-    @Test("planner guidance treats browser page tools as optional")
-    func plannerGuidanceTreatsBrowserPageToolsAsOptional() {
+    @Test("planner guidance preserves model and driver ownership")
+    func plannerGuidancePreservesOwnership() {
         let instructions = ComputerUsePlannerClient.instructions
 
         #expect(instructions.contains("native tool call"))
-        #expect(instructions.contains("Browser DOM/page tools are optional accelerators"))
-        #expect(instructions.contains("Chrome Apple Events JavaScript permission"))
-        #expect(instructions.contains("AX/screenshot fallback"))
-        #expect(instructions.contains("Do not use fail only because a browser DOM/page tool failed"))
-        #expect(instructions.contains("Do not call get_app_state/get_window_state repeatedly"))
-        #expect(instructions.contains("do not loop on observation"))
-        #expect(instructions.contains("After open_new_browser_tab, call navigate_active_browser_tab"))
-        #expect(instructions.contains("prefer paste_text for multi-word text"))
-        #expect(instructions.contains("Use finish only when the user's command is complete and successful"))
+        #expect(instructions.contains("Look -> Act -> Verify"))
+        #expect(instructions.contains("available_tools is authoritative"))
+        #expect(instructions.contains("planner_history is the compact action chain"))
+        #expect(instructions.contains("Muesli chooses AX, point, or other delivery routes"))
+        #expect(instructions.contains("Neither means the user's semantic task is complete"))
+        #expect(instructions.contains("The runtime accepts that terminal decision"))
     }
 }
 
@@ -87,6 +89,16 @@ struct ComputerUseObservationCaptureTests {
 
 @Suite("Computer Use planner response")
 struct ComputerUsePlannerResponseTests {
+    @Test("rejects legacy tools outside current contract")
+    func rejectsLegacyToolsOutsideCurrentContract() throws {
+        let response = try ComputerUsePlannerResponse.decodeNativeToolCall(
+            name: "page_query_dom",
+            arguments: #"{"app_bundle_id":"com.google.Chrome","selector":"body"}"#
+        )
+
+        #expect(response.toolAvailabilityFailure(availableTools: ComputerUseToolRegistry.modelFacingTools) != nil)
+    }
+
     @Test("decodes valid top-level tool call")
     func decodesValidToolCall() throws {
         let response = try ComputerUsePlannerResponse.decodeJSON(from: #"{"tool":"launch_app","app_name":"Google Chrome"}"#)
@@ -440,6 +452,37 @@ struct ComputerUsePlannerRequestTests {
         #expect(text.contains("s1"))
         #expect(!text.contains("data:image"))
         #expect(text.contains(ComputerUseToolRegistry.catalogVersion))
+        #expect(text.contains("available_tools"))
+        #expect(!text.contains("prior_tool_outcomes"))
+        #expect(!text.contains("page_query_dom"))
+    }
+
+    @Test("encodes compact planner history")
+    func encodesCompactPlannerHistory() throws {
+        let request = ComputerUsePlannerRequest(
+            command: "write content",
+            step: 2,
+            maxSteps: 100,
+            latestWindowState: ComputerUseWindowState(observation: ComputerUsePlannerRuntimeTests.observation()),
+            plannerHistory: [
+                ComputerUsePlannerHistoryItem(kind: .modelToolCall, step: 1, tool: .pasteText, summary: "paste_text (13 characters)"),
+                ComputerUsePlannerHistoryItem(
+                    kind: .toolResult,
+                    step: 1,
+                    tool: .pasteText,
+                    status: "executed",
+                    summary: "Pasted text",
+                    transaction: ComputerUseActionTransaction(effect: .changed)
+                ),
+            ],
+            priorOutcomes: []
+        )
+        let text = String(data: try JSONEncoder().encode(request), encoding: .utf8) ?? ""
+
+        #expect(text.contains("planner_history"))
+        #expect(text.contains("paste_text (13 characters)"))
+        #expect(text.contains("\"effect\":\"changed\""))
+        #expect(!text.contains("private words"))
     }
 }
 
@@ -570,37 +613,9 @@ struct ComputerUsePlannerRuntimeTests {
         #expect(result.message == "CUA reached its step limit")
     }
 
-    @Test("stops after one repeated no-op tool call")
+    @Test("repeated observations remain model-owned")
     @MainActor
-    func stopsRepeatedNoOpToolCalls() async {
-        var executionCount = 0
-        let runtime = ComputerUsePlannerRuntime(
-            config: AppConfig(),
-            observe: { _, _, _ in Self.observation(screenshot: Self.screenshot()) },
-            plan: { _ in
-                ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(
-                    tool: .click,
-                    elementID: "e1",
-                    label: "Address and search bar"
-                ))
-            },
-            execute: { _, _ in
-                executionCount += 1
-                return .executed("Clicked")
-            }
-        )
-
-        let result = await runtime.run(command: "search in chrome")
-
-        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.failed)
-        #expect(result.message.contains("repeated click Address and search bar after two unchanged attempts"))
-        #expect(executionCount == 2)
-        #expect(result.traceEvents.contains { $0.title == "Repeated action stopped" })
-    }
-
-    @Test("repeated get window state gives planner feedback before stopping")
-    @MainActor
-    func repeatedGetWindowStateGivesPlannerFeedbackBeforeStopping() async {
+    func repeatedObservationsRemainModelOwned() async {
         var executionCount = 0
         let runtime = ComputerUsePlannerRuntime(
             config: AppConfig(),
@@ -621,17 +636,14 @@ struct ComputerUsePlannerRuntimeTests {
                 )
             },
             plan: { request in
-                if request.step == 2 {
-                    #expect(request.priorOutcomes.last?.message.contains("State is unchanged after get window state") == true)
-                    #expect(request.priorOutcomes.last?.message.contains("choose a concrete action now") == true)
-                }
                 if request.step <= 2 {
                     return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(
                         tool: .getWindowState,
                         appBundleID: "com.google.Chrome"
                     ))
                 }
-                #expect(request.priorOutcomes.last?.message.contains("do not call get_app_state/get_window_state again") == true)
+                #expect(request.plannerHistory.filter { $0.kind == .modelToolCall }.count == 2)
+                #expect(request.plannerHistory.filter { $0.kind == .observationReceipt }.count == 3)
                 return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish, reason: "done"))
             },
             execute: { _, _ in
@@ -645,48 +657,6 @@ struct ComputerUsePlannerRuntimeTests {
         #expect(result.status == ComputerUsePlannerRuntimeResult.Status.done)
         #expect(executionCount == 2)
         #expect(!result.traceEvents.contains { $0.title == "Repeated action stopped" })
-    }
-
-    @Test("stops observation-only loops after larger budget")
-    @MainActor
-    func stopsObservationOnlyLoopsAfterLargerBudget() async {
-        var executionCount = 0
-        let runtime = ComputerUsePlannerRuntime(
-            config: AppConfig(),
-            observe: { _, _, _ in
-                Self.observation(
-                    appName: "Google Chrome",
-                    bundleID: "com.google.Chrome",
-                    windowTitle: "YouTube",
-                    screenshot: ComputerUseScreenshotObservation(
-                        screenshotID: "s\(executionCount)",
-                        width: 2940,
-                        height: 1800,
-                        windowFrame: ComputerUseRect(x: 0, y: 0, width: 1470, height: 900),
-                        scaleX: 2,
-                        scaleY: 2,
-                        imageDataURL: "data:image/jpeg;base64,abc"
-                    )
-                )
-            },
-            plan: { _ in
-                ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(
-                    tool: .getWindowState,
-                    appBundleID: "com.google.Chrome"
-                ))
-            },
-            execute: { _, _ in
-                executionCount += 1
-                return .executed("Observed")
-            }
-        )
-
-        let result = await runtime.run(command: "use the visible page")
-
-        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.failed)
-        #expect(result.message.contains("repeated get window state after 4 unchanged observations"))
-        #expect(executionCount == 4)
-        #expect(result.traceEvents.contains { $0.title == "Repeated action stopped" })
     }
 
     @Test("stops on confirmation-required action")
@@ -901,6 +871,7 @@ struct ComputerUsePlannerRuntimeTests {
                 #expect(outcome?.beforeStateID == "state-before")
                 #expect(outcome?.afterStateID == "state-after")
                 #expect(outcome?.stateDelta?.summary.contains("Observed UI state changed") == true)
+                #expect(outcome?.transaction?.effect == .changed)
                 return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish, reason: "done"))
             },
             execute: { _, _ in .executed("Clicked") }
@@ -934,9 +905,9 @@ struct ComputerUsePlannerRuntimeTests {
         #expect(result.status == ComputerUsePlannerRuntimeResult.Status.done)
     }
 
-    @Test("changed action clears previous unchanged action counts")
+    @Test("model can continue after mixed action effects")
     @MainActor
-    func changedActionClearsPreviousUnchangedActionCounts() async {
+    func modelCanContinueAfterMixedActionEffects() async {
         var observeCount = 0
         let runtime = ComputerUsePlannerRuntime(
             config: AppConfig(),
@@ -969,9 +940,9 @@ struct ComputerUsePlannerRuntimeTests {
         #expect(observeCount == 4)
     }
 
-    @Test("finish with incomplete language becomes failed")
+    @Test("finish is owned by the model")
     @MainActor
-    func finishWithIncompleteLanguageBecomesFailed() async {
+    func finishIsOwnedByModel() async {
         let runtime = ComputerUsePlannerRuntime(
             config: AppConfig(),
             observe: { _, _, _ in Self.observation() },
@@ -983,13 +954,13 @@ struct ComputerUsePlannerRuntimeTests {
 
         let result = await runtime.run(command: "do something")
 
-        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.failed)
-        #expect(result.message.contains("attempted to finish with an incomplete or blocked result"))
+        #expect(result.status == ComputerUsePlannerRuntimeResult.Status.done)
+        #expect(result.message == "Could not complete the task.")
     }
 
-    @Test("finish failure heuristic avoids success false positives")
+    @Test("finish accepts model-provided result language")
     @MainActor
-    func finishFailureHeuristicAvoidsSuccessFalsePositives() async {
+    func finishAcceptsModelProvidedResultLanguage() async {
         var finishReasons = [
             "Granted the camera permission.",
             "The modal did not have a cancel button so I pressed Escape instead; task is complete.",

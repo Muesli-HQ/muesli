@@ -13,25 +13,29 @@ struct ComputerUseExecutionResult: Equatable {
 
     let status: Status
     let message: String
+    let transaction: ComputerUseActionTransaction?
 
-    static func executed(_ message: String) -> ComputerUseExecutionResult {
-        ComputerUseExecutionResult(status: .executed, message: message)
+    static func executed(
+        _ message: String,
+        transaction: ComputerUseActionTransaction? = nil
+    ) -> ComputerUseExecutionResult {
+        ComputerUseExecutionResult(status: .executed, message: message, transaction: transaction)
     }
 
     static func needsConfirmation(_ message: String) -> ComputerUseExecutionResult {
-        ComputerUseExecutionResult(status: .needsConfirmation, message: message)
+        ComputerUseExecutionResult(status: .needsConfirmation, message: message, transaction: nil)
     }
 
     static func unsupported(_ message: String) -> ComputerUseExecutionResult {
-        ComputerUseExecutionResult(status: .unsupported, message: message)
+        ComputerUseExecutionResult(status: .unsupported, message: message, transaction: nil)
     }
 
     static func failed(_ message: String) -> ComputerUseExecutionResult {
-        ComputerUseExecutionResult(status: .failed, message: message)
+        ComputerUseExecutionResult(status: .failed, message: message, transaction: nil)
     }
 
     static func cancelled(_ message: String = "Cancelled") -> ComputerUseExecutionResult {
-        ComputerUseExecutionResult(status: .cancelled, message: message)
+        ComputerUseExecutionResult(status: .cancelled, message: message, transaction: nil)
     }
 }
 

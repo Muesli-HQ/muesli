@@ -139,6 +139,39 @@ enum ComputerUseVerificationStatus: String, Codable, Equatable {
     case unknown
 }
 
+enum ComputerUseActionEffect: String, Codable, Equatable {
+    case changed
+    case unchanged
+    case blocked
+    case unknown
+}
+
+struct ComputerUseActionTransaction: Codable, Equatable {
+    let route: String?
+    let posted: Bool?
+    let effect: ComputerUseActionEffect
+    let targetStable: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case route
+        case posted
+        case effect
+        case targetStable = "target_stable"
+    }
+
+    init(
+        route: String? = nil,
+        posted: Bool? = nil,
+        effect: ComputerUseActionEffect = .unknown,
+        targetStable: Bool? = nil
+    ) {
+        self.route = route
+        self.posted = posted
+        self.effect = effect
+        self.targetStable = targetStable
+    }
+}
+
 struct ComputerUseStateDelta: Codable, Equatable {
     let status: ComputerUseVerificationStatus
     let summary: String
@@ -150,6 +183,56 @@ struct ComputerUseStateDelta: Codable, Equatable {
         case summary
         case beforeStateID = "before_state_id"
         case afterStateID = "after_state_id"
+    }
+}
+
+enum ComputerUsePlannerHistoryKind: String, Codable, Equatable {
+    case userCommand = "user_command"
+    case modelToolCall = "model_tool_call"
+    case toolResult = "tool_result"
+    case observationReceipt = "observation_receipt"
+    case plannerRepair = "planner_repair"
+}
+
+struct ComputerUsePlannerHistoryItem: Codable, Equatable {
+    let kind: ComputerUsePlannerHistoryKind
+    let step: Int?
+    let tool: ComputerUseToolName?
+    let status: String?
+    let summary: String
+    let stateID: String?
+    let screenshotID: String?
+    let transaction: ComputerUseActionTransaction?
+
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case step
+        case tool
+        case status
+        case summary
+        case stateID = "state_id"
+        case screenshotID = "screenshot_id"
+        case transaction
+    }
+
+    init(
+        kind: ComputerUsePlannerHistoryKind,
+        step: Int? = nil,
+        tool: ComputerUseToolName? = nil,
+        status: String? = nil,
+        summary: String,
+        stateID: String? = nil,
+        screenshotID: String? = nil,
+        transaction: ComputerUseActionTransaction? = nil
+    ) {
+        self.kind = kind
+        self.step = step
+        self.tool = tool
+        self.status = status
+        self.summary = summary
+        self.stateID = stateID
+        self.screenshotID = screenshotID
+        self.transaction = transaction
     }
 }
 
@@ -759,6 +842,13 @@ struct ComputerUsePlannerResponse: Codable, Equatable {
         return ComputerUsePlannerResponse(toolCall: decoded, rawModelOutput: json)
     }
 
+    func toolAvailabilityFailure(availableTools: [ComputerUseToolName]) -> String? {
+        guard availableTools.contains(toolCall.tool) else {
+            return "Tool \(toolCall.tool.rawValue) is not available in the current planner contract."
+        }
+        return nil
+    }
+
     private static func rejectUnknownKeys(in json: String) throws {
         guard let data = json.data(using: .utf8),
               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -834,6 +924,7 @@ struct ComputerUseToolOutcome: Codable, Equatable {
     let beforeStateID: String?
     let afterStateID: String?
     let stateDelta: ComputerUseStateDelta?
+    let transaction: ComputerUseActionTransaction?
 
     enum CodingKeys: String, CodingKey {
         case step
@@ -848,6 +939,7 @@ struct ComputerUseToolOutcome: Codable, Equatable {
         case beforeStateID = "before_state_id"
         case afterStateID = "after_state_id"
         case stateDelta = "state_delta"
+        case transaction
     }
 
     init(
@@ -862,7 +954,8 @@ struct ComputerUseToolOutcome: Codable, Equatable {
         verificationStatus: ComputerUseVerificationStatus? = nil,
         beforeStateID: String? = nil,
         afterStateID: String? = nil,
-        stateDelta: ComputerUseStateDelta? = nil
+        stateDelta: ComputerUseStateDelta? = nil,
+        transaction: ComputerUseActionTransaction? = nil
     ) {
         self.step = step
         self.tool = tool
@@ -876,18 +969,21 @@ struct ComputerUseToolOutcome: Codable, Equatable {
         self.beforeStateID = beforeStateID
         self.afterStateID = afterStateID
         self.stateDelta = stateDelta
+        self.transaction = transaction
     }
 }
 
 typealias ComputerUseToolResult = ComputerUseToolOutcome
 
-struct ComputerUsePlannerRequest: Codable, Equatable {
+struct ComputerUsePlannerRequest: Encodable, Equatable {
     let command: String
     let step: Int
     let maxSteps: Int?
     let toolCatalogVersion: String
     let toolCatalog: String
+    let availableTools: [ComputerUseToolName]
     let latestWindowState: ComputerUseWindowState
+    let plannerHistory: [ComputerUsePlannerHistoryItem]
     let priorOutcomes: [ComputerUseToolOutcome]
 
     enum CodingKeys: String, CodingKey {
@@ -896,8 +992,9 @@ struct ComputerUsePlannerRequest: Codable, Equatable {
         case maxSteps = "max_steps"
         case toolCatalogVersion = "tool_catalog_version"
         case toolCatalog = "tool_catalog"
+        case availableTools = "available_tools"
         case latestWindowState = "latest_window_state"
-        case priorOutcomes = "prior_tool_outcomes"
+        case plannerHistory = "planner_history"
     }
 
     init(
@@ -905,16 +1002,20 @@ struct ComputerUsePlannerRequest: Codable, Equatable {
         step: Int,
         maxSteps: Int?,
         toolCatalogVersion: String = ComputerUseToolRegistry.catalogVersion,
-        toolCatalog: String = ComputerUseToolRegistry.promptDocumentation(),
+        availableTools: [ComputerUseToolName] = ComputerUseToolRegistry.modelFacingTools,
+        toolCatalog: String? = nil,
         latestWindowState: ComputerUseWindowState,
+        plannerHistory: [ComputerUsePlannerHistoryItem] = [],
         priorOutcomes: [ComputerUseToolOutcome]
     ) {
         self.command = command
         self.step = step
         self.maxSteps = maxSteps
         self.toolCatalogVersion = toolCatalogVersion
-        self.toolCatalog = toolCatalog
+        self.availableTools = availableTools
+        self.toolCatalog = toolCatalog ?? ComputerUseToolRegistry.promptDocumentation(allowedTools: Set(availableTools))
         self.latestWindowState = latestWindowState
+        self.plannerHistory = plannerHistory
         self.priorOutcomes = priorOutcomes
     }
 

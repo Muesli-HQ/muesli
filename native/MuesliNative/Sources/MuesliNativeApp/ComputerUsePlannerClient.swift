@@ -32,29 +32,17 @@ enum ComputerUsePlannerClient {
     You are Muesli's computer-use planner. You do not execute actions. You must choose exactly one native tool call from the provided tool list.
 
     Rules:
-    - Only use element_index or element_id values present in latest_window_state. Element references expire after each new get_app_state/get_window_state or refreshed state.
-    - Never invent AppleScript, shell commands, code, URLs, or tools.
-    - For app launch/navigation, use launch_app with the requested app name or app bundle id. Do not substitute another app because it is frontmost, visible, or present in examples.
-    - After launch_app, Muesli will refresh the requested app's state automatically. If the next state is not the requested app, call get_app_state for that app before using fail.
-    - Prefer get_app_state when the current state is insufficient or appears to be for the wrong app. get_window_state is a compatibility alias.
-    - Prefer click_element/set_value over coordinate clicks when a matching element exists.
-    - For coordinate click/drag, use screenshot pixel coordinates from the current screenshot, not global screen coordinates.
-    - Include screenshot_id from latest_window_state when using screenshot-coordinate tools.
-    - Use click_element for AX candidates and click_point for screenshot coordinates. Never use legacy click unless it appears in an old prior trace.
-    - For new or separate browser tasks, prefer open_new_browser_tab and then navigate_active_browser_tab. Use list_browser_tabs and activate_browser_tab only when the user asks to continue, find, or reuse an existing tab.
-    - Browser DOM/page tools are optional accelerators. Use page_get_text/page_query_dom when useful, but do not depend on them as the control path.
-    - If page_get_text, page_query_dom, or list_browser_tabs fails, is blocked by Chrome Apple Events JavaScript permission, returns insufficient content, or returns no tabs, immediately continue with get_app_state plus AX/screenshot actions such as click_element/click_point, paste_text/type_text, press_key/hotkey, and scroll.
-    - For text entry, prefer app-scoped calls: include app_name/app_bundle_id, and include element_index/element_id when an editable target is visible in the latest state.
-    - type_text sends literal keyboard input after Muesli activates the requested app and verifies a focused editable target. Use it for normal typing into focused text fields.
-    - For Apple Notes and native rich-text editors, first focus the editable note body/title, then prefer paste_text for multi-word text. Use type_text only for short direct key-event text entry when paste_text is inappropriate.
-    - Do not use fail only because a browser DOM/page tool failed. Use fail only after trying the available AX/screenshot fallback path or when the requested task is unsafe or truly unsupported.
-    - After get_app_state returns a fresh state, act on the visible AX/screenshot evidence. Do not call get_app_state/get_window_state repeatedly unless a tool result indicates the app/window changed or a previous action needs verification.
-    - Every mutating action result includes verification. If the prior outcome says no relevant UI change was observed, choose a different strategy such as a different target, different text primitive, keyboard navigation, or get_app_state before retrying.
-    - If browser page tools are blocked, use the screenshot and AX candidates to click_element/click_point, type, press keys, or scroll; do not loop on observation waiting for DOM access to appear.
-    - navigate_url and navigate_active_browser_tab may only use http or https URLs. Never output javascript:, file:, data:, shell text, or arbitrary code.
-    - For navigate_url, include window_index/tab_index only when they came from a recent list_browser_tabs result. After open_new_browser_tab, call navigate_active_browser_tab.
+    - Follow Look -> Act -> Verify. Read latest_window_state, choose one concrete action, then use the next observation and receipt to decide what to do.
+    - available_tools is authoritative for this turn. Never emit legacy or unavailable tools even if planner_history mentions them.
+    - planner_history is the compact action chain. It records prior model calls, primitive results, and observation receipts. The latest state and attached screenshot remain the current source of truth.
+    - Only use element_index or element_id values from latest_window_state. They expire after every refreshed observation.
+    - Use click for all click intent. Address a clear AX target by element_index/element_id, or a visual target by screenshot_id plus screenshot x/y. Muesli chooses AX, point, or other delivery routes.
+    - Use paste_text for text-entry intent. Include the current app and element target when available; Muesli chooses the insertion route.
+    - A transaction receipt describes primitive delivery only. posted means an input was sent; effect reports the observed low-level state change. Neither means the user's semantic task is complete.
+    - The harness does not judge whether your strategy is good. Inspect the latest screenshot/AX state and decide whether to continue, finish, or fail.
+    - Never invent AppleScript, shell commands, code, URLs, element IDs, screenshot IDs, or tools.
     - max_steps is a high safety ceiling, not a target. Use as few steps as needed.
-    - Use finish only when the user's command is complete and successful. If the task could not be completed, is blocked, is unsafe, or needs missing permission/confirmation, use fail(reason); never put blocked or incomplete language in finish.
+    - Use finish when you judge the user's command complete. Use fail when you judge it blocked, unsupported, unsafe, or incomplete. The runtime accepts that terminal decision.
     - Risky actions are locally blocked by Muesli; do not try to bypass confirmation.
     """
     }
@@ -68,6 +56,7 @@ enum ComputerUsePlannerClient {
                 systemPrompt: instructions,
                 userPrompt: requestPrompt(for: request),
                 imageDataURL: request.latestWindowState.screenshot?.imageDataURL,
+                availableTools: request.availableTools,
                 model: plannerModel(for: config)
             )
         } catch ChatGPTAuthError.notAuthenticated {
@@ -97,6 +86,7 @@ enum ComputerUsePlannerClient {
         systemPrompt: String,
         userPrompt: String,
         imageDataURL: String?,
+        availableTools: [ComputerUseToolName],
         model: String
     ) async throws -> ComputerUsePlannerResponse {
         let (token, accountId) = try await ChatGPTAuthManager.shared.validAccessToken()
@@ -111,7 +101,7 @@ enum ComputerUsePlannerClient {
             "store": false,
             "stream": true,
             "instructions": systemPrompt,
-            "tools": ComputerUseToolRegistry.nativeToolDefinitions(),
+            "tools": ComputerUseToolRegistry.nativeToolDefinitions(allowedTools: Set(availableTools)),
             "tool_choice": "required",
             "parallel_tool_calls": false,
             "input": [
@@ -167,10 +157,20 @@ enum ComputerUsePlannerClient {
 
         if let nativeToolCall = parsedNativeToolCall {
             do {
-                return try ComputerUsePlannerResponse.decodeNativeToolCall(
+                let response = try ComputerUsePlannerResponse.decodeNativeToolCall(
                     name: nativeToolCall.name,
                     arguments: nativeToolCall.arguments
                 )
+                if let failure = response.toolAvailabilityFailure(availableTools: availableTools) {
+                    throw ComputerUsePlannerError.invalidToolCall(
+                        name: nativeToolCall.name,
+                        arguments: nativeToolCall.arguments,
+                        message: failure
+                    )
+                }
+                return response
+            } catch let error as ComputerUsePlannerError {
+                throw error
             } catch {
                 throw ComputerUsePlannerError.invalidToolCall(
                     name: nativeToolCall.name,

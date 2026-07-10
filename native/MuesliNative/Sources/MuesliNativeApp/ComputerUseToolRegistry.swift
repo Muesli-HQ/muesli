@@ -70,7 +70,20 @@ struct ComputerUseToolSchemaArrayItems: Codable, Equatable {
 }
 
 enum ComputerUseToolRegistry {
-    static let catalogVersion = "muesli-cua-tools-v1"
+    static let catalogVersion = "muesli-cua-tools-v2"
+
+    // The planner chooses user intent. Legacy and route-specific tools remain
+    // decodable for old traces, but are not advertised to new planner turns.
+    static let modelFacingTools: [ComputerUseToolName] = [
+        .launchApp,
+        .getWindowState,
+        .click,
+        .pasteText,
+        .pressKey,
+        .scroll,
+        .finish,
+        .fail,
+    ]
 
     static let definitions: [ComputerUseToolDefinition] = [
         definition(.listApps, "List running desktop apps with names, bundle IDs, process IDs, and active state.", required: [], properties: [:], risk: "safe read-only"),
@@ -85,10 +98,20 @@ enum ComputerUseToolRegistry {
             "app_bundle_id": .string("Optional app bundle to activate before capture."),
             "window_id": .integer("Optional window id hint."),
         ], risk: "safe read-only"),
-        definition(.getWindowState, "Compatibility alias for get_app_state. Prefer get_app_state for new planner calls.", required: [], properties: [
+        definition(.getWindowState, "Capture fresh app/window state with screenshot metadata, AX candidates, focused element, selected text, cursor, and app hints.", required: [], properties: [
             "app_bundle_id": .string("Optional app bundle to activate before capture."),
             "window_id": .integer("Optional window id hint."),
         ], risk: "safe read-only"),
+        definition(.click, "Click a target from the latest window state. Address it with either element_index/element_id or screenshot_id plus x/y; Muesli chooses the delivery route.", required: [], properties: [
+            "element_index": .integer("Temporary element index from the latest state."),
+            "element_id": .string("Temporary element id from the latest state."),
+            "screenshot_id": .string("Current screenshot id for coordinate addressing."),
+            "x": .number("Screenshot pixel x coordinate."),
+            "y": .number("Screenshot pixel y coordinate."),
+            "clicks": .integer("1 for single click, 2 for double click."),
+            "button": .string("left or right."),
+            "label": .string("Human target label for trace and safety."),
+        ], risk: "confirmation for risky labels; target addressing is validated"),
         definition(.moveCursor, "Move the visible Muesli CUA cursor to a screenshot coordinate without clicking. Use this before uncertain coordinate clicks to show intent.", required: ["screenshot_id", "x", "y"], properties: [
             "screenshot_id": .string("Current screenshot id."),
             "x": .number("Screenshot pixel x coordinate."),
@@ -205,8 +228,8 @@ enum ComputerUseToolRegistry {
         definitions.first { $0.name == tool }
     }
 
-    static func promptDocumentation() -> String {
-        definitions.map { definition in
+    static func promptDocumentation(allowedTools: Set<ComputerUseToolName>? = nil) -> String {
+        selectedDefinitions(allowedTools: allowedTools).map { definition in
             let required = definition.schema.required.isEmpty ? "none" : definition.schema.required.joined(separator: ", ")
             let properties = definition.schema.properties
                 .sorted { $0.key < $1.key }
@@ -230,8 +253,8 @@ enum ComputerUseToolRegistry {
         }.joined(separator: "\n\n")
     }
 
-    static func nativeToolDefinitions() -> [[String: Any]] {
-        definitions.map { definition in
+    static func nativeToolDefinitions(allowedTools: Set<ComputerUseToolName>? = nil) -> [[String: Any]] {
+        selectedDefinitions(allowedTools: allowedTools).map { definition in
             [
                 "type": "function",
                 "name": definition.name.rawValue,
@@ -239,6 +262,11 @@ enum ComputerUseToolRegistry {
                 "parameters": toolParameters(for: definition),
             ]
         }
+    }
+
+    private static func selectedDefinitions(allowedTools: Set<ComputerUseToolName>?) -> [ComputerUseToolDefinition] {
+        let allowedTools = allowedTools ?? Set(modelFacingTools)
+        return definitions.filter { allowedTools.contains($0.name) }
     }
 
     private static func toolParameters(for definition: ComputerUseToolDefinition) -> [String: Any] {
