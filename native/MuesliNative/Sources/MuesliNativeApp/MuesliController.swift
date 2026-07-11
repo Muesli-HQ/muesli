@@ -6909,7 +6909,153 @@ final class MuesliController: NSObject {
                     : "Added \(entry.displayLabel) to the dictionary.",
                 changed: !alreadyExists
             )
+
+        case .success(.removeDictionaryWord(let word)):
+            let matchingIDs = config.customWords
+                .filter { $0.word.caseInsensitiveCompare(word) == .orderedSame }
+                .map(\.id)
+            if !matchingIDs.isEmpty {
+                let ids = Set(matchingIDs)
+                updateConfig { $0.customWords.removeAll { ids.contains($0.id) } }
+            }
+            guard !config.customWords.contains(where: {
+                $0.word.caseInsensitiveCompare(word) == .orderedSame
+            }) else {
+                return .failed("Could not remove \(word) from the dictionary.")
+            }
+            return computerUseSettingsResult(
+                matchingIDs.isEmpty
+                    ? "Dictionary did not contain \(word)."
+                    : "Removed \(word) from the dictionary.",
+                changed: !matchingIDs.isEmpty
+            )
+
+        case .success(.computerUseEnabled(let enabled)):
+            let unchanged = config.enableComputerUseHotkey == enabled
+            if !unchanged {
+                let result = updateComputerUseHotkeyEnabled(enabled)
+                guard result.didUpdate else {
+                    return .failed(result.message ?? "Computer Use could not be enabled because its shortcut conflicts with another shortcut.")
+                }
+            }
+            guard config.enableComputerUseHotkey == enabled else {
+                return .failed("Could not persist Computer Use as \(enabled ? "enabled" : "disabled").")
+            }
+            return computerUseSettingsResult(
+                unchanged
+                    ? "Computer Use was already \(enabled ? "enabled" : "disabled")."
+                    : "Computer Use is now \(enabled ? "enabled" : "disabled") for future shortcut activations.",
+                changed: !unchanged
+            )
+
+        case .success(.computerUseSafetyLimit(let seconds)):
+            let unchanged = config.computerUseTimeoutSeconds == seconds
+            if !unchanged {
+                updateConfig { $0.computerUseTimeoutSeconds = seconds }
+            }
+            guard config.computerUseTimeoutSeconds == seconds else {
+                return .failed("Could not persist the Computer Use safety limit.")
+            }
+            return computerUseSettingsResult(
+                unchanged
+                    ? "Computer Use safety limit was already \(seconds) seconds."
+                    : "Computer Use safety limit is now \(seconds) seconds for future commands.",
+                changed: !unchanged
+            )
+
+        case .success(.pauseMediaDuringDictation(let enabled)):
+            return applyComputerUseBooleanSetting(
+                name: "Pause media during dictation",
+                enabled: enabled,
+                current: { self.config.pauseMediaDuringDictation },
+                persist: { value in self.updateConfig { $0.pauseMediaDuringDictation = value } }
+            )
+
+        case .success(.muteSystemAudioDuringDictation(let enabled)):
+            return applyComputerUseBooleanSetting(
+                name: "Mute system audio during dictation",
+                enabled: enabled,
+                current: { self.config.muteSystemAudioDuringDictation },
+                persist: { value in self.updateConfig { $0.muteSystemAudioDuringDictation = value } }
+            )
+
+        case .success(.floatingIndicatorEnabled(let enabled)):
+            let result = applyComputerUseBooleanSetting(
+                name: "Floating indicator",
+                enabled: enabled,
+                current: { self.config.showFloatingIndicator },
+                persist: { value in self.updateConfig { $0.showFloatingIndicator = value } }
+            )
+            refreshIndicatorVisibility()
+            return result
+
+        case .success(.floatingIndicatorPosition(let anchor)):
+            let unchanged = config.indicatorAnchor == anchor
+            if !unchanged {
+                updateConfig { $0.indicatorAnchor = anchor }
+                refreshIndicatorVisibility()
+            }
+            guard config.indicatorAnchor == anchor else {
+                return .failed("Could not persist floating indicator position \(anchor.label).")
+            }
+            return computerUseSettingsResult(
+                unchanged
+                    ? "Floating indicator was already at \(anchor.label)."
+                    : "Floating indicator is now at \(anchor.label).",
+                changed: !unchanged
+            )
+
+        case .success(.soundEffects(let enabled)):
+            return applyComputerUseBooleanSetting(
+                name: "Sound effects",
+                enabled: enabled,
+                current: { self.config.soundEnabled },
+                persist: { value in self.updateConfig { $0.soundEnabled = value } }
+            )
+
+        case .success(.darkMode(let enabled)):
+            let theme = enabled ? "Dark" : "Light"
+            let unchanged = config.darkMode == enabled
+            if !unchanged {
+                updateConfig { $0.darkMode = enabled }
+            }
+            guard config.darkMode == enabled else {
+                return .failed("Could not persist \(theme.lowercased()) mode.")
+            }
+            return computerUseSettingsResult(
+                unchanged ? "Muesli was already using \(theme.lowercased()) mode." : "Muesli is now using \(theme.lowercased()) mode.",
+                changed: !unchanged
+            )
+
+        case .success(.openDashboardOnLaunch(let enabled)):
+            return applyComputerUseBooleanSetting(
+                name: "Open dashboard on launch",
+                enabled: enabled,
+                current: { self.config.openDashboardOnLaunch },
+                persist: { value in self.updateConfig { $0.openDashboardOnLaunch = value } }
+            )
         }
+    }
+
+    private func applyComputerUseBooleanSetting(
+        name: String,
+        enabled: Bool,
+        current: () -> Bool,
+        persist: (Bool) -> Void
+    ) -> ComputerUseExecutionResult {
+        let unchanged = current() == enabled
+        if !unchanged {
+            persist(enabled)
+        }
+        guard current() == enabled else {
+            return .failed("Could not persist \(name.lowercased()) as \(enabled ? "enabled" : "disabled").")
+        }
+        return computerUseSettingsResult(
+            unchanged
+                ? "\(name) was already \(enabled ? "enabled" : "disabled")."
+                : "\(name) is now \(enabled ? "enabled" : "disabled").",
+            changed: !unchanged
+        )
     }
 
     private func computerUseSettingsResult(_ message: String, changed: Bool) -> ComputerUseExecutionResult {

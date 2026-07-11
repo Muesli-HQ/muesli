@@ -34,6 +34,16 @@ enum ComputerUseMuesliSettingsOperation: String, Codable, Equatable, CaseIterabl
     case setTranscriptionModel = "set_transcription_model"
     case setAICleanup = "set_ai_cleanup"
     case addDictionaryWord = "add_dictionary_word"
+    case removeDictionaryWord = "remove_dictionary_word"
+    case setComputerUseEnabled = "set_computer_use_enabled"
+    case setComputerUseSafetyLimit = "set_computer_use_safety_limit"
+    case setPauseMediaDuringDictation = "set_pause_media_during_dictation"
+    case setMuteSystemAudioDuringDictation = "set_mute_system_audio_during_dictation"
+    case setFloatingIndicatorEnabled = "set_floating_indicator_enabled"
+    case setFloatingIndicatorPosition = "set_floating_indicator_position"
+    case setSoundEffects = "set_sound_effects"
+    case setTheme = "set_theme"
+    case setOpenDashboardOnLaunch = "set_open_dashboard_on_launch"
 }
 
 enum ComputerUseScrollDirection: String, Codable, Equatable {
@@ -395,6 +405,9 @@ struct ComputerUseToolInvocation: Codable, Equatable {
     let operation: ComputerUseMuesliSettingsOperation?
     let model: String?
     let enabled: Bool?
+    let seconds: Int?
+    let position: String?
+    let theme: String?
     let word: String?
     let replacement: String?
     let reason: String?
@@ -431,6 +444,9 @@ struct ComputerUseToolInvocation: Codable, Equatable {
         case operation
         case model
         case enabled
+        case seconds
+        case position
+        case theme
         case word
         case replacement
         case reason
@@ -468,6 +484,9 @@ struct ComputerUseToolInvocation: Codable, Equatable {
         operation: ComputerUseMuesliSettingsOperation? = nil,
         model: String? = nil,
         enabled: Bool? = nil,
+        seconds: Int? = nil,
+        position: String? = nil,
+        theme: String? = nil,
         word: String? = nil,
         replacement: String? = nil,
         reason: String? = nil
@@ -503,6 +522,9 @@ struct ComputerUseToolInvocation: Codable, Equatable {
         self.operation = operation
         self.model = model
         self.enabled = enabled
+        self.seconds = seconds
+        self.position = position
+        self.theme = theme
         self.word = word
         self.replacement = replacement
         self.reason = reason
@@ -564,6 +586,9 @@ struct ComputerUseToolInvocation: Codable, Equatable {
             operation: operation,
             model: model,
             enabled: enabled,
+            seconds: seconds,
+            position: position,
+            theme: theme,
             word: word,
             replacement: replacement,
             reason: reason
@@ -675,6 +700,24 @@ struct ComputerUseToolInvocation: Codable, Equatable {
                 return enabled == nil ? "set_ai_cleanup requires enabled" : nil
             case .addDictionaryWord:
                 return trimmed(word).isEmpty ? "add_dictionary_word requires word" : nil
+            case .removeDictionaryWord:
+                return trimmed(word).isEmpty ? "remove_dictionary_word requires word" : nil
+            case .setComputerUseEnabled,
+                 .setPauseMediaDuringDictation,
+                 .setMuteSystemAudioDuringDictation,
+                 .setFloatingIndicatorEnabled,
+                 .setSoundEffects,
+                 .setOpenDashboardOnLaunch:
+                return enabled == nil ? "\(operation.rawValue) requires enabled" : nil
+            case .setComputerUseSafetyLimit:
+                guard let seconds else { return "set_computer_use_safety_limit requires seconds" }
+                return (1...600).contains(seconds)
+                    ? nil
+                    : "set_computer_use_safety_limit requires seconds between 1 and 600"
+            case .setFloatingIndicatorPosition:
+                return trimmed(position).isEmpty ? "set_floating_indicator_position requires position" : nil
+            case .setTheme:
+                return trimmed(theme).isEmpty ? "set_theme requires theme" : nil
             }
         case .fail:
             return trimmed(reason).isEmpty ? "fail requires reason" : nil
@@ -790,6 +833,26 @@ struct ComputerUseToolInvocation: Codable, Equatable {
                 return target.isEmpty
                     ? "add \(truncateForSummary(trimmed(word))) to Muesli dictionary"
                     : "add \(truncateForSummary(trimmed(word))) as \(truncateForSummary(target)) to Muesli dictionary"
+            case .removeDictionaryWord:
+                return "remove \(truncateForSummary(trimmed(word))) from Muesli dictionary"
+            case .setComputerUseEnabled:
+                return "\(enabled == true ? "enable" : "disable") Muesli Computer Use"
+            case .setComputerUseSafetyLimit:
+                return "set Muesli Computer Use safety limit to \(seconds ?? 0) seconds"
+            case .setPauseMediaDuringDictation:
+                return "\(enabled == true ? "enable" : "disable") pause media during dictation"
+            case .setMuteSystemAudioDuringDictation:
+                return "\(enabled == true ? "enable" : "disable") mute system audio during dictation"
+            case .setFloatingIndicatorEnabled:
+                return "\(enabled == true ? "show" : "hide") Muesli floating indicator"
+            case .setFloatingIndicatorPosition:
+                return "move Muesli floating indicator to \(trimmed(position))"
+            case .setSoundEffects:
+                return "\(enabled == true ? "enable" : "disable") Muesli sound effects"
+            case .setTheme:
+                return "set Muesli theme to \(trimmed(theme))"
+            case .setOpenDashboardOnLaunch:
+                return "\(enabled == true ? "enable" : "disable") open dashboard on launch"
             case nil:
                 return "update Muesli settings"
             }

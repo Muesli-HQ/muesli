@@ -29,6 +29,8 @@ struct ComputerUseToolRegistryTests {
         #expect(docs.contains("Tool: paste_text"))
         #expect(docs.contains("Tool: update_muesli_settings"))
         #expect(docs.contains(#"{"operation":"set_transcription_model","model":"parakeet"}"#))
+        #expect(docs.contains(#"{"operation":"set_computer_use_enabled","enabled":false}"#))
+        #expect(docs.contains(#"{"operation":"remove_dictionary_word","word":"musli"}"#))
         #expect(!docs.contains("Tool: click_element"))
         #expect(!docs.contains("Tool: type_text"))
         #expect(!docs.contains("Tool: page_query_dom"))
@@ -61,6 +63,8 @@ struct ComputerUseToolRegistryTests {
         let settingsParameters = settings?["parameters"] as? [String: Any]
         let settingsProperties = settingsParameters?["properties"] as? [String: Any]
         #expect((settingsProperties?["enabled"] as? [String: Any])?["type"] as? String == "boolean")
+        #expect((settingsProperties?["seconds"] as? [String: Any])?["type"] as? String == "integer")
+        #expect((settingsProperties?["theme"] as? [String: Any])?["enum"] as? [String] == ["light", "dark"])
     }
 
     @Test("planner guidance preserves model and driver ownership")
@@ -78,6 +82,9 @@ struct ComputerUseToolRegistryTests {
         #expect(instructions.contains(#"{"operation":"set_transcription_model","model":"parakeet"}"#))
         #expect(instructions.contains(#"{"operation":"set_ai_cleanup","enabled":true}"#))
         #expect(instructions.contains(#"{"operation":"add_dictionary_word","word":"musli","replacement":"Muesli"}"#))
+        #expect(instructions.contains(#"{"operation":"set_computer_use_enabled","enabled":false}"#))
+        #expect(instructions.contains(#"{"operation":"remove_dictionary_word","word":"musli"}"#))
+        #expect(instructions.contains("Boolean setters accept true and false"))
     }
 }
 
@@ -94,12 +101,52 @@ struct ComputerUseMuesliSettingsTests {
         let dictionary = try ComputerUsePlannerResponse.decodeJSON(
             from: #"{"tool":"update_muesli_settings","operation":"add_dictionary_word","word":"musli","replacement":"Muesli"}"#
         ).toolCall
+        let removeDictionary = try ComputerUsePlannerResponse.decodeJSON(
+            from: #"{"tool":"update_muesli_settings","operation":"remove_dictionary_word","word":"musli"}"#
+        ).toolCall
+        let computerUse = try ComputerUsePlannerResponse.decodeJSON(
+            from: #"{"tool":"update_muesli_settings","operation":"set_computer_use_enabled","enabled":false}"#
+        ).toolCall
+        let safetyLimit = try ComputerUsePlannerResponse.decodeJSON(
+            from: #"{"tool":"update_muesli_settings","operation":"set_computer_use_safety_limit","seconds":300}"#
+        ).toolCall
+        let indicatorPosition = try ComputerUsePlannerResponse.decodeJSON(
+            from: #"{"tool":"update_muesli_settings","operation":"set_floating_indicator_position","position":"Bottom Center"}"#
+        ).toolCall
+        let theme = try ComputerUsePlannerResponse.decodeJSON(
+            from: #"{"tool":"update_muesli_settings","operation":"set_theme","theme":"dark"}"#
+        ).toolCall
 
         #expect(model.operation == .setTranscriptionModel)
         #expect(model.model == "parakeet")
         #expect(cleanup.enabled == true)
         #expect(dictionary.word == "musli")
         #expect(dictionary.replacement == "Muesli")
+        #expect(removeDictionary.operation == .removeDictionaryWord)
+        #expect(removeDictionary.word == "musli")
+        #expect(computerUse.operation == .setComputerUseEnabled)
+        #expect(computerUse.enabled == false)
+        #expect(safetyLimit.seconds == 300)
+        #expect(indicatorPosition.position == "Bottom Center")
+        #expect(theme.theme == "dark")
+
+        let reversibleBooleanOperations: [ComputerUseMuesliSettingsOperation] = [
+            .setAICleanup,
+            .setComputerUseEnabled,
+            .setPauseMediaDuringDictation,
+            .setMuteSystemAudioDuringDictation,
+            .setFloatingIndicatorEnabled,
+            .setSoundEffects,
+            .setOpenDashboardOnLaunch,
+        ]
+        for operation in reversibleBooleanOperations {
+            for enabled in [true, false] {
+                let decoded = try ComputerUsePlannerResponse.decodeJSON(
+                    from: #"{"tool":"update_muesli_settings","operation":"\#(operation.rawValue)","enabled":\#(enabled)}"#
+                ).toolCall
+                #expect(decoded.enabled == enabled)
+            }
+        }
     }
 
     @Test("rejects missing operation-specific values")
@@ -117,6 +164,31 @@ struct ComputerUseMuesliSettingsTests {
         #expect(throws: Error.self) {
             _ = try ComputerUsePlannerResponse.decodeJSON(
                 from: #"{"tool":"update_muesli_settings","operation":"add_dictionary_word"}"#
+            )
+        }
+        #expect(throws: Error.self) {
+            _ = try ComputerUsePlannerResponse.decodeJSON(
+                from: #"{"tool":"update_muesli_settings","operation":"remove_dictionary_word"}"#
+            )
+        }
+        #expect(throws: Error.self) {
+            _ = try ComputerUsePlannerResponse.decodeJSON(
+                from: #"{"tool":"update_muesli_settings","operation":"set_computer_use_enabled"}"#
+            )
+        }
+        #expect(throws: Error.self) {
+            _ = try ComputerUsePlannerResponse.decodeJSON(
+                from: #"{"tool":"update_muesli_settings","operation":"set_computer_use_safety_limit","seconds":601}"#
+            )
+        }
+        #expect(throws: Error.self) {
+            _ = try ComputerUsePlannerResponse.decodeJSON(
+                from: #"{"tool":"update_muesli_settings","operation":"set_floating_indicator_position"}"#
+            )
+        }
+        #expect(throws: Error.self) {
+            _ = try ComputerUsePlannerResponse.decodeJSON(
+                from: #"{"tool":"update_muesli_settings","operation":"set_theme"}"#
             )
         }
     }
@@ -144,6 +216,31 @@ struct ComputerUseMuesliSettingsTests {
         #expect(entry.replacement == "Muesli")
         #expect(entry.matchingThreshold == 0.85)
         #expect(toolCall.requiresPostActionObservation == false)
+    }
+
+    @Test("builds reversible first-pass settings mutations")
+    func buildsReversibleSettingsMutations() throws {
+        let remove = try ComputerUsePlannerResponse.decodeJSON(
+            from: #"{"tool":"update_muesli_settings","operation":"remove_dictionary_word","word":"Muesli"}"#
+        ).toolCall
+        let disableCUA = try ComputerUsePlannerResponse.decodeJSON(
+            from: #"{"tool":"update_muesli_settings","operation":"set_computer_use_enabled","enabled":false}"#
+        ).toolCall
+        let limit = try ComputerUsePlannerResponse.decodeJSON(
+            from: #"{"tool":"update_muesli_settings","operation":"set_computer_use_safety_limit","seconds":180}"#
+        ).toolCall
+        let position = try ComputerUsePlannerResponse.decodeJSON(
+            from: #"{"tool":"update_muesli_settings","operation":"set_floating_indicator_position","position":"bottom_center"}"#
+        ).toolCall
+        let lightTheme = try ComputerUsePlannerResponse.decodeJSON(
+            from: #"{"tool":"update_muesli_settings","operation":"set_theme","theme":"light"}"#
+        ).toolCall
+
+        #expect(try ComputerUseMuesliSettingsDriver.mutation(for: remove).get() == .removeDictionaryWord("Muesli"))
+        #expect(try ComputerUseMuesliSettingsDriver.mutation(for: disableCUA).get() == .computerUseEnabled(false))
+        #expect(try ComputerUseMuesliSettingsDriver.mutation(for: limit).get() == .computerUseSafetyLimit(180))
+        #expect(try ComputerUseMuesliSettingsDriver.mutation(for: position).get() == .floatingIndicatorPosition(.bottomCenter))
+        #expect(try ComputerUseMuesliSettingsDriver.mutation(for: lightTheme).get() == .darkMode(false))
     }
 
     @Test("prepared settings persist only after readiness succeeds")
@@ -1385,6 +1482,12 @@ struct ComputerUsePlannerRuntimeTests {
         #expect(result.status == .done)
         #expect(observeCalls == 1)
         #expect(receivedConfigReceipt)
+        #expect(result.traceEvents.contains {
+            $0.kind == "tool_call" && $0.body.contains("set_ai_cleanup")
+        })
+        #expect(result.traceEvents.contains {
+            $0.kind == "tool_result" && $0.body == "AI cleanup is now enabled."
+        })
     }
 
     static func observation(
