@@ -13,6 +13,7 @@ case "${shard}" in
     filters=(
       ConfigStoreTests
       DictationStoreTests
+      ComputerUse
       MuesliCLITests
       ChatGPTAuthTests
       ChatGPTTokenStorageTests
