@@ -856,6 +856,9 @@ struct AppConfigTests {
         #expect(config.resolvedAutoExportMarkdownContent == .notes)
         #expect(config.autoExportFileFormat == MeetingAutoExportFileFormat.markdown.rawValue)
         #expect(config.resolvedAutoExportFileFormat == .markdown)
+        #expect(config.manualExportFormat == MeetingManualExportFormat.pdf.rawValue)
+        #expect(config.resolvedManualExportFormat == .pdf)
+        #expect(config.openFileAfterManualExport == true)
         #expect(config.contributionPromptNextWordCount == nil)
         #expect(config.contributionPromptNextMeetingCount == nil)
         #expect(config.contributionGitHubStarClicked == false)
@@ -1008,6 +1011,8 @@ struct AppConfigTests {
         config.autoExportMarkdownFolderPath = "/tmp/muesli-auto-export"
         config.autoExportMarkdownContent = MeetingExportContent.fullMeeting.rawValue
         config.autoExportFileFormat = MeetingAutoExportFileFormat.markdownAndPDF.rawValue
+        config.manualExportFormat = MeetingManualExportFormat.markdown.rawValue
+        config.openFileAfterManualExport = false
         config.showScheduledMeetingNotifications = false
         config.scheduledMeetingNotificationLeadTime = .threeMinutes
         config.showMeetingDetectionNotification = false
@@ -1088,6 +1093,9 @@ struct AppConfigTests {
         #expect(decoded.resolvedAutoExportMarkdownContent == .fullMeeting)
         #expect(decoded.autoExportFileFormat == MeetingAutoExportFileFormat.markdownAndPDF.rawValue)
         #expect(decoded.resolvedAutoExportFileFormat == .markdownAndPDF)
+        #expect(decoded.manualExportFormat == MeetingManualExportFormat.markdown.rawValue)
+        #expect(decoded.resolvedManualExportFormat == .markdown)
+        #expect(decoded.openFileAfterManualExport == false)
         #expect(decoded.showScheduledMeetingNotifications == false)
         #expect(decoded.scheduledMeetingNotificationLeadTime == .threeMinutes)
         #expect(decoded.showMeetingDetectionNotification == false)
@@ -1186,6 +1194,8 @@ struct AppConfigTests {
         #expect(json["auto_export_markdown_folder_path"] != nil)
         #expect(json["auto_export_markdown_content"] != nil)
         #expect(json["auto_export_file_format"] != nil)
+        #expect(json["manual_export_format"] != nil)
+        #expect(json["open_file_after_manual_export"] != nil)
         #expect(json["contribution_prompt_next_word_count"] != nil)
         #expect(json["contribution_prompt_next_meeting_count"] != nil)
         #expect(json["contribution_github_star_clicked"] != nil)
@@ -1464,6 +1474,37 @@ struct AppConfigTests {
         #expect(config.hasCompletedOnboarding)
         #expect(config.resolvedOnboardingUseCase == .dictationAndMeetings)
         #expect(config.resolvedOnboardingUseCase.includesMeetings)
+    }
+
+    @Test("manual export preferences default when missing from legacy config")
+    func manualExportPreferencesDefaultWhenMissing() throws {
+        let json = """
+        {
+          "has_completed_onboarding": true
+        }
+        """
+
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.manualExportFormat == MeetingManualExportFormat.pdf.rawValue)
+        #expect(config.resolvedManualExportFormat == .pdf)
+        #expect(config.openFileAfterManualExport == true)
+    }
+
+    @Test("malformed manual export format falls back to PDF")
+    func malformedManualExportFormatFallsBackToPDF() throws {
+        let json = """
+        {
+          "manual_export_format": "docx",
+          "open_file_after_manual_export": false
+        }
+        """
+
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.manualExportFormat == MeetingManualExportFormat.pdf.rawValue)
+        #expect(config.resolvedManualExportFormat == .pdf)
+        #expect(config.openFileAfterManualExport == false)
     }
 
     @Test("legacy completed onboarding enables meetings when use case is malformed")
