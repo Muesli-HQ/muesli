@@ -6837,24 +6837,35 @@ final class MuesliController: NSObject {
         case .success(.transcriptionModel(let option)):
             let unchanged = selectedBackend == option
             presentComputerUseFloatingStatus("Preparing \(option.label)")
-            do {
-                let ppOption = runtimePostProcessorOption()
-                await configureTranscriptCleanupForRuntime(option: ppOption)
-                try await transcriptionCoordinator.preloadRequired(
-                    backend: option,
-                    enablePostProcessor: canRunTranscriptCleanup(option: ppOption),
-                    includeMeetingHelpers: config.resolvedOnboardingUseCase.includesMeetings
-                )
-            } catch is CancellationError {
+            let preparation = await ComputerUseMuesliSettingsDriver.prepareThenPersist(
+                prepare: {
+                    let ppOption = self.runtimePostProcessorOption()
+                    await self.configureTranscriptCleanupForRuntime(option: ppOption)
+                    await self.transcriptionCoordinator.setNemotron35PromptId(
+                        self.config.resolvedNemotron35Language.promptId
+                    )
+                    try await self.transcriptionCoordinator.preloadRequired(
+                        backend: option,
+                        enablePostProcessor: self.canRunTranscriptCleanup(option: ppOption),
+                        includeMeetingHelpers: self.config.resolvedOnboardingUseCase.includesMeetings
+                    )
+                },
+                persist: {
+                    if !unchanged {
+                        self.persistSelectedBackend(option)
+                    }
+                }
+            )
+            switch preparation {
+            case .cancelled:
                 return .cancelled("Model preparation cancelled")
-            } catch {
+            case .failed(let message):
                 return .failed(
                     "Could not switch to \(option.label) because the model could not be prepared. "
-                        + "The previous transcription model remains selected. \(error.localizedDescription)"
+                        + "The previous transcription model remains selected. \(message)"
                 )
-            }
-            if !unchanged {
-                persistSelectedBackend(option)
+            case .committed:
+                break
             }
             guard config.sttBackend == option.backend, config.sttModel == option.model else {
                 return .failed("Could not persist transcription model \(option.label).")

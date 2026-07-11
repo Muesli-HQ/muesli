@@ -145,6 +145,37 @@ struct ComputerUseMuesliSettingsTests {
         #expect(entry.matchingThreshold == 0.85)
         #expect(toolCall.requiresPostActionObservation == false)
     }
+
+    @Test("prepared settings persist only after readiness succeeds")
+    @MainActor
+    func preparedSettingsCommitAfterSuccess() async {
+        var events: [String] = []
+
+        let result = await ComputerUseMuesliSettingsDriver.prepareThenPersist(
+            prepare: { events.append("prepared") },
+            persist: { events.append("persisted") }
+        )
+
+        #expect(result == .committed)
+        #expect(events == ["prepared", "persisted"])
+    }
+
+    @Test("prepared settings preserve selection when readiness fails")
+    @MainActor
+    func preparedSettingsPreserveOnFailure() async {
+        struct PreparationFailure: LocalizedError {
+            var errorDescription: String? { "model unavailable" }
+        }
+        var persisted = false
+
+        let result = await ComputerUseMuesliSettingsDriver.prepareThenPersist(
+            prepare: { throw PreparationFailure() },
+            persist: { persisted = true }
+        )
+
+        #expect(result == .failed("model unavailable"))
+        #expect(!persisted)
+    }
 }
 
 @Suite("Computer Use observation capture")

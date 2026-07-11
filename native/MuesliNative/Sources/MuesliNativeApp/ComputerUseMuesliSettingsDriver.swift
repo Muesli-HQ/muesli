@@ -10,7 +10,29 @@ struct ComputerUseMuesliSettingsError: Error, Equatable {
     let message: String
 }
 
+enum ComputerUsePreparedSettingsResult: Equatable {
+    case committed
+    case cancelled
+    case failed(String)
+}
+
 enum ComputerUseMuesliSettingsDriver {
+    @MainActor
+    static func prepareThenPersist(
+        prepare: () async throws -> Void,
+        persist: () -> Void
+    ) async -> ComputerUsePreparedSettingsResult {
+        do {
+            try await prepare()
+            persist()
+            return .committed
+        } catch is CancellationError {
+            return .cancelled
+        } catch {
+            return .failed(error.localizedDescription)
+        }
+    }
+
     static func mutation(for toolCall: ComputerUseToolCall) -> Result<ComputerUseMuesliSettingsMutation, ComputerUseMuesliSettingsError> {
         guard toolCall.tool == .updateMuesliSettings else {
             return .failure(.init(message: "Expected update_muesli_settings tool call"))
