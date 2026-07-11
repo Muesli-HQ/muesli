@@ -2,7 +2,7 @@ import AppKit
 import ApplicationServices
 import Foundation
 
-struct MeetingTitleContext: Equatable {
+struct MeetingTitleContext: Equatable, Sendable {
     struct CaptureTarget: Sendable {
         let appName: String
         let processIdentifier: pid_t?
@@ -12,6 +12,26 @@ struct MeetingTitleContext: Equatable {
     let windowTitle: String
 
     static let empty = MeetingTitleContext(appName: "", windowTitle: "")
+
+    /// Captures without holding up meeting audio when an accessibility query stalls.
+    static func captureWithTimeout(
+        target: CaptureTarget? = nil,
+        delay: TimeInterval = 0,
+        timeout: TimeInterval = 0.5
+    ) async -> MeetingTitleContext {
+        await withCheckedContinuation { continuation in
+            let completion = MeetingTitleContextCaptureCompletion(continuation)
+            let captureDelay = max(delay, 0)
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + captureDelay) {
+                completion.resume(capture(target: target))
+            }
+            DispatchQueue.global(qos: .utility).asyncAfter(
+                deadline: .now() + captureDelay + max(timeout, 0)
+            ) {
+                completion.resume(.empty)
+            }
+        }
+    }
 
     static func capture(target: CaptureTarget? = nil) -> MeetingTitleContext {
         let app: NSRunningApplication?
@@ -54,6 +74,24 @@ struct MeetingTitleContext: Equatable {
         )
         let windowTitle = titleResult == .success ? (titleRef as? String ?? "") : ""
         return MeetingTitleContext(appName: appName, windowTitle: windowTitle)
+    }
+}
+
+private final class MeetingTitleContextCaptureCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<MeetingTitleContext, Never>?
+
+    init(_ continuation: CheckedContinuation<MeetingTitleContext, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume(_ context: MeetingTitleContext) {
+        lock.lock()
+        let continuation = continuation
+        self.continuation = nil
+        lock.unlock()
+
+        continuation?.resume(returning: context)
     }
 }
 

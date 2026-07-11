@@ -4343,10 +4343,10 @@ final class MuesliController: NSObject {
             endDate: endDate,
             autoStopSource: autoStopSource,
             startOrigin: startOrigin,
-            titleContextTarget: titleContextTarget
+            titleContextTarget: titleContextTarget,
+            presentHistoryWindowAfterTitleContextCapture: true
         )
         guard didStart else { return false }
-        presentHistoryWindow(tab: .meetings)
         return true
     }
 
@@ -4361,7 +4361,8 @@ final class MuesliController: NSObject {
         followUpToID: Int64? = nil,
         inheritedFolderID: Int64? = nil,
         previousMeetingNotes: String? = nil,
-        titleContextTarget: MeetingTitleContext.CaptureTarget? = nil
+        titleContextTarget: MeetingTitleContext.CaptureTarget? = nil,
+        presentHistoryWindowAfterTitleContextCapture: Bool = false
     ) -> Bool {
         guard !isMeetingRecording(), !isStartingMeetingRecording else { return false }
         guard let meetingBackend = normalizeMeetingTranscriptionSelectionForAvailability() else {
@@ -4372,7 +4373,12 @@ final class MuesliController: NSObject {
             return false
         }
         let titleContextCaptureTask = Task.detached(priority: .utility) {
-            MeetingTitleContext.capture(target: titleContextTarget)
+            await MeetingTitleContext.captureWithTimeout(
+                target: titleContextTarget,
+                // Opening a meeting link hands focus to the browser or native
+                // client asynchronously; give it a brief chance to settle.
+                delay: startOrigin == .joinAndRecord ? 0.5 : 0
+            )
         }
         let templateSnapshot = defaultMeetingTemplate()
         let meetingID: Int64
@@ -4391,9 +4397,6 @@ final class MuesliController: NSObject {
             activeMeetingID = meetingID
             activeMeetingAudioWarning = nil
             syncAppState()
-            if openDocument {
-                showMeetingDocument(id: meetingID)
-            }
         } catch {
             fputs("[muesli-native] failed to create live meeting: \(error)\n", stderr)
             recordDiagnosticIncident(
@@ -4431,6 +4434,12 @@ final class MuesliController: NSObject {
                 try Task.checkCancellation()
                 let titleContext = await titleContextCaptureTask.value
                 try Task.checkCancellation()
+                if openDocument {
+                    self.showMeetingDocument(id: meetingID)
+                }
+                if presentHistoryWindowAfterTitleContextCapture {
+                    self.presentHistoryWindow(tab: .meetings)
+                }
                 try await self.startMeetingRecordingWithSystemAudioRecovery(
                     title: title,
                     titleContext: titleContext,
@@ -4582,7 +4591,7 @@ final class MuesliController: NSObject {
         meetingMonitor.refreshState()
         updateMeetingNotificationVisibility()
         let titleContextCaptureTask = Task.detached(priority: .utility) {
-            MeetingTitleContext.capture()
+            await MeetingTitleContext.captureWithTimeout()
         }
 
         meetingStartTask = Task { @MainActor [weak self] in
