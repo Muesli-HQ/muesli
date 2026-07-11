@@ -9,7 +9,7 @@ struct ComputerUseToolRegistryTests {
     @Test("advertises only intent-level tools")
     func advertisesOnlyIntentLevelTools() {
         let advertised = ComputerUseToolRegistry.modelFacingTools
-        #expect(advertised == [.launchApp, .getWindowState, .click, .pasteText, .pressKey, .scroll, .finish, .fail])
+        #expect(advertised == [.launchApp, .getWindowState, .click, .pasteText, .pressKey, .scroll, .updateMuesliSettings, .finish, .fail])
         #expect(ComputerUseToolRegistry.definition(for: .click) != nil)
 
         for tool in advertised {
@@ -27,6 +27,8 @@ struct ComputerUseToolRegistryTests {
         #expect(docs.contains("Tool: get_window_state"))
         #expect(docs.contains("Tool: click\n"))
         #expect(docs.contains("Tool: paste_text"))
+        #expect(docs.contains("Tool: update_muesli_settings"))
+        #expect(docs.contains(#"{"operation":"set_transcription_model","model":"parakeet"}"#))
         #expect(!docs.contains("Tool: click_element"))
         #expect(!docs.contains("Tool: type_text"))
         #expect(!docs.contains("Tool: page_query_dom"))
@@ -54,6 +56,11 @@ struct ComputerUseToolRegistryTests {
         let modifiers = pressKeyProperties?["modifiers"] as? [String: Any]
         let modifierItems = modifiers?["items"] as? [String: Any]
         #expect(modifierItems?["enum"] as? [String] == ComputerUseKeyModifier.allCases.map(\.rawValue))
+
+        let settings = tools.first { ($0["name"] as? String) == "update_muesli_settings" }
+        let settingsParameters = settings?["parameters"] as? [String: Any]
+        let settingsProperties = settingsParameters?["properties"] as? [String: Any]
+        #expect((settingsProperties?["enabled"] as? [String: Any])?["type"] as? String == "boolean")
     }
 
     @Test("planner guidance preserves model and driver ownership")
@@ -67,6 +74,76 @@ struct ComputerUseToolRegistryTests {
         #expect(instructions.contains("Muesli chooses AX, point, or other delivery routes"))
         #expect(instructions.contains("Neither means the user's semantic task is complete"))
         #expect(instructions.contains("The tool choice, not wording heuristics over reason"))
+        #expect(instructions.contains("Use update_muesli_settings"))
+        #expect(instructions.contains(#"{"operation":"set_transcription_model","model":"parakeet"}"#))
+        #expect(instructions.contains(#"{"operation":"set_ai_cleanup","enabled":true}"#))
+        #expect(instructions.contains(#"{"operation":"add_dictionary_word","word":"musli","replacement":"Muesli"}"#))
+    }
+}
+
+@Suite("Computer Use Muesli settings")
+struct ComputerUseMuesliSettingsTests {
+    @Test("decodes each settings operation with operation-specific fields")
+    func decodesSettingsOperations() throws {
+        let model = try ComputerUsePlannerResponse.decodeJSON(
+            from: #"{"tool":"update_muesli_settings","operation":"set_transcription_model","model":"parakeet"}"#
+        ).toolCall
+        let cleanup = try ComputerUsePlannerResponse.decodeJSON(
+            from: #"{"tool":"update_muesli_settings","operation":"set_ai_cleanup","enabled":true}"#
+        ).toolCall
+        let dictionary = try ComputerUsePlannerResponse.decodeJSON(
+            from: #"{"tool":"update_muesli_settings","operation":"add_dictionary_word","word":"musli","replacement":"Muesli"}"#
+        ).toolCall
+
+        #expect(model.operation == .setTranscriptionModel)
+        #expect(model.model == "parakeet")
+        #expect(cleanup.enabled == true)
+        #expect(dictionary.word == "musli")
+        #expect(dictionary.replacement == "Muesli")
+    }
+
+    @Test("rejects missing operation-specific values")
+    func rejectsMissingSettingsValues() {
+        #expect(throws: Error.self) {
+            _ = try ComputerUsePlannerResponse.decodeJSON(
+                from: #"{"tool":"update_muesli_settings","operation":"set_transcription_model"}"#
+            )
+        }
+        #expect(throws: Error.self) {
+            _ = try ComputerUsePlannerResponse.decodeJSON(
+                from: #"{"tool":"update_muesli_settings","operation":"set_ai_cleanup"}"#
+            )
+        }
+        #expect(throws: Error.self) {
+            _ = try ComputerUsePlannerResponse.decodeJSON(
+                from: #"{"tool":"update_muesli_settings","operation":"add_dictionary_word"}"#
+            )
+        }
+    }
+
+    @Test("resolves natural transcription model names without exposing backend ids")
+    func resolvesModelAliases() {
+        #expect(ComputerUseMuesliSettingsDriver.transcriptionModel(named: "parakeet") == .parakeetMultilingual)
+        #expect(ComputerUseMuesliSettingsDriver.transcriptionModel(named: "Parakeet v2") == .parakeetEnglish)
+        #expect(ComputerUseMuesliSettingsDriver.transcriptionModel(named: "Qwen 3") == .qwen3Asr)
+        #expect(ComputerUseMuesliSettingsDriver.transcriptionModel(named: "Whisper") == nil)
+    }
+
+    @Test("builds a validated dictionary mutation")
+    func buildsDictionaryMutation() throws {
+        let toolCall = try ComputerUsePlannerResponse.decodeJSON(
+            from: #"{"tool":"update_muesli_settings","operation":"add_dictionary_word","word":"musli","replacement":"Muesli"}"#
+        ).toolCall
+
+        let mutation = try ComputerUseMuesliSettingsDriver.mutation(for: toolCall).get()
+        guard case .dictionaryWord(let entry) = mutation else {
+            Issue.record("Expected dictionary mutation")
+            return
+        }
+        #expect(entry.word == "musli")
+        #expect(entry.replacement == "Muesli")
+        #expect(entry.matchingThreshold == 0.85)
+        #expect(toolCall.requiresPostActionObservation == false)
     }
 }
 
@@ -1231,6 +1308,52 @@ struct ComputerUsePlannerRuntimeTests {
         #expect(result.message == "CUA cancelled")
         #expect(planCalls == 1)
         #expect(!result.traceEvents.contains { $0.title == "Planner retry" })
+    }
+
+    @Test("settings mutations use config receipts without unrelated screen verification")
+    @MainActor
+    func settingsMutationUsesConfigReceipt() async {
+        var observeCalls = 0
+        var planCalls = 0
+        var receivedConfigReceipt = false
+        let runtime = ComputerUsePlannerRuntime(
+            config: AppConfig(),
+            observe: { _, _, _ in
+                observeCalls += 1
+                return Self.observation(screenshot: Self.screenshot())
+            },
+            plan: { request in
+                planCalls += 1
+                if planCalls == 1 {
+                    return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(
+                        tool: .updateMuesliSettings,
+                        operation: .setAICleanup,
+                        enabled: true
+                    ))
+                }
+                receivedConfigReceipt = request.priorOutcomes.last?.transaction?.route == "muesli_config"
+                    && request.priorOutcomes.last?.transaction?.effect == .changed
+                return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish, reason: "Enabled AI cleanup"))
+            },
+            execute: { toolCall, _ in
+                #expect(toolCall.tool == .updateMuesliSettings)
+                return .executed(
+                    "AI cleanup is now enabled.",
+                    transaction: ComputerUseActionTransaction(
+                        route: "muesli_config",
+                        posted: true,
+                        effect: .changed,
+                        targetStable: true
+                    )
+                )
+            }
+        )
+
+        let result = await runtime.run(command: "enable AI cleanup")
+
+        #expect(result.status == .done)
+        #expect(observeCalls == 1)
+        #expect(receivedConfigReceipt)
     }
 
     static func observation(

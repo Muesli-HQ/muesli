@@ -162,6 +162,8 @@ enum ComputerUseToolExecutor {
                 selector: toolCall.selector ?? "",
                 attributes: toolCall.attributes ?? []
             )
+        case .updateMuesliSettings:
+            return .unsupported("update_muesli_settings requires the live Muesli controller")
         case .finish:
             return .executed(toolCall.reason ?? "Done")
         case .fail:

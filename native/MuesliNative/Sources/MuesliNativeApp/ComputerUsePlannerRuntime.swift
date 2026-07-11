@@ -272,7 +272,7 @@ final class ComputerUsePlannerRuntime {
                         onStatus(resultTitle)
                     }
                     var delta: ComputerUseStateDelta?
-                    if toolCall.isMutating {
+                    if toolCall.requiresPostActionObservation {
                         onStatus("Observing screen")
                         observation = observe(registry, true, currentTarget)
                         traceEvents.append(observationEvent(observation, step: step))
@@ -297,7 +297,7 @@ final class ComputerUsePlannerRuntime {
                     )
                     priorResults.append(recordedOutcome)
                     plannerHistory.append(outcomeHistoryItem(recordedOutcome))
-                    if toolCall.isMutating {
+                    if toolCall.requiresPostActionObservation {
                         plannerHistory.append(observationHistoryItem(observation, step: step))
                     }
                 case .needsConfirmation:
@@ -627,6 +627,8 @@ final class ComputerUsePlannerRuntime {
             return "Dragged"
         case .activateBrowserTab:
             return "Switched tab"
+        case .updateMuesliSettings:
+            return result.message
         default:
             return nil
         }
@@ -661,6 +663,8 @@ final class ComputerUsePlannerRuntime {
             return "Navigating"
         case .activateBrowserTab:
             return "Switching tab"
+        case .updateMuesliSettings:
+            return "Updating Muesli"
         case .listApps, .listWindows, .listBrowserTabs, .pageGetText, .pageQueryDOM:
             return "Reading"
         case .getAppState, .getWindowState:

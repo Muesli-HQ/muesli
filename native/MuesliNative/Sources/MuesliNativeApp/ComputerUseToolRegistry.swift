@@ -70,7 +70,7 @@ struct ComputerUseToolSchemaArrayItems: Codable, Equatable {
 }
 
 enum ComputerUseToolRegistry {
-    static let catalogVersion = "muesli-cua-tools-v2"
+    static let catalogVersion = "muesli-cua-tools-v4"
 
     // The planner chooses user intent. Legacy and route-specific tools remain
     // decodable for old traces, but are not advertised to new planner turns.
@@ -81,6 +81,7 @@ enum ComputerUseToolRegistry {
         .pasteText,
         .pressKey,
         .scroll,
+        .updateMuesliSettings,
         .finish,
         .fail,
     ]
@@ -216,6 +217,13 @@ enum ComputerUseToolRegistry {
             "selector": .string("CSS selector."),
             "attributes": .array("Attributes to return.", item: .string("Attribute name.")),
         ], risk: "safe read-only"),
+        definition(.updateMuesliSettings, "Change Muesli's own settings without opening or clicking through Settings. Use one operation at a time. Muesli validates the value, applies it through its normal controller, persists it, and reports the resulting setting. Use set_transcription_model for dictation/STT models, set_ai_cleanup for transcript AI cleanup, and add_dictionary_word for custom vocabulary. Native argument examples: {\"operation\":\"set_transcription_model\",\"model\":\"parakeet\"}; {\"operation\":\"set_ai_cleanup\",\"enabled\":true}; {\"operation\":\"add_dictionary_word\",\"word\":\"musli\",\"replacement\":\"Muesli\"}.", required: ["operation"], properties: [
+            "operation": .string("The Muesli setting operation to perform.", enumValues: ComputerUseMuesliSettingsOperation.allCases.map(\.rawValue)),
+            "model": .string("For set_transcription_model: a user-facing model name such as Parakeet, Parakeet v3, Parakeet v2, Whisper Small, Qwen3 ASR, or Nemotron 3.5 Multilingual."),
+            "enabled": .boolean("For set_ai_cleanup: true to enable AI cleanup or false to disable it."),
+            "word": .string("For add_dictionary_word: the word or phrase users want Muesli to recognize."),
+            "replacement": .string("Optional corrected output for add_dictionary_word. Omit when the desired output is identical to word."),
+        ], risk: "changes only Muesli's local persisted settings; no screen control or external side effect"),
         definition(.finish, "Typed successful terminal state. Use only when the requested task is complete; use fail for blocked, partial, unsafe, or incomplete outcomes.", required: [], properties: [
             "reason": .string("Concise user-facing description of the completed result."),
         ], risk: "safe finalization"),
@@ -314,6 +322,10 @@ private extension ComputerUseToolSchemaProperty {
 
     static func number(_ description: String) -> ComputerUseToolSchemaProperty {
         ComputerUseToolSchemaProperty(type: "number", description: description)
+    }
+
+    static func boolean(_ description: String) -> ComputerUseToolSchemaProperty {
+        ComputerUseToolSchemaProperty(type: "boolean", description: description)
     }
 
     static func array(_ description: String, item: ComputerUseToolSchemaProperty) -> ComputerUseToolSchemaProperty {

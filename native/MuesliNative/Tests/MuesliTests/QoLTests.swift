@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import AppKit
 import MuesliCore
 @testable import MuesliNativeApp
 
@@ -190,6 +191,21 @@ struct IndicatorFrameSizeTests {
         #expect(short.height >= 44)
         #expect(long.width <= 372)
         #expect(long.height > short.height)
+    }
+
+    @Test("final CUA status pill leaves enough width for complete labels")
+    @MainActor
+    func finalCUAStatusPillDoesNotTruncate() {
+        let font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        let done = FloatingIndicatorController.finalStatusPillSizeForTesting(
+            message: "Done",
+            icon: "✓",
+            screenWidth: 1200
+        )
+        let textWidth = ceil(("Done" as NSString).size(withAttributes: [.font: font]).width)
+
+        #expect(done.width >= textWidth + 70)
+        #expect(done.height == 36)
     }
 }
 

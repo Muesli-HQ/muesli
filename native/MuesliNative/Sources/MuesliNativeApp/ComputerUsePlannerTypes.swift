@@ -25,8 +25,15 @@ enum ComputerUseToolName: String, Codable, Equatable, CaseIterable {
     case navigateActiveBrowserTab = "navigate_active_browser_tab"
     case pageGetText = "page_get_text"
     case pageQueryDOM = "page_query_dom"
+    case updateMuesliSettings = "update_muesli_settings"
     case finish
     case fail
+}
+
+enum ComputerUseMuesliSettingsOperation: String, Codable, Equatable, CaseIterable {
+    case setTranscriptionModel = "set_transcription_model"
+    case setAICleanup = "set_ai_cleanup"
+    case addDictionaryWord = "add_dictionary_word"
 }
 
 enum ComputerUseScrollDirection: String, Codable, Equatable {
@@ -385,6 +392,11 @@ struct ComputerUseToolInvocation: Codable, Equatable {
     let url: String?
     let selector: String?
     let attributes: [String]?
+    let operation: ComputerUseMuesliSettingsOperation?
+    let model: String?
+    let enabled: Bool?
+    let word: String?
+    let replacement: String?
     let reason: String?
 
     enum CodingKeys: String, CodingKey, CaseIterable {
@@ -416,6 +428,11 @@ struct ComputerUseToolInvocation: Codable, Equatable {
         case url
         case selector
         case attributes
+        case operation
+        case model
+        case enabled
+        case word
+        case replacement
         case reason
     }
 
@@ -448,6 +465,11 @@ struct ComputerUseToolInvocation: Codable, Equatable {
         url: String? = nil,
         selector: String? = nil,
         attributes: [String]? = nil,
+        operation: ComputerUseMuesliSettingsOperation? = nil,
+        model: String? = nil,
+        enabled: Bool? = nil,
+        word: String? = nil,
+        replacement: String? = nil,
         reason: String? = nil
     ) {
         self.tool = tool
@@ -478,6 +500,11 @@ struct ComputerUseToolInvocation: Codable, Equatable {
         self.url = url
         self.selector = selector
         self.attributes = attributes
+        self.operation = operation
+        self.model = model
+        self.enabled = enabled
+        self.word = word
+        self.replacement = replacement
         self.reason = reason
     }
 
@@ -534,6 +561,11 @@ struct ComputerUseToolInvocation: Codable, Equatable {
             url: url,
             selector: selector,
             attributes: attributes,
+            operation: operation,
+            model: model,
+            enabled: enabled,
+            word: word,
+            replacement: replacement,
             reason: reason
         )
     }
@@ -632,6 +664,18 @@ struct ComputerUseToolInvocation: Codable, Equatable {
         case .pageQueryDOM:
             if canonicalBundleID.isEmpty { return "page_query_dom requires app_bundle_id" }
             return trimmed(selector).isEmpty ? "page_query_dom requires selector" : nil
+        case .updateMuesliSettings:
+            guard let operation else {
+                return "update_muesli_settings requires operation"
+            }
+            switch operation {
+            case .setTranscriptionModel:
+                return trimmed(model).isEmpty ? "set_transcription_model requires model" : nil
+            case .setAICleanup:
+                return enabled == nil ? "set_ai_cleanup requires enabled" : nil
+            case .addDictionaryWord:
+                return trimmed(word).isEmpty ? "add_dictionary_word requires word" : nil
+            }
         case .fail:
             return trimmed(reason).isEmpty ? "fail requires reason" : nil
         }
@@ -663,11 +707,15 @@ struct ComputerUseToolInvocation: Codable, Equatable {
 
     var isMutating: Bool {
         switch tool {
-        case .launchApp, .moveCursor, .click, .clickElement, .clickPoint, .performSecondaryAction, .setValue, .typeText, .pasteText, .pressKey, .hotkey, .scroll, .drag, .activateBrowserTab, .openNewBrowserTab, .navigateURL, .navigateActiveBrowserTab:
+        case .launchApp, .moveCursor, .click, .clickElement, .clickPoint, .performSecondaryAction, .setValue, .typeText, .pasteText, .pressKey, .hotkey, .scroll, .drag, .activateBrowserTab, .openNewBrowserTab, .navigateURL, .navigateActiveBrowserTab, .updateMuesliSettings:
             return true
         case .listApps, .listWindows, .getAppState, .getWindowState, .listBrowserTabs, .pageGetText, .pageQueryDOM, .finish, .fail:
             return false
         }
+    }
+
+    var requiresPostActionObservation: Bool {
+        isMutating && tool != .updateMuesliSettings
     }
 
     var summary: String {
@@ -731,6 +779,20 @@ struct ComputerUseToolInvocation: Codable, Equatable {
             return "get page text"
         case .pageQueryDOM:
             return "query DOM \(trimmed(selector))"
+        case .updateMuesliSettings:
+            switch operation {
+            case .setTranscriptionModel:
+                return "set Muesli transcription model to \(trimmed(model))"
+            case .setAICleanup:
+                return "\(enabled == true ? "enable" : "disable") Muesli AI cleanup"
+            case .addDictionaryWord:
+                let target = trimmed(replacement)
+                return target.isEmpty
+                    ? "add \(truncateForSummary(trimmed(word))) to Muesli dictionary"
+                    : "add \(truncateForSummary(trimmed(word))) as \(truncateForSummary(target)) to Muesli dictionary"
+            case nil:
+                return "update Muesli settings"
+            }
         case .finish:
             return trimmed(reason).isEmpty ? "finish" : "finish: \(trimmed(reason))"
         case .fail:

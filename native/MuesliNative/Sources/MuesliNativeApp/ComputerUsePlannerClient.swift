@@ -38,6 +38,11 @@ enum ComputerUsePlannerClient {
     - Only use element_index or element_id values from latest_window_state. They expire after every refreshed observation.
     - Use click for all click intent. Address a clear AX target by element_index/element_id, or a visual target by screenshot_id plus screenshot x/y. Muesli chooses AX, point, or other delivery routes.
     - Use paste_text for text-entry intent. Include the current app and element target when available; Muesli chooses the insertion route.
+    - Use update_muesli_settings for Muesli's own transcription model, AI cleanup, and custom dictionary settings. Do not open or click through Muesli Settings for supported operations.
+      Examples (native tool arguments only):
+      - Change the transcription model to Parakeet: {"operation":"set_transcription_model","model":"parakeet"}
+      - Enable AI cleanup: {"operation":"set_ai_cleanup","enabled":true}
+      - Add a dictionary correction: {"operation":"add_dictionary_word","word":"musli","replacement":"Muesli"}
     - A transaction receipt describes primitive delivery only. posted means an input was sent; effect reports the observed low-level state change. Neither means the user's semantic task is complete.
     - The harness does not judge whether your strategy is good. Inspect the latest screenshot/AX state and decide whether to continue, finish, or fail.
     - Never invent AppleScript, shell commands, code, URLs, element IDs, screenshot IDs, or tools.

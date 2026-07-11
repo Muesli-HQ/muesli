@@ -1712,10 +1712,7 @@ final class MuesliController: NSObject {
     }
 
     func selectBackend(_ option: BackendOption) {
-        updateConfig {
-            $0.sttBackend = option.backend
-            $0.sttModel = option.model
-        }
+        persistSelectedBackend(option)
         Task { [weak self] in
             guard let self else { return }
             // Push the selected Nemotron 3.5 language before preload so the loaded
@@ -1741,6 +1738,13 @@ final class MuesliController: NSObject {
                 self.statusBarController?.refresh()
                 self.historyWindowController?.updateBackendLabel()
             }
+        }
+    }
+
+    private func persistSelectedBackend(_ option: BackendOption) {
+        updateConfig {
+            $0.sttBackend = option.backend
+            $0.sttModel = option.model
         }
     }
 
@@ -6628,10 +6632,22 @@ final class MuesliController: NSObject {
         resetComputerUseFloatingStatus()
         presentComputerUseTranscript(transcript)
         setState(.transcribing)
-        let runtime = ComputerUsePlannerRuntime(config: config) { [weak self] status in
-            guard let self else { return }
-            self.presentComputerUseFloatingStatus(status)
-        }
+        let runtime = ComputerUsePlannerRuntime(
+            config: config,
+            onStatus: { [weak self] status in
+                guard let self else { return }
+                self.presentComputerUseFloatingStatus(status)
+            },
+            execute: { [weak self] toolCall, registry in
+                guard let self else {
+                    return .cancelled("Muesli closed before the action could run")
+                }
+                if toolCall.tool == .updateMuesliSettings {
+                    return await self.applyComputerUseSettings(toolCall)
+                }
+                return await ComputerUseToolExecutor.execute(toolCall, registry: registry)
+            }
+        )
 
         let result = await runtime.run(command: transcript)
         indicator.hideComputerUseCursor()
@@ -6812,6 +6828,91 @@ final class MuesliController: NSObject {
         }
     }
 
+    @MainActor
+    private func applyComputerUseSettings(_ toolCall: ComputerUseToolCall) async -> ComputerUseExecutionResult {
+        switch ComputerUseMuesliSettingsDriver.mutation(for: toolCall) {
+        case .failure(let error):
+            return .failed(error.message)
+
+        case .success(.transcriptionModel(let option)):
+            let unchanged = selectedBackend == option
+            presentComputerUseFloatingStatus("Preparing \(option.label)")
+            do {
+                let ppOption = runtimePostProcessorOption()
+                await configureTranscriptCleanupForRuntime(option: ppOption)
+                try await transcriptionCoordinator.preloadRequired(
+                    backend: option,
+                    enablePostProcessor: canRunTranscriptCleanup(option: ppOption),
+                    includeMeetingHelpers: config.resolvedOnboardingUseCase.includesMeetings
+                )
+            } catch is CancellationError {
+                return .cancelled("Model preparation cancelled")
+            } catch {
+                return .failed(
+                    "Could not switch to \(option.label) because the model could not be prepared. "
+                        + "The previous transcription model remains selected. \(error.localizedDescription)"
+                )
+            }
+            if !unchanged {
+                persistSelectedBackend(option)
+            }
+            guard config.sttBackend == option.backend, config.sttModel == option.model else {
+                return .failed("Could not persist transcription model \(option.label).")
+            }
+            return computerUseSettingsResult(
+                unchanged ? "Transcription model was already \(option.label)." : "Changed transcription model to \(option.label).",
+                changed: !unchanged
+            )
+
+        case .success(.aiCleanup(let enabled)):
+            let unchanged = config.enablePostProcessor == enabled
+            if !unchanged {
+                setPostProcessorEnabled(enabled)
+            }
+            guard config.enablePostProcessor == enabled else {
+                return .failed(enabled
+                    ? "AI cleanup could not be enabled because its configured cleanup model or service is unavailable."
+                    : "AI cleanup could not be disabled.")
+            }
+            return computerUseSettingsResult(
+                unchanged
+                    ? "AI cleanup was already \(enabled ? "enabled" : "disabled")."
+                    : "AI cleanup is now \(enabled ? "enabled" : "disabled").",
+                changed: !unchanged
+            )
+
+        case .success(.dictionaryWord(let entry)):
+            let alreadyExists = config.customWords.contains {
+                $0.word.caseInsensitiveCompare(entry.word) == .orderedSame
+                    && ($0.replacement ?? "").caseInsensitiveCompare(entry.replacement ?? "") == .orderedSame
+            }
+            if !alreadyExists {
+                addCustomWord(entry)
+            }
+            guard config.customWords.contains(entry) || alreadyExists else {
+                return .failed("Could not persist dictionary entry \(entry.displayLabel).")
+            }
+            return computerUseSettingsResult(
+                alreadyExists
+                    ? "Dictionary already contained \(entry.displayLabel)."
+                    : "Added \(entry.displayLabel) to the dictionary.",
+                changed: !alreadyExists
+            )
+        }
+    }
+
+    private func computerUseSettingsResult(_ message: String, changed: Bool) -> ComputerUseExecutionResult {
+        .executed(
+            message,
+            transaction: ComputerUseActionTransaction(
+                route: "muesli_config",
+                posted: true,
+                effect: changed ? .changed : .unchanged,
+                targetStable: true
+            )
+        )
+    }
+
     private func presentComputerUseRuntimeResult(_ result: ComputerUsePlannerRuntimeResult) {
         setState(.idle)
         let message: String
@@ -6821,7 +6922,7 @@ final class MuesliController: NSObject {
         case .done:
             message = result.message.hasPrefix("Done") ? result.message : "Done: \(result.message)"
             floatingMessage = "Done"
-            icon = ""
+            icon = "✓"
         case .timedOut:
             message = result.message
             floatingMessage = "Timed out"
@@ -6840,7 +6941,11 @@ final class MuesliController: NSObject {
             icon = ""
         }
         statusBarController?.setStatus(message)
-        indicator.showWarning(floatingMessage, icon: icon, duration: 3.0)
+        if result.status == .done {
+            indicator.showSuccess(floatingMessage, icon: icon, duration: 3.0)
+        } else {
+            indicator.showWarning(floatingMessage, icon: icon, duration: 3.0)
+        }
     }
 
     /// Streaming RNNT dictation backend (handsfree live text at cursor).
@@ -7658,6 +7763,9 @@ final class MuesliController: NSObject {
                     self.clearCapturedDictationSessionContext()
                     self.resetDictationOutputMode()
                     self.setState(.idle)
+                    if !self.isDictationTestMode {
+                        self.indicator.showWarning("Transcription failed", icon: "!", duration: 3.0)
+                    }
                     self.meetingMonitor.resumeAfterCooldown()
                     self.syncDictationRecorderWarmup(intent: .postDictation(.transcriptionFailed))
                 }

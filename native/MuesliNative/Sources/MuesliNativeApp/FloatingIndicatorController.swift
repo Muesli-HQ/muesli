@@ -494,6 +494,20 @@ final class FloatingIndicatorController: NSObject {
 
     /// Flash a brief warning message on the indicator pill, then snap back to idle.
     func showWarning(_ message: String, icon: String = "⚡", duration: TimeInterval = 2.5) {
+        showResultMessage(message, icon: icon, duration: duration, isSuccess: false)
+    }
+
+    /// Show a completed CUA result with a distinct success treatment.
+    func showSuccess(_ message: String, icon: String = "✓", duration: TimeInterval = 2.5) {
+        showResultMessage(message, icon: icon, duration: duration, isSuccess: true)
+    }
+
+    private func showResultMessage(
+        _ message: String,
+        icon: String,
+        duration: TimeInterval,
+        isSuccess: Bool
+    ) {
         guard state == .idle else { return }
         let config = configStore.load()
         if panel == nil { createPanel(config: config) }
@@ -501,7 +515,7 @@ final class FloatingIndicatorController: NSObject {
         guard let screen = NSScreen.main?.visibleFrame else { return }
 
         let warningFont = NSFont.systemFont(ofSize: 11, weight: .medium)
-        let warningSize = warningPillSize(
+        let warningSize = Self.resultPillSize(
             message: message,
             icon: icon,
             font: warningFont,
@@ -512,7 +526,7 @@ final class FloatingIndicatorController: NSObject {
         let y = min(max(center.y - warningSize.height / 2, screen.minY), screen.maxY - warningSize.height)
         let targetFrame = NSRect(x: x, y: y, width: warningSize.width, height: warningSize.height)
 
-        // Warning uses its own solid amber background — hide glass layers.
+        // Terminal results use a solid state color and remain visually distinct from in-progress CUA.
         glassView?.isHidden = true
         tintLayer?.isHidden = true
         micIconView?.isHidden = true
@@ -526,7 +540,10 @@ final class FloatingIndicatorController: NSObject {
             panel.animator().alphaValue = 1.0
             contentView.animator().frame = NSRect(origin: .zero, size: warningSize)
             contentView.layer?.cornerRadius = warningSize.height / 2
-            contentView.layer?.backgroundColor = NSColor.colorWith(hex: 0xD99A11, alpha: 0.92).cgColor
+            contentView.layer?.backgroundColor = NSColor.colorWith(
+                hex: isSuccess ? 0x239B65 : 0xD99A11,
+                alpha: 0.94
+            ).cgColor
             contentView.layer?.borderWidth = 1.0
             contentView.layer?.borderColor = NSColor.colorWith(hex: 0xFFFFFF, alpha: 0.24).cgColor
 
@@ -534,12 +551,18 @@ final class FloatingIndicatorController: NSObject {
             iconLabel.isHidden = !hasIcon
             iconLabel.font = NSFont.systemFont(ofSize: 14, weight: .bold)
             iconLabel.stringValue = icon
-            iconLabel.textColor = NSColor.colorWith(hex: 0x1A140D, alpha: 0.95)
+            iconLabel.textColor = isSuccess
+                ? .white
+                : NSColor.colorWith(hex: 0x1A140D, alpha: 0.95)
             iconLabel.animator().alphaValue = hasIcon ? 1 : 0
 
+            Self.configureTextLabel(textLabel, forTranscript: false)
             textLabel.stringValue = message
             textLabel.font = warningFont
-            textLabel.textColor = NSColor.colorWith(hex: 0x1A140D, alpha: 0.95)
+            textLabel.lineBreakMode = .byClipping
+            textLabel.textColor = isSuccess
+                ? .white
+                : NSColor.colorWith(hex: 0x1A140D, alpha: 0.95)
             textLabel.isHidden = false
             textLabel.animator().alphaValue = 1
             layoutLabels(iconLabel: iconLabel, textLabel: textLabel, in: warningSize, hasTitle: true, animated: true)
@@ -552,7 +575,7 @@ final class FloatingIndicatorController: NSObject {
         }
     }
 
-    private func warningPillSize(message: String, icon: String, font: NSFont, screen: NSRect) -> NSSize {
+    private static func resultPillSize(message: String, icon: String, font: NSFont, screen: NSRect) -> NSSize {
         let horizontalPadding: CGFloat = 18
         let hasIcon = !icon.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let iconWidth = hasIcon
@@ -564,6 +587,15 @@ final class FloatingIndicatorController: NSObject {
         let minWidth: CGFloat = hasIcon ? 180 : 88
         let maxWidth = max(minWidth, min(640, screen.width - 32))
         return NSSize(width: min(max(preferredWidth, minWidth), maxWidth), height: 36)
+    }
+
+    static func finalStatusPillSizeForTesting(message: String, icon: String, screenWidth: CGFloat) -> NSSize {
+        resultPillSize(
+            message: message,
+            icon: icon,
+            font: NSFont.systemFont(ofSize: 11, weight: .medium),
+            screen: NSRect(x: 0, y: 0, width: screenWidth, height: 900)
+        )
     }
 
     func showLoading(_ message: String) {
