@@ -15,7 +15,7 @@ struct SpeechTranscriptionResult: Sendable {
 
 actor TranscriptionCoordinator {
     static let explicitlyRoutedBackendIdentifiers: Set<String> = [
-        "whisper", "nemotron35", "qwen", "cohere", "indicasr", "sensevoice",
+        "whisper", "nemotron35", "qwen", "cohere", "indicasr", "sensevoice", "gemma4-litert",
     ]
 
     private let fluidTranscriber = FluidAudioTranscriber()
@@ -24,6 +24,7 @@ actor TranscriptionCoordinator {
     private var _qwen3PostProcessor: Any?
     private var _cohereTranscriber: Any?
     private var _indicASRTranscriber: Any?
+    private var _gemma4LiteRTTranscriber: Any?
     private let senseVoiceTranscriber = SenseVoiceTranscriber()
     private var vadManager: VadManager?
     private var diarizerManager: DiarizerManager?
@@ -67,6 +68,13 @@ actor TranscriptionCoordinator {
     func unloadNemotron35Transcriber() async {
         if #available(macOS 15, *), let transcriber = _nemotron35Transcriber as? Nemotron35StreamingTranscriber {
             await transcriber.shutdown()
+        }
+    }
+
+    func unloadGemma4LiteRTTranscriber() async {
+        if #available(macOS 15, *), let transcriber = _gemma4LiteRTTranscriber as? Gemma4LiteRTTranscriber {
+            await transcriber.shutdown()
+            _gemma4LiteRTTranscriber = nil
         }
     }
 
@@ -122,13 +130,15 @@ actor TranscriptionCoordinator {
         postProcessorSystemPrompt = systemPrompt
         postProcessorConfig = config
 
-        if let option {
+        if backend == .gemma4LiteRT {
+            postProcessorModelId = Gemma4LiteRTModelStore.repoID
+        } else if let option {
             postProcessorModelURL = option.modelURL
             postProcessorModelId = option.id
             if #available(macOS 15, *), let existing = _qwen3PostProcessor as? Qwen3PostProcessor {
                 await existing.reconfigure(modelURL: option.modelURL, systemPrompt: systemPrompt)
             }
-        } else if !backend.isLocal {
+        } else if backend.llmBackend != nil {
             postProcessorModelId = TranscriptCleanupClient.configuredModel(for: backend, config: config)
         }
     }
@@ -185,6 +195,14 @@ actor TranscriptionCoordinator {
             _indicASRTranscriber = IndicASRTranscriber()
         }
         return _indicASRTranscriber as! IndicASRTranscriber
+    }
+
+    @available(macOS 15, *)
+    private var gemma4LiteRTTranscriber: Gemma4LiteRTTranscriber {
+        if _gemma4LiteRTTranscriber == nil {
+            _gemma4LiteRTTranscriber = Gemma4LiteRTTranscriber()
+        }
+        return _gemma4LiteRTTranscriber as! Gemma4LiteRTTranscriber
     }
 
     func preload(
@@ -289,21 +307,44 @@ actor TranscriptionCoordinator {
             }
         case "sensevoice":
             try await senseVoiceTranscriber.loadModels(progress: progress)
+        case "gemma4-litert":
+            if #available(macOS 15, *) {
+                try await gemma4LiteRTTranscriber.prepare(progress: progress)
+            } else {
+                throw NSError(domain: "MuesliTranscriptionRuntime", code: 7, userInfo: [
+                    NSLocalizedDescriptionKey: "Gemma 4 E2B requires macOS 15 or later.",
+                ])
+            }
         default:
             throw NSError(domain: "MuesliTranscriptionRuntime", code: 5, userInfo: [
                 NSLocalizedDescriptionKey: "Unknown transcription backend: \(backend.backend)",
             ])
         }
 
-        await preloadPostProcessorIfNeeded(enabled: enablePostProcessor)
+        await preloadPostProcessorIfNeeded(enabled: enablePostProcessor, transcriptionBackend: backend)
     }
 
-    func preloadPostProcessorIfNeeded(enabled: Bool) async {
-        if enabled, postProcessorBackend == .local, #available(macOS 15, *) {
-            do {
+    func preloadPostProcessorIfNeeded(
+        enabled: Bool,
+        transcriptionBackend: BackendOption? = nil
+    ) async {
+        guard enabled,
+              transcriptionBackend.map({ postProcessorBackend.isCompatible(with: $0) }) ?? true,
+              #available(macOS 15, *) else { return }
+        do {
+            switch postProcessorBackend {
+            case .local:
                 try await qwen3PostProcessor.prepare()
-            } catch {
+            case .gemma4LiteRT:
+                try await gemma4LiteRTTranscriber.prepare()
+            default:
+                return
+            }
+        } catch {
+            if postProcessorBackend == .local {
                 Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor preload failed: \(error)")
+            } else {
+                Gemma4LiteRTLogging.log("Gemma cleanup preload failed: \(error)")
             }
         }
     }
@@ -429,6 +470,9 @@ actor TranscriptionCoordinator {
             }
             await cohereTranscriber.shutdown()
             await indicASRTranscriber.shutdown()
+            if let gemma4 = _gemma4LiteRTTranscriber as? Gemma4LiteRTTranscriber {
+                await gemma4.shutdown()
+            }
         }
     }
 
@@ -477,7 +521,19 @@ actor TranscriptionCoordinator {
             Qwen3PostProcessorLogging.logVerbose("Post-processor skipped: empty transcript")
             return nil
         }
-        if !postProcessorSnapshot.backend.isLocal {
+        guard postProcessorSnapshot.backend.isCompatible(with: backend) else {
+            Gemma4LiteRTLogging.log("Gemma cleanup skipped because Gemma is the transcription backend")
+            return nil
+        }
+        if postProcessorSnapshot.backend.isGemma4LiteRT {
+            return await postProcessDictationWithGemma4(
+                result,
+                backend: backend,
+                postProcessorSnapshot: postProcessorSnapshot,
+                appContext: appContext
+            )
+        }
+        if postProcessorSnapshot.backend.llmBackend != nil {
             return await postProcessDictationWithHostedBackend(
                 result,
                 backend: backend,
@@ -534,6 +590,66 @@ actor TranscriptionCoordinator {
             )
         } catch {
             Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor failed, falling back: \(error)")
+            TranscriptCleanupDebugLogger.append(
+                status: "fallback_error",
+                cleanupBackend: postProcessorSnapshot.backend,
+                cleanupModel: postProcessorSnapshot.modelId,
+                asrBackend: backend.backend,
+                appContextText: appContext,
+                rawASRText: result.text,
+                errorDescription: String(describing: error)
+            )
+            return nil
+        }
+    }
+
+    private func postProcessDictationWithGemma4(
+        _ result: SpeechTranscriptionResult,
+        backend: BackendOption,
+        postProcessorSnapshot: PostProcessorSnapshot,
+        appContext: String?
+    ) async -> SpeechTranscriptionResult? {
+        guard #available(macOS 15, *) else {
+            Gemma4LiteRTLogging.log("Gemma cleanup skipped: requires macOS 15+")
+            return nil
+        }
+        do {
+            let transcriber = gemma4LiteRTTranscriber
+            try await transcriber.prepare()
+            let cleanup = try await transcriber.cleanTranscript(
+                result.text,
+                systemPrompt: postProcessorSnapshot.systemPrompt,
+                appContext: appContext
+            )
+            let elapsedMs = cleanup.processingTime * 1000
+            let trimmed = cleanup.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            Qwen3PostProcessorLogging.logVerbose(
+                "Gemma 4 post-processor applied to \(backend.label) in \(String(format: "%.1f", elapsedMs))ms " +
+                    "(chars=\(trimmed.count))"
+            )
+            logPostProcPair(
+                raw: result.text,
+                processed: trimmed,
+                model: postProcessorSnapshot.modelId,
+                asr: backend.backend
+            )
+            TranscriptCleanupDebugLogger.append(
+                status: "applied",
+                cleanupBackend: postProcessorSnapshot.backend,
+                cleanupModel: postProcessorSnapshot.modelId,
+                asrBackend: backend.backend,
+                appContextText: appContext,
+                rawASRText: result.text,
+                rawCleanupOutputText: cleanup.rawOutput,
+                cleanupOutputText: trimmed,
+                elapsedMs: elapsedMs
+            )
+            return SpeechTranscriptionResult(
+                text: trimmed,
+                segments: Qwen3PostProcessorLogging.isVerboseEnabled && !trimmed.isEmpty ? result.segments : []
+            )
+        } catch {
+            Gemma4LiteRTLogging.log("Gemma cleanup failed, falling back: \(error)")
             TranscriptCleanupDebugLogger.append(
                 status: "fallback_error",
                 cleanupBackend: postProcessorSnapshot.backend,
@@ -654,6 +770,8 @@ actor TranscriptionCoordinator {
             return try await transcribeWithIndicASR(url: url, language: indicASRLanguage)
         case "sensevoice":
             return try await transcribeWithSenseVoice(url: url)
+        case "gemma4-litert":
+            return try await transcribeWithGemma4LiteRT(url: url)
         default:
             return try await transcribeWithFluidAudio(url: url)
         }
@@ -719,6 +837,27 @@ actor TranscriptionCoordinator {
             // FluidAudio's SenseVoice API returns plain text only, so timestamped segments are not available here.
             segments: text.isEmpty ? [] : [SpeechSegment(start: 0, end: 0, text: text)]
         )
+    }
+
+    // MARK: - Gemma 4 E2B (LiteRT-LM multimodal)
+
+    private func transcribeWithGemma4LiteRT(url: URL) async throws -> SpeechTranscriptionResult {
+        if #available(macOS 15, *) {
+            Gemma4LiteRTLogging.log("transcribing \(url.lastPathComponent)")
+            let transcriber = gemma4LiteRTTranscriber
+            try await transcriber.prepare()
+            let result = try await transcriber.transcribe(wavURL: url)
+            Gemma4LiteRTLogging.log("result chars=\(result.text.count), processingTime=\(String(format: "%.3f", result.processingTime))s")
+            let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return SpeechTranscriptionResult(
+                text: text,
+                segments: text.isEmpty ? [] : [SpeechSegment(start: 0, end: 0, text: text)]
+            )
+        } else {
+            throw NSError(domain: "MuesliTranscriptionRuntime", code: 7, userInfo: [
+                NSLocalizedDescriptionKey: "Gemma 4 E2B requires macOS 15 or later.",
+            ])
+        }
     }
 
     // MARK: - Cohere Transcribe (CoreML)

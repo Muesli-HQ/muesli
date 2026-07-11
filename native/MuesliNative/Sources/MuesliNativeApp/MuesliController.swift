@@ -388,7 +388,17 @@ final class MuesliController: NSObject {
         dictationAudioRoutingController: DictationAudioRouting = DictationAudioRouteController()
     ) {
         self.configStore = configStore
-        let loadedConfig = configStore.load()
+        var loadedConfig = configStore.load()
+        let loadedBackend = BackendOption.all.first(where: {
+            $0.backend == loadedConfig.sttBackend && $0.model == loadedConfig.sttModel
+        }) ?? .whisper
+        var loadedPostProcessorBackend = TranscriptCleanupBackendOption.resolved(loadedConfig.postProcessorBackend)
+        if !loadedPostProcessorBackend.isCompatible(with: loadedBackend) {
+            loadedPostProcessorBackend = .local
+            loadedConfig.postProcessorBackend = loadedPostProcessorBackend.backend
+            loadedConfig.enablePostProcessor = false
+            configStore.save(loadedConfig)
+        }
         self.runtime = runtime
         self.dictationStore = dictationStore ?? DictationStore(
             databaseURL: MuesliPaths.defaultDatabaseURL(appName: AppIdentity.supportDirectoryName)
@@ -403,9 +413,7 @@ final class MuesliController: NSObject {
         if loadedConfig.recordingColorHex != "1e1e2e" {
             MuesliTheme.accentOverrideHex = loadedConfig.recordingColorHex
         }
-        self.selectedBackend = BackendOption.all.first(where: {
-            $0.backend == loadedConfig.sttBackend && $0.model == loadedConfig.sttModel
-        }) ?? .whisper
+        self.selectedBackend = loadedBackend
         let configuredMeetingBackend = BackendOption.resolve(
             backend: loadedConfig.meetingTranscriptionBackend,
             model: loadedConfig.meetingTranscriptionModel
@@ -421,7 +429,7 @@ final class MuesliController: NSObject {
         self.selectedMeetingSummaryBackend = MeetingSummaryBackendOption.all.first(where: {
             $0.backend == loadedConfig.meetingSummaryBackend
         }) ?? .chatGPT
-        self.selectedPostProcessorBackend = TranscriptCleanupBackendOption.resolved(loadedConfig.postProcessorBackend)
+        self.selectedPostProcessorBackend = loadedPostProcessorBackend
         self.indicator = FloatingIndicatorController(configStore: configStore)
         ComputerUseCursorOverlay.shared.attachIndicator(self.indicator)
         super.init()
@@ -1020,6 +1028,11 @@ final class MuesliController: NSObject {
         selectedBackend = BackendOption.all.first(where: {
             $0.backend == config.sttBackend && $0.model == config.sttModel
         }) ?? .whisper
+        let configuredPostProcessorBackend = TranscriptCleanupBackendOption.resolved(config.postProcessorBackend)
+        if !configuredPostProcessorBackend.isCompatible(with: selectedBackend) {
+            config.postProcessorBackend = TranscriptCleanupBackendOption.local.backend
+            config.enablePostProcessor = false
+        }
         let configuredMeetingTranscriptionBackend = BackendOption.all.first(where: {
             $0.backend == config.meetingTranscriptionBackend && $0.model == config.meetingTranscriptionModel
         })
@@ -1742,9 +1755,17 @@ final class MuesliController: NSObject {
     }
 
     private func persistSelectedBackend(_ option: BackendOption) {
+        let replacesGemmaCleanup = !selectedPostProcessorBackend.isCompatible(with: option)
+        let hasLocalCleanupModel = PostProcessorOption.runtimeOption(id: config.activePostProcessorId) != nil
         updateConfig {
             $0.sttBackend = option.backend
             $0.sttModel = option.model
+            if replacesGemmaCleanup {
+                $0.postProcessorBackend = TranscriptCleanupBackendOption.local.backend
+                if !hasLocalCleanupModel {
+                    $0.enablePostProcessor = false
+                }
+            }
         }
     }
 
@@ -1839,9 +1860,13 @@ final class MuesliController: NSObject {
     }
 
     private func canRunTranscriptCleanup(option: PostProcessorOption?) -> Bool {
-        guard config.enablePostProcessor else { return false }
+        guard config.enablePostProcessor,
+              selectedPostProcessorBackend.isCompatible(with: selectedBackend) else { return false }
         if selectedPostProcessorBackend == .local {
             return option != nil
+        }
+        if selectedPostProcessorBackend == .gemma4LiteRT {
+            return Gemma4LiteRTModelStore.isAvailableLocally()
         }
         return TranscriptCleanupClient.hasRequiredSettings(
             for: selectedPostProcessorBackend,
@@ -1860,12 +1885,22 @@ final class MuesliController: NSObject {
     }
 
     func setPostProcessorEnabled(_ enabled: Bool) {
+        guard !enabled || selectedPostProcessorBackend.isCompatible(with: selectedBackend) else {
+            updateConfig { $0.enablePostProcessor = false }
+            return
+        }
         if enabled, selectedPostProcessorBackend == .local {
             guard normalizePostProcessorSelectionForAvailability() != nil else {
                 updateConfig { $0.enablePostProcessor = false }
                 appState.selectedTab = .models
                 return
             }
+        }
+        if enabled, selectedPostProcessorBackend == .gemma4LiteRT,
+           !Gemma4LiteRTModelStore.isAvailableLocally() {
+            updateConfig { $0.enablePostProcessor = false }
+            appState.selectedTab = .models
+            return
         }
         updateConfig { $0.enablePostProcessor = enabled }
         preloadExperimentalTranscriptionFeatures()
@@ -1877,7 +1912,10 @@ final class MuesliController: NSObject {
         Task { [weak self] in
             guard let self else { return }
             await self.configureTranscriptCleanupForRuntime(option: ppOption)
-            await self.transcriptionCoordinator.preloadPostProcessorIfNeeded(enabled: enabled)
+            await self.transcriptionCoordinator.preloadPostProcessorIfNeeded(
+                enabled: enabled,
+                transcriptionBackend: self.selectedBackend
+            )
         }
     }
 
@@ -1897,6 +1935,13 @@ final class MuesliController: NSObject {
     }
 
     func selectPostProcessorBackend(_ option: TranscriptCleanupBackendOption) {
+        guard option.isCompatible(with: selectedBackend) else {
+            presentErrorAlert(
+                title: "Cleanup model unavailable",
+                message: "Gemma 4 cannot clean up a transcription produced by the same Gemma 4 backend."
+            )
+            return
+        }
         updateConfig { $0.postProcessorBackend = option.backend }
         selectedPostProcessorBackend = option
         appState.selectedPostProcessorBackend = option
@@ -1906,6 +1951,12 @@ final class MuesliController: NSObject {
                 appState.selectedTab = .models
                 return
             }
+        }
+        if option == .gemma4LiteRT, config.enablePostProcessor,
+           !Gemma4LiteRTModelStore.isAvailableLocally() {
+            updateConfig { $0.enablePostProcessor = false }
+            appState.selectedTab = .models
+            return
         }
         preloadExperimentalTranscriptionFeatures()
     }

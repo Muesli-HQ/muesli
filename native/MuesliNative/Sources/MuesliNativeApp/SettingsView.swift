@@ -140,6 +140,10 @@ struct SettingsView: View {
         TranscriptCleanupPrompts.presets(custom: appState.config.customTranscriptCleanupPrompts)
     }
 
+    private var cleanupBackendOptions: [TranscriptCleanupBackendOption] {
+        TranscriptCleanupBackendOption.available(for: appState.selectedBackend)
+    }
+
     private var selectedCleanupPromptName: String {
         cleanupPromptPresets.first { $0.id == appState.config.activeTranscriptCleanupPromptId }?.name
             ?? TranscriptCleanupPrompts.builtIns[0].name
@@ -150,6 +154,11 @@ struct SettingsView: View {
             return downloadedPostProcOptions.isEmpty
                 ? "Download a cleanup model from Models to refine dictations on this Mac."
                 : "Refines dictated text on this Mac."
+        }
+        if appState.selectedPostProcessorBackend == .gemma4LiteRT {
+            return Gemma4LiteRTModelStore.isAvailableLocally()
+                ? "Uses the downloaded Gemma 4 model to refine dictated text on this Mac."
+                : "Download Gemma 4 E2B from Models to use it for cleanup."
         }
         return "Sends dictated text to \(appState.selectedPostProcessorBackend.label) and may add latency."
     }
@@ -662,9 +671,9 @@ struct SettingsView: View {
             ) {
                 settingsMenu(
                     selection: appState.selectedPostProcessorBackend.label,
-                    options: TranscriptCleanupBackendOption.all.map(\.label)
+                    options: cleanupBackendOptions.map(\.label)
                 ) { label in
-                    if let option = TranscriptCleanupBackendOption.all.first(where: { $0.label == label }) {
+                    if let option = cleanupBackendOptions.first(where: { $0.label == label }) {
                         controller.selectPostProcessorBackend(option)
                     }
                 }
@@ -691,6 +700,18 @@ struct SettingsView: View {
                             }
                         }
                     }
+                }
+            } else if appState.selectedPostProcessorBackend == .gemma4LiteRT {
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Cleanup model", controlWidth: meetingControlWidth) {
+                    Text(Gemma4LiteRTModelStore.isAvailableLocally() ? "Gemma 4 E2B (Downloaded)" : "Gemma 4 E2B")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(
+                            Gemma4LiteRTModelStore.isAvailableLocally()
+                                ? MuesliTheme.textSecondary
+                                : MuesliTheme.textTertiary
+                        )
+                        .frame(width: meetingControlWidth, alignment: .trailing)
                 }
             } else {
                 hostedCleanupSettings(for: appState.selectedPostProcessorBackend)

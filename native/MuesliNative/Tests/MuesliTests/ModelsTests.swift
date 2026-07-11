@@ -25,7 +25,7 @@ struct BackendOptionTests {
 
     @Test("backend field is one of the known backends")
     func knownBackends() {
-        let known: Set<String> = ["fluidaudio", "whisper", "qwen", "nemotron35", "cohere", "indicasr", "sensevoice"]
+        let known: Set<String> = ["fluidaudio", "whisper", "qwen", "nemotron35", "cohere", "indicasr", "sensevoice", "gemma4-litert"]
         for option in BackendOption.all {
             #expect(known.contains(option.backend), "Unknown backend: \(option.backend)")
         }
@@ -71,6 +71,7 @@ struct BackendOptionTests {
         #expect(BackendOption.all.contains(.indicASR))
         #expect(BackendOption.all.contains(.senseVoiceSmall))
         #expect(BackendOption.all.contains(.nemotron35Multilingual))
+        #expect(BackendOption.all.contains(.gemma4E2BLiteRT))
     }
 
     @Test("Cohere uses cohere backend")
@@ -145,6 +146,20 @@ struct BackendOptionTests {
         #expect(BackendOption.senseVoiceSmall.backend == "sensevoice")
         #expect(BackendOption.senseVoiceSmall.model == "FluidInference/sensevoice-small-coreml")
         #expect(BackendOption.senseVoiceSmall.description.contains("FluidAudio"))
+    }
+
+    @Test("Gemma 4 E2B uses LiteRT-LM as an experimental managed model")
+    func gemma4LiteRTBackend() {
+        #expect(BackendOption.gemma4E2BLiteRT.backend == "gemma4-litert")
+        #expect(BackendOption.gemma4E2BLiteRT.model == Gemma4LiteRTModelStore.repoID)
+        #expect(BackendOption.gemma4E2BLiteRT.label == "Gemma 4 E2B")
+        #expect(BackendOption.gemma4E2BLiteRT.sizeLabel == "~2.6 GB")
+        #expect(BackendOption.gemma4E2BLiteRT.description.contains("LiteRT-LM"))
+        #expect(BackendOption.gemma4E2BLiteRT.description.contains("Downloads managed local weights"))
+        #expect(BackendOption.gemma4E2BLiteRT.description.contains("ASR-tuned Gemma artifact"))
+        #expect(BackendOption.gemma4E2BLiteRT.description.contains("chat-style outputs fail closed"))
+        #expect(BackendOption.experimental.contains(.gemma4E2BLiteRT))
+        #expect(!BackendOption.onboarding.contains(.gemma4E2BLiteRT))
     }
 
     @Test("Cohere is not in experimental list")

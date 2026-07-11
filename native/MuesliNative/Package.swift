@@ -38,6 +38,7 @@ let package = Package(
                 "MuesliCore",
                 .product(name: "FluidAudio", package: "FluidAudio"),
                 .product(name: "LLM", package: "LLM.swift"),
+                .target(name: "CLiteRTLM_mac", condition: .when(platforms: [.macOS])),
                 .product(name: "WhisperKit", package: "WhisperKit"),
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "TelemetryDeck", package: "SwiftSDK"),
@@ -67,6 +68,11 @@ let package = Package(
             name: "LocalVQEBridge",
             path: "Sources/LocalVQEBridge",
             publicHeadersPath: "include"
+        ),
+        .binaryTarget(
+            name: "CLiteRTLM_mac",
+            url: "https://github.com/google-ai-edge/LiteRT-LM/releases/download/v0.13.1/CLiteRTLM_mac.xcframework.zip",
+            checksum: "ec9ffe230dc39117a7fc8933b1cc15910454027fee6d3041534ab7cf17313981"
         ),
         .testTarget(
             name: "MuesliTests",

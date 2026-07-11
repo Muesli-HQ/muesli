@@ -35,6 +35,9 @@ enum TranscriptCleanupClient {
     private static let hostedAppContextCharacterLimit = 5_000
 
     static func defaultModel(for backend: TranscriptCleanupBackendOption) -> String {
+        if backend == .gemma4LiteRT {
+            return Gemma4LiteRTModelStore.repoID
+        }
         switch backend.llmBackend {
         case .some(.chatGPT):
             return SummaryModelPreset.chatGPTModels.first?.id ?? "gpt-5.4-mini"
@@ -54,6 +57,9 @@ enum TranscriptCleanupClient {
     }
 
     static func configuredModel(for backend: TranscriptCleanupBackendOption, config: AppConfig) -> String {
+        if backend == .gemma4LiteRT {
+            return Gemma4LiteRTModelStore.repoID
+        }
         let raw: String
         switch backend.llmBackend {
         case .some(.chatGPT):
@@ -78,6 +84,9 @@ enum TranscriptCleanupClient {
     }
 
     static func hasRequiredSettings(for backend: TranscriptCleanupBackendOption, config: AppConfig, isChatGPTAuthenticated: Bool) -> Bool {
+        if backend == .gemma4LiteRT {
+            return Gemma4LiteRTModelStore.isAvailableLocally()
+        }
         switch backend.llmBackend {
         case .some(.chatGPT):
             return isChatGPTAuthenticated
