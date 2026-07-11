@@ -49,6 +49,13 @@ struct ConfigStoreTests {
         #expect(path.hasSuffix("config.json"))
     }
 
+    @Test("missing title format defaults to automatic titles")
+    func missingTitleFormatDefaultsToAutomaticTitles() throws {
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+
+        #expect(config.meetingTitleFormat == MeetingTitleFormatter.defaultPattern)
+    }
+
     @Test("saved config uses owner-only file permissions")
     func configPermissions() throws {
         let store = ConfigStore()

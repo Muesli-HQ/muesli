@@ -140,6 +140,7 @@ final class MeetingSession {
     private static let logger = Logger(subsystem: "com.muesli.native", category: "MeetingSession")
 
     private let title: String
+    private let titleContext: MeetingTitleContext
     private let calendarEventID: String?
     private let backendLock = OSAllocatedUnfairLock(initialState: BackendOption.whisper)
     private let runtime: RuntimePaths
@@ -197,6 +198,7 @@ final class MeetingSession {
 
     init(
         title: String,
+        titleContext: MeetingTitleContext,
         calendarEventID: String?,
         backend: BackendOption,
         runtime: RuntimePaths,
@@ -206,6 +208,7 @@ final class MeetingSession {
         meetingMicRecorder: MeetingMicRecording = RouteAwareMeetingMicRecorder()
     ) {
         self.title = title
+        self.titleContext = titleContext
         self.calendarEventID = calendarEventID
         backendLock.withLock { $0 = backend }
         self.runtime = runtime
@@ -506,17 +509,26 @@ final class MeetingSession {
         onProgress?(.generatingTitle)
         if let liveTitle = await userEditedLiveTitle() {
             generatedTitle = liveTitle
-        } else if let calendarTitle = Self.calendarTitleCandidate(
-            originalTitle: title,
-            calendarEventID: calendarEventID
-        ) {
-            generatedTitle = calendarTitle
-        } else if let autoTitle = await MeetingSummaryClient.generateTitle(transcript: rawTranscript, config: config),
-           !autoTitle.isEmpty {
-            generatedTitle = autoTitle
-            fputs("[meeting] auto-generated title: \(generatedTitle)\n", stderr)
         } else {
-            generatedTitle = title
+            let baseTitle: String
+            if let calendarTitle = Self.calendarTitleCandidate(
+                originalTitle: title,
+                calendarEventID: calendarEventID
+            ) {
+                baseTitle = calendarTitle
+            } else if let autoTitle = await MeetingSummaryClient.generateTitle(transcript: rawTranscript, config: config),
+               !autoTitle.isEmpty {
+                baseTitle = autoTitle
+                fputs("[meeting] auto-generated title: \(baseTitle)\n", stderr)
+            } else {
+                baseTitle = title
+            }
+            generatedTitle = MeetingTitleFormatter.format(
+                pattern: config.meetingTitleFormat,
+                generatedTitle: baseTitle,
+                startTime: meetingStart,
+                context: titleContext
+            )
         }
 
         let visualContext = await screenContextCollector.stopAndDrain()

@@ -1133,6 +1133,18 @@ struct SettingsView: View {
             meetingSummarySettingsSection
 
             settingsSection("Meeting Notes") {
+                settingsRow("Title format", controlWidth: meetingControlWidth) {
+                    PastableTextField(
+                        text: appState.config.meetingTitleFormat,
+                        placeholder: MeetingTitleFormatter.defaultPattern,
+                        onChange: { value in
+                            controller.updateConfig { $0.meetingTitleFormat = value }
+                        }
+                    )
+                    .frame(height: 22)
+                }
+                settingsDescription("Use {title}, {date}, {time}, {app}, or {window}. Add literal text for project-specific names.")
+                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Default template", controlWidth: meetingControlWidth) {
                     meetingTemplateMenu(selectionID: appState.config.defaultMeetingTemplateID) { id in
                         controller.updateDefaultMeetingTemplate(id: id)

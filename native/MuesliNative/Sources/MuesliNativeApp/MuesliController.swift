@@ -4361,6 +4361,7 @@ final class MuesliController: NSObject {
         previousMeetingNotes: String? = nil
     ) -> Bool {
         guard !isMeetingRecording(), !isStartingMeetingRecording else { return false }
+        let titleContext = MeetingTitleContext.capture()
         guard let meetingBackend = normalizeMeetingTranscriptionSelectionForAvailability() else {
             presentErrorAlert(
                 title: "Meeting failed to start",
@@ -4425,6 +4426,7 @@ final class MuesliController: NSObject {
                 try Task.checkCancellation()
                 try await self.startMeetingRecordingWithSystemAudioRecovery(
                     title: title,
+                    titleContext: titleContext,
                     calendarEventID: calendarEventID,
                     meetingID: meetingID,
                     backend: meetingBackend,
@@ -4579,6 +4581,7 @@ final class MuesliController: NSObject {
                 try Task.checkCancellation()
                 try await self.startMeetingRecordingWithSystemAudioRecovery(
                     title: meeting.title,
+                    titleContext: .empty,
                     calendarEventID: meeting.calendarEventID,
                     meetingID: meetingID,
                     backend: meetingBackend,
@@ -4846,6 +4849,7 @@ final class MuesliController: NSObject {
 
     private func startMeetingRecordingWithSystemAudioRecovery(
         title: String,
+        titleContext: MeetingTitleContext,
         calendarEventID: String?,
         meetingID: Int64,
         backend: BackendOption,
@@ -4875,6 +4879,7 @@ final class MuesliController: NSObject {
             meetingMicRecorder.preferredInputDeviceID = routeSnapshot.preferredInputDeviceID
             let meetingSession = MeetingSession(
                 title: title,
+                titleContext: titleContext,
                 calendarEventID: calendarEventID,
                 backend: backend,
                 runtime: runtime,
