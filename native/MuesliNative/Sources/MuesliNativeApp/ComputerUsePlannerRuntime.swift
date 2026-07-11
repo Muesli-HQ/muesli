@@ -95,10 +95,7 @@ final class ComputerUsePlannerRuntime {
         onStatus("Observing screen")
         var observation = observe(registry, true, currentTarget)
         traceEvents.append(observationEvent(observation, step: nil))
-        var plannerHistory = [
-            ComputerUsePlannerHistoryItem(kind: .userCommand, summary: command),
-            observationHistoryItem(observation, step: nil),
-        ]
+        var plannerHistory = [observationHistoryItem(observation, step: nil)]
 
         var step = 1
         while true {
@@ -120,7 +117,7 @@ final class ComputerUsePlannerRuntime {
                 step: step,
                 maxSteps: maxSteps,
                 latestWindowState: ComputerUseWindowState(observation: observation),
-                plannerHistory: plannerHistory,
+                plannerHistory: ComputerUsePlannerHistoryWindow.bounded(plannerHistory),
                 priorOutcomes: priorResults
             )
 
@@ -396,6 +393,8 @@ final class ComputerUsePlannerRuntime {
         result: ComputerUseExecutionResult,
         delta: ComputerUseStateDelta?
     ) -> ComputerUseActionTransaction {
+        // Driver PRs populate concrete route and posted=true evidence. Until
+        // then, leave successful delivery unknown instead of overclaiming it.
         let effect: ComputerUseActionEffect
         switch delta?.status {
         case .changed: effect = .changed
@@ -424,11 +423,21 @@ final class ComputerUsePlannerRuntime {
             step: outcome.step,
             tool: outcome.tool,
             status: outcome.status,
-            summary: String(outcome.message.prefix(320)),
+            summary: historyOutcomeSummary(outcome),
             stateID: outcome.afterStateID,
             screenshotID: outcome.snapshotID,
             transaction: outcome.transaction
         )
+    }
+
+    private func historyOutcomeSummary(_ outcome: ComputerUseToolOutcome) -> String {
+        switch outcome.tool {
+        case .pasteText, .typeText, .setValue:
+            let verification = outcome.verificationStatus?.rawValue ?? "unknown"
+            return "\(outcome.tool.rawValue) \(outcome.status); observed_effect=\(verification)"
+        default:
+            return String(outcome.message.prefix(320))
+        }
     }
 
     private func observationHistoryItem(

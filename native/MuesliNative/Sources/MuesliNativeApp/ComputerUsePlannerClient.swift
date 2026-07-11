@@ -42,7 +42,7 @@ enum ComputerUsePlannerClient {
     - The harness does not judge whether your strategy is good. Inspect the latest screenshot/AX state and decide whether to continue, finish, or fail.
     - Never invent AppleScript, shell commands, code, URLs, element IDs, screenshot IDs, or tools.
     - max_steps is a high safety ceiling, not a target. Use as few steps as needed.
-    - Use finish when you judge the user's command complete. Use fail when you judge it blocked, unsupported, unsafe, or incomplete. The runtime accepts that terminal decision.
+    - finish and fail are typed terminal decisions. Use finish only for a completed task and fail for blocked, partial, unsupported, unsafe, or incomplete work. The tool choice, not wording heuristics over reason, determines runtime status.
     - Risky actions are locally blocked by Muesli; do not try to bypass confirmation.
     """
     }

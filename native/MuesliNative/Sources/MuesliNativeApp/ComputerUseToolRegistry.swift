@@ -216,10 +216,10 @@ enum ComputerUseToolRegistry {
             "selector": .string("CSS selector."),
             "attributes": .array("Attributes to return.", item: .string("Attribute name.")),
         ], risk: "safe read-only"),
-        definition(.finish, "Finish when the user task is complete. Use reason for the final answer.", required: [], properties: [
-            "reason": .string("Final user-facing result."),
+        definition(.finish, "Typed successful terminal state. Use only when the requested task is complete; use fail for blocked, partial, unsafe, or incomplete outcomes.", required: [], properties: [
+            "reason": .string("Concise user-facing description of the completed result."),
         ], risk: "safe finalization"),
-        definition(.fail, "Fail explicitly when blocked, unsupported, unsafe, or incomplete. Use reason to explain.", required: ["reason"], properties: [
+        definition(.fail, "Typed unsuccessful terminal state for blocked, unsupported, unsafe, partial, or incomplete outcomes. Use reason to explain.", required: ["reason"], properties: [
             "reason": .string("Failure reason."),
         ], risk: "safe finalization"),
     ]

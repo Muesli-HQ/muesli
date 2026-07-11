@@ -192,6 +192,7 @@ enum ComputerUsePlannerHistoryKind: String, Codable, Equatable {
     case toolResult = "tool_result"
     case observationReceipt = "observation_receipt"
     case plannerRepair = "planner_repair"
+    case historyCompaction = "history_compaction"
 }
 
 struct ComputerUsePlannerHistoryItem: Codable, Equatable {
@@ -233,6 +234,35 @@ struct ComputerUsePlannerHistoryItem: Codable, Equatable {
         self.stateID = stateID
         self.screenshotID = screenshotID
         self.transaction = transaction
+    }
+}
+
+enum ComputerUsePlannerHistoryWindow {
+    static let retainedStepCount = 16
+
+    static func bounded(
+        _ history: [ComputerUsePlannerHistoryItem],
+        retainedStepCount: Int = retainedStepCount
+    ) -> [ComputerUsePlannerHistoryItem] {
+        guard retainedStepCount > 0 else { return [] }
+        let steps = history.compactMap(\.step).reduce(into: [Int]()) { result, step in
+            if result.last != step {
+                result.append(step)
+            }
+        }
+        guard steps.count > retainedStepCount else { return history }
+
+        let retainedSteps = Set(steps.suffix(retainedStepCount))
+        let retained = history.filter { item in
+            item.step.map(retainedSteps.contains) ?? false
+        }
+        let omittedCount = history.count - retained.count
+        return [
+            ComputerUsePlannerHistoryItem(
+                kind: .historyCompaction,
+                summary: "\(omittedCount) older history items omitted; use the current command and latest state as source of truth."
+            ),
+        ] + retained
     }
 }
 

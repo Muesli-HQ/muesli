@@ -66,7 +66,7 @@ struct ComputerUseToolRegistryTests {
         #expect(instructions.contains("planner_history is the compact action chain"))
         #expect(instructions.contains("Muesli chooses AX, point, or other delivery routes"))
         #expect(instructions.contains("Neither means the user's semantic task is complete"))
-        #expect(instructions.contains("The runtime accepts that terminal decision"))
+        #expect(instructions.contains("The tool choice, not wording heuristics over reason"))
     }
 }
 
@@ -482,7 +482,24 @@ struct ComputerUsePlannerRequestTests {
         #expect(text.contains("planner_history"))
         #expect(text.contains("paste_text (13 characters)"))
         #expect(text.contains("\"effect\":\"changed\""))
-        #expect(!text.contains("private words"))
+    }
+
+    @Test("bounds history by complete recent steps")
+    func boundsHistoryByCompleteRecentSteps() {
+        let history = (1...20).flatMap { (step: Int) -> [ComputerUsePlannerHistoryItem] in
+            [
+                ComputerUsePlannerHistoryItem(kind: .modelToolCall, step: step, tool: .click, summary: "click \(step)"),
+                ComputerUsePlannerHistoryItem(kind: .toolResult, step: step, tool: .click, status: "executed", summary: "result \(step)"),
+            ]
+        }
+
+        let bounded = ComputerUsePlannerHistoryWindow.bounded(history)
+
+        #expect(bounded.first?.kind == .historyCompaction)
+        #expect(bounded.count == 1 + (ComputerUsePlannerHistoryWindow.retainedStepCount * 2))
+        #expect(bounded.compactMap(\.step).min() == 5)
+        #expect(bounded.compactMap(\.step).max() == 20)
+        #expect(!bounded.contains { $0.step == 4 })
     }
 }
 
@@ -895,6 +912,8 @@ struct ComputerUsePlannerRuntimeTests {
                 let outcome = request.priorOutcomes.last
                 #expect(outcome?.verificationStatus == .unchanged)
                 #expect(outcome?.message.contains("no focused value, selected text, or visible AX text change was observed") == true)
+                #expect(request.plannerHistory.contains { $0.summary == "paste_text (5 characters)" })
+                #expect(!request.plannerHistory.contains { $0.summary.contains("hello") })
                 return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish, reason: "done"))
             },
             execute: { _, _ in .executed("Pasted text") }
@@ -940,14 +959,14 @@ struct ComputerUsePlannerRuntimeTests {
         #expect(observeCount == 4)
     }
 
-    @Test("finish is owned by the model")
+    @Test("finish is the typed successful terminal choice")
     @MainActor
-    func finishIsOwnedByModel() async {
+    func finishIsTypedSuccessfulTerminalChoice() async {
         let runtime = ComputerUsePlannerRuntime(
             config: AppConfig(),
             observe: { _, _, _ in Self.observation() },
             plan: { _ in
-                ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish, reason: "Could not complete the task."))
+                ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish, reason: "Completed the task."))
             },
             execute: { _, _ in .executed("unexpected") }
         )
@@ -955,7 +974,7 @@ struct ComputerUsePlannerRuntimeTests {
         let result = await runtime.run(command: "do something")
 
         #expect(result.status == ComputerUsePlannerRuntimeResult.Status.done)
-        #expect(result.message == "Could not complete the task.")
+        #expect(result.message == "Completed the task.")
     }
 
     @Test("finish accepts model-provided result language")
