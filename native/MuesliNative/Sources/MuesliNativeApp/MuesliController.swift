@@ -4327,7 +4327,8 @@ final class MuesliController: NSObject {
         calendarEventID: String? = nil,
         endDate: Date? = nil,
         autoStopSource: MeetingAutoStopSource? = nil,
-        startOrigin: MeetingRecordingStartOrigin = .manual
+        startOrigin: MeetingRecordingStartOrigin = .manual,
+        titleContextTarget: MeetingTitleContext.CaptureTarget? = nil
     ) -> Bool {
         guard ensureBasicDictationPermissionsBeforeDashboard() else { return false }
         if isMeetingRecording() {
@@ -4341,7 +4342,8 @@ final class MuesliController: NSObject {
             openDocument: true,
             endDate: endDate,
             autoStopSource: autoStopSource,
-            startOrigin: startOrigin
+            startOrigin: startOrigin,
+            titleContextTarget: titleContextTarget
         )
         guard didStart else { return false }
         presentHistoryWindow(tab: .meetings)
@@ -4358,16 +4360,19 @@ final class MuesliController: NSObject {
         startOrigin: MeetingRecordingStartOrigin = .manual,
         followUpToID: Int64? = nil,
         inheritedFolderID: Int64? = nil,
-        previousMeetingNotes: String? = nil
+        previousMeetingNotes: String? = nil,
+        titleContextTarget: MeetingTitleContext.CaptureTarget? = nil
     ) -> Bool {
         guard !isMeetingRecording(), !isStartingMeetingRecording else { return false }
-        let titleContext = MeetingTitleContext.capture()
         guard let meetingBackend = normalizeMeetingTranscriptionSelectionForAvailability() else {
             presentErrorAlert(
                 title: "Meeting failed to start",
                 message: "Download a transcription model before recording a meeting."
             )
             return false
+        }
+        let titleContextCaptureTask = Task.detached(priority: .utility) {
+            MeetingTitleContext.capture(target: titleContextTarget)
         }
         let templateSnapshot = defaultMeetingTemplate()
         let meetingID: Int64
@@ -4423,6 +4428,8 @@ final class MuesliController: NSObject {
         meetingStartTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
+                try Task.checkCancellation()
+                let titleContext = await titleContextCaptureTask.value
                 try Task.checkCancellation()
                 try await self.startMeetingRecordingWithSystemAudioRecovery(
                     title: title,
@@ -4574,14 +4581,19 @@ final class MuesliController: NSObject {
         meetingMonitor.suppressWhileActive()
         meetingMonitor.refreshState()
         updateMeetingNotificationVisibility()
+        let titleContextCaptureTask = Task.detached(priority: .utility) {
+            MeetingTitleContext.capture()
+        }
 
         meetingStartTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
                 try Task.checkCancellation()
+                let titleContext = await titleContextCaptureTask.value
+                try Task.checkCancellation()
                 try await self.startMeetingRecordingWithSystemAudioRecovery(
                     title: meeting.title,
-                    titleContext: .empty,
+                    titleContext: titleContext,
                     calendarEventID: meeting.calendarEventID,
                     meetingID: meetingID,
                     backend: meetingBackend,
@@ -6445,7 +6457,11 @@ final class MuesliController: NSObject {
                 if self.startForegroundMeetingRecording(
                     title: title,
                     autoStopSource: MeetingAutoStopSource(candidate: candidate),
-                    startOrigin: .detectedPrompt
+                    startOrigin: .detectedPrompt,
+                    titleContextTarget: MeetingTitleContext.CaptureTarget(
+                        appName: candidate.appName,
+                        processIdentifier: candidate.sourcePID
+                    )
                 ) {
                     self.meetingMonitor.markRecordingStarted(candidate)
                     self.presentedMeetingCandidate = nil

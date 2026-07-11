@@ -27,6 +27,7 @@ struct ConfigStoreTests {
         config.openRouterModel = "nvidia/nemotron-3-super-120b-a12b:free"
         config.cohereLanguage = CohereTranscribeLanguage.german.rawValue
         config.meetingSummaryBackend = "openrouter"
+        config.meetingTitleFormat = "Project Atlas · {date} · {title}"
         store.save(config)
 
         let loaded = store.load()
@@ -36,6 +37,7 @@ struct ConfigStoreTests {
         #expect(loaded.openRouterModel == "nvidia/nemotron-3-super-120b-a12b:free")
         #expect(loaded.cohereLanguage == CohereTranscribeLanguage.german.rawValue)
         #expect(loaded.meetingSummaryBackend == "openrouter")
+        #expect(loaded.meetingTitleFormat == "Project Atlas · {date} · {title}")
 
         // Restore original
         store.save(original)

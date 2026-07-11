@@ -3,17 +3,33 @@ import ApplicationServices
 import Foundation
 
 struct MeetingTitleContext: Equatable {
+    struct CaptureTarget: Sendable {
+        let appName: String
+        let processIdentifier: pid_t?
+    }
+
     let appName: String
     let windowTitle: String
 
     static let empty = MeetingTitleContext(appName: "", windowTitle: "")
 
-    static func capture() -> MeetingTitleContext {
-        guard let app = NSWorkspace.shared.frontmostApplication else {
+    static func capture(target: CaptureTarget? = nil) -> MeetingTitleContext {
+        let app: NSRunningApplication?
+        if let processIdentifier = target?.processIdentifier {
+            app = NSRunningApplication(processIdentifier: processIdentifier)
+        } else {
+            app = NSWorkspace.shared.frontmostApplication
+        }
+        guard let app else {
+            let targetAppName = target?.appName.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !targetAppName.isEmpty {
+                return MeetingTitleContext(appName: targetAppName, windowTitle: "")
+            }
             return .empty
         }
 
-        let appName = app.localizedName ?? ""
+        let targetAppName = target?.appName.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let appName = targetAppName.isEmpty ? (app.localizedName ?? "") : targetAppName
         guard AXIsProcessTrusted() else {
             return MeetingTitleContext(appName: appName, windowTitle: "")
         }
@@ -61,8 +77,8 @@ enum MeetingTitleFormatter {
             "{app}": context.appName.trimmingCharacters(in: .whitespacesAndNewlines),
             "{window}": context.windowTitle.trimmingCharacters(in: .whitespacesAndNewlines),
         ]
-        let formatted = replacements.reduce(into: resolvedPattern) { result, replacement in
-            result = result.replacingOccurrences(of: replacement.key, with: replacement.value)
+        let formatted = replacements.reduce(resolvedPattern) { result, replacement in
+            replacingToken(replacement.key, with: replacement.value, in: result)
         }
 
         let collapsedWhitespace = formatted.replacingOccurrences(
@@ -71,10 +87,29 @@ enum MeetingTitleFormatter {
             options: .regularExpression
         )
         let trimmed = collapsedWhitespace.trimmingCharacters(in: .whitespacesAndNewlines)
-        let withoutEmptyTokenSeparators = trimmed.trimmingCharacters(
-            in: CharacterSet(charactersIn: " -–—:|/·")
+        return trimmed.isEmpty ? fallbackTitle : trimmed
+    }
+
+    private static func replacingToken(_ token: String, with value: String, in pattern: String) -> String {
+        guard value.isEmpty else {
+            return pattern.replacingOccurrences(of: token, with: value)
+        }
+
+        let escapedToken = NSRegularExpression.escapedPattern(for: token)
+        let separator = "[-–—:|/·]"
+        let removeLeadingSeparator = #"\s*"# + separator + #"\s*"# + escapedToken
+        let removeTrailingSeparator = escapedToken + #"\s*"# + separator + #"\s*"#
+        let withoutLeadingSeparator = pattern.replacingOccurrences(
+            of: removeLeadingSeparator,
+            with: "",
+            options: .regularExpression
         )
-        return withoutEmptyTokenSeparators.isEmpty ? fallbackTitle : withoutEmptyTokenSeparators
+        let withoutTrailingSeparator = withoutLeadingSeparator.replacingOccurrences(
+            of: removeTrailingSeparator,
+            with: "",
+            options: .regularExpression
+        )
+        return withoutTrailingSeparator.replacingOccurrences(of: token, with: "")
     }
 
     private static let dateFormatter: DateFormatter = {

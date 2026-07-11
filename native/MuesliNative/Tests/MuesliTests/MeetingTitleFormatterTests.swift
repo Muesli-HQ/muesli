@@ -16,6 +16,18 @@ struct MeetingTitleFormatterTests {
         #expect(formatted == "Sprint planning")
     }
 
+    @Test("default format preserves title punctuation")
+    func defaultFormatPreservesTitlePunctuation() {
+        let formatted = MeetingTitleFormatter.format(
+            pattern: MeetingTitleFormatter.defaultPattern,
+            generatedTitle: "Weekly Sync:",
+            startTime: Date(timeIntervalSince1970: 0),
+            context: .empty
+        )
+
+        #expect(formatted == "Weekly Sync:")
+    }
+
     @Test("format supports context tokens and literal project text")
     func contextAndLiteralTokens() {
         let formatted = MeetingTitleFormatter.format(
@@ -50,5 +62,17 @@ struct MeetingTitleFormatterTests {
         )
 
         #expect(formatted == "Meeting")
+    }
+
+    @Test("missing context removes only its adjacent separator")
+    func missingContextRemovesAdjacentSeparator() {
+        let formatted = MeetingTitleFormatter.format(
+            pattern: "{title} · {window}",
+            generatedTitle: "Weekly Sync",
+            startTime: Date(timeIntervalSince1970: 0),
+            context: .empty
+        )
+
+        #expect(formatted == "Weekly Sync")
     }
 }
