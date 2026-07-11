@@ -36,6 +36,13 @@ Hold your hotkey (or double-tap for hands-free mode) → speak → release → t
 ### Meeting Transcription
 Start a meeting recording → Muesli captures your mic (You) and system audio (Others) simultaneously → VAD-driven chunked transcription happens during the meeting at natural speech boundaries → speaker diarization identifies individual remote speakers (Speaker 1, Speaker 2, etc.) → when you stop, the transcript is ready in seconds, not minutes. Generate structured meeting notes via OpenAI, free OpenRouter models, your ChatGPT Plus/Pro subscription, or local Ollama models.
 
+### Computer Use (experimental)
+Hold the Computer Use shortcut, speak a task, and release. The model-driven planner observes the current macOS app or browser through screenshots and Accessibility state, then chooses intent-level actions such as opening an app, clicking, entering text, pressing keys, or scrolling. Muesli owns native input delivery and returns action receipts; the model decides whether to continue, finish, or report that the task is blocked.
+
+Computer Use can also change supported Muesli settings directly without navigating the Settings UI: transcription model, AI cleanup, custom dictionary entries, Computer Use activation and safety limit, dictation media behavior, floating-indicator visibility and position, sound effects, light/dark theme, and dashboard-on-launch. Boolean settings can be enabled or disabled, and dictionary entries can be added or removed. These commands and their detailed execution traces appear in Dictations.
+
+Computer Use requires Microphone, Accessibility, and Screen Recording permissions for the complete workflow. Commands can be cancelled manually and are bounded by a configurable 1–600 second safety limit. Some actions may bring their target app forward; fully background-safe interaction is not claimed by this experimental planner.
+
 ---
 
 ## Features
@@ -57,7 +64,7 @@ Start a meeting recording → Muesli captures your mic (You) and system audio (O
 - **Filler word removal** — Automatically strips "uh", "um", "er", "hmm" and verbal disfluencies.
 - **AI meeting notes** — BYOK with OpenAI or OpenRouter, sign in with your ChatGPT Plus/Pro subscription (no API key needed), or use local Ollama models. Auto-generated meeting titles. Re-summarize any meeting.
 - **ChatGPT OAuth** — Sign in with your existing ChatGPT subscription via browser-based OAuth (PKCE). Tokens stored in the app support directory with owner-only file permissions.
-- **Computer Use planner** — Optional voice-driven planner that can execute local app and browser actions from dictated commands with configurable model and timeout settings.
+- **Computer Use planner** — Optional model-driven macOS control through a dedicated voice shortcut, typed intent tools, action receipts, cancellation, and a configurable safety limit. It can operate app/browser UI and directly apply supported Muesli settings; commands and traces are saved in Dictations.
 - **Post-meeting hooks** — Run a user-supplied executable after completed meetings. Hooks receive a JSON payload on stdin and log results in the app support directory.
 - **Personal dictionary** — Add custom words, phrase matches, and replacement pairs. Jaro-Winkler fuzzy matching auto-corrects transcription output.
 - **Model management** — Download, delete, and switch between models from the Models tab. Background downloads that don't block the app.
@@ -375,7 +382,7 @@ swift test --package-path native/MuesliNative
 
 Current test scope:
 
-- Covered by tests: CLI command contract generation, CLI path-resolution logic, SQLite read/write behavior, note-state classification, meeting/dictation retrieval/update flows, update-flow policy, CoreAudio cleanup, paste/clipboard safety, launch at login, Ollama summary routing, and Computer Use planner foundations.
+- Covered by tests: CLI command contract generation, CLI path-resolution logic, SQLite read/write behavior, note-state classification, meeting/dictation retrieval/update flows, update-flow policy, CoreAudio cleanup, paste/clipboard safety, launch at login, Ollama summary routing, and Computer Use planner contracts, controller settings persistence, transaction receipts, and trace storage.
 - Not covered by Swift unit tests: app-bundle packaging and copying `muesli-cli` into `/Applications/Muesli.app/Contents/MacOS`.
 - Packaging is verified by `scripts/test_packaged_cli.sh`, which builds an isolated app bundle, checks that `Contents/MacOS/muesli-cli` exists and is executable, and runs `muesli-cli spec` from the packaged path.
 

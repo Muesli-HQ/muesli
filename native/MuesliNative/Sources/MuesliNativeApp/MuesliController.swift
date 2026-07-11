@@ -6880,7 +6880,7 @@ final class MuesliController: NSObject {
     }
 
     @MainActor
-    private func applyComputerUseSettings(_ toolCall: ComputerUseToolCall) async -> ComputerUseExecutionResult {
+    func applyComputerUseSettings(_ toolCall: ComputerUseToolCall) async -> ComputerUseExecutionResult {
         switch ComputerUseMuesliSettingsDriver.mutation(for: toolCall) {
         case .failure(let error):
             return .failed(error.message)
