@@ -75,4 +75,51 @@ struct MeetingTitleFormatterTests {
 
         #expect(formatted == "Weekly Sync")
     }
+
+    @Test("context capture uses the completed result before its timeout")
+    func contextCaptureReturnsCompletedResult() async {
+        let expected = MeetingTitleContext(appName: "Zoom", windowTitle: "Weekly sync")
+
+        let context = await MeetingTitleContext.captureWithTimeout(
+            timeout: 0.1,
+            captureOperation: { _ in expected }
+        )
+
+        #expect(context == expected)
+    }
+
+    @Test("context capture ignores a late result after timeout")
+    func contextCaptureIgnoresLateResult() async {
+        let lateContext = MeetingTitleContext(appName: "Zoom", windowTitle: "Late meeting")
+
+        let context = await MeetingTitleContext.captureWithTimeout(
+            timeout: 0.01,
+            captureOperation: { _ in
+                Thread.sleep(forTimeInterval: 0.05)
+                return lateContext
+            }
+        )
+
+        #expect(context == .empty)
+        try? await Task.sleep(for: .milliseconds(60))
+    }
+
+    @Test("context capture clamps negative delay and timeout")
+    func contextCaptureClampsNegativeIntervals() async {
+        let expected = MeetingTitleContext(appName: "Chrome", windowTitle: "Planning")
+
+        let immediateContext = await MeetingTitleContext.captureWithTimeout(
+            delay: -1,
+            timeout: 0.1,
+            captureOperation: { _ in expected }
+        )
+        let timedOutContext = await MeetingTitleContext.captureWithTimeout(
+            delay: -1,
+            timeout: -1,
+            captureOperation: { _ in expected }
+        )
+
+        #expect(immediateContext == expected)
+        #expect(timedOutContext == .empty)
+    }
 }

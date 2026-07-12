@@ -4373,12 +4373,14 @@ final class MuesliController: NSObject {
             return false
         }
         let titleContextCaptureTask = Task.detached(priority: .utility) {
-            await MeetingTitleContext.captureWithTimeout(
-                target: titleContextTarget,
-                // Opening a meeting link hands focus to the browser or native
-                // client asynchronously; give it a brief chance to settle.
-                delay: startOrigin == .joinAndRecord ? 0.5 : 0
-            )
+            if let titleContextTarget {
+                return await MeetingTitleContext.captureWithTimeout(target: titleContextTarget)
+            }
+            // Non-manual starts without an identified meeting process must not
+            // infer context from the frontmost app. Omitting it is preferable
+            // to persisting Muesli or another unrelated app in the title.
+            guard startOrigin == .manual else { return .empty }
+            return await MeetingTitleContext.captureWithTimeout()
         }
         let templateSnapshot = defaultMeetingTemplate()
         let meetingID: Int64
@@ -4590,15 +4592,11 @@ final class MuesliController: NSObject {
         meetingMonitor.suppressWhileActive()
         meetingMonitor.refreshState()
         updateMeetingNotificationVisibility()
-        let titleContextCaptureTask = Task.detached(priority: .utility) {
-            await MeetingTitleContext.captureWithTimeout()
-        }
-
         meetingStartTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
                 try Task.checkCancellation()
-                let titleContext = await titleContextCaptureTask.value
+                let titleContext = MeetingTitleContext.empty
                 try Task.checkCancellation()
                 try await self.startMeetingRecordingWithSystemAudioRecovery(
                     title: meeting.title,

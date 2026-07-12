@@ -17,16 +17,22 @@ struct MeetingTitleContext: Equatable, Sendable {
     static func captureWithTimeout(
         target: CaptureTarget? = nil,
         delay: TimeInterval = 0,
-        timeout: TimeInterval = 0.5
+        timeout: TimeInterval = 0.5,
+        captureOperation: @escaping @Sendable (CaptureTarget?) -> MeetingTitleContext = { target in
+            MeetingTitleContext.capture(target: target)
+        }
     ) async -> MeetingTitleContext {
-        await withCheckedContinuation { continuation in
+        let captureDelay = max(delay, 0)
+        let captureTimeout = max(timeout, 0)
+        guard captureTimeout > 0 else { return .empty }
+
+        return await withCheckedContinuation { continuation in
             let completion = MeetingTitleContextCaptureCompletion(continuation)
-            let captureDelay = max(delay, 0)
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + captureDelay) {
-                completion.resume(capture(target: target))
+                completion.resume(captureOperation(target))
             }
             DispatchQueue.global(qos: .utility).asyncAfter(
-                deadline: .now() + captureDelay + max(timeout, 0)
+                deadline: .now() + captureDelay + captureTimeout
             ) {
                 completion.resume(.empty)
             }
