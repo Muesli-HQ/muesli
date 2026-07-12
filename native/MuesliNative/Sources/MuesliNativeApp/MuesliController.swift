@@ -2408,7 +2408,8 @@ final class MuesliController: NSObject {
                     openDocument: true,
                     endDate: event.endDate,
                     autoStopSource: event.meetingURL.flatMap { MeetingAutoStopSource(meetingURL: $0) },
-                    startOrigin: .calendarAutoRecord
+                    startOrigin: .calendarAutoRecord,
+                    titleContextMeetingURL: event.meetingURL
                 )
                 return
             }
@@ -2491,7 +2492,8 @@ final class MuesliController: NSObject {
                     calendarEventID: calendarEventID,
                     endDate: endDate,
                     autoStopSource: autoStopSource,
-                    startOrigin: .scheduledMeetingPrompt
+                    startOrigin: .scheduledMeetingPrompt,
+                    titleContextMeetingURL: meetingURL
                 )
             },
             onJoinAndRecord: meetingURL != nil ? { [weak self] in
@@ -4312,7 +4314,8 @@ final class MuesliController: NSObject {
                 calendarEventID: payload.calendarEventID,
                 endDate: payload.endDate,
                 autoStopSource: payload.autoStopSource,
-                startOrigin: .scheduledMeetingPrompt
+                startOrigin: .scheduledMeetingPrompt,
+                titleContextMeetingURL: payload.meetingURL
             )
             return
         }
@@ -4328,7 +4331,8 @@ final class MuesliController: NSObject {
         endDate: Date? = nil,
         autoStopSource: MeetingAutoStopSource? = nil,
         startOrigin: MeetingRecordingStartOrigin = .manual,
-        titleContextTarget: MeetingTitleContext.CaptureTarget? = nil
+        titleContextTarget: MeetingTitleContext.CaptureTarget? = nil,
+        titleContextMeetingURL: URL? = nil
     ) -> Bool {
         guard ensureBasicDictationPermissionsBeforeDashboard() else { return false }
         if isMeetingRecording() {
@@ -4344,6 +4348,7 @@ final class MuesliController: NSObject {
             autoStopSource: autoStopSource,
             startOrigin: startOrigin,
             titleContextTarget: titleContextTarget,
+            titleContextMeetingURL: titleContextMeetingURL,
             presentHistoryWindowAfterTitleContextCapture: true
         )
         guard didStart else { return false }
@@ -4362,6 +4367,7 @@ final class MuesliController: NSObject {
         inheritedFolderID: Int64? = nil,
         previousMeetingNotes: String? = nil,
         titleContextTarget: MeetingTitleContext.CaptureTarget? = nil,
+        titleContextMeetingURL: URL? = nil,
         presentHistoryWindowAfterTitleContextCapture: Bool = false
     ) -> Bool {
         guard !isMeetingRecording(), !isStartingMeetingRecording else { return false }
@@ -4376,9 +4382,13 @@ final class MuesliController: NSObject {
             if let titleContextTarget {
                 return await MeetingTitleContext.captureWithTimeout(target: titleContextTarget)
             }
-            // Non-manual starts without an identified meeting process must not
-            // infer context from the frontmost app. Omitting it is preferable
-            // to persisting Muesli or another unrelated app in the title.
+            if let titleContextMeetingURL {
+                return await MeetingTitleContext.captureMatchingMeetingContext(
+                    meetingURL: titleContextMeetingURL
+                )
+            }
+            // Non-manual starts without a source process or meeting URL must
+            // not infer context from the frontmost app.
             guard startOrigin == .manual else { return .empty }
             return await MeetingTitleContext.captureWithTimeout()
         }
@@ -5037,7 +5047,8 @@ final class MuesliController: NSObject {
             calendarEventID: calendarEventID,
             endDate: endDate,
             autoStopSource: MeetingAutoStopSource(meetingURL: meetingURL),
-            startOrigin: .joinAndRecord
+            startOrigin: .joinAndRecord,
+            titleContextMeetingURL: meetingURL
         )
     }
 
@@ -7895,7 +7906,8 @@ final class MuesliController: NSObject {
                     calendarEventID: event.id,
                     endDate: calendarEndDate,
                     autoStopSource: autoStopSource,
-                    startOrigin: .scheduledMeetingPrompt
+                    startOrigin: .scheduledMeetingPrompt,
+                    titleContextMeetingURL: meetingURL
                 )
             },
             onJoinAndRecord: meetingURL != nil ? { [weak self] in

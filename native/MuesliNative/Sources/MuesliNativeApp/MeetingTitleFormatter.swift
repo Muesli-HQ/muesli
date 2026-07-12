@@ -39,6 +39,52 @@ struct MeetingTitleContext: Equatable, Sendable {
         }
     }
 
+    /// Waits for the meeting URL's owning process, rather than inferring context
+    /// from whichever unrelated app happens to be frontmost during launch.
+    static func captureMatchingMeetingContext(
+        meetingURL: URL,
+        waitTimeout: TimeInterval = 2,
+        pollInterval: TimeInterval = 0.1,
+        targetProvider: @escaping @Sendable (String, String) -> CaptureTarget? = { meetingID, platform in
+            matchingFrontmostMeetingTarget(meetingID: meetingID, platform: platform)
+        },
+        captureOperation: @escaping @Sendable (CaptureTarget?) -> MeetingTitleContext = { target in
+            MeetingTitleContext.capture(target: target)
+        }
+    ) async -> MeetingTitleContext {
+        guard let meeting = MeetingURLNormalizer.normalize(meetingURL.absoluteString) else {
+            return .empty
+        }
+
+        let deadline = Date().addingTimeInterval(max(waitTimeout, 0))
+        let pollMilliseconds = max(Int((max(pollInterval, 0.01) * 1_000).rounded(.up)), 1)
+        while !Task.isCancelled {
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else { break }
+            switch await matchingTargetWithTimeout(
+                meetingID: meeting.id,
+                platform: meeting.platform.rawValue,
+                timeout: min(remaining, 0.25),
+                targetProvider: targetProvider
+            ) {
+            case .target(let target?):
+                return await captureWithTimeout(target: target, captureOperation: captureOperation)
+            case .timedOut:
+                return .empty
+            case .target(nil):
+                break
+            }
+            let sleepMilliseconds = min(
+                pollMilliseconds,
+                max(Int((deadline.timeIntervalSinceNow * 1_000).rounded(.down)), 0)
+            )
+            guard sleepMilliseconds > 0 else { break }
+            try? await Task.sleep(for: .milliseconds(sleepMilliseconds))
+        }
+
+        return .empty
+    }
+
     static func capture(target: CaptureTarget? = nil) -> MeetingTitleContext {
         let app: NSRunningApplication?
         if let processIdentifier = target?.processIdentifier {
@@ -81,6 +127,78 @@ struct MeetingTitleContext: Equatable, Sendable {
         let windowTitle = titleResult == .success ? (titleRef as? String ?? "") : ""
         return MeetingTitleContext(appName: appName, windowTitle: windowTitle)
     }
+
+    private static func matchingFrontmostMeetingTarget(
+        meetingID: String,
+        platform: String
+    ) -> CaptureTarget? {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              let bundleID = app.bundleIdentifier else {
+            return nil
+        }
+
+        let appName = app.localizedName
+            ?? MeetingCandidateResolver.browserApps[bundleID]
+            ?? MeetingCandidateResolver.dedicatedApps[bundleID]?.name
+            ?? bundleID
+        if MeetingCandidateResolver.dedicatedApps[bundleID]?.platform.rawValue == platform {
+            return CaptureTarget(appName: appName, processIdentifier: app.processIdentifier)
+        }
+        guard MeetingCandidateResolver.browserApps[bundleID] != nil,
+              browserFocusedDocumentMatches(
+                processIdentifier: app.processIdentifier,
+                meetingID: meetingID
+              ) else {
+            return nil
+        }
+        return CaptureTarget(appName: appName, processIdentifier: app.processIdentifier)
+    }
+
+    private static func matchingTargetWithTimeout(
+        meetingID: String,
+        platform: String,
+        timeout: TimeInterval,
+        targetProvider: @escaping @Sendable (String, String) -> CaptureTarget?
+    ) async -> MeetingTitleContextTargetLookupResult {
+        guard timeout > 0 else { return .timedOut }
+        return await withCheckedContinuation { continuation in
+            let completion = MeetingTitleContextTargetCompletion(continuation)
+            DispatchQueue.global(qos: .utility).async {
+                completion.resume(.target(targetProvider(meetingID, platform)))
+            }
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) {
+                completion.resume(.timedOut)
+            }
+        }
+    }
+
+    private static func browserFocusedDocumentMatches(
+        processIdentifier: pid_t,
+        meetingID: String
+    ) -> Bool {
+        let app = AXUIElementCreateApplication(processIdentifier)
+        var windowRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            app,
+            kAXFocusedWindowAttribute as CFString,
+            &windowRef
+        ) == .success,
+        let window = windowRef,
+        CFGetTypeID(window) == AXUIElementGetTypeID() else {
+            return false
+        }
+
+        var documentRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            window as! AXUIElement,
+            kAXDocumentAttribute as CFString,
+            &documentRef
+        ) == .success,
+        let documentURL = documentRef as? String else {
+            return false
+        }
+        return MeetingURLNormalizer.normalize(documentURL)?.id == meetingID
+    }
 }
 
 private final class MeetingTitleContextCaptureCompletion: @unchecked Sendable {
@@ -98,6 +216,29 @@ private final class MeetingTitleContextCaptureCompletion: @unchecked Sendable {
         lock.unlock()
 
         continuation?.resume(returning: context)
+    }
+}
+
+private enum MeetingTitleContextTargetLookupResult: Sendable {
+    case target(MeetingTitleContext.CaptureTarget?)
+    case timedOut
+}
+
+private final class MeetingTitleContextTargetCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<MeetingTitleContextTargetLookupResult, Never>?
+
+    init(_ continuation: CheckedContinuation<MeetingTitleContextTargetLookupResult, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume(_ result: MeetingTitleContextTargetLookupResult) {
+        lock.lock()
+        let continuation = continuation
+        self.continuation = nil
+        lock.unlock()
+
+        continuation?.resume(returning: result)
     }
 }
 

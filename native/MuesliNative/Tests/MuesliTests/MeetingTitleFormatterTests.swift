@@ -122,4 +122,45 @@ struct MeetingTitleFormatterTests {
         #expect(immediateContext == expected)
         #expect(timedOutContext == .empty)
     }
+
+    @Test("meeting URL capture uses a matched target")
+    func matchingMeetingContextUsesTarget() async {
+        let expected = MeetingTitleContext(appName: "Chrome", windowTitle: "Weekly sync")
+
+        let context = await MeetingTitleContext.captureMatchingMeetingContext(
+            meetingURL: URL(string: "https://meet.google.com/abc-defg-hij")!,
+            targetProvider: { _, _ in
+                MeetingTitleContext.CaptureTarget(appName: "Chrome", processIdentifier: nil)
+            },
+            captureOperation: { _ in expected }
+        )
+
+        #expect(context == expected)
+    }
+
+    @Test("meeting URL capture omits context without a matched target")
+    func matchingMeetingContextTimesOutWithoutTarget() async {
+        let context = await MeetingTitleContext.captureMatchingMeetingContext(
+            meetingURL: URL(string: "https://meet.google.com/abc-defg-hij")!,
+            waitTimeout: 0,
+            targetProvider: { _, _ in nil }
+        )
+
+        #expect(context == .empty)
+    }
+
+    @Test("meeting URL capture bounds slow target lookups")
+    func matchingMeetingContextBoundsTargetLookup() async {
+        let context = await MeetingTitleContext.captureMatchingMeetingContext(
+            meetingURL: URL(string: "https://meet.google.com/abc-defg-hij")!,
+            waitTimeout: 0.01,
+            targetProvider: { _, _ in
+                Thread.sleep(forTimeInterval: 0.05)
+                return MeetingTitleContext.CaptureTarget(appName: "Chrome", processIdentifier: nil)
+            }
+        )
+
+        #expect(context == .empty)
+        try? await Task.sleep(for: .milliseconds(60))
+    }
 }
