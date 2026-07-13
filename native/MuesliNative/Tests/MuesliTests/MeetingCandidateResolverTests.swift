@@ -1022,4 +1022,13 @@ struct MeetingCandidateResolverTests {
         #expect(MeetingURLNormalizer.normalize("https://meet.google.com/landing") == nil)
         #expect(MeetingURLNormalizer.normalize("https://meet.google.com/") == nil)
     }
+
+    @Test("URL normalizer extracts stable Chime identity")
+    func chimeURLNormalization() {
+        let normalized = MeetingURLNormalizer.normalize("https://meetings.chime.aws/1234567890?token=secret")
+
+        #expect(normalized?.id == "chime:meetings.chime.aws/1234567890")
+        #expect(normalized?.url == "meetings.chime.aws/1234567890")
+        #expect(normalized?.platform == .unknown)
+    }
 }

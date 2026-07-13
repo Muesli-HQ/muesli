@@ -123,12 +123,12 @@ struct MeetingTitleFormatterTests {
         #expect(timedOutContext == .empty)
     }
 
-    @Test("meeting URL capture uses a matched target")
-    func matchingMeetingContextUsesTarget() async {
+    @Test("Chime URL capture uses a matched target")
+    func matchingChimeMeetingContextUsesTarget() async {
         let expected = MeetingTitleContext(appName: "Chrome", windowTitle: "Weekly sync")
 
         let context = await MeetingTitleContext.captureMatchingMeetingContext(
-            meetingURL: URL(string: "https://meet.google.com/abc-defg-hij")!,
+            meetingURL: URL(string: "https://meetings.chime.aws/1234567890")!,
             targetProvider: { _, _ in
                 MeetingTitleContext.CaptureTarget(appName: "Chrome", processIdentifier: nil)
             },
