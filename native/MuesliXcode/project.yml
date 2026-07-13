@@ -1,0 +1,43 @@
+name: MuesliXcode
+options:
+  bundleIdPrefix: com.muesli.spike
+  deploymentTarget:
+    macOS: "14.2"
+  createIntermediateGroups: true
+
+packages:
+  MuesliNative:
+    path: ../MuesliNative
+
+targets:
+  Muesli:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.2"
+    sources:
+      - path: ../MuesliNative/Sources/MuesliNativeAppShell
+    dependencies:
+      - package: MuesliNative
+        product: MuesliNativeAppCore
+    settings:
+      base:
+        PRODUCT_NAME: Muesli
+        PRODUCT_BUNDLE_IDENTIFIER: com.muesli.spike.xcodeintents
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSUIElement: YES
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        MARKETING_VERSION: "0.1"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.9"
+        CODE_SIGNING_ALLOWED: NO
+        ENABLE_HARDENED_RUNTIME: NO
+        MACOSX_DEPLOYMENT_TARGET: "14.2"
+        OTHER_SWIFT_FLAGS: -parse-as-library
+        # Support both the legacy SwiftPM layout and Xcode's standard
+        # Contents/Frameworks layout used by the App Intents build path.
+        LD_RUNPATH_SEARCH_PATHS: "@loader_path @executable_path/../Frameworks"
+        # Xcode's Debug-only "debug dylib" split (app code compiled into a
+        # separate Muesli.debug.dylib loaded at @rpath) speeds up Xcode's own
+        # incremental Build & Run but doesn't survive being copied out of
+        # DerivedData into a standalone bundle by build_native_app.sh.
+        ENABLE_DEBUG_DYLIB: NO

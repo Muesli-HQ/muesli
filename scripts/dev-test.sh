@@ -129,6 +129,13 @@ DEFAULT_DEV_CLOUD_SIGN_IDENTITY="Apple Development: Pranav Hari Guruvayurappan (
 RESOLVED_PROVISIONING_PROFILE="${MUESLI_PROVISIONING_PROFILE:-}"
 RESOLVED_SIGN_IDENTITY="${MUESLI_SIGN_IDENTITY:-}"
 RESOLVED_CODESIGN_TIMESTAMP="${MUESLI_CODESIGN_TIMESTAMP:-}"
+# Build the app via xcodebuild (native/MuesliXcode) by default so App Intents
+# metadata is generated and Shortcuts/Siri actions are actually discoverable
+# in dev builds. Requires xcodegen (brew install xcodegen). Set
+# MUESLI_USE_XCODE_BUILD=0 to fall back to the plain `swift build` path if
+# xcodegen/xcodebuild aren't available or something regresses.
+RESOLVED_USE_XCODE_BUILD="${MUESLI_USE_XCODE_BUILD:-1}"
+
 BUILD_ENV=(
   MUESLI_APP_NAME="$DEV_APP_NAME"
   MUESLI_BUNDLE_ID="$DEV_BUNDLE_ID"
@@ -137,6 +144,7 @@ BUILD_ENV=(
   MUESLI_SPARKLE_FEED_URL=""
   MUESLI_TELEMETRYDECK_APP_ID="$MUESLI_TELEMETRYDECK_DEV_APP_ID"
   MUESLI_TELEMETRY_CHANNEL="dev"
+  MUESLI_USE_XCODE_BUILD="$RESOLVED_USE_XCODE_BUILD"
 )
 if [[ -n "$LANE" ]]; then
   BUILD_ENV+=(MUESLI_EXECUTABLE_NAME="$DEV_APP_NAME")
