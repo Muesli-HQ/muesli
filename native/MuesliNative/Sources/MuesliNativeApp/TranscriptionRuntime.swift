@@ -232,27 +232,7 @@ actor TranscriptionCoordinator {
         activeBackend = backend.backend
 
         if includeMeetingHelpers {
-            // Meeting helpers are intentionally loaded only when the caller needs meeting behavior.
-            if vadManager == nil {
-                do {
-                    vadManager = try await VadManager()
-                    fputs("[muesli-native] Silero VAD loaded\n", stderr)
-                } catch {
-                    fputs("[muesli-native] VAD load failed (non-critical): \(error)\n", stderr)
-                }
-            }
-
-            if diarizerManager == nil {
-                do {
-                    let diarizer = DiarizerManager()
-                    let models = try await DiarizerModels.download()
-                    diarizer.initialize(models: models)
-                    diarizerManager = diarizer
-                    fputs("[muesli-native] Speaker diarization loaded\n", stderr)
-                } catch {
-                    fputs("[muesli-native] Diarization load failed (non-critical): \(error)\n", stderr)
-                }
-            }
+            await preloadMeetingHelpers()
         }
 
         switch backend.backend {
@@ -322,6 +302,29 @@ actor TranscriptionCoordinator {
         }
 
         await preloadPostProcessorIfNeeded(enabled: enablePostProcessor, transcriptionBackend: backend)
+    }
+
+    func preloadMeetingHelpers() async {
+        if vadManager == nil {
+            do {
+                vadManager = try await VadManager()
+                fputs("[muesli-native] Silero VAD loaded\n", stderr)
+            } catch {
+                fputs("[muesli-native] VAD load failed (non-critical): \(error)\n", stderr)
+            }
+        }
+
+        if diarizerManager == nil {
+            do {
+                let diarizer = DiarizerManager()
+                let models = try await DiarizerModels.download()
+                diarizer.initialize(models: models)
+                diarizerManager = diarizer
+                fputs("[muesli-native] Speaker diarization loaded\n", stderr)
+            } catch {
+                fputs("[muesli-native] Diarization load failed (non-critical): \(error)\n", stderr)
+            }
+        }
     }
 
     func preloadPostProcessorIfNeeded(

@@ -39,12 +39,12 @@ struct SpeechTranscriptionResultTests {
     }
 }
 
-@Suite("Qwen3 inference gate")
-struct Qwen3InferenceGateTests {
+@Suite("Inference serialization gate")
+struct InferenceGateTests {
 
     @Test("cancelled waiter is removed before next slot")
     func cancelledWaiterDoesNotConsumeSlot() async throws {
-        let gate = Qwen3InferenceGate()
+        let gate = InferenceGate()
         try await gate.acquire()
 
         let cancelled = Task {
@@ -217,10 +217,40 @@ struct TranscriptionEngineArtifactsFilterTests {
         #expect(TranscriptionEngineArtifactsFilter.apply("") == "")
     }
 
-    @Test("does not strip artifact when it appears mid-sentence")
-    func midSentenceNotStripped() {
+    @Test("strips artifact when it appears mid-sentence")
+    func midSentenceArtifact() {
         let text = "Hello [blank_audio] world"
-        #expect(TranscriptionEngineArtifactsFilter.apply(text) == text)
+        #expect(TranscriptionEngineArtifactsFilter.apply(text) == "Hello world")
+    }
+
+    @Test("strips decorated streaming blank-audio artifact")
+    func decoratedStreamingArtifact() {
+        #expect(TranscriptionEngineArtifactsFilter.apply(">> [BLANK_AUDIO]") == "")
+        #expect(TranscriptionEngineArtifactsFilter.apply(">> [BLANK_AUDIO] Hello") == "Hello")
+        #expect(TranscriptionEngineArtifactsFilter.apply(">> Hello") == ">> Hello")
+    }
+
+    @Test("strips model control tokens and non-speech annotations")
+    func controlTokens() {
+        #expect(
+            TranscriptionEngineArtifactsFilter.apply("<EOU> Hello <EOB> [silence]") ==
+                "Hello"
+        )
+    }
+
+    @Test("strips foreign-language placeholders without removing ordinary sentences")
+    func foreignLanguagePlaceholder() {
+        #expect(TranscriptionEngineArtifactsFilter.apply("[SPEAKING IN FOREIGN LANGUAGE]") == "")
+        #expect(
+            TranscriptionEngineArtifactsFilter.apply("Speaking in a foreign language.") ==
+                "Speaking in a foreign language."
+        )
+        #expect(TranscriptionEngineArtifactsFilter.apply("Hello [speaking in foreign language] world") == "Hello world")
+        #expect(TranscriptionEngineArtifactsFilter.apply("[screaming]") == "")
+        #expect(
+            TranscriptionEngineArtifactsFilter.apply("We discussed speaking in foreign language classes.") ==
+                "We discussed speaking in foreign language classes."
+        )
     }
 
     @Test("strips leaked prompt suffix from transcript")

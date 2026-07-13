@@ -24,6 +24,7 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
     private var isLoading = false
     private var loadWaiters: [CheckedContinuation<Void, Error>] = []
     private var loadGeneration = 0
+    private let inferenceGate = InferenceGate()
 
     /// Selected language `prompt_id` fed to the encoder (101 = auto-detect).
     /// Set from app config via `setPromptId(_:)` before dictation.
@@ -167,12 +168,23 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
         guard loaded, let preprocessor, let encoder, let decoder, let joint else {
             throw TranscriberError.notLoaded
         }
-        let newTokens = try await nemotronTranscribeChunk(
-            preprocessor: preprocessor, encoder: encoder, decoder: decoder, joint: joint,
-            config: config, samples: samples, state: &state)
-        return nemotronDecodeTokens(
-            newTokens, tokenizer: tokenizer,
-            stripAngleBracketTags: config.stripAngleBracketTags, trim: false)
+        // Actor methods can re-enter while Core ML predictions await. Serialize
+        // shared-model inference while each caller retains its own stream state.
+        try await inferenceGate.acquire()
+        do {
+            try Task.checkCancellation()
+            let newTokens = try await nemotronTranscribeChunk(
+                preprocessor: preprocessor, encoder: encoder, decoder: decoder, joint: joint,
+                config: config, samples: samples, state: &state)
+            let text = nemotronDecodeTokens(
+                newTokens, tokenizer: tokenizer,
+                stripAngleBracketTags: config.stripAngleBracketTags, trim: false)
+            await inferenceGate.release()
+            return text
+        } catch {
+            await inferenceGate.release()
+            throw error
+        }
     }
 
     // MARK: - Convenience (full-file transcription)

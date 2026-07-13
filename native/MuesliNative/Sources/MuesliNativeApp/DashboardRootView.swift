@@ -92,6 +92,12 @@ struct DashboardRootView: View {
             switch appState.selectedTab {
             case .dictations:
                 DictationsView(appState: appState, controller: controller)
+            case .insights:
+                InsightsView(
+                    initialSection: appState.insightsInitialSection,
+                    loadSnapshot: { range in try await controller.insightsSnapshot(range: range) },
+                    onBack: { controller.closeInsights() }
+                )
             case .meetings:
                 MeetingsView(appState: appState, controller: controller)
             case .dictionary:

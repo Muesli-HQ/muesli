@@ -3,11 +3,36 @@ import QuartzCore
 import Foundation
 import MuesliCore
 
+enum FloatingIndicatorPointerIntent {
+    static let dragThreshold: CGFloat = 4
+
+    static func isDrag(from start: NSPoint, to current: NSPoint) -> Bool {
+        hypot(current.x - start.x, current.y - start.y) >= dragThreshold
+    }
+}
+
+final class InteractiveFloatingPanel: NSPanel {
+    var leftMouseDownHandler: ((NSPoint) -> Bool)?
+
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown {
+            if leftMouseDownHandler?(event.locationInWindow) == true {
+                return
+            }
+        }
+        super.sendEvent(event)
+    }
+}
+
 @MainActor
 private final class HoverIndicatorView: NSView {
     weak var owner: FloatingIndicatorController?
     private var trackingAreaRef: NSTrackingArea?
-    private var dragOrigin: NSPoint?
+    private var mouseDownScreenLocation: NSPoint?
+    private var windowOriginAtMouseDown: NSPoint?
     private var didDrag = false
 
     override func updateTrackingAreas() {
@@ -35,26 +60,36 @@ private final class HoverIndicatorView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         didDrag = false
+        mouseDownScreenLocation = NSEvent.mouseLocation
         owner?.collapseForDrag()
-        // Recalculate drag origin after collapse (frame changed)
-        dragOrigin = NSPoint(x: (window?.frame.width ?? 0) / 2, y: (window?.frame.height ?? 0) / 2)
+        windowOriginAtMouseDown = window?.frame.origin
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard let window else { return }
+        guard let window,
+              let mouseDownScreenLocation,
+              let windowOriginAtMouseDown else { return }
+        let currentScreenLocation = NSEvent.mouseLocation
+        let deltaX = currentScreenLocation.x - mouseDownScreenLocation.x
+        let deltaY = currentScreenLocation.y - mouseDownScreenLocation.y
+        guard didDrag || FloatingIndicatorPointerIntent.isDrag(
+            from: mouseDownScreenLocation,
+            to: currentScreenLocation
+        ) else { return }
+        if !didDrag {
+            owner?.pointerDragBegan()
+        }
         didDrag = true
-        let current = event.locationInWindow
-        let frame = window.frame
-        let newOrigin = NSPoint(
-            x: frame.origin.x + (current.x - (dragOrigin?.x ?? current.x)),
-            y: frame.origin.y + (current.y - (dragOrigin?.y ?? current.y))
+        window.setFrameOrigin(
+            NSPoint(
+                x: windowOriginAtMouseDown.x + deltaX,
+                y: windowOriginAtMouseDown.y + deltaY
+            )
         )
-        window.setFrameOrigin(newOrigin)
     }
 
     override func mouseUp(with event: NSEvent) {
         if didDrag {
-            owner?.isDragging = false
             owner?.savePosition()
         } else if event.modifierFlags.contains(.option) {
             owner?.handleOptionClick()
@@ -62,7 +97,9 @@ private final class HoverIndicatorView: NSView {
             let clickX = convert(event.locationInWindow, from: nil).x
             owner?.handleClick(atX: clickX)
         }
-        dragOrigin = nil
+        owner?.pointerInteractionEnded()
+        mouseDownScreenLocation = nil
+        windowOriginAtMouseDown = nil
         didDrag = false
     }
 
@@ -74,6 +111,7 @@ private final class HoverIndicatorView: NSView {
 @MainActor
 final class FloatingIndicatorController: NSObject {
     private var panel: NSPanel?
+    private var containerView: NSView?
     private var contentView: HoverIndicatorView?
     private var iconLabel: NSTextField?
     private var textLabel: NSTextField?
@@ -83,6 +121,18 @@ final class FloatingIndicatorController: NSObject {
     private let configStore: ConfigStore
     private var isMeetingRecording = false
     private var isMeetingRecordingPaused = false
+    private var isMeetingTranscriptManuallyDismissed = false
+    private lazy var meetingTranscriptPanel = FloatingMeetingTranscriptPanelController(
+        onHoverChanged: { [weak self] hovered in
+            self?.setMeetingTranscriptPanelHovered(hovered)
+        },
+        onOpenNotes: { [weak self] in
+            self?.openMeetingNotesFromTranscript()
+        },
+        onDismiss: { [weak self] in
+            self?.dismissMeetingTranscript()
+        }
+    )
     private var glassView: NSVisualEffectView?
     private var tintLayer: CALayer?
     private var micIconView: NSImageView?
@@ -98,6 +148,7 @@ final class FloatingIndicatorController: NSObject {
     var onStopMeeting: (() -> Void)?
     var onDiscardMeeting: (() -> Void)?
     var onToggleMeetingPause: (() -> Void)?
+    var onOpenMeetingNotes: (() -> Void)?
     var onCancelToggleDictation: (() -> Void)?
     var onPositionSaved: ((CGPoint) -> Void)?
     var isToggleDictation = false
@@ -122,7 +173,15 @@ final class FloatingIndicatorController: NSObject {
     var onStopToggleDictation: (() -> Void)?
 
     var currentFrame: NSRect? {
-        panel?.frame
+        indicatorScreenFrame
+    }
+
+    func pointerDragBegan() {
+        hideMeetingTranscript()
+    }
+
+    func pointerInteractionEnded() {
+        isDragging = false
     }
 
     func handleClick(atX x: CGFloat? = nil) {
@@ -160,6 +219,7 @@ final class FloatingIndicatorController: NSObject {
     func collapseForDrag() {
         isDragging = true
         hoverExitWorkItem?.cancel()
+        hideMeetingTranscript()
         guard state == .idle,
               !isShowingLoading,
               let panel,
@@ -190,7 +250,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func savePosition() {
-        guard let frame = panel?.frame else { return }
+        guard let frame = indicatorScreenFrame else { return }
         let center = CGPoint(x: frame.midX, y: frame.midY)
         onPositionSaved?(center)
     }
@@ -210,6 +270,7 @@ final class FloatingIndicatorController: NSObject {
         recordingWaveformMode = .level
         if !recording {
             isMeetingRecordingPaused = false
+            hideMeetingTranscript(reset: true)
         }
         if recording {
             setState(.recording, config: config)
@@ -241,16 +302,101 @@ final class FloatingIndicatorController: NSObject {
             setState(.preparing, config: config)
             return
         }
-        if let panel {
-            ensureWaveformAnimation(in: panel.frame.size, mode: .waiting)
+        if let contentView {
+            ensureWaveformAnimation(in: contentView.frame.size, mode: .waiting)
         }
     }
 
     func setMeetingRecordingPaused(_ paused: Bool, config: AppConfig) {
         guard isMeetingRecordingPaused != paused else { return }
         isMeetingRecordingPaused = paused
+        meetingTranscriptPanel.setPaused(paused)
+        hideMeetingTranscript()
         guard isMeetingRecording, state == .recording else { return }
         setState(.recording, config: config)
+    }
+
+    func updateMeetingTranscript(
+        transcript: String,
+        partialYou: String,
+        partialOthers: String
+    ) {
+        meetingTranscriptPanel.update(
+            transcript: transcript,
+            partialYou: partialYou,
+            partialOthers: partialOthers
+        )
+    }
+
+    func refreshMeetingTranscriptPreference(config: AppConfig) {
+        guard config.showMeetingTranscriptOnIndicatorHover else {
+            hideMeetingTranscript()
+            return
+        }
+        if isMeetingRecording,
+           state == .recording,
+           pointerIsInsidePanel(),
+           panel != nil {
+            showMeetingTranscript()
+        }
+    }
+
+    private var indicatorScreenFrame: NSRect? {
+        guard let panel, let contentView else { return nil }
+        return panel.convertToScreen(contentView.frame)
+    }
+
+    private func showMeetingTranscript() {
+        guard let panel,
+              let containerView,
+              let contentView,
+              let indicatorFrame = indicatorScreenFrame else { return }
+        panel.ignoresMouseEvents = false
+        let screen = NSScreen.screens.first(where: { $0.frame.intersects(indicatorFrame) }) ?? NSScreen.main
+        guard let visibleFrame = screen?.visibleFrame else { return }
+        let transcriptFrame = FloatingMeetingTranscriptPlacement.frame(
+            beside: indicatorFrame,
+            visibleFrame: visibleFrame
+        )
+        let expandedFrame = indicatorFrame.union(transcriptFrame)
+        panel.setFrame(expandedFrame, display: true)
+        containerView.frame = NSRect(origin: .zero, size: expandedFrame.size)
+        contentView.frame = localFrame(indicatorFrame, in: expandedFrame)
+        meetingTranscriptPanel.show(
+            in: containerView,
+            frame: localFrame(transcriptFrame, in: expandedFrame)
+        )
+    }
+
+    private func hideMeetingTranscript(reset: Bool = false) {
+        guard meetingTranscriptPanel.isVisible else {
+            if reset { meetingTranscriptPanel.reset() }
+            return
+        }
+        guard let panel,
+              let containerView,
+              let contentView,
+              let indicatorFrame = indicatorScreenFrame else {
+            if reset { meetingTranscriptPanel.reset() } else { meetingTranscriptPanel.hide() }
+            return
+        }
+        if reset {
+            meetingTranscriptPanel.reset()
+        } else {
+            meetingTranscriptPanel.hide()
+        }
+        panel.setFrame(indicatorFrame, display: true)
+        containerView.frame = NSRect(origin: .zero, size: indicatorFrame.size)
+        contentView.frame = NSRect(origin: .zero, size: indicatorFrame.size)
+    }
+
+    private func localFrame(_ screenFrame: NSRect, in windowFrame: NSRect) -> NSRect {
+        NSRect(
+            x: screenFrame.minX - windowFrame.minX,
+            y: screenFrame.minY - windowFrame.minY,
+            width: screenFrame.width,
+            height: screenFrame.height
+        )
     }
 
     func setTranscribingTitle(_ title: String, config: AppConfig) {
@@ -671,6 +817,19 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func setHovered(_ hovered: Bool) {
+        if state == .recording, isMeetingRecording, !isShowingLoading, !isDragging {
+            guard hovered else {
+                isMeetingTranscriptManuallyDismissed = false
+                hideMeetingTranscript()
+                return
+            }
+            guard !isMeetingTranscriptManuallyDismissed else { return }
+            let config = configStore.load()
+            guard config.showMeetingTranscriptOnIndicatorHover, panel != nil else { return }
+            hoverExitWorkItem?.cancel()
+            showMeetingTranscript()
+            return
+        }
         guard state == .idle, !isShowingLoading, !isDragging, isHovered != hovered else { return }
         hoverExitWorkItem?.cancel()
         isHovered = hovered
@@ -679,6 +838,10 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func scheduleHoverExit() {
+        if state == .recording, isMeetingRecording, meetingTranscriptPanel.isVisible {
+            scheduleMeetingTranscriptHoverExit()
+            return
+        }
         guard state == .idle, !isShowingLoading, isHovered else { return }
         hoverExitWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
@@ -700,6 +863,7 @@ final class FloatingIndicatorController: NSObject {
         hoverExitWorkItem = nil
         panel?.close()
         panel = nil
+        containerView = nil
         contentView = nil
         iconLabel = nil
         textLabel = nil
@@ -707,6 +871,42 @@ final class FloatingIndicatorController: NSObject {
         tintLayer = nil
         micIconView = nil
         wandIconView = nil
+        meetingTranscriptPanel.close()
+    }
+
+    private func setMeetingTranscriptPanelHovered(_ hovered: Bool) {
+        if hovered {
+            hoverExitWorkItem?.cancel()
+        } else {
+            scheduleMeetingTranscriptHoverExit()
+        }
+    }
+
+    private func dismissMeetingTranscript() {
+        isMeetingTranscriptManuallyDismissed = true
+        hoverExitWorkItem?.cancel()
+        hideMeetingTranscript()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            guard let self, !self.pointerIsInsidePanel() else { return }
+            self.isMeetingTranscriptManuallyDismissed = false
+        }
+    }
+
+    private func openMeetingNotesFromTranscript() {
+        hideMeetingTranscript()
+        onOpenMeetingNotes?()
+    }
+
+    private func scheduleMeetingTranscriptHoverExit() {
+        hoverExitWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard !self.pointerIsInsidePanel(),
+                  !self.meetingTranscriptPanel.containsMouseLocation() else { return }
+            self.hideMeetingTranscript()
+        }
+        hoverExitWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: workItem)
     }
 
     // MARK: - Stop Layer (toggle dictation)
@@ -1026,7 +1226,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     private func createPanel(config: AppConfig) {
-        let panel = NSPanel(
+        let panel = InteractiveFloatingPanel(
             contentRect: frameForState(.idle, config: config),
             styleMask: .borderless,
             backing: .buffered,
@@ -1039,9 +1239,16 @@ final class FloatingIndicatorController: NSObject {
         panel.hidesOnDeactivate = false
         panel.ignoresMouseEvents = false
         panel.isMovableByWindowBackground = false
+        panel.becomesKeyOnlyIfNeeded = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.leftMouseDownHandler = { [weak self] windowPoint in
+            self?.meetingTranscriptPanel.handleClick(atWindowPoint: windowPoint) ?? false
+        }
 
-        let contentView = HoverIndicatorView(frame: NSRect(origin: .zero, size: panel.frame.size))
+        let containerView = NSView(frame: NSRect(origin: .zero, size: panel.frame.size))
+        containerView.wantsLayer = true
+
+        let contentView = HoverIndicatorView(frame: containerView.bounds)
         contentView.owner = self
         contentView.wantsLayer = true
         contentView.layer?.cornerRadius = panel.frame.height / 2
@@ -1058,9 +1265,11 @@ final class FloatingIndicatorController: NSObject {
         Self.configureTextLabel(textLabel, forTranscript: false)
         contentView.addSubview(textLabel)
 
-        panel.contentView = contentView
+        containerView.addSubview(contentView)
+        panel.contentView = containerView
 
         self.panel = panel
+        self.containerView = containerView
         self.contentView = contentView
         self.iconLabel = iconLabel
         self.textLabel = textLabel
@@ -1269,7 +1478,7 @@ final class FloatingIndicatorController: NSObject {
         // changing the setting snaps immediately to the chosen anchor.
         let center: CGPoint
         if config.indicatorAnchor == .custom,
-           let currentFrame = panel?.frame,
+           let currentFrame = indicatorScreenFrame,
            currentFrame.width > 0 {
             center = CGPoint(x: currentFrame.midX, y: currentFrame.midY)
         } else {
@@ -1463,8 +1672,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     private func pointerIsInsidePanel() -> Bool {
-        guard let panel else { return false }
-        return panel.frame.contains(NSEvent.mouseLocation)
+        indicatorScreenFrame?.contains(NSEvent.mouseLocation) == true
     }
 }
 

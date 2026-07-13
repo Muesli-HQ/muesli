@@ -65,6 +65,28 @@ struct MeetingsNavigationTests {
         #expect(appState.selectedMeeting == nil)
     }
 
+    @Test("each dashboard statistic opens insights with its originating section")
+    func dashboardStatisticsOpenInsights() {
+        let controller = makeController()
+
+        for section in InsightsSection.allCases {
+            controller.openInsights(section: section)
+            #expect(controller.appState.selectedTab == .insights)
+            #expect(controller.appState.insightsInitialSection == section)
+        }
+    }
+
+    @Test("closing insights returns to dictations")
+    func closingInsightsReturnsToDictations() {
+        let controller = makeController()
+        controller.openInsights(section: .meetings)
+
+        controller.closeInsights()
+
+        #expect(controller.appState.selectedTab == .dictations)
+        #expect(controller.appState.insightsInitialSection == .meetings)
+    }
+
     @Test("discard confirmation maps checkbox selections to meeting discard resolutions")
     func discardConfirmationResolutionMapping() {
         #expect(

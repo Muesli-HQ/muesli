@@ -76,7 +76,8 @@ struct DictationsView: View {
         VStack(spacing: 0) {
             StatsHeaderView(
                 dictationStats: appState.dictationStats,
-                meetingStats: appState.meetingStats
+                meetingStats: appState.meetingStats,
+                onSelect: { controller.openInsights(section: $0) }
             )
 
             if appState.config.showIOSCompanionPrompt {

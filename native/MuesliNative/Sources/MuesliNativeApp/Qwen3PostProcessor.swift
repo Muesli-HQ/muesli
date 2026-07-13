@@ -204,7 +204,7 @@ enum Qwen3PostProcessorConfig {
     }
 }
 
-actor Qwen3InferenceGate {
+actor InferenceGate {
     private struct Waiter {
         let id: UUID
         let continuation: CheckedContinuation<Bool, Never>
@@ -255,7 +255,7 @@ private actor Qwen3PostProcessorManager {
     private let modelURL: URL
     private let systemPrompt: String
     private var bot: LLM?
-    private let inferenceGate = Qwen3InferenceGate()
+    private let inferenceGate = InferenceGate()
 
     init(modelURL: URL, systemPrompt: String) {
         self.modelURL = modelURL

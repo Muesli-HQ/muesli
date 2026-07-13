@@ -86,6 +86,7 @@ struct SettingsView: View {
     @State private var selectedPane: SettingsPane = .general
     @State private var downloadedBackendOptions: [BackendOption] = []
     @State private var downloadedPostProcOptions: [PostProcessorOption] = []
+    @State private var downloadedMeetingLiveCaptionBackends: [MeetingLiveCaptionBackend] = []
     @State private var dictationInputDevices: [AudioInputDeviceInfo] = []
     @State private var permissionPollTimer: Timer?
     @State private var isCleanupPromptManagerPresented = false
@@ -127,6 +128,33 @@ struct SettingsView: View {
 
     private var meetingBackendOptions: [BackendOption] {
         downloadedBackendOptions.filter(\.supportsMeetingTranscription)
+    }
+
+    private var selectedMeetingLiveCaptionLabel: String {
+        let selected = appState.config.resolvedMeetingLiveCaptionBackend
+        guard appState.config.enableLiveStreamingPartials,
+              downloadedMeetingLiveCaptionBackends.contains(selected) else {
+            return "Off"
+        }
+        return selected.settingsLabel
+    }
+
+    private var usesUnifiedMeetingTranscript: Bool {
+        appState.config.enableLiveStreamingPartials
+            && appState.config.resolvedMeetingLiveCaptionBackend == .nemotron35
+            && downloadedMeetingLiveCaptionBackends.contains(.nemotron35)
+    }
+
+    private var meetingLiveTranscriptDescription: String {
+        let selected = appState.config.resolvedMeetingLiveCaptionBackend
+        guard appState.config.enableLiveStreamingPartials,
+              downloadedMeetingLiveCaptionBackends.contains(selected) else {
+            return "Live captions are off. Select a streaming model to preview speech as it is spoken."
+        }
+        if usesUnifiedMeetingTranscript {
+            return "Nemotron transcribes continuously and becomes the final raw transcript."
+        }
+        return "Parakeet provides a low-latency preview; the final model transcribes separately."
     }
 
     private var selectedMeetingBackendLabel: String {
@@ -173,6 +201,10 @@ struct SettingsView: View {
 
     private var selectedIndicASRLanguage: IndicASRLanguage {
         appState.config.resolvedIndicASRLanguage
+    }
+
+    private var selectedNemotron35Language: Nemotron35Language {
+        appState.config.resolvedNemotron35Language
     }
 
     private var dictationMicrophoneOptions: [DictationMicrophoneOption] {
@@ -290,6 +322,7 @@ struct SettingsView: View {
         controller.refreshMeetingTranscriptionSelectionForAvailability()
         downloadedBackendOptions = BackendOption.downloaded
         downloadedPostProcOptions = PostProcessorOption.downloaded
+        downloadedMeetingLiveCaptionBackends = MeetingLiveCaptionBackend.allCases.filter(\.isDownloaded)
     }
 
     private func refreshDictationInputDevices() {
@@ -630,8 +663,51 @@ struct SettingsView: View {
 
     private var meetingTranscriptionSettingsSection: some View {
         settingsSection("Transcription") {
-            settingsRow("Meeting model", controlWidth: meetingControlWidth) {
-                if meetingBackendOptions.isEmpty {
+            settingsRow("Live transcript on waveform hover") {
+                settingsSwitch(isOn: appState.config.showMeetingTranscriptOnIndicatorHover) { newValue in
+                    controller.updateConfig { $0.showMeetingTranscriptOnIndicatorHover = newValue }
+                }
+            }
+            settingsDescription("Show recent live captions beside the floating meeting waveform.")
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow(
+                "Live transcript",
+                description: meetingLiveTranscriptDescription,
+                controlWidth: meetingControlWidth
+            ) {
+                if !downloadedMeetingLiveCaptionBackends.isEmpty {
+                    settingsMenu(
+                        selection: selectedMeetingLiveCaptionLabel,
+                        options: downloadedMeetingLiveCaptionBackends.map(\.settingsLabel) + ["Off"]
+                    ) { label in
+                        guard label != "Off" else {
+                            controller.updateConfig { $0.enableLiveStreamingPartials = false }
+                            return
+                        }
+                        guard let backend = downloadedMeetingLiveCaptionBackends.first(where: { $0.settingsLabel == label }) else {
+                            return
+                        }
+                        controller.updateConfig {
+                            $0.meetingLiveCaptionBackend = backend.rawValue
+                            $0.enableLiveStreamingPartials = true
+                        }
+                    }
+                } else {
+                    Text("Download from Models")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: meetingControlWidth, alignment: .trailing)
+                }
+            }
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("Final transcript", controlWidth: meetingControlWidth) {
+                if usesUnifiedMeetingTranscript {
+                    Text("\(MeetingLiveCaptionBackend.nemotron35.label) (same model)")
+                        .font(MuesliTheme.body())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                        .frame(width: meetingControlWidth, alignment: .trailing)
+                } else if meetingBackendOptions.isEmpty {
                     Text("No downloaded models")
                         .font(MuesliTheme.body())
                         .foregroundStyle(MuesliTheme.textTertiary)
@@ -647,13 +723,17 @@ struct SettingsView: View {
                     }
                 }
             }
-            if appState.selectedMeetingTranscriptionBackend.backend == BackendOption.cohereTranscribe.backend {
+            if usesUnifiedMeetingTranscript {
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Language", controlWidth: meetingControlWidth) {
+                    nemotron35LanguageMenu
+                }
+            } else if appState.selectedMeetingTranscriptionBackend.backend == BackendOption.cohereTranscribe.backend {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Cohere language", controlWidth: meetingControlWidth) {
                     cohereLanguageMenu
                 }
-            }
-            if appState.selectedMeetingTranscriptionBackend.backend == BackendOption.indicASR.backend {
+            } else if appState.selectedMeetingTranscriptionBackend.backend == BackendOption.indicASR.backend {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Indic language", controlWidth: meetingControlWidth) {
                     indicLanguageMenu
@@ -726,6 +806,16 @@ struct SettingsView: View {
         ) { label in
             guard let language = CohereTranscribeLanguage.allCases.first(where: { $0.label == label }) else { return }
             controller.selectCohereLanguage(language)
+        }
+    }
+
+    private var nemotron35LanguageMenu: some View {
+        settingsMenu(
+            selection: selectedNemotron35Language.label,
+            options: Nemotron35Language.allCases.map(\.label)
+        ) { label in
+            guard let language = Nemotron35Language.allCases.first(where: { $0.label == label }) else { return }
+            Task { await controller.setNemotron35Language(language) }
         }
     }
 

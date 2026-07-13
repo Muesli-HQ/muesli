@@ -69,7 +69,7 @@ struct BackendOption: Equatable {
         model: "FluidInference/Nemotron-3.5-ASR-Streaming-Multilingual-0.6b-CoreML",
         label: "Nemotron 3.5 Multilingual",
         sizeLabel: "~665 MB",
-        description: "NVIDIA Nemotron 3.5 streaming RNNT via FluidInference. Multilingual incl. Hindi, Chinese, Japanese + 100+ locales (auto-detect). Native punctuation. Hold-to-talk or double-tap handsfree (live text). Append-only — no corrections.",
+        description: "NVIDIA Nemotron 3.5 streaming RNNT via FluidInference. Multilingual incl. Hindi, Chinese, Japanese + 100+ locales (auto-detect). Native punctuation. Hold-to-talk or double-tap handsfree (live text). For meetings, one continuous transcript is used live and as the final raw transcript. Append-only with no corrections.",
         recommended: false
     )
 
@@ -133,8 +133,15 @@ struct BackendOption: Equatable {
         .senseVoiceSmall, .qwen3Asr, .indicASR, .gemma4E2BLiteRT,
     ]
 
+    /// Native streaming backends used by low-latency product surfaces.
+    /// Meeting-only helpers such as Parakeet Realtime EOU are managed by their
+    /// dedicated model store and displayed alongside these options in Models.
+    static let streaming: [BackendOption] = [
+        .nemotron35Multilingual,
+    ]
+
     /// Models available for download and use.
-    static let all: [BackendOption] = parakeetFamily + whisperFamily + [.cohereTranscribe, .nemotron35Multilingual] + experimental
+    static let all: [BackendOption] = parakeetFamily + whisperFamily + [.cohereTranscribe] + streaming + experimental
 
     /// Curated first-run choices shown in onboarding's "Other models" section.
     /// This is a deliberate hand-picked list, not a derived rule. Experimental models
@@ -159,7 +166,7 @@ struct BackendOption: Equatable {
     }
 
     var isStreamingDictationBackend: Bool {
-        backend == "nemotron35"
+        Self.streaming.contains(self)
     }
 
     var supportsMeetingTranscription: Bool {
@@ -288,6 +295,43 @@ enum Nemotron35Language: String, CaseIterable, Codable, Sendable {
 
     static func resolvedCode(_ rawValue: String?) -> String {
         resolved(rawValue).rawValue
+    }
+}
+
+enum MeetingLiveCaptionBackend: String, CaseIterable, Codable, Sendable {
+    case parakeetRealtimeEOU = "parakeet_realtime_eou"
+    case nemotron35 = "nemotron35"
+
+    static let defaultBackend: Self = .parakeetRealtimeEOU
+
+    var label: String {
+        switch self {
+        case .parakeetRealtimeEOU: return MeetingLiveCaptionModelStore.label
+        case .nemotron35: return BackendOption.nemotron35Multilingual.label
+        }
+    }
+
+    var settingsLabel: String {
+        switch self {
+        case .parakeetRealtimeEOU: return "\(label) (live preview only)"
+        case .nemotron35: return "\(label) (live + final)"
+        }
+    }
+
+    var isDownloaded: Bool {
+        switch self {
+        case .parakeetRealtimeEOU: return MeetingLiveCaptionModelStore.isDownloaded()
+        case .nemotron35:
+            guard #available(macOS 15, *) else { return false }
+            return BackendOption.nemotron35Multilingual.isDownloaded
+        }
+    }
+
+    static func resolved(_ rawValue: String?) -> Self {
+        guard let rawValue, let backend = Self(rawValue: rawValue) else {
+            return defaultBackend
+        }
+        return backend
     }
 }
 
@@ -1042,6 +1086,12 @@ struct AppConfig: Codable {
     var enableScreenContext: Bool = false
     var enableDictationOCRContext: Bool = false
     var useCoreAudioTap: Bool = true
+    /// Enables the explicitly selected live meeting transcription mode.
+    var enableLiveStreamingPartials: Bool = false
+    var meetingLiveCaptionBackend: String = MeetingLiveCaptionBackend.defaultBackend.rawValue
+    /// Reveals a compact live transcript beside the meeting waveform while the
+    /// pointer is over either floating surface.
+    var showMeetingTranscriptOnIndicatorHover: Bool = true
     var meetingHookEnabled: Bool = false
     var meetingHookPath: String = ""
     var meetingHookTimeoutSeconds: Int = 30
@@ -1153,6 +1203,9 @@ struct AppConfig: Codable {
         case enableScreenContext = "enable_screen_context"
         case enableDictationOCRContext = "enable_dictation_ocr_context"
         case useCoreAudioTap = "use_core_audio_tap"
+        case enableLiveStreamingPartials = "enable_live_streaming_partials"
+        case meetingLiveCaptionBackend = "meeting_live_caption_backend"
+        case showMeetingTranscriptOnIndicatorHover = "show_meeting_transcript_on_indicator_hover"
         case meetingHookEnabled = "meeting_hook_enabled"
         case meetingHookPath = "meeting_hook_path"
         case meetingHookTimeoutSeconds = "meeting_hook_timeout_seconds"
@@ -1324,6 +1377,11 @@ struct AppConfig: Codable {
         enableScreenContext = (try? c.decode(Bool.self, forKey: .enableScreenContext)) ?? defaults.enableScreenContext
         enableDictationOCRContext = (try? c.decode(Bool.self, forKey: .enableDictationOCRContext)) ?? defaults.enableDictationOCRContext
         useCoreAudioTap = (try? c.decode(Bool.self, forKey: .useCoreAudioTap)) ?? defaults.useCoreAudioTap
+        enableLiveStreamingPartials = (try? c.decode(Bool.self, forKey: .enableLiveStreamingPartials)) ?? defaults.enableLiveStreamingPartials
+        meetingLiveCaptionBackend = MeetingLiveCaptionBackend
+            .resolved(try? c.decode(String.self, forKey: .meetingLiveCaptionBackend))
+            .rawValue
+        showMeetingTranscriptOnIndicatorHover = (try? c.decode(Bool.self, forKey: .showMeetingTranscriptOnIndicatorHover)) ?? defaults.showMeetingTranscriptOnIndicatorHover
         meetingHookEnabled = (try? c.decode(Bool.self, forKey: .meetingHookEnabled)) ?? defaults.meetingHookEnabled
         meetingHookPath = (try? c.decode(String.self, forKey: .meetingHookPath)) ?? defaults.meetingHookPath
         meetingHookTimeoutSeconds = (try? c.decode(Int.self, forKey: .meetingHookTimeoutSeconds)) ?? defaults.meetingHookTimeoutSeconds
@@ -1351,6 +1409,10 @@ struct AppConfig: Codable {
 
     var resolvedNemotron35Language: Nemotron35Language {
         Nemotron35Language.resolved(nemotron35Language)
+    }
+
+    var resolvedMeetingLiveCaptionBackend: MeetingLiveCaptionBackend {
+        MeetingLiveCaptionBackend.resolved(meetingLiveCaptionBackend)
     }
 
     var resolvedOnboardingUseCase: OnboardingUseCase {

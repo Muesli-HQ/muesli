@@ -1,7 +1,35 @@
+import AppKit
 import Testing
 import Foundation
 import MuesliCore
 @testable import MuesliNativeApp
+
+@Suite("Dictation backend readiness")
+struct DictationBackendReadinessTests {
+    @Test("preparing backend blocks dictation with existing warmup copy")
+    func preparingBlocksDictation() {
+        let readiness = DictationBackendReadiness.preparing
+
+        #expect(!readiness.allowsDictation)
+        #expect(readiness.blockingMessage(backendLabel: "Parakeet v3") == "Warming up Parakeet v3...")
+    }
+
+    @Test("ready backend allows dictation")
+    func readyAllowsDictation() {
+        let readiness = DictationBackendReadiness.ready
+
+        #expect(readiness.allowsDictation)
+        #expect(readiness.blockingMessage(backendLabel: "Parakeet v3") == nil)
+    }
+
+    @Test("failed backend remains blocked with actionable status")
+    func failedBlocksDictation() {
+        let readiness = DictationBackendReadiness.failed
+
+        #expect(!readiness.allowsDictation)
+        #expect(readiness.blockingMessage(backendLabel: "Parakeet v3") == "Parakeet v3 unavailable")
+    }
+}
 
 // MARK: - ChatGPT File-based Token Storage
 
@@ -50,6 +78,25 @@ struct FloatingIndicatorVisibilityTests {
         let json = #"{"show_floating_indicator": false}"#
         let config = try JSONDecoder().decode(AppConfig.self, from: json.data(using: .utf8)!)
         #expect(config.showFloatingIndicator == false)
+    }
+
+    @Test("meeting transcript hover defaults on and persists")
+    func meetingTranscriptHoverRoundTrip() throws {
+        var config = AppConfig()
+        #expect(config.showMeetingTranscriptOnIndicatorHover)
+        config.showMeetingTranscriptOnIndicatorHover = false
+
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+
+        #expect(!decoded.showMeetingTranscriptOnIndicatorHover)
+    }
+
+    @Test("meeting transcript hover decodes from snake_case JSON")
+    func meetingTranscriptHoverSnakeCaseDecode() throws {
+        let json = #"{"show_meeting_transcript_on_indicator_hover": false}"#
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+        #expect(!config.showMeetingTranscriptOnIndicatorHover)
     }
 
     @Test("post processor defaults to disabled")
@@ -190,6 +237,205 @@ struct IndicatorFrameSizeTests {
         #expect(short.height >= 44)
         #expect(long.width <= 372)
         #expect(long.height > short.height)
+    }
+}
+
+@Suite("Floating meeting transcript")
+struct FloatingMeetingTranscriptTests {
+    @Test("overlay routes header controls and leaves transcript body to SwiftUI")
+    func overlayClickRouting() {
+        let frame = NSRect(x: 100, y: 100, width: 360, height: 320)
+
+        #expect(FloatingMeetingTranscriptInteraction.action(
+            at: NSPoint(x: 390, y: 400), in: frame
+        ) == .dismiss)
+        #expect(FloatingMeetingTranscriptInteraction.action(
+            at: NSPoint(x: 430, y: 400), in: frame
+        ) == .copy)
+        #expect(FloatingMeetingTranscriptInteraction.action(
+            at: NSPoint(x: 250, y: 250), in: frame
+        ) == nil)
+        #expect(FloatingMeetingTranscriptInteraction.action(
+            at: NSPoint(x: 90, y: 250), in: frame
+        ) == nil)
+    }
+
+    @Test("floating panel can receive controls without becoming the main window")
+    @MainActor
+    func floatingPanelIsInteractive() {
+        let panel = InteractiveFloatingPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 320),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        var receivedMouseDown: NSPoint?
+        panel.leftMouseDownHandler = { point in
+            receivedMouseDown = point
+            return true
+        }
+        let event = NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: NSPoint(x: 20, y: 20),
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: panel.windowNumber,
+            context: nil,
+            eventNumber: 1,
+            clickCount: 1,
+            pressure: 1
+        )
+        if let event {
+            panel.sendEvent(event)
+        }
+
+        #expect(panel.canBecomeKey)
+        #expect(!panel.canBecomeMain)
+        #expect(!panel.becomesKeyOnlyIfNeeded)
+        #expect(!panel.styleMask.contains(.nonactivatingPanel))
+        #expect(receivedMouseDown == NSPoint(x: 20, y: 20))
+    }
+
+    @Test("shown overlay retains its hosting view and routes dismissal")
+    @MainActor
+    func shownOverlayRoutesDismissal() {
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 320),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        let container = NSView(frame: panel.contentView?.bounds ?? .zero)
+        panel.contentView = container
+        var dismissCount = 0
+        let controller = FloatingMeetingTranscriptPanelController(
+            onHoverChanged: { _ in },
+            onOpenNotes: {},
+            onDismiss: { dismissCount += 1 }
+        )
+
+        controller.show(in: container, frame: container.bounds)
+
+        #expect(controller.isVisible)
+        #expect(!controller.handleClick(atWindowPoint: NSPoint(x: 180, y: 160)))
+        #expect(controller.handleClick(atWindowPoint: NSPoint(x: 290, y: 300)))
+        #expect(dismissCount == 1)
+    }
+
+    @Test("panel prefers the open side and remains inside the screen")
+    func panelPlacement() {
+        let screen = NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let trailingIndicator = NSRect(x: 1350, y: 440, width: 76, height: 22)
+        let leadingIndicator = NSRect(x: 14, y: 440, width: 76, height: 22)
+
+        let leftFrame = FloatingMeetingTranscriptPlacement.frame(
+            beside: trailingIndicator,
+            visibleFrame: screen
+        )
+        let rightFrame = FloatingMeetingTranscriptPlacement.frame(
+            beside: leadingIndicator,
+            visibleFrame: screen
+        )
+
+        #expect(leftFrame.maxX == trailingIndicator.minX)
+        #expect(rightFrame.minX == leadingIndicator.maxX)
+        #expect(screen.insetBy(dx: 8, dy: 8).contains(leftFrame))
+        #expect(screen.insetBy(dx: 8, dy: 8).contains(rightFrame))
+    }
+
+    @Test("panel clamps vertically on short screens")
+    func verticalPlacementClamp() {
+        let screen = NSRect(x: 100, y: 50, width: 900, height: 360)
+        let indicator = NSRect(x: 950, y: 380, width: 40, height: 22)
+
+        let frame = FloatingMeetingTranscriptPlacement.frame(
+            beside: indicator,
+            visibleFrame: screen
+        )
+
+        #expect(frame.minY >= screen.minY + 8)
+        #expect(frame.maxY == screen.maxY - 8)
+    }
+
+    @Test("copy includes committed transcript and current partials")
+    func copyTextIncludesLiveTails() {
+        let text = LiveTranscriptCopyContent.text(
+            transcript: "[10:00:00] You: committed",
+            partialYou: "speaking now",
+            partialOthers: "current reply"
+        )
+
+        #expect(text == "[10:00:00] You: committed\nOthers: current reply\nYou: speaking now")
+    }
+
+    @Test("panel retains the complete committed transcript")
+    func completeTranscriptHistory() {
+        let transcript = (0..<12)
+            .map { "[10:00:\(String(format: "%02d", $0))] You: line \($0)" }
+            .joined(separator: "\n")
+
+        let messages = TranscriptChatMessage.messages(from: transcript)
+
+        #expect(messages.count == 12)
+        #expect(messages.first?.text == "line 0")
+        #expect(messages.last?.text == "line 11")
+    }
+
+    @Test("incremental panel updates retain unique message identities")
+    @MainActor
+    func incrementalUpdatesUseUniqueIDs() {
+        let model = LiveTranscriptPresentationModel()
+
+        model.update(
+            transcript: "[10:00:00] You: first\n",
+            partialYou: "",
+            partialOthers: ""
+        )
+        model.update(
+            transcript: "[10:00:00] You: first\n[10:00:05] Others: second\n",
+            partialYou: "",
+            partialOthers: ""
+        )
+
+        #expect(model.messages.map(\.id) == [0, 1])
+        #expect(model.messages.map(\.text) == ["first", "second"])
+    }
+}
+
+@Suite("Floating indicator pointer interaction")
+struct FloatingIndicatorPointerInteractionTests {
+    @Test("small pointer movement remains a click while deliberate movement drags")
+    func dragThreshold() {
+        let start = NSPoint(x: 100, y: 100)
+        #expect(!FloatingIndicatorPointerIntent.isDrag(
+            from: start,
+            to: NSPoint(x: 102, y: 102)
+        ))
+        #expect(FloatingIndicatorPointerIntent.isDrag(
+            from: start,
+            to: NSPoint(x: 104, y: 100)
+        ))
+    }
+
+    @MainActor
+    @Test("single-click retains its existing meeting command")
+    func singleClickStillRuns() {
+        let indicator = makeIndicator()
+        var stopCount = 0
+        indicator.onStopMeeting = { stopCount += 1 }
+        indicator.setMeetingRecording(true, config: AppConfig())
+
+        indicator.handleClick(atX: 50)
+
+        #expect(stopCount == 1)
+        indicator.close()
+    }
+
+    @MainActor
+    private func makeIndicator() -> FloatingIndicatorController {
+        let supportDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        return FloatingIndicatorController(configStore: ConfigStore(supportDirectory: supportDirectory))
     }
 }
 
