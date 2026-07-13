@@ -69,9 +69,7 @@ struct MeetingTitleContext: Equatable, Sendable {
             ) {
             case .target(let target?):
                 return await captureWithTimeout(target: target, captureOperation: captureOperation)
-            case .timedOut:
-                return .empty
-            case .target(nil):
+            case .timedOut, .target(nil):
                 break
             }
             let sleepMilliseconds = min(

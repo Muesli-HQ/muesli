@@ -4,6 +4,19 @@ import Testing
 
 @Suite("Meeting title formats")
 struct MeetingTitleFormatterTests {
+    private final class LookupAttemptCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = 0
+
+        func next() -> Int {
+            lock.lock()
+            value += 1
+            let value = value
+            lock.unlock()
+            return value
+        }
+    }
+
     @Test("default format preserves the generated title")
     func defaultFormat() {
         let formatted = MeetingTitleFormatter.format(
@@ -162,5 +175,28 @@ struct MeetingTitleFormatterTests {
 
         #expect(context == .empty)
         try? await Task.sleep(for: .milliseconds(60))
+    }
+
+    @Test("meeting URL capture continues after a timed-out target lookup")
+    func matchingMeetingContextContinuesAfterLookupTimeout() async {
+        let attempts = LookupAttemptCounter()
+        let expected = MeetingTitleContext(appName: "Chrome", windowTitle: "Weekly sync")
+
+        let context = await MeetingTitleContext.captureMatchingMeetingContext(
+            meetingURL: URL(string: "https://meet.google.com/abc-defg-hij")!,
+            waitTimeout: 0.5,
+            pollInterval: 0.01,
+            targetProvider: { _, _ in
+                if attempts.next() == 1 {
+                    Thread.sleep(forTimeInterval: 0.3)
+                    return nil
+                }
+                return MeetingTitleContext.CaptureTarget(appName: "Chrome", processIdentifier: nil)
+            },
+            captureOperation: { _ in expected }
+        )
+
+        #expect(context == expected)
+        try? await Task.sleep(for: .milliseconds(310))
     }
 }
