@@ -30,6 +30,11 @@ PACKAGE_DIR="$ROOT/native/MuesliNative"
 SWIFTPM_SCRATCH_PATH=""
 SWIFT_TEST_ARGS=(--package-path "$PACKAGE_DIR")
 BUILD_ENV=()
+# Pin the compile path to plain `swift build`, overriding any
+# MUESLI_USE_XCODE_BUILD the caller's shell may have exported (e.g. for
+# local App Intents testing via dev-test.sh). Production/notarized builds
+# must never silently pick that up from the ambient environment.
+BUILD_ENV+=(MUESLI_USE_XCODE_BUILD=0)
 # The alpha channel is intentionally shared across worktrees. Do not run this
 # script concurrently from multiple worktrees unless you set an isolated
 # MUESLI_SWIFTPM_SCRATCH_PATH or MUESLI_SWIFTPM_SCRATCH_CHANNEL.
