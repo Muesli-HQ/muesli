@@ -2326,7 +2326,11 @@ final class MuesliController: NSObject {
     }
 
     func meetingTemplateSnapshot(for meeting: MeetingRecord) -> MeetingTemplateSnapshot {
-        MeetingTemplates.snapshot(for: meeting, customTemplates: config.customMeetingTemplates)
+        MeetingTemplates.snapshot(
+            for: meeting,
+            customTemplates: config.customMeetingTemplates,
+            defaultTemplateID: config.defaultMeetingTemplateID
+        )
     }
 
     func updateDefaultMeetingTemplate(id: String) {
