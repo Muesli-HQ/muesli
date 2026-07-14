@@ -103,17 +103,21 @@ struct MeetingTemplatesDefaultFallbackTests {
 
     @Test("fully stamped Auto snapshot ignores configured default")
     func fullyStampedAutoSnapshotIgnoresDefault() {
-        let auto = MeetingTemplates.auto
+        let storedName = "Stored Auto"
+        let storedPrompt = "Stored prompt"
         let snapshot = MeetingTemplates.snapshot(
             for: makeMeeting(
-                selectedTemplateID: auto.id,
-                selectedTemplateName: auto.title,
+                selectedTemplateID: MeetingTemplates.autoID,
+                selectedTemplateName: storedName,
                 selectedTemplateKind: .auto,
-                selectedTemplatePrompt: auto.promptBody
+                selectedTemplatePrompt: storedPrompt
             ),
             customTemplates: [makeCustom(id: "custom-1", name: "My Notes")],
             defaultTemplateID: "custom-1"
         )
         #expect(snapshot.id == MeetingTemplates.autoID)
+        #expect(snapshot.name == storedName)
+        #expect(snapshot.kind == .auto)
+        #expect(snapshot.prompt == storedPrompt)
     }
 }
