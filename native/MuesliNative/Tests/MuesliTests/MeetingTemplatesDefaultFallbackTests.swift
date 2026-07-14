@@ -29,6 +29,16 @@ struct MeetingTemplatesDefaultFallbackTests {
         #expect(resolved.id == "one-to-one")
     }
 
+    @Test("bare auto id defers to configured default")
+    func bareAutoIDDefersToConfiguredDefault() {
+        let resolved = MeetingTemplates.resolveDefinition(
+            id: MeetingTemplates.autoID,
+            customTemplates: [makeCustom(id: "custom-1", name: "My Notes")],
+            defaultTemplateID: "custom-1"
+        )
+        #expect(resolved.id == "custom-1")
+    }
+
     @Test("invalid default degrades to Auto")
     func invalidDefaultDegradesToAuto() {
         let resolved = MeetingTemplates.resolveDefinition(
