@@ -4,6 +4,7 @@ import MuesliCore
 struct DashboardRootView: View {
     let appState: AppState
     let controller: MuesliController
+    @State private var featureTourTargetFrames: [FeatureTourTarget: CGRect] = [:]
 
     var body: some View {
         NavigationSplitView {
@@ -17,6 +18,44 @@ struct DashboardRootView: View {
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 900, minHeight: 600)
         .preferredColorScheme(appState.config.darkMode ? .dark : .light)
+        .onPreferenceChange(FeatureTourTargetPreferenceKey.self) { frames in
+            guard FeatureTourFrameTracking.hasMeaningfulChange(
+                from: featureTourTargetFrames,
+                to: frames
+            ) else { return }
+            featureTourTargetFrames = frames
+        }
+        .overlay {
+            GeometryReader { proxy in
+                if let invitation = appState.pendingFeatureTourInvitation {
+                    FeatureTourInvitationView(
+                        tour: invitation,
+                        onAccept: { controller.acceptFeatureTourInvitation() },
+                        onSkip: { controller.skipFeatureTourInvitation() }
+                    )
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .zIndex(101)
+                } else if let tour = appState.activeFeatureTour,
+                   tour.steps.indices.contains(appState.featureTourStepIndex),
+                   let globalTargetFrame = featureTourTargetFrames[tour.steps[appState.featureTourStepIndex].target] {
+                    let globalRootFrame = proxy.frame(in: .global)
+                    let targetFrame = globalTargetFrame.offsetBy(
+                        dx: -globalRootFrame.minX,
+                        dy: -globalRootFrame.minY
+                    )
+                    FeatureTourOverlay(
+                        tour: tour,
+                        stepIndex: appState.featureTourStepIndex,
+                        spotlightRect: targetFrame,
+                        containerSize: proxy.size,
+                        onBack: { controller.showPreviousFeatureTourStep() },
+                        onNext: { controller.showNextFeatureTourStep() },
+                        onDismiss: { controller.dismissFeatureTour() }
+                    )
+                    .zIndex(100)
+                }
+            }
+        }
         .alert(
             appState.contributionMilestonePrompt?.title ?? "Muesli milestone",
             isPresented: Binding(

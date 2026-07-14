@@ -284,6 +284,7 @@ struct SidebarView: View {
             )
             .contentShape(Rectangle())
             .padding(.horizontal, sidebarRowOuterPadding)
+            .featureTourTarget(.meetingsSidebar)
 
             if meetingsExpanded {
                 let folderTree = folderTreePresentation

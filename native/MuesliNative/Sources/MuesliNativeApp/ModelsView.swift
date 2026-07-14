@@ -34,65 +34,41 @@ struct ModelsView: View {
         let active = appState.selectedBackend
         _selectedParakeetModel = State(initialValue: BackendOption.parakeetFamily.contains(active) ? active.model : BackendOption.parakeetMultilingual.model)
         _selectedWhisperModel = State(initialValue: BackendOption.whisperFamily.contains(active) ? active.model : BackendOption.whisperSmall.model)
-        _showExperimental = State(initialValue: false)
+        _showExperimental = State(initialValue: appState.activeFeatureTourTarget == .experimentalModels)
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
-                Text("Models")
-                    .font(MuesliTheme.title1())
-                    .foregroundStyle(MuesliTheme.textPrimary)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
+                    Text("Models")
+                        .font(MuesliTheme.title1())
+                        .foregroundStyle(MuesliTheme.textPrimary)
 
-                Text("Download and manage models for dictation, live captions, and meeting transcription.")
-                    .font(MuesliTheme.body())
-                    .foregroundStyle(MuesliTheme.textSecondary)
+                    Text("Download and manage models for dictation, streaming, and post-processing.")
+                        .font(MuesliTheme.body())
+                        .foregroundStyle(MuesliTheme.textSecondary)
 
-                familyCard(
-                    title: "Parakeet Family",
-                    subtitle: "NVIDIA speech models for fast everyday dictation.",
-                    defaultBadge: "Default: v3",
-                    logo: "nvidia-logo",
-                    selection: $selectedParakeetModel,
-                    options: BackendOption.parakeetFamily
-                )
-
-                familyCard(
-                    title: "Whisper",
-                    subtitle: "OpenAI Whisper variants. Runs on Apple Neural Engine via CoreML.",
-                    defaultBadge: "Default: Small",
-                    logo: "openai-logo",
-                    selection: $selectedWhisperModel,
-                    options: BackendOption.whisperFamily
-                )
-
-                modelCard(option: .cohereTranscribe, logo: "cohere-logo")
-
-                streamingSection
-
-                experimentalSection
-
-                postProcessorSection
-
-                if !BackendOption.comingSoon.isEmpty {
-                    VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
-                        Text("COMING SOON")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(MuesliTheme.textTertiary)
-                            .textCase(.uppercase)
-                            .padding(.leading, 2)
-                            .padding(.top, MuesliTheme.spacing8)
-
-                        VStack(spacing: MuesliTheme.spacing12) {
-                            ForEach(BackendOption.comingSoon, id: \.model) { option in
-                                comingSoonCard(option: option)
-                            }
+                    Picker("Model category", selection: modelsCategorySelection) {
+                        ForEach(ModelsCategory.allCases) { category in
+                            Text(category.title).tag(category)
                         }
                     }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 520)
+
+                    selectedCategoryContent
                 }
+                .padding(MuesliTheme.spacing32)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(MuesliTheme.spacing32)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .onAppear {
+                revealFeatureTourTargetIfNeeded(using: proxy)
+            }
+            .onChange(of: activeFeatureTourTarget) { _, target in
+                guard target == .streamingModels || target == .experimentalModels else { return }
+                revealFeatureTourTargetIfNeeded(using: proxy)
+            }
         }
         .background(MuesliTheme.backgroundBase)
         .onAppear {
@@ -154,6 +130,88 @@ struct ModelsView: View {
         }
     }
 
+    private var modelsCategorySelection: Binding<ModelsCategory> {
+        Binding(
+            get: { appState.selectedModelsCategory },
+            set: { appState.selectedModelsCategory = $0 }
+        )
+    }
+
+    @ViewBuilder
+    private var selectedCategoryContent: some View {
+        switch appState.selectedModelsCategory {
+        case .dictation:
+            familyCard(
+                title: "Parakeet Family",
+                subtitle: "NVIDIA speech models for fast everyday dictation.",
+                defaultBadge: "Default: v3",
+                logo: "nvidia-logo",
+                selection: $selectedParakeetModel,
+                options: BackendOption.parakeetFamily
+            )
+
+            familyCard(
+                title: "Whisper",
+                subtitle: "OpenAI Whisper variants. Runs on Apple Neural Engine via CoreML.",
+                defaultBadge: "Default: Small",
+                logo: "openai-logo",
+                selection: $selectedWhisperModel,
+                options: BackendOption.whisperFamily
+            )
+
+            modelCard(option: .cohereTranscribe, logo: "cohere-logo")
+            experimentalSection
+            comingSoonSection
+        case .streaming:
+            streamingSection
+        case .postProcessing:
+            postProcessorSection
+        }
+    }
+
+    @ViewBuilder
+    private var comingSoonSection: some View {
+        if !BackendOption.comingSoon.isEmpty {
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                Text("COMING SOON")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .textCase(.uppercase)
+                    .padding(.leading, 2)
+                    .padding(.top, MuesliTheme.spacing8)
+
+                VStack(spacing: MuesliTheme.spacing12) {
+                    ForEach(BackendOption.comingSoon, id: \.model) { option in
+                        comingSoonCard(option: option)
+                    }
+                }
+            }
+        }
+    }
+
+    private var activeFeatureTourTarget: FeatureTourTarget? {
+        appState.activeFeatureTourTarget
+    }
+
+    private func revealFeatureTourTargetIfNeeded(using proxy: ScrollViewProxy) {
+        let target: FeatureTourTarget
+        switch activeFeatureTourTarget {
+        case .streamingModels:
+            target = .streamingModels
+            appState.selectedModelsCategory = .streaming
+        case .experimentalModels:
+            target = .experimentalModels
+            appState.selectedModelsCategory = .dictation
+            showExperimental = true
+        default:
+            return
+        }
+        Task { @MainActor in
+            await Task.yield()
+            proxy.scrollTo(target.rawValue, anchor: .center)
+        }
+    }
+
     private var streamingSection: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
@@ -167,6 +225,8 @@ struct ModelsView: View {
             }
             .padding(.leading, 2)
             .padding(.top, MuesliTheme.spacing8)
+            .id(FeatureTourTarget.streamingModels.rawValue)
+            .featureTourTarget(.streamingModels)
 
             ForEach(BackendOption.streaming, id: \.model) { option in
                 if let liveCaptionBackend = MeetingLiveCaptionBackend(rawValue: option.backend) {
@@ -358,7 +418,7 @@ struct ModelsView: View {
                                 .foregroundStyle(MuesliTheme.textSecondary)
                         }
 
-                        Text("SenseVoice, Qwen, Indic ASR, and legacy streaming backends. Hidden by default because these are still slower and less polished.")
+                        Text("SenseVoice, Qwen, Indic ASR, and Gemma 4 evaluation backends. Hidden by default because these are still slower and less polished.")
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(MuesliTheme.textPrimary)
                             .opacity(0.8)
@@ -377,11 +437,21 @@ struct ModelsView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .featureTourTarget(.experimentalModels)
 
             if showExperimental {
                 VStack(spacing: MuesliTheme.spacing12) {
                     ForEach(BackendOption.experimental, id: \.model) { option in
-                        modelCard(option: option, logo: logoForBackend(option))
+                        if !appState.selectedPostProcessorBackend.isCompatible(with: option) {
+                            modelCard(
+                                option: option,
+                                logo: logoForBackend(option),
+                                downloadedLabel: "Used for Cleanup",
+                                activationDisabledReason: "Unavailable while Gemma 4 is selected for cleanup. Choose another cleanup backend first."
+                            )
+                        } else {
+                            modelCard(option: option, logo: logoForBackend(option))
+                        }
                     }
                 }
             }
@@ -393,6 +463,7 @@ struct ModelsView: View {
             RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
                 .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
         )
+        .id(FeatureTourTarget.experimentalModels.rawValue)
     }
 
     private var cohereLanguageSelection: Binding<CohereTranscribeLanguage> {
@@ -435,11 +506,36 @@ struct ModelsView: View {
             .padding(.top, MuesliTheme.spacing8)
 
             VStack(spacing: MuesliTheme.spacing12) {
+                gemmaCleanupModelCard
+
                 ForEach(PostProcessorOption.all) { option in
                     postProcModelCard(option)
                 }
             }
         }
+    }
+
+    private var gemmaCleanupModelCard: some View {
+        let option = BackendOption.gemma4E2BLiteRT
+        let isDownloaded = downloadedModels.contains(option.model)
+        let isCompatible = TranscriptCleanupBackendOption.gemma4LiteRT
+            .isCompatible(with: appState.selectedBackend)
+
+        return modelCard(
+            option: option,
+            logo: "google-logo",
+            isActive: isDownloaded && appState.selectedPostProcessorBackend == .gemma4LiteRT,
+            onSetActive: {
+                controller.selectPostProcessorBackend(.gemma4LiteRT)
+            },
+            description: "On-device Gemma cleanup for filler removal, formatting, and transcript correction. Shares one download with the experimental Gemma dictation backend.",
+            activeLabel: "Cleanup Active",
+            downloadedLabel: isCompatible ? "Downloaded" : "Used for Dictation",
+            actionTitle: "Use for Cleanup",
+            activationDisabledReason: isCompatible
+                ? nil
+                : "Unavailable while Gemma 4 is selected for dictation. Choose another dictation model first."
+        )
     }
 
     private func postProcModelCard(_ option: PostProcessorOption) -> some View {
@@ -699,6 +795,8 @@ struct ModelsView: View {
         isActive: Bool,
         isDownloaded: Bool,
         isDownloading: Bool,
+        actionTitle: String = "Set Active",
+        activationDisabledReason: String? = nil,
         onSetActive: (() -> Void)? = nil
     ) -> some View {
         HStack(spacing: MuesliTheme.spacing8) {
@@ -715,7 +813,7 @@ struct ModelsView: View {
                 .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
             } else if isDownloaded {
                 if !isActive {
-                    Button("Set Active") {
+                    Button(actionTitle) {
                         if let onSetActive {
                             onSetActive()
                         } else {
@@ -724,11 +822,13 @@ struct ModelsView: View {
                     }
                     .buttonStyle(.plain)
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(MuesliTheme.accent)
+                    .foregroundStyle(activationDisabledReason == nil ? MuesliTheme.accent : MuesliTheme.textTertiary)
                     .padding(.horizontal, MuesliTheme.spacing12)
                     .padding(.vertical, 4)
-                    .background(MuesliTheme.accentSubtle)
+                    .background(activationDisabledReason == nil ? MuesliTheme.accentSubtle : MuesliTheme.surfacePrimary)
                     .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                    .disabled(activationDisabledReason != nil)
+                    .help(activationDisabledReason ?? actionTitle)
                 }
 
                 Button {
@@ -759,7 +859,12 @@ struct ModelsView: View {
         option: BackendOption,
         logo: String? = nil,
         isActive activeOverride: Bool? = nil,
-        onSetActive: (() -> Void)? = nil
+        onSetActive: (() -> Void)? = nil,
+        description: String? = nil,
+        activeLabel: String = "Active",
+        downloadedLabel: String = "Downloaded",
+        actionTitle: String = "Set Active",
+        activationDisabledReason: String? = nil
     ) -> some View {
         let isActive = activeOverride ?? (appState.selectedBackend == option)
         let isDownloaded = downloadedModels.contains(option.model)
@@ -790,7 +895,7 @@ struct ModelsView: View {
                             .foregroundStyle(MuesliTheme.textTertiary)
                     }
 
-                    Text(option.description)
+                    Text(description ?? option.description)
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
@@ -799,7 +904,7 @@ struct ModelsView: View {
 
                 // Status badge
                 if isActive {
-                    Text("Active")
+                    Text(activeLabel)
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(MuesliTheme.success)
                         .padding(.horizontal, 8)
@@ -807,7 +912,7 @@ struct ModelsView: View {
                         .background(MuesliTheme.success.opacity(0.15))
                         .clipShape(RoundedRectangle(cornerRadius: 4))
                 } else if isDownloaded {
-                    Text("Downloaded")
+                    Text(downloadedLabel)
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .padding(.horizontal, 8)
@@ -897,11 +1002,19 @@ struct ModelsView: View {
                 }
             }
 
+            if let activationDisabledReason, isDownloaded, !isActive {
+                Label(activationDisabledReason, systemImage: "exclamationmark.lock")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+            }
+
             actionButtons(
                 for: option,
                 isActive: isActive,
                 isDownloaded: isDownloaded,
                 isDownloading: isDownloading,
+                actionTitle: actionTitle,
+                activationDisabledReason: activationDisabledReason,
                 onSetActive: onSetActive
             )
         }
@@ -1199,8 +1312,7 @@ struct ModelsView: View {
            appState.config.resolvedMeetingLiveCaptionBackend == .nemotron35 {
             controller.updateConfig { $0.enableLiveStreamingPartials = false }
         }
-        if option.backend == BackendOption.gemma4E2BLiteRT.backend,
-           appState.selectedPostProcessorBackend == .gemma4LiteRT {
+        if !appState.selectedPostProcessorBackend.isCompatible(with: option) {
             controller.selectPostProcessorBackend(.local)
         }
         if appState.selectedBackend == option {
@@ -1299,7 +1411,7 @@ struct ModelsView: View {
             selectedWhisperModel = active.model
         }
         if BackendOption.experimental.contains(active) {
-            return
+            showExperimental = true
         }
     }
 

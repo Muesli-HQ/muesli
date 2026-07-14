@@ -41,6 +41,7 @@ struct StatsHeaderView: View {
                 action: { onSelect(.meetings) }
             )
         }
+        .featureTourTarget(.insightsEntry)
         .padding(.horizontal, MuesliTheme.spacing24)
         .padding(.vertical, MuesliTheme.spacing20)
     }

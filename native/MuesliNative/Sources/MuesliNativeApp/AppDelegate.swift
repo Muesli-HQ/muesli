@@ -96,6 +96,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller?.focusSearchField()
     }
 
+    @objc func showWhatsNew(_ sender: Any?) {
+        controller?.showWhatsNew()
+    }
+
     private func installStandardEditMenu() {
         let mainMenu = NSMenu()
 
@@ -108,6 +112,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         settingsItem.target = self
         appMenu.addItem(settingsItem)
+        let whatsNewItem = NSMenuItem(
+            title: "What's New in Muesli",
+            action: #selector(AppDelegate.showWhatsNew(_:)),
+            keyEquivalent: ""
+        )
+        whatsNewItem.target = self
+        appMenu.addItem(whatsNewItem)
         appMenu.addItem(.separator())
         appMenu.addItem(
             withTitle: "Quit \(AppIdentity.displayName)",

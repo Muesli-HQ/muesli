@@ -20,6 +20,44 @@ enum InsightsSection: String, CaseIterable, Sendable {
     case meetings
 }
 
+enum SettingsPane: String, CaseIterable, Identifiable {
+    case general
+    case sync
+    case dictation
+    case computerUse
+    case meetings
+    case appearance
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .general: return "General"
+        case .sync: return "Sync"
+        case .dictation: return "Dictation"
+        case .computerUse: return "Computer Use"
+        case .meetings: return "Meetings"
+        case .appearance: return "Appearance"
+        }
+    }
+}
+
+enum ModelsCategory: String, CaseIterable, Identifiable {
+    case dictation
+    case streaming
+    case postProcessing
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .dictation: return "Dictation"
+        case .streaming: return "Streaming"
+        case .postProcessing: return "Post-processing"
+        }
+    }
+}
+
 enum MeetingsNavigationState: Equatable {
     case browser
     case document(Int64)
@@ -160,6 +198,11 @@ final class AppState {
     // Navigation
     var selectedTab: DashboardTab = .dictations
     var insightsInitialSection: InsightsSection = .words
+    var selectedSettingsPane: SettingsPane = .general
+    var selectedModelsCategory: ModelsCategory = .dictation
+    var pendingFeatureTourInvitation: FeatureTour?
+    var activeFeatureTour: FeatureTour?
+    var featureTourStepIndex: Int = 0
 
     // Computed
     var selectedMeeting: MeetingRecord? {

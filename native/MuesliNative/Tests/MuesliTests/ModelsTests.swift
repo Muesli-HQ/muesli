@@ -349,6 +349,34 @@ struct PostProcessorOptionTests {
     }
 }
 
+@Suite("TranscriptCleanupBackendOption")
+struct TranscriptCleanupBackendOptionTests {
+
+    @Test("Gemma cleanup is unavailable only for Gemma dictation")
+    func gemmaCleanupCompatibility() {
+        #expect(!TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: .gemma4E2BLiteRT))
+
+        for backend in BackendOption.all where backend != .gemma4E2BLiteRT {
+            #expect(TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: backend))
+        }
+    }
+
+    @Test("Other cleanup backends remain available for Gemma dictation")
+    func otherCleanupBackendsRemainCompatible() {
+        for backend in TranscriptCleanupBackendOption.all where backend != .gemma4LiteRT {
+            #expect(backend.isCompatible(with: .gemma4E2BLiteRT))
+        }
+    }
+
+    @Test("Available cleanup options exclude only conflicting Gemma cleanup")
+    func availableOptionsExcludeGemmaConflict() {
+        let available = TranscriptCleanupBackendOption.available(for: .gemma4E2BLiteRT)
+
+        #expect(!available.contains(.gemma4LiteRT))
+        #expect(available.count == TranscriptCleanupBackendOption.all.count - 1)
+    }
+}
+
 @Suite("SummaryModelPreset")
 struct SummaryModelPresetTests {
 
