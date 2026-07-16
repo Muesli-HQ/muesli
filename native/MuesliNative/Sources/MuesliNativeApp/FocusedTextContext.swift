@@ -15,6 +15,35 @@ struct FocusedTextFingerprint: Equatable, Sendable {
     let suffix: String
 }
 
+enum FocusedTextCaretGeometryConfidence: String, Equatable, Sendable {
+    case exact
+    case inferred
+    case unavailable
+}
+
+struct FocusedTextColor: Equatable, Sendable {
+    let red: CGFloat
+    let green: CGFloat
+    let blue: CGFloat
+    let alpha: CGFloat
+
+    var relativeLuminance: CGFloat {
+        (0.2126 * red) + (0.7152 * green) + (0.0722 * blue)
+    }
+}
+
+struct FocusedTextPresentationStyle: Equatable, Sendable {
+    let fontName: String?
+    let fontSize: CGFloat?
+    let foregroundColor: FocusedTextColor?
+    let backgroundColor: FocusedTextColor?
+
+    var supportsInlineGhost: Bool {
+        guard let fontSize, (7 ... 96).contains(fontSize) else { return false }
+        return foregroundColor != nil || backgroundColor != nil
+    }
+}
+
 struct FocusedTextContext: Equatable, Sendable {
     let appName: String
     let bundleID: String
@@ -31,6 +60,8 @@ struct FocusedTextContext: Equatable, Sendable {
     let caretBounds: CGRect?
     let elementBounds: CGRect?
     let fingerprint: FocusedTextFingerprint
+    let caretGeometryConfidence: FocusedTextCaretGeometryConfidence
+    let presentationStyle: FocusedTextPresentationStyle?
 }
 
 struct FocusedTextRawSnapshot: Equatable, Sendable {
@@ -52,6 +83,8 @@ struct FocusedTextRawSnapshot: Equatable, Sendable {
     let selectedText: String
     let caretBounds: CGRect?
     let elementBounds: CGRect?
+    let caretGeometryConfidence: FocusedTextCaretGeometryConfidence
+    let presentationStyle: FocusedTextPresentationStyle?
 }
 
 protocol FocusedTextReading {
@@ -135,7 +168,9 @@ struct FocusedTextContextService {
             suffix: raw.suffix,
             caretBounds: raw.caretBounds,
             elementBounds: raw.elementBounds,
-            fingerprint: fingerprint
+            fingerprint: fingerprint,
+            caretGeometryConfidence: raw.caretGeometryConfidence,
+            presentationStyle: raw.presentationStyle
         )
     }
 
@@ -195,6 +230,9 @@ struct SystemFocusedTextReader: FocusedTextReading {
             }
             .joined(separator: " · ")
 
+        let caretGeometry = selection.flatMap { Self.caretGeometry(element: element, selection: $0) }
+        let presentationStyle = selection.flatMap { Self.presentationStyle(element: element, selection: $0) }
+
         return FocusedTextRawSnapshot(
             appName: app.localizedName ?? "Unknown",
             bundleID: app.bundleIdentifier ?? "",
@@ -212,8 +250,10 @@ struct SystemFocusedTextReader: FocusedTextReading {
             prefix: segments.prefix,
             suffix: segments.suffix,
             selectedText: Self.stringAttribute(element, kAXSelectedTextAttribute as String),
-            caretBounds: selection.flatMap { Self.caretBounds(element: element, selection: $0) },
-            elementBounds: Self.elementBounds(element)
+            caretBounds: caretGeometry?.bounds,
+            elementBounds: Self.elementBounds(element),
+            caretGeometryConfidence: caretGeometry?.confidence ?? .unavailable,
+            presentationStyle: presentationStyle
         )
     }
 
@@ -300,9 +340,14 @@ struct SystemFocusedTextReader: FocusedTextReading {
         return result as? String ?? ""
     }
 
-    private static func caretBounds(element: AXUIElement, selection: FocusedTextRange) -> CGRect? {
+    private struct CaretGeometry {
+        let bounds: CGRect
+        let confidence: FocusedTextCaretGeometryConfidence
+    }
+
+    private static func caretGeometry(element: AXUIElement, selection: FocusedTextRange) -> CaretGeometry? {
         if let exact = bounds(element: element, range: selection), exact.isUsableCaretBounds {
-            return exact
+            return CaretGeometry(bounds: exact, confidence: .exact)
         }
 
         // Some text controls return CGRect.zero for a zero-length range even though
@@ -314,16 +359,85 @@ struct SystemFocusedTextReader: FocusedTextReading {
             element: element,
             range: FocusedTextRange(location: selection.location, length: 1)
         ), next.isUsableTextBounds {
-            return CGRect(x: next.minX, y: next.minY, width: 0, height: next.height)
+            return CaretGeometry(
+                bounds: CGRect(x: next.minX, y: next.minY, width: 0, height: next.height),
+                confidence: .inferred
+            )
         }
         if selection.location > 0,
            let previous = bounds(
                element: element,
                range: FocusedTextRange(location: selection.location - 1, length: 1)
            ), previous.isUsableTextBounds {
-            return CGRect(x: previous.maxX, y: previous.minY, width: 0, height: previous.height)
+            return CaretGeometry(
+                bounds: CGRect(x: previous.maxX, y: previous.minY, width: 0, height: previous.height),
+                confidence: .inferred
+            )
         }
         return nil
+    }
+
+    private static func presentationStyle(
+        element: AXUIElement,
+        selection: FocusedTextRange
+    ) -> FocusedTextPresentationStyle? {
+        let characterLocation = selection.location > 0 ? selection.location - 1 : selection.location
+        guard let attributed = attributedString(
+            element: element,
+            range: FocusedTextRange(location: characterLocation, length: 1)
+        ), attributed.length > 0 else { return nil }
+
+        let attributes = attributed.attributes(at: 0, effectiveRange: nil)
+        let fontAttribute = kAXFontTextAttribute.takeUnretainedValue() as String
+        let fontNameKey = kAXFontNameKey.takeUnretainedValue()
+        let visibleNameKey = kAXVisibleNameKey.takeUnretainedValue()
+        let fontSizeKey = kAXFontSizeKey.takeUnretainedValue()
+        let foregroundAttribute = kAXForegroundColorTextAttribute.takeUnretainedValue() as String
+        let backgroundAttribute = kAXBackgroundColorTextAttribute.takeUnretainedValue() as String
+        let fontInfo = attributes[
+            NSAttributedString.Key(rawValue: fontAttribute)
+        ] as? NSDictionary
+        let fontName = (fontInfo?.object(forKey: fontNameKey) as? String)
+            ?? (fontInfo?.object(forKey: visibleNameKey) as? String)
+        let fontSize = (fontInfo?.object(forKey: fontSizeKey) as? NSNumber).map { CGFloat(truncating: $0) }
+        let foreground = focusedTextColor(from: attributes[
+            NSAttributedString.Key(rawValue: foregroundAttribute)
+        ])
+        let background = focusedTextColor(from: attributes[
+            NSAttributedString.Key(rawValue: backgroundAttribute)
+        ])
+
+        guard fontName != nil || fontSize != nil || foreground != nil || background != nil else { return nil }
+        return FocusedTextPresentationStyle(
+            fontName: fontName,
+            fontSize: fontSize,
+            foregroundColor: foreground,
+            backgroundColor: background
+        )
+    }
+
+    private static func attributedString(
+        element: AXUIElement,
+        range: FocusedTextRange
+    ) -> NSAttributedString? {
+        guard range.location >= 0, range.length > 0 else { return nil }
+        var cfRange = CFRange(location: range.location, length: range.length)
+        guard let rangeValue = AXValueCreate(.cfRange, &cfRange) else { return nil }
+        var result: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(
+            element,
+            kAXAttributedStringForRangeParameterizedAttribute as CFString,
+            rangeValue,
+            &result
+        ) == .success else { return nil }
+        return result as? NSAttributedString
+    }
+
+    private static func focusedTextColor(from value: Any?) -> FocusedTextColor? {
+        guard let value else { return nil }
+        let cfValue = value as CFTypeRef
+        guard CFGetTypeID(cfValue) == CGColor.typeID else { return nil }
+        return FocusedTextColor(cgColor: value as! CGColor)
     }
 
     private static func bounds(element: AXUIElement, range: FocusedTextRange) -> CGRect? {
@@ -413,5 +527,17 @@ private extension CGRect {
 
     var isUsableElementBounds: Bool {
         isFinite && !isNull && width > 0 && height > 0
+    }
+}
+
+private extension FocusedTextColor {
+    init?(cgColor: CGColor) {
+        guard let color = NSColor(cgColor: cgColor)?.usingColorSpace(.deviceRGB) else { return nil }
+        self.init(
+            red: color.redComponent,
+            green: color.greenComponent,
+            blue: color.blueComponent,
+            alpha: color.alphaComponent
+        )
     }
 }
