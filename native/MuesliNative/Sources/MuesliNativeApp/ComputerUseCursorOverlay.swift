@@ -51,7 +51,7 @@ final class ComputerUseCursorOverlay {
     }
 
     private func makePanel(size: CGSize) -> NSPanel {
-        let panel = NSPanel(
+        let panel = NonactivatingOverlayPanel(
             contentRect: CGRect(origin: .zero, size: size),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
@@ -68,20 +68,12 @@ final class ComputerUseCursorOverlay {
     }
 
     private func appKitOrigin(forQuartzPoint point: CGPoint, size: CGSize) -> CGPoint {
-        let screen = NSScreen.screens.first { screen in
-            let convertedY = screen.frame.maxY - point.y
-            return point.x >= screen.frame.minX
-                && point.x <= screen.frame.maxX
-                && convertedY >= screen.frame.minY
-                && convertedY <= screen.frame.maxY
-        } ?? NSScreen.main
-
-        guard let screen else {
+        guard let converted = AccessibilityScreenGeometry.appKitPoint(forQuartzPoint: point) else {
             return CGPoint(x: point.x - size.width / 2, y: point.y - size.height / 2)
         }
         return CGPoint(
-            x: point.x - size.width / 2,
-            y: screen.frame.maxY - point.y - size.height / 2
+            x: converted.point.x - size.width / 2,
+            y: converted.point.y - size.height / 2
         )
     }
 }

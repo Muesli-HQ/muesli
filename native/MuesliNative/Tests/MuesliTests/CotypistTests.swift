@@ -146,7 +146,13 @@ struct CotypistConfigurationTests {
 struct FocusedTextContextTests {
     @Test("service requests bounded AX ranges and creates a complete fingerprint")
     func boundedCapture() throws {
-        let raw = makeRawSnapshot(prefix: "hello", suffix: " world")
+        let style = FocusedTextPresentationStyle(
+            fontName: "Helvetica",
+            fontSize: 14,
+            foregroundColor: FocusedTextColor(red: 0.1, green: 0.1, blue: 0.1, alpha: 1),
+            backgroundColor: FocusedTextColor(red: 1, green: 1, blue: 1, alpha: 1)
+        )
+        let raw = makeRawSnapshot(prefix: "hello", suffix: " world", presentationStyle: style)
         let reader = StubFocusedTextReader(snapshot: raw)
         let service = FocusedTextContextService(reader: reader, currentProcessID: 999, currentBundleID: "com.muesli.test")
 
@@ -158,6 +164,8 @@ struct FocusedTextContextTests {
         #expect(context.fingerprint.selection == raw.selection)
         #expect(context.fingerprint.prefix == "hello")
         #expect(context.fingerprint.suffix == " world")
+        #expect(context.caretGeometryConfidence == .exact)
+        #expect(context.presentationStyle == style)
     }
 
     @Test("small-document fallback respects UTF-16 AX range bounds")
@@ -271,7 +279,7 @@ struct CotypistOverlayPlacementTests {
         CGRect(x: 1_440, y: 0, width: 1_920, height: 1_080),
     ]
 
-    @Test("caret placement selects and fits the correct display")
+    @Test("caret capsule selects the correct display and sits below the line")
     func multipleDisplays() {
         let frame = CotypistOverlayPlacement.frame(
             caretBounds: CGRect(x: 1_500, y: 380, width: 2, height: 18),
@@ -283,8 +291,8 @@ struct CotypistOverlayPlacementTests {
             fallbackPoint: .zero
         )
         #expect(screenFrames[1].contains(frame))
-        #expect(frame.minX == 1_505)
-        #expect(frame.maxY == 522)
+        #expect(frame.minX == 1_508)
+        #expect(frame.maxY < 502)
     }
 
     @Test("full-screen edge placement remains visible")
@@ -330,7 +338,7 @@ struct CotypistOverlayPlacementTests {
         )
 
         #expect(frame.minX == 328)
-        #expect(frame.minY == 604)
+        #expect(frame.minY == 588)
         #expect(frame.minX > 100)
     }
 
@@ -349,6 +357,68 @@ struct CotypistOverlayPlacementTests {
 
         #expect(frame.minX == pointer.x + 8)
         #expect(frame.midY == pointer.y)
+    }
+
+    @Test("inline ghost starts immediately after the caret and clips to the field")
+    func inlineGhostPlacement() throws {
+        let frame = try #require(CotypistOverlayPlacement.ghostFrame(
+            caretBounds: CGRect(x: 500, y: 300, width: 0, height: 18),
+            elementBounds: CGRect(x: 200, y: 260, width: 500, height: 120),
+            panelSize: CGSize(width: 300, height: 18),
+            screenFrames: screenFrames,
+            visibleFrames: screenFrames,
+            primaryScreenMaxY: 900
+        ))
+
+        #expect(frame.minX == 502)
+        #expect(frame.maxX == 696)
+        #expect(frame.maxY == 602)
+    }
+
+    @Test("preview policy uses ghost text only with reliable single-line style")
+    func previewModePolicy() {
+        let style = FocusedTextPresentationStyle(
+            fontName: "Helvetica",
+            fontSize: 14,
+            foregroundColor: FocusedTextColor(red: 0, green: 0, blue: 0, alpha: 1),
+            backgroundColor: nil
+        )
+
+        #expect(CotypistPreviewPresentation.mode(
+            text: " continues here",
+            isLoading: false,
+            geometryConfidence: .exact,
+            presentationStyle: style
+        ) == .ghost)
+        #expect(CotypistPreviewPresentation.mode(
+            text: "first line\nsecond line",
+            isLoading: false,
+            geometryConfidence: .exact,
+            presentationStyle: style
+        ) == .capsule)
+        #expect(CotypistPreviewPresentation.mode(
+            text: " continues here",
+            isLoading: true,
+            geometryConfidence: .exact,
+            presentationStyle: style
+        ) == .capsule)
+        #expect(CotypistPreviewPresentation.mode(
+            text: " continues here",
+            isLoading: false,
+            geometryConfidence: .unavailable,
+            presentationStyle: style
+        ) == .capsule)
+    }
+
+    @Test("shared AX geometry converts tall secondary displays against the primary origin")
+    func sharedScreenGeometry() throws {
+        let converted = try #require(AccessibilityScreenGeometry.appKitPoint(
+            forQuartzPoint: CGPoint(x: 1_500, y: -120),
+            screenFrames: screenFrames,
+            primaryScreenMaxY: 900
+        ))
+        #expect(converted.screenIndex == 1)
+        #expect(converted.point == CGPoint(x: 1_500, y: 1_020))
     }
 }
 
@@ -406,7 +476,9 @@ private func makeRawSnapshot(
     isSecure: Bool = false,
     selection: FocusedTextRange? = FocusedTextRange(location: 5, length: 0),
     prefix: String = "hello",
-    suffix: String = " world"
+    suffix: String = " world",
+    caretGeometryConfidence: FocusedTextCaretGeometryConfidence = .exact,
+    presentationStyle: FocusedTextPresentationStyle? = nil
 ) -> FocusedTextRawSnapshot {
     FocusedTextRawSnapshot(
         appName: "Editor",
@@ -426,7 +498,9 @@ private func makeRawSnapshot(
         suffix: suffix,
         selectedText: "",
         caretBounds: CGRect(x: 100, y: 200, width: 2, height: 18),
-        elementBounds: CGRect(x: 80, y: 180, width: 500, height: 300)
+        elementBounds: CGRect(x: 80, y: 180, width: 500, height: 300),
+        caretGeometryConfidence: caretGeometryConfidence,
+        presentationStyle: presentationStyle
     )
 }
 
@@ -458,6 +532,8 @@ private func makeContext(
         suffix: suffix,
         caretBounds: CGRect(x: 100, y: 200, width: 2, height: 18),
         elementBounds: CGRect(x: 80, y: 180, width: 500, height: 300),
-        fingerprint: fingerprint
+        fingerprint: fingerprint,
+        caretGeometryConfidence: .exact,
+        presentationStyle: nil
     )
 }

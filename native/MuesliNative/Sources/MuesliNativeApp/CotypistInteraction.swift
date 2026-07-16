@@ -235,6 +235,26 @@ final class CotypistEventTap: @unchecked Sendable {
     }
 }
 
+enum CotypistPreviewMode: Equatable {
+    case ghost
+    case capsule
+}
+
+enum CotypistPreviewPresentation {
+    static func mode(
+        text: String,
+        isLoading: Bool,
+        geometryConfidence: FocusedTextCaretGeometryConfidence,
+        presentationStyle: FocusedTextPresentationStyle?
+    ) -> CotypistPreviewMode {
+        guard !isLoading,
+              !text.contains(where: \.isNewline),
+              geometryConfidence != .unavailable,
+              presentationStyle?.supportsInlineGhost == true else { return .capsule }
+        return .ghost
+    }
+}
+
 enum CotypistOverlayPlacement {
     static func frame(
         caretBounds: CGRect?,
@@ -246,8 +266,9 @@ enum CotypistOverlayPlacement {
         fallbackPoint: CGPoint
     ) -> CGRect {
         if let caretBounds, isUsableCaretBounds(caretBounds),
-           let placement = placement(
-               quartzAnchor: CGPoint(x: caretBounds.maxX + 3, y: caretBounds.minY),
+           let placement = capsulePlacement(
+               quartzBounds: caretBounds,
+               horizontalAnchor: caretBounds.maxX + 6,
                panelSize: panelSize,
                screenFrames: screenFrames,
                visibleFrames: visibleFrames,
@@ -257,8 +278,9 @@ enum CotypistOverlayPlacement {
         }
 
         if let elementBounds, isUsableElementBounds(elementBounds),
-           let placement = placement(
-               quartzAnchor: CGPoint(x: elementBounds.minX + 8, y: elementBounds.maxY - 8),
+           let placement = capsulePlacement(
+               quartzBounds: elementBounds,
+               horizontalAnchor: elementBounds.minX + 8,
                panelSize: panelSize,
                screenFrames: screenFrames,
                visibleFrames: visibleFrames,
@@ -270,26 +292,65 @@ enum CotypistOverlayPlacement {
         return fallbackFrame(panelSize: panelSize, fallbackPoint: fallbackPoint, visibleFrames: visibleFrames)
     }
 
-    private static func placement(
-        quartzAnchor: CGPoint,
+    static func ghostFrame(
+        caretBounds: CGRect?,
+        elementBounds: CGRect?,
         panelSize: CGSize,
         screenFrames: [CGRect],
         visibleFrames: [CGRect],
         primaryScreenMaxY: CGFloat
     ) -> CGRect? {
-        guard quartzAnchor.x.isFinite, quartzAnchor.y.isFinite, primaryScreenMaxY.isFinite else { return nil }
-        let appKitAnchor = CGPoint(x: quartzAnchor.x, y: primaryScreenMaxY - quartzAnchor.y)
-        // AX geometry uses a top-left global origin while AppKit uses a
-        // bottom-left origin. Reject geometry that does not map to any display;
-        // otherwise a bogus (often zero) AX rect gets clamped into a corner.
-        guard let screenIndex = screenFrames.firstIndex(where: {
-            $0.insetBy(dx: -8, dy: -8).contains(appKitAnchor)
-        }) else { return nil }
-        let visible = visibleFrames.indices.contains(screenIndex) ? visibleFrames[screenIndex] : visibleFrames.first
-        var origin = CGPoint(x: appKitAnchor.x, y: appKitAnchor.y - panelSize.height + 2)
+        guard let caretBounds, isUsableCaretBounds(caretBounds),
+              let converted = AccessibilityScreenGeometry.appKitPoint(
+                  forQuartzPoint: CGPoint(x: caretBounds.maxX + 2, y: caretBounds.minY),
+                  screenFrames: screenFrames,
+                  primaryScreenMaxY: primaryScreenMaxY,
+                  tolerance: 8
+              ) else { return nil }
+        let visible = visibleFrames.indices.contains(converted.screenIndex)
+            ? visibleFrames[converted.screenIndex]
+            : visibleFrames.first
+        guard let visible else { return nil }
+
+        var rightEdge = visible.maxX - 4
+        if let elementBounds, isUsableElementBounds(elementBounds), elementBounds.maxX > converted.point.x {
+            rightEdge = min(rightEdge, elementBounds.maxX - 4)
+        }
+        let availableWidth = rightEdge - converted.point.x
+        guard availableWidth >= 40 else { return nil }
+
+        let size = CGSize(width: min(panelSize.width, availableWidth), height: panelSize.height)
+        let origin = CGPoint(x: converted.point.x, y: converted.point.y - size.height + 2)
+        guard origin.y >= visible.minY + 2, origin.y + size.height <= visible.maxY + 2 else { return nil }
+        return CGRect(origin: origin, size: size)
+    }
+
+    private static func capsulePlacement(
+        quartzBounds: CGRect,
+        horizontalAnchor: CGFloat,
+        panelSize: CGSize,
+        screenFrames: [CGRect],
+        visibleFrames: [CGRect],
+        primaryScreenMaxY: CGFloat
+    ) -> CGRect? {
+        guard let convertedTop = AccessibilityScreenGeometry.appKitPoint(
+            forQuartzPoint: CGPoint(x: quartzBounds.minX, y: quartzBounds.minY),
+            screenFrames: screenFrames,
+            primaryScreenMaxY: primaryScreenMaxY,
+            tolerance: 8
+        ) else { return nil }
+        let visible = visibleFrames.indices.contains(convertedTop.screenIndex)
+            ? visibleFrames[convertedTop.screenIndex]
+            : visibleFrames.first
+        let appKitBounds = CGRect(
+            x: quartzBounds.minX,
+            y: primaryScreenMaxY - quartzBounds.maxY,
+            width: quartzBounds.width,
+            height: quartzBounds.height
+        )
+        var origin = CGPoint(x: horizontalAnchor, y: appKitBounds.minY - panelSize.height - 6)
         if let visible {
-            if origin.x + panelSize.width > visible.maxX { origin.x = appKitAnchor.x - panelSize.width - 5 }
-            if origin.y < visible.minY { origin.y = appKitAnchor.y + 8 }
+            if origin.y < visible.minY + 4 { origin.y = appKitBounds.maxY + 6 }
         }
         return fit(CGRect(origin: origin, size: panelSize), in: visible)
     }
@@ -332,19 +393,12 @@ enum CotypistOverlayPlacement {
 
 @MainActor
 final class CotypistPreviewPanel {
-    private let panel: NSPanel
-    private let label: NSTextField
+    private let panel: NonactivatingOverlayPanel
+    private let previewView: CotypistPreviewView
 
     init() {
-        label = NSTextField(labelWithString: "")
-        label.font = .systemFont(ofSize: 14, weight: .regular)
-        label.textColor = .secondaryLabelColor.withAlphaComponent(0.78)
-        label.backgroundColor = .clear
-        label.isSelectable = false
-        label.maximumNumberOfLines = 3
-        label.lineBreakMode = .byTruncatingTail
-
-        panel = NSPanel(
+        previewView = CotypistPreviewView(frame: CGRect(x: 0, y: 0, width: 120, height: 28))
+        panel = NonactivatingOverlayPanel(
             contentRect: CGRect(x: 0, y: 0, width: 120, height: 25),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
@@ -352,47 +406,221 @@ final class CotypistPreviewPanel {
         )
         panel.backgroundColor = .clear
         panel.isOpaque = false
-        panel.hasShadow = false
         panel.ignoresMouseEvents = true
         panel.level = .statusBar
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
-        panel.contentView = label
+        panel.contentView = previewView
     }
 
     func show(text: String, context: FocusedTextContext, isLoading: Bool = false) {
-        label.stringValue = text
-        label.textColor = isLoading
-            ? .tertiaryLabelColor
-            : .secondaryLabelColor.withAlphaComponent(0.78)
-        let measured = label.sizeThatFits(CGSize(width: 520, height: 90))
-        let size = CGSize(width: min(max(measured.width + 8, 40), 520), height: min(max(measured.height + 4, 22), 90))
         let screens = NSScreen.screens
-        let frame = CotypistOverlayPlacement.frame(
+        var mode = CotypistPreviewPresentation.mode(
+            text: text,
+            isLoading: isLoading,
+            geometryConfidence: context.caretGeometryConfidence,
+            presentationStyle: context.presentationStyle
+        )
+        var font = Self.font(for: context.presentationStyle, mode: mode)
+        var textColor = Self.textColor(for: context.presentationStyle, mode: mode, isLoading: isLoading)
+        previewView.configure(text: text, mode: mode, font: font, textColor: textColor, isLoading: isLoading)
+        var size = previewView.preferredSize(maxWidth: mode == .ghost ? 520 : 430)
+
+        var frame = mode == .ghost ? CotypistOverlayPlacement.ghostFrame(
             caretBounds: context.caretBounds,
             elementBounds: context.elementBounds,
             panelSize: size,
             screenFrames: screens.map(\.frame),
             visibleFrames: screens.map(\.visibleFrame),
-            primaryScreenMaxY: screens.first?.frame.maxY ?? 0,
-            fallbackPoint: NSEvent.mouseLocation
-        )
+            primaryScreenMaxY: screens.first?.frame.maxY ?? 0
+        ) : nil
+
+        if frame == nil {
+            mode = .capsule
+            font = Self.font(for: context.presentationStyle, mode: mode)
+            textColor = Self.textColor(for: context.presentationStyle, mode: mode, isLoading: isLoading)
+            previewView.configure(text: text, mode: mode, font: font, textColor: textColor, isLoading: isLoading)
+            size = previewView.preferredSize(maxWidth: 430)
+            frame = CotypistOverlayPlacement.frame(
+                caretBounds: context.caretBounds,
+                elementBounds: context.elementBounds,
+                panelSize: size,
+                screenFrames: screens.map(\.frame),
+                visibleFrames: screens.map(\.visibleFrame),
+                primaryScreenMaxY: screens.first?.frame.maxY ?? 0,
+                fallbackPoint: NSEvent.mouseLocation
+            )
+        }
+
+        guard let frame else { return }
+        panel.hasShadow = mode == .capsule
+        let wasVisible = panel.isVisible
         panel.setFrame(frame, display: true)
+        previewView.frame = CGRect(origin: .zero, size: frame.size)
+        previewView.needsDisplay = true
+        if !wasVisible { panel.alphaValue = 0 }
         panel.orderFrontRegardless()
+        if !wasVisible {
+            NSAnimationContext.runAnimationGroup { animation in
+                animation.duration = 0.1
+                panel.animator().alphaValue = 1
+            }
+        }
     }
 
     func hide() {
         panel.orderOut(nil)
     }
+
+    private static func font(
+        for style: FocusedTextPresentationStyle?,
+        mode: CotypistPreviewMode
+    ) -> NSFont {
+        guard mode == .ghost, let size = style?.fontSize else {
+            return .systemFont(ofSize: 13, weight: .regular)
+        }
+        let clampedSize = min(max(size, 7), 96)
+        if let name = style?.fontName, let font = NSFont(name: name, size: clampedSize) {
+            return font
+        }
+        return .systemFont(ofSize: clampedSize, weight: .regular)
+    }
+
+    private static func textColor(
+        for style: FocusedTextPresentationStyle?,
+        mode: CotypistPreviewMode,
+        isLoading: Bool
+    ) -> NSColor {
+        guard mode == .ghost else { return isLoading ? .secondaryLabelColor : .labelColor }
+        if let foreground = style?.foregroundColor {
+            return foreground.nsColor.withAlphaComponent(min(max(foreground.alpha * 0.48, 0.34), 0.58))
+        }
+        let isLightBackground = (style?.backgroundColor?.relativeLuminance ?? 1) > 0.52
+        return (isLightBackground ? NSColor.black : NSColor.white).withAlphaComponent(0.48)
+    }
+}
+
+private final class CotypistPreviewView: NSView {
+    private var text = ""
+    private var mode = CotypistPreviewMode.capsule
+    private var font = NSFont.systemFont(ofSize: 13)
+    private var textColor = NSColor.labelColor
+    private var isLoading = false
+
+    override var isFlipped: Bool { true }
+    override var isOpaque: Bool { false }
+
+    func configure(
+        text: String,
+        mode: CotypistPreviewMode,
+        font: NSFont,
+        textColor: NSColor,
+        isLoading: Bool
+    ) {
+        self.text = text
+        self.mode = mode
+        self.font = font
+        self.textColor = textColor
+        self.isLoading = isLoading
+        needsDisplay = true
+    }
+
+    func preferredSize(maxWidth: CGFloat) -> CGSize {
+        let attributes: [NSAttributedString.Key: Any] = [.font: font]
+        if mode == .ghost {
+            let measured = ceil((text as NSString).size(withAttributes: attributes).width)
+            let lineHeight = ceil(font.ascender - font.descender + font.leading)
+            return CGSize(width: min(max(measured + 2, 1), maxWidth), height: max(lineHeight, 16))
+        }
+
+        let keycapWidth: CGFloat = isLoading ? 0 : 38
+        let horizontalInsets: CGFloat = 20
+        let textLimit = max(80, maxWidth - horizontalInsets - keycapWidth)
+        let measured = (text as NSString).boundingRect(
+            with: CGSize(width: textLimit, height: 58),
+            options: [.usesLineFragmentOrigin, .usesFontLeading, .truncatesLastVisibleLine],
+            attributes: attributes
+        )
+        let width = min(max(ceil(measured.width) + horizontalInsets + keycapWidth, isLoading ? 108 : 120), maxWidth)
+        let height = min(max(ceil(measured.height) + 12, 28), 70)
+        return CGSize(width: width, height: height)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        switch mode {
+        case .ghost:
+            drawGhost()
+        case .capsule:
+            drawCapsule()
+        }
+    }
+
+    private func drawGhost() {
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: textColor,
+        ]
+        let lineHeight = font.ascender - font.descender + font.leading
+        let y = max(0, floor((bounds.height - lineHeight) / 2))
+        NSAttributedString(string: text, attributes: attributes).draw(at: CGPoint(x: 0, y: y))
+    }
+
+    private func drawCapsule() {
+        let background = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 8, yRadius: 8)
+        NSColor.windowBackgroundColor.withAlphaComponent(0.96).setFill()
+        background.fill()
+        NSColor.separatorColor.withAlphaComponent(0.55).setStroke()
+        background.lineWidth = 1
+        background.stroke()
+
+        let keycapWidth: CGFloat = isLoading ? 0 : 32
+        let textRect = CGRect(
+            x: 10,
+            y: 6,
+            width: max(1, bounds.width - 20 - (isLoading ? 0 : keycapWidth + 6)),
+            height: max(1, bounds.height - 12)
+        )
+        (text as NSString).draw(
+            with: textRect,
+            options: [.usesLineFragmentOrigin, .usesFontLeading, .truncatesLastVisibleLine],
+            attributes: [.font: font, .foregroundColor: textColor]
+        )
+
+        guard !isLoading else { return }
+        let keycapRect = CGRect(x: bounds.maxX - keycapWidth - 8, y: (bounds.height - 20) / 2, width: keycapWidth, height: 20)
+        let keycap = NSBezierPath(roundedRect: keycapRect, xRadius: 5, yRadius: 5)
+        NSColor.controlBackgroundColor.withAlphaComponent(0.88).setFill()
+        keycap.fill()
+        NSColor.separatorColor.withAlphaComponent(0.7).setStroke()
+        keycap.lineWidth = 1
+        keycap.stroke()
+        let keycapText = "Tab" as NSString
+        let keycapFont = NSFont.systemFont(ofSize: 10, weight: .semibold)
+        let textSize = keycapText.size(withAttributes: [.font: keycapFont])
+        keycapText.draw(
+            at: CGPoint(x: keycapRect.midX - textSize.width / 2, y: keycapRect.midY - textSize.height / 2),
+            withAttributes: [.font: keycapFont, .foregroundColor: NSColor.secondaryLabelColor]
+        )
+    }
+}
+
+private extension FocusedTextColor {
+    var nsColor: NSColor {
+        NSColor(deviceRed: red, green: green, blue: blue, alpha: alpha)
+    }
 }
 
 @MainActor
 final class CotypistCoordinator {
+    private static let loadingPresentationDelay = Duration.milliseconds(250)
+
     private let transcriptionRuntime: TranscriptionCoordinator
     private let contextService: FocusedTextContextService
     private let eventTap = CotypistEventTap()
     private let previewPanel = CotypistPreviewPanel()
     private var config = AppConfig()
     private var requestTask: Task<Void, Never>?
+    private var loadingTask: Task<Void, Never>?
     private var requestID: UUID?
     private var previewContext: FocusedTextContext?
     private var workspaceObserver: NSObjectProtocol?
@@ -459,6 +687,8 @@ final class CotypistCoordinator {
     func invoke() {
         guard config.enableCotypist, config.resolvedCotypistModel.isDownloaded else { return }
         requestTask?.cancel()
+        loadingTask?.cancel()
+        previewPanel.hide()
         let excluded = Set(config.cotypistExcludedBundleIDs)
         guard let context = contextService.capture(excludedBundleIDs: excluded) else {
             fail("No supported text field at the cursor")
@@ -469,7 +699,15 @@ final class CotypistCoordinator {
         requestID = id
         previewContext = nil
         state = .generating
-        previewPanel.show(text: "Completing…", context: context, isLoading: true)
+        loadingTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: Self.loadingPresentationDelay)
+                guard let self, requestID == id, state.isGenerating else { return }
+                previewPanel.show(text: "Completing…", context: context, isLoading: true)
+            } catch {
+                return
+            }
+        }
         let request = CotypistCompletionRequest(context: context, model: config.resolvedCotypistModel)
         requestTask = Task { [weak self] in
             guard let self else { return }
@@ -482,6 +720,8 @@ final class CotypistCoordinator {
                     cancel()
                     return
                 }
+                loadingTask?.cancel()
+                loadingTask = nil
                 previewContext = fresh
                 state = .previewing(completion)
                 previewPanel.show(text: completion, context: fresh)
@@ -497,6 +737,8 @@ final class CotypistCoordinator {
         guard case .previewing(let completion) = state, let expected = previewContext else { return }
         state = .accepting
         previewPanel.hide()
+        loadingTask?.cancel()
+        loadingTask = nil
         requestTask?.cancel()
         requestTask = nil
         requestID = nil
@@ -513,6 +755,8 @@ final class CotypistCoordinator {
 
     func cancel() {
         let hadActiveRequest = requestTask != nil || state != .idle
+        loadingTask?.cancel()
+        loadingTask = nil
         requestTask?.cancel()
         requestTask = nil
         requestID = nil
@@ -524,6 +768,8 @@ final class CotypistCoordinator {
     }
 
     private func fail(_ message: String) {
+        loadingTask?.cancel()
+        loadingTask = nil
         requestTask?.cancel()
         requestTask = nil
         requestID = nil
@@ -538,6 +784,8 @@ final class CotypistCoordinator {
     }
 
     private func resetUI() {
+        loadingTask?.cancel()
+        loadingTask = nil
         previewPanel.hide()
         state = .idle
     }
