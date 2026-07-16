@@ -579,7 +579,7 @@ actor Gemma4LiteRTTranscriber {
 
         let userMessageJSON = try Self.messageJSONString(
             role: "user",
-            contents: [["type": "text", "text": request.userPrompt]]
+            contents: [["type": "text", "text": request.gemmaUserPrompt]]
         )
         guard let jsonResponse = litert_lm_conversation_send_message(
             conversation,

@@ -266,40 +266,45 @@ private actor Qwen3CotypistManager {
 
     func complete(_ request: CotypistCompletionRequest) async throws -> String {
         try await inferenceGate.acquire()
-        defer { Task { await inferenceGate.release() } }
-        try Task.checkCancellation()
-        let bot = try loadBot()
-        defer { bot.reset() }
+        do {
+            try Task.checkCancellation()
+            let bot = try loadBot()
+            defer { bot.reset() }
 
-        var generated = ""
-        await bot.respond(to: request.userPrompt, thinking: .suppressed) { stream in
-            for await chunk in stream {
-                if Task.isCancelled {
-                    bot.stop()
-                    break
-                }
-
-                var accepted = generated
-                for character in chunk {
-                    let candidate = accepted + String(character)
-                    let tokenCount = await bot.encode(candidate, shouldAddBOS: false).count
-                    if tokenCount > request.maxOutputTokens {
+            var generated = ""
+            await bot.respond(to: request.userPrompt, thinking: .suppressed) { stream in
+                for await chunk in stream {
+                    if Task.isCancelled {
                         bot.stop()
-                        return accepted
+                        break
                     }
-                    accepted = candidate
+
+                    var accepted = generated
+                    for character in chunk {
+                        let candidate = accepted + String(character)
+                        let tokenCount = await bot.encode(candidate, shouldAddBOS: false).count
+                        if tokenCount > request.maxOutputTokens {
+                            bot.stop()
+                            return accepted
+                        }
+                        accepted = candidate
+                    }
+                    generated = accepted
+                    let tokenCount = await bot.encode(generated, shouldAddBOS: false).count
+                    if tokenCount >= request.maxOutputTokens {
+                        bot.stop()
+                        break
+                    }
                 }
-                generated = accepted
-                let tokenCount = await bot.encode(generated, shouldAddBOS: false).count
-                if tokenCount >= request.maxOutputTokens {
-                    bot.stop()
-                    break
-                }
+                return generated
             }
+            try Task.checkCancellation()
+            await inferenceGate.release()
             return generated
+        } catch {
+            await inferenceGate.release()
+            throw error
         }
-        try Task.checkCancellation()
-        return generated
     }
 
     func stop() {
