@@ -251,6 +251,117 @@ actor InferenceGate {
 }
 
 @available(macOS 15, *)
+private actor Qwen3CotypistManager {
+    private let modelURL: URL
+    private var bot: LLM?
+    private let inferenceGate = InferenceGate()
+
+    init(modelURL: URL) {
+        self.modelURL = Qwen3PostProcessorConfig.devOverrideURL() ?? modelURL
+    }
+
+    func warm() throws {
+        _ = try loadBot()
+    }
+
+    func complete(_ request: CotypistCompletionRequest) async throws -> String {
+        try await inferenceGate.acquire()
+        defer { Task { await inferenceGate.release() } }
+        try Task.checkCancellation()
+        let bot = try loadBot()
+        defer { bot.reset() }
+
+        var generated = ""
+        await bot.respond(to: request.userPrompt, thinking: .suppressed) { stream in
+            for await chunk in stream {
+                if Task.isCancelled {
+                    bot.stop()
+                    break
+                }
+
+                var accepted = generated
+                for character in chunk {
+                    let candidate = accepted + String(character)
+                    let tokenCount = await bot.encode(candidate, shouldAddBOS: false).count
+                    if tokenCount > request.maxOutputTokens {
+                        bot.stop()
+                        return accepted
+                    }
+                    accepted = candidate
+                }
+                generated = accepted
+                let tokenCount = await bot.encode(generated, shouldAddBOS: false).count
+                if tokenCount >= request.maxOutputTokens {
+                    bot.stop()
+                    break
+                }
+            }
+            return generated
+        }
+        try Task.checkCancellation()
+        return generated
+    }
+
+    func stop() {
+        bot?.stop()
+    }
+
+    private func loadBot() throws -> LLM {
+        if let bot { return bot }
+        guard FileManager.default.fileExists(atPath: modelURL.path) else {
+            throw NSError(domain: "CotypistQwen", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Qwen3.5 0.8B is not downloaded. Open Local Language Models to download it.",
+            ])
+        }
+        guard let loaded = LLM(
+            from: modelURL,
+            seed: 0,
+            topK: 1,
+            topP: 1.0,
+            temp: 0.0,
+            repeatPenalty: 1.0,
+            repetitionLookback: 64,
+            historyLimit: 0,
+            maxTokenCount: 2_048
+        ) else {
+            throw NSError(domain: "CotypistQwen", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "Failed to load Qwen3.5 0.8B at \(modelURL.path).",
+            ])
+        }
+        loaded.useResolvedTemplate(systemPrompt: CotypistCompletionRequest.systemPromptTemplate)
+        bot = loaded
+        return loaded
+    }
+}
+
+@available(macOS 15, *)
+actor Qwen3CotypistEngine {
+    private var manager: Qwen3CotypistManager?
+
+    func prepare() async throws {
+        if manager != nil { return }
+        let newManager = Qwen3CotypistManager(modelURL: PostProcessorOption.qwen35_0_8b.modelURL)
+        try await newManager.warm()
+        manager = newManager
+    }
+
+    func complete(_ request: CotypistCompletionRequest) async throws -> String {
+        try await prepare()
+        guard let manager else { throw CancellationError() }
+        return try await manager.complete(request)
+    }
+
+    func cancel() async {
+        await manager?.stop()
+    }
+
+    func shutdown() async {
+        await manager?.stop()
+        manager = nil
+    }
+}
+
+@available(macOS 15, *)
 private actor Qwen3PostProcessorManager {
     private let modelURL: URL
     private let systemPrompt: String

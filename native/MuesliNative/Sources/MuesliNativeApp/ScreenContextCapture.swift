@@ -42,16 +42,10 @@ enum DictationContextCapture {
         let app = NSWorkspace.shared.frontmostApplication
         let appName = app?.localizedName ?? "Unknown"
         let bundleID = app?.bundleIdentifier ?? ""
-
-        var docContext = ""
-        var selectedText = ""
-
-        if let app, AXIsProcessTrusted(), let focusedElement = focusedUIElement(for: app) {
-            docContext = textBeforeCursor(focusedElement, maxChars: 200)
-            selectedText = axStringValue(focusedElement, attribute: kAXSelectedTextAttribute as String)
-        }
-
-        let url = browserURL(for: app)
+        let focusedText = FocusedTextContextService().captureRaw(maxPrefixCharacters: 200)
+        let docContext = focusedText?.prefix ?? ""
+        let selectedText = focusedText?.selectedText ?? ""
+        let url = focusedText?.browserLocation
 
         fputs("[muesli-native] dictation context: app=\(appName) docContext=\(docContext.count) chars selectedText=\(selectedText.count) chars url=\(url ?? "none")\n", stderr)
 
@@ -93,94 +87,6 @@ enum DictationContextCapture {
         return parts
     }
 
-    // MARK: - Accessibility helpers
-
-    private static func focusedUIElement(for app: NSRunningApplication) -> AXUIElement? {
-        let axApp = AXUIElementCreateApplication(app.processIdentifier)
-        var focusedElement: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(axApp, kAXFocusedUIElementAttribute as CFString, &focusedElement)
-        guard result == .success, let element = focusedElement,
-              CFGetTypeID(element) == AXUIElementGetTypeID() else { return nil }
-        return (element as! AXUIElement)
-    }
-
-    /// Reads up to `maxChars` of text before the cursor using the parameterized
-    /// AX string-for-range attribute. Falls back to suffix of full value if unsupported.
-    private static func textBeforeCursor(_ element: AXUIElement, maxChars: Int) -> String {
-        // Try cursor-aware read via kAXSelectedTextRangeAttribute + kAXStringForRangeParameterizedAttribute
-        var rangeRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeRef) == .success,
-           let rangeValue = rangeRef,
-           CFGetTypeID(rangeValue) == AXValueGetTypeID() {
-            var cfRange = CFRange(location: 0, length: 0)
-            if AXValueGetValue(rangeValue as! AXValue, .cfRange, &cfRange) {
-                let cursorPos = cfRange.location
-                let prefixLen = min(cursorPos, maxChars)
-                if prefixLen > 0 {
-                    var sliceRange = CFRange(location: cursorPos - prefixLen, length: prefixLen)
-                    let axRange: AXValue? = AXValueCreate(.cfRange, &sliceRange)
-                    if let axRange {
-                        var sliceRef: CFTypeRef?
-                        if AXUIElementCopyParameterizedAttributeValue(
-                            element,
-                            kAXStringForRangeParameterizedAttribute as CFString,
-                            axRange,
-                            &sliceRef
-                        ) == .success, let text = sliceRef as? String {
-                            return text
-                        }
-                    }
-                }
-            }
-        }
-
-        // Fallback: read full value only if the document is small enough that the
-        // IPC cost is acceptable. Skip for large documents (>5000 chars) to avoid
-        // copying the entire text buffer across the process boundary.
-        var charCountRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(element, kAXNumberOfCharactersAttribute as CFString, &charCountRef) == .success,
-           let count = charCountRef as? Int, count > 5000 {
-            return ""
-        }
-        let full = axStringValue(element, attribute: kAXValueAttribute as String)
-        if full.count > maxChars {
-            return "..." + String(full.suffix(maxChars))
-        }
-        return full
-    }
-
-    private static func axStringValue(_ element: AXUIElement, attribute: String) -> String {
-        var value: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
-        guard result == .success, let str = value as? String else { return "" }
-        return str
-    }
-
-    private static func browserURL(for app: NSRunningApplication?) -> String? {
-        guard let app else { return nil }
-        let browserBundles = [
-            "com.google.Chrome", "com.apple.Safari", "company.thebrowser.Browser",
-            "org.mozilla.firefox", "com.brave.Browser", "com.microsoft.edgemac"
-        ]
-        guard browserBundles.contains(app.bundleIdentifier ?? "") else { return nil }
-
-        let axApp = AXUIElementCreateApplication(app.processIdentifier)
-        var windowRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &windowRef) == .success,
-              let window = windowRef,
-              CFGetTypeID(window) == AXUIElementGetTypeID() else { return nil }
-
-        let axWindow = (window as! AXUIElement)
-        var urlValue: CFTypeRef?
-        if AXUIElementCopyAttributeValue(axWindow, kAXDocumentAttribute as CFString, &urlValue) == .success,
-           let url = urlValue as? String, !url.isEmpty {
-            if let parsed = URL(string: url) {
-                return "\(parsed.host ?? "")\(parsed.path)"
-            }
-            return String(url.prefix(100))
-        }
-        return nil
-    }
 }
 
 // MARK: - Meeting context (Screenshot + OCR — richer, for cloud LLMs)

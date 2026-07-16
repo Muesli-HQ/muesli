@@ -259,6 +259,7 @@ final class MuesliController: NSObject {
     private let meetingMarkdownAutoExporter: MeetingMarkdownAutoExporting
     private let launchAtLoginCoordinator: LaunchAtLoginCoordinator
     let transcriptionCoordinator = TranscriptionCoordinator()
+    private lazy var cotypistCoordinator = CotypistCoordinator(transcriptionRuntime: transcriptionCoordinator)
     private let hotkeyMonitor = HotkeyMonitor()
     private let computerUseHotkeyMonitor = HotkeyMonitor()
     private let meetingRecordingHotkeyMonitor = HotkeyMonitor()
@@ -547,6 +548,7 @@ final class MuesliController: NSObject {
         }
         if canRunMainApp {
             startMeetingRecordingHotkeyMonitorIfNeeded()
+            cotypistCoordinator.update(config: config)
         }
         syncDictationRecorderWarmup(intent: .idlePrewarm(.startup))
         indicator.onStopMeeting = { [weak self] in self?.stopMeetingRecording() }
@@ -765,6 +767,7 @@ final class MuesliController: NSObject {
         hotkeyMonitor.stop()
         computerUseHotkeyMonitor.stop()
         meetingRecordingHotkeyMonitor.stop()
+        cotypistCoordinator.shutdown()
         computerUseCommandTask?.cancel()
         computerUseCommandTask = nil
         calendarMonitor.stop()
@@ -1299,6 +1302,9 @@ final class MuesliController: NSObject {
         appState.selectedMeetingSummaryBackend = selectedMeetingSummaryBackend
         appState.selectedPostProcessorBackend = selectedPostProcessorBackend
         appState.config = config
+        if hasStarted {
+            cotypistCoordinator.update(config: config)
+        }
         appState.isChatGPTAuthenticated = chatGPTAuth.isAuthenticated
         syncCalendarMonitor()
         syncMeetingDetectionMonitor()
@@ -3125,7 +3131,9 @@ final class MuesliController: NSObject {
             computerUseHotkey: config.computerUseHotkey,
             isComputerUseEnabled: config.enableComputerUseHotkey,
             meetingRecordingHotkey: config.meetingRecordingHotkey,
-            isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
+            isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey,
+            cotypistHotkey: config.cotypistHotkey,
+            isCotypistEnabled: config.enableCotypist
         )
         guard result.didUpdate else {
             fputs("[hotkeys] rejected dictation hotkey because it matches computer use hotkey\n", stderr)
@@ -3144,7 +3152,9 @@ final class MuesliController: NSObject {
             dictationHotkey: config.dictationHotkey,
             isComputerUseEnabled: config.enableComputerUseHotkey,
             meetingRecordingHotkey: config.meetingRecordingHotkey,
-            isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
+            isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey,
+            cotypistHotkey: config.cotypistHotkey,
+            isCotypistEnabled: config.enableCotypist
         )
         guard result.didUpdate else {
             fputs("[hotkeys] rejected computer use hotkey because it matches dictation hotkey\n", stderr)
@@ -3162,7 +3172,9 @@ final class MuesliController: NSObject {
                 currentHotkey: config.computerUseHotkey,
                 dictationHotkey: config.dictationHotkey,
                 meetingRecordingHotkey: config.meetingRecordingHotkey,
-                isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
+                isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey,
+                cotypistHotkey: config.cotypistHotkey,
+                isCotypistEnabled: config.enableCotypist
             )
             guard resolution.result.didUpdate else {
                 fputs("[hotkeys] rejected computer use enable because fallback conflicts with another shortcut\n", stderr)
@@ -3187,7 +3199,9 @@ final class MuesliController: NSObject {
             hotkey,
             dictationHotkey: config.dictationHotkey,
             computerUseHotkey: config.computerUseHotkey,
-            isComputerUseEnabled: config.enableComputerUseHotkey
+            isComputerUseEnabled: config.enableComputerUseHotkey,
+            cotypistHotkey: config.cotypistHotkey,
+            isCotypistEnabled: config.enableCotypist
         )
         guard result.didUpdate else {
             fputs("[hotkeys] rejected meeting recording hotkey due to conflict\n", stderr)
@@ -3205,7 +3219,9 @@ final class MuesliController: NSObject {
                 config.meetingRecordingHotkey,
                 dictationHotkey: config.dictationHotkey,
                 computerUseHotkey: config.computerUseHotkey,
-                isComputerUseEnabled: config.enableComputerUseHotkey
+                isComputerUseEnabled: config.enableComputerUseHotkey,
+                cotypistHotkey: config.cotypistHotkey,
+                isCotypistEnabled: config.enableCotypist
             )
             guard result.didUpdate else { return result }
             updateConfig { $0.enableMeetingRecordingHotkey = true }
@@ -3225,6 +3241,7 @@ final class MuesliController: NSObject {
             config.enableComputerUseHotkey = false
             config.meetingRecordingHotkey = .meetingRecordingDefault
             config.enableMeetingRecordingHotkey = false
+            config.cotypistHotkey = .cotypistDefault
             config.hotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultThresholdMilliseconds
             config.computerUseHotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultThresholdMilliseconds
             config.meetingRecordingHotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultMeetingThresholdMilliseconds
@@ -3232,6 +3249,86 @@ final class MuesliController: NSObject {
         hotkeyMonitor.configure(.default)
         configureComputerUseHotkeyMonitor()
         meetingRecordingHotkeyMonitor.stop()
+    }
+
+    @discardableResult
+    func updateCotypistHotkey(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
+        let result = ShortcutHotkeyPolicy.validateCotypistHotkey(
+            hotkey,
+            dictationHotkey: config.dictationHotkey,
+            computerUseHotkey: config.computerUseHotkey,
+            isComputerUseEnabled: config.enableComputerUseHotkey,
+            meetingRecordingHotkey: config.meetingRecordingHotkey,
+            isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
+        )
+        guard result.didUpdate else { return result }
+        updateConfig { $0.cotypistHotkey = hotkey }
+        return result
+    }
+
+    @discardableResult
+    func updateCotypistEnabled(_ enabled: Bool) -> ShortcutHotkeyUpdateResult {
+        guard enabled else {
+            updateConfig { $0.enableCotypist = false }
+            return .updated
+        }
+        guard #available(macOS 15, *) else {
+            updateConfig { $0.enableCotypist = false }
+            return .conflict(message: "Cotypist requires macOS 15 or later.")
+        }
+        let hotkeyResult = ShortcutHotkeyPolicy.validateCotypistHotkey(
+            config.cotypistHotkey,
+            dictationHotkey: config.dictationHotkey,
+            computerUseHotkey: config.computerUseHotkey,
+            isComputerUseEnabled: config.enableComputerUseHotkey,
+            meetingRecordingHotkey: config.meetingRecordingHotkey,
+            isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
+        )
+        guard hotkeyResult.didUpdate else { return hotkeyResult }
+        guard config.resolvedCotypistModel.isDownloaded else {
+            updateConfig { $0.enableCotypist = false }
+            showModels(category: .postProcessing)
+            return .conflict(message: "Download \(config.resolvedCotypistModel.label) in Local Language Models first.")
+        }
+        guard AXIsProcessTrusted() else {
+            updateConfig { $0.enableCotypist = false }
+            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+            AXIsProcessTrustedWithOptions(options)
+            return .conflict(message: "Allow Accessibility access, then enable Cotypist again.")
+        }
+        guard CGPreflightListenEventAccess() else {
+            updateConfig { $0.enableCotypist = false }
+            CGRequestListenEventAccess()
+            return .conflict(message: "Allow Input Monitoring access, then enable Cotypist again.")
+        }
+        updateConfig { $0.enableCotypist = true }
+        return hotkeyResult
+    }
+
+    func selectCotypistModel(_ model: CotypistModelOption) {
+        guard model.isDownloaded else {
+            updateConfig {
+                $0.cotypistModel = model.rawValue
+                $0.enableCotypist = false
+            }
+            showModels(category: .postProcessing)
+            return
+        }
+        updateConfig { $0.cotypistModel = model.rawValue }
+    }
+
+    func addCotypistExcludedApplication(bundleID: String) {
+        guard !bundleID.isEmpty else { return }
+        updateConfig { config in
+            if !config.cotypistExcludedBundleIDs.contains(bundleID) {
+                config.cotypistExcludedBundleIDs.append(bundleID)
+                config.cotypistExcludedBundleIDs.sort()
+            }
+        }
+    }
+
+    func removeCotypistExcludedApplication(bundleID: String) {
+        updateConfig { $0.cotypistExcludedBundleIDs.removeAll(where: { $0 == bundleID }) }
     }
 
     // MARK: - Onboarding

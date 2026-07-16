@@ -238,6 +238,7 @@ enum Gemma4LiteRTModelStore {
 actor Gemma4LiteRTTranscriber {
     static let maxOutputTokens: Int32 = 128
     static let maxCleanupOutputTokens: Int32 = 1024
+    static let maxCotypistOutputTokens: Int32 = 24
     static let maxAudioDurationSeconds = 30.0
 
     private var engine: OpaquePointer?
@@ -515,6 +516,65 @@ actor Gemma4LiteRTTranscriber {
                 "processing_seconds=\(String(format: "%.3f", elapsed))"
         )
         return (trimmed, rawOutput, elapsed)
+    }
+
+    func completeText(_ request: CotypistCompletionRequest) async throws -> String {
+        guard let engine else { throw TranscriberError.notLoaded }
+        try Task.checkCancellation()
+
+        guard let sessionConfig = litert_lm_session_config_create() else {
+            throw TranscriberError.failedToCreateSessionConfig
+        }
+        defer { litert_lm_session_config_delete(sessionConfig) }
+        litert_lm_session_config_set_max_output_tokens(
+            sessionConfig,
+            Int32(min(request.maxOutputTokens, Int(Self.maxCotypistOutputTokens)))
+        )
+        var sampler = LiteRtLmSamplerParams(
+            type: kLiteRtLmSamplerTypeTopP,
+            top_k: 1,
+            top_p: 1.0,
+            temperature: 0.0,
+            seed: 0
+        )
+        litert_lm_session_config_set_sampler_params(sessionConfig, &sampler)
+
+        guard let conversationConfig = litert_lm_conversation_config_create() else {
+            throw TranscriberError.failedToCreateConversationConfig
+        }
+        defer { litert_lm_conversation_config_delete(conversationConfig) }
+        litert_lm_conversation_config_set_session_config(conversationConfig, sessionConfig)
+        let systemMessageJSON = try Self.messageJSONString(
+            role: "system",
+            contents: [["type": "text", "text": request.systemPrompt]]
+        )
+        litert_lm_conversation_config_set_system_message(conversationConfig, systemMessageJSON)
+
+        guard let conversation = litert_lm_conversation_create(engine, conversationConfig) else {
+            throw TranscriberError.failedToCreateConversation
+        }
+        defer { litert_lm_conversation_delete(conversation) }
+        guard let optionalArgs = litert_lm_conversation_optional_args_create() else {
+            throw TranscriberError.failedToCreateOptionalArgs
+        }
+        defer { litert_lm_conversation_optional_args_delete(optionalArgs) }
+
+        let userMessageJSON = try Self.messageJSONString(
+            role: "user",
+            contents: [["type": "text", "text": request.userPrompt]]
+        )
+        guard let jsonResponse = litert_lm_conversation_send_message(
+            conversation,
+            userMessageJSON,
+            nil,
+            optionalArgs
+        ) else { throw TranscriberError.invalidResponse }
+        defer { litert_lm_json_response_delete(jsonResponse) }
+        guard let responseCString = litert_lm_json_response_get_string(jsonResponse) else {
+            throw TranscriberError.invalidResponse
+        }
+        try Task.checkCancellation()
+        return try Self.textContent(fromResponseJSON: String(cString: responseCString))
     }
 
     func shutdown() {
