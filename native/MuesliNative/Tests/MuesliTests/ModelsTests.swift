@@ -605,6 +605,7 @@ struct AppConfigTests {
         #expect(config.dictationHotkey == .default)
         #expect(config.computerUseHotkey == .computerUseDefault)
         #expect(config.enableComputerUseHotkey == false)
+        #expect(config.sidebarToggleHotkey == .sidebarToggleDefault)
         #expect(config.computerUseHotkeyDefaultDisabledMigrationApplied == true)
         #expect(config.enableComputerUsePlanner == true)
         #expect(config.computerUsePlannerModel.isEmpty)
@@ -790,6 +791,7 @@ struct AppConfigTests {
         config.hotkeyTriggerThresholdMS = 125
         config.computerUseHotkeyTriggerThresholdMS = 350
         config.meetingRecordingHotkeyTriggerThresholdMS = 900
+        config.sidebarToggleHotkey = .combination(modifiers: [.command, .shift], keyCode: 11)
         config.lmStudioURL = "http://localhost:1234"
         config.lmStudioModel = "local-model"
         config.customLLMURL = "https://example.com"
@@ -870,6 +872,7 @@ struct AppConfigTests {
         #expect(decoded.hotkeyTriggerThresholdMS == 125)
         #expect(decoded.computerUseHotkeyTriggerThresholdMS == 350)
         #expect(decoded.meetingRecordingHotkeyTriggerThresholdMS == 900)
+        #expect(decoded.sidebarToggleHotkey == .combination(modifiers: [.command, .shift], keyCode: 11))
         #expect(decoded.lmStudioURL == "http://localhost:1234")
         #expect(decoded.lmStudioModel == "local-model")
         #expect(decoded.customLLMURL == "https://example.com")
@@ -1026,6 +1029,7 @@ struct AppConfigTests {
         #expect(config.hotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds)
         #expect(config.computerUseHotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds)
         #expect(config.meetingRecordingHotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultMeetingThresholdMilliseconds)
+        #expect(config.sidebarToggleHotkey == .sidebarToggleDefault)
         #expect(config.meetingHookEnabled == false)
         #expect(config.meetingHookPath.isEmpty)
         #expect(config.meetingHookTimeoutSeconds == 30)
@@ -2213,6 +2217,7 @@ struct HotkeyConfigTests {
         #expect(HotkeyConfig.default.displayLabel == "Right ⌥")
         #expect(HotkeyConfig.computerUseDefault.displayLabel == "Right ⌘")
         #expect(HotkeyConfig.meetingRecordingDefault.displayLabel == "⌘⇧R")
+        #expect(HotkeyConfig.sidebarToggleDefault.displayLabel == "⌘B")
         #expect(HotkeyConfig(keyCode: 62, label: "Right Ctrl").displayLabel == "Right ⌃")
         #expect(HotkeyConfig(keyCode: 63, label: "Fn").displayLabel == "fn")
     }

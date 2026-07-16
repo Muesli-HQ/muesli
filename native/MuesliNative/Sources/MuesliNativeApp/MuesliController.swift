@@ -3225,6 +3225,7 @@ final class MuesliController: NSObject {
             config.enableComputerUseHotkey = false
             config.meetingRecordingHotkey = .meetingRecordingDefault
             config.enableMeetingRecordingHotkey = false
+            config.sidebarToggleHotkey = .sidebarToggleDefault
             config.hotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultThresholdMilliseconds
             config.computerUseHotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultThresholdMilliseconds
             config.meetingRecordingHotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultMeetingThresholdMilliseconds
