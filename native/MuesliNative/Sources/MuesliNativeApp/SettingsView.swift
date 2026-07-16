@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import SwiftUI
+import UniformTypeIdentifiers
 import MuesliCore
 
 private struct MeetingDetectionAppOption: Identifiable {
@@ -1359,7 +1360,7 @@ struct SettingsView: View {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        panel.allowedFileTypes = ["app"]
+        panel.allowedContentTypes = [.application]
         panel.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
         panel.begin { response in
             guard response == .OK, let url = panel.url,

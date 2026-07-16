@@ -74,6 +74,20 @@ struct CotypistEventPolicy: Sendable {
 
     private var consumedKeyUps: Set<UInt16> = []
 
+    init(
+        isEnabled: Bool = false,
+        isGenerating: Bool = false,
+        isPreviewing: Bool = false,
+        invocationKeyCode: UInt16 = 8,
+        invocationModifiers: CotypistEventModifiers = [.control, .option]
+    ) {
+        self.isEnabled = isEnabled
+        self.isGenerating = isGenerating
+        self.isPreviewing = isPreviewing
+        self.invocationKeyCode = invocationKeyCode
+        self.invocationModifiers = invocationModifiers
+    }
+
     mutating func handle(_ event: CotypistInputEvent) -> CotypistEventAction {
         switch event {
         case .tapDisabled:

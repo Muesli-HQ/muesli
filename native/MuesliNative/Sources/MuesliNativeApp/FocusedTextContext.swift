@@ -9,7 +9,7 @@ struct FocusedTextRange: Equatable, Sendable {
 
 struct FocusedTextFingerprint: Equatable, Sendable {
     let processID: pid_t
-    let elementIdentifier: Int
+    let elementIdentifier: UInt
     let selection: FocusedTextRange
     let prefix: String
     let suffix: String
@@ -37,7 +37,7 @@ struct FocusedTextRawSnapshot: Equatable, Sendable {
     let appName: String
     let bundleID: String
     let processID: pid_t
-    let elementIdentifier: Int
+    let elementIdentifier: UInt
     let browserLocation: String?
     let windowTitle: String
     let role: String
@@ -56,6 +56,26 @@ struct FocusedTextRawSnapshot: Equatable, Sendable {
 
 protocol FocusedTextReading {
     func readFocusedText(maxPrefixCharacters: Int, maxSuffixCharacters: Int) -> FocusedTextRawSnapshot?
+}
+
+enum FocusedTextFallbackReader {
+    static func boundedSegments(
+        fullText: String,
+        selection: FocusedTextRange?,
+        maxPrefixCharacters: Int,
+        maxSuffixCharacters: Int
+    ) -> (prefix: String, suffix: String) {
+        let nsValue = fullText as NSString
+        let location = min(max(selection?.location ?? nsValue.length, 0), nsValue.length)
+        let selectedLength = min(max(selection?.length ?? 0, 0), nsValue.length - location)
+        let prefixStart = max(0, location - maxPrefixCharacters)
+        let suffixStart = location + selectedLength
+        let suffixLength = min(maxSuffixCharacters, nsValue.length - suffixStart)
+        return (
+            nsValue.substring(with: NSRange(location: prefixStart, length: location - prefixStart)),
+            nsValue.substring(with: NSRange(location: suffixStart, length: suffixLength))
+        )
+    }
 }
 
 /// Shared, bounded Accessibility capture for dictation and Cotypist.
@@ -258,15 +278,11 @@ struct SystemFocusedTextReader: FocusedTextReading {
         }
         let full = stringAttribute(element, kAXValueAttribute as String)
         guard !full.isEmpty else { return ("", "") }
-        let nsValue = full as NSString
-        let location = min(max(selection?.location ?? nsValue.length, 0), nsValue.length)
-        let selectedLength = min(max(selection?.length ?? 0, 0), nsValue.length - location)
-        let prefixStart = max(0, location - maxPrefixCharacters)
-        let suffixStart = location + selectedLength
-        let suffixLength = min(maxSuffixCharacters, nsValue.length - suffixStart)
-        return (
-            nsValue.substring(with: NSRange(location: prefixStart, length: location - prefixStart)),
-            nsValue.substring(with: NSRange(location: suffixStart, length: suffixLength))
+        return FocusedTextFallbackReader.boundedSegments(
+            fullText: full,
+            selection: selection,
+            maxPrefixCharacters: maxPrefixCharacters,
+            maxSuffixCharacters: maxSuffixCharacters
         )
     }
 
