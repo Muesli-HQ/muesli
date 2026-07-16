@@ -212,7 +212,7 @@ struct SystemFocusedTextReader: FocusedTextReading {
             prefix: segments.prefix,
             suffix: segments.suffix,
             selectedText: Self.stringAttribute(element, kAXSelectedTextAttribute as String),
-            caretBounds: selection.flatMap { Self.bounds(element: element, range: $0) },
+            caretBounds: selection.flatMap { Self.caretBounds(element: element, selection: $0) },
             elementBounds: Self.elementBounds(element)
         )
     }
@@ -300,6 +300,32 @@ struct SystemFocusedTextReader: FocusedTextReading {
         return result as? String ?? ""
     }
 
+    private static func caretBounds(element: AXUIElement, selection: FocusedTextRange) -> CGRect? {
+        if let exact = bounds(element: element, range: selection), exact.isUsableCaretBounds {
+            return exact
+        }
+
+        // Some text controls return CGRect.zero for a zero-length range even though
+        // neighboring character bounds are available. Prefer the next character so
+        // a caret at the start of a wrapped line stays on that line; at the end of
+        // the value, infer the caret from the trailing edge of the previous glyph.
+        guard selection.length == 0 else { return nil }
+        if let next = bounds(
+            element: element,
+            range: FocusedTextRange(location: selection.location, length: 1)
+        ), next.isUsableTextBounds {
+            return CGRect(x: next.minX, y: next.minY, width: 0, height: next.height)
+        }
+        if selection.location > 0,
+           let previous = bounds(
+               element: element,
+               range: FocusedTextRange(location: selection.location - 1, length: 1)
+           ), previous.isUsableTextBounds {
+            return CGRect(x: previous.maxX, y: previous.minY, width: 0, height: previous.height)
+        }
+        return nil
+    }
+
     private static func bounds(element: AXUIElement, range: FocusedTextRange) -> CGRect? {
         var cfRange = CFRange(location: range.location, length: range.length)
         guard let rangeValue = AXValueCreate(.cfRange, &cfRange) else { return nil }
@@ -325,7 +351,7 @@ struct SystemFocusedTextReader: FocusedTextReading {
               CFGetTypeID(sizeValue) == AXValueGetTypeID(),
               AXValueGetValue(sizeValue as! AXValue, .cgSize, &size) else { return nil }
         let rect = CGRect(origin: position, size: size)
-        return rect.isFinite && !rect.isNull ? rect : nil
+        return rect.isUsableElementBounds ? rect : nil
     }
 
     private static func isEditable(element: AXUIElement, role: String) -> Bool {
@@ -375,5 +401,17 @@ struct SystemFocusedTextReader: FocusedTextReading {
 private extension CGRect {
     var isFinite: Bool {
         origin.x.isFinite && origin.y.isFinite && size.width.isFinite && size.height.isFinite
+    }
+
+    var isUsableCaretBounds: Bool {
+        isFinite && !isNull && width >= 0 && height > 0
+    }
+
+    var isUsableTextBounds: Bool {
+        isFinite && !isNull && width > 0 && height > 0
+    }
+
+    var isUsableElementBounds: Bool {
+        isFinite && !isNull && width > 0 && height > 0
     }
 }

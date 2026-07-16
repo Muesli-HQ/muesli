@@ -245,20 +245,46 @@ enum CotypistOverlayPlacement {
         primaryScreenMaxY: CGFloat,
         fallbackPoint: CGPoint
     ) -> CGRect {
-        let quartzAnchor: CGPoint
-        if let caretBounds, !caretBounds.isNull {
-            quartzAnchor = CGPoint(x: caretBounds.maxX + 3, y: caretBounds.minY)
-        } else if let elementBounds, !elementBounds.isNull {
-            quartzAnchor = CGPoint(x: elementBounds.minX + 8, y: elementBounds.maxY - 8)
-        } else {
-            return fit(
-                CGRect(origin: CGPoint(x: fallbackPoint.x + 8, y: fallbackPoint.y - panelSize.height / 2), size: panelSize),
-                in: visibleFrames.first(where: { $0.contains(fallbackPoint) }) ?? visibleFrames.first
-            )
+        if let caretBounds, isUsableCaretBounds(caretBounds),
+           let placement = placement(
+               quartzAnchor: CGPoint(x: caretBounds.maxX + 3, y: caretBounds.minY),
+               panelSize: panelSize,
+               screenFrames: screenFrames,
+               visibleFrames: visibleFrames,
+               primaryScreenMaxY: primaryScreenMaxY
+           ) {
+            return placement
         }
 
+        if let elementBounds, isUsableElementBounds(elementBounds),
+           let placement = placement(
+               quartzAnchor: CGPoint(x: elementBounds.minX + 8, y: elementBounds.maxY - 8),
+               panelSize: panelSize,
+               screenFrames: screenFrames,
+               visibleFrames: visibleFrames,
+               primaryScreenMaxY: primaryScreenMaxY
+           ) {
+            return placement
+        }
+
+        return fallbackFrame(panelSize: panelSize, fallbackPoint: fallbackPoint, visibleFrames: visibleFrames)
+    }
+
+    private static func placement(
+        quartzAnchor: CGPoint,
+        panelSize: CGSize,
+        screenFrames: [CGRect],
+        visibleFrames: [CGRect],
+        primaryScreenMaxY: CGFloat
+    ) -> CGRect? {
+        guard quartzAnchor.x.isFinite, quartzAnchor.y.isFinite, primaryScreenMaxY.isFinite else { return nil }
         let appKitAnchor = CGPoint(x: quartzAnchor.x, y: primaryScreenMaxY - quartzAnchor.y)
-        let screenIndex = screenFrames.firstIndex(where: { $0.contains(appKitAnchor) }) ?? 0
+        // AX geometry uses a top-left global origin while AppKit uses a
+        // bottom-left origin. Reject geometry that does not map to any display;
+        // otherwise a bogus (often zero) AX rect gets clamped into a corner.
+        guard let screenIndex = screenFrames.firstIndex(where: {
+            $0.insetBy(dx: -8, dy: -8).contains(appKitAnchor)
+        }) else { return nil }
         let visible = visibleFrames.indices.contains(screenIndex) ? visibleFrames[screenIndex] : visibleFrames.first
         var origin = CGPoint(x: appKitAnchor.x, y: appKitAnchor.y - panelSize.height + 2)
         if let visible {
@@ -266,6 +292,33 @@ enum CotypistOverlayPlacement {
             if origin.y < visible.minY { origin.y = appKitAnchor.y + 8 }
         }
         return fit(CGRect(origin: origin, size: panelSize), in: visible)
+    }
+
+    private static func fallbackFrame(
+        panelSize: CGSize,
+        fallbackPoint: CGPoint,
+        visibleFrames: [CGRect]
+    ) -> CGRect {
+        let visible = visibleFrames.first(where: { $0.contains(fallbackPoint) }) ?? visibleFrames.first
+        return fit(
+            CGRect(
+                origin: CGPoint(x: fallbackPoint.x + 8, y: fallbackPoint.y - panelSize.height / 2),
+                size: panelSize
+            ),
+            in: visible
+        )
+    }
+
+    private static func isUsableCaretBounds(_ rect: CGRect) -> Bool {
+        rect.origin.x.isFinite && rect.origin.y.isFinite
+            && rect.width.isFinite && rect.height.isFinite
+            && !rect.isNull && rect.width >= 0 && rect.height > 0
+    }
+
+    private static func isUsableElementBounds(_ rect: CGRect) -> Bool {
+        rect.origin.x.isFinite && rect.origin.y.isFinite
+            && rect.width.isFinite && rect.height.isFinite
+            && !rect.isNull && rect.width > 0 && rect.height > 0
     }
 
     private static func fit(_ frame: CGRect, in visible: CGRect?) -> CGRect {

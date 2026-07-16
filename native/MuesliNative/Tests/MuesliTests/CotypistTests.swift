@@ -283,6 +283,8 @@ struct CotypistOverlayPlacementTests {
             fallbackPoint: .zero
         )
         #expect(screenFrames[1].contains(frame))
+        #expect(frame.minX == 1_505)
+        #expect(frame.maxY == 522)
     }
 
     @Test("full-screen edge placement remains visible")
@@ -313,6 +315,40 @@ struct CotypistOverlayPlacementTests {
         )
         #expect(screenFrames[0].contains(frame))
         #expect(frame.minX >= pointer.x)
+    }
+
+    @Test("zero caret bounds fall back to the focused element instead of a screen corner")
+    func zeroCaretUsesElement() {
+        let frame = CotypistOverlayPlacement.frame(
+            caretBounds: .zero,
+            elementBounds: CGRect(x: 320, y: 240, width: 480, height: 36),
+            panelSize: CGSize(width: 240, height: 30),
+            screenFrames: screenFrames,
+            visibleFrames: screenFrames,
+            primaryScreenMaxY: 900,
+            fallbackPoint: CGPoint(x: 40, y: 40)
+        )
+
+        #expect(frame.minX == 328)
+        #expect(frame.minY == 604)
+        #expect(frame.minX > 100)
+    }
+
+    @Test("off-screen AX geometry falls back near the pointer")
+    func invalidGeometryUsesPointer() {
+        let pointer = CGPoint(x: 700, y: 420)
+        let frame = CotypistOverlayPlacement.frame(
+            caretBounds: CGRect(x: -40_000, y: -40_000, width: 1, height: 18),
+            elementBounds: CGRect.zero,
+            panelSize: CGSize(width: 200, height: 30),
+            screenFrames: screenFrames,
+            visibleFrames: screenFrames,
+            primaryScreenMaxY: 900,
+            fallbackPoint: pointer
+        )
+
+        #expect(frame.minX == pointer.x + 8)
+        #expect(frame.midY == pointer.y)
     }
 }
 
