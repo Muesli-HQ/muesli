@@ -80,6 +80,7 @@ struct SettingsView: View {
     @State private var isLoadingOpenRouterFreeModels = false
     @State private var openRouterFreeModelsError: String?
     @State private var hasRefreshedMeetingCalendarSources = false
+    @State private var cotypistStatusMessage: String?
 
     init(appState: AppState, controller: MuesliController) {
         self.appState = appState
@@ -479,7 +480,7 @@ struct SettingsView: View {
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-            .frame(width: 760)
+            .frame(width: 860)
             Spacer()
         }
     }
@@ -493,6 +494,8 @@ struct SettingsView: View {
             syncSettingsPane
         case .dictation:
             dictationSettingsPane
+        case .cotypist:
+            cotypistSettingsPane
         case .computerUse:
             computerUseSettingsPane
         case .meetings:
@@ -1303,6 +1306,121 @@ struct SettingsView: View {
                     }
                 }
             }
+        }
+    }
+
+    private var cotypistSettingsPane: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
+            settingsSection("Cotypist (Experimental)") {
+                settingsRow(
+                    "Enable Cotypist",
+                    description: "Manually request a short, private continuation in the focused text field. Tab accepts; Escape or continued typing dismisses."
+                ) {
+                    settingsSwitch(isOn: appState.config.enableCotypist) { enabled in
+                        cotypistStatusMessage = controller.updateCotypistEnabled(enabled).message
+                    }
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Local model", controlWidth: meetingControlWidth) {
+                    settingsMenu(
+                        selection: appState.config.resolvedCotypistModel.label,
+                        options: CotypistModelOption.allCases.map(\.label)
+                    ) { label in
+                        guard let model = CotypistModelOption.allCases.first(where: { $0.label == label }) else { return }
+                        controller.selectCotypistModel(model)
+                        cotypistStatusMessage = model.isDownloaded
+                            ? nil
+                            : "Download \(model.label) in Local Language Models before enabling Cotypist."
+                    }
+                }
+                settingsDescription(appState.config.resolvedCotypistModel.detail)
+                if let cotypistStatusMessage {
+                    Text(cotypistStatusMessage)
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.transcribing)
+                        .padding(.horizontal, MuesliTheme.spacing16)
+                }
+            }
+
+            settingsSection("Permission Readiness") {
+                cotypistPermissionRow(
+                    title: "Accessibility",
+                    isReady: accessibilityGranted,
+                    detail: "Reads only bounded text around the focused caret and inserts accepted text."
+                )
+                Divider().background(MuesliTheme.surfaceBorder)
+                cotypistPermissionRow(
+                    title: "Input Monitoring",
+                    isReady: inputMonitoringGranted,
+                    detail: "Captures the invocation chord, Tab, and Escape without hijacking ordinary typing."
+                )
+                Divider().background(MuesliTheme.surfaceBorder)
+                cotypistPermissionRow(
+                    title: "Selected model",
+                    isReady: appState.config.resolvedCotypistModel.isDownloaded,
+                    detail: appState.config.resolvedCotypistModel.isDownloaded
+                        ? "Ready for local inference."
+                        : "Not downloaded."
+                )
+            }
+
+            settingsSection("Excluded Applications") {
+                if appState.config.cotypistExcludedBundleIDs.isEmpty {
+                    Text("No applications excluded.")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .padding(.horizontal, MuesliTheme.spacing16)
+                } else {
+                    ForEach(appState.config.cotypistExcludedBundleIDs, id: \.self) { bundleID in
+                        settingsRow(cotypistApplicationName(bundleID: bundleID), description: bundleID) {
+                            actionButton("Remove") {
+                                controller.removeCotypistExcludedApplication(bundleID: bundleID)
+                            }
+                        }
+                        if bundleID != appState.config.cotypistExcludedBundleIDs.last {
+                            Divider().background(MuesliTheme.surfaceBorder)
+                        }
+                    }
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                HStack {
+                    actionButton("Choose Application…") { chooseCotypistExcludedApplication() }
+                    Spacer()
+                }
+                .padding(.horizontal, MuesliTheme.spacing16)
+            }
+        }
+    }
+
+    private func cotypistPermissionRow(title: String, isReady: Bool, detail: String) -> some View {
+        settingsRow(title, description: detail) {
+            Label(isReady ? "Ready" : "Required", systemImage: isReady ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                .font(MuesliTheme.caption())
+                .foregroundStyle(isReady ? Color.green : MuesliTheme.transcribing)
+        }
+    }
+
+    private func cotypistApplicationName(bundleID: String) -> String {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID),
+              let bundle = Bundle(url: url) else { return bundleID }
+        return (bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+            ?? (bundle.object(forInfoDictionaryKey: "CFBundleName") as? String)
+            ?? url.deletingPathExtension().lastPathComponent
+    }
+
+    private func chooseCotypistExcludedApplication() {
+        let panel = NSOpenPanel()
+        panel.title = "Exclude an Application from Cotypist"
+        panel.prompt = "Exclude"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedFileTypes = ["app"]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        panel.begin { response in
+            guard response == .OK, let url = panel.url,
+                  let bundleID = Bundle(url: url)?.bundleIdentifier else { return }
+            controller.addCotypistExcludedApplication(bundleID: bundleID)
         }
     }
 

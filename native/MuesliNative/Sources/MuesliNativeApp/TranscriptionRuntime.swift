@@ -42,6 +42,9 @@ actor TranscriptionCoordinator {
     private let whisperTranscriber = WhisperKitTranscriber()
     private var _qwen3Transcriber: Any?
     private var _qwen3PostProcessor: Any?
+    private var _cotypistQwenEngine: Any?
+    private var _cotypistGemmaEngine: Any?
+    private var activeCotypistModel: CotypistModelOption?
     private var _cohereTranscriber: Any?
     private var _indicASRTranscriber: Any?
     private var _gemma4LiteRTTranscriber: Any?
@@ -259,6 +262,77 @@ actor TranscriptionCoordinator {
             _gemma4LiteRTTranscriber = Gemma4LiteRTTranscriber()
         }
         return _gemma4LiteRTTranscriber as! Gemma4LiteRTTranscriber
+    }
+
+    @available(macOS 15, *)
+    private var cotypistQwenEngine: Qwen3CotypistEngine {
+        if _cotypistQwenEngine == nil {
+            _cotypistQwenEngine = Qwen3CotypistEngine()
+        }
+        return _cotypistQwenEngine as! Qwen3CotypistEngine
+    }
+
+    @available(macOS 15, *)
+    private var cotypistGemmaEngine: Gemma4LiteRTTranscriber {
+        if _cotypistGemmaEngine == nil {
+            _cotypistGemmaEngine = Gemma4LiteRTTranscriber()
+        }
+        return _cotypistGemmaEngine as! Gemma4LiteRTTranscriber
+    }
+
+    func prepareCotypist(model: CotypistModelOption) async throws {
+        guard #available(macOS 15, *) else {
+            throw NSError(domain: "Cotypist", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Cotypist requires macOS 15 or later.",
+            ])
+        }
+        if activeCotypistModel != model {
+            await unloadCotypist()
+            activeCotypistModel = model
+        }
+        switch model {
+        case .qwen35_0_8b:
+            try await cotypistQwenEngine.prepare()
+        case .gemma4E2B:
+            try await cotypistGemmaEngine.prepare()
+        }
+    }
+
+    func completeText(request: CotypistCompletionRequest) async throws -> String {
+        try await prepareCotypist(model: request.model)
+        let raw: String
+        switch request.model {
+        case .qwen35_0_8b:
+            raw = try await cotypistQwenEngine.complete(request)
+        case .gemma4E2B:
+            raw = try await cotypistGemmaEngine.completeText(request)
+        }
+        guard let sanitized = CotypistOutputSanitizer.sanitize(raw, for: request.context) else {
+            throw NSError(domain: "Cotypist", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "The local model returned an unsafe or invalid continuation.",
+            ])
+        }
+        return sanitized
+    }
+
+    func cancelCotypistCompletion() async {
+        guard #available(macOS 15, *) else { return }
+        if let engine = _cotypistQwenEngine as? Qwen3CotypistEngine {
+            await engine.cancel()
+        }
+    }
+
+    func unloadCotypist() async {
+        guard #available(macOS 15, *) else { return }
+        if let engine = _cotypistQwenEngine as? Qwen3CotypistEngine {
+            await engine.shutdown()
+        }
+        if let engine = _cotypistGemmaEngine as? Gemma4LiteRTTranscriber {
+            await engine.shutdown()
+        }
+        _cotypistQwenEngine = nil
+        _cotypistGemmaEngine = nil
+        activeCotypistModel = nil
     }
 
     func preload(
@@ -741,6 +815,7 @@ actor TranscriptionCoordinator {
     }
 
     func shutdown() async {
+        await unloadCotypist()
         await fluidTranscriber.shutdown()
         await whisperTranscriber.shutdown()
         await senseVoiceTranscriber.shutdown()

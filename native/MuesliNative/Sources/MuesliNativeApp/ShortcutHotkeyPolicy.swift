@@ -49,12 +49,17 @@ struct ShortcutHotkeyPolicy {
         computerUseHotkey: HotkeyConfig,
         isComputerUseEnabled: Bool,
         meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault,
-        isMeetingRecordingEnabled: Bool = false
+        isMeetingRecordingEnabled: Bool = false,
+        cotypistHotkey: HotkeyConfig = .cotypistDefault,
+        isCotypistEnabled: Bool = false
     ) -> ShortcutHotkeyUpdateResult {
         if isComputerUseEnabled && hotkeysConflict(hotkey, computerUseHotkey) {
             return .conflict(message: conflictMessage)
         }
         if isMeetingRecordingEnabled && hotkeysConflict(hotkey, meetingRecordingHotkey) {
+            return .conflict(message: conflictMessage)
+        }
+        if isCotypistEnabled && hotkeysConflict(hotkey, cotypistHotkey) {
             return .conflict(message: conflictMessage)
         }
         return .updated
@@ -65,12 +70,17 @@ struct ShortcutHotkeyPolicy {
         dictationHotkey: HotkeyConfig,
         isComputerUseEnabled: Bool,
         meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault,
-        isMeetingRecordingEnabled: Bool = false
+        isMeetingRecordingEnabled: Bool = false,
+        cotypistHotkey: HotkeyConfig = .cotypistDefault,
+        isCotypistEnabled: Bool = false
     ) -> ShortcutHotkeyUpdateResult {
         if isComputerUseEnabled && hotkeysConflict(hotkey, dictationHotkey) {
             return .conflict(message: conflictMessage)
         }
         if isMeetingRecordingEnabled && hotkeysConflict(hotkey, meetingRecordingHotkey) {
+            return .conflict(message: conflictMessage)
+        }
+        if isCotypistEnabled && hotkeysConflict(hotkey, cotypistHotkey) {
             return .conflict(message: conflictMessage)
         }
         return .updated
@@ -80,12 +90,36 @@ struct ShortcutHotkeyPolicy {
         _ hotkey: HotkeyConfig,
         dictationHotkey: HotkeyConfig,
         computerUseHotkey: HotkeyConfig,
-        isComputerUseEnabled: Bool
+        isComputerUseEnabled: Bool,
+        cotypistHotkey: HotkeyConfig = .cotypistDefault,
+        isCotypistEnabled: Bool = false
     ) -> ShortcutHotkeyUpdateResult {
         if hotkeysConflict(hotkey, dictationHotkey) {
             return .conflict(message: conflictMessage)
         }
         if isComputerUseEnabled && hotkeysConflict(hotkey, computerUseHotkey) {
+            return .conflict(message: conflictMessage)
+        }
+        if isCotypistEnabled && hotkeysConflict(hotkey, cotypistHotkey) {
+            return .conflict(message: conflictMessage)
+        }
+        return .updated(notice: commonGlobalShortcutWarning(for: hotkey))
+    }
+
+    static func validateCotypistHotkey(
+        _ hotkey: HotkeyConfig,
+        dictationHotkey: HotkeyConfig,
+        computerUseHotkey: HotkeyConfig,
+        isComputerUseEnabled: Bool,
+        meetingRecordingHotkey: HotkeyConfig,
+        isMeetingRecordingEnabled: Bool
+    ) -> ShortcutHotkeyUpdateResult {
+        guard hotkey.isCombination else {
+            return .conflict(message: "Cotypist requires a key combination.")
+        }
+        if hotkeysConflict(hotkey, dictationHotkey)
+            || (isComputerUseEnabled && hotkeysConflict(hotkey, computerUseHotkey))
+            || (isMeetingRecordingEnabled && hotkeysConflict(hotkey, meetingRecordingHotkey)) {
             return .conflict(message: conflictMessage)
         }
         return .updated(notice: commonGlobalShortcutWarning(for: hotkey))
@@ -110,7 +144,9 @@ struct ShortcutHotkeyPolicy {
         currentHotkey: HotkeyConfig,
         dictationHotkey: HotkeyConfig,
         meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault,
-        isMeetingRecordingEnabled: Bool = false
+        isMeetingRecordingEnabled: Bool = false,
+        cotypistHotkey: HotkeyConfig = .cotypistDefault,
+        isCotypistEnabled: Bool = false
     ) -> (hotkey: HotkeyConfig, result: ShortcutHotkeyUpdateResult) {
         var resolved = currentHotkey
         var notice: String?
@@ -127,6 +163,9 @@ struct ShortcutHotkeyPolicy {
             }
             resolved = fallback
             notice = "Computer Use Command moved to \(resolved.label) to avoid matching Meeting Recording."
+        }
+        if isCotypistEnabled && hotkeysConflict(resolved, cotypistHotkey) {
+            return (currentHotkey, .conflict(message: conflictMessage))
         }
         return (resolved, .updated(notice: notice))
     }

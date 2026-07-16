@@ -1022,6 +1022,12 @@ struct HotkeyConfig: Codable, Equatable {
         combinationModifiers: UInt(NSEvent.ModifierFlags([.command, .shift]).rawValue),
         combinationKeyCode: 15
     )
+    static let cotypistDefault = HotkeyConfig(
+        keyCode: UInt16.max,
+        label: "⌃⌥C",
+        combinationModifiers: UInt(NSEvent.ModifierFlags([.control, .option]).rawValue),
+        combinationKeyCode: 8
+    )
 
     static func computerUseDefault(avoiding dictationHotkey: HotkeyConfig) -> HotkeyConfig {
         dictationHotkey.keyCode == computerUseDefault.keyCode ? .default : .computerUseDefault
@@ -1068,6 +1074,10 @@ struct AppConfig: Codable {
     var enableComputerUseHotkey: Bool = false
     var meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault
     var enableMeetingRecordingHotkey: Bool = false
+    var cotypistHotkey: HotkeyConfig = .cotypistDefault
+    var enableCotypist: Bool = false
+    var cotypistModel: String = CotypistModelOption.qwen35_0_8b.rawValue
+    var cotypistExcludedBundleIDs: [String] = []
     var computerUseHotkeyDefaultDisabledMigrationApplied: Bool = true
     var enableComputerUsePlanner: Bool = true
     var computerUsePlannerModel: String = ""
@@ -1191,6 +1201,10 @@ struct AppConfig: Codable {
         case enableComputerUseHotkey = "enable_computer_use_hotkey"
         case meetingRecordingHotkey = "meeting_recording_hotkey"
         case enableMeetingRecordingHotkey = "enable_meeting_recording_hotkey"
+        case cotypistHotkey = "cotypist_hotkey"
+        case enableCotypist = "enable_cotypist"
+        case cotypistModel = "cotypist_model"
+        case cotypistExcludedBundleIDs = "cotypist_excluded_bundle_ids"
         case computerUseHotkeyDefaultDisabledMigrationApplied = "computer_use_hotkey_default_disabled_migration_applied"
         case enableComputerUsePlanner = "enable_computer_use_planner"
         case computerUsePlannerModel = "computer_use_planner_model"
@@ -1319,6 +1333,11 @@ struct AppConfig: Codable {
         computerUseHotkeyDefaultDisabledMigrationApplied = true
         meetingRecordingHotkey = (try? c.decode(HotkeyConfig.self, forKey: .meetingRecordingHotkey)) ?? defaults.meetingRecordingHotkey
         enableMeetingRecordingHotkey = (try? c.decode(Bool.self, forKey: .enableMeetingRecordingHotkey)) ?? defaults.enableMeetingRecordingHotkey
+        cotypistHotkey = (try? c.decode(HotkeyConfig.self, forKey: .cotypistHotkey)) ?? defaults.cotypistHotkey
+        enableCotypist = (try? c.decode(Bool.self, forKey: .enableCotypist)) ?? defaults.enableCotypist
+        cotypistModel = CotypistModelOption.resolved(try? c.decode(String.self, forKey: .cotypistModel)).rawValue
+        cotypistExcludedBundleIDs = (try? c.decode([String].self, forKey: .cotypistExcludedBundleIDs))
+            ?? defaults.cotypistExcludedBundleIDs
         enableComputerUsePlanner = (try? c.decode(Bool.self, forKey: .enableComputerUsePlanner)) ?? defaults.enableComputerUsePlanner
         computerUsePlannerModel = SummaryModelPreset.migratedFromGPT55(
             (try? c.decode(String.self, forKey: .computerUsePlannerModel)) ?? defaults.computerUsePlannerModel
@@ -1532,6 +1551,10 @@ struct AppConfig: Codable {
 
     var resolvedMeetingRecordingFileFormat: MeetingRecordingFileFormat {
         MeetingRecordingFileFormat.resolved(meetingRecordingFileFormat)
+    }
+
+    var resolvedCotypistModel: CotypistModelOption {
+        CotypistModelOption.resolved(cotypistModel)
     }
 }
 
