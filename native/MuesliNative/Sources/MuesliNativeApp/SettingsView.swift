@@ -1267,16 +1267,9 @@ struct SettingsView: View {
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Local model", controlWidth: meetingControlWidth) {
-                    settingsMenu(
-                        selection: appState.config.resolvedCotypistModel.label,
-                        options: CotypistModelOption.allCases.map(\.label)
-                    ) { label in
-                        guard let model = CotypistModelOption.allCases.first(where: { $0.label == label }) else { return }
-                        controller.selectCotypistModel(model)
-                        cotypistStatusMessage = model.isDownloaded
-                            ? nil
-                            : "Download \(model.label) in Local Language Models before enabling Cotypist."
-                    }
+                    Text(appState.config.resolvedCotypistModel.label)
+                        .font(MuesliTheme.body())
+                        .foregroundStyle(MuesliTheme.textPrimary)
                 }
                 settingsDescription(appState.config.resolvedCotypistModel.detail)
                 if let cotypistStatusMessage {

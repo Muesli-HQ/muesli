@@ -16,7 +16,19 @@ final class ConfigStore {
         guard let data = try? Data(contentsOf: configURL) else {
             return AppConfig()
         }
-        return (try? decoder.decode(AppConfig.self, from: data)) ?? AppConfig()
+        guard let config = try? decoder.decode(AppConfig.self, from: data) else {
+            return AppConfig()
+        }
+
+        // AppConfig normalizes retired Cotypist model identifiers while decoding.
+        // Persist that normalization so the settings UI and on-disk configuration
+        // agree after upgrading from a build that offered Qwen for Cotypist.
+        if let storedModel = storedCotypistModel(in: data),
+           storedModel != config.cotypistModel {
+            save(config)
+        }
+
+        return config
     }
 
     func save(_ config: AppConfig) {
@@ -46,5 +58,12 @@ final class ConfigStore {
             at: configURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
+    }
+
+    private func storedCotypistModel(in data: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return object["cotypist_model"] as? String
     }
 }

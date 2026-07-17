@@ -1,34 +1,18 @@
 import Foundation
 
 enum CotypistModelOption: String, Codable, CaseIterable, Identifiable, Sendable {
-    case qwen35_0_8b = "qwen35_0_8b"
     case gemma4E2B = "gemma4_e2b"
 
     var id: String { rawValue }
 
-    var label: String {
-        switch self {
-        case .qwen35_0_8b: return "Qwen3.5 0.8B"
-        case .gemma4E2B: return "Gemma 4 E2B"
-        }
-    }
+    var label: String { "Gemma 4 E2B" }
 
-    var detail: String {
-        switch self {
-        case .qwen35_0_8b: return "Fastest. Uses the existing vanilla GGUF language model."
-        case .gemma4E2B: return "Higher quality, with a larger memory footprint."
-        }
-    }
+    var detail: String { "The supported local Cotypist model. Uses LiteRT for higher-quality continuations." }
 
-    var isDownloaded: Bool {
-        switch self {
-        case .qwen35_0_8b: return PostProcessorOption.qwen35_0_8b.isDownloaded
-        case .gemma4E2B: return Gemma4LiteRTModelStore.isAvailableLocally()
-        }
-    }
+    var isDownloaded: Bool { Gemma4LiteRTModelStore.isAvailableLocally() }
 
     static func resolved(_ rawValue: String?) -> CotypistModelOption {
-        rawValue.flatMap(CotypistModelOption.init(rawValue:)) ?? .qwen35_0_8b
+        rawValue.flatMap(CotypistModelOption.init(rawValue:)) ?? .gemma4E2B
     }
 }
 
@@ -127,36 +111,6 @@ struct CotypistCompletionRequest: Equatable, Sendable {
         Self.systemPromptTemplate
     }
 
-    var userPrompt: String {
-        let metadata = [
-            "Surface: \(surface.rawValue)",
-            "App: \(context.appName)",
-            context.browserLocation.map { "Location: \($0)" },
-            context.fieldMetadata.isEmpty ? nil : "Field: \(context.fieldMetadata)",
-        ].compactMap { $0 }.joined(separator: "\n")
-        return """
-        Complete the text at the cursor. Do not answer the writer, rewrite the existing text, or repeat BEFORE or AFTER. Return only the new characters to insert, including any required leading space.
-
-        Examples (the quoted RETURN value shows the exact missing text):
-        BEFORE: "Please send the report"
-        AFTER: " by Friday."
-        RETURN: " to me"
-
-        BEFORE: "Why is the Qwen model not working as"
-        AFTER: ""
-        RETURN: " expected?"
-
-        BEFORE: "let response = client."
-        AFTER: ""
-        RETURN: "fetch()"
-
-        \(metadata)
-        BEFORE: \(context.prefix)
-        AFTER: \(context.suffix)
-        Return the missing continuation only, with no RETURN label, quotation marks, explanation, or repeated context.
-        """
-    }
-
     var gemmaUserPrompt: String {
         """
         Fill the cursor gap with a short natural continuation. Return only the missing text, including any required leading space. Never repeat BEFORE or AFTER.
@@ -169,18 +123,6 @@ struct CotypistCompletionRequest: Equatable, Sendable {
         """
     }
 
-    var qwenRetryPrompt: String {
-        let endingWords = context.prefix
-            .split(whereSeparator: \Character.isWhitespace)
-            .suffix(8)
-            .joined(separator: " ")
-        let suffixHead = String(context.suffix.prefix(120))
-        return """
-        Surface: \(surface.rawValue)
-        BEFORE END: \(endingWords)
-        AFTER START: \(suffixHead)
-        """
-    }
 }
 
 enum CotypistOutputSanitizer {
@@ -335,21 +277,5 @@ enum CotypistOutputSanitizer {
 
     private static func isWordCharacter(_ character: Character) -> Bool {
         character.unicodeScalars.allSatisfy(CharacterSet.alphanumerics.contains)
-    }
-}
-
-enum CotypistQwenRetryPolicy {
-    static func shouldRetry(_ completion: CotypistCompletion?) -> Bool {
-        completion == nil || completion?.quality == .contextEcho
-    }
-
-    static func choose(
-        primary: CotypistCompletion?,
-        retry: CotypistCompletion?
-    ) -> CotypistCompletion? {
-        if let retry, retry.quality == .normal {
-            return retry
-        }
-        return primary ?? retry
     }
 }
