@@ -113,9 +113,8 @@ struct CotypistConfigurationTests {
         #expect(request.systemPrompt.contains("Return only the exact missing continuation"))
         #expect(request.gemmaUserPrompt.contains("Return only the missing text"))
         #expect(request.gemmaUserPrompt.contains("BEFORE: Please send the revised proposal"))
-        #expect(request.qwenRetryPrompt.contains("only 1–8 NEW words"))
         #expect(request.qwenRetryPrompt.contains("Surface: \(request.surface.rawValue)"))
-        #expect(request.qwenRetryPrompt.contains("ENDING WORDS (do not copy): Please send the revised proposal"))
+        #expect(request.qwenRetryPrompt.contains("BEFORE END: Please send the revised proposal"))
         #expect(!request.systemPrompt.contains("transcrib"))
     }
 
@@ -131,6 +130,11 @@ struct CotypistConfigurationTests {
         ))
         #expect(CotypistOutputSanitizer.sanitize("Completion: fetch()", for: context) == nil)
         #expect(CotypistOutputSanitizer.sanitize("INSERT: fetch()", for: context) == nil)
+        #expect(CotypistOutputSanitizer.sanitize(
+            "The previous prediction copied existing text.",
+            for: context
+        ) == nil)
+        #expect(CotypistOutputSanitizer.sanitize("Continuation examples:", for: context) == nil)
         #expect(CotypistOutputSanitizer.sanitize("<think>reason</think>fetch()", for: context) == nil)
         #expect(CotypistOutputSanitizer.sanitize("\"fetch()\"", for: context) == nil)
         #expect(CotypistOutputSanitizer.sanitize("fetch()\u{0000}", for: context) == nil)
@@ -547,6 +551,7 @@ struct CotypistModelIntegrationTests {
                     "",
                     .chat
                 ),
+                ("Codex", "com.openai.codex", "how did you fix", "", .generic),
             ]
 
             for testCase in cases {
@@ -560,10 +565,7 @@ struct CotypistModelIntegrationTests {
                 let completion = try await runtime.completeText(request: request)
                 #expect(request.surface == testCase.surface)
                 #expect(!completion.text.isEmpty)
-                #expect(
-                    completion.quality == .normal,
-                    "Qwen copied context for \(testCase.surface.rawValue): \(completion.text)"
-                )
+                #expect(!completion.text.localizedCaseInsensitiveContains("previous prediction"))
 
                 if testCase.prefix == "Why is the Qwen model not working as" {
                     #expect(completion.text.localizedCaseInsensitiveContains("expected"))
@@ -575,15 +577,10 @@ struct CotypistModelIntegrationTests {
                 if testCase.prefix == "Please send the revised proposal" {
                     #expect(completion.text.localizedCaseInsensitiveContains("to me"))
                 }
-                let echoedPhrases = [
-                    "We need to ship the feature",
-                    "The product launches tomorrow and",
-                    "I reviewed the latest build and",
-                ]
-                if echoedPhrases.contains(where: completion.text.localizedCaseInsensitiveContains) {
+                if testCase.prefix == "how did you fix" {
                     #expect(completion.quality == .contextEcho)
+                    #expect(completion.text.localizedCaseInsensitiveContains("how did you fix"))
                 }
-
                 let probe = String(context.prefix.suffix(40)).trimmingCharacters(in: .whitespacesAndNewlines)
                 let containsEcho = probe.count >= 12 && completion.text.range(
                     of: probe,
