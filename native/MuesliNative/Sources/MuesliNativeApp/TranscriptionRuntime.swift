@@ -42,9 +42,7 @@ actor TranscriptionCoordinator {
     private let whisperTranscriber = WhisperKitTranscriber()
     private var _qwen3Transcriber: Any?
     private var _qwen3PostProcessor: Any?
-    private var _cotypistQwenEngine: Any?
     private var _cotypistGemmaEngine: Any?
-    private var activeCotypistModel: CotypistModelOption?
     private var _cohereTranscriber: Any?
     private var _indicASRTranscriber: Any?
     private var _gemma4LiteRTTranscriber: Any?
@@ -265,14 +263,6 @@ actor TranscriptionCoordinator {
     }
 
     @available(macOS 15, *)
-    private var cotypistQwenEngine: Qwen3CotypistEngine {
-        if _cotypistQwenEngine == nil {
-            _cotypistQwenEngine = Qwen3CotypistEngine()
-        }
-        return _cotypistQwenEngine as! Qwen3CotypistEngine
-    }
-
-    @available(macOS 15, *)
     private var cotypistGemmaEngine: Gemma4LiteRTTranscriber {
         if _cotypistGemmaEngine == nil {
             _cotypistGemmaEngine = Gemma4LiteRTTranscriber()
@@ -280,22 +270,13 @@ actor TranscriptionCoordinator {
         return _cotypistGemmaEngine as! Gemma4LiteRTTranscriber
     }
 
-    func prepareCotypist(model: CotypistModelOption) async throws {
+    func prepareCotypist(model _: CotypistModelOption) async throws {
         guard #available(macOS 15, *) else {
             throw NSError(domain: "Cotypist", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "Cotypist requires macOS 15 or later.",
             ])
         }
-        if activeCotypistModel != model {
-            await unloadCotypist()
-            activeCotypistModel = model
-        }
-        switch model {
-        case .qwen35_0_8b:
-            try await cotypistQwenEngine.prepare()
-        case .gemma4E2B:
-            try await cotypistGemmaEngine.prepare()
-        }
+        try await cotypistGemmaEngine.prepare()
     }
 
     func completeText(request: CotypistCompletionRequest) async throws -> CotypistCompletion {
@@ -305,54 +286,26 @@ actor TranscriptionCoordinator {
             ])
         }
         try await prepareCotypist(model: request.model)
-        let raw: String
-        switch request.model {
-        case .qwen35_0_8b:
-            raw = try await cotypistQwenEngine.complete(request)
-        case .gemma4E2B:
-            raw = try await cotypistGemmaEngine.completeText(request)
-        }
-        let primary = CotypistOutputSanitizer.sanitize(raw, for: request.context)
-        if request.model == .qwen35_0_8b,
-           CotypistQwenRetryPolicy.shouldRetry(primary) {
-            let retryRaw = try await cotypistQwenEngine.completeRetry(request)
-            let retry = CotypistOutputSanitizer.sanitize(retryRaw, for: request.context)
-            if let retry, retry.quality == .normal {
-                return retry
-            }
-            if let chosen = CotypistQwenRetryPolicy.choose(
-                primary: primary,
-                retry: retry
-            ) {
-                return chosen
-            }
-        }
-        guard let primary else {
+        let raw = try await cotypistGemmaEngine.completeText(request)
+        guard let completion = CotypistOutputSanitizer.sanitize(raw, for: request.context) else {
             throw NSError(domain: "Cotypist", code: 2, userInfo: [
                 NSLocalizedDescriptionKey: "The local model returned an unsafe or invalid continuation.",
             ])
         }
-        return primary
+        return completion
     }
 
     func cancelCotypistCompletion() async {
-        guard #available(macOS 15, *) else { return }
-        if let engine = _cotypistQwenEngine as? Qwen3CotypistEngine {
-            await engine.cancel()
-        }
+        // LiteRT's synchronous conversation API has no interrupt hook. The calling
+        // task rechecks cancellation before presenting the returned completion.
     }
 
     func unloadCotypist() async {
         guard #available(macOS 15, *) else { return }
-        if let engine = _cotypistQwenEngine as? Qwen3CotypistEngine {
-            await engine.shutdown()
-        }
         if let engine = _cotypistGemmaEngine as? Gemma4LiteRTTranscriber {
             await engine.shutdown()
         }
-        _cotypistQwenEngine = nil
         _cotypistGemmaEngine = nil
-        activeCotypistModel = nil
     }
 
     func preload(

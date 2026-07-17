@@ -3467,18 +3467,6 @@ final class MuesliController: NSObject {
         return hotkeyResult
     }
 
-    func selectCotypistModel(_ model: CotypistModelOption) {
-        guard model.isDownloaded else {
-            updateConfig {
-                $0.cotypistModel = model.rawValue
-                $0.enableCotypist = false
-            }
-            showModels(category: .postProcessing)
-            return
-        }
-        updateConfig { $0.cotypistModel = model.rawValue }
-    }
-
     func addCotypistExcludedApplication(bundleID: String) {
         guard !bundleID.isEmpty else { return }
         updateConfig { config in

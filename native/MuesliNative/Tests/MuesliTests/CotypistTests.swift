@@ -9,9 +9,24 @@ struct CotypistConfigurationTests {
         let config = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
 
         #expect(!config.enableCotypist)
-        #expect(config.resolvedCotypistModel == .qwen35_0_8b)
+        #expect(config.resolvedCotypistModel == .gemma4E2B)
+        #expect(CotypistModelOption.allCases == [.gemma4E2B])
         #expect(config.cotypistHotkey == .cotypistDefault)
         #expect(config.cotypistExcludedBundleIDs.isEmpty)
+    }
+
+    @Test("legacy Qwen Cotypist config migrates to Gemma")
+    func legacyQwenModelMigration() throws {
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data("""
+        {
+          "enable_cotypist": true,
+          "cotypist_model": "qwen35_0_8b"
+        }
+        """.utf8))
+
+        #expect(config.enableCotypist)
+        #expect(config.cotypistModel == CotypistModelOption.gemma4E2B.rawValue)
+        #expect(config.resolvedCotypistModel == .gemma4E2B)
     }
 
     @Test("Cotypist config uses stable snake-case keys")
@@ -102,19 +117,13 @@ struct CotypistConfigurationTests {
     @Test("prompt requests only a bounded missing continuation")
     func promptAndTokenLimit() {
         let context = makeContext(prefix: "Please send the revised proposal", suffix: " before Friday.")
-        let request = CotypistCompletionRequest(context: context, model: .qwen35_0_8b, maxOutputTokens: 500)
+        let request = CotypistCompletionRequest(context: context, model: .gemma4E2B, maxOutputTokens: 500)
 
         #expect(request.maxOutputTokens == 24)
-        #expect(request.userPrompt.contains("Do not answer the writer"))
-        #expect(request.userPrompt.contains("BEFORE: \"Why is the Qwen model not working as\""))
-        #expect(request.userPrompt.contains("RETURN: \" expected?\""))
-        #expect(request.userPrompt.contains("BEFORE: Please send the revised proposal"))
-        #expect(request.userPrompt.contains("AFTER:  before Friday."))
         #expect(request.systemPrompt.contains("Return only the exact missing continuation"))
         #expect(request.gemmaUserPrompt.contains("Return only the missing text"))
         #expect(request.gemmaUserPrompt.contains("BEFORE: Please send the revised proposal"))
-        #expect(request.qwenRetryPrompt.contains("Surface: \(request.surface.rawValue)"))
-        #expect(request.qwenRetryPrompt.contains("BEFORE END: Please send the revised proposal"))
+        #expect(request.gemmaUserPrompt.contains("AFTER:  before Friday."))
         #expect(!request.systemPrompt.contains("transcrib"))
     }
 
@@ -172,11 +181,11 @@ struct CotypistConfigurationTests {
         ))
 
         let reportedContext = makeContext(
-            prefix: "why is the qwen model not working as",
+            prefix: "why is the local model not working as",
             suffix: ""
         )
         #expect(CotypistOutputSanitizer.sanitize(
-            "(pressed the combo key) Why is the Qwen model not working as expected?",
+            "(pressed the combo key) Why is the local model not working as expected?",
             for: reportedContext
         ) == CotypistCompletion(
             text: " expected?",
@@ -214,7 +223,7 @@ struct CotypistConfigurationTests {
             quality: .contextEcho
         ))
         #expect(CotypistOutputSanitizer.sanitize(
-            "why is the qwen model not working as it should now",
+            "why is the local model not working as it should now",
             for: reportedContext
         ) == CotypistCompletion(
             text: " it should now",
@@ -222,17 +231,6 @@ struct CotypistConfigurationTests {
         ))
     }
 
-    @Test("Qwen retries copied output and prefers a novel continuation")
-    func qwenRetryPolicy() {
-        let copied = CotypistCompletion(text: " repeated context", quality: .contextEcho)
-        let novel = CotypistCompletion(text: " continues naturally", quality: .normal)
-
-        #expect(CotypistQwenRetryPolicy.shouldRetry(nil))
-        #expect(CotypistQwenRetryPolicy.shouldRetry(copied))
-        #expect(!CotypistQwenRetryPolicy.shouldRetry(novel))
-        #expect(CotypistQwenRetryPolicy.choose(primary: copied, retry: novel) == novel)
-        #expect(CotypistQwenRetryPolicy.choose(primary: copied, retry: nil) == copied)
-    }
 }
 
 @Suite("Focused text context")
@@ -517,40 +515,18 @@ struct CotypistOverlayPlacementTests {
 
 @Suite("Cotypist model integration gates", .serialized)
 struct CotypistModelIntegrationTests {
-    @Test("Qwen semantic Cotypist cases", .timeLimit(.minutes(4)))
-    func qwenCompletion() async throws {
-        guard ProcessInfo.processInfo.environment["MUESLI_RUN_COTYPIST_QWEN_INTEGRATION"] == "1",
-              CotypistModelOption.qwen35_0_8b.isDownloaded else { return }
+    @Test("Gemma semantic Cotypist cases", .timeLimit(.minutes(4)))
+    func gemmaCompletion() async throws {
+        guard ProcessInfo.processInfo.environment["MUESLI_RUN_COTYPIST_GEMMA_INTEGRATION"] == "1",
+              CotypistModelOption.gemma4E2B.isDownloaded else { return }
         let runtime = TranscriptionCoordinator()
         do {
             let cases: [(appName: String, bundleID: String, prefix: String, suffix: String, surface: CotypistSurface)] = [
-                ("Editor", "com.example.editor", "Why is the Qwen model not working as", "", .generic),
-                ("Editor", "com.example.editor", "Repeat this exactly: We need to ship the feature", "", .generic),
-                ("Editor", "com.example.editor", "Rewrite this sentence: The product launches tomorrow and", "", .generic),
+                ("Editor", "com.example.editor", "The project is ready and we can", "", .generic),
                 ("Xcode", "com.apple.dt.Xcode", "let response = client.", "", .code),
                 ("Mail", "com.apple.mail", "Please send the revised proposal", " before Friday.", .email),
                 ("Slack", "com.tinyspeck.slackmacgap", "I reviewed the latest build and", "", .chat),
-                (
-                    "TextEdit",
-                    "com.apple.TextEdit",
-                    "Today I tested Cotypist in several applications. The overlay appears beside the cursor, but when I switch to the smaller Qwen model it",
-                    "",
-                    .document
-                ),
-                (
-                    "Mail",
-                    "com.apple.mail",
-                    "Hi Sarah,\n\nThanks for sending the revised proposal. I reviewed the budget and timeline, and everything",
-                    "",
-                    .email
-                ),
-                (
-                    "Slack",
-                    "com.tinyspeck.slackmacgap",
-                    "The deployment just finished. I checked the service logs and everything",
-                    "",
-                    .chat
-                ),
+                ("TextEdit", "com.apple.TextEdit", "The overlay appears beside the cursor and", "", .document),
                 ("Codex", "com.openai.codex", "how did you fix", "", .generic),
             ]
 
@@ -561,26 +537,12 @@ struct CotypistModelIntegrationTests {
                     prefix: testCase.prefix,
                     suffix: testCase.suffix
                 )
-                let request = CotypistCompletionRequest(context: context, model: .qwen35_0_8b)
+                let request = CotypistCompletionRequest(context: context, model: .gemma4E2B)
                 let completion = try await runtime.completeText(request: request)
+                #expect(request.model == .gemma4E2B)
                 #expect(request.surface == testCase.surface)
                 #expect(!completion.text.isEmpty)
-                #expect(!completion.text.localizedCaseInsensitiveContains("previous prediction"))
 
-                if testCase.prefix == "Why is the Qwen model not working as" {
-                    #expect(completion.text.localizedCaseInsensitiveContains("expected"))
-                    #expect(completion.quality == .normal)
-                }
-                if testCase.surface == .code {
-                    #expect(completion.text.localizedCaseInsensitiveContains("fetch"))
-                }
-                if testCase.prefix == "Please send the revised proposal" {
-                    #expect(completion.text.localizedCaseInsensitiveContains("to me"))
-                }
-                if testCase.prefix == "how did you fix" {
-                    #expect(completion.quality == .contextEcho)
-                    #expect(completion.text.localizedCaseInsensitiveContains("how did you fix"))
-                }
                 let probe = String(context.prefix.suffix(40)).trimmingCharacters(in: .whitespacesAndNewlines)
                 let containsEcho = probe.count >= 12 && completion.text.range(
                     of: probe,
@@ -588,24 +550,6 @@ struct CotypistModelIntegrationTests {
                 ) != nil
                 #expect(!containsEcho || completion.quality == .contextEcho)
             }
-            await runtime.shutdown()
-        } catch {
-            await runtime.shutdown()
-            throw error
-        }
-    }
-
-    @Test("Gemma local completion", .timeLimit(.minutes(3)))
-    func gemmaCompletion() async throws {
-        guard ProcessInfo.processInfo.environment["MUESLI_RUN_COTYPIST_GEMMA_INTEGRATION"] == "1",
-              CotypistModelOption.gemma4E2B.isDownloaded else { return }
-        let runtime = TranscriptionCoordinator()
-        do {
-            let completion = try await runtime.completeText(request: CotypistCompletionRequest(
-                context: makeContext(prefix: "The project is ready and we can", suffix: ""),
-                model: .gemma4E2B
-            ))
-            #expect(!completion.text.isEmpty)
             await runtime.shutdown()
         } catch {
             await runtime.shutdown()

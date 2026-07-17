@@ -1076,7 +1076,7 @@ struct AppConfig: Codable {
     var enableMeetingRecordingHotkey: Bool = false
     var cotypistHotkey: HotkeyConfig = .cotypistDefault
     var enableCotypist: Bool = false
-    var cotypistModel: String = CotypistModelOption.qwen35_0_8b.rawValue
+    var cotypistModel: String = CotypistModelOption.gemma4E2B.rawValue
     var cotypistExcludedBundleIDs: [String] = []
     var computerUseHotkeyDefaultDisabledMigrationApplied: Bool = true
     var enableComputerUsePlanner: Bool = true
