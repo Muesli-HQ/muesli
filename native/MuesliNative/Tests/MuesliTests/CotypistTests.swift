@@ -29,6 +29,18 @@ struct CotypistConfigurationTests {
         #expect(config.resolvedCotypistModel == .gemma4E2B)
     }
 
+    @Test("Cotypist is not a standalone settings pane")
+    func noStandaloneSettingsPane() {
+        #expect(SettingsPane.allCases == [
+            .general,
+            .sync,
+            .dictation,
+            .computerUse,
+            .meetings,
+            .appearance,
+        ])
+    }
+
     @Test("Cotypist config uses stable snake-case keys")
     func configKeys() throws {
         var config = AppConfig()
