@@ -535,6 +535,25 @@ struct SettingsView: View {
                         cotypistStatusMessage = controller.updateCotypistEnabled(enabled).message
                     }
                 }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow(
+                    "Cotypist model",
+                    description: appState.config.resolvedCotypistModel.detail
+                ) {
+                    Picker("Cotypist model", selection: Binding(
+                        get: { appState.config.resolvedCotypistModel },
+                        set: { model in
+                            cotypistStatusMessage = controller.selectCotypistModel(model).message
+                        }
+                    )) {
+                        ForEach(CotypistModelOption.allCases) { model in
+                            Text(model.isDownloaded ? model.label : "\(model.label) — Download")
+                                .tag(model)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                }
                 if let cotypistStatusMessage {
                     settingsDescription(cotypistStatusMessage)
                 }

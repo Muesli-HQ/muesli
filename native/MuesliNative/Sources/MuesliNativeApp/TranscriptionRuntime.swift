@@ -1,5 +1,6 @@
 import FluidAudio
 import Foundation
+import LLM
 import MuesliCore
 
 struct SpeechSegment: Sendable {
@@ -43,6 +44,7 @@ actor TranscriptionCoordinator {
     private var _qwen3Transcriber: Any?
     private var _qwen3PostProcessor: Any?
     private var _cotypistGemmaEngine: Any?
+    private var _cotypistTextFIMEngine: Any?
     private var _cohereTranscriber: Any?
     private var _indicASRTranscriber: Any?
     private var _gemma4LiteRTTranscriber: Any?
@@ -270,13 +272,34 @@ actor TranscriptionCoordinator {
         return _cotypistGemmaEngine as! Gemma4LiteRTTranscriber
     }
 
-    func prepareCotypist(model _: CotypistModelOption) async throws {
+    @available(macOS 15, *)
+    private var cotypistTextFIMEngine: CotypistTextFIMEngine {
+        if _cotypistTextFIMEngine == nil {
+            _cotypistTextFIMEngine = CotypistTextFIMEngine()
+        }
+        return _cotypistTextFIMEngine as! CotypistTextFIMEngine
+    }
+
+    func prepareCotypist(model: CotypistModelOption) async throws {
         guard #available(macOS 15, *) else {
             throw NSError(domain: "Cotypist", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "Cotypist requires macOS 15 or later.",
             ])
         }
-        try await cotypistGemmaEngine.prepare()
+        switch model {
+        case .gemma4E2B:
+            if let engine = _cotypistTextFIMEngine as? CotypistTextFIMEngine {
+                await engine.shutdown()
+                _cotypistTextFIMEngine = nil
+            }
+            try await cotypistGemmaEngine.prepare()
+        case .qwen3TextFIM:
+            if let engine = _cotypistGemmaEngine as? Gemma4LiteRTTranscriber {
+                await engine.shutdown()
+                _cotypistGemmaEngine = nil
+            }
+            try await cotypistTextFIMEngine.prepare()
+        }
     }
 
     func completeText(request: CotypistCompletionRequest) async throws -> CotypistCompletion {
@@ -286,7 +309,13 @@ actor TranscriptionCoordinator {
             ])
         }
         try await prepareCotypist(model: request.model)
-        let raw = try await cotypistGemmaEngine.completeText(request)
+        let raw: String
+        switch request.model {
+        case .gemma4E2B:
+            raw = try await cotypistGemmaEngine.completeText(request)
+        case .qwen3TextFIM:
+            raw = try await cotypistTextFIMEngine.completeText(request)
+        }
         guard let completion = CotypistOutputSanitizer.sanitize(raw, for: request.context) else {
             throw NSError(domain: "Cotypist", code: 2, userInfo: [
                 NSLocalizedDescriptionKey: "The local model returned an unsafe or invalid continuation.",
@@ -296,8 +325,11 @@ actor TranscriptionCoordinator {
     }
 
     func cancelCotypistCompletion() async {
-        // LiteRT's synchronous conversation API has no interrupt hook. The calling
-        // task rechecks cancellation before presenting the returned completion.
+        if #available(macOS 15, *), let engine = _cotypistTextFIMEngine as? CotypistTextFIMEngine {
+            await engine.cancel()
+        }
+        // LiteRT's synchronous conversation API has no interrupt hook; its calling
+        // task still rechecks cancellation before presenting the returned completion.
     }
 
     func unloadCotypist() async {
@@ -306,6 +338,10 @@ actor TranscriptionCoordinator {
             await engine.shutdown()
         }
         _cotypistGemmaEngine = nil
+        if let engine = _cotypistTextFIMEngine as? CotypistTextFIMEngine {
+            await engine.shutdown()
+        }
+        _cotypistTextFIMEngine = nil
     }
 
     func preload(
@@ -805,6 +841,9 @@ actor TranscriptionCoordinator {
             if let gemma4 = _gemma4LiteRTTranscriber as? Gemma4LiteRTTranscriber {
                 await gemma4.shutdown()
             }
+            // LLM.swift owns one process-wide llama.cpp/Metal backend shared by
+            // Qwen cleanup and Cotypist FIM. Release it only after both engines.
+            LLM.shutdownBackend()
         }
     }
 
