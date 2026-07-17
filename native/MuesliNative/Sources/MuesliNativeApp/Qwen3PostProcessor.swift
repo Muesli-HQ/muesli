@@ -265,13 +265,33 @@ private actor Qwen3CotypistManager {
     }
 
     func complete(_ request: CotypistCompletionRequest) async throws -> String {
+        try await generate(
+            prompt: request.userPrompt,
+            maxOutputTokens: request.maxOutputTokens,
+            thinking: .suppressed
+        )
+    }
+
+    func completeRetry(_ request: CotypistCompletionRequest) async throws -> String {
+        try await generate(
+            prompt: request.qwenRetryPrompt,
+            maxOutputTokens: min(request.maxOutputTokens, 8),
+            thinking: .suppressed
+        )
+    }
+
+    private func generate(
+        prompt: String,
+        maxOutputTokens: Int,
+        thinking: ThinkingMode
+    ) async throws -> String {
         try await inferenceGate.acquire()
         do {
             try Task.checkCancellation()
             let bot = try loadBot()
 
             var generated = ""
-            await bot.respond(to: request.userPrompt, thinking: .suppressed) { stream in
+            await bot.respond(to: prompt, thinking: thinking) { stream in
                 for await chunk in stream {
                     if Task.isCancelled {
                         bot.stop()
@@ -282,7 +302,7 @@ private actor Qwen3CotypistManager {
                     for character in chunk {
                         let candidate = accepted + String(character)
                         let tokenCount = await bot.encode(candidate, shouldAddBOS: false).count
-                        if tokenCount > request.maxOutputTokens {
+                        if tokenCount > maxOutputTokens {
                             bot.stop()
                             return accepted
                         }
@@ -290,7 +310,7 @@ private actor Qwen3CotypistManager {
                     }
                     generated = accepted
                     let tokenCount = await bot.encode(generated, shouldAddBOS: false).count
-                    if tokenCount >= request.maxOutputTokens {
+                    if tokenCount >= maxOutputTokens {
                         bot.stop()
                         break
                     }
@@ -365,6 +385,12 @@ actor Qwen3CotypistEngine {
         try await prepare()
         guard let manager else { throw CancellationError() }
         return try await manager.complete(request)
+    }
+
+    func completeRetry(_ request: CotypistCompletionRequest) async throws -> String {
+        try await prepare()
+        guard let manager else { throw CancellationError() }
+        return try await manager.completeRetry(request)
     }
 
     func cancel() async {

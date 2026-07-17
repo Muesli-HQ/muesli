@@ -168,6 +168,26 @@ struct CotypistCompletionRequest: Equatable, Sendable {
         Supply only the missing continuation now, without a heading, label, quotation marks, or explanation.
         """
     }
+
+    var qwenRetryPrompt: String {
+        let endingWords = context.prefix
+            .split(whereSeparator: \Character.isWhitespace)
+            .suffix(8)
+            .joined(separator: " ")
+        let suffixHead = String(context.suffix.prefix(120))
+        return """
+        The previous prediction copied existing text. Write only 1–8 NEW words that follow the ending words. Never include the ending words in the answer. Do not answer a question or add a label. Include a leading space when needed.
+
+        Example:
+        ENDING WORDS (do not copy): reviewed the latest build and
+        NEW WORDS:  found two issues.
+
+        Surface: \(surface.rawValue)
+        ENDING WORDS (do not copy): \(endingWords)
+        FOLLOWING TEXT: \(suffixHead)
+        NEW WORDS:
+        """
+    }
 }
 
 enum CotypistOutputSanitizer {
@@ -197,7 +217,17 @@ enum CotypistOutputSanitizer {
             return nil
         }
 
+        // A small model often repeats the text immediately before the caret and then
+        // supplies a useful continuation. Keep only that genuinely new tail. This also
+        // repairs outputs such as "<copied question> expected?" without hiding a pure
+        // copy, which remains a red low-quality suggestion.
+        if let novelTail = novelTailAfterPrefixEcho(raw, prefix: context.prefix),
+           novelTail.count < raw.count {
+            return sanitize(novelTail, for: context)
+        }
+
         let containsContextEcho = containsPrefixEcho(context.prefix, in: visible)
+            || containsEarlierPrefixEcho(context.prefix, in: visible)
             || containsSuffixEcho(context.suffix, in: visible)
 
         // A 24-token response should stay well below this character ceiling even for
@@ -237,6 +267,52 @@ enum CotypistOutputSanitizer {
         return false
     }
 
+    private static func novelTailAfterPrefixEcho(_ output: String, prefix: String) -> String? {
+        let prefixCharacters = Array(prefix)
+        let maximumLength = min(prefixCharacters.count, 160)
+        guard maximumLength >= 8 else { return nil }
+
+        for length in stride(from: maximumLength, through: 8, by: -1) {
+            let probe = String(prefixCharacters.suffix(length))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard probe.count >= 8,
+                  let range = output.range(
+                    of: probe,
+                    options: [.caseInsensitive, .diacriticInsensitive]
+                  ) else { continue }
+            let tail = String(output[range.upperBound...])
+            guard !tail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return nil
+            }
+            return tail
+        }
+        return nil
+    }
+
+    private static func containsEarlierPrefixEcho(_ prefix: String, in output: String) -> Bool {
+        let visible = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard visible.count >= 8 else { return false }
+
+        // Catch short, complete copied fragments such as an email salutation. Requiring
+        // more than one word avoids flagging ordinary single-word predictions.
+        if visible.split(whereSeparator: \Character.isWhitespace).count >= 2,
+           contains(visible, in: prefix) {
+            return true
+        }
+
+        // Qwen can copy a sentence from anywhere in the captured prefix and then add
+        // more text. Comparing the leading output fragment catches that behavior even
+        // when the copied sentence is not adjacent to the caret.
+        let head = Array(visible.prefix(40))
+        guard head.count >= 12 else { return false }
+        for length in stride(from: head.count, through: 12, by: -1) {
+            let probe = String(head.prefix(length)).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard probe.count >= 12 else { continue }
+            if contains(probe, in: prefix) { return true }
+        }
+        return false
+    }
+
     private static func containsSuffixEcho(_ suffix: String, in output: String) -> Bool {
         let head = Array(suffix.prefix(40))
         guard head.count >= 12 else { return false }
@@ -254,5 +330,21 @@ enum CotypistOutputSanitizer {
 
     private static func isWordCharacter(_ character: Character) -> Bool {
         character.unicodeScalars.allSatisfy(CharacterSet.alphanumerics.contains)
+    }
+}
+
+enum CotypistQwenRetryPolicy {
+    static func shouldRetry(_ completion: CotypistCompletion?) -> Bool {
+        completion == nil || completion?.quality == .contextEcho
+    }
+
+    static func choose(
+        primary: CotypistCompletion?,
+        retry: CotypistCompletion?
+    ) -> CotypistCompletion? {
+        if let retry, retry.quality == .normal {
+            return retry
+        }
+        return primary ?? retry
     }
 }

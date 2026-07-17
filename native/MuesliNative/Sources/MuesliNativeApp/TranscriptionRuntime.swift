@@ -256,12 +256,21 @@ actor TranscriptionCoordinator {
         case .gemma4E2B:
             raw = try await cotypistGemmaEngine.completeText(request)
         }
-        guard let sanitized = CotypistOutputSanitizer.sanitize(raw, for: request.context) else {
+        let primary = CotypistOutputSanitizer.sanitize(raw, for: request.context)
+        if request.model == .qwen35_0_8b,
+           CotypistQwenRetryPolicy.shouldRetry(primary) {
+            let retryRaw = try await cotypistQwenEngine.completeRetry(request)
+            let retry = CotypistOutputSanitizer.sanitize(retryRaw, for: request.context)
+            if let chosen = CotypistQwenRetryPolicy.choose(primary: primary, retry: retry) {
+                return chosen
+            }
+        }
+        guard let primary else {
             throw NSError(domain: "Cotypist", code: 2, userInfo: [
                 NSLocalizedDescriptionKey: "The local model returned an unsafe or invalid continuation.",
             ])
         }
-        return sanitized
+        return primary
     }
 
     func cancelCotypistCompletion() async {

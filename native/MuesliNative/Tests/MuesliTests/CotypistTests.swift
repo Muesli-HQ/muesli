@@ -113,6 +113,9 @@ struct CotypistConfigurationTests {
         #expect(request.systemPrompt.contains("Return only the exact missing continuation"))
         #expect(request.gemmaUserPrompt.contains("Return only the missing text"))
         #expect(request.gemmaUserPrompt.contains("BEFORE: Please send the revised proposal"))
+        #expect(request.qwenRetryPrompt.contains("only 1–8 NEW words"))
+        #expect(request.qwenRetryPrompt.contains("Surface: \(request.surface.rawValue)"))
+        #expect(request.qwenRetryPrompt.contains("ENDING WORDS (do not copy): Please send the revised proposal"))
         #expect(!request.systemPrompt.contains("transcrib"))
     }
 
@@ -153,8 +156,8 @@ struct CotypistConfigurationTests {
             "A deliberately long context ending with more",
             for: echoContext
         ) == CotypistCompletion(
-            text: " A deliberately long context ending with more",
-            quality: .contextEcho
+            text: " with more",
+            quality: .normal
         ))
         #expect(CotypistOutputSanitizer.sanitize(
             "new words a deliberately long suffix",
@@ -172,8 +175,8 @@ struct CotypistConfigurationTests {
             "(pressed the combo key) Why is the Qwen model not working as expected?",
             for: reportedContext
         ) == CotypistCompletion(
-            text: "(pressed the combo key) Why is the Qwen model not working as expected?",
-            quality: .contextEcho
+            text: " expected?",
+            quality: .normal
         ))
 
         let shorterEchoContext = makeContext(
@@ -187,6 +190,44 @@ struct CotypistConfigurationTests {
             text: " We need to ship the feature",
             quality: .contextEcho
         ))
+
+        let earlierEchoContext = makeContext(
+            prefix: "Hi Sarah,\n\nThanks for sending the revised proposal. Everything",
+            suffix: ""
+        )
+        #expect(CotypistOutputSanitizer.sanitize(
+            "Hi Sarah,",
+            for: earlierEchoContext
+        ) == CotypistCompletion(
+            text: " Hi Sarah,",
+            quality: .contextEcho
+        ))
+        #expect(CotypistOutputSanitizer.sanitize(
+            "Thanks for sending the revised proposal again",
+            for: earlierEchoContext
+        ) == CotypistCompletion(
+            text: " Thanks for sending the revised proposal again",
+            quality: .contextEcho
+        ))
+        #expect(CotypistOutputSanitizer.sanitize(
+            "why is the qwen model not working as it should now",
+            for: reportedContext
+        ) == CotypistCompletion(
+            text: " it should now",
+            quality: .normal
+        ))
+    }
+
+    @Test("Qwen retries copied output and prefers a novel continuation")
+    func qwenRetryPolicy() {
+        let copied = CotypistCompletion(text: " repeated context", quality: .contextEcho)
+        let novel = CotypistCompletion(text: " continues naturally", quality: .normal)
+
+        #expect(CotypistQwenRetryPolicy.shouldRetry(nil))
+        #expect(CotypistQwenRetryPolicy.shouldRetry(copied))
+        #expect(!CotypistQwenRetryPolicy.shouldRetry(novel))
+        #expect(CotypistQwenRetryPolicy.choose(primary: copied, retry: novel) == novel)
+        #expect(CotypistQwenRetryPolicy.choose(primary: copied, retry: nil) == copied)
     }
 }
 
@@ -485,6 +526,27 @@ struct CotypistModelIntegrationTests {
                 ("Xcode", "com.apple.dt.Xcode", "let response = client.", "", .code),
                 ("Mail", "com.apple.mail", "Please send the revised proposal", " before Friday.", .email),
                 ("Slack", "com.tinyspeck.slackmacgap", "I reviewed the latest build and", "", .chat),
+                (
+                    "TextEdit",
+                    "com.apple.TextEdit",
+                    "Today I tested Cotypist in several applications. The overlay appears beside the cursor, but when I switch to the smaller Qwen model it",
+                    "",
+                    .document
+                ),
+                (
+                    "Mail",
+                    "com.apple.mail",
+                    "Hi Sarah,\n\nThanks for sending the revised proposal. I reviewed the budget and timeline, and everything",
+                    "",
+                    .email
+                ),
+                (
+                    "Slack",
+                    "com.tinyspeck.slackmacgap",
+                    "The deployment just finished. I checked the service logs and everything",
+                    "",
+                    .chat
+                ),
             ]
 
             for testCase in cases {
@@ -498,6 +560,10 @@ struct CotypistModelIntegrationTests {
                 let completion = try await runtime.completeText(request: request)
                 #expect(request.surface == testCase.surface)
                 #expect(!completion.text.isEmpty)
+                #expect(
+                    completion.quality == .normal,
+                    "Qwen copied context for \(testCase.surface.rawValue): \(completion.text)"
+                )
 
                 if testCase.prefix == "Why is the Qwen model not working as" {
                     #expect(completion.text.localizedCaseInsensitiveContains("expected"))
@@ -506,7 +572,7 @@ struct CotypistModelIntegrationTests {
                 if testCase.surface == .code {
                     #expect(completion.text.localizedCaseInsensitiveContains("fetch"))
                 }
-                if testCase.surface == .email {
+                if testCase.prefix == "Please send the revised proposal" {
                     #expect(completion.text.localizedCaseInsensitiveContains("to me"))
                 }
                 let echoedPhrases = [
