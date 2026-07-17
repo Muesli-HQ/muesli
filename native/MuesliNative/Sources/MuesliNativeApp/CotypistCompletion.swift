@@ -176,16 +176,9 @@ struct CotypistCompletionRequest: Equatable, Sendable {
             .joined(separator: " ")
         let suffixHead = String(context.suffix.prefix(120))
         return """
-        The previous prediction copied existing text. Write only 1–8 NEW words that follow the ending words. Never include the ending words in the answer. Do not answer a question or add a label. Include a leading space when needed.
-
-        Example:
-        ENDING WORDS (do not copy): reviewed the latest build and
-        NEW WORDS:  found two issues.
-
         Surface: \(surface.rawValue)
-        ENDING WORDS (do not copy): \(endingWords)
-        FOLLOWING TEXT: \(suffixHead)
-        NEW WORDS:
+        BEFORE END: \(endingWords)
+        AFTER START: \(suffixHead)
         """
     }
 }
@@ -204,12 +197,24 @@ enum CotypistOutputSanitizer {
         ]
         guard !structuralMarkers.contains(where: lower.contains) else { return nil }
 
+        let promptLeakageMarkers = [
+            "the previous prediction copied existing text",
+            "continuation examples:",
+            "ending words (do not copy):",
+            "following text:",
+            "new words:",
+            "before end:",
+            "after start:",
+            "never include the ending words",
+        ]
+        guard !promptLeakageMarkers.contains(where: lower.contains) else { return nil }
+
         let visible = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !visible.isEmpty else { return nil }
         let lowerVisible = visible.lowercased()
         let commentaryPrefixes = [
             "assistant:", "analysis:", "reasoning:", "completion:", "continuation:", "insert:",
-            "here is", "i suggest", "the user", "as an ai",
+            "input:", "output:", "surface:", "here is", "i suggest", "the user", "as an ai",
         ]
         guard !commentaryPrefixes.contains(where: lowerVisible.hasPrefix) else { return nil }
         if (visible.hasPrefix("\"") && visible.hasSuffix("\""))

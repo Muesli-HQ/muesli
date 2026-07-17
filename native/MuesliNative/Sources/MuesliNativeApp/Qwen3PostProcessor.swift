@@ -265,7 +265,7 @@ private actor Qwen3CotypistManager {
     }
 
     func complete(_ request: CotypistCompletionRequest) async throws -> String {
-        try await generate(
+        return try await generate(
             prompt: request.userPrompt,
             maxOutputTokens: request.maxOutputTokens,
             thinking: .suppressed
@@ -273,22 +273,37 @@ private actor Qwen3CotypistManager {
     }
 
     func completeRetry(_ request: CotypistCompletionRequest) async throws -> String {
-        try await generate(
+        let examples: [Chat] = [
+            (.user, "Surface: email\nBEFORE END: Please send the report\nAFTER START:  by Friday."),
+            (.bot, " to me"),
+            (.user, "Surface: generic\nBEFORE END: Why is the Qwen model not working as\nAFTER START:"),
+            (.bot, " expected?"),
+            (.user, "Surface: chat\nBEFORE END: I reviewed the latest build and\nAFTER START:"),
+            (.bot, " found two issues."),
+        ]
+        return try await generate(
             prompt: request.qwenRetryPrompt,
             maxOutputTokens: min(request.maxOutputTokens, 8),
-            thinking: .suppressed
+            thinking: .suppressed,
+            history: examples
         )
     }
 
     private func generate(
         prompt: String,
         maxOutputTokens: Int,
-        thinking: ThinkingMode
+        thinking: ThinkingMode,
+        history: [Chat]? = nil
     ) async throws -> String {
         try await inferenceGate.acquire()
         do {
             try Task.checkCancellation()
             let bot = try loadBot()
+            let priorHistory = bot.history
+            if let history {
+                bot.history = history
+            }
+            defer { bot.history = priorHistory }
 
             var generated = ""
             await bot.respond(to: prompt, thinking: thinking) { stream in

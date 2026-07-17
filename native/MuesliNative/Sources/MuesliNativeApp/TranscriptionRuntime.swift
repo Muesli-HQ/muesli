@@ -261,7 +261,13 @@ actor TranscriptionCoordinator {
            CotypistQwenRetryPolicy.shouldRetry(primary) {
             let retryRaw = try await cotypistQwenEngine.completeRetry(request)
             let retry = CotypistOutputSanitizer.sanitize(retryRaw, for: request.context)
-            if let chosen = CotypistQwenRetryPolicy.choose(primary: primary, retry: retry) {
+            if let retry, retry.quality == .normal {
+                return retry
+            }
+            if let chosen = CotypistQwenRetryPolicy.choose(
+                primary: primary,
+                retry: retry
+            ) {
                 return chosen
             }
         }
