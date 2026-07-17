@@ -24,7 +24,6 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     case general
     case sync
     case dictation
-    case cotypist
     case computerUse
     case meetings
     case appearance
@@ -36,7 +35,6 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .general: return "General"
         case .sync: return "Sync"
         case .dictation: return "Dictation"
-        case .cotypist: return "Cotypist"
         case .computerUse: return "Computer Use"
         case .meetings: return "Meetings"
         case .appearance: return "Appearance"
