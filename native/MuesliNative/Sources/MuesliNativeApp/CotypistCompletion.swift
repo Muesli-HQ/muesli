@@ -91,6 +91,16 @@ enum CotypistSurface: String, CaseIterable, Sendable {
     }
 }
 
+enum CotypistCompletionQuality: Equatable, Sendable {
+    case normal
+    case contextEcho
+}
+
+struct CotypistCompletion: Equatable, Sendable {
+    let text: String
+    let quality: CotypistCompletionQuality
+}
+
 struct CotypistCompletionRequest: Equatable, Sendable {
     static let maximumOutputTokens = 24
     static let systemPromptTemplate = """
@@ -125,9 +135,25 @@ struct CotypistCompletionRequest: Equatable, Sendable {
             context.fieldMetadata.isEmpty ? nil : "Field: \(context.fieldMetadata)",
         ].compactMap { $0 }.joined(separator: "\n")
         return """
+        Complete the text at the cursor. Do not answer the writer, rewrite the existing text, or repeat BEFORE or AFTER. Return only the new characters to insert, including any required leading space.
+
+        Examples (the quoted RETURN value shows the exact missing text):
+        BEFORE: "Please send the report"
+        AFTER: " by Friday."
+        RETURN: " to me"
+
+        BEFORE: "Why is the Qwen model not working as"
+        AFTER: ""
+        RETURN: " expected?"
+
+        BEFORE: "let response = client."
+        AFTER: ""
+        RETURN: "fetch()"
+
         \(metadata)
-        <PREFIX>\(context.prefix)</PREFIX><CARET><SUFFIX>\(context.suffix)</SUFFIX>
-        Continue at <CARET>. Output continuation only.
+        BEFORE: \(context.prefix)
+        AFTER: \(context.suffix)
+        Return the missing continuation only, with no RETURN label, quotation marks, explanation, or repeated context.
         """
     }
 
@@ -145,7 +171,7 @@ struct CotypistCompletionRequest: Equatable, Sendable {
 }
 
 enum CotypistOutputSanitizer {
-    static func sanitize(_ raw: String, for context: FocusedTextContext) -> String? {
+    static func sanitize(_ raw: String, for context: FocusedTextContext) -> CotypistCompletion? {
         guard !raw.isEmpty, raw.count <= 1_000 else { return nil }
         guard !raw.unicodeScalars.contains(where: { scalar in
             CharacterSet.controlCharacters.contains(scalar) && scalar.value != 10 && scalar.value != 9
@@ -171,17 +197,12 @@ enum CotypistOutputSanitizer {
             return nil
         }
 
-        let prefixProbe = String(context.prefix.suffix(40)).trimmingCharacters(in: .whitespacesAndNewlines)
-        if prefixProbe.count >= 12 && visible.hasPrefix(prefixProbe) { return nil }
-        let suffixProbe = String(context.suffix.prefix(40)).trimmingCharacters(in: .whitespacesAndNewlines)
-        if suffixProbe.count >= 12 && visible == suffixProbe { return nil }
-        if !suffixProbe.isEmpty, visible.hasSuffix(suffixProbe), visible.count > suffixProbe.count {
-            return nil
-        }
+        let containsContextEcho = containsPrefixEcho(context.prefix, in: visible)
+            || containsSuffixEcho(context.suffix, in: visible)
 
         // A 24-token response should stay well below this character ceiling even for
-        // code-heavy output; this catches runaway or echoed prompts without trimming
-        // meaningful leading whitespace.
+        // code-heavy output; this catches runaway prompts without trimming meaningful
+        // leading whitespace. Context echoes are retained and marked separately.
         guard raw.count <= 320 else { return nil }
 
         // LiteRT text responses can omit a required leading space even when the prompt
@@ -194,9 +215,41 @@ enum CotypistOutputSanitizer {
            isWordCharacter(prefixLast),
            isWordCharacter(outputFirst),
            context.suffix.first.map(isWordCharacter) != true {
-            return " " + raw
+            return CotypistCompletion(
+                text: " " + raw,
+                quality: containsContextEcho ? .contextEcho : .normal
+            )
         }
-        return raw
+        return CotypistCompletion(
+            text: raw,
+            quality: containsContextEcho ? .contextEcho : .normal
+        )
+    }
+
+    private static func containsPrefixEcho(_ prefix: String, in output: String) -> Bool {
+        let tail = Array(prefix.suffix(40))
+        guard tail.count >= 12 else { return false }
+        for start in tail.indices {
+            let probe = String(tail[start...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard probe.count >= 12 else { break }
+            if contains(probe, in: output) { return true }
+        }
+        return false
+    }
+
+    private static func containsSuffixEcho(_ suffix: String, in output: String) -> Bool {
+        let head = Array(suffix.prefix(40))
+        guard head.count >= 12 else { return false }
+        for length in stride(from: head.count, through: 12, by: -1) {
+            let probe = String(head.prefix(length)).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard probe.count >= 12 else { continue }
+            if contains(probe, in: output) { return true }
+        }
+        return false
+    }
+
+    private static func contains(_ probe: String, in output: String) -> Bool {
+        output.range(of: probe, options: [.caseInsensitive, .diacriticInsensitive]) != nil
     }
 
     private static func isWordCharacter(_ character: Character) -> Bool {

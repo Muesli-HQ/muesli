@@ -5,7 +5,7 @@ import Foundation
 enum CotypistState: Equatable, Sendable {
     case idle
     case generating
-    case previewing(String)
+    case previewing(CotypistCompletion)
     case accepting
     case failed(String)
 
@@ -412,7 +412,12 @@ final class CotypistPreviewPanel {
         panel.contentView = previewView
     }
 
-    func show(text: String, context: FocusedTextContext, isLoading: Bool = false) {
+    func show(
+        text: String,
+        context: FocusedTextContext,
+        isLoading: Bool = false,
+        quality: CotypistCompletionQuality = .normal
+    ) {
         let screens = NSScreen.screens
         var mode = CotypistPreviewPresentation.mode(
             text: text,
@@ -421,7 +426,12 @@ final class CotypistPreviewPanel {
             presentationStyle: context.presentationStyle
         )
         var font = Self.font(for: context.presentationStyle, mode: mode)
-        var textColor = Self.textColor(for: context.presentationStyle, mode: mode, isLoading: isLoading)
+        var textColor = Self.textColor(
+            for: context.presentationStyle,
+            mode: mode,
+            isLoading: isLoading,
+            quality: quality
+        )
         previewView.configure(text: text, mode: mode, font: font, textColor: textColor, isLoading: isLoading)
         var size = previewView.preferredSize(maxWidth: mode == .ghost ? 520 : 430)
 
@@ -437,7 +447,12 @@ final class CotypistPreviewPanel {
         if frame == nil {
             mode = .capsule
             font = Self.font(for: context.presentationStyle, mode: mode)
-            textColor = Self.textColor(for: context.presentationStyle, mode: mode, isLoading: isLoading)
+            textColor = Self.textColor(
+                for: context.presentationStyle,
+                mode: mode,
+                isLoading: isLoading,
+                quality: quality
+            )
             previewView.configure(text: text, mode: mode, font: font, textColor: textColor, isLoading: isLoading)
             size = previewView.preferredSize(maxWidth: 430)
             frame = CotypistOverlayPlacement.frame(
@@ -488,8 +503,14 @@ final class CotypistPreviewPanel {
     private static func textColor(
         for style: FocusedTextPresentationStyle?,
         mode: CotypistPreviewMode,
-        isLoading: Bool
+        isLoading: Bool,
+        quality: CotypistCompletionQuality
     ) -> NSColor {
+        if !isLoading, quality == .contextEcho {
+            return mode == .ghost
+                ? NSColor.systemRed.withAlphaComponent(0.82)
+                : NSColor.systemRed
+        }
         guard mode == .ghost else { return isLoading ? .secondaryLabelColor : .labelColor }
         if let foreground = style?.foregroundColor {
             return foreground.nsColor.withAlphaComponent(min(max(foreground.alpha * 0.48, 0.34), 0.58))
@@ -724,7 +745,11 @@ final class CotypistCoordinator {
                 loadingTask = nil
                 previewContext = fresh
                 state = .previewing(completion)
-                previewPanel.show(text: completion, context: fresh)
+                previewPanel.show(
+                    text: completion.text,
+                    context: fresh,
+                    quality: completion.quality
+                )
             } catch is CancellationError {
                 if requestID == id { resetUI() }
             } catch {
@@ -750,7 +775,7 @@ final class CotypistCoordinator {
             return
         }
         state = .idle
-        PasteController.typeText(completion)
+        PasteController.typeText(completion.text)
     }
 
     func cancel() {
