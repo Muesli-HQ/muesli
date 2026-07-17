@@ -26,6 +26,11 @@ struct ModelsView: View {
     @State private var downloadedPostProcModels: Set<String> = []
     @State private var downloadTasksPostProc: [String: Task<Void, Never>] = [:]
     @State private var postProcModelToDelete: PostProcessorOption?
+    @State private var isCotypistTextFIMDownloaded = false
+    @State private var isDownloadingCotypistTextFIM = false
+    @State private var cotypistTextFIMDownloadProgress = 0.0
+    @State private var cotypistTextFIMDownloadTask: Task<Void, Never>?
+    @State private var showDeleteCotypistTextFIMConfirmation = false
 
     init(appState: AppState, controller: MuesliController) {
         self.appState = appState
@@ -74,6 +79,7 @@ struct ModelsView: View {
         .onAppear {
             checkDownloadedModels()
             checkDownloadedPostProcModels()
+            isCotypistTextFIMDownloaded = CotypistTextFIMModelStore.isAvailableLocally()
             isLiveCaptionModelDownloaded = MeetingLiveCaptionModelStore.isDownloaded()
             syncSelectionsFromActiveBackend()
             checkNemotron35Update()
@@ -98,6 +104,17 @@ struct ModelsView: View {
             }
         } message: {
             Text("The downloaded model files will be removed from this Mac. You can download the model again later.")
+        }
+        .alert(
+            "Delete \"\(CotypistTextFIMModelStore.label)\"?",
+            isPresented: $showDeleteCotypistTextFIMConfirmation
+        ) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) {
+                deleteCotypistTextFIMModel()
+            }
+        } message: {
+            Text("The local Cotypist checkpoint will be removed from this Mac. You can download it again later.")
         }
         .alert(
             "Delete \"\(postProcModelToDelete?.label ?? "")\"?",
@@ -492,13 +509,13 @@ struct ModelsView: View {
     private var postProcessorSection: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                Text("POST-PROCESSING")
+                Text("LOCAL LANGUAGE MODELS")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(MuesliTheme.textTertiary)
                     .textCase(.uppercase)
                     .padding(.leading, 2)
 
-                Text("Optional LLM cleanup layer applied after transcription. Removes filler words, formats spoken lists, and corrects common dictation errors.")
+                Text("Download and manage private on-device models used for dictation cleanup and experimental Cotypist continuations.")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(MuesliTheme.textSecondary)
                     .padding(.leading, 2)
@@ -507,12 +524,138 @@ struct ModelsView: View {
 
             VStack(spacing: MuesliTheme.spacing12) {
                 gemmaCleanupModelCard
+                cotypistTextFIMModelCard
 
                 ForEach(PostProcessorOption.all) { option in
                     postProcModelCard(option)
                 }
             }
         }
+    }
+
+    private var cotypistTextFIMModelCard: some View {
+        let model = CotypistModelOption.qwen3TextFIM
+        let isSelected = appState.config.resolvedCotypistModel == model && isCotypistTextFIMDownloaded
+        let isActive = isSelected && appState.config.enableCotypist
+
+        return VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+            HStack(alignment: .top, spacing: MuesliTheme.spacing12) {
+                brandLogo("qwen-logo")
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                    HStack(spacing: MuesliTheme.spacing8) {
+                        Text(CotypistTextFIMModelStore.label)
+                            .font(MuesliTheme.headline())
+                            .foregroundStyle(MuesliTheme.textPrimary)
+                        Text(CotypistTextFIMModelStore.sizeLabel)
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                        Text("Experimental")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(MuesliTheme.accent)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(MuesliTheme.accentSubtle)
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
+
+                    Text("Community English fill-in-the-middle checkpoint for fast inline Cotypist completions. It uses raw FIM inference rather than a chat prompt.")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+
+                    Link("Hugging Face · \(CotypistTextFIMModelStore.licenseLabel)", destination: CotypistTextFIMModelStore.sourceURL)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                }
+                Spacer()
+
+                if isActive {
+                    Text("Cotypist Active")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(MuesliTheme.success)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(MuesliTheme.success.opacity(0.15))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                } else if isSelected {
+                    Text("Selected")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(MuesliTheme.surfacePrimary)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                } else if isCotypistTextFIMDownloaded {
+                    Text("Downloaded")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(MuesliTheme.surfacePrimary)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
+            }
+
+            if isDownloadingCotypistTextFIM {
+                VStack(alignment: .leading, spacing: 4) {
+                    ProgressView(value: cotypistTextFIMDownloadProgress)
+                        .tint(MuesliTheme.accent)
+                    Text("\(Int(cotypistTextFIMDownloadProgress * 100))% downloading...")
+                        .font(.system(size: 11))
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                }
+            }
+
+            HStack(spacing: MuesliTheme.spacing8) {
+                if isDownloadingCotypistTextFIM {
+                    Button("Cancel") { cancelCotypistTextFIMDownload() }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                        .padding(.horizontal, MuesliTheme.spacing12)
+                        .padding(.vertical, 4)
+                        .background(MuesliTheme.surfacePrimary)
+                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                } else if isCotypistTextFIMDownloaded {
+                    if !isSelected {
+                        Button("Use for Cotypist") {
+                            _ = controller.selectCotypistModel(model)
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(MuesliTheme.accent)
+                        .padding(.horizontal, MuesliTheme.spacing12)
+                        .padding(.vertical, 4)
+                        .background(MuesliTheme.accentSubtle)
+                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                    }
+                    Button {
+                        showDeleteCotypistTextFIMConfirmation = true
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.red.opacity(0.6))
+                            .frame(width: 20, height: 20)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Button("Download") { startCotypistTextFIMDownload() }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(MuesliTheme.accent)
+                        .padding(.horizontal, MuesliTheme.spacing12)
+                        .padding(.vertical, 4)
+                        .background(MuesliTheme.accentSubtle)
+                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                }
+            }
+        }
+        .padding(MuesliTheme.spacing16)
+        .background(MuesliTheme.backgroundRaised)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+        .overlay(
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
+                .strokeBorder(isSelected ? MuesliTheme.accent.opacity(0.5) : MuesliTheme.surfaceBorder, lineWidth: isSelected ? 1.5 : 1)
+        )
     }
 
     private var gemmaCleanupModelCard: some View {
@@ -1066,6 +1209,70 @@ struct ModelsView: View {
         .opacity(0.6)
     }
 
+    // MARK: - Local GGUF Actions
+
+    private func startCotypistTextFIMDownload() {
+        withAnimation { isDownloadingCotypistTextFIM = true }
+        cotypistTextFIMDownloadProgress = 0.02
+
+        let task = Task {
+            do {
+                try FileManager.default.createDirectory(
+                    at: CotypistTextFIMModelStore.cacheDirectory,
+                    withIntermediateDirectories: true
+                )
+                try await downloadGGUFModel(
+                    downloadURL: CotypistTextFIMModelStore.downloadURL,
+                    filename: CotypistTextFIMModelStore.filename,
+                    cacheDirectory: CotypistTextFIMModelStore.cacheDirectory,
+                    modelURL: CotypistTextFIMModelStore.modelURL
+                ) { progress in
+                    DispatchQueue.main.async {
+                        cotypistTextFIMDownloadProgress = max(progress, 0.02)
+                    }
+                }
+                await MainActor.run {
+                    withAnimation {
+                        isDownloadingCotypistTextFIM = false
+                        isCotypistTextFIMDownloaded = true
+                        cotypistTextFIMDownloadProgress = 0
+                        cotypistTextFIMDownloadTask = nil
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    withAnimation {
+                        isDownloadingCotypistTextFIM = false
+                        cotypistTextFIMDownloadProgress = 0
+                        cotypistTextFIMDownloadTask = nil
+                    }
+                }
+                let isCancelled = error is CancellationError || (error as? URLError)?.code == .cancelled
+                if !isCancelled {
+                    fputs("[muesli-native] Cotypist model download failed: \(error)\n", stderr)
+                }
+            }
+        }
+        cotypistTextFIMDownloadTask = task
+    }
+
+    private func cancelCotypistTextFIMDownload() {
+        cotypistTextFIMDownloadTask?.cancel()
+        withAnimation {
+            isDownloadingCotypistTextFIM = false
+            cotypistTextFIMDownloadProgress = 0
+            cotypistTextFIMDownloadTask = nil
+        }
+    }
+
+    private func deleteCotypistTextFIMModel() {
+        if appState.config.resolvedCotypistModel == .qwen3TextFIM {
+            _ = controller.selectCotypistModel(.gemma4E2B)
+        }
+        try? FileManager.default.removeItem(at: CotypistTextFIMModelStore.cacheDirectory)
+        isCotypistTextFIMDownloaded = false
+    }
+
     // MARK: - Post-Processor Actions
 
     private func startPostProcDownload(_ option: PostProcessorOption) {
@@ -1108,21 +1315,44 @@ struct ModelsView: View {
         downloadTasksPostProc[option.id] = task
     }
 
-    private func downloadPostProcModel(_ option: PostProcessorOption, maxRetries: Int = 3) async throws {
+    private func downloadPostProcModel(_ option: PostProcessorOption) async throws {
+        try await downloadGGUFModel(
+            downloadURL: option.downloadURL,
+            filename: option.filename,
+            cacheDirectory: option.cacheDirectory,
+            modelURL: option.modelURL
+        ) { progress in
+            DispatchQueue.main.async {
+                downloadProgressPostProc[option.id] = max(progress, 0.02)
+            }
+        }
+    }
+
+    private func downloadGGUFModel(
+        downloadURL: URL,
+        filename: String,
+        cacheDirectory: URL,
+        modelURL: URL,
+        maxRetries: Int = 3,
+        onProgress: @escaping (Double) -> Void
+    ) async throws {
         var lastError: Error?
         for attempt in 0..<maxRetries {
             try Task.checkCancellation()
             if attempt > 0 {
                 let delay = UInt64(pow(2.0, Double(attempt - 1))) * 1_000_000_000
                 try await Task.sleep(nanoseconds: delay)
-                fputs("[download] retry \(attempt)/\(maxRetries) for \(option.filename)\n", stderr)
-                await MainActor.run {
-                    downloadProgressPostProc[option.id] = 0.02
-                }
+                fputs("[download] retry \(attempt)/\(maxRetries) for \(filename)\n", stderr)
+                onProgress(0.02)
             }
             do {
-                let tmpURL = try await downloadPostProcTempFile(option)
-                try installPostProcModel(from: tmpURL, option: option)
+                let tmpURL = try await downloadGGUFTempFile(downloadURL: downloadURL, onProgress: onProgress)
+                try installGGUFModel(
+                    from: tmpURL,
+                    filename: filename,
+                    cacheDirectory: cacheDirectory,
+                    modelURL: modelURL
+                )
                 return
             } catch is CancellationError {
                 throw CancellationError()
@@ -1130,25 +1360,24 @@ struct ModelsView: View {
                 lastError = error
             }
         }
-        let underlying = lastError ?? NSError(domain: "PostProcDownload", code: 0, userInfo: [
+        let underlying = lastError ?? NSError(domain: "GGUFDownload", code: 0, userInfo: [
             NSLocalizedDescriptionKey: "No download attempts were made",
         ])
-        throw DownloadError.retriesExhausted(option.filename, underlying)
+        throw DownloadError.retriesExhausted(filename, underlying)
     }
 
-    private func downloadPostProcTempFile(_ option: PostProcessorOption) async throws -> URL {
-        let delegate = PostProcDownloadDelegate { progress in
-            DispatchQueue.main.async {
-                downloadProgressPostProc[option.id] = max(progress, 0.02)
-            }
-        }
+    private func downloadGGUFTempFile(
+        downloadURL: URL,
+        onProgress: @escaping (Double) -> Void
+    ) async throws -> URL {
+        let delegate = GGUFDownloadDelegate(onProgress: onProgress)
         let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
         let invalidator = URLSessionInvalidator()
         do {
             let downloadedURL = try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { continuation in
                     delegate.setContinuation(continuation)
-                    session.downloadTask(with: option.downloadURL).resume()
+                    session.downloadTask(with: downloadURL).resume()
                 }
             } onCancel: {
                 invalidator.cancel(session)
@@ -1165,24 +1394,29 @@ struct ModelsView: View {
         }
     }
 
-    private func installPostProcModel(from tmpURL: URL, option: PostProcessorOption) throws {
+    private func installGGUFModel(
+        from tmpURL: URL,
+        filename: String,
+        cacheDirectory: URL,
+        modelURL: URL
+    ) throws {
         let fm = FileManager.default
-        let stagingURL = option.cacheDirectory.appendingPathComponent(".\(option.filename).download")
+        let stagingURL = cacheDirectory.appendingPathComponent(".\(filename).download")
         defer {
             try? fm.removeItem(at: tmpURL)
             try? fm.removeItem(at: stagingURL)
         }
         try? fm.removeItem(at: stagingURL)
         try fm.moveItem(at: tmpURL, to: stagingURL)
-        if fm.fileExists(atPath: option.modelURL.path) {
+        if fm.fileExists(atPath: modelURL.path) {
             _ = try fm.replaceItemAt(
-                option.modelURL,
+                modelURL,
                 withItemAt: stagingURL,
                 backupItemName: nil,
                 options: []
             )
         } else {
-            try fm.moveItem(at: stagingURL, to: option.modelURL)
+            try fm.moveItem(at: stagingURL, to: modelURL)
         }
     }
 
@@ -1477,9 +1711,9 @@ private final class URLSessionInvalidator: @unchecked Sendable {
     }
 }
 
-/// URLSessionDownloadDelegate bridge for post-processor GGUF downloads.
+/// URLSessionDownloadDelegate bridge shared by local GGUF model cards.
 /// Uses OS-level buffered download task instead of byte-by-byte async iteration.
-private final class PostProcDownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+private final class GGUFDownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     private let onProgress: (Double) -> Void
     private let lock = NSLock()
     private var continuation: CheckedContinuation<URL, Error>?
@@ -1499,8 +1733,8 @@ private final class PostProcDownloadDelegate: NSObject, URLSessionDownloadDelega
         do {
             if let response = downloadTask.response as? HTTPURLResponse,
                !(200..<300).contains(response.statusCode) {
-                throw NSError(domain: "PostProcDownload", code: response.statusCode, userInfo: [
-                    NSLocalizedDescriptionKey: "Post-processor download failed with HTTP \(response.statusCode)",
+                throw NSError(domain: "GGUFDownload", code: response.statusCode, userInfo: [
+                    NSLocalizedDescriptionKey: "GGUF model download failed with HTTP \(response.statusCode)",
                 ])
             }
 
@@ -1548,8 +1782,8 @@ private final class PostProcDownloadDelegate: NSObject, URLSessionDownloadDelega
         defer { try? fh.close() }
         let header = try fh.read(upToCount: 4) ?? Data()
         guard header == Data([0x47, 0x47, 0x55, 0x46]) else {
-            throw NSError(domain: "PostProcDownload", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "Downloaded post-processor file is not a GGUF model",
+            throw NSError(domain: "GGUFDownload", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Downloaded file is not a GGUF model",
             ])
         }
     }

@@ -2,14 +2,36 @@ import Foundation
 
 enum CotypistModelOption: String, Codable, CaseIterable, Identifiable, Sendable {
     case gemma4E2B = "gemma4_e2b"
+    case qwen3TextFIM = "qwen3_0_6b_text_fim"
 
     var id: String { rawValue }
 
-    var label: String { "Gemma 4 E2B" }
+    var label: String {
+        switch self {
+        case .gemma4E2B:
+            return "Gemma 4 E2B"
+        case .qwen3TextFIM:
+            return "Qwen3 0.6B Text FIM"
+        }
+    }
 
-    var detail: String { "The supported local Cotypist model. Uses LiteRT for higher-quality continuations." }
+    var detail: String {
+        switch self {
+        case .gemma4E2B:
+            return "General-purpose LiteRT model for higher-quality continuations."
+        case .qwen3TextFIM:
+            return "Community English fill-in-the-middle checkpoint optimized for low-latency inline completion."
+        }
+    }
 
-    var isDownloaded: Bool { Gemma4LiteRTModelStore.isAvailableLocally() }
+    var isDownloaded: Bool {
+        switch self {
+        case .gemma4E2B:
+            return Gemma4LiteRTModelStore.isAvailableLocally()
+        case .qwen3TextFIM:
+            return CotypistTextFIMModelStore.isAvailableLocally()
+        }
+    }
 
     static func resolved(_ rawValue: String?) -> CotypistModelOption {
         rawValue.flatMap(CotypistModelOption.init(rawValue:)) ?? .gemma4E2B
@@ -123,6 +145,11 @@ struct CotypistCompletionRequest: Equatable, Sendable {
         """
     }
 
+    /// Qwen Text FIM is a base completion model, not a chat model. Feeding it
+    /// instructions or a chat template materially degrades the continuation.
+    var fimPrompt: String {
+        "<|fim_prefix|>\(context.prefix)<|fim_suffix|>\(context.suffix)<|fim_middle|>"
+    }
 }
 
 enum CotypistOutputSanitizer {
@@ -134,7 +161,7 @@ enum CotypistOutputSanitizer {
 
         let lower = raw.lowercased()
         let structuralMarkers = [
-            "<think", "</think", "<|im_", "```", "<prefix>", "</prefix>",
+            "<think", "</think", "<|im_", "<|fim_", "<|endoftext|>", "```", "<prefix>", "</prefix>",
             "<suffix>", "</suffix>", "<caret>",
         ]
         guard !structuralMarkers.contains(where: lower.contains) else { return nil }

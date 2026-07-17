@@ -3306,6 +3306,21 @@ final class MuesliController: NSObject {
         return hotkeyResult
     }
 
+    @discardableResult
+    func selectCotypistModel(_ model: CotypistModelOption) -> ShortcutHotkeyUpdateResult {
+        guard model != config.resolvedCotypistModel else { return .updated }
+        guard model.isDownloaded else {
+            updateConfig {
+                $0.cotypistModel = model.rawValue
+                $0.enableCotypist = false
+            }
+            showModels(category: .postProcessing)
+            return .conflict(message: "Download \(model.label) in Local Language Models before enabling Cotypist.")
+        }
+        updateConfig { $0.cotypistModel = model.rawValue }
+        return .updated
+    }
+
     func addCotypistExcludedApplication(bundleID: String) {
         guard !bundleID.isEmpty else { return }
         updateConfig { config in
