@@ -55,6 +55,26 @@ thin_macho_to_bundle_arch() {
   mv "$tmp" "$binary"
 }
 
+copy_macho_to_bundle_arch() {
+  local source="$1"
+  local target="$2"
+  local info
+  info="$(lipo -info "$source" 2>/dev/null || true)"
+
+  # Extract directly from a universal source so constrained dev volumes do not
+  # need space for both the fat binary and its final thin replacement.
+  if [[ -n "$BUNDLE_THIN_ARCH" \
+      && "$info" == *"Architectures in the fat file"* \
+      && "$info" == *" $BUNDLE_THIN_ARCH"* ]]; then
+    lipo "$source" -thin "$BUNDLE_THIN_ARCH" -output "$target"
+    chmod +x "$target"
+    return 0
+  fi
+
+  cp -RL "$source" "$target"
+  thin_macho_to_bundle_arch "$target"
+}
+
 if [[ -n "$TELEMETRYDECK_APP_ID" && ! "$TELEMETRYDECK_APP_ID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]; then
   echo "Invalid MUESLI_TELEMETRYDECK_APP_ID: expected a UUID." >&2
   exit 2
@@ -132,8 +152,7 @@ done
 for dylib in "$BIN_DIR"/*.dylib; do
   [[ -f "$dylib" ]] || continue
   target="$STAGED_APP_DIR/Contents/MacOS/$(basename "$dylib")"
-  cp -RL "$dylib" "$target"
-  thin_macho_to_bundle_arch "$target"
+  copy_macho_to_bundle_arch "$dylib" "$target"
 done
 
 # Bundle SPM resource bundles (CoreML models, privacy manifests, etc.)
@@ -209,8 +228,7 @@ EOF
 else
   for dylib in "${LOCALVQE_RUNTIME_FILES[@]}"; do
     target="$STAGED_APP_DIR/Contents/MacOS/$(basename "$dylib")"
-    cp -RL "$dylib" "$target"
-    thin_macho_to_bundle_arch "$target"
+    copy_macho_to_bundle_arch "$dylib" "$target"
   done
   echo "Bundled LocalVQE runtime (${#LOCALVQE_RUNTIME_FILES[@]} files) from $LOCALVQE_LIB_DIR"
 fi

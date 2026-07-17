@@ -298,7 +298,7 @@ actor TranscriptionCoordinator {
         }
     }
 
-    func completeText(request: CotypistCompletionRequest) async throws -> String {
+    func completeText(request: CotypistCompletionRequest) async throws -> CotypistCompletion {
         guard #available(macOS 15, *) else {
             throw NSError(domain: "Cotypist", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "Cotypist requires macOS 15 or later.",

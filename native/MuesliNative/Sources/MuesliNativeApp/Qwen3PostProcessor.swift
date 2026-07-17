@@ -269,7 +269,6 @@ private actor Qwen3CotypistManager {
         do {
             try Task.checkCancellation()
             let bot = try loadBot()
-            defer { bot.reset() }
 
             var generated = ""
             await bot.respond(to: request.userPrompt, thinking: .suppressed) { stream in
@@ -311,6 +310,15 @@ private actor Qwen3CotypistManager {
         bot?.stop()
     }
 
+    func shutdown() async {
+        // LLM.stop() dispatches its core stop asynchronously. Give that work and any
+        // final Metal command buffer time to drain before releasing the model.
+        bot?.stop()
+        try? await Task.sleep(for: .milliseconds(100))
+        bot = nil
+        try? await Task.sleep(for: .milliseconds(100))
+    }
+
     private func loadBot() throws -> LLM {
         if let bot { return bot }
         guard FileManager.default.fileExists(atPath: modelURL.path) else {
@@ -333,6 +341,9 @@ private actor Qwen3CotypistManager {
                 NSLocalizedDescriptionKey: "Failed to load Qwen3.5 0.8B at \(modelURL.path).",
             ])
         }
+        // LLM.swift prints every completed response by default. Cotypist context and
+        // suggestions are private transient content, so suppress that callback.
+        loaded.postprocess = { _ in }
         loaded.useResolvedTemplate(systemPrompt: CotypistCompletionRequest.systemPromptTemplate)
         bot = loaded
         return loaded
@@ -361,7 +372,7 @@ actor Qwen3CotypistEngine {
     }
 
     func shutdown() async {
-        await manager?.stop()
+        await manager?.shutdown()
         manager = nil
     }
 }

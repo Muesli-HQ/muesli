@@ -105,21 +105,27 @@ struct CotypistConfigurationTests {
         let request = CotypistCompletionRequest(context: context, model: .qwen35_0_8b, maxOutputTokens: 500)
 
         #expect(request.maxOutputTokens == 24)
-        #expect(request.userPrompt.contains("<PREFIX>Please send the revised proposal</PREFIX><CARET>"))
-        #expect(request.userPrompt.contains("<SUFFIX> before Friday.</SUFFIX>"))
+        #expect(request.userPrompt.contains("Do not answer the writer"))
+        #expect(request.userPrompt.contains("BEFORE: \"Why is the Qwen model not working as\""))
+        #expect(request.userPrompt.contains("RETURN: \" expected?\""))
+        #expect(request.userPrompt.contains("BEFORE: Please send the revised proposal"))
+        #expect(request.userPrompt.contains("AFTER:  before Friday."))
         #expect(request.systemPrompt.contains("Return only the exact missing continuation"))
         #expect(request.gemmaUserPrompt.contains("Return only the missing text"))
         #expect(request.gemmaUserPrompt.contains("BEFORE: Please send the revised proposal"))
         #expect(!request.systemPrompt.contains("transcrib"))
     }
 
-    @Test("sanitizer preserves leading whitespace and rejects wrappers and echoes")
+    @Test("sanitizer preserves whitespace, rejects malformed output, and flags context echoes")
     func sanitizer() {
         let context = makeContext(
             prefix: "func load() {\n    let response = client.",
             suffix: "\n}"
         )
-        #expect(CotypistOutputSanitizer.sanitize("\n        fetch()", for: context) == "\n        fetch()")
+        #expect(CotypistOutputSanitizer.sanitize("\n        fetch()", for: context) == CotypistCompletion(
+            text: "\n        fetch()",
+            quality: .normal
+        ))
         #expect(CotypistOutputSanitizer.sanitize("Completion: fetch()", for: context) == nil)
         #expect(CotypistOutputSanitizer.sanitize("INSERT: fetch()", for: context) == nil)
         #expect(CotypistOutputSanitizer.sanitize("<think>reason</think>fetch()", for: context) == nil)
@@ -127,18 +133,60 @@ struct CotypistConfigurationTests {
         #expect(CotypistOutputSanitizer.sanitize("fetch()\u{0000}", for: context) == nil)
 
         let proseContext = makeContext(prefix: "We can", suffix: "")
-        #expect(CotypistOutputSanitizer.sanitize("continue tomorrow", for: proseContext) == " continue tomorrow")
+        #expect(CotypistOutputSanitizer.sanitize("continue tomorrow", for: proseContext) == CotypistCompletion(
+            text: " continue tomorrow",
+            quality: .normal
+        ))
         let codeContext = makeContext(
             appName: "Xcode",
             bundleID: "com.apple.dt.Xcode",
             prefix: "res",
             suffix: ""
         )
-        #expect(CotypistOutputSanitizer.sanitize("ponse", for: codeContext) == "ponse")
+        #expect(CotypistOutputSanitizer.sanitize("ponse", for: codeContext) == CotypistCompletion(
+            text: "ponse",
+            quality: .normal
+        ))
 
         let echoContext = makeContext(prefix: "A deliberately long context ending", suffix: " a deliberately long suffix")
-        #expect(CotypistOutputSanitizer.sanitize("A deliberately long context ending with more", for: echoContext) == nil)
-        #expect(CotypistOutputSanitizer.sanitize("new words a deliberately long suffix", for: echoContext) == nil)
+        #expect(CotypistOutputSanitizer.sanitize(
+            "A deliberately long context ending with more",
+            for: echoContext
+        ) == CotypistCompletion(
+            text: " A deliberately long context ending with more",
+            quality: .contextEcho
+        ))
+        #expect(CotypistOutputSanitizer.sanitize(
+            "new words a deliberately long suffix",
+            for: echoContext
+        ) == CotypistCompletion(
+            text: " new words a deliberately long suffix",
+            quality: .contextEcho
+        ))
+
+        let reportedContext = makeContext(
+            prefix: "why is the qwen model not working as",
+            suffix: ""
+        )
+        #expect(CotypistOutputSanitizer.sanitize(
+            "(pressed the combo key) Why is the Qwen model not working as expected?",
+            for: reportedContext
+        ) == CotypistCompletion(
+            text: "(pressed the combo key) Why is the Qwen model not working as expected?",
+            quality: .contextEcho
+        ))
+
+        let shorterEchoContext = makeContext(
+            prefix: "Repeat this exactly: We need to ship the feature",
+            suffix: ""
+        )
+        #expect(CotypistOutputSanitizer.sanitize(
+            "We need to ship the feature",
+            for: shorterEchoContext
+        ) == CotypistCompletion(
+            text: " We need to ship the feature",
+            quality: .contextEcho
+        ))
     }
 }
 
@@ -424,17 +472,64 @@ struct CotypistOverlayPlacementTests {
 
 @Suite("Cotypist model integration gates", .serialized)
 struct CotypistModelIntegrationTests {
-    @Test("Qwen local completion", .timeLimit(.minutes(2)))
+    @Test("Qwen semantic Cotypist cases", .timeLimit(.minutes(4)))
     func qwenCompletion() async throws {
         guard ProcessInfo.processInfo.environment["MUESLI_RUN_COTYPIST_QWEN_INTEGRATION"] == "1",
               CotypistModelOption.qwen35_0_8b.isDownloaded else { return }
         let runtime = TranscriptionCoordinator()
-        defer { Task { await runtime.shutdown() } }
-        let text = try await runtime.completeText(request: CotypistCompletionRequest(
-            context: makeContext(prefix: "Thank you for taking the time to", suffix: ""),
-            model: .qwen35_0_8b
-        ))
-        #expect(!text.isEmpty)
+        do {
+            let cases: [(appName: String, bundleID: String, prefix: String, suffix: String, surface: CotypistSurface)] = [
+                ("Editor", "com.example.editor", "Why is the Qwen model not working as", "", .generic),
+                ("Editor", "com.example.editor", "Repeat this exactly: We need to ship the feature", "", .generic),
+                ("Editor", "com.example.editor", "Rewrite this sentence: The product launches tomorrow and", "", .generic),
+                ("Xcode", "com.apple.dt.Xcode", "let response = client.", "", .code),
+                ("Mail", "com.apple.mail", "Please send the revised proposal", " before Friday.", .email),
+                ("Slack", "com.tinyspeck.slackmacgap", "I reviewed the latest build and", "", .chat),
+            ]
+
+            for testCase in cases {
+                let context = makeContext(
+                    appName: testCase.appName,
+                    bundleID: testCase.bundleID,
+                    prefix: testCase.prefix,
+                    suffix: testCase.suffix
+                )
+                let request = CotypistCompletionRequest(context: context, model: .qwen35_0_8b)
+                let completion = try await runtime.completeText(request: request)
+                #expect(request.surface == testCase.surface)
+                #expect(!completion.text.isEmpty)
+
+                if testCase.prefix == "Why is the Qwen model not working as" {
+                    #expect(completion.text.localizedCaseInsensitiveContains("expected"))
+                    #expect(completion.quality == .normal)
+                }
+                if testCase.surface == .code {
+                    #expect(completion.text.localizedCaseInsensitiveContains("fetch"))
+                }
+                if testCase.surface == .email {
+                    #expect(completion.text.localizedCaseInsensitiveContains("to me"))
+                }
+                let echoedPhrases = [
+                    "We need to ship the feature",
+                    "The product launches tomorrow and",
+                    "I reviewed the latest build and",
+                ]
+                if echoedPhrases.contains(where: completion.text.localizedCaseInsensitiveContains) {
+                    #expect(completion.quality == .contextEcho)
+                }
+
+                let probe = String(context.prefix.suffix(40)).trimmingCharacters(in: .whitespacesAndNewlines)
+                let containsEcho = probe.count >= 12 && completion.text.range(
+                    of: probe,
+                    options: [.caseInsensitive, .diacriticInsensitive]
+                ) != nil
+                #expect(!containsEcho || completion.quality == .contextEcho)
+            }
+            await runtime.shutdown()
+        } catch {
+            await runtime.shutdown()
+            throw error
+        }
     }
 
     @Test("Gemma local completion", .timeLimit(.minutes(3)))
@@ -442,12 +537,17 @@ struct CotypistModelIntegrationTests {
         guard ProcessInfo.processInfo.environment["MUESLI_RUN_COTYPIST_GEMMA_INTEGRATION"] == "1",
               CotypistModelOption.gemma4E2B.isDownloaded else { return }
         let runtime = TranscriptionCoordinator()
-        defer { Task { await runtime.shutdown() } }
-        let text = try await runtime.completeText(request: CotypistCompletionRequest(
-            context: makeContext(prefix: "The project is ready and we can", suffix: ""),
-            model: .gemma4E2B
-        ))
-        #expect(!text.isEmpty)
+        do {
+            let completion = try await runtime.completeText(request: CotypistCompletionRequest(
+                context: makeContext(prefix: "The project is ready and we can", suffix: ""),
+                model: .gemma4E2B
+            ))
+            #expect(!completion.text.isEmpty)
+            await runtime.shutdown()
+        } catch {
+            await runtime.shutdown()
+            throw error
+        }
     }
 }
 
