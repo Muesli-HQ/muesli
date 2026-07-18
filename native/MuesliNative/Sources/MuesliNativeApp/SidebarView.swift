@@ -10,6 +10,8 @@ struct SidebarView: View {
 
     let appState: AppState
     let controller: MuesliController
+    let isCollapsed: Bool
+    let onToggleCollapsed: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @State private var meetingsExpanded = true
     @State private var renamingFolderID: Int64?
@@ -97,22 +99,33 @@ struct SidebarView: View {
         return luminance > 0.45 ? Color.black.opacity(0.88) : Color.white
     }
 
+    @ViewBuilder
     var body: some View {
+        if isCollapsed {
+            collapsedSidebar
+        } else {
+            expandedSidebar
+        }
+    }
+
+    private var expandedSidebar: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
             sidebarHeader
             searchBar
 
             sidebarItem(tab: .timeline, icon: "clock.fill", label: "Timeline")
             sidebarItem(tab: .dictations, icon: "mic.fill", label: "Dictations")
+
             meetingsSection
+            sidebarItem(tab: .insights, icon: "chart.bar.xaxis", label: "Insights")
             sidebarItem(tab: .dictionary, icon: "character.book.closed", label: "Dictionary")
-            sidebarItem(tab: .models, icon: "square.and.arrow.down", label: "Models")
-            sidebarItem(tab: .shortcuts, icon: "keyboard", label: "Shortcuts")
 
             Spacer()
 
             modelPreparationStatus
             spreadTheWordSection
+            sidebarItem(tab: .models, icon: "cpu", label: "Models")
+            sidebarItem(tab: .shortcuts, icon: "command", label: "Shortcuts")
             sidebarItem(tab: .settings, icon: "gearshape", label: "Settings")
             sidebarItem(tab: .about, icon: "info.circle", label: "About", updateCTA: pendingUpdateCTA)
             darkModeToggle
@@ -156,10 +169,65 @@ struct SidebarView: View {
         }
     }
 
+    private var collapsedSidebar: some View {
+        VStack(spacing: MuesliTheme.spacing8) {
+            sidebarToggleButton
+                .padding(.top, MuesliTheme.spacing16)
+                .padding(.bottom, MuesliTheme.spacing12)
+
+            collapsedItem(tab: .dictations, icon: "waveform", label: "Dictations")
+            collapsedItem(tab: .meetings, icon: "person.2", label: "Meetings")
+            collapsedItem(tab: .insights, icon: "chart.bar.xaxis", label: "Insights")
+            collapsedItem(tab: .dictionary, icon: "character.book.closed", label: "Dictionary")
+
+            Spacer()
+
+            collapsedItem(tab: .models, icon: "cpu", label: "Models")
+            collapsedItem(tab: .shortcuts, icon: "command", label: "Shortcuts")
+            collapsedItem(tab: .settings, icon: "gearshape", label: "Settings")
+            collapsedItem(tab: .about, icon: "info.circle", label: "About")
+                .padding(.bottom, MuesliTheme.spacing16)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(MuesliTheme.backgroundDeep)
+    }
+
+    private var sidebarToggleButton: some View {
+        Button(action: onToggleCollapsed) {
+            Image(systemName: "sidebar.left")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(MuesliTheme.textSecondary)
+                .frame(width: 36, height: 36)
+                .background(MuesliTheme.backgroundRaised.opacity(0.72))
+                .clipShape(Circle())
+                .overlay(Circle().strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .help(isCollapsed ? "Expand sidebar" : "Collapse sidebar")
+    }
+
+    private func collapsedItem(tab: DashboardTab, icon: String, label: String) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                appState.selectedTab = tab
+            }
+        } label: {
+            Image(systemName: icon)
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(appState.selectedTab == tab ? MuesliTheme.accent : MuesliTheme.textSecondary)
+                .frame(width: 40, height: 36)
+                .background(appState.selectedTab == tab ? MuesliTheme.surfacePrimary : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        }
+        .buttonStyle(.plain)
+        .help(label)
+    }
+
     @ViewBuilder
     private var sidebarHeader: some View {
-        VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-            HStack(spacing: MuesliTheme.spacing12) {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                HStack(spacing: MuesliTheme.spacing12) {
                 Group {
                     if appState.config.menuBarIcon == "muesli",
                        let img = MenuBarIconRenderer.make(choice: "muesli") {
@@ -175,13 +243,16 @@ struct SidebarView: View {
                 Text("muesli")
                     .font(MuesliTheme.title2())
                     .foregroundStyle(MuesliTheme.textPrimary)
+                }
+                if !userName.isEmpty {
+                    Text("Hi, \(userName)")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .padding(.leading, 34)
+                }
             }
-            if !userName.isEmpty {
-                Text("Hi, \(userName)")
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textTertiary)
-                    .padding(.leading, 34)
-            }
+            Spacer(minLength: MuesliTheme.spacing8)
+            sidebarToggleButton
         }
         .padding(.horizontal, MuesliTheme.spacing16)
         .padding(.top, MuesliTheme.pageTop)
@@ -290,15 +361,6 @@ struct SidebarView: View {
             if meetingsExpanded {
                 let folderTree = folderTreePresentation
                 VStack(alignment: .leading, spacing: 2) {
-                    meetingFilterRow(
-                        icon: "tray.2",
-                        label: "All Meetings",
-                        count: appState.totalMeetingCount,
-                        isSelected: appState.selectedTab == .meetings && appState.selectedFolderID == nil
-                    ) {
-                        controller.showMeetingsHome()
-                    }
-
                     ForEach(folderTree.visibleFolders) { folder in
                         let depth = folderTree.depth(of: folder)
                         let hasChildren = folderTree.hasChildren(folder.id)

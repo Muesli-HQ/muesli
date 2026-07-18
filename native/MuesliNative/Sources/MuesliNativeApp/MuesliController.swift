@@ -697,6 +697,15 @@ public final class MuesliController: NSObject {
                 $0.indicatorOrigin = CGPointCodable(x: center.x, y: center.y)
             }
         }
+        indicator.onDockSaved = { [weak self] anchor in
+            self?.updateConfig {
+                $0.indicatorAnchor = anchor
+                $0.indicatorOrigin = nil
+            }
+        }
+        indicator.onStartToggleDictation = { [weak self] in
+            self?.toggleDashboardDictation()
+        }
         workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil,
@@ -1188,7 +1197,9 @@ public final class MuesliController: NSObject {
     }
 
     func refreshIndicatorVisibility() {
-        if config.showFloatingIndicator {
+        let canShowIndicator = config.hasCompletedOnboarding
+            && hasRequiredStartupPermissions(for: config.resolvedOnboardingUseCase)
+        if config.showFloatingIndicator && canShowIndicator {
             indicator.ensureVisible(config: config)
         } else {
             indicator.closeIfIdle()
@@ -8937,6 +8948,15 @@ public final class MuesliController: NSObject {
         guard isMeetingRecording() else { return false }
         stopMeetingRecording()
         return true
+
+    /// Starts the same paste-at-cursor dictation used by the configured hotkey,
+    /// exposed for the dashboard's floating record control.
+    func toggleDashboardDictation() {
+        if dictationStartedAt != nil || dictationAudioSessionManager.hasActiveSession || isNemotron35Streaming {
+            handleToggleStop()
+        } else if dictationState == .idle {
+            handleToggleStart(outputMode: .paste)
+        }
     }
 
     private func handleStop() {

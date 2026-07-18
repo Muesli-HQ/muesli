@@ -77,22 +77,34 @@ struct ModelsView: View {
                         .font(MuesliTheme.body())
                         .foregroundStyle(MuesliTheme.textSecondary)
 
-                    Picker("Model category", selection: modelsCategorySelection) {
-                        ForEach(ModelsCategory.allCases) { category in
-                            Text(category.title).tag(category)
-                        }
-                    }
-                    .pickerStyle(.segmented)
+                    MuesliSegmentedTabs(
+                        options: ModelsCategory.allCases,
+                        selection: modelsCategorySelection,
+                        title: { $0.title }
+                    )
                     .frame(maxWidth: 520)
                     .id(FeatureTourTarget.modelLibrary.rawValue)
                     .featureTourTarget(.modelLibrary)
 
-                    selectedCategoryContent
+                    HStack(spacing: MuesliTheme.spacing8) {
+                        Image(systemName: "lock.shield")
+                            .foregroundStyle(MuesliTheme.accent)
+                        Text("Models run privately on this Mac")
+                            .font(MuesliTheme.captionMedium())
+                            .foregroundStyle(MuesliTheme.textSecondary)
+                    }
+
+                    Divider().background(MuesliTheme.surfaceBorder)
+
+                    VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
+                        selectedCategoryContent
+                    }
                 }
                 .padding(.horizontal, MuesliTheme.spacing32)
+                .frame(maxWidth: 1080, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .center)
             .padding(.top, MuesliTheme.pageTop)
             .padding(.bottom, MuesliTheme.spacing32)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .onAppear {
                 revealFeatureTourTargetIfNeeded(using: proxy)

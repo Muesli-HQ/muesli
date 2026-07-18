@@ -209,8 +209,8 @@ struct MeetingsView: View {
     }
 
     private var currentFolderName: String {
-        guard let folderID = appState.selectedFolderID else { return "All Meetings" }
-        return appState.folders.first(where: { $0.id == folderID })?.name ?? "All Meetings"
+        guard let folderID = appState.selectedFolderID else { return "Meetings" }
+        return appState.folders.first(where: { $0.id == folderID })?.name ?? "Meetings"
     }
 
     private var currentDocumentMeeting: MeetingRecord? {
@@ -262,6 +262,7 @@ struct MeetingsView: View {
             let presentation = browserPresentation
             VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
                 PageTitle("Meetings")
+                browserHeader(meetingCount: presentation.meetings.count)
 
                 if !appState.upcomingCalendarEvents.isEmpty {
                     comingUpSection
@@ -277,8 +278,6 @@ struct MeetingsView: View {
                 if let activeLiveMeeting {
                     activeMeetingBanner(activeLiveMeeting)
                 }
-
-                browserHeader(meetingCount: presentation.meetings.count)
 
                 if presentation.meetings.isEmpty {
                     emptyState
@@ -306,9 +305,9 @@ struct MeetingsView: View {
                 }
             }
             .frame(maxWidth: 960, alignment: .leading)
-            .padding(.horizontal, 40)
+            .padding(.horizontal, MuesliTheme.spacing48)
             .padding(.top, MuesliTheme.pageTop)
-            .padding(.bottom, 32)
+            .padding(.bottom, MuesliTheme.spacing32)
             .frame(maxWidth: .infinity, alignment: .center)
         }
         .onDrop(of: ["public.file-url"], isTargeted: nil) { providers in
@@ -624,30 +623,36 @@ struct MeetingsView: View {
 
     @ViewBuilder
     private func browserHeader(meetingCount: Int) -> some View {
-        VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
+            HStack {
+                Spacer(minLength: 0)
+                browserPrimaryActions
+            }
+
+            browserHeaderTitle
+                .padding(.top, MuesliTheme.spacing8)
+            browserHeaderMeta(meetingCount: meetingCount)
+
             ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: MuesliTheme.spacing16) {
-                    browserHeaderTitle
-                    Spacer(minLength: MuesliTheme.spacing16)
-                    browserHeaderActions
+                HStack(alignment: .center, spacing: MuesliTheme.spacing16) {
+                    meetingOriginTabs
+                    Spacer(minLength: MuesliTheme.spacing24)
+                    browserSecondaryActions
                 }
 
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
-                    browserHeaderTitle
-                    HStack {
-                        Spacer(minLength: 0)
-                        browserHeaderActions
-                    }
+                    meetingOriginTabs
+                    browserSecondaryActions
                 }
             }
-
-            browserHeaderMeta(meetingCount: meetingCount)
-
-            RecordOriginPicker(selection: Binding(
-                get: { appState.meetingOriginFilter },
-                set: { controller.filterMeetings(origin: $0) }
-            ))
         }
+    }
+
+    private var meetingOriginTabs: some View {
+        RecordOriginPicker(selection: Binding(
+            get: { appState.meetingOriginFilter },
+            set: { controller.filterMeetings(origin: $0) }
+        ))
     }
 
     @ViewBuilder
@@ -660,7 +665,7 @@ struct MeetingsView: View {
 
     @ViewBuilder
     private func browserHeaderMeta(meetingCount: Int) -> some View {
-        HStack(spacing: MuesliTheme.spacing8) {
+        HStack(spacing: MuesliTheme.spacing12) {
             Text("\(meetingCount) meeting\(meetingCount == 1 ? "" : "s")")
                 .font(MuesliTheme.callout())
                 .foregroundStyle(MuesliTheme.textSecondary)
@@ -679,7 +684,7 @@ struct MeetingsView: View {
     }
 
     @ViewBuilder
-    private var browserHeaderActions: some View {
+    private var browserPrimaryActions: some View {
         HStack(spacing: MuesliTheme.spacing8) {
             Button {
                 controller.startQuickNoteMeeting()
@@ -727,9 +732,6 @@ struct MeetingsView: View {
             .help("Import an audio file for offline transcription")
             .fixedSize()
 
-            sortButton
-            dateFilterButton
-
             Button {
                 controller.showMeetingTemplatesManager()
             } label: {
@@ -753,7 +755,13 @@ struct MeetingsView: View {
             .buttonStyle(.plain)
             .fixedSize()
         }
-        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var browserSecondaryActions: some View {
+        HStack(spacing: MuesliTheme.spacing12) {
+            sortButton
+            dateFilterButton
+        }
     }
 
     @ViewBuilder

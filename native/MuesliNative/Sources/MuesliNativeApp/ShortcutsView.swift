@@ -15,13 +15,15 @@ struct ShortcutsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
-                Text("Shortcuts")
-                    .font(MuesliTheme.title1())
-                    .foregroundStyle(MuesliTheme.textPrimary)
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                    Text("Shortcuts")
+                        .font(MuesliTheme.title1())
+                        .foregroundStyle(MuesliTheme.textPrimary)
 
-                Text("Choose your preferred shortcuts for dictation and computer use commands.")
-                    .font(MuesliTheme.body())
-                    .foregroundStyle(MuesliTheme.textSecondary)
+                    Text("Choose how you start dictation, computer use, and meeting recording.")
+                        .font(MuesliTheme.body())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
 
                 dictationShortcutSection
 
@@ -34,9 +36,10 @@ struct ShortcutsView: View {
                 resetButton
             }
             .padding(.horizontal, MuesliTheme.spacing32)
+            .frame(maxWidth: 820, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
             .padding(.top, MuesliTheme.pageTop)
             .padding(.bottom, MuesliTheme.spacing32)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .onDisappear {
             stopRecording()
@@ -61,7 +64,6 @@ struct ShortcutsView: View {
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
                 Spacer()
-                hotkeyBadge(appState.config.dictationHotkey)
             }
 
             Divider()
@@ -78,13 +80,7 @@ struct ShortcutsView: View {
                 shortcutMessage(dictationShortcutMessage)
             }
         }
-        .padding(MuesliTheme.spacing16)
-        .background(MuesliTheme.backgroundRaised)
-        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
-        .overlay(
-            RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
-                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-        )
+        .padding(.vertical, MuesliTheme.spacing8)
     }
 
     private var computerUseShortcutSection: some View {
@@ -132,13 +128,7 @@ struct ShortcutsView: View {
                 shortcutMessage(computerUseShortcutMessage)
             }
         }
-        .padding(MuesliTheme.spacing16)
-        .background(MuesliTheme.backgroundRaised)
-        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
-        .overlay(
-            RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
-                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-        )
+        .padding(.vertical, MuesliTheme.spacing8)
     }
 
     private var meetingRecordingShortcutSection: some View {
@@ -183,13 +173,7 @@ struct ShortcutsView: View {
                 shortcutMessage(warning)
             }
         }
-        .padding(MuesliTheme.spacing16)
-        .background(MuesliTheme.backgroundRaised)
-        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
-        .overlay(
-            RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
-                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-        )
+        .padding(.vertical, MuesliTheme.spacing8)
     }
 
     private func hotkeyBadge(_ hotkey: HotkeyConfig) -> some View {
@@ -213,18 +197,19 @@ struct ShortcutsView: View {
         isEnabled: Bool = true,
         onThresholdChange: @escaping (Int) -> Void
     ) -> some View {
-        HStack(spacing: MuesliTheme.spacing12) {
-            hotkeyBadge(hotkey(for: target))
+        HStack(alignment: .top, spacing: MuesliTheme.spacing24) {
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                Text("Hold \(hotkey(for: target).label)")
+                    .font(MuesliTheme.body())
+                    .foregroundStyle(isEnabled ? MuesliTheme.textPrimary : MuesliTheme.textTertiary)
+                if isEnabled {
+                    thresholdInput(value: threshold, onChange: onThresholdChange)
+                }
+            }
+            Spacer(minLength: MuesliTheme.spacing24)
             changeButton(for: target)
                 .disabled(!isEnabled)
                 .opacity(isEnabled ? 1 : 0.55)
-            Spacer(minLength: MuesliTheme.spacing16)
-            if isEnabled {
-                thresholdInput(
-                    value: threshold,
-                    onChange: onThresholdChange
-                )
-            }
         }
     }
 
@@ -335,13 +320,7 @@ struct ShortcutsView: View {
                 .labelsHidden()
             }
         }
-        .padding(MuesliTheme.spacing16)
-        .background(MuesliTheme.backgroundRaised)
-        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
-        .overlay(
-            RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
-                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-        )
+        .padding(.vertical, MuesliTheme.spacing8)
     }
 
     private var resetButton: some View {

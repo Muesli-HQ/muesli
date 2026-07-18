@@ -21,15 +21,15 @@ struct StatsHeaderView: View {
     private var cards: some View {
         HStack(spacing: MuesliTheme.spacing16) {
             StatCard(
-                icon: "flame.fill",
-                iconColor: Color(hex: 0xF5A623),
+                icon: "flame",
+                iconColor: MuesliTheme.accent,
                 value: "\(dictationStats.currentStreakDays)",
                 label: "day streak",
                 accessibilityHint: "Open streak insights",
                 action: { onSelect(.streak) }
             )
             StatCard(
-                icon: "character.cursor.ibeam",
+                icon: "text.word.spacing",
                 iconColor: MuesliTheme.accent,
                 value: formatWordCount(dictationStats.totalWords),
                 label: "words dictated",
@@ -38,7 +38,7 @@ struct StatsHeaderView: View {
             )
             StatCard(
                 icon: "gauge.with.dots.needle.33percent",
-                iconColor: MuesliTheme.success,
+                iconColor: MuesliTheme.accent,
                 value: String(format: "%.0f", dictationStats.averageWPM),
                 label: "avg WPM",
                 accessibilityHint: "Open speaking pace insights",
@@ -54,6 +54,7 @@ struct StatsHeaderView: View {
                     action: { onSelect(.meetings) }
                 )
             }
+
         }
         .padding(.horizontal, MuesliTheme.spacing24)
         .padding(.vertical, MuesliTheme.spacing20)

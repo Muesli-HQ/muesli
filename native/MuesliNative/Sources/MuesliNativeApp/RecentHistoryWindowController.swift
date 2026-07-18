@@ -139,6 +139,7 @@ final class RecentHistoryWindowController: NSObject, NSWindowDelegate {
         window.backgroundColor = MuesliTheme.backgroundDeepNSColor
         applyAppearance(to: window)
 
+
         let rootView = DashboardRootView(
             appState: controller.appState,
             controller: controller
@@ -182,5 +183,6 @@ final class RecentHistoryWindowController: NSObject, NSWindowDelegate {
         for action in actions {
             action()
         }
+
     }
 }

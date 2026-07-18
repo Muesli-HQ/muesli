@@ -136,6 +136,8 @@ final class FloatingIndicatorController: NSObject {
     )
     private var glassView: NSVisualEffectView?
     private var tintLayer: CALayer?
+    private var idleLabelBackgroundLayer: CALayer?
+    private var idleIconBackgroundLayer: CALayer?
     private var micIconView: NSImageView?
     private var wandIconView: NSImageView?
     private var barLayers: [CALayer] = []
@@ -152,6 +154,8 @@ final class FloatingIndicatorController: NSObject {
     var onOpenMeetingNotes: (() -> Void)?
     var onCancelToggleDictation: (() -> Void)?
     var onPositionSaved: ((CGPoint) -> Void)?
+    var onDockSaved: ((IndicatorAnchor) -> Void)?
+    var onStartToggleDictation: (() -> Void)?
     var isToggleDictation = false
     private var stopLayer: CALayer?
     private var transcribingTitle = "Transcribing"
@@ -194,6 +198,10 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func handleClick(atX x: CGFloat? = nil) {
+        if state == .idle {
+            onStartToggleDictation?()
+            return
+        }
         if state == .recording, let x {
             if x < 30 {
                 if isMeetingRecording {
@@ -232,6 +240,7 @@ final class FloatingIndicatorController: NSObject {
             preservesCollapsedLeftEdge: preservesCollapsedLeftEdge
         )
         onPositionSaved?(center)
+
     }
 
     func setToggleDictation(_ active: Bool, config: AppConfig) {
@@ -1082,8 +1091,8 @@ final class FloatingIndicatorController: NSObject {
         let tintHex: String
         switch state {
         case .idle:
-            tintAlpha = isHovered ? 0.72 : 0.44
-            tintHex = "1e1e2e"
+            tintAlpha = 0
+            tintHex = "08090A"
         case .preparing:
             tintAlpha = 0.62
             tintHex = "1e1e2e"
@@ -1097,6 +1106,19 @@ final class FloatingIndicatorController: NSObject {
         tintLayer?.isHidden = false
         tintLayer?.backgroundColor = NSColor.colorWith(hexString: tintHex, alpha: tintAlpha).cgColor
         applyTintLayerGeometry(size: frameSize, radius: radius)
+
+        let labelWidth = max(0, frameSize.width - 56)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        idleLabelBackgroundLayer?.isHidden = state != .idle || !isHovered
+        idleLabelBackgroundLayer?.frame = CGRect(x: 0, y: 6, width: labelWidth, height: 40)
+        idleLabelBackgroundLayer?.cornerRadius = 20
+        idleIconBackgroundLayer?.isHidden = state != .idle
+        idleIconBackgroundLayer?.frame = isHovered
+            ? CGRect(x: frameSize.width - 48, y: 2, width: 48, height: 48)
+            : CGRect(x: 0, y: 0, width: frameSize.width, height: frameSize.height)
+        idleIconBackgroundLayer?.cornerRadius = isHovered ? 24 : frameSize.height / 2
+        CATransaction.commit()
 
         let iconSize = NSSize(width: 18, height: 18)
 
@@ -1125,6 +1147,7 @@ final class FloatingIndicatorController: NSObject {
                             height: textHeight
                         )
                     }
+
                 } else {
                     let showsHotkey = config.showHotkeyOnFloatingIndicator
                     let compactIconSize = NSSize(width: 14, height: 14)
@@ -1152,6 +1175,11 @@ final class FloatingIndicatorController: NSObject {
                         textLabel?.alphaValue = 0
                     }
                 }
+            }
+            if isHovered, let textLabel {
+                textLabel.font = NSFont.systemFont(ofSize: 15, weight: .regular)
+                textLabel.alignment = .center
+                textLabel.frame = NSRect(x: 10, y: 16, width: max(0, labelWidth - 20), height: 20)
             }
 
         case .recording:
@@ -1411,6 +1439,24 @@ final class FloatingIndicatorController: NSObject {
         contentView.layer?.insertSublayer(tint, at: 0)
         tintLayer = tint
 
+        let labelBackground = CALayer()
+        labelBackground.backgroundColor = NSColor.black.withAlphaComponent(0.97).cgColor
+        labelBackground.borderColor = NSColor.white.withAlphaComponent(0.16).cgColor
+        labelBackground.borderWidth = 1
+        labelBackground.cornerCurve = .continuous
+        labelBackground.isHidden = true
+        contentView.layer?.insertSublayer(labelBackground, above: tint)
+        idleLabelBackgroundLayer = labelBackground
+
+        let iconBackground = CALayer()
+        iconBackground.backgroundColor = NSColor.colorWith(hex: 0x111111, alpha: 1).cgColor
+        iconBackground.borderColor = NSColor.white.withAlphaComponent(0.10).cgColor
+        iconBackground.borderWidth = 1
+        iconBackground.cornerCurve = .continuous
+        iconBackground.isHidden = true
+        contentView.layer?.insertSublayer(iconBackground, above: labelBackground)
+        idleIconBackgroundLayer = iconBackground
+
         // Idle icon — uses the user's selected menu bar icon from config.
         // Falls back to waveform.badge.microphone if the configured icon can't be loaded.
         let config = configStore.load()
@@ -1448,7 +1494,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     static func defaultIndicatorCenter(in visibleFrame: NSRect, idleSize: NSSize = NSSize(width: 44, height: 28)) -> CGPoint {
-        anchorCenter(.midTrailing, in: visibleFrame, size: idleSize)
+        anchorCenter(.bottomCenter, in: visibleFrame, size: idleSize)
     }
 
     static func idlePositionCenter(
@@ -1581,6 +1627,7 @@ final class FloatingIndicatorController: NSObject {
             size = isHovered
                 ? Self.idleHoverPillSize(hotkeyLabel: config.dictationHotkey.label, screenWidth: screen.width)
                 : NSSize(width: 44, height: 28)
+
         case .preparing: size = NSSize(width: 76, height: 22)
         case .recording: size = NSSize(width: 76, height: 22)
         case .transcribing:
@@ -1642,12 +1689,13 @@ final class FloatingIndicatorController: NSObject {
         case .idle:
             return (
                 .clear,
-                .colorWith(hex: 0xFFFFFF, alpha: isHovered ? 0.14 : 0.22),
+                .clear,
                 "",
-                isHovered ? "Hold \(config.dictationHotkey.label) to dictate" : "",
+                isHovered ? "Dictate \(config.dictationHotkey.displayLabel)" : "",
                 .colorWith(hex: 0xFFFFFF, alpha: 0.75),
                 .colorWith(hex: 0xFFFFFF, alpha: 0.75),
                 isHovered ? 1.0 : 0.90
+
             )
         case .preparing:
             return (.clear, .colorWith(hex: 0xFFFFFF, alpha: 0.16), "", "", .white, .white, 1.0)

@@ -249,6 +249,8 @@ struct SettingsView: View {
                     paneContent
                 }
                 .padding(.horizontal, MuesliTheme.spacing32)
+                .frame(maxWidth: 840, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .center)
             .padding(.top, MuesliTheme.pageTop)
             .padding(.bottom, MuesliTheme.spacing32)
             }
@@ -474,13 +476,11 @@ struct SettingsView: View {
     private var settingsPanePicker: some View {
         HStack {
             Spacer()
-            Picker("", selection: $selectedPane) {
-                ForEach(SettingsPane.allCases) { pane in
-                    Text(pane.title).tag(pane)
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.segmented)
+            MuesliSegmentedTabs(
+                options: SettingsPane.allCases,
+                selection: $selectedPane,
+                title: { $0.title }
+            )
             .frame(width: 760)
             Spacer()
         }
@@ -527,17 +527,16 @@ struct SettingsView: View {
 
             permissionsSection
 
-            settingsSection("Data") {
-                HStack(spacing: MuesliTheme.spacing12) {
-                    actionButton("Clear dictation history", role: .destructive) {
-                        pendingDataDestruction = .dictations
-                    }
-                    actionButton("Clear meeting history", role: .destructive) {
-                        pendingDataDestruction = .meetings
-                    }
-                    .disabled(controller.isMeetingRecording())
-                    .help("Stop the current meeting recording before clearing meeting history.")
+            HStack(spacing: MuesliTheme.spacing12) {
+                Spacer()
+                compactDataButton("Clear dictation history") {
+                    pendingDataDestruction = .dictations
                 }
+                compactDataButton("Clear meeting history") {
+                    pendingDataDestruction = .meetings
+                }
+                .disabled(controller.isMeetingRecording())
+                .help("Stop the current meeting recording before clearing meeting history.")
             }
         }
     }
@@ -1544,14 +1543,14 @@ struct SettingsView: View {
                 settingsRow("Indicator position") {
                     let isCustom = appState.config.indicatorAnchor == .custom
                     let selection = isCustom ? customIndicatorPositionLabel : appState.config.indicatorAnchor.label
-                    let options = (isCustom ? [customIndicatorPositionLabel] : [])
-                        + IndicatorAnchor.allCases.filter { $0 != .custom }.map(\.label)
+                    let dockAnchors: [IndicatorAnchor] = [.bottomCenter, .topCenter, .midLeading, .midTrailing]
+                    let options = (isCustom ? [customIndicatorPositionLabel] : []) + dockAnchors.map(\.label)
                     settingsMenu(
                         selection: selection,
                         options: options
                     ) { label in
                         if label == customIndicatorPositionLabel { return }
-                        guard let anchor = IndicatorAnchor.allCases.first(where: { $0.label == label }) else { return }
+                        guard let anchor = dockAnchors.first(where: { $0.label == label }) else { return }
                         controller.updateConfig { $0.indicatorAnchor = anchor }
                         controller.refreshIndicatorVisibility()
                     }
@@ -2240,7 +2239,7 @@ struct SettingsView: View {
 
     @ViewBuilder
     private func settingsSection(_ title: String, @ViewBuilder content: () -> some View) -> some View {
-        VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
             Text(title)
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(MuesliTheme.textTertiary)
@@ -2250,13 +2249,9 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 0) {
                 content()
             }
-            .padding(MuesliTheme.spacing16)
-            .background(MuesliTheme.backgroundRaised)
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
-            .overlay(
-                RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
-                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-            )
+            .padding(.horizontal, MuesliTheme.spacing4)
+
+            Divider().background(MuesliTheme.surfaceBorder)
         }
     }
 
@@ -2313,7 +2308,7 @@ struct SettingsView: View {
         Text(text)
             .font(MuesliTheme.caption())
             .foregroundStyle(MuesliTheme.textTertiary)
-            .padding(.horizontal, MuesliTheme.spacing16)
+            .padding(.horizontal, MuesliTheme.spacing4)
             .padding(.top, -4)
             .padding(.bottom, MuesliTheme.spacing8)
     }
@@ -3017,6 +3012,24 @@ struct SettingsView: View {
                             lineWidth: 1
                         )
                 )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func compactDataButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(MuesliTheme.recording)
+                .padding(.horizontal, MuesliTheme.spacing12)
+                .padding(.vertical, MuesliTheme.spacing8)
+                .background(MuesliTheme.recording.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                .overlay(
+                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                        .strokeBorder(MuesliTheme.recording.opacity(0.18), lineWidth: 1)
+                )
+                .fixedSize()
         }
         .buttonStyle(.plain)
     }

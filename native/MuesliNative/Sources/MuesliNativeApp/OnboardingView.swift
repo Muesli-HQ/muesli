@@ -28,11 +28,13 @@ struct OnboardingView: View {
     @State private var grantingPermissionName: String?
     @State private var nativePermissionPromptName: String?
     @State private var recentlyGrantedPermissionName: String?
+    @State private var didAutoAdvancePermissions = false
 
     // Hotkey recorder
     @State private var selectedHotkey: HotkeyConfig
     @State private var isRecordingHotkey = false
     @State private var hotkeyEventMonitor: Any?
+    @State private var dictationInputDevices: [AudioInputDeviceInfo] = []
 
     // Model selection
     @State private var showMoreModels = false
@@ -116,6 +118,7 @@ struct OnboardingView: View {
         let initialInputMonitoringGranted = CGPreflightListenEventAccess()
         let initialScreenRecordingGranted = CGPreflightScreenCaptureAccess()
         let initialSystemAudioGranted = initialSystemAudioRequested
+        let productUseCase = OnboardingUseCase.dictationAndMeetings
         let initialPermissions = OnboardingPermissionSnapshot(
             microphone: initialMicGranted,
             accessibility: initialAccessibilityGranted,
@@ -126,11 +129,11 @@ struct OnboardingView: View {
         let permissionGatedInitialStep = OnboardingPermissionGate.resumeStep(
             requestedStep: initialStep,
             permissions: initialPermissions,
-            useCase: initialUseCase,
+            useCase: productUseCase,
             permissionsStep: Self.permissionsStep,
             dictationTestStep: Self.dictationTestStep
         )
-        let effectiveInitialStep = OnboardingFlow.normalizedStep(permissionGatedInitialStep, for: initialUseCase)
+        let effectiveInitialStep = OnboardingFlow.normalizedStep(permissionGatedInitialStep, for: productUseCase)
 
         _currentStep = State(initialValue: effectiveInitialStep)
         _userName = State(initialValue: initialUserName)
@@ -138,6 +141,7 @@ struct OnboardingView: View {
         let sanitizedInitialBackend = BackendOption.onboarding.contains(initialBackend)
             ? initialBackend
             : BackendOption.onboardingDefault
+
         _selectedBackend = State(initialValue: sanitizedInitialBackend)
         _selectedCohereLanguage = State(initialValue: initialCohereLanguage)
         _selectedHotkey = State(initialValue: initialHotkey)
@@ -153,6 +157,9 @@ struct OnboardingView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            onboardingProgress
+                .padding(.top, MuesliTheme.spacing20)
+
             Group {
                 switch currentStep {
                 case 0: welcomeStep
@@ -171,13 +178,9 @@ struct OnboardingView: View {
 
             // Bottom bar
             HStack {
-                HStack(spacing: 6) {
-                    ForEach(Array(orderedSteps.enumerated()), id: \.offset) { _, step in
-                        Circle()
-                            .fill(step == currentStep ? MuesliTheme.accent : MuesliTheme.textTertiary)
-                            .frame(width: 7, height: 7)
-                    }
-                }
+                Text("Step \(currentStepIndex + 1) of \(totalSteps)")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
 
                 Spacer()
 
@@ -245,6 +248,21 @@ struct OnboardingView: View {
         }
     }
 
+    private var onboardingProgress: some View {
+        HStack(spacing: MuesliTheme.spacing8) {
+            ForEach(Array(orderedSteps.enumerated()), id: \.offset) { index, step in
+                Capsule()
+                    .fill(index <= currentStepIndex ? MuesliTheme.accent : MuesliTheme.surfacePrimary)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: step == currentStep ? 6 : 4)
+                    .animation(.spring(response: 0.32, dampingFraction: 0.82), value: currentStep)
+            }
+        }
+        .frame(maxWidth: 440)
+        .frame(maxWidth: .infinity)
+        .accessibilityLabel("Setup step \(currentStepIndex + 1) of \(totalSteps)")
+    }
+
     // MARK: - Primary Button
 
     @ViewBuilder
@@ -263,15 +281,7 @@ struct OnboardingView: View {
                 goToNextStep()
             }
         case 3:
-            onboardingButton(currentStepIndex == orderedSteps.count - 1 ? "Finish" : "Continue", enabled: requiredPermissionsGranted) {
-                if selectedUseCase.includesPushToTalk {
-                    saveProgressAndRestart()
-                } else if currentStepIndex == orderedSteps.count - 1 {
-                    finishOnboarding(withKey: false)
-                } else {
-                    goToNextStep()
-                }
-            }
+            EmptyView()
         case 4:
             if dictationTestResult != nil {
                 onboardingButton(selectedUseCase.includesMeetings ? "Continue" : "Finish", enabled: true) {
@@ -583,56 +593,6 @@ struct OnboardingView: View {
                     .frame(width: 280, height: 32)
             }
 
-            VStack(spacing: MuesliTheme.spacing8) {
-                Text("What will you use Muesli for?")
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textTertiary)
-
-                LazyVGrid(
-                    columns: [
-                        GridItem(.fixed(132), spacing: MuesliTheme.spacing8),
-                        GridItem(.fixed(132), spacing: MuesliTheme.spacing8),
-                    ],
-                    spacing: MuesliTheme.spacing8
-                ) {
-                    useCaseCard(
-                        icon: "waveform",
-                        title: "Voice Notes",
-                        subtitle: "Record in Muesli",
-                        selected: selectedUseCase == .voiceNotes
-                    ) {
-                        selectedUseCase = .voiceNotes
-                    }
-
-                    useCaseCard(
-                        icon: "keyboard.fill",
-                        title: "Dictation",
-                        subtitle: "Paste into apps",
-                        selected: selectedUseCase == .dictation
-                    ) {
-                        selectedUseCase = .dictation
-                    }
-
-                    useCaseCard(
-                        icon: "person.2.fill",
-                        title: "Meetings",
-                        subtitle: "Notes and summaries",
-                        selected: selectedUseCase == .meetings
-                    ) {
-                        selectedUseCase = .meetings
-                    }
-
-                    useCaseCard(
-                        icon: "rectangle.3.group.fill",
-                        title: "Everything",
-                        subtitle: "Dictation + meetings",
-                        selected: selectedUseCase == .dictationAndMeetings
-                    ) {
-                        selectedUseCase = .dictationAndMeetings
-                    }
-                }
-            }
-
             Spacer()
         }
         .frame(maxWidth: .infinity)
@@ -815,11 +775,7 @@ struct OnboardingView: View {
     /// Keep this to the core dictation path so first-run setup gets to a
     /// successful transcription before meeting-specific permissions appear.
     private var permissionSteps: [(icon: String, name: String, description: String, granted: Bool, action: () -> Void)] {
-        var steps: [(String, String, String, Bool, () -> Void)] = [
-            ("mic.fill", "Microphone", "Record audio for voice notes, dictation, and meetings", micGranted, {
-                AVCaptureDevice.requestAccess(for: .audio) { _ in }
-            })
-        ]
+        var steps: [(String, String, String, Bool, () -> Void)] = []
         if selectedUseCase.includesPushToTalk {
             if selectedUseCase.includesDictation {
                 steps += [
@@ -834,6 +790,22 @@ struct OnboardingView: View {
             }),
             ]
         }
+        if selectedUseCase.includesMeetings {
+            steps += [
+                (
+                    "calendar",
+                    "Google Calendar",
+                    "Show upcoming meetings and start notes at the right time",
+                    !appState.isGoogleCalendarAvailable || !appState.isGoogleCalendarVerified || appState.isGoogleCalendarAuthenticated || googleCalSignInDone,
+                    requestGoogleCalendarPermission
+                ),
+            ]
+        }
+        steps += [
+            ("mic.fill", "Microphone", "Test your microphone with a live transcription before setup finishes", micGranted, {
+                AVCaptureDevice.requestAccess(for: .audio) { _ in }
+            })
+        ]
         return steps
     }
 
@@ -862,69 +834,73 @@ struct OnboardingView: View {
                 let isConfirmingGrant = recentlyGrantedPermissionName == step.name
 
                 VStack(spacing: MuesliTheme.spacing8) {
-                    Text("Permission \(displayIndex + 1) of \(total)")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(MuesliTheme.textTertiary)
-                        .textCase(.uppercase)
-
-                    Text(step.name)
+                    Text("A few quick permissions")
                         .font(MuesliTheme.title1())
                         .foregroundStyle(MuesliTheme.textPrimary)
 
-                    Text(step.description)
+                    Text("Muesli asks for this once — your data stays on this Mac.")
                         .font(MuesliTheme.body())
                         .foregroundStyle(MuesliTheme.textSecondary)
                         .multilineTextAlignment(.center)
                 }
 
-                Image(systemName: step.icon)
-                    .font(.system(size: 48, weight: .light))
-                    .foregroundStyle(isConfirmingGrant ? MuesliTheme.success : MuesliTheme.accent)
-                    .frame(height: 64)
+                permissionTutorialImage(for: step.name)
 
-                Button {
-                    if grantingPermissionName == step.name && !isConfirmingGrant {
-                        guard !isWaitingForNativePermissionPrompt(step.name) else { return }
-                        openSystemSettingsForPermission(at: displayIndex)
-                    } else {
-                        grantingPermissionName = step.name
-                        recentlyGrantedPermissionName = nil
-                        saveProgress(atStep: currentStep)
-                        step.action()
+                HStack(spacing: MuesliTheme.spacing16) {
+                    Image(systemName: step.icon)
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundStyle(MuesliTheme.accent)
+                        .frame(width: 32)
+                    VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                        Text(step.name)
+                            .font(MuesliTheme.headline())
+                            .foregroundStyle(MuesliTheme.textPrimary)
+                        Text(step.description)
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textSecondary)
                     }
-                } label: {
-                    HStack(spacing: 6) {
-                        if isConfirmingGrant {
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 12, weight: .bold))
+                    Spacer()
+                    Button {
+                        if step.name == "Google Calendar" {
+                            grantingPermissionName = step.name
+                            recentlyGrantedPermissionName = nil
+                            requestGoogleCalendarPermission()
+                        } else if grantingPermissionName == step.name && !isConfirmingGrant {
+                            guard !isWaitingForNativePermissionPrompt(step.name) else { return }
+                            openSystemSettingsForPermission(at: displayIndex)
+                        } else {
+                            grantingPermissionName = step.name
+                            recentlyGrantedPermissionName = nil
+                            saveProgress(atStep: currentStep)
+                            step.action()
                         }
-                        Text(permissionButtonTitle(for: step.name, isConfirmingGrant: isConfirmingGrant))
-                            .font(.system(size: 14, weight: .semibold))
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(permissionButtonTitle(for: step.name, isConfirmingGrant: isConfirmingGrant))
+                            Image(systemName: "arrow.right")
+                                .font(.system(size: 11, weight: .semibold))
+                        }
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 220)
+                        .padding(.vertical, MuesliTheme.spacing12)
+                        .background(isConfirmingGrant ? MuesliTheme.success : MuesliTheme.accent)
+                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                     }
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, MuesliTheme.spacing24)
-                    .padding(.vertical, MuesliTheme.spacing12)
-                    .background(isConfirmingGrant ? MuesliTheme.success : MuesliTheme.accent)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                    .buttonStyle(.plain)
+                    .disabled(isConfirmingGrant || isWaitingForNativePermissionPrompt(step.name) || (step.name == "Google Calendar" && isSigningInGoogleCal))
                 }
-                .buttonStyle(.plain)
-                .disabled(isConfirmingGrant || isWaitingForNativePermissionPrompt(step.name))
+                .frame(maxWidth: 720)
                 .animation(.easeInOut(duration: 0.2), value: isConfirmingGrant)
 
-                // Progress dots
-                HStack(spacing: 6) {
-                    ForEach(0..<total, id: \.self) { i in
-                        Circle()
-                            .fill(progressDotColor(
-                                index: i,
-                                currentIndex: displayIndex,
-                                isConfirmingGrant: isConfirmingGrant
-                            ))
-                            .frame(width: 8, height: 8)
+                if step.name == "Google Calendar" {
+                    if let googleCalSignInError {
+                        Text(googleCalSignInError)
+                            .font(.system(size: 11))
+                            .foregroundStyle(MuesliTheme.recording)
+                            .multilineTextAlignment(.center)
                     }
-                }
-
-                if isWaitingForNativePermissionPrompt(step.name) {
+                } else if isWaitingForNativePermissionPrompt(step.name) {
                     Text("Respond to the macOS permission prompt")
                         .font(.system(size: 11))
                         .foregroundStyle(MuesliTheme.textTertiary)
@@ -982,12 +958,128 @@ struct OnboardingView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity)
-        .onAppear { startPermissionPolling() }
-        .onDisappear { stopPermissionPolling() }
+        .onAppear {
+            refreshPermissionsAndAdvanceIfReady()
+            startPermissionPolling()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            // System Settings can stay in front while a TCC toggle changes. Re-read
+            // every permission as soon as Muesli becomes active so permissions that
+            // were already granted are skipped without another click.
+            refreshPermissionsAndAdvanceIfReady()
+        }
+        .onChange(of: currentPermissionIndex) { _, _ in
+            autoAdvanceFromPermissionsIfReady()
+        }
+        .onDisappear {
+            stopPermissionPolling()
+            stopRecordingHotkey()
+        }
+    }
+
+    private func requestGoogleCalendarPermission() {
+        guard !isSigningInGoogleCal else { return }
+        isSigningInGoogleCal = true
+        googleCalSignInError = nil
+        Task {
+            let error = await controller.signInWithGoogleCalendar()
+            isSigningInGoogleCal = false
+            if let error {
+                googleCalSignInError = error
+            } else {
+                googleCalSignInDone = true
+                recentlyGrantedPermissionName = "Google Calendar"
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(850))
+                    if recentlyGrantedPermissionName == "Google Calendar" {
+                        recentlyGrantedPermissionName = nil
+                    }
+                }
+            }
+        }
+    }
+
+    private func autoAdvanceFromPermissionsIfReady() {
+        guard currentStep == Self.permissionsStep,
+              currentPermissionIndex == permissionSteps.count,
+              !didAutoAdvancePermissions else { return }
+        didAutoAdvancePermissions = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(700))
+            guard currentStep == Self.permissionsStep else { return }
+            if selectedUseCase.includesPushToTalk {
+                saveProgressAndRestart()
+            } else {
+                goToNextStep()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func permissionTutorialImage(for permissionName: String) -> some View {
+        let resourceName: String? = switch permissionName {
+        case "Accessibility": "accessibility-settings"
+        case "Input Monitoring": "input-monitoring-settings"
+        default: nil
+        }
+
+        if let resourceName,
+           let url = Bundle.main.url(forResource: resourceName, withExtension: "png"),
+           let image = NSImage(contentsOf: url) {
+            PermissionTutorialCard(
+                image: image,
+                firstInstruction: permissionName == "Accessibility"
+                    ? "Find MuesliDevC under Accessibility"
+                    : "Find MuesliDevC under Input Monitoring",
+                secondInstruction: "Flip the toggle on, then come back"
+            )
+            .frame(maxWidth: 720)
+        } else {
+            VStack(spacing: MuesliTheme.spacing12) {
+                Image(systemName: permissionName == "Microphone" ? "mic.fill" : "calendar.badge.checkmark")
+                    .font(.system(size: 42, weight: .light))
+                    .foregroundStyle(MuesliTheme.accent)
+                Text(permissionName == "Microphone"
+                    ? "macOS will ask which microphone Muesli can use."
+                    : "Connect only the calendar account you want Muesli to use.")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+            }
+            .frame(maxWidth: 720, minHeight: 120)
+            .background(MuesliTheme.backgroundRaised)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge))
+        }
+    }
+
+    private func permissionInstructions(for permissionName: String) -> some View {
+        let instructions: [String] = switch permissionName {
+        case "Accessibility": ["Find MuesliDevC under Accessibility", "Turn the switch on, then return to Muesli"]
+        case "Input Monitoring": ["Find MuesliDevC under Input Monitoring", "Turn the switch on so your shortcut works in every app"]
+        case "Google Calendar": ["A secure Google window will open", "Choose the calendar account you want to connect"]
+        default: ["Find MuesliDevC under Microphone", "Allow access, then speak during the live test"]
+        }
+        return VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+            ForEach(Array(instructions.enumerated()), id: \.offset) { index, instruction in
+                HStack(spacing: MuesliTheme.spacing8) {
+                    Text("\(index + 1)")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 18, height: 18)
+                        .background(MuesliTheme.accent, in: Circle())
+                    Text(instruction)
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
+            }
+        }
+        .frame(maxWidth: 430, alignment: .leading)
     }
 
     private func permissionButtonTitle(for permissionName: String, isConfirmingGrant: Bool) -> String {
         if isConfirmingGrant { return "Granted" }
+        if permissionName == "Google Calendar" {
+            return isSigningInGoogleCal ? "Connecting…" : "Connect Calendar"
+        }
         if isWaitingForNativePermissionPrompt(permissionName) { return "Waiting for macOS..." }
         if grantingPermissionName == permissionName { return "Open Settings" }
         return "Grant Permission"
@@ -1099,10 +1191,9 @@ struct OnboardingView: View {
     }
 
     private func startPermissionPolling() {
-        refreshPermissions()
         permissionPollTimer?.invalidate()
         let timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-            withAnimation { refreshPermissions() }
+            withAnimation { refreshPermissionsAndAdvanceIfReady() }
         }
         RunLoop.main.add(timer, forMode: .common)
         permissionPollTimer = timer
@@ -1121,6 +1212,16 @@ struct OnboardingView: View {
 
         if let grantingPermissionName, isPermissionGranted(named: grantingPermissionName) {
             notePermissionGranted(grantingPermissionName)
+        }
+    }
+
+    private func refreshPermissionsAndAdvanceIfReady() {
+        refreshPermissions()
+        // State writes are committed on the current main-actor turn. Queue the
+        // navigation check for the following turn so it observes the refreshed
+        // permission snapshot rather than the values used to render the last card.
+        DispatchQueue.main.async {
+            autoAdvanceFromPermissionsIfReady()
         }
     }
 
@@ -1287,58 +1388,82 @@ struct OnboardingView: View {
 
     // MARK: - Step 5: Dictation Test
 
+    private var selectedDictationMicrophoneLabel: String {
+        guard let selectedUID = appState.config.dictationInputDeviceUID else { return "Automatic" }
+        return dictationInputDevices.first(where: { $0.uid == selectedUID })?.name ?? "Selected microphone"
+    }
+
     private var dictationTestStep: some View {
         VStack(spacing: MuesliTheme.spacing24) {
             Spacer()
 
             VStack(spacing: MuesliTheme.spacing8) {
-                Text(selectedUseCase.includesVoiceNotes ? "Test Voice Note" : "Test Dictation")
+                Text("Try your shortcut")
                     .font(MuesliTheme.title1())
                     .foregroundStyle(MuesliTheme.textPrimary)
 
-                Text(dictationTestSubtitle)
+                Text("Hold \(selectedHotkey.displayLabel) and speak — release when you’re done.")
                     .font(MuesliTheme.body())
                     .foregroundStyle(MuesliTheme.textSecondary)
                     .multilineTextAlignment(.center)
-
-                if isSelectedModelReadyForDictationTest {
-                    Text("Try saying: \"testing this one out\"")
-                        .font(.system(size: 13, weight: .medium, design: .rounded))
-                        .foregroundStyle(MuesliTheme.accent)
-                        .padding(.top, 2)
-                }
             }
 
-            if !isSelectedModelReadyForDictationTest {
-                VStack(spacing: MuesliTheme.spacing8) {
-                    if isModelPreparingAfterDownload {
-                        IndeterminatePreparationBar()
-                            .frame(width: 260, height: 7)
-                        Text(modelDownloadStatus ?? "Preparing \(selectedBackend.label)...")
-                            .font(.system(size: 11, weight: .medium, design: .rounded))
-                            .foregroundStyle(MuesliTheme.textTertiary)
-                        Text("This usually takes 20-60 seconds the first time.")
-                            .font(.system(size: 10, weight: .medium, design: .rounded))
-                            .foregroundStyle(MuesliTheme.textTertiary)
-                        RotatingPreparationHint(messages: modelPreparationHints)
-                            .padding(.top, 2)
-                    } else if let modelDownloadProgress {
-                        ProgressView(value: modelDownloadProgress, total: 1.0)
-                            .frame(width: 260)
-                        Text(modelDownloadStatus ?? "\(Int((modelDownloadProgress * 100).rounded()))% complete")
-                            .font(.system(size: 11, weight: .medium, design: .rounded))
-                            .foregroundStyle(MuesliTheme.textTertiary)
-                    } else {
-                        ProgressView()
-                            .controlSize(.regular)
-                        Text(modelDownloadStatus ?? "Preparing \(selectedBackend.label)...")
-                            .font(.system(size: 11, weight: .medium, design: .rounded))
-                            .foregroundStyle(MuesliTheme.textTertiary)
-                    }
-                    Text("The dictation test is disabled until download and warmup complete.")
+            HStack {
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                    Text("Hold to dictate")
                         .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.textTertiary)
-                        .multilineTextAlignment(.center)
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                    Text(selectedHotkey.displayLabel)
+                        .font(MuesliTheme.headline())
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                }
+                Spacer()
+                Button {
+                    if isRecordingHotkey { stopRecordingHotkey() } else { startRecordingHotkey() }
+                } label: {
+                    HStack(spacing: MuesliTheme.spacing8) {
+                        Text(isRecordingHotkey ? "Press a modifier key…" : "Change shortcut")
+                        Image(systemName: "arrow.right")
+                    }
+                    .font(MuesliTheme.headline())
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                    .frame(width: 220)
+                    .padding(.vertical, MuesliTheme.spacing12)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                            .strokeBorder(MuesliTheme.accent, lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+            .frame(maxWidth: 720)
+
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
+                HStack {
+                    VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                        Text("Test your microphone")
+                            .font(MuesliTheme.headline())
+                            .foregroundStyle(MuesliTheme.textPrimary)
+                        Text(dictationTestResult ?? (isDictationTesting
+                            ? "Listening… release \(selectedHotkey.displayLabel) when you’re done."
+                            : "Hold \(selectedHotkey.displayLabel) and start speaking."))
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(dictationTestResult == nil ? MuesliTheme.textSecondary : MuesliTheme.success)
+                    }
+                    Spacer()
+                    Circle()
+                        .fill(isDictationTesting ? MuesliTheme.success : MuesliTheme.surfacePrimary)
+                        .frame(width: 12, height: 12)
+                }
+                HStack(alignment: .bottom, spacing: 5) {
+                    ForEach(0..<16, id: \.self) { index in
+                        Capsule()
+                            .fill(isDictationTesting ? MuesliTheme.accent : MuesliTheme.surfacePrimary)
+                            .frame(width: 5, height: isDictationTesting ? CGFloat(8 + (index % 5) * 3) : 7)
+                            .animation(.easeInOut(duration: 0.22).delay(Double(index) * 0.015), value: isDictationTesting)
+
+                    }
+                }
 
                     if let modelDownloadError {
                         Text(modelDownloadError)
@@ -1354,64 +1479,64 @@ struct OnboardingView: View {
                         .buttonStyle(.plain)
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(MuesliTheme.accent)
-                    }
-                }
-            } else {
-                VStack(spacing: MuesliTheme.spacing16) {
-                    Text(dictationTestResult ?? "Your transcription will appear here...")
-                        .font(dictationTestResult != nil ? .system(size: 14, design: .monospaced) : .system(size: 13, design: .rounded))
-                        .foregroundStyle(dictationTestResult != nil ? MuesliTheme.textPrimary : MuesliTheme.textTertiary)
-                        .italic(dictationTestResult == nil)
-                        .frame(maxWidth: 400, minHeight: 60, alignment: .topLeading)
-                        .padding(MuesliTheme.spacing16)
-                        .background(MuesliTheme.backgroundRaised)
-                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
-                                .strokeBorder(dictationTestResult != nil ? MuesliTheme.success.opacity(0.5) : MuesliTheme.surfaceBorder, lineWidth: 1)
-                        )
 
-                    if isDictationTesting {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("Listening... release \(selectedHotkey.label) when done")
-                                .font(MuesliTheme.caption())
-                                .foregroundStyle(MuesliTheme.textSecondary)
-                        }
-                    } else if dictationTestResult == nil {
-                        HStack(spacing: 6) {
-                            Image(systemName: "keyboard")
-                                .font(.system(size: 14))
-                            Text("Hold \(selectedHotkey.label) to start")
-                                .font(MuesliTheme.body())
-                        }
-                        .foregroundStyle(MuesliTheme.textTertiary)
+                if !isSelectedModelReadyForDictationTest {
+                    HStack(spacing: MuesliTheme.spacing8) {
+                        ProgressView().controlSize(.small)
+                        Text(modelDownloadStatus ?? "Preparing \(selectedBackend.label)…")
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textTertiary)
                     }
-
-                    if let dictationTestError {
-                        Text(dictationTestError)
-                            .font(.system(size: 11))
-                            .foregroundStyle(.red)
-                            .lineLimit(2)
-                    }
-
-                    if dictationTestResult != nil {
-                        HStack(spacing: 6) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(MuesliTheme.success)
-                            Text("Dictation is working!")
-                                .font(MuesliTheme.body())
-                                .foregroundStyle(MuesliTheme.success)
-                        }
-                    }
+                } else if let dictationTestError {
+                    Text(dictationTestError)
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.recording)
                 }
             }
+            .padding(MuesliTheme.spacing24)
+            .frame(maxWidth: 720, minHeight: 150, alignment: .topLeading)
+            .background(MuesliTheme.backgroundRaised.opacity(0.72))
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge))
+            .overlay(RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge).strokeBorder(MuesliTheme.surfaceBorder))
+
+            HStack(spacing: MuesliTheme.spacing16) {
+                Image(systemName: "mic")
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundStyle(MuesliTheme.accent)
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                    Text("Microphone")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                    Text(selectedDictationMicrophoneLabel)
+                        .font(MuesliTheme.headline())
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                }
+                Spacer()
+                Menu {
+                    Button("Automatic") { controller.selectDictationInputDeviceUID(nil) }
+                    ForEach(dictationInputDevices) { device in
+                        Button(device.name) { controller.selectDictationInputDeviceUID(device.uid) }
+                    }
+                } label: {
+                    Label("Choose", systemImage: "chevron.down")
+                        .labelStyle(.titleAndIcon)
+                        .font(MuesliTheme.headline())
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+            }
+            .padding(.horizontal, MuesliTheme.spacing24)
+            .frame(maxWidth: 720, minHeight: 76)
+            .background(MuesliTheme.backgroundRaised.opacity(0.72))
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge))
+            .overlay(RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge).strokeBorder(MuesliTheme.surfaceBorder))
 
             Spacer()
         }
         .frame(maxWidth: .infinity)
         .onAppear {
+            dictationInputDevices = controller.availableDictationInputDevices()
             ensureModelDownloadStarted()
             controller.dictationTestBackend = selectedBackend
             controller.dictationTestCohereLanguage = selectedCohereLanguage
@@ -2112,6 +2237,70 @@ struct OnboardingView: View {
             summaryBackend: summaryBackend,
             apiKey: withKey ? apiKey : nil
         )
+    }
+}
+
+private struct PermissionTutorialCard: View {
+    let image: NSImage
+    let firstInstruction: String
+    let secondInstruction: String
+    @State private var calloutStage = 0
+
+    var body: some View {
+        Image(nsImage: image)
+            .resizable()
+            .scaledToFit()
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge))
+            .overlay(
+                RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge)
+                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+            )
+            .overlay(alignment: .bottomTrailing) {
+                VStack(alignment: .trailing, spacing: MuesliTheme.spacing8) {
+                    permissionCallout("1.  \(firstInstruction)")
+                        .opacity(calloutStage >= 2 ? 0.8 : calloutStage >= 1 ? 1 : 0)
+                        .offset(x: -28)
+                    permissionCallout("2.  \(secondInstruction)")
+                        .opacity(calloutStage >= 2 ? 1 : 0)
+                }
+                .padding(.trailing, MuesliTheme.spacing24)
+                .padding(.bottom, MuesliTheme.spacing24)
+            }
+            .onAppear {
+                calloutStage = 0
+                withAnimation(.easeOut(duration: 0.25)) { calloutStage = 1 }
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(650))
+                    withAnimation(.easeOut(duration: 0.28)) { calloutStage = 2 }
+                }
+            }
+    }
+
+    private func permissionCallout(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, MuesliTheme.spacing16)
+            .padding(.vertical, MuesliTheme.spacing12)
+            .background(Color.black.opacity(0.86))
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+            .overlay(alignment: .bottom) {
+                Triangle()
+                    .fill(Color.black.opacity(0.86))
+                    .frame(width: 16, height: 8)
+                    .offset(y: 7)
+            }
+    }
+}
+
+private struct Triangle: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
+        path.closeSubpath()
+        return path
     }
 }
 

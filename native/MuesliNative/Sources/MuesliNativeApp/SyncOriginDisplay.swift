@@ -29,11 +29,31 @@ extension RecordOriginFilter {
 
 struct RecordOriginPicker: View {
     @Binding var selection: RecordOriginFilter
+    @Namespace private var selectionAnimation
 
     var body: some View {
-        Picker("Record source", selection: $selection) {
+        HStack(spacing: 2) {
             ForEach(RecordOriginFilter.allCases, id: \.self) { origin in
-                Text(origin.label).tag(origin)
+                Button {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+                        selection = origin
+                    }
+                } label: {
+                    Text(origin.label)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(selection == origin ? MuesliTheme.textPrimary : MuesliTheme.textSecondary)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 28)
+                        .background {
+                            if selection == origin {
+                                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                                    .fill(MuesliTheme.backgroundBase)
+                                    .matchedGeometryEffect(id: "record-origin", in: selectionAnimation)
+                                    .shadow(color: .black.opacity(0.10), radius: 3, y: 1)
+                            }
+                        }
+                }
+                .buttonStyle(.plain)
             }
         }
         .pickerStyle(.segmented)
@@ -41,6 +61,7 @@ struct RecordOriginPicker: View {
         // The segmented control's intrinsic width is wider than a hardcoded frame, and the extra
         // width bleeds out of it — which pushed the filter row past the page's leading padding.
         .fixedSize()
+
         .help("Filter by the device where the recording was created")
         .accessibilityLabel("Record source")
     }

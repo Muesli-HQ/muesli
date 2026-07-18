@@ -36,11 +36,8 @@ struct InsightsView: View {
                     header
                     Group {
                         if let snapshot {
-                            hero(snapshot)
-                            activityPanel(snapshot).id(initialSection == .meetings ? InsightsSection.meetings : .words)
-                            usagePanel(snapshot).id(InsightsSection.pace)
-                            streakPanel(snapshot).id(InsightsSection.streak)
-                            wordClouds(snapshot)
+                            bentoDashboard(snapshot)
+                                .id(initialSection == .meetings ? InsightsSection.meetings : .words)
                         } else if let errorMessage {
                             errorState(errorMessage)
                         } else {
@@ -49,7 +46,7 @@ struct InsightsView: View {
                     }
                 }
                 .padding(28)
-                .frame(maxWidth: 1240, alignment: .leading)
+                .frame(maxWidth: 860, alignment: .leading)
                 .frame(maxWidth: .infinity)
             }
             .background(insightsBackground)
@@ -68,6 +65,277 @@ struct InsightsView: View {
                         proxy.scrollTo(initialSection, anchor: .top)
                     }
                 }
+            }
+        }
+    }
+
+    private func bentoDashboard(_ data: InsightsSnapshot) -> some View {
+        VStack(spacing: 16) {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 16) {
+                    goalsTile(data)
+                        .frame(width: 200)
+                    VStack(spacing: 16) {
+                        metricRow(data)
+                        HStack(alignment: .top, spacing: 16) {
+                            weeklyTile(data)
+                            VStack(spacing: 16) {
+                                topWordsTile(data)
+                                compactActivityTile(data)
+                            }
+                            .frame(width: 190)
+                        }
+                    }
+                }
+                VStack(spacing: 16) {
+                    goalsTile(data)
+                    metricRow(data)
+                    weeklyTile(data)
+                    topWordsTile(data)
+                    wordInsightRow(data)
+                }
+            }
+            heatmapTile(data)
+        }
+    }
+
+    private func goalsTile(_ data: InsightsSnapshot) -> some View {
+        let wordProgress = min(Double(data.selected.totalWords) / 1500.0, 1)
+        let meetingProgress = min(Double(data.selected.meetings) / 3.0, 1)
+        let activeProgress = min(Double(data.activeDaysInRange) / 7.0, 1)
+        return VStack(alignment: .leading, spacing: 16) {
+            ZStack {
+                BentoProgressRing(progress: wordProgress, color: MuesliTheme.accent, diameter: 108, lineWidth: 10)
+                BentoProgressRing(progress: meetingProgress, color: MuesliTheme.secondaryAccent, diameter: 80, lineWidth: 10)
+                BentoProgressRing(progress: activeProgress, color: MuesliTheme.transcribing, diameter: 52, lineWidth: 10)
+            }
+            .frame(width: 124, height: 124)
+            .frame(maxWidth: .infinity)
+
+            VStack(alignment: .leading, spacing: 6) {
+                goalLegend(color: MuesliTheme.accent, label: "Words", value: "\(format(data.selected.totalWords)) of 1.5k")
+                goalLegend(color: MuesliTheme.secondaryAccent, label: "Meetings", value: "\(data.selected.meetings) of 3")
+                goalLegend(color: MuesliTheme.transcribing, label: "Active days", value: "\(data.activeDaysInRange) of 7")
+            }
+
+            Divider().background(MuesliTheme.surfaceBorder)
+            VStack(alignment: .leading, spacing: 5) {
+                Text("TODAY'S GOAL")
+                    .font(.system(size: 10, weight: .semibold))
+                    .tracking(1.1)
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                Text("Close all three rings")
+                    .font(MuesliTheme.body())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+            }
+        }
+        .padding(20)
+        .bentoTile()
+    }
+
+    private func metricRow(_ data: InsightsSnapshot) -> some View {
+        HStack(spacing: 16) {
+            bentoMetric(value: "\(Int(data.selected.averageWPM.rounded()))", label: "words per minute", icon: "gauge.with.dots.needle.50percent")
+            bentoMetric(value: format(data.selected.totalWords), label: "words dictated", icon: "text.word.spacing")
+            bentoMetric(value: "\(data.currentStreakDays)", label: "day streak", icon: "flame")
+        }
+    }
+
+    private func bentoMetric(value: String, label: String, icon: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(value)
+                    .font(.system(size: 28, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                if label == "day streak" {
+                    Image(systemName: "flame.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(MuesliTheme.secondaryAccent)
+                }
+            }
+            Text(label)
+                .font(MuesliTheme.callout())
+                .foregroundStyle(MuesliTheme.textSecondary)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, minHeight: 84, alignment: .leading)
+        .bentoTile()
+    }
+
+    private func weeklyTile(_ data: InsightsSnapshot) -> some View {
+        let days = Array(data.dailyActivity.suffix(7))
+        let maximum = max(days.map(\.words).max() ?? 1, 1)
+        return VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("This week")
+                    .font(MuesliTheme.title3())
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                Spacer()
+                Text("words per day")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+            }
+            HStack(alignment: .bottom, spacing: 10) {
+                ForEach(Array(days.enumerated()), id: \.offset) { index, day in
+                    VStack(spacing: 8) {
+                        RoundedRectangle(cornerRadius: 5)
+                            .fill(index == days.count - 1 ? MuesliTheme.accent : MuesliTheme.accent.opacity(0.16))
+                            .frame(height: max(4, 74 * CGFloat(day.words) / CGFloat(maximum)))
+                            .help("\(day.words.formatted()) words")
+                        Text(day.date.formatted(.dateTime.weekday(.narrow)))
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .bottom)
+                }
+            }
+            .frame(height: 96, alignment: .bottom)
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity)
+        .bentoTile()
+    }
+
+    private func topWordsTile(_ data: InsightsSnapshot) -> some View {
+        let words = Array(data.dictationWords.prefix(4))
+        let maximum = max(words.map(\.count).max() ?? 1, 1)
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("Top words")
+                .font(MuesliTheme.title3())
+                .foregroundStyle(MuesliTheme.textPrimary)
+            ForEach(words) { word in
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Text(word.word)
+                            .font(MuesliTheme.callout())
+                            .foregroundStyle(MuesliTheme.textSecondary)
+                        Spacer()
+                        Text("\(word.count)")
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                    }
+                    GeometryReader { geometry in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(MuesliTheme.surfacePrimary)
+                            Capsule().fill(MuesliTheme.secondaryAccent.opacity(0.72))
+                                .frame(width: geometry.size.width * CGFloat(word.count) / CGFloat(maximum))
+                        }
+                    }
+                    .frame(height: 6)
+                }
+            }
+            if words.isEmpty {
+                Text("Your most-used words will appear here.")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+            }
+        }
+        .padding(16)
+        .bentoTile()
+    }
+
+    private func compactActivityTile(_ data: InsightsSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("\(data.activeDaysInRange)")
+                .font(.system(size: 28, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(MuesliTheme.textPrimary)
+            Text("active days this period")
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textSecondary)
+                .lineLimit(1)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .bentoTile()
+    }
+
+    private func wordInsightRow(_ data: InsightsSnapshot) -> some View {
+        let common = data.dictationWords.first
+        let candidate = data.dictationWords.dropFirst().first ?? data.meetingWords.first
+        return HStack(spacing: 16) {
+            wordInsightTile(
+                eyebrow: "Most common word",
+                word: common?.word ?? "—",
+                detail: common.map { "Used \($0.count) times" } ?? "Keep dictating to see patterns",
+                icon: "textformat.abc"
+            )
+            wordInsightTile(
+                eyebrow: "Dictionary suggestion",
+                word: candidate?.word ?? "No suggestion yet",
+                detail: candidate == nil ? "New words will appear here" : "Review for your dictionary",
+                icon: "character.book.closed"
+            )
+        }
+    }
+
+    private func wordInsightTile(eyebrow: String, word: String, detail: String, icon: String) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(eyebrow)
+                    .font(MuesliTheme.captionMedium())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                Text(word)
+                    .font(MuesliTheme.title3())
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                    .lineLimit(1)
+                Text(detail)
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Image(systemName: icon)
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(MuesliTheme.accent)
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .bentoTile()
+    }
+
+    private func heatmapTile(_ data: InsightsSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Last 12 weeks")
+                    .font(MuesliTheme.title3())
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                Spacer()
+                Text("longest streak · \(data.longestStreakDays) days")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+            }
+            BentoHeatmap(activity: Array(data.dailyActivity.suffix(84)))
+        }
+        .padding(20)
+        .bentoTile()
+    }
+
+    private func goalLegend(color: Color, label: String, value: String) -> some View {
+        HStack(spacing: 9) {
+            RoundedRectangle(cornerRadius: 3).fill(color).frame(width: 10, height: 10)
+            Text(label).foregroundStyle(MuesliTheme.textSecondary)
+            Spacer()
+            Text(value).foregroundStyle(MuesliTheme.textTertiary)
+        }
+        .font(MuesliTheme.caption())
+    }
+
+    private func insightsBento(_ data: InsightsSnapshot) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 20) {
+                usagePanel(data)
+                    .id(InsightsSection.pace)
+                    .frame(maxWidth: .infinity)
+                streakPanel(data)
+                    .id(InsightsSection.streak)
+                    .frame(maxWidth: .infinity)
+            }
+
+            VStack(spacing: 20) {
+                usagePanel(data).id(InsightsSection.pace)
+                streakPanel(data).id(InsightsSection.streak)
             }
         }
     }
@@ -109,6 +377,7 @@ struct InsightsView: View {
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(InsightsPalette.secondaryText)
             }
+
         }
     }
 
@@ -183,7 +452,7 @@ struct InsightsView: View {
                 RoundedRectangle(cornerRadius: 14)
                     .fill(MuesliTheme.backgroundRaised)
                 LinearGradient(
-                    colors: [MuesliTheme.accent.opacity(0.13), Color.cyan.opacity(0.025), .clear],
+                    colors: [MuesliTheme.accent.opacity(0.13), MuesliTheme.secondaryAccent.opacity(0.07), .clear],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
                 )
@@ -244,7 +513,7 @@ struct InsightsView: View {
                             .fill(MuesliTheme.accent)
                             .frame(width: max(4, geometry.size.width * dictationShare))
                         RoundedRectangle(cornerRadius: 4)
-                            .fill(Color.cyan.opacity(0.75))
+                            .fill(MuesliTheme.secondaryAccent.opacity(0.78))
                     }
                 }
                 .frame(height: 12)
@@ -383,12 +652,29 @@ struct InsightsView: View {
     }
 
     private func heroDatum(_ label: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(value).font(.system(size: 18, weight: .semibold)).monospacedDigit()
-            Text(label.uppercased()).font(.system(size: 9, weight: .bold)).tracking(1.3).foregroundStyle(InsightsPalette.tertiaryText)
+        HStack(spacing: 10) {
+            Image(systemName: heroIcon(for: label))
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(MuesliTheme.accent)
+                .frame(width: 30, height: 30)
+                .background(MuesliTheme.accentSubtle)
+                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(value).font(.system(size: 18, weight: .semibold)).monospacedDigit()
+                Text(label.uppercased()).font(.system(size: 9, weight: .bold)).tracking(1.3).foregroundStyle(InsightsPalette.tertiaryText)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 18)
+    }
+
+    private func heroIcon(for label: String) -> String {
+        switch label {
+        case "Meetings": return "person.2"
+        case "Average pace": return "gauge.with.dots.needle.50percent"
+        case "Current streak": return "flame"
+        default: return "trophy"
+        }
     }
 
     private func panelTitle(_ title: String, subtitle: String) -> some View {
@@ -423,6 +709,83 @@ struct InsightsView: View {
     private func format(_ value: Int) -> String { value.formatted(.number.notation(.compactName)) }
 
     private func dayCount(_ value: Int) -> String { "\(value) \(value == 1 ? "day" : "days")" }
+}
+
+private struct BentoProgressRing: View {
+    let progress: Double
+    let color: Color
+    let diameter: CGFloat
+    let lineWidth: CGFloat
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(color.opacity(0.12), style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+            Circle()
+                .trim(from: 0, to: max(0.025, min(progress, 1)))
+                .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }
+        .frame(width: diameter, height: diameter)
+    }
+}
+
+private struct BentoHeatmap: View {
+    let activity: [InsightsDailyActivity]
+
+    private var paddedActivity: [InsightsDailyActivity?] {
+        Array(repeating: nil, count: max(0, 84 - activity.count)) + activity.map(Optional.some)
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 3) {
+            ForEach(0..<12, id: \.self) { week in
+                VStack(spacing: 3) {
+                    ForEach(0..<7, id: \.self) { day in
+                        let item = paddedActivity[week * 7 + day]
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .fill(color(for: item?.words ?? 0))
+                            .frame(width: 13, height: 13)
+                            .help(item.map { "\($0.words.formatted()) words" } ?? "No activity")
+                    }
+                }
+            }
+            Spacer(minLength: 16)
+            HStack(spacing: 4) {
+                Text("Less")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                ForEach([0, 1, 2, 3], id: \.self) { level in
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(color(for: level * 250))
+                        .frame(width: 11, height: 11)
+                }
+                Text("More")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+            }
+        }
+    }
+
+    private func color(for words: Int) -> Color {
+        switch words {
+        case 0: MuesliTheme.surfacePrimary
+        case 1..<150: MuesliTheme.accent.opacity(0.18)
+        case 150..<400: MuesliTheme.secondaryAccent.opacity(0.45)
+        default: MuesliTheme.accent
+        }
+    }
+}
+
+private extension View {
+    func bentoTile() -> some View {
+        background(MuesliTheme.backgroundRaised)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge))
+            .overlay(
+                RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge)
+                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+            )
+    }
 }
 
 enum InsightsLoadingCopy {

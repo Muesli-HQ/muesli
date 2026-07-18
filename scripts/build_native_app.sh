@@ -335,6 +335,9 @@ cp "$ROOT/assets/x-logo.png" "$STAGED_APP_DIR/Contents/Resources/x-logo.png"
 cp "$ROOT/assets/linkedin-logo.png" "$STAGED_APP_DIR/Contents/Resources/linkedin-logo.png"
 cp "$ROOT/assets/insights-share-background.png" "$STAGED_APP_DIR/Contents/Resources/insights-share-background.png"
 cp "$ROOT/assets/muesli_app_icon.png" "$STAGED_APP_DIR/Contents/Resources/muesli_app_icon.png"
+cp "$ROOT/assets/accessibility-settings.png" "$STAGED_APP_DIR/Contents/Resources/accessibility-settings.png"
+cp "$ROOT/assets/input-monitoring-settings.png" "$STAGED_APP_DIR/Contents/Resources/input-monitoring-settings.png"
+cp "$ROOT/assets/mic-settings.png" "$STAGED_APP_DIR/Contents/Resources/mic-settings.png"
 if [[ -d "$ROOT/assets/fonts" ]]; then
   ditto "$ROOT/assets/fonts" "$STAGED_APP_DIR/Contents/Resources/fonts"
 fi
@@ -603,11 +606,11 @@ else
   # grants to the running process. Without it, AXIsProcessTrusted()/CGPreflightListenEventAccess()
   # keep returning false even after the user grants permission, so onboarding stalls.
   #
-  # Note: ad-hoc signatures have no stable designated requirement, so the cdhash changes on
-  # every rebuild and macOS privacy grants must be re-approved after each dev build. For grants
-  # that persist across rebuilds, create a self-signed code-signing certificate and pass its name
-  # via MUESLI_SIGN_IDENTITY. No hardened runtime here: ad-hoc has no Team ID, so library
-  # validation would block dlopen of the bundled frameworks/dylibs.
+  # Ad-hoc signatures normally get a cdhash-based designated requirement, which changes on every
+  # rebuild and makes an enabled TCC entry go stale. Give the outer local app a stable, lane-specific
+  # designated requirement based on its bundle identifier so Accessibility/Input Monitoring grants
+  # survive subsequent rebuilds of that lane. No hardened runtime here: ad-hoc has no Team ID, so
+  # library validation would block dlopen of the bundled frameworks/dylibs.
   LOCAL_SIGN_IDENTITY="-"
   if [[ -n "${MUESLI_SIGN_IDENTITY:-}" ]]; then
     LOCAL_SIGN_IDENTITY="$MUESLI_SIGN_IDENTITY"
@@ -647,15 +650,23 @@ else
     codesign --force --sign "$LOCAL_SIGN_IDENTITY" "$APP_DIR/Contents/MacOS/muesli-cli"
   fi
 
-  # Sign the bundle last so the Info.plist binding / identity stick.
-  codesign --force --sign "$LOCAL_SIGN_IDENTITY" --entitlements "$ENTITLEMENTS" "$APP_DIR"
+  # Sign the bundle last so the Info.plist binding / identity stick. For the ad-hoc fallback,
+  # explicitly stabilize the designated requirement; certificate-backed identities already
+  # provide their own stable requirement and must not be overridden.
+  if [[ "$LOCAL_SIGN_IDENTITY" == "-" ]]; then
+    codesign --force --sign "$LOCAL_SIGN_IDENTITY" \
+      --requirements "=designated => identifier \"$BUNDLE_ID\"" \
+      --entitlements "$ENTITLEMENTS" "$APP_DIR"
+  else
+    codesign --force --sign "$LOCAL_SIGN_IDENTITY" --entitlements "$ENTITLEMENTS" "$APP_DIR"
+  fi
 
   echo "Verifying ad-hoc signature..."
   if ! codesign --verify --deep --strict "$APP_DIR" 2>&1; then
     echo "ERROR: ad-hoc signature verification failed" >&2
     exit 1
   fi
-  echo "  Local signature valid. Re-approve macOS privacy permissions if prompted after ad-hoc rebuilds."
+  echo "  Local signature valid. Lane privacy permissions will persist after their first approval."
 fi
 
 rm -rf "$STAGED_APP_DIR"

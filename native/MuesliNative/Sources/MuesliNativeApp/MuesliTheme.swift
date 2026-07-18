@@ -55,6 +55,8 @@ enum MuesliTheme {
         return defaultAccent
     }
     static var accentSubtle: Color { accent.opacity(0.15) }
+    static let secondaryAccent = Color.adaptive(dark: 0x69C397, light: 0x2F8F65)
+    static var secondaryAccentSubtle: Color { secondaryAccent.opacity(0.12) }
 
     // MARK: - Semantic
 
@@ -86,6 +88,7 @@ enum MuesliTheme {
     static let spacing20: CGFloat = 20
     static let spacing24: CGFloat = 24
     static let spacing32: CGFloat = 32
+    static let spacing48: CGFloat = 48
 
     // MARK: - Corner radii
 

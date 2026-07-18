@@ -22,24 +22,44 @@ struct DictionaryView: View {
     @State private var isShowingAccessibilityPrompt = false
     @State private var suggestionPage = 0
     @State private var dictionaryAlertMessage: String?
+    @State private var editingWord: CustomWord?
+
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
                 header
+                dictionaryHero
                 if !appState.config.dictionarySuggestions.isEmpty {
                     suggestionList
                 }
                 wordList
             }
             .padding(.horizontal, MuesliTheme.spacing32)
+            .frame(maxWidth: 760, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
             .padding(.top, MuesliTheme.pageTop)
             .padding(.bottom, MuesliTheme.spacing32)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(MuesliTheme.backgroundBase)
         .onAppear {
             controller.reconcilePendingDictionaryCorrectionAccessibilityEnable()
+        }
+        .sheet(isPresented: $isAdding) {
+            DictionaryAddSheet { word, replacement in
+                controller.addCustomWord(
+                    CustomWord(
+                        word: word,
+                        replacement: replacement.isEmpty ? nil : replacement,
+                        matchingThreshold: 0.85
+                    )
+                )
+            }
+        }
+        .sheet(item: $editingWord) { word in
+            DictionaryEditSheet(word: word) { updated in
+                controller.updateCustomWord(updated)
+            }
         }
         .alert("Enable Accessibility?", isPresented: $isShowingAccessibilityPrompt) {
             Button("Cancel", role: .cancel) {
@@ -65,23 +85,64 @@ struct DictionaryView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
-            HStack {
-                Text("Dictionary")
-                    .font(MuesliTheme.title1())
-                    .foregroundStyle(MuesliTheme.textPrimary)
-                Spacer()
-                Toggle(
-                    "Dictionary suggestions",
-                    isOn: Binding(
-                        get: { appState.config.enableDictionaryCorrectionPrompts },
-                        set: { handleDictionaryCorrectionPromptsToggle($0) }
-                    )
-                )
-                .toggleStyle(.switch)
-                .font(MuesliTheme.caption())
+        Text("Dictionary")
+            .font(MuesliTheme.title1())
+            .foregroundStyle(MuesliTheme.textPrimary)
+    }
+
+    private var dictionaryHero: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
+            Text("muesli spells the way you do.")
+                .font(.system(size: 25, weight: .semibold))
+                .foregroundStyle(MuesliTheme.textPrimary)
+
+            Text("Muesli learns your unique words and names—automatically or manually. Add personal terms, client names, or industry language.")
+                .font(MuesliTheme.body())
                 .foregroundStyle(MuesliTheme.textSecondary)
-                .help("Briefly reads focused app text after dictation to detect corrections.")
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: MuesliTheme.spacing8) {
+                    Button {
+                        isAdding = true
+                    } label: {
+                        Text("Add new word")
+                            .font(MuesliTheme.captionMedium())
+                            .foregroundStyle(MuesliTheme.textPrimary)
+                            .padding(.horizontal, MuesliTheme.spacing12)
+                            .padding(.vertical, MuesliTheme.spacing8)
+                            .background(MuesliTheme.backgroundBase)
+                            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                    }
+                    .buttonStyle(.plain)
+
+                    ForEach(appState.config.customWords.prefix(5)) { word in
+                        Text(dictionaryDisplayText(word))
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textSecondary)
+                            .padding(.horizontal, MuesliTheme.spacing12)
+                            .padding(.vertical, MuesliTheme.spacing8)
+                            .background(MuesliTheme.backgroundRaised.opacity(0.55))
+                            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                            )
+                    }
+                }
+            }
+
+            HStack {
+                Text("Automatic suggestions")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                Spacer()
+                Toggle("", isOn: Binding(
+                    get: { appState.config.enableDictionaryCorrectionPrompts },
+                    set: { handleDictionaryCorrectionPromptsToggle($0) }
+                ))
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .tint(MuesliTheme.textSecondary)
                 .featureTourTarget(.dictionarySuggestions)
                 Button {
                     importDictionary()
@@ -140,11 +201,16 @@ struct DictionaryView: View {
                     )
                 }
                 .buttonStyle(.plain)
+
             }
-            Text("Add custom words for names, brands, and domain terms, and tune how aggressively each entry should fuzzy-match transcription errors.")
-                .font(MuesliTheme.body())
-                .foregroundStyle(MuesliTheme.textSecondary)
         }
+        .padding(MuesliTheme.spacing24)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge))
+        .overlay(
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge)
+                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+        )
     }
 
     private func handleDictionaryCorrectionPromptsToggle(_ enabled: Bool) {
@@ -318,20 +384,37 @@ struct DictionaryView: View {
 
     private var wordList: some View {
         VStack(spacing: 0) {
-            columnHeader
-            Divider().background(MuesliTheme.surfaceBorder)
-
-            if isAdding {
-                addWordRow
-                Divider().background(MuesliTheme.surfaceBorder)
-            }
-
-            if appState.config.customWords.isEmpty && !isAdding {
+            if appState.config.customWords.isEmpty {
                 emptyState
             } else {
-                ForEach(appState.config.customWords) { word in
-                    DictionaryWordEditorRow(word: word, controller: controller)
-                    Divider().background(MuesliTheme.surfaceBorder)
+                ForEach(Array(appState.config.customWords.enumerated()), id: \.element.id) { index, word in
+                    HStack(spacing: MuesliTheme.spacing16) {
+                        VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                            Text(word.word)
+                                .font(MuesliTheme.body())
+                                .foregroundStyle(MuesliTheme.textPrimary)
+                            if let replacement = word.replacement, !replacement.isEmpty {
+                                Text("Replaces with \(replacement)")
+                                    .font(MuesliTheme.caption())
+                                    .foregroundStyle(MuesliTheme.textTertiary)
+                            }
+                        }
+                        Spacer()
+                        Text("\(Int(word.matchingThreshold * 100))%")
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                        DictionaryIconButton(systemName: "pencil", label: "Edit word", tint: MuesliTheme.textTertiary) {
+                            editingWord = word
+                        }
+                        DictionaryIconButton(systemName: "trash", label: "Delete word", tint: MuesliTheme.textTertiary) {
+                            controller.removeCustomWord(id: word.id)
+                        }
+                    }
+                    .padding(.horizontal, MuesliTheme.spacing16)
+                    .padding(.vertical, MuesliTheme.spacing16)
+                    if index < appState.config.customWords.count - 1 {
+                        Divider().background(MuesliTheme.surfaceBorder)
+                    }
                 }
             }
         }
@@ -341,6 +424,11 @@ struct DictionaryView: View {
             RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
                 .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
         )
+    }
+
+    private func dictionaryDisplayText(_ word: CustomWord) -> String {
+        guard let replacement = word.replacement, !replacement.isEmpty else { return word.word }
+        return "\(word.word) → \(replacement)"
     }
 
     private var emptyState: some View {
@@ -425,6 +513,125 @@ struct DictionaryView: View {
         }
         .padding(.horizontal, MuesliTheme.spacing16)
         .padding(.vertical, MuesliTheme.spacing12)
+    }
+}
+
+private struct DictionaryAddSheet: View {
+    let onAdd: (String, String) -> Void
+    @State private var word = ""
+    @State private var replacement = ""
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                Text("Add to dictionary")
+                    .font(MuesliTheme.title2())
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                Text("Teach Muesli a word, name, or phrase you use often.")
+                    .font(MuesliTheme.body())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+            }
+            VStack(spacing: MuesliTheme.spacing16) {
+                dictionaryField("Word or phrase", text: $word)
+                dictionaryField("Replace with (optional)", text: $replacement)
+            }
+            HStack(spacing: MuesliTheme.spacing8) {
+                Spacer()
+                sheetButton("Cancel", primary: false) { dismiss() }
+                sheetButton("Add word", primary: true) {
+                    let cleanWord = word.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !cleanWord.isEmpty else { return }
+                    onAdd(cleanWord, replacement.trimmingCharacters(in: .whitespacesAndNewlines))
+                    dismiss()
+                }
+                .disabled(word.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(MuesliTheme.spacing32)
+        .frame(width: 440)
+        .background(MuesliTheme.backgroundBase)
+    }
+
+    private func dictionaryField(_ placeholder: String, text: Binding<String>) -> some View {
+        TextField(placeholder, text: text)
+            .textFieldStyle(.plain)
+            .font(MuesliTheme.body())
+            .padding(.horizontal, MuesliTheme.spacing12)
+            .padding(.vertical, MuesliTheme.spacing12)
+            .background(MuesliTheme.backgroundRaised)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            .overlay(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall).strokeBorder(MuesliTheme.surfaceBorder))
+    }
+
+    private func sheetButton(_ title: String, primary: Bool, action: @escaping () -> Void) -> some View {
+        Button(title, action: action)
+            .buttonStyle(.plain)
+            .font(MuesliTheme.body())
+            .foregroundStyle(primary ? Color.white : MuesliTheme.textPrimary)
+            .padding(.horizontal, MuesliTheme.spacing16)
+            .padding(.vertical, MuesliTheme.spacing8)
+            .background(primary ? MuesliTheme.accent : MuesliTheme.surfacePrimary)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+    }
+}
+
+private struct DictionaryEditSheet: View {
+    let word: CustomWord
+    let onSave: (CustomWord) -> Void
+    @State private var draftWord: String
+    @State private var replacement: String
+    @State private var threshold: Double
+    @Environment(\.dismiss) private var dismiss
+
+    init(word: CustomWord, onSave: @escaping (CustomWord) -> Void) {
+        self.word = word
+        self.onSave = onSave
+        _draftWord = State(initialValue: word.word)
+        _replacement = State(initialValue: word.replacement ?? "")
+        _threshold = State(initialValue: word.matchingThreshold)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
+            Text("Edit word")
+                .font(MuesliTheme.title2())
+                .foregroundStyle(MuesliTheme.textPrimary)
+            VStack(spacing: MuesliTheme.spacing16) {
+                TextField("Word or phrase", text: $draftWord)
+                    .textFieldStyle(.roundedBorder)
+                TextField("Replace with (optional)", text: $replacement)
+                    .textFieldStyle(.roundedBorder)
+                HStack {
+                    Text("Matching threshold")
+                        .font(MuesliTheme.body())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                    Spacer()
+                    ThresholdEditor(value: $threshold)
+                }
+            }
+            HStack(spacing: MuesliTheme.spacing8) {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .buttonStyle(.bordered)
+                Button("Save changes") {
+                    let cleanWord = draftWord.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !cleanWord.isEmpty else { return }
+                    let cleanReplacement = replacement.trimmingCharacters(in: .whitespacesAndNewlines)
+                    onSave(CustomWord(
+                        id: word.id,
+                        word: cleanWord,
+                        replacement: cleanReplacement.isEmpty ? nil : cleanReplacement,
+                        matchingThreshold: threshold
+                    ))
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(MuesliTheme.spacing32)
+        .frame(width: 440)
+        .background(MuesliTheme.backgroundBase)
     }
 }
 

@@ -5,17 +5,29 @@ struct DashboardRootView: View {
     let appState: AppState
     let controller: MuesliController
     @State private var featureTourTargetFrames: [FeatureTourTarget: CGRect] = [:]
+    @State private var isSidebarCollapsed = false
 
     var body: some View {
-        NavigationSplitView {
-            SidebarView(appState: appState, controller: controller)
-                .navigationSplitViewColumnWidth(min: 240, ideal: 260, max: 300)
-        } detail: {
+        HStack(spacing: 0) {
+            SidebarView(
+                appState: appState,
+                controller: controller,
+                isCollapsed: isSidebarCollapsed,
+                onToggleCollapsed: {
+                    withAnimation(.easeInOut(duration: 0.22)) {
+                        isSidebarCollapsed.toggle()
+                    }
+                }
+            )
+            .frame(width: isSidebarCollapsed ? 68 : 260)
+
+            Divider()
+                .overlay(MuesliTheme.surfaceBorder)
+
             detailContent
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(MuesliTheme.backgroundBase)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(MuesliTheme.backgroundBase)
         }
-        .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 900, minHeight: 600)
         .preferredColorScheme(appState.config.darkMode ? .dark : .light)
         .onPreferenceChange(FeatureTourTargetPreferenceKey.self) { frames in

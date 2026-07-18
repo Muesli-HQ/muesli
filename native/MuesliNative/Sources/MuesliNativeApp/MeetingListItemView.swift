@@ -108,9 +108,10 @@ struct MeetingListItemView: View {
             Text(previewText())
                 .font(MuesliTheme.caption())
                 .foregroundStyle(MuesliTheme.textTertiary)
-                .lineLimit(2)
+                .lineLimit(4)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(MuesliTheme.spacing16)
+        .padding(MuesliTheme.spacing20)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(isSelected ? MuesliTheme.surfaceSelected : MuesliTheme.backgroundRaised)
         .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge))
