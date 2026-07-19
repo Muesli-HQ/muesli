@@ -204,6 +204,11 @@ enum MeetingURLNormalizer {
             return NormalizedMeetingURL(id: "facetime:\(identity)", url: identity, platform: .facetime)
         }
 
+        if host.hasSuffix("chime.aws") {
+            let identity = compactIdentity(host: host, path: compactPath)
+            return NormalizedMeetingURL(id: "chime:\(identity)", url: identity, platform: .unknown)
+        }
+
         return nil
     }
 

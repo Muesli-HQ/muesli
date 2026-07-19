@@ -2691,7 +2691,8 @@ final class MuesliController: NSObject {
                     openDocument: true,
                     endDate: event.endDate,
                     autoStopSource: event.meetingURL.flatMap { MeetingAutoStopSource(meetingURL: $0) },
-                    startOrigin: .calendarAutoRecord
+                    startOrigin: .calendarAutoRecord,
+                    titleContextMeetingURL: event.meetingURL
                 )
                 return
             }
@@ -2774,7 +2775,8 @@ final class MuesliController: NSObject {
                     calendarEventID: calendarEventID,
                     endDate: endDate,
                     autoStopSource: autoStopSource,
-                    startOrigin: .scheduledMeetingPrompt
+                    startOrigin: .scheduledMeetingPrompt,
+                    titleContextMeetingURL: meetingURL
                 )
             },
             onJoinAndRecord: meetingURL != nil ? { [weak self] in
@@ -4618,7 +4620,8 @@ final class MuesliController: NSObject {
                 calendarEventID: payload.calendarEventID,
                 endDate: payload.endDate,
                 autoStopSource: payload.autoStopSource,
-                startOrigin: .scheduledMeetingPrompt
+                startOrigin: .scheduledMeetingPrompt,
+                titleContextMeetingURL: payload.meetingURL
             )
             return
         }
@@ -4633,7 +4636,9 @@ final class MuesliController: NSObject {
         calendarEventID: String? = nil,
         endDate: Date? = nil,
         autoStopSource: MeetingAutoStopSource? = nil,
-        startOrigin: MeetingRecordingStartOrigin = .manual
+        startOrigin: MeetingRecordingStartOrigin = .manual,
+        titleContextTarget: MeetingTitleContext.CaptureTarget? = nil,
+        titleContextMeetingURL: URL? = nil
     ) -> Bool {
         guard ensureBasicDictationPermissionsBeforeDashboard() else { return false }
         if isMeetingRecording() {
@@ -4647,10 +4652,12 @@ final class MuesliController: NSObject {
             openDocument: true,
             endDate: endDate,
             autoStopSource: autoStopSource,
-            startOrigin: startOrigin
+            startOrigin: startOrigin,
+            titleContextTarget: titleContextTarget,
+            titleContextMeetingURL: titleContextMeetingURL,
+            presentHistoryWindowAfterTitleContextCapture: true
         )
         guard didStart else { return false }
-        presentHistoryWindow(tab: .meetings)
         return true
     }
 
@@ -4664,7 +4671,10 @@ final class MuesliController: NSObject {
         startOrigin: MeetingRecordingStartOrigin = .manual,
         followUpToID: Int64? = nil,
         inheritedFolderID: Int64? = nil,
-        previousMeetingNotes: String? = nil
+        previousMeetingNotes: String? = nil,
+        titleContextTarget: MeetingTitleContext.CaptureTarget? = nil,
+        titleContextMeetingURL: URL? = nil,
+        presentHistoryWindowAfterTitleContextCapture: Bool = false
     ) -> Bool {
         guard !isMeetingRecording(), !isStartingMeetingRecording else { return false }
         guard let meetingBackend = normalizeMeetingTranscriptionSelectionForAvailability() else {
@@ -4673,6 +4683,20 @@ final class MuesliController: NSObject {
                 message: "Download a transcription model before recording a meeting."
             )
             return false
+        }
+        let titleContextCaptureTask = Task.detached(priority: .utility) {
+            if let titleContextTarget {
+                return await MeetingTitleContext.captureWithTimeout(target: titleContextTarget)
+            }
+            if let titleContextMeetingURL {
+                return await MeetingTitleContext.captureMatchingMeetingContext(
+                    meetingURL: titleContextMeetingURL
+                )
+            }
+            // Non-manual starts without a source process or meeting URL must
+            // not infer context from the frontmost app.
+            guard startOrigin == .manual else { return .empty }
+            return await MeetingTitleContext.captureWithTimeout()
         }
         let templateSnapshot = defaultMeetingTemplate()
         let meetingID: Int64
@@ -4691,9 +4715,6 @@ final class MuesliController: NSObject {
             activeMeetingID = meetingID
             activeMeetingAudioWarning = nil
             syncAppState()
-            if openDocument {
-                showMeetingDocument(id: meetingID)
-            }
         } catch {
             fputs("[muesli-native] failed to create live meeting: \(error)\n", stderr)
             recordDiagnosticIncident(
@@ -4729,8 +4750,17 @@ final class MuesliController: NSObject {
             guard let self else { return }
             do {
                 try Task.checkCancellation()
+                let titleContext = await titleContextCaptureTask.value
+                try Task.checkCancellation()
+                if openDocument {
+                    self.showMeetingDocument(id: meetingID)
+                }
+                if presentHistoryWindowAfterTitleContextCapture {
+                    self.presentHistoryWindow(tab: .meetings)
+                }
                 try await self.startMeetingRecordingWithSystemAudioRecovery(
                     title: title,
+                    titleContext: titleContext,
                     calendarEventID: calendarEventID,
                     meetingID: meetingID,
                     backend: meetingBackend,
@@ -4878,13 +4908,15 @@ final class MuesliController: NSObject {
         meetingMonitor.suppressWhileActive()
         meetingMonitor.refreshState()
         updateMeetingNotificationVisibility()
-
         meetingStartTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
                 try Task.checkCancellation()
+                let titleContext = MeetingTitleContext.empty
+                try Task.checkCancellation()
                 try await self.startMeetingRecordingWithSystemAudioRecovery(
                     title: meeting.title,
+                    titleContext: titleContext,
                     calendarEventID: meeting.calendarEventID,
                     meetingID: meetingID,
                     backend: meetingBackend,
@@ -5154,6 +5186,7 @@ final class MuesliController: NSObject {
 
     private func startMeetingRecordingWithSystemAudioRecovery(
         title: String,
+        titleContext: MeetingTitleContext,
         calendarEventID: String?,
         meetingID: Int64,
         backend: BackendOption,
@@ -5183,6 +5216,7 @@ final class MuesliController: NSObject {
             meetingMicRecorder.preferredInputDeviceID = routeSnapshot.preferredInputDeviceID
             let meetingSession = MeetingSession(
                 title: title,
+                titleContext: titleContext,
                 calendarEventID: calendarEventID,
                 backend: backend,
                 runtime: runtime,
@@ -5365,7 +5399,8 @@ final class MuesliController: NSObject {
             calendarEventID: calendarEventID,
             endDate: endDate,
             autoStopSource: MeetingAutoStopSource(meetingURL: meetingURL),
-            startOrigin: .joinAndRecord
+            startOrigin: .joinAndRecord,
+            titleContextMeetingURL: meetingURL
         )
     }
 
@@ -6799,7 +6834,11 @@ final class MuesliController: NSObject {
                 if self.startForegroundMeetingRecording(
                     title: title,
                     autoStopSource: MeetingAutoStopSource(candidate: candidate),
-                    startOrigin: .detectedPrompt
+                    startOrigin: .detectedPrompt,
+                    titleContextTarget: MeetingTitleContext.CaptureTarget(
+                        appName: candidate.appName,
+                        processIdentifier: candidate.sourcePID
+                    )
                 ) {
                     self.meetingMonitor.markRecordingStarted(candidate)
                     self.presentedMeetingCandidate = nil
@@ -8250,7 +8289,8 @@ final class MuesliController: NSObject {
                     calendarEventID: event.id,
                     endDate: calendarEndDate,
                     autoStopSource: autoStopSource,
-                    startOrigin: .scheduledMeetingPrompt
+                    startOrigin: .scheduledMeetingPrompt,
+                    titleContextMeetingURL: meetingURL
                 )
             },
             onJoinAndRecord: meetingURL != nil ? { [weak self] in

@@ -1,0 +1,202 @@
+import Foundation
+import Testing
+@testable import MuesliNativeApp
+
+@Suite("Meeting title formats")
+struct MeetingTitleFormatterTests {
+    private final class LookupAttemptCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = 0
+
+        func next() -> Int {
+            lock.lock()
+            value += 1
+            let value = value
+            lock.unlock()
+            return value
+        }
+    }
+
+    @Test("default format preserves the generated title")
+    func defaultFormat() {
+        let formatted = MeetingTitleFormatter.format(
+            pattern: MeetingTitleFormatter.defaultPattern,
+            generatedTitle: "Sprint planning",
+            startTime: Date(timeIntervalSince1970: 0),
+            context: .empty
+        )
+
+        #expect(formatted == "Sprint planning")
+    }
+
+    @Test("default format preserves title punctuation")
+    func defaultFormatPreservesTitlePunctuation() {
+        let formatted = MeetingTitleFormatter.format(
+            pattern: MeetingTitleFormatter.defaultPattern,
+            generatedTitle: "Weekly Sync:",
+            startTime: Date(timeIntervalSince1970: 0),
+            context: .empty
+        )
+
+        #expect(formatted == "Weekly Sync:")
+    }
+
+    @Test("format supports context tokens and literal project text")
+    func contextAndLiteralTokens() {
+        let formatted = MeetingTitleFormatter.format(
+            pattern: "Muesli · {app} · {window}",
+            generatedTitle: "Ignored generated title",
+            startTime: Date(timeIntervalSince1970: 0),
+            context: MeetingTitleContext(appName: "Chrome", windowTitle: "Weekly sync - Google Meet")
+        )
+
+        #expect(formatted == "Muesli · Chrome · Weekly sync - Google Meet")
+    }
+
+    @Test("format supports date and time tokens")
+    func dateAndTimeTokens() {
+        let formatted = MeetingTitleFormatter.format(
+            pattern: "{date} {time}",
+            generatedTitle: "Ignored generated title",
+            startTime: Date(timeIntervalSince1970: 0),
+            context: .empty
+        )
+
+        #expect(formatted.range(of: #"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$"#, options: .regularExpression) != nil)
+    }
+
+    @Test("missing context falls back to the generated title")
+    func missingContextFallsBack() {
+        let formatted = MeetingTitleFormatter.format(
+            pattern: "{window}",
+            generatedTitle: "Meeting",
+            startTime: Date(timeIntervalSince1970: 0),
+            context: .empty
+        )
+
+        #expect(formatted == "Meeting")
+    }
+
+    @Test("missing context removes only its adjacent separator")
+    func missingContextRemovesAdjacentSeparator() {
+        let formatted = MeetingTitleFormatter.format(
+            pattern: "{title} · {window}",
+            generatedTitle: "Weekly Sync",
+            startTime: Date(timeIntervalSince1970: 0),
+            context: .empty
+        )
+
+        #expect(formatted == "Weekly Sync")
+    }
+
+    @Test("context capture uses the completed result before its timeout")
+    func contextCaptureReturnsCompletedResult() async {
+        let expected = MeetingTitleContext(appName: "Zoom", windowTitle: "Weekly sync")
+
+        let context = await MeetingTitleContext.captureWithTimeout(
+            timeout: 0.1,
+            captureOperation: { _ in expected }
+        )
+
+        #expect(context == expected)
+    }
+
+    @Test("context capture ignores a late result after timeout")
+    func contextCaptureIgnoresLateResult() async {
+        let lateContext = MeetingTitleContext(appName: "Zoom", windowTitle: "Late meeting")
+
+        let context = await MeetingTitleContext.captureWithTimeout(
+            timeout: 0.01,
+            captureOperation: { _ in
+                Thread.sleep(forTimeInterval: 0.05)
+                return lateContext
+            }
+        )
+
+        #expect(context == .empty)
+        try? await Task.sleep(for: .milliseconds(60))
+    }
+
+    @Test("context capture clamps negative delay and timeout")
+    func contextCaptureClampsNegativeIntervals() async {
+        let expected = MeetingTitleContext(appName: "Chrome", windowTitle: "Planning")
+
+        let immediateContext = await MeetingTitleContext.captureWithTimeout(
+            delay: -1,
+            timeout: 0.1,
+            captureOperation: { _ in expected }
+        )
+        let timedOutContext = await MeetingTitleContext.captureWithTimeout(
+            delay: -1,
+            timeout: -1,
+            captureOperation: { _ in expected }
+        )
+
+        #expect(immediateContext == expected)
+        #expect(timedOutContext == .empty)
+    }
+
+    @Test("Chime URL capture uses a matched target")
+    func matchingChimeMeetingContextUsesTarget() async {
+        let expected = MeetingTitleContext(appName: "Chrome", windowTitle: "Weekly sync")
+
+        let context = await MeetingTitleContext.captureMatchingMeetingContext(
+            meetingURL: URL(string: "https://meetings.chime.aws/1234567890")!,
+            targetProvider: { _, _ in
+                MeetingTitleContext.CaptureTarget(appName: "Chrome", processIdentifier: nil)
+            },
+            captureOperation: { _ in expected }
+        )
+
+        #expect(context == expected)
+    }
+
+    @Test("meeting URL capture omits context without a matched target")
+    func matchingMeetingContextTimesOutWithoutTarget() async {
+        let context = await MeetingTitleContext.captureMatchingMeetingContext(
+            meetingURL: URL(string: "https://meet.google.com/abc-defg-hij")!,
+            waitTimeout: 0,
+            targetProvider: { _, _ in nil }
+        )
+
+        #expect(context == .empty)
+    }
+
+    @Test("meeting URL capture bounds slow target lookups")
+    func matchingMeetingContextBoundsTargetLookup() async {
+        let context = await MeetingTitleContext.captureMatchingMeetingContext(
+            meetingURL: URL(string: "https://meet.google.com/abc-defg-hij")!,
+            waitTimeout: 0.01,
+            targetProvider: { _, _ in
+                Thread.sleep(forTimeInterval: 0.05)
+                return MeetingTitleContext.CaptureTarget(appName: "Chrome", processIdentifier: nil)
+            }
+        )
+
+        #expect(context == .empty)
+        try? await Task.sleep(for: .milliseconds(60))
+    }
+
+    @Test("meeting URL capture continues after a timed-out target lookup")
+    func matchingMeetingContextContinuesAfterLookupTimeout() async {
+        let attempts = LookupAttemptCounter()
+        let expected = MeetingTitleContext(appName: "Chrome", windowTitle: "Weekly sync")
+
+        let context = await MeetingTitleContext.captureMatchingMeetingContext(
+            meetingURL: URL(string: "https://meet.google.com/abc-defg-hij")!,
+            waitTimeout: 0.5,
+            pollInterval: 0.01,
+            targetProvider: { _, _ in
+                if attempts.next() == 1 {
+                    Thread.sleep(forTimeInterval: 0.3)
+                    return nil
+                }
+                return MeetingTitleContext.CaptureTarget(appName: "Chrome", processIdentifier: nil)
+            },
+            captureOperation: { _ in expected }
+        )
+
+        #expect(context == expected)
+        try? await Task.sleep(for: .milliseconds(310))
+    }
+}

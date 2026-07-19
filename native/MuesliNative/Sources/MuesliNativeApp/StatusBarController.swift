@@ -7,12 +7,14 @@ final class CalendarMenuMeetingPayload: NSObject {
     let calendarEventID: String
     let endDate: Date
     let autoStopSource: MeetingAutoStopSource?
+    let meetingURL: URL?
 
     init(event: UnifiedCalendarEvent) {
         self.title = event.title
         self.calendarEventID = event.id
         self.endDate = event.endDate
         self.autoStopSource = event.meetingURL.flatMap { MeetingAutoStopSource(meetingURL: $0) }
+        self.meetingURL = event.meetingURL
     }
 }
 

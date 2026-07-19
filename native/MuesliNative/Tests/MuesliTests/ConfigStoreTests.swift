@@ -27,6 +27,7 @@ struct ConfigStoreTests {
         config.openRouterModel = "nvidia/nemotron-3-super-120b-a12b:free"
         config.cohereLanguage = CohereTranscribeLanguage.german.rawValue
         config.meetingSummaryBackend = "openrouter"
+        config.meetingTitleFormat = "Project Atlas · {date} · {title}"
         store.save(config)
 
         let loaded = store.load()
@@ -36,6 +37,7 @@ struct ConfigStoreTests {
         #expect(loaded.openRouterModel == "nvidia/nemotron-3-super-120b-a12b:free")
         #expect(loaded.cohereLanguage == CohereTranscribeLanguage.german.rawValue)
         #expect(loaded.meetingSummaryBackend == "openrouter")
+        #expect(loaded.meetingTitleFormat == "Project Atlas · {date} · {title}")
 
         // Restore original
         store.save(original)
@@ -47,6 +49,13 @@ struct ConfigStoreTests {
         let path = store.configPath().path
         #expect(path.contains("Application Support"))
         #expect(path.hasSuffix("config.json"))
+    }
+
+    @Test("missing title format defaults to automatic titles")
+    func missingTitleFormatDefaultsToAutomaticTitles() throws {
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+
+        #expect(config.meetingTitleFormat == MeetingTitleFormatter.defaultPattern)
     }
 
     @Test("saved config uses owner-only file permissions")
