@@ -23,6 +23,37 @@ struct WhisperKitTranscriberTests {
             #expect(!option.model.hasSuffix(".bin"), "\(option.label) should not use .bin suffix")
         }
     }
+
+    @Test("hebrew ivrit model pins repo and language")
+    func hebrewIvritOption() {
+        let option = BackendOption.whisperHebrewIvrit
+        #expect(option.backend == "whisper")
+        #expect(option.repo == "rontw4/whisperkit-coreml-hebrew")
+        #expect(option.forcedLanguage == "he")
+        #expect(BackendOption.whisperFamily.contains(option))
+        #expect(BackendOption.all.contains(option))
+    }
+
+    @Test("stock whisper models keep default repo and auto language")
+    func stockWhisperOptionsUseDefaults() {
+        for option in [BackendOption.whisperTinyEnglish, .whisperSmall, .whisperMedium, .whisperLargeTurbo] {
+            #expect(option.repo == nil, "\(option.label) should use the default argmax repo")
+            #expect(option.forcedLanguage == nil, "\(option.label) should auto-detect language")
+        }
+    }
+
+    @Test("model directory honors custom repo")
+    func modelDirectoryCustomRepo() {
+        let defaultDir = WhisperKitTranscriber.modelDirectory("small.en")
+        #expect(defaultDir.path.contains("argmaxinc/whisperkit-coreml/openai_whisper-small.en"))
+
+        let hebrewDir = WhisperKitTranscriber.modelDirectory(
+            "ivrit-ai_whisper-large-v3-turbo",
+            repo: "rontw4/whisperkit-coreml-hebrew"
+        )
+        #expect(hebrewDir.path.contains("rontw4/whisperkit-coreml-hebrew/ivrit-ai_whisper-large-v3-turbo"))
+        #expect(!hebrewDir.path.contains("openai_whisper-"), "custom repo variants keep their name as-is")
+    }
 }
 
 @Suite("FluidAudioTranscriber")

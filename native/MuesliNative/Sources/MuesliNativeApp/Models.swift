@@ -9,6 +9,15 @@ struct BackendOption: Equatable {
     let sizeLabel: String
     let description: String
     let recommended: Bool
+    /// Hugging Face repo to download WhisperKit models from. `nil` uses
+    /// WhisperKit's default (argmaxinc/whisperkit-coreml). Lets Muesli offer
+    /// community fine-tunes (e.g. ivrit.ai Hebrew) that live outside the
+    /// argmax repo.
+    var repo: String? = nil
+    /// Force this transcription language instead of Whisper auto-detect.
+    /// Fine-tunes like ivrit.ai degrade language detection during training,
+    /// so their model cards require pinning the language explicitly.
+    var forcedLanguage: String? = nil
 
     static let parakeetMultilingual = BackendOption(
         backend: "fluidaudio",
@@ -64,6 +73,17 @@ struct BackendOption: Equatable {
         recommended: false
     )
 
+    static let whisperHebrewIvrit = BackendOption(
+        backend: "whisper",
+        model: "ivrit-ai_whisper-large-v3-turbo",
+        label: "Hebrew (ivrit.ai)",
+        sizeLabel: "~1.6 GB",
+        description: "Whisper Large v3 Turbo fine-tuned for Hebrew by ivrit.ai. Best local Hebrew accuracy, handles mixed Hebrew/English meetings. Language is pinned to Hebrew.",
+        recommended: false,
+        repo: "rontw4/whisperkit-coreml-hebrew",
+        forcedLanguage: "he"
+    )
+
     static let nemotron35Multilingual = BackendOption(
         backend: "nemotron35",
         model: "FluidInference/Nemotron-3.5-ASR-Streaming-Multilingual-0.6b-CoreML",
@@ -117,7 +137,7 @@ struct BackendOption: Equatable {
     ]
 
     static let whisperFamily: [BackendOption] = [
-        .whisperTinyEnglish, .whisperSmall, .whisperMedium, .whisperLargeTurbo,
+        .whisperTinyEnglish, .whisperSmall, .whisperMedium, .whisperLargeTurbo, .whisperHebrewIvrit,
     ]
 
     static let qwen3Asr = BackendOption(
@@ -194,7 +214,7 @@ struct BackendOption: Equatable {
         let fm = FileManager.default
         switch backend {
         case "whisper":
-            return WhisperKitTranscriber.isModelDownloaded(model)
+            return WhisperKitTranscriber.isModelDownloaded(model, repo: repo)
         case "fluidaudio":
             let supportDir = fm.homeDirectoryForCurrentUser
                 .appendingPathComponent("Library/Application Support/FluidAudio/Models")

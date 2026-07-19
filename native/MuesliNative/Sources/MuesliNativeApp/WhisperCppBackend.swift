@@ -6,6 +6,7 @@ import MuesliCore
 actor WhisperKitTranscriber {
     private var whisperKit: WhisperKit?
     private var loadedModel: String?
+    private var loadedLanguage: String?
 
     enum TranscriberError: Error, LocalizedError {
         case notLoaded
@@ -20,19 +21,34 @@ actor WhisperKitTranscriber {
     }
 
     /// Load a WhisperKit CoreML model. Downloads from HuggingFace if not cached.
-    func loadModel(modelName: String, progress: ((Double, String?) -> Void)? = nil) async throws {
-        if loadedModel == modelName, whisperKit != nil { return }
+    /// `repo` selects the Hugging Face repo (nil = WhisperKit's default
+    /// argmaxinc/whisperkit-coreml); community fine-tunes such as the ivrit.ai
+    /// Hebrew model live in their own repos. `language` is remembered so
+    /// transcription can pin it (fine-tunes often require an explicit language).
+    func loadModel(
+        modelName: String,
+        repo: String? = nil,
+        language: String? = nil,
+        progress: ((Double, String?) -> Void)? = nil
+    ) async throws {
+        if loadedModel == modelName, whisperKit != nil {
+            loadedLanguage = language
+            return
+        }
 
         fputs("[whisperkit] loading model: \(modelName)...\n", stderr)
         let modelFolder: URL?
 
-        if Self.isModelDownloaded(modelName) {
+        if Self.isModelDownloaded(modelName, repo: repo) {
             modelFolder = nil
         } else {
             let estimatedTotalBytes = Self.estimatedDownloadBytes(for: modelName)
             let totalText = Self.formatMegabytes(estimatedTotalBytes)
             progress?(0.02, "0 MB of \(totalText)")
-            modelFolder = try await WhisperKit.download(variant: modelName) { downloadProgress in
+            modelFolder = try await WhisperKit.download(
+                variant: modelName,
+                from: repo ?? "argmaxinc/whisperkit-coreml"
+            ) { downloadProgress in
                 let fraction = min(max(downloadProgress.fractionCompleted, 0), 1)
                 let estimatedBytes = Int64(Double(estimatedTotalBytes) * fraction)
                 let completedText = Self.formatMegabytes(estimatedBytes)
@@ -49,7 +65,8 @@ actor WhisperKitTranscriber {
 
         let config = WhisperKitConfig(
             model: modelFolder == nil ? modelName : nil,
-            modelFolder: modelFolder?.path,
+            modelRepo: repo,
+            modelFolder: modelFolder?.path ?? Self.cachedModelFolder(modelName, repo: repo),
             computeOptions: ModelComputeOptions(
                 audioEncoderCompute: .cpuAndNeuralEngine,
                 textDecoderCompute: .cpuAndNeuralEngine
@@ -58,6 +75,7 @@ actor WhisperKitTranscriber {
 
         whisperKit = try await WhisperKit(config)
         loadedModel = modelName
+        loadedLanguage = language
         fputs("[whisperkit] model ready: \(modelName)\n", stderr)
     }
 
@@ -71,6 +89,8 @@ actor WhisperKitTranscriber {
             return 1_500 * 1_000_000
         case "large-v3-v20240930_626MB":
             return 626 * 1_000_000
+        case "ivrit-ai_whisper-large-v3-turbo":
+            return 1_620 * 1_000_000
         default:
             return 250 * 1_000_000
         }
@@ -92,7 +112,13 @@ actor WhisperKitTranscriber {
         guard let whisperKit else { throw TranscriberError.notLoaded }
 
         let start = CFAbsoluteTimeGetCurrent()
-        let results = try await whisperKit.transcribe(audioPath: wavURL.path)
+        let results: [TranscriptionResult]
+        if let language = loadedLanguage {
+            let options = DecodingOptions(task: .transcribe, language: language)
+            results = try await whisperKit.transcribe(audioPath: wavURL.path, decodeOptions: options)
+        } else {
+            results = try await whisperKit.transcribe(audioPath: wavURL.path)
+        }
         let elapsed = CFAbsoluteTimeGetCurrent() - start
 
         let text = results.map(\.text).joined(separator: " ")
@@ -114,26 +140,39 @@ actor WhisperKitTranscriber {
     func shutdown() {
         whisperKit = nil
         loadedModel = nil
+        loadedLanguage = nil
     }
 
     // MARK: - Model Storage
 
-    /// WhisperKit stores models under ~/Documents/huggingface/models/argmaxinc/whisperkit-coreml/.
-    /// Each model variant is a direct subdirectory (e.g. openai_whisper-small.en/).
-    static func isModelDownloaded(_ modelName: String) -> Bool {
-        let fm = FileManager.default
-        let fullName = modelName.hasPrefix("openai_whisper-") ? modelName : "openai_whisper-\(modelName)"
-        let modelDir = fm.homeDirectoryForCurrentUser
-            .appendingPathComponent("Documents/huggingface/models/argmaxinc/whisperkit-coreml/\(fullName)")
-        return fm.fileExists(atPath: modelDir.path)
+    /// WhisperKit stores models under ~/Documents/huggingface/models/<repo>/.
+    /// For the default argmax repo, each variant is prefixed with
+    /// "openai_whisper-" (e.g. openai_whisper-small.en/); custom repos use the
+    /// variant name as the directory as-is.
+    static func modelDirectory(_ modelName: String, repo: String? = nil) -> URL {
+        let repoPath = repo ?? "argmaxinc/whisperkit-coreml"
+        let fullName: String
+        if repo == nil {
+            fullName = modelName.hasPrefix("openai_whisper-") ? modelName : "openai_whisper-\(modelName)"
+        } else {
+            fullName = modelName
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Documents/huggingface/models/\(repoPath)/\(fullName)")
+    }
+
+    private static func cachedModelFolder(_ modelName: String, repo: String?) -> String? {
+        guard repo != nil else { return nil }
+        return modelDirectory(modelName, repo: repo).path
+    }
+
+    /// Check if this model's files exist on disk.
+    static func isModelDownloaded(_ modelName: String, repo: String? = nil) -> Bool {
+        FileManager.default.fileExists(atPath: modelDirectory(modelName, repo: repo).path)
     }
 
     /// Delete cached model files for a WhisperKit model variant.
-    static func deleteModel(_ modelName: String) {
-        let fm = FileManager.default
-        let fullName = modelName.hasPrefix("openai_whisper-") ? modelName : "openai_whisper-\(modelName)"
-        let modelDir = fm.homeDirectoryForCurrentUser
-            .appendingPathComponent("Documents/huggingface/models/argmaxinc/whisperkit-coreml/\(fullName)")
-        try? fm.removeItem(at: modelDir)
+    static func deleteModel(_ modelName: String, repo: String? = nil) {
+        try? FileManager.default.removeItem(at: modelDirectory(modelName, repo: repo))
     }
 }

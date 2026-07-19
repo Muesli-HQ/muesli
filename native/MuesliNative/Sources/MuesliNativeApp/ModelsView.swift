@@ -1338,7 +1338,7 @@ struct ModelsView: View {
         let fm = FileManager.default
         switch option.backend {
         case "whisper":
-            WhisperKitTranscriber.deleteModel(option.model)
+            WhisperKitTranscriber.deleteModel(option.model, repo: option.repo)
         case "nemotron35":
             let path = fm.homeDirectoryForCurrentUser
                 .appendingPathComponent(".cache/muesli/models/nemotron35-multilingual-2240ms")
@@ -1418,7 +1418,7 @@ struct ModelsView: View {
     private func isModelDownloaded(_ option: BackendOption, fm: FileManager) -> Bool {
         switch option.backend {
         case "whisper":
-            return WhisperKitTranscriber.isModelDownloaded(option.model)
+            return WhisperKitTranscriber.isModelDownloaded(option.model, repo: option.repo)
         case "nemotron35":
             let path = fm.homeDirectoryForCurrentUser
                 .appendingPathComponent(".cache/muesli/models/nemotron35-multilingual-2240ms/encoder.mlmodelc/coremldata.bin")
