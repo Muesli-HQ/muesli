@@ -6,6 +6,7 @@ import MuesliCore
 actor WhisperKitTranscriber {
     private var whisperKit: WhisperKit?
     private var loadedModel: String?
+    private var loadedRepo: String?
     private var loadedLanguage: String?
 
     enum TranscriberError: Error, LocalizedError {
@@ -31,7 +32,7 @@ actor WhisperKitTranscriber {
         language: String? = nil,
         progress: ((Double, String?) -> Void)? = nil
     ) async throws {
-        if loadedModel == modelName, whisperKit != nil {
+        if loadedModel == modelName, loadedRepo == repo, whisperKit != nil {
             loadedLanguage = language
             return
         }
@@ -75,6 +76,7 @@ actor WhisperKitTranscriber {
 
         whisperKit = try await WhisperKit(config)
         loadedModel = modelName
+        loadedRepo = repo
         loadedLanguage = language
         fputs("[whisperkit] model ready: \(modelName)\n", stderr)
     }
@@ -140,6 +142,7 @@ actor WhisperKitTranscriber {
     func shutdown() {
         whisperKit = nil
         loadedModel = nil
+        loadedRepo = nil
         loadedLanguage = nil
     }
 
