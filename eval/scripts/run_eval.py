@@ -51,7 +51,11 @@ def transcribe(cli: str, wav: Path, model: str) -> tuple[str, float, float]:
     wall = time.monotonic() - start
     if proc.returncode != 0:
         raise RuntimeError(f"muesli-cli failed on {wav.name}: {proc.stderr.strip()[:300]}")
-    payload = json.loads(proc.stdout)["data"]
+    # CoreML sometimes appends runtime noise (e.g. E5RT exceptions) after the
+    # JSON envelope on stdout; decode just the first JSON object.
+    stdout = proc.stdout
+    obj, _ = json.JSONDecoder().raw_decode(stdout[stdout.index("{"):])
+    payload = obj["data"]
     return payload["transcript"], payload.get("durationSeconds", 0.0), wall
 
 
