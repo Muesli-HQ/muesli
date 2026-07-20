@@ -78,11 +78,81 @@ struct MuesliCLITests {
     func transcribeEnumsAcceptDocumentedValues() {
         #expect(TranscribeModel(argument: "parakeet-v3") == .parakeetV3)
         #expect(TranscribeModel(argument: "parakeet-v2") == .parakeetV2)
+        #expect(TranscribeModel(argument: "parakeet-eou-320ms") == .parakeetEou320ms)
         #expect(TranscribeModel(argument: "canary-qwen") == nil)
         #expect(TranscribeOutputFormat(argument: "text") == .text)
         #expect(TranscribeOutputFormat(argument: "json") == .json)
         #expect(TranscribeOutputFormat(argument: "markdown") == .markdown)
         #expect(TranscribeOutputFormat(argument: "xml") == nil)
+    }
+
+    @Test("only the streaming EOU model reports itself as streaming")
+    func onlyEouModelIsStreaming() {
+        #expect(TranscribeModel.parakeetV3.isStreaming == false)
+        #expect(TranscribeModel.parakeetV2.isStreaming == false)
+        #expect(TranscribeModel.parakeetEou320ms.isStreaming == true)
+        #expect(TranscribeModel.parakeetV3.asrModelVersion != nil)
+        #expect(TranscribeModel.parakeetEou320ms.asrModelVersion == nil)
+    }
+
+    @Test("--emit-partials is rejected for non-streaming models")
+    func emitPartialsRejectedForBatchModels() {
+        #expect(throws: Error.self) {
+            _ = try TranscribeCommand.parse(["recording.wav", "--model", "parakeet-v3", "--emit-partials", "/tmp/partials.jsonl"])
+        }
+    }
+
+    @Test("--emit-partials is accepted for the streaming EOU model")
+    func emitPartialsAcceptedForStreamingModel() throws {
+        let command = try TranscribeCommand.parse(["recording.wav", "--model", "parakeet-eou-320ms", "--emit-partials", "/tmp/partials.jsonl"])
+        #expect(command.emitPartials == "/tmp/partials.jsonl")
+    }
+
+    @Test("PartialsJSONLWriter emits one JSON object per line")
+    func partialsWriterEmitsOneObjectPerLine() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-cli-partials-\(UUID().uuidString)/partials.jsonl")
+        let writer = try PartialsJSONLWriter(url: url)
+        writer.record(t: 0.32, text: "hello")
+        writer.record(t: 0.64, text: "hello there")
+        writer.close()
+
+        let lines = try String(contentsOf: url, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+        #expect(lines.count == 2)
+        let first = try #require(try JSONSerialization.jsonObject(with: Data(lines[0].utf8)) as? [String: Any])
+        #expect(first["text"] as? String == "hello")
+        #expect((first["t"] as? Double).map { abs($0 - 0.32) < 0.0001 } == true)
+        let second = try #require(try JSONSerialization.jsonObject(with: Data(lines[1].utf8)) as? [String: Any])
+        #expect(second["text"] as? String == "hello there")
+    }
+
+    @Test("pipeline writes partials file when emitPartialsURL is set")
+    func pipelineWritesPartialsFile() async throws {
+        let fixture = try TranscribeFixture()
+        let partialsURL = fixture.directory.appendingPathComponent("partials.jsonl")
+        let pipeline = MuesliAudioTranscriptionPipeline(
+            audioPreparer: FakeAudioPreparer(wavURL: fixture.wavURL, durationSeconds: 3),
+            transcriber: FakeTranscriber(text: "streamed transcript"),
+            summarizer: SuccessfulSummarizer(notes: "unused"),
+            dataChangePoster: {}
+        )
+
+        _ = try await pipeline.run(
+            request: MuesliAudioTranscriptionRequest(
+                sourceURL: fixture.sourceURL,
+                model: .parakeetEou320ms,
+                title: "Streaming Demo",
+                summarize: false,
+                saveMeeting: false,
+                emitPartialsURL: partialsURL
+            ),
+            context: fixture.context
+        )
+
+        let contents = try String(contentsOf: partialsURL, encoding: .utf8)
+        #expect(contents.contains("streamed transcript"))
     }
 
     @Test("transcribe text output is transcript only")
@@ -283,8 +353,14 @@ private struct FakeAudioPreparer: AudioPreparing {
 private struct FakeTranscriber: AudioTranscribing {
     let text: String
 
-    func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
+    func transcribe(
+        wavURL: URL,
+        model: TranscribeModel,
+        onPartial: (@Sendable (Double, String) -> Void)?,
+        progress: @escaping (String) -> Void
+    ) async throws -> HeadlessTranscription {
         progress("fake")
+        onPartial?(1.0, text)
         return HeadlessTranscription(text: text, durationSeconds: nil)
     }
 }
