@@ -186,7 +186,9 @@ final class AppState {
     var dictationPageSize: Int = 50
     var dictationFromDate: String? = nil
     var dictationToDate: String? = nil
+    var dictationOriginFilter: RecordOriginFilter = .all
     var hasMoreDictations: Bool = true
+    var meetingOriginFilter: RecordOriginFilter = .all
 
     // Search
     var searchQuery: String = ""

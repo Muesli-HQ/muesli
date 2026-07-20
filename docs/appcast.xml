@@ -6,6 +6,39 @@
         <language>en</language>
         <!-- Items are added by generate_appcast or the release script -->
         <item>
+            <title>0.8.0</title>
+            <pubDate>Tue, 14 Jul 2026 21:29:34 -0700</pubDate>
+            <description><![CDATA[
+<h2>Muesli 0.8</h2>
+<p>Muesli 0.8 turns your local voice history into a private workspace for understanding, cleaning up, and continuing your work.</p>
+<h3>What's new</h3>
+<ul>
+<li>Private, on-device Insights: Explore activity trends, word patterns, meeting totals, and shareable contribution cards without sending your history anywhere.</li>
+<li>Live meeting captions: Follow meetings as they happen with optional local streaming transcription, then rely on the selected meeting model for the final transcript.</li>
+<li>Meetings that continue with you: Pause and resume recordings, continue an existing meeting, create linked follow-ups, revisit upcoming meetings, and export notes and audio more flexibly.</li>
+<li>Smarter dictation cleanup: Use optional ChatGPT-hosted cleanup or downloadable local cleanup models, with a clearer model catalog and direct links from Settings.</li>
+<li>Dictionary suggestions: Muesli can notice repeated corrections and suggest additions to your personal dictionary. Suggestions remain opt-in and require Accessibility permission.</li>
+<li>Private iCloud sync: Sync text records with the iPhone companion app, filter Dictations and Meetings by this Mac or iPhone, and recover cleanly if initial sync setup takes too long.</li>
+<li>A guided tour of 0.8: After updating, choose whether to walk through the new features in their actual locations. Skip at any point or replay it later from What's New in Muesli.</li>
+<li>More local model options: Try experimental Gemma 4 E2B dictation and cleanup, Indic ASR, and Nemotron 3.5 multilingual streaming. Large model weights remain optional downloads.</li>
+</ul>
+<h3>Reliability and privacy</h3>
+<ul>
+<li>The first dictation after an update now waits for the selected transcription backend to be ready instead of beginning an unusable recording.</li>
+<li>Live captions and cloud cleanup remain off until you choose them.</li>
+<li>Error telemetry remains available, while automatic GitHub issue prompts are off by default.</li>
+</ul>
+<h3>Install</h3>
+<p>Download <code>Muesli-0.8.0.dmg</code>, open it, and drag Muesli to Applications. Muesli 0.8 requires Apple silicon and macOS 14.2 or later.</p>
+<p>The release is signed with Developer ID, notarized, and stapled by Apple.</p>
+]]></description>
+            <sparkle:version>0.8.0</sparkle:version>
+            <sparkle:shortVersionString>0.8.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.8.0/Muesli-0.8.0.dmg" length="94564841" type="application/octet-stream" sparkle:edSignature="vyg6q42RE8T9bDVnhyHE/ZuD+SgFNqWtXTgb5wCArGgZ2Eexe8FN5yApaRq2sEEDXvfuyVimCCgYqV9kubcvBg=="/>
+        </item>
+        <item>
             <title>0.7.1</title>
             <pubDate>Fri, 26 Jun 2026 02:25:12 -0700</pubDate>
             <description><![CDATA[

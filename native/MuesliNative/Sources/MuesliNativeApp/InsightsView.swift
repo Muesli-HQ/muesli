@@ -311,6 +311,7 @@ struct InsightsView: View {
 
     private var loadingState: some View {
         VStack(spacing: 18) {
+            InsightsLoadingStatus()
             ForEach(0..<4, id: \.self) { index in
                 RoundedRectangle(cornerRadius: 14)
                     .fill(MuesliTheme.backgroundRaised)
@@ -419,6 +420,60 @@ struct InsightsView: View {
     private func format(_ value: Int) -> String { value.formatted(.number.notation(.compactName)) }
 
     private func dayCount(_ value: Int) -> String { "\(value) \(value == 1 ? "day" : "days")" }
+}
+
+enum InsightsLoadingCopy {
+    static let messages = [
+        "Calculating your private activity history",
+        "Insights are computed on this Mac and never uploaded",
+        "Your transcripts and statistics stay under your control",
+        "Hybrid AI works best when you choose what stays local",
+    ]
+}
+
+private struct InsightsLoadingStatus: View {
+    @State private var messageIndex = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ProgressView()
+                .controlSize(.small)
+                .tint(MuesliTheme.accent)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Building your Insights")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                ZStack(alignment: .leading) {
+                    Text(InsightsLoadingCopy.messages[messageIndex])
+                        .id(messageIndex)
+                        .transition(.opacity)
+                }
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(InsightsPalette.secondaryText)
+            }
+            Spacer()
+            Image(systemName: "lock.shield.fill")
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(MuesliTheme.accent.opacity(0.8))
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
+        .background(MuesliTheme.backgroundRaised)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(MuesliTheme.surfaceBorder))
+        .task {
+            guard !reduceMotion else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 2_200_000_000)
+                guard !Task.isCancelled else { return }
+                withAnimation(.easeInOut(duration: 0.28)) {
+                    messageIndex = (messageIndex + 1) % InsightsLoadingCopy.messages.count
+                }
+            }
+        }
+    }
 }
 
 struct InsightsInitialScrollGate {

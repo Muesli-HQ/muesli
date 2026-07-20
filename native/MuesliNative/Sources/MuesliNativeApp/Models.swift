@@ -1057,6 +1057,7 @@ struct AppConfig: Codable {
     var dictionarySuggestions: [DictionarySuggestion] = []
     var dismissedDictionarySuggestionKeys: [String] = []
     var enableDictionaryCorrectionPrompts: Bool = false
+    var enableAutomaticDiagnosticIssuePrompts: Bool = false
     var folderOrder: [Int64] = []
     var soundEnabled: Bool = true
     var pauseMediaDuringDictation: Bool = false
@@ -1173,6 +1174,7 @@ struct AppConfig: Codable {
         case dictionarySuggestions = "dictionary_suggestions"
         case dismissedDictionarySuggestionKeys = "dismissed_dictionary_suggestion_keys"
         case enableDictionaryCorrectionPrompts = "enable_dictionary_correction_prompts"
+        case enableAutomaticDiagnosticIssuePrompts = "enable_automatic_diagnostic_issue_prompts"
         case folderOrder = "folder_order"
         case soundEnabled = "sound_enabled"
         case pauseMediaDuringDictation = "pause_media_during_dictation"
@@ -1335,6 +1337,7 @@ struct AppConfig: Codable {
         dictionarySuggestions = (try? c.decode([DictionarySuggestion].self, forKey: .dictionarySuggestions)) ?? defaults.dictionarySuggestions
         dismissedDictionarySuggestionKeys = (try? c.decode([String].self, forKey: .dismissedDictionarySuggestionKeys)) ?? defaults.dismissedDictionarySuggestionKeys
         enableDictionaryCorrectionPrompts = (try? c.decode(Bool.self, forKey: .enableDictionaryCorrectionPrompts)) ?? defaults.enableDictionaryCorrectionPrompts
+        enableAutomaticDiagnosticIssuePrompts = (try? c.decode(Bool.self, forKey: .enableAutomaticDiagnosticIssuePrompts)) ?? defaults.enableAutomaticDiagnosticIssuePrompts
         folderOrder = (try? c.decode([Int64].self, forKey: .folderOrder)) ?? defaults.folderOrder
         soundEnabled = (try? c.decode(Bool.self, forKey: .soundEnabled)) ?? defaults.soundEnabled
         pauseMediaDuringDictation = (try? c.decode(Bool.self, forKey: .pauseMediaDuringDictation)) ?? defaults.pauseMediaDuringDictation

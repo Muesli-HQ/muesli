@@ -32,6 +32,12 @@ public enum MeetingSource: String, Codable, Sendable {
     case audioImport = "audio_import"
 }
 
+public enum RecordOriginFilter: String, Codable, CaseIterable, Hashable, Sendable {
+    case all
+    case thisMac
+    case fromIPhone
+}
+
 public enum SyncTextRecordKind: String, Codable, Sendable {
     case dictation
     case meeting

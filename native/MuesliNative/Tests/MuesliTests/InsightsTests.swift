@@ -299,6 +299,14 @@ struct InsightsTests {
         #expect(smallest == 13)
     }
 
+    @Test("loading copy explains local processing without overpromising")
+    func loadingCopyExplainsPrivacy() {
+        #expect(InsightsLoadingCopy.messages.count == 4)
+        #expect(Set(InsightsLoadingCopy.messages).count == 4)
+        #expect(InsightsLoadingCopy.messages.contains { $0.contains("computed on this Mac") })
+        #expect(InsightsLoadingCopy.messages.contains { $0.contains("choose what stays local") })
+    }
+
     @Test("activity heatmap marks the visible starting month and later month boundaries")
     func activityHeatmapMonthMarkers() {
         var calendar = Calendar(identifier: .gregorian)

@@ -231,6 +231,7 @@ struct DiagnosticIncidentReporterTests {
             appState: appState,
             defaults: defaults,
             telemetrySink: { sent.append($0) },
+            automaticPromptEnabled: { true },
             onPrompt: { prompted.append($0) }
         )
 
@@ -260,6 +261,7 @@ struct DiagnosticIncidentReporterTests {
             appState: appState,
             defaults: defaults,
             telemetrySink: { sent.append($0) },
+            automaticPromptEnabled: { true },
             onPrompt: { restartedPrompted.append($0) }
         )
         let third = restartedReporter.record(
@@ -271,5 +273,29 @@ struct DiagnosticIncidentReporterTests {
         #expect(sent.map(\.id) == [first.id, second.id, third.id])
         #expect(restartedPrompted.isEmpty)
         #expect(appState.pendingDiagnosticIncident == nil)
+    }
+
+    @Test("default-off automatic reporting still records telemetry")
+    func defaultOffStillRecordsTelemetry() {
+        let appState = AppState()
+        var sent: [DiagnosticIncident] = []
+        var prompted: [DiagnosticIncident] = []
+        let reporter = DiagnosticIncidentReporter(
+            appState: appState,
+            telemetrySink: { sent.append($0) },
+            onPrompt: { prompted.append($0) }
+        )
+
+        let incident = reporter.record(
+            kind: .dictationTranscriptionFailed,
+            stage: .standardDictationTranscribe
+        )
+
+        #expect(sent.map(\.id) == [incident.id])
+        #expect(prompted.isEmpty)
+        #expect(appState.pendingDiagnosticIncident == nil)
+
+        reporter.recordManualReport()
+        #expect(appState.pendingDiagnosticIncident?.kind == .manualReport)
     }
 }

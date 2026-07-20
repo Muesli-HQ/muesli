@@ -816,6 +816,7 @@ struct AppConfigTests {
         config.enableScreenContext = true
         config.enableDictationOCRContext = true
         config.enableLiveStreamingPartials = true
+        config.enableAutomaticDiagnosticIssuePrompts = true
         config.meetingLiveCaptionBackend = MeetingLiveCaptionBackend.nemotron35.rawValue
         config.showMeetingTranscriptOnIndicatorHover = false
         config.contributionPromptNextWordCount = 31_000
@@ -890,6 +891,7 @@ struct AppConfigTests {
         #expect(decoded.enableScreenContext == true)
         #expect(decoded.enableDictationOCRContext == true)
         #expect(decoded.enableLiveStreamingPartials == true)
+        #expect(decoded.enableAutomaticDiagnosticIssuePrompts == true)
         #expect(decoded.resolvedMeetingLiveCaptionBackend == .nemotron35)
         #expect(decoded.showMeetingTranscriptOnIndicatorHover == false)
         #expect(decoded.contributionPromptNextWordCount == 31_000)
@@ -900,6 +902,13 @@ struct AppConfigTests {
         #expect(decoded.contributionLinkedInClicked == false)
         #expect(decoded.upcomingMeetingsDayCount == UpcomingMeetingsWindow.today.dayCount)
         #expect(decoded.hiddenCalendarEventSourceHints == config.hiddenCalendarEventSourceHints)
+    }
+
+    @Test("Automatic diagnostic issue prompts default off when absent")
+    func automaticDiagnosticIssuePromptsDefaultOffWhenAbsent() throws {
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+
+        #expect(decoded.enableAutomaticDiagnosticIssuePrompts == false)
     }
 
     @Test("JSON coding keys use snake_case")

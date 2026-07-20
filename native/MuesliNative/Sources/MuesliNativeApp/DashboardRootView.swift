@@ -150,7 +150,8 @@ struct DashboardRootView: View {
             case .about:
                 AboutView(
                     appState: appState,
-                    onOpenManualDiagnosticReport: { controller.openManualDiagnosticReport() }
+                    onOpenManualDiagnosticReport: { controller.openManualDiagnosticReport() },
+                    onSetAutomaticDiagnosticIssuePrompts: { controller.setAutomaticDiagnosticIssuePrompts($0) }
                 )
             }
         }

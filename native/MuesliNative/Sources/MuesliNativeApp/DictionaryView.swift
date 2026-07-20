@@ -66,6 +66,7 @@ struct DictionaryView: View {
                 .font(MuesliTheme.caption())
                 .foregroundStyle(MuesliTheme.textSecondary)
                 .help("Briefly reads focused app text after dictation to detect corrections.")
+                .featureTourTarget(.dictionarySuggestions)
                 Button {
                     isAdding = true
                     newWord = ""

@@ -1311,7 +1311,11 @@ struct MeetingBrowserLogicTests {
     private func makeMeeting(id: Int64, daysAgo: Int, title: String) -> MeetingRecord {
         let now = Date(timeIntervalSince1970: 1_710_000_000)
         let calendar = Calendar(identifier: .gregorian)
-        return makeMeeting(id: id, rawDate: Self.isoDate(daysAgo: daysAgo, now: now, calendar: calendar), title: title)
+        return makeMeeting(
+            id: id,
+            rawDate: Self.isoDate(daysAgo: daysAgo, now: now, calendar: calendar),
+            title: title
+        )
     }
 
     private func makeMeeting(id: Int64, rawDate: String, title: String) -> MeetingRecord {

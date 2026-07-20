@@ -281,6 +281,9 @@ final class MuesliController: NSObject {
     )
     private lazy var diagnosticIncidentReporter = DiagnosticIncidentReporter(
         appState: appState,
+        automaticPromptEnabled: { [weak self] in
+            self?.config.enableAutomaticDiagnosticIssuePrompts ?? false
+        },
         onPrompt: { [weak self] _ in
             self?.presentHistoryWindow(tab: .about)
         }
@@ -957,6 +960,8 @@ final class MuesliController: NSObject {
         switch step.target {
         case .insightsEntry:
             appState.selectedTab = .dictations
+        case .dictionarySuggestions:
+            appState.selectedTab = .dictionary
         case .meetingsSidebar:
             appState.selectedTab = .meetings
             appState.meetingsNavigationState = .browser
@@ -1022,12 +1027,18 @@ final class MuesliController: NSObject {
             limit: appState.dictationPageSize,
             offset: 0,
             fromDate: appState.dictationFromDate,
-            toDate: appState.dictationToDate
+            toDate: appState.dictationToDate,
+            origin: appState.dictationOriginFilter
         )) ?? []
         appState.dictationRows = rows
         appState.hasMoreDictations = rows.count >= appState.dictationPageSize
-        appState.meetingRows = (try? dictationStore.recentMeetings(limit: 200, folderID: appState.selectedFolderID)) ?? []
-        let counts = (try? dictationStore.meetingCounts()) ?? (total: 0, byFolder: [:], directByFolder: [:])
+        appState.meetingRows = (try? dictationStore.recentMeetings(
+            limit: 200,
+            folderID: appState.selectedFolderID,
+            origin: appState.meetingOriginFilter
+        )) ?? []
+        let counts = (try? dictationStore.meetingCounts(origin: appState.meetingOriginFilter))
+            ?? (total: 0, byFolder: [:], directByFolder: [:])
         appState.totalMeetingCount = counts.total
         appState.meetingCountsByFolder = counts.byFolder
         appState.directMeetingCountsByFolder = counts.directByFolder
@@ -4325,7 +4336,8 @@ final class MuesliController: NSObject {
             limit: appState.dictationPageSize,
             offset: offset,
             fromDate: appState.dictationFromDate,
-            toDate: appState.dictationToDate
+            toDate: appState.dictationToDate,
+            origin: appState.dictationOriginFilter
         )) ?? []
         appState.dictationRows.append(contentsOf: more)
         appState.hasMoreDictations = more.count >= appState.dictationPageSize
@@ -4342,6 +4354,16 @@ final class MuesliController: NSObject {
     func clearDictationFilter() {
         appState.dictationFromDate = nil
         appState.dictationToDate = nil
+        syncAppState()
+    }
+
+    func filterDictations(origin: RecordOriginFilter) {
+        appState.dictationOriginFilter = origin
+        syncAppState()
+    }
+
+    func filterMeetings(origin: RecordOriginFilter) {
+        appState.meetingOriginFilter = origin
         syncAppState()
     }
 
@@ -5694,6 +5716,15 @@ final class MuesliController: NSObject {
 
     func openManualDiagnosticReport() {
         diagnosticIncidentReporter.recordManualReport()
+    }
+
+    func setAutomaticDiagnosticIssuePrompts(_ enabled: Bool) {
+        updateConfig { $0.enableAutomaticDiagnosticIssuePrompts = enabled }
+        if !enabled,
+           let pending = appState.pendingDiagnosticIncident,
+           pending.kind != .manualReport {
+            diagnosticIncidentReporter.dismissCurrentPrompt()
+        }
     }
 
     func dismissDiagnosticIncidentPrompt() {

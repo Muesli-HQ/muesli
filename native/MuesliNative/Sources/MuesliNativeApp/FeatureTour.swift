@@ -36,6 +36,7 @@ struct MarketingVersion: Comparable, Equatable {
 
 enum FeatureTourTarget: String, Hashable {
     case insightsEntry
+    case dictionarySuggestions
     case meetingsSidebar
     case liveCaptionsSetting
     case cloudCleanupSetting
@@ -48,7 +49,7 @@ enum FeatureTourTarget: String, Hashable {
             return .streaming
         case .experimentalModels:
             return .dictation
-        case .insightsEntry, .meetingsSidebar, .liveCaptionsSetting, .cloudCleanupSetting:
+        case .insightsEntry, .dictionarySuggestions, .meetingsSidebar, .liveCaptionsSetting, .cloudCleanupSetting:
             return nil
         }
     }
@@ -95,6 +96,14 @@ enum FeatureTourCatalog {
                 message: "Select any stat card to explore private word, meeting, pace, streak, and daily activity trends calculated from your local history.",
                 systemImage: "chart.bar.xaxis",
                 target: .insightsEntry
+            ),
+            FeatureTourStep(
+                id: "dictionary-suggestions",
+                eyebrow: "SMARTER DICTIONARY",
+                title: "Turn corrections into custom words",
+                message: "Dictionary suggestions stay off by default. Turn them on to let Muesli notice corrections after dictation and offer a one-click way to remember names, brands, and domain terms.",
+                systemImage: "text.book.closed.fill",
+                target: .dictionarySuggestions
             ),
             FeatureTourStep(
                 id: "meeting-workspace",

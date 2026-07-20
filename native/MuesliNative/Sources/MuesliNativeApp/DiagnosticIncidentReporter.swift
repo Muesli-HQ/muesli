@@ -9,6 +9,7 @@ final class DiagnosticIncidentReporter {
     private let defaults: UserDefaults
     private let appState: AppState
     private let telemetrySink: TelemetrySink
+    private let automaticPromptEnabled: @MainActor () -> Bool
     private let onPrompt: PromptHandler
     private let calendar: Calendar
 
@@ -17,12 +18,14 @@ final class DiagnosticIncidentReporter {
         defaults: UserDefaults = .standard,
         calendar: Calendar = .current,
         telemetrySink: @escaping TelemetrySink = DiagnosticIncidentReporter.sendTelemetry,
+        automaticPromptEnabled: @escaping @MainActor () -> Bool = { false },
         onPrompt: @escaping PromptHandler = { _ in }
     ) {
         self.appState = appState
         self.defaults = defaults
         self.calendar = calendar
         self.telemetrySink = telemetrySink
+        self.automaticPromptEnabled = automaticPromptEnabled
         self.onPrompt = onPrompt
     }
 
@@ -43,7 +46,7 @@ final class DiagnosticIncidentReporter {
             error: error
         )
         telemetrySink(incident)
-        if promptUser, shouldPrompt(for: incident) {
+        if promptUser, automaticPromptEnabled(), shouldPrompt(for: incident) {
             markPrompted(for: incident)
             onPrompt(incident)
             appState.pendingDiagnosticIncident = incident

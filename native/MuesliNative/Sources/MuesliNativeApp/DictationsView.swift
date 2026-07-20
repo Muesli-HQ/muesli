@@ -19,6 +19,26 @@ enum DictationFilter: Hashable {
     }
 }
 
+enum ICloudBridgeWorkingCopy {
+    static func title(isActivationPending: Bool) -> String {
+        isActivationPending
+            ? "Setting up private iCloud sync"
+            : "Syncing with private iCloud"
+    }
+
+    static func subtitle(isActivationPending: Bool) -> String {
+        isActivationPending
+            ? "Creating the sync channel and pulling your latest text records."
+            : "Checking for new text and uploading local changes."
+    }
+
+    static func buttonHelp(isActivationPending: Bool) -> String {
+        isActivationPending
+            ? "Sync setup is in progress"
+            : "Text sync is in progress"
+    }
+}
+
 struct DictationsView: View {
     let appState: AppState
     let controller: MuesliController
@@ -26,7 +46,7 @@ struct DictationsView: View {
     @State private var bridgePromptSeen = false
     @State private var isBridgeQRCodePresented = false
 
-    private var groupedDictations: [(header: String, records: [DictationRecord])] {
+    private var groupedDictations: [(id: Date, header: String, records: [DictationRecord])] {
         let calendar = Calendar.current
         let now = Date()
         let today = calendar.startOfDay(for: now)
@@ -69,7 +89,7 @@ struct DictationsView: View {
             groups.append((key: key, header: currentHeader, records: currentRecords))
         }
 
-        return groups.map { (header: $0.header, records: $0.records) }
+        return groups.map { (id: $0.key, header: $0.header, records: $0.records) }
     }
 
     var body: some View {
@@ -95,13 +115,17 @@ struct DictationsView: View {
                 .padding(.bottom, MuesliTheme.spacing12)
             }
 
+            dictationFilterBar
+                .padding(.horizontal, MuesliTheme.spacing24)
+                .padding(.bottom, MuesliTheme.spacing12)
+
             if appState.dictationRows.isEmpty {
                 Spacer()
                 VStack(spacing: MuesliTheme.spacing12) {
                     Image(systemName: "mic.badge.plus")
                         .font(.system(size: 40, weight: .thin))
                         .foregroundStyle(MuesliTheme.textTertiary)
-                    Text("No dictations yet")
+                    Text(emptyStateTitle)
                         .font(MuesliTheme.title3())
                         .foregroundStyle(MuesliTheme.textSecondary)
                     Text(emptyStateInstruction)
@@ -112,20 +136,13 @@ struct DictationsView: View {
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: MuesliTheme.spacing20) {
-                        ForEach(Array(groupedDictations.enumerated()), id: \.element.header) { index, group in
+                        ForEach(groupedDictations, id: \.id) { group in
                             VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
                                 HStack {
                                     Text(group.header)
                                         .font(.system(size: 12, weight: .semibold))
                                         .foregroundStyle(MuesliTheme.textTertiary)
                                         .padding(.leading, MuesliTheme.spacing4)
-
-                                    Spacer()
-
-                                    // Filter button on the first group header
-                                    if index == 0 {
-                                        dateFilterButton
-                                    }
                                 }
 
                                 VStack(spacing: 1) {
@@ -341,8 +358,12 @@ struct DictationsView: View {
                 return "Synced with \(deviceName) · \(relativeSyncTime(lastSyncedAt))"
             }
             return "Synced with \(deviceName)"
-        case .checkingICloud, .syncing:
+        case .checkingICloud:
             return "Setting up private iCloud sync"
+        case .syncing:
+            return ICloudBridgeWorkingCopy.title(
+                isActivationPending: appState.isICloudBridgeActivationPending
+            )
         case .needsICloud:
             return "Sign in to iCloud to sync"
         case .error:
@@ -362,7 +383,9 @@ struct DictationsView: View {
         case .checkingICloud:
             return "Checking this Mac's iCloud account..."
         case .syncing:
-            return "Creating the sync channel and pulling your latest text records."
+            return ICloudBridgeWorkingCopy.subtitle(
+                isActivationPending: appState.isICloudBridgeActivationPending
+            )
         case .needsICloud, .error:
             return appState.iCloudBridgeMessage ?? "Open iCloud settings, then try again."
         case .notConfigured:
@@ -400,8 +423,12 @@ struct DictationsView: View {
         switch bridgeState {
         case .active:
             return "Sync text with iCloud"
-        case .checkingICloud, .syncing:
+        case .checkingICloud:
             return "Sync setup is in progress"
+        case .syncing:
+            return ICloudBridgeWorkingCopy.buttonHelp(
+                isActivationPending: appState.isICloudBridgeActivationPending
+            )
         default:
             return "Set up private iCloud text sync"
         }
@@ -425,9 +452,31 @@ struct DictationsView: View {
     }
 
     private var emptyStateInstruction: String {
-        appState.config.resolvedOnboardingUseCase.includesVoiceNotes
+        if appState.dictationOriginFilter != .all || selectedFilter != .all {
+            return "Try another source or time range"
+        }
+        return appState.config.resolvedOnboardingUseCase.includesVoiceNotes
             ? "Click Record Voice Note to capture your first note"
             : "Hold \(appState.config.dictationHotkey.label) to start dictating"
+    }
+
+    private var emptyStateTitle: String {
+        switch appState.dictationOriginFilter {
+        case .all: return "No dictations yet"
+        case .thisMac: return "No dictations from this Mac"
+        case .fromIPhone: return "No dictations from iPhone"
+        }
+    }
+
+    private var dictationFilterBar: some View {
+        HStack(spacing: MuesliTheme.spacing12) {
+            RecordOriginPicker(selection: Binding(
+                get: { appState.dictationOriginFilter },
+                set: { controller.filterDictations(origin: $0) }
+            ))
+            Spacer(minLength: 0)
+            dateFilterButton
+        }
     }
 
     private var voiceNoteButton: some View {

@@ -4,6 +4,7 @@ import MuesliCore
 struct AboutView: View {
     let appState: AppState
     let onOpenManualDiagnosticReport: () -> Void
+    let onSetAutomaticDiagnosticIssuePrompts: (Bool) -> Void
 
     private let githubURL = "https://github.com/Muesli-HQ/muesli"
     private let donateURL = "https://buymeacoffee.com/phequals7"
@@ -85,6 +86,19 @@ struct AboutView: View {
                         actionButton("Open Report", icon: "exclamationmark.bubble") {
                             onOpenManualDiagnosticReport()
                         }
+                    }
+
+                    Divider().background(MuesliTheme.surfaceBorder)
+
+                    aboutRow("Automatic issue reporting prompts") {
+                        Toggle("Auto reporting", isOn: Binding(
+                            get: { appState.config.enableAutomaticDiagnosticIssuePrompts },
+                            set: onSetAutomaticDiagnosticIssuePrompts
+                        ))
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                        .help("Suggest an anonymized GitHub issue after an app error")
+                        .accessibilityLabel("Automatic issue reporting prompts")
                     }
                 }
 

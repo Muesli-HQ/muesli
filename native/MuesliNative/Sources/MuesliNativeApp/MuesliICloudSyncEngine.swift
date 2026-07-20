@@ -263,6 +263,150 @@ private enum ICloudSyncAccountError: LocalizedError {
     }
 }
 
+enum ICloudSyncDeadlineError: LocalizedError, Equatable {
+    case operationTimedOut
+
+    var errorDescription: String? {
+        "iCloud did not respond in time. Your text is safe and will be retried."
+    }
+}
+
+private final class ICloudSyncCallbackGate<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Value, Error>?
+    private var operation: CKOperation?
+    private var timeoutWorkItem: DispatchWorkItem?
+    private var isFinished = false
+    private var isCancelled = false
+
+    func install(continuation: CheckedContinuation<Value, Error>) -> Bool {
+        lock.lock()
+        if isCancelled {
+            isFinished = true
+            lock.unlock()
+            continuation.resume(throwing: CancellationError())
+            return false
+        }
+        guard !isFinished, self.continuation == nil else {
+            lock.unlock()
+            return false
+        }
+        self.continuation = continuation
+        lock.unlock()
+        return true
+    }
+
+    func resolve(_ result: Result<Value, Error>) {
+        lock.lock()
+        guard !isFinished, let continuation else {
+            lock.unlock()
+            return
+        }
+        isFinished = true
+        self.continuation = nil
+        operation = nil
+        let timeoutWorkItem = self.timeoutWorkItem
+        self.timeoutWorkItem = nil
+        lock.unlock()
+
+        timeoutWorkItem?.cancel()
+        continuation.resume(with: result)
+    }
+
+    func arm(operation: CKOperation?, timeout: TimeInterval) {
+        let timeoutWorkItem = DispatchWorkItem { [self] in
+            timeOut()
+        }
+
+        lock.lock()
+        guard !isFinished, continuation != nil else {
+            let shouldCancel = isCancelled
+            lock.unlock()
+            if shouldCancel {
+                operation?.cancel()
+            }
+            return
+        }
+        self.operation = operation
+        self.timeoutWorkItem = timeoutWorkItem
+        lock.unlock()
+
+        DispatchQueue.global(qos: .utility).asyncAfter(
+            deadline: .now() + timeout,
+            execute: timeoutWorkItem
+        )
+    }
+
+    func cancel() {
+        lock.lock()
+        guard !isFinished else {
+            lock.unlock()
+            return
+        }
+        isCancelled = true
+        let continuation = self.continuation
+        let operation = self.operation
+        let timeoutWorkItem = self.timeoutWorkItem
+        self.continuation = nil
+        self.operation = nil
+        self.timeoutWorkItem = nil
+        if continuation != nil {
+            isFinished = true
+        }
+        lock.unlock()
+
+        timeoutWorkItem?.cancel()
+        operation?.cancel()
+        continuation?.resume(throwing: CancellationError())
+    }
+
+    private func timeOut() {
+        lock.lock()
+        guard !isFinished, let continuation else {
+            lock.unlock()
+            return
+        }
+        isFinished = true
+        self.continuation = nil
+        let operation = self.operation
+        self.operation = nil
+        timeoutWorkItem = nil
+        lock.unlock()
+
+        operation?.cancel()
+        continuation.resume(throwing: ICloudSyncDeadlineError.operationTimedOut)
+    }
+}
+
+enum ICloudSyncCallbackDeadline {
+    static let defaultTimeout: TimeInterval = 60
+
+    static func wait<Value>(
+        timeout: TimeInterval = defaultTimeout,
+        start: (@escaping (Result<Value, Error>) -> Void) -> CKOperation?
+    ) async throws -> Value {
+        let gate = ICloudSyncCallbackGate<Value>()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                guard gate.install(continuation: continuation) else { return }
+                if Task.isCancelled {
+                    gate.cancel()
+                    return
+                }
+                let operation = start { result in
+                    gate.resolve(result)
+                }
+                gate.arm(operation: operation, timeout: timeout)
+                if Task.isCancelled {
+                    gate.cancel()
+                }
+            }
+        } onCancel: {
+            gate.cancel()
+        }
+    }
+}
+
 final class MuesliICloudSyncEngine {
     private enum Schema {
         static let containerIdentifier = "iCloud.com.mueslihq.muesli"
@@ -458,14 +602,15 @@ final class MuesliICloudSyncEngine {
     }
 
     private func accountStatus() async throws -> CKAccountStatus {
-        try await withCheckedThrowingContinuation { continuation in
+        try await ICloudSyncCallbackDeadline.wait { finish in
             container.accountStatus { status, error in
                 if let error {
-                    continuation.resume(throwing: error)
+                    finish(.failure(error))
                 } else {
-                    continuation.resume(returning: status)
+                    finish(.success(status))
                 }
             }
+            return nil
         }
     }
 
@@ -673,7 +818,7 @@ final class MuesliICloudSyncEngine {
     }
 
     private func fetchTextRecordsPage(cursor: CKQueryOperation.Cursor?) async throws -> ICloudQueryPage {
-        try await withCheckedThrowingContinuation { continuation in
+        try await ICloudSyncCallbackDeadline.wait { finish in
             let operation: CKQueryOperation
             if let cursor {
                 operation = CKQueryOperation(cursor: cursor)
@@ -701,12 +846,13 @@ final class MuesliICloudSyncEngine {
                     lock.lock()
                     let pageRecords = records
                     lock.unlock()
-                    continuation.resume(returning: ICloudQueryPage(records: pageRecords, cursor: cursor))
+                    finish(.success(ICloudQueryPage(records: pageRecords, cursor: cursor)))
                 case .failure(let error):
-                    continuation.resume(throwing: error)
+                    finish(.failure(error))
                 }
             }
             database.add(operation)
+            return operation
         }
     }
 
@@ -714,7 +860,7 @@ final class MuesliICloudSyncEngine {
         query: CKQuery,
         cursor: CKQueryOperation.Cursor?
     ) async throws -> ICloudQueryPage {
-        try await withCheckedThrowingContinuation { continuation in
+        try await ICloudSyncCallbackDeadline.wait { finish in
             let operation: CKQueryOperation
             if let cursor {
                 operation = CKQueryOperation(cursor: cursor)
@@ -741,12 +887,13 @@ final class MuesliICloudSyncEngine {
                     lock.lock()
                     let pageRecords = records
                     lock.unlock()
-                    continuation.resume(returning: ICloudQueryPage(records: pageRecords, cursor: cursor))
+                    finish(.success(ICloudQueryPage(records: pageRecords, cursor: cursor)))
                 case .failure(let error):
-                    continuation.resume(throwing: error)
+                    finish(.failure(error))
                 }
             }
             database.add(operation)
+            return operation
         }
     }
 
@@ -754,7 +901,7 @@ final class MuesliICloudSyncEngine {
         zoneID: CKRecordZone.ID,
         previousServerChangeToken: CKServerChangeToken?
     ) async throws -> ICloudZoneChangesPage {
-        try await withCheckedThrowingContinuation { continuation in
+        try await ICloudSyncCallbackDeadline.wait { finish in
             let configuration = CKFetchRecordZoneChangesOperation.ZoneConfiguration(
                 previousServerChangeToken: previousServerChangeToken,
                 resultsLimit: nil,
@@ -800,55 +947,58 @@ final class MuesliICloudSyncEngine {
                     lock.unlock()
                     switch pageResult {
                     case .success(let page):
-                        continuation.resume(returning: ICloudZoneChangesPage(
+                        finish(.success(ICloudZoneChangesPage(
                             records: pageRecords,
                             serverChangeToken: page.serverChangeToken,
                             moreComing: page.moreComing
-                        ))
+                        )))
                     case .failure(let error):
-                        continuation.resume(throwing: error)
+                        finish(.failure(error))
                     case .none:
-                        continuation.resume(throwing: CKError(.internalError))
+                        finish(.failure(CKError(.internalError)))
                     }
                 case .failure(let error):
-                    continuation.resume(throwing: error)
+                    finish(.failure(error))
                 }
             }
             database.add(operation)
+            return operation
         }
     }
 
     private func fetchSubscription(id: String) async throws -> CKSubscription {
-        try await withCheckedThrowingContinuation { continuation in
+        try await ICloudSyncCallbackDeadline.wait { finish in
             database.fetch(withSubscriptionID: id) { subscription, error in
                 if let subscription {
-                    continuation.resume(returning: subscription)
+                    finish(.success(subscription))
                 } else if let error {
-                    continuation.resume(throwing: error)
+                    finish(.failure(error))
                 } else {
-                    continuation.resume(throwing: CKError(.unknownItem))
+                    finish(.failure(CKError(.unknownItem)))
                 }
             }
+            return nil
         }
     }
 
     private func fetchZone(id: CKRecordZone.ID) async throws -> CKRecordZone {
-        try await withCheckedThrowingContinuation { continuation in
+        try await ICloudSyncCallbackDeadline.wait { finish in
             database.fetch(withRecordZoneID: id) { zone, error in
                 if let zone {
-                    continuation.resume(returning: zone)
+                    finish(.success(zone))
                 } else if let error {
-                    continuation.resume(throwing: error)
+                    finish(.failure(error))
                 } else {
-                    continuation.resume(throwing: CKError(.unknownItem))
+                    finish(.failure(CKError(.unknownItem)))
                 }
             }
+            return nil
         }
     }
 
     private func fetchExistingRecords(recordIDs: [CKRecord.ID]) async throws -> [CKRecord.ID: CKRecord] {
         guard !recordIDs.isEmpty else { return [:] }
-        return try await withCheckedThrowingContinuation { continuation in
+        return try await ICloudSyncCallbackDeadline.wait { finish in
             let operation = CKFetchRecordsOperation(recordIDs: recordIDs)
             let lock = NSLock()
             var fetchedRecords: [CKRecord.ID: CKRecord] = [:]
@@ -874,29 +1024,30 @@ final class MuesliICloudSyncEngine {
                 lock.unlock()
 
                 if let firstNonMissingError {
-                    continuation.resume(throwing: firstNonMissingError)
+                    finish(.failure(firstNonMissingError))
                     return
                 }
 
                 switch result {
                 case .success:
-                    continuation.resume(returning: records)
+                    finish(.success(records))
                 case .failure(let error):
                     if Self.containsOnlyUnknownItemErrors(error) {
-                        continuation.resume(returning: records)
+                        finish(.success(records))
                     } else {
-                        continuation.resume(throwing: error)
+                        finish(.failure(error))
                     }
                 }
             }
 
             database.add(operation)
+            return operation
         }
     }
 
     private func save(records: [CKRecord]) async throws -> [CKRecord] {
         guard !records.isEmpty else { return [] }
-        return try await withCheckedThrowingContinuation { continuation in
+        return try await ICloudSyncCallbackDeadline.wait { finish in
             let operation = CKModifyRecordsOperation(recordsToSave: records, recordIDsToDelete: nil)
             operation.savePolicy = .changedKeys
             let lock = NSLock()
@@ -914,12 +1065,13 @@ final class MuesliICloudSyncEngine {
                     lock.lock()
                     let records = savedRecords
                     lock.unlock()
-                    continuation.resume(returning: records)
+                    finish(.success(records))
                 case .failure(let error):
-                    continuation.resume(throwing: error)
+                    finish(.failure(error))
                 }
             }
             database.add(operation)
+            return operation
         }
     }
 
@@ -936,30 +1088,32 @@ final class MuesliICloudSyncEngine {
     }
 
     private func save(subscription: CKSubscription) async throws -> CKSubscription {
-        try await withCheckedThrowingContinuation { continuation in
+        try await ICloudSyncCallbackDeadline.wait { finish in
             database.save(subscription) { savedSubscription, error in
                 if let savedSubscription {
-                    continuation.resume(returning: savedSubscription)
+                    finish(.success(savedSubscription))
                 } else if let error {
-                    continuation.resume(throwing: error)
+                    finish(.failure(error))
                 } else {
-                    continuation.resume(throwing: CKError(.internalError))
+                    finish(.failure(CKError(.internalError)))
                 }
             }
+            return nil
         }
     }
 
     private func save(zone: CKRecordZone) async throws -> CKRecordZone {
-        try await withCheckedThrowingContinuation { continuation in
+        try await ICloudSyncCallbackDeadline.wait { finish in
             database.save(zone) { savedZone, error in
                 if let savedZone {
-                    continuation.resume(returning: savedZone)
+                    finish(.success(savedZone))
                 } else if let error {
-                    continuation.resume(throwing: error)
+                    finish(.failure(error))
                 } else {
-                    continuation.resume(throwing: CKError(.internalError))
+                    finish(.failure(CKError(.internalError)))
                 }
             }
+            return nil
         }
     }
 

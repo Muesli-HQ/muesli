@@ -6,6 +6,41 @@
         <language>en</language>
         <!-- Items are added by scripts/release-preprod.sh -->
         <item>
+            <title>0.8.0-preprod.2</title>
+            <pubDate>Tue, 14 Jul 2026 13:36:16 -0700</pubDate>
+            <description><![CDATA[
+<h2>MuesliPreprod 0.8.0-preprod.2</h2>
+<p>Pre-production build for validating the Sparkle update flow before a stable release.</p>
+<h3>Install</h3>
+<ul>
+<li>Download <code>MuesliPreprod-0.8.0-preprod.2.dmg</code></li>
+<li>Open the DMG and drag MuesliPreprod to Applications</li>
+<li>Launch MuesliPreprod from Applications</li>
+</ul>
+<h3>Notes</h3>
+<ul>
+<li>Installs alongside production Muesli.</li>
+<li>Stores data separately in <code>~/Library/Application Support/MuesliPreprod/</code>.</li>
+<li>Uses the pre-production Sparkle feed: <code>https://muesli-hq.github.io/muesli/appcast-preprod.xml</code>.</li>
+<li>Does not update the production appcast, public download page, or Homebrew tap.</li>
+</ul>
+]]></description>
+            <sparkle:version>8000002</sparkle:version>
+            <sparkle:shortVersionString>0.8.0-preprod.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.8.0-preprod.2/MuesliPreprod-0.8.0-preprod.2.dmg" length="94561043" type="application/octet-stream" sparkle:edSignature="PEQFKQNfLcKGRnRDIl4mNSltifJVAH1BLOnpeP3vS9WkA71PbqWYpy6777FW49rH1GprVWMFpJedlQP7hyiICA=="/>
+        </item>
+        <item>
+            <title>0.8.0-preprod.1</title>
+            <pubDate>Tue, 14 Jul 2026 11:09:19 -0700</pubDate>
+            <sparkle:version>8000001</sparkle:version>
+            <sparkle:shortVersionString>0.8.0-preprod.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.8.0-preprod.1/MuesliPreprod-0.8.0-preprod.1.dmg" length="94557093" type="application/octet-stream" sparkle:edSignature="qiixTLEWcRXDNTLNaCeMsPf+z3YIWilnCltXhcf63jHsxj23Vej3BmKivO4lSwQSDo/T8X7gPgFvGGXxMBFSCw=="/>
+        </item>
+        <item>
             <title>0.7.1-preprod.1</title>
             <pubDate>Fri, 26 Jun 2026 01:24:05 -0700</pubDate>
             <description><![CDATA[
