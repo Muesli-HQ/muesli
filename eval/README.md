@@ -52,31 +52,49 @@ within this harness, not across papers.
 | `sensevoice` | Batch, final transcript | FluidAudio's `SenseVoiceManager` (int8 encoder), same as the app's SenseVoice backend. Auto-downloads ~240 MB. |
 | `qwen3-asr` | Batch, final transcript | FluidAudio's `Qwen3AsrManager` (int8 variant), same as the app's Qwen3 ASR backend. Auto-downloads ~900 MB; macOS 15+ required (CoreML stateful decoder), same constraint the app has. Autoregressive — noticeably slower per clip than the other models. |
 | `nemotron35` | Batch, final transcript | `MuesliASRKit`'s `Nemotron35StreamingTranscriber.transcribe(wavURL:)` — the same call the app's `transcribeWithNemotron35` makes; internally chunks the WAV through the streaming RNNT pipeline at 2240ms per chunk. Multilingual (100+ locales via `prompt_id`, defaults to auto-detect). Auto-downloads ~665 MB; macOS 15+ required. **Fails outright (CoreML "zero shape" exception) on clips shorter than its 2240ms chunk size** — `run_eval.py` scores these as empty hypotheses rather than aborting the sweep; see Known gaps. |
+| `whisper-tiny` / `whisper-small` / `whisper-medium` / `whisper-large-turbo` | Batch, final transcript | WhisperKit directly, same as the app's `WhisperKitTranscriber`. Model names map to WhisperKit's own variants (`tiny.en`, `small.en`, `medium.en`, `large-v3-v20240930_626MB`) and share the app's on-disk cache (`~/Documents/huggingface/models/argmaxinc/whisperkit-coreml/`). English-only except large-turbo (multilingual). Sizes: ~153 MB / ~250 MB / ~1.5 GB / ~626 MB. |
 
-Comparative WER, 40 clips/set, all 5 models this harness can currently reach:
+Comparative WER, 40 clips/set, all 9 models this harness can currently reach
+(sorted by WER within each set):
 
 ```
-set                  model          WER    failed
-earnings22           parakeet-v2   13.3%       0
-earnings22           parakeet-v3   13.7%       0
-earnings22           sensevoice    17.0%       0
-earnings22           qwen3-asr     20.0%       0
-earnings22           nemotron35    34.6%       1
-librispeech-clean    parakeet-v2    1.9%       0
-librispeech-clean    parakeet-v3    2.3%       0
-librispeech-clean    qwen3-asr      3.2%       0
-librispeech-clean    sensevoice     3.9%       0
-librispeech-clean    nemotron35     5.5%       0
+set                  model                    WER  failed
+earnings22           parakeet-v2           13.3%       0
+earnings22           parakeet-v3           13.7%       0
+earnings22           sensevoice            17.0%       0
+earnings22           whisper-small         17.0%       0
+earnings22           whisper-large-turbo   17.2%       0
+earnings22           whisper-medium        17.2%       0
+earnings22           qwen3-asr             20.0%       0
+earnings22           whisper-tiny          21.6%       0
+earnings22           nemotron35            34.6%       1
+librispeech-clean    parakeet-v2            1.9%       0
+librispeech-clean    parakeet-v3            2.3%       0
+librispeech-clean    whisper-medium         3.0%       0
+librispeech-clean    whisper-large-turbo    3.1%       0
+librispeech-clean    qwen3-asr              3.2%       0
+librispeech-clean    whisper-small          3.6%       0
+librispeech-clean    sensevoice             3.9%       0
+librispeech-clean    whisper-tiny           5.1%       0
+librispeech-clean    nemotron35             5.5%       0
 ```
 
-parakeet-v3/v2 remain strongest on both clean and real-world audio in this sample.
-Nemotron 3.5's much higher WER (and heavy deletion count on Earnings-22 — words
-dropped, not substituted) is consistent with its design: it's a streaming,
-multilingual-coverage model with greedy per-chunk decoding and no cross-chunk
-correction, not tuned for single-pass English batch accuracy. Its real value is
-multilingual coverage and low-latency streaming, neither of which this
-English-only, batch-mode measurement credits — a fair multilingual comparison
-needs a non-English set (not built yet).
+parakeet-v3/v2 remain strongest on both clean and real-world audio in this
+sample — no other model comes close on Earnings-22. Within the Whisper
+family, whisper-medium and whisper-large-turbo are essentially tied and
+both edge out qwen3-asr and sensevoice on clean audio (3.0%/3.1% vs
+3.2%/3.9%), though all four Whisper variants cluster together on
+Earnings-22 (17.0–21.6%) — more model capacity buys little on real-world
+audio here, same pattern as Parakeet v2 vs v3. whisper-tiny is the weakest
+Whisper variant on both sets, as expected for the smallest model.
+
+Nemotron 3.5's much higher WER (and heavy deletion count on Earnings-22 —
+words dropped, not substituted) is consistent with its design: it's a
+streaming, multilingual-coverage model with greedy per-chunk decoding and no
+cross-chunk correction, not tuned for single-pass English batch accuracy.
+Its real value is multilingual coverage and low-latency streaming, neither
+of which this English-only, batch-mode measurement credits — a fair
+multilingual comparison needs a non-English set (not built yet).
 
 Streaming models support `--emit-partials <path>`, which writes one JSON
 object per line as transcription progresses:
@@ -112,16 +130,19 @@ unrelated Qwen3 post-processor) and `downloadWithRetry`/`DownloadError`
 meeting-caption code is unchanged behaviorally — it now just calls the same
 types from `MuesliASRKit` instead of defining them locally.
 
+Whisper (Tiny/Small/Medium/Large Turbo) is done too — WhisperKit's public API
+made it a thin wrapper (~139-line app wrapper mirrored almost directly),
+same recipe as SenseVoice/Qwen3 ASR, just with WhisperKit added as a
+`MuesliCLI` dependency instead of FluidAudio already covering it.
+
 Cohere Transcribe and Indic ASR are still NOT CLI-reachable. Despite "Cohere
 Transcribe"'s name, neither is a cloud call — both are large (1,100+ line),
 fully custom CoreML pipelines (hand-rolled mel spectrogram, manual KV-cache,
 custom decoder loops) living entirely in the app's executable target, with
 no FluidAudio (or other linkable package) equivalent to call directly.
 Reaching them needs the same kind of extraction just done for Nemotron —
-each is its own separate lift, not attempted here. Whisper (Tiny/Small/
-Medium/Large Turbo) is cheap in principle (WhisperKit's public API, ~139-line
-app wrapper) but needs WhisperKit added as a MuesliCLI dependency, not done
-in this pass.
+each is its own separate lift, not attempted here. That leaves 9 of
+Muesli's 11 shipped ASR models CLI-reachable.
 
 ## Dictionary correction
 
