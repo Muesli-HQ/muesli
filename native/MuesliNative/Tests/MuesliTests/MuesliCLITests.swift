@@ -79,6 +79,8 @@ struct MuesliCLITests {
         #expect(TranscribeModel(argument: "parakeet-v3") == .parakeetV3)
         #expect(TranscribeModel(argument: "parakeet-v2") == .parakeetV2)
         #expect(TranscribeModel(argument: "parakeet-eou-320ms") == .parakeetEou320ms)
+        #expect(TranscribeModel(argument: "sensevoice") == .senseVoice)
+        #expect(TranscribeModel(argument: "qwen3-asr") == .qwen3Asr)
         #expect(TranscribeModel(argument: "canary-qwen") == nil)
         #expect(TranscribeOutputFormat(argument: "text") == .text)
         #expect(TranscribeOutputFormat(argument: "json") == .json)
@@ -91,8 +93,12 @@ struct MuesliCLITests {
         #expect(TranscribeModel.parakeetV3.isStreaming == false)
         #expect(TranscribeModel.parakeetV2.isStreaming == false)
         #expect(TranscribeModel.parakeetEou320ms.isStreaming == true)
+        #expect(TranscribeModel.senseVoice.isStreaming == false)
+        #expect(TranscribeModel.qwen3Asr.isStreaming == false)
         #expect(TranscribeModel.parakeetV3.asrModelVersion != nil)
         #expect(TranscribeModel.parakeetEou320ms.asrModelVersion == nil)
+        #expect(TranscribeModel.senseVoice.asrModelVersion == nil)
+        #expect(TranscribeModel.qwen3Asr.asrModelVersion == nil)
     }
 
     @Test("--emit-partials is rejected for non-streaming models")
@@ -153,6 +159,77 @@ struct MuesliCLITests {
 
         let contents = try String(contentsOf: partialsURL, encoding: .utf8)
         #expect(contents.contains("streamed transcript"))
+    }
+
+    @Test("--dictionary parses into the request")
+    func dictionaryOptionParses() throws {
+        let command = try TranscribeCommand.parse(["recording.wav", "--dictionary", "/tmp/dictionary.json"])
+        #expect(command.dictionary == "/tmp/dictionary.json")
+    }
+
+    @Test("loadCustomWords accepts a plain JSON array")
+    func loadCustomWordsAcceptsPlainArray() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-cli-dictionary-\(UUID().uuidString).json")
+        try Data("""
+        [{"word": "museli", "replacement": "muesli", "matching_threshold": 0.85}]
+        """.utf8).write(to: url)
+
+        let words = try MuesliAudioTranscriptionPipeline.loadCustomWords(from: url)
+        #expect(words.count == 1)
+        #expect(words[0].word == "museli")
+        #expect(words[0].targetWord == "muesli")
+    }
+
+    @Test("loadCustomWords accepts a config.json-shaped object")
+    func loadCustomWordsAcceptsConfigShape() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-cli-dictionary-\(UUID().uuidString).json")
+        try Data("""
+        {"custom_words": [{"word": "kubernete", "replacement": "Kubernetes"}], "other_config_key": true}
+        """.utf8).write(to: url)
+
+        let words = try MuesliAudioTranscriptionPipeline.loadCustomWords(from: url)
+        #expect(words.count == 1)
+        #expect(words[0].targetWord == "Kubernetes")
+    }
+
+    @Test("loadCustomWords rejects a missing file")
+    func loadCustomWordsRejectsMissingFile() {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("does-not-exist-\(UUID().uuidString).json")
+        #expect(throws: Error.self) {
+            _ = try MuesliAudioTranscriptionPipeline.loadCustomWords(from: url)
+        }
+    }
+
+    @Test("pipeline applies the dictionary to the transcript")
+    func pipelineAppliesDictionary() async throws {
+        let fixture = try TranscribeFixture()
+        let dictionaryURL = fixture.directory.appendingPathComponent("dictionary.json")
+        try Data("""
+        [{"word": "museli", "replacement": "muesli"}]
+        """.utf8).write(to: dictionaryURL)
+
+        let pipeline = MuesliAudioTranscriptionPipeline(
+            audioPreparer: FakeAudioPreparer(wavURL: fixture.wavURL, durationSeconds: 3),
+            transcriber: FakeTranscriber(text: "I love museli"),
+            summarizer: SuccessfulSummarizer(notes: "unused"),
+            dataChangePoster: {}
+        )
+
+        let result = try await pipeline.run(
+            request: MuesliAudioTranscriptionRequest(
+                sourceURL: fixture.sourceURL,
+                model: .parakeetV3,
+                title: "Dictionary Demo",
+                summarize: false,
+                saveMeeting: false,
+                dictionaryURL: dictionaryURL
+            ),
+            context: fixture.context
+        )
+
+        #expect(result.transcript == "I love muesli")
     }
 
     @Test("transcribe text output is transcript only")

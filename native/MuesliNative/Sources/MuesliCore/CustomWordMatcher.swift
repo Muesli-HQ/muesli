@@ -1,5 +1,50 @@
 import Foundation
-import MuesliCore
+
+/// A user-defined dictionary entry: a word or phrase Muesli's ASR output should be
+/// corrected to, applied post-transcription by `CustomWordMatcher`.
+public struct CustomWord: Codable, Equatable, Identifiable {
+    public var id = UUID()
+    public var word: String
+    public var replacement: String?
+    public var matchingThreshold: Double = 0.85
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case word
+        case replacement
+        case matchingThreshold = "matching_threshold"
+    }
+
+    public init(id: UUID = UUID(), word: String, replacement: String?, matchingThreshold: Double = 0.85) {
+        self.id = id
+        self.word = word
+        self.replacement = replacement
+        self.matchingThreshold = Self.clampedThreshold(matchingThreshold)
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
+        word = try c.decode(String.self, forKey: .word)
+        replacement = try c.decodeIfPresent(String.self, forKey: .replacement)
+        matchingThreshold = Self.clampedThreshold(try c.decodeIfPresent(Double.self, forKey: .matchingThreshold) ?? 0.85)
+    }
+
+    public var displayLabel: String {
+        if let replacement, !replacement.isEmpty {
+            return "\(word) → \(replacement)"
+        }
+        return word
+    }
+
+    public var targetWord: String {
+        replacement ?? word
+    }
+
+    private static func clampedThreshold(_ value: Double) -> Double {
+        min(max(value, 0.70), 0.95)
+    }
+}
 
 /// Post-processing step that replaces transcribed words with entries from
 /// the user's personal dictionary using fuzzy matching.
@@ -7,7 +52,7 @@ import MuesliCore
 /// Matching stages (first match wins):
 /// 1. Exact case-insensitive match
 /// 2. Jaro-Winkler similarity >= the entry's configured threshold
-struct CustomWordMatcher {
+public struct CustomWordMatcher {
 
     struct Entry {
         let replacement: String
@@ -31,7 +76,7 @@ struct CustomWordMatcher {
     }
 
     /// Apply custom word replacements to transcribed text.
-    static func apply(text: String, customWords: [CustomWord]) -> String {
+    public static func apply(text: String, customWords: [CustomWord]) -> String {
         guard !text.isEmpty, !customWords.isEmpty else { return text }
 
         let entries = customWords.compactMap {
@@ -170,7 +215,7 @@ struct CustomWordMatcher {
     // MARK: - Jaro-Winkler Similarity
 
     /// Computes Jaro-Winkler similarity between two strings (0.0 to 1.0).
-    static func jaroWinklerSimilarity(_ s1: String, _ s2: String) -> Double {
+    public static func jaroWinklerSimilarity(_ s1: String, _ s2: String) -> Double {
         let jaro = jaroSimilarity(s1, s2)
         guard jaro > 0 else { return 0 }
 
