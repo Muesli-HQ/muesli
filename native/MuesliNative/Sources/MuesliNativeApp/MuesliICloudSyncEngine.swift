@@ -1148,6 +1148,12 @@ final class MuesliICloudSyncEngine {
         cloud["speakerTranscript"] = record.speakerTranscript as NSString?
         cloud["summaryText"] = record.summaryText as NSString?
         cloud["manualNotes"] = record.manualNotes as NSString?
+        // Only write publishState when we actually have one locally. A never-published record
+        // has a nil publishStateJSON; unconditionally writing that would clobber a peer's shared
+        // page id already stored in CloudKit and cause a duplicate remote page. An intentional
+        // clear is encoded as the non-nil string "{}", so it still propagates.
+        if let js = record.publishStateJSON { cloud["publishState"] = js as NSString }
+        // else: leave the existing cloud value untouched (don't clobber a peer's page id)
         return cloud
     }
 
@@ -1177,6 +1183,7 @@ final class MuesliICloudSyncEngine {
             speakerTranscript: record["speakerTranscript"] as? String,
             summaryText: record["summaryText"] as? String,
             manualNotes: record["manualNotes"] as? String,
+            publishStateJSON: record["publishState"] as? String,
             source: record["source"] as? String,
             localSource: record["localSource"] as? String,
             meetingStatus: (record["meetingStatus"] as? String).flatMap(MeetingStatus.init(rawValue:)),
@@ -1313,6 +1320,7 @@ final class MuesliICloudSyncEngine {
             "speakerTranscript",
             "summaryText",
             "manualNotes",
+            "publishState",
             "source",
             "localSource",
             "meetingStatus",

@@ -43,6 +43,55 @@ public enum SyncTextRecordKind: String, Codable, Sendable {
     case meeting
 }
 
+/// One target's publication state within `publish_state_json`: the remote id (`id`) the
+/// record was pushed to, and the synced clock (`s`, same units as `updated_at`).
+public struct PublishRef: Codable, Sendable, Equatable {
+    public var id: String?
+    public var syncedAt: Double?
+
+    public init(id: String? = nil, syncedAt: Double? = nil) {
+        self.id = id
+        self.syncedAt = syncedAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case syncedAt = "s"
+    }
+
+    /// Tolerant decode: the page id (`id`) must survive even if `s` (syncedAt) arrives in a
+    /// slightly different shape from another device/version — e.g. a string instead of a number.
+    /// A throwing decode here would null the whole ref and create a duplicate remote page, so we
+    /// accept `s` as a Double or a numeric String and fall back to nil rather than failing.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try? c.decodeIfPresent(String.self, forKey: .id)
+        if let d = try? c.decodeIfPresent(Double.self, forKey: .syncedAt) {
+            self.syncedAt = d
+        } else if let s = try? c.decodeIfPresent(String.self, forKey: .syncedAt) {
+            self.syncedAt = Double(s)
+        } else {
+            self.syncedAt = nil
+        }
+    }
+
+    /// Decodes a `publish_state_json` string (nil/empty/invalid → `[:]`) into a per-target map.
+    /// Shared by `DictationStore` (the write path) and `SyncTextRecord.publishState()` (the read
+    /// path) so the two never drift.
+    public static func decodeMap(_ json: String?) -> [String: PublishRef] {
+        guard let json, !json.isEmpty, let data = json.data(using: .utf8) else { return [:] }
+        return (try? JSONDecoder().decode([String: PublishRef].self, from: data)) ?? [:]
+    }
+
+    /// Encodes a per-target map back to a compact `publish_state_json` string (`"{}"` on failure).
+    public static func encodeMap(_ map: [String: PublishRef]) -> String {
+        guard let data = try? JSONEncoder().encode(map), let text = String(data: data, encoding: .utf8) else {
+            return "{}"
+        }
+        return text
+    }
+}
+
 public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
     public let id: String
     public let kind: SyncTextRecordKind
@@ -51,6 +100,10 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
     public var speakerTranscript: String?
     public var summaryText: String?
     public var manualNotes: String?
+    /// Per-target publication state as a raw JSON object keyed by target name
+    /// (`{"notion":{"id":...,"s":...}}`), mirrored cross-device so a second machine
+    /// updates the same remote page instead of creating a duplicate. Nil until pushed.
+    public var publishStateJSON: String?
     public var source: String?
     /// Platform origin for UI badges lives in `source`; this preserves the
     /// local capture subtype such as dictation, cua, meeting, or audio_import.
@@ -75,6 +128,7 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
         speakerTranscript: String? = nil,
         summaryText: String? = nil,
         manualNotes: String? = nil,
+        publishStateJSON: String? = nil,
         source: String? = nil,
         localSource: String? = nil,
         meetingStatus: MeetingStatus? = nil,
@@ -96,6 +150,7 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
         self.speakerTranscript = speakerTranscript
         self.summaryText = summaryText
         self.manualNotes = manualNotes
+        self.publishStateJSON = publishStateJSON
         self.source = source
         self.localSource = localSource
         self.meetingStatus = meetingStatus
@@ -109,6 +164,72 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
         self.isDeleted = isDeleted
         self.cloudChangeTag = cloudChangeTag
         self.followUpToRecordName = followUpToRecordName
+    }
+
+    /// Returns a copy with `publishStateJSON` set (keeps all other fields).
+    public func withPublishStateJSON(_ json: String?) -> SyncTextRecord {
+        var copy = self
+        copy.publishStateJSON = json
+        return copy
+    }
+
+    /// Decodes `publishStateJSON` into a per-target map (empty when nil/invalid).
+    public func publishState() -> [String: PublishRef] {
+        PublishRef.decodeMap(publishStateJSON)
+    }
+}
+
+/// A flattened one-way export payload for a single meeting or dictation, target-neutral.
+/// Built by `DictationStore.*NeedingExport(target:)`. A record needs an export when the
+/// target's synced clock (`s`) is null or older than `updated_at` (the write-clock every
+/// mutation already bumps), so no separate dirty-flag plumbing is required.
+public struct ExportRecord: Sendable, Equatable {
+    public let kind: SyncTextRecordKind
+    public let localID: Int64
+    public let updatedAt: Double
+    /// The current remote id for the target being exported, populated by the store query.
+    public let existingRemoteID: String?
+    public let title: String
+    public let notesMarkdown: String?
+    public let manualNotes: String?
+    public let transcript: String?
+    public let startTime: String?
+    public let appContext: String?
+    /// The meeting's template/kind (Interview, 1:1, …) for the target's "Meeting type"
+    /// property. Nil for dictations.
+    public let meetingType: String?
+
+    public init(
+        kind: SyncTextRecordKind, localID: Int64, updatedAt: Double, existingRemoteID: String?,
+        title: String, notesMarkdown: String?, manualNotes: String?, transcript: String?,
+        startTime: String?, appContext: String?, meetingType: String? = nil
+    ) {
+        self.kind = kind
+        self.localID = localID
+        self.updatedAt = updatedAt
+        self.existingRemoteID = existingRemoteID
+        self.title = title
+        self.notesMarkdown = notesMarkdown
+        self.manualNotes = manualNotes
+        self.transcript = transcript
+        self.startTime = startTime
+        self.appContext = appContext
+        self.meetingType = meetingType
+    }
+}
+
+/// A record whose Notion (or other target) page should be archived because the local row was
+/// soft-deleted. Built by `DictationStore.recordsNeedingUnpublish(target:)`: the row has a
+/// `deleted_at` but still carries the target's remote page id in `publish_state_json`.
+public struct UnpublishTarget: Sendable, Equatable {
+    public let kind: SyncTextRecordKind
+    public let localID: Int64
+    public let remoteID: String
+
+    public init(kind: SyncTextRecordKind, localID: Int64, remoteID: String) {
+        self.kind = kind
+        self.localID = localID
+        self.remoteID = remoteID
     }
 }
 

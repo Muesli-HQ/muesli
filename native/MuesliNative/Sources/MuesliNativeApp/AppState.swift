@@ -154,6 +154,12 @@ final class AppState {
     var sparkleLastCheckedAt: Date?
     var iCloudSyncStatus: String?
     var isICloudSyncInProgress: Bool = false
+    // Notion integration status (one-way push).
+    // Holds the integration token for the Settings field only; the source of truth on
+    // disk is the hardened NotionCredentialStore (not config.json).
+    var notionToken: String = ""
+    var notionStatus: String?
+    var isNotionPushInProgress: Bool = false
     var isICloudBridgeActivationPending: Bool = false
     var iCloudBridgeState: ICloudBridgeState = .notConfigured
     var iCloudBridgeMessage: String?

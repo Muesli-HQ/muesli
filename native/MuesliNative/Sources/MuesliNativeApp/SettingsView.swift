@@ -608,6 +608,52 @@ struct SettingsView: View {
                 }
             }
 
+            settingsSection("Notion") {
+                settingsRow("Sync to Notion") {
+                    settingsSwitch(isOn: appState.config.notionSyncEnabled) { newValue in
+                        controller.setNotionSyncEnabled(newValue)
+                    }
+                }
+                settingsDescriptionMarkdown("One-way push of meetings (notes + transcript) and dictations into your Notion workspace. Get a Notion integration API token from [notion.so/my-integrations](https://www.notion.so/my-integrations), paste it below, then **share a page with the integration** in Notion (open the page → ••• → Connections → add “Muesli”). Muesli creates a styled “Muesli Notes” database under that page automatically. Audio is never sent.")
+
+                Divider().background(MuesliTheme.surfaceBorder)
+
+                settingsRow("Integration token", controlWidth: controlWidth) {
+                    PastableSecureField(
+                        text: appState.notionToken,
+                        placeholder: "secret_… / ntn_…",
+                        onChange: { val in controller.updateNotionToken(val) }
+                    )
+                    .frame(height: 22)
+                    // Editable only while sync is on; turning sync off clears the token.
+                    .disabled(!appState.config.notionSyncEnabled)
+                    .opacity(appState.config.notionSyncEnabled ? 1 : 0.5)
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+
+                HStack(spacing: MuesliTheme.spacing12) {
+                    VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                        Text(notionStatusText)
+                            .font(MuesliTheme.body())
+                            .foregroundStyle(MuesliTheme.textPrimary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let last = appState.config.notionLastSyncedAt {
+                            Text("Last synced: \(notionLastSyncedText(last))")
+                                .font(MuesliTheme.caption())
+                                .foregroundStyle(MuesliTheme.textTertiary)
+                        }
+                    }
+                    Spacer(minLength: MuesliTheme.spacing16)
+                    actionButton("Sync now", systemImage: "arrow.triangle.2.circlepath") {
+                        controller.performNotionPush()
+                    }
+                    .frame(width: controlWidth)
+                    .disabled(!appState.config.notionSyncEnabled
+                              || appState.notionToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                              || appState.isNotionPushInProgress)
+                }
+            }
+
             settingsSection("iPhone Bridge") {
                 settingsRow("Show iOS companion prompt") {
                     settingsSwitch(isOn: appState.config.showIOSCompanionPrompt) { newValue in
@@ -643,6 +689,16 @@ struct SettingsView: View {
             return "Sync is off. Turn it on to bridge this Mac with Muesli for iPhone."
         }
         return appState.iCloudSyncStatus ?? "Private iCloud text sync is ready."
+    }
+
+    private var notionStatusText: String {
+        if !appState.config.notionSyncEnabled {
+            return "Notion sync is off. Turn it on to push meetings and dictations to your Notion workspace."
+        }
+        if appState.notionToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "Add your Notion integration token to start syncing."
+        }
+        return appState.notionStatus ?? "Notion sync is ready."
     }
 
     private var syncLastSyncedText: String? {
@@ -2254,6 +2310,18 @@ struct SettingsView: View {
         .frame(minHeight: 44)
     }
 
+    /// Like `settingsDescription`, but renders inline Markdown (e.g. `[label](url)` links,
+    /// opened in the default browser via the environment's `openURL`).
+    private func settingsDescriptionMarkdown(_ markdown: String) -> some View {
+        Text((try? AttributedString(markdown: markdown)) ?? AttributedString(markdown))
+            .font(MuesliTheme.caption())
+            .foregroundStyle(MuesliTheme.textTertiary)
+            .tint(MuesliTheme.accent)
+            .padding(.horizontal, MuesliTheme.spacing16)
+            .padding(.top, -4)
+            .padding(.bottom, MuesliTheme.spacing8)
+    }
+
     private func settingsDescription(_ text: String) -> some View {
         Text(text)
             .font(MuesliTheme.caption())
@@ -2286,6 +2354,17 @@ struct SettingsView: View {
                 .tint(MuesliTheme.accent)
                 .labelsHidden()
         }
+    }
+
+    // Hoisted to a static so we don't allocate a formatter on every render.
+    private static let notionLastSyncedFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter
+    }()
+
+    private func notionLastSyncedText(_ date: Date) -> String {
+        Self.notionLastSyncedFormatter.localizedString(for: date, relativeTo: Date())
     }
 
     @ViewBuilder

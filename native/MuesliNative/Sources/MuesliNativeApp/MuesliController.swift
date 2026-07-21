@@ -399,6 +399,12 @@ final class MuesliController: NSObject {
     private var iCloudSyncGeneration = 0
     private var iCloudSyncDebounceTask: Task<Void, Never>?
     private var iCloudSubscriptionTask: Task<Void, Never>?
+    private var notionPushTask: Task<Void, Never>?
+    private var notionPushDebounceTask: Task<Void, Never>?
+    private var notionSetupTask: Task<Void, Never>?
+    private var notionSetupGeneration = 0
+    private var notionPushGeneration = 0
+    private var notionPushRerunPending = false
     private var hasEnsuredICloudSubscription = false
     private var bridgeActivationPending = false
     private var bridgeDiscoveryPending = false
@@ -439,6 +445,11 @@ final class MuesliController: NSObject {
         self.dictationAudioRoutingController.selectedInputDeviceUID = loadedConfig.dictationInputDeviceUID
         self.dictationAudioRoutingController.selectedMeetingInputDeviceUID = loadedConfig.meetingInputDeviceUID
         self.config = loadedConfig
+        // Move any legacy plaintext `notion_token` out of config.json into the hardened
+        // credential store, then surface the current token to the Settings field. Runs
+        // before any Notion UI can read it.
+        NotionCredentialStore.migrateFromLegacyConfigIfNeeded(configURL: configStore.configPath())
+        appState.notionToken = NotionCredentialStore.read()
         if loadedConfig.recordingColorHex != "1e1e2e" {
             MuesliTheme.accentOverrideHex = loadedConfig.recordingColorHex
         }
@@ -1530,6 +1541,208 @@ final class MuesliController: NSObject {
         }
     }
 
+    // MARK: - Notion push
+
+    func setNotionSyncEnabled(_ enabled: Bool) {
+        updateConfig { $0.notionSyncEnabled = enabled }
+        guard enabled else {
+            // Turning sync off deletes the stored token (the field is editable again only
+            // when re-enabled). The database reference is kept so re-enabling reuses it.
+            // Cancel any in-flight setup/push so a disable that lands mid-setup can't still
+            // create a database or complete a push after the user opted out.
+            notionSetupTask?.cancel()
+            notionSetupTask = nil
+            // Cancel the debounce and any in-flight push, and clear the rerun/progress flags so a
+            // subsequent re-enable starts cleanly instead of inheriting stale state. Bump the push
+            // generation so the in-flight run's completion handler no-ops (it can't clobber a new
+            // push task's handle or reset current state).
+            notionPushDebounceTask?.cancel()
+            notionPushDebounceTask = nil
+            notionPushRerunPending = false
+            notionPushGeneration += 1
+            notionPushTask?.cancel()
+            notionPushTask = nil
+            appState.isNotionPushInProgress = false
+            NotionCredentialStore.delete()
+            appState.notionToken = ""
+            appState.notionStatus = nil
+            return
+        }
+        ensureNotionDatabasesThenPush()
+    }
+
+    /// On enabling sync, ensures the single Muesli Notes database exists — reusing one
+    /// already shared with the integration (matched by an "…Muesli Notes" title suffix, which
+    /// covers both the old plain name and the new owner-named form), else creating a fresh,
+    /// owner-named database under a page the user shared with the integration. Internal
+    /// integration tokens cannot create anything at the workspace root, so if no page has been
+    /// shared yet we surface a "share a page first" instruction and stop. Then pushes.
+    private func ensureNotionDatabasesThenPush() {
+        let token = appState.notionToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else { appState.notionStatus = "Add your Notion integration token first."; return }
+        if !config.notionDataSourceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            startNotionPush(userInitiated: true); return
+        }
+        // Only one database-creation setup may run at a time. Two rapid triggers (enable +
+        // Sync now, or a double-click) would otherwise both pass the isEmpty check above and
+        // both createDatabase, producing duplicate "Muesli Notes" databases.
+        guard notionSetupTask == nil else { return }
+        appState.notionStatus = "Setting up your Notion database..."
+        notionSetupGeneration += 1
+        let setupGeneration = notionSetupGeneration
+        notionSetupTask = Task { [weak self] in
+            guard let self else { return }
+            // Clear the handle on every exit path, but only if a newer setup hasn't already
+            // taken over (disable→re-enable can start a fresh setup before this one unwinds).
+            defer {
+                Task { @MainActor in
+                    if self.notionSetupGeneration == setupGeneration { self.notionSetupTask = nil }
+                }
+            }
+            do {
+                let identity = try await NotionClient.validateToken(token)
+                let dbTitle = NotionClient.muesliDatabaseTitle(userName: self.config.userName, identity: identity)
+
+                // Reuse any existing Muesli database (so a second machine — or a re-setup —
+                // converges on the same one). Match by the "Muesli Notes" title suffix, which
+                // covers both the legacy plain name and the new "<Name>’s Muesli Notes".
+                let existing = try await NotionClient.listDataSources(token: token)
+                if let reusedID = existing.first(where: { $0.title.hasSuffix("Muesli Notes") })?.id {
+                    await MainActor.run {
+                        guard !Task.isCancelled, self.config.notionSyncEnabled else { return }
+                        self.updateConfig { $0.notionDataSourceID = reusedID }
+                        self.appState.notionStatus = "Using your existing “Muesli Notes” database. Syncing..."
+                        self.startNotionPush(userInitiated: true)
+                    }
+                    return
+                }
+
+                // No existing database — create one. Internal integration tokens can't create
+                // at the workspace root, so require a page the user shared with the integration.
+                let pages = try await NotionClient.listPages(token: token)
+                guard let parent = pages.first else {
+                    await MainActor.run {
+                        self.appState.notionStatus = "Share a page with the Muesli integration first: open a page in Notion → ••• → Connections → add “Muesli”, then sync again."
+                    }
+                    return
+                }
+
+                // Create the styled database under the best shared page. `listPages` orders
+                // top-level pages first, so `pages.first` lands as close to the sidebar root as
+                // the API allows. Store the created database's data source id (the sync target).
+                // Re-check on the MainActor first: a disable that landed mid-setup must prevent
+                // creating the database at all.
+                guard await MainActor.run(body: { !Task.isCancelled && self.config.notionSyncEnabled }) else { return }
+                let db = try await NotionClient.createDatabase(parentPageID: parent.id, title: dbTitle, token: token)
+                let dsID = db.dataSourceID
+                await MainActor.run {
+                    guard !Task.isCancelled, self.config.notionSyncEnabled else { return }
+                    self.updateConfig { $0.notionDataSourceID = dsID }
+                    self.appState.notionStatus = "Created your “\(dbTitle)” database in Notion. Syncing..."
+                    self.startNotionPush(userInitiated: true)
+                }
+            } catch {
+                await MainActor.run { self.appState.notionStatus = "Notion sync failed: \(error.localizedDescription)" }
+            }
+        }
+    }
+
+    func updateNotionToken(_ token: String) {
+        NotionCredentialStore.save(token)
+        appState.notionToken = token
+    }
+
+    /// "Sync now" — sets up the database if it doesn't exist yet, validates the connection
+    /// (a bad token / unshared page surfaces as an error in `notionStatus`), then pushes.
+    func performNotionPush() { ensureNotionDatabasesThenPush() }
+
+    private func scheduleNotionPushAfterLocalChange() {
+        guard config.notionSyncEnabled, notionPushReady else { return }
+        notionPushDebounceTask?.cancel()
+        notionPushDebounceTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.notionPushDebounceTask = nil
+                self?.startNotionPush(userInitiated: false)
+            }
+        }
+    }
+
+    private var notionPushReady: Bool {
+        // Read the in-memory token mirror (authoritative) instead of hitting the on-disk
+        // credential store — this is on the per-local-change hot path (every save).
+        !appState.notionToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !config.notionDataSourceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func startNotionPush(userInitiated: Bool) {
+        guard config.notionSyncEnabled else {
+            if userInitiated { appState.notionStatus = "Turn on Notion sync first." }
+            return
+        }
+        guard notionPushReady else {
+            if userInitiated { appState.notionStatus = "Add your Notion integration token to start syncing." }
+            return
+        }
+        guard notionPushTask == nil else {
+            if userInitiated {
+                appState.notionStatus = "Sync already in progress."
+            } else {
+                // An edit landed while a push was already running. Remember it so the running
+                // push re-arms the debounced push on completion instead of dropping the edit.
+                notionPushRerunPending = true
+            }
+            return
+        }
+        let target = NotionTarget(
+            token: appState.notionToken.trimmingCharacters(in: .whitespacesAndNewlines),
+            dataSourceID: config.notionDataSourceID.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        let coordinator = ExportCoordinator()
+        let store = dictationStore
+        appState.isNotionPushInProgress = true
+        appState.notionStatus = "Syncing with Notion..."
+        notionPushGeneration += 1
+        let pushGen = notionPushGeneration
+        notionPushTask = Task { [weak self] in
+            let result = await coordinator.run(target: target, store: store)
+            await MainActor.run {
+                guard let self else { return }
+                // A superseded or cancelled run (e.g. sync disabled mid-push) must no-op instead
+                // of resetting the current task handle / push state.
+                guard self.notionPushGeneration == pushGen else { return }
+                self.notionPushTask = nil
+                self.appState.isNotionPushInProgress = false
+                // If an edit arrived while this push was in flight, re-arm the debounced push so
+                // it still syncs without waiting for an unrelated future change.
+                if self.notionPushRerunPending {
+                    self.notionPushRerunPending = false
+                    if self.config.notionSyncEnabled && self.notionPushReady {
+                        self.scheduleNotionPushAfterLocalChange()
+                    }
+                }
+                if result.authError != nil {
+                    self.appState.notionStatus = "Notion sync paused: the token was rejected or the database isn’t shared with the integration. Fix the token or re-share the page, then sync again."
+                } else if result.failed > 0 {
+                    self.appState.notionStatus = "Synced \(result.pushedTotal); \(result.failed) failed" + (result.firstError.map { ": \($0)" } ?? "")
+                } else if result.pushedTotal > 0 && result.unpublished > 0 {
+                    self.appState.notionStatus = "Synced \(result.pushedTotal); removed \(result.unpublished)."
+                } else if result.pushedTotal > 0 {
+                    self.appState.notionStatus = "Synced \(result.pushedTotal) to Notion."
+                } else if result.unpublished > 0 {
+                    self.appState.notionStatus = "Removed \(result.unpublished) from Notion."
+                } else {
+                    self.appState.notionStatus = "All text is up to date."
+                }
+                // Record the last successful sync (any run that wasn't an auth failure).
+                if result.authError == nil {
+                    self.updateConfig { $0.notionLastSyncedAt = Date() }
+                }
+            }
+        }
+    }
+
     func enableIPhoneBridgeSync() {
         guard MuesliICloudSyncEngine.hasRequiredEntitlement else {
             disableICloudSyncForUnavailableEntitlement()
@@ -1665,6 +1878,7 @@ final class MuesliController: NSObject {
             return
         }
         scheduleICloudSync(delay: 2.0, userInitiated: false)
+        scheduleNotionPushAfterLocalChange()
     }
 
     private func scheduleICloudSync(

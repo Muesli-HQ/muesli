@@ -202,7 +202,14 @@ public final class DictationStore {
             "ALTER TABLE meetings ADD COLUMN cloud_change_tag TEXT",
             "ALTER TABLE meetings ADD COLUMN cloud_transcript_record_name TEXT",
             "ALTER TABLE meetings ADD COLUMN last_synced_at REAL",
-            "ALTER TABLE meetings ADD COLUMN sync_dirty INTEGER NOT NULL DEFAULT 1"
+            "ALTER TABLE meetings ADD COLUMN sync_dirty INTEGER NOT NULL DEFAULT 1",
+            // Export publication scaffold (independent of the CloudKit columns above). One
+            // generic per-target state column, keyed by target name, holds each target's
+            // remote id + synced clock as JSON: {"notion":{"id":"<pageid>","s":<syncedAt>}}.
+            // A record needs an export when a target's "s" is NULL OR < updated_at, so it
+            // rides the existing updated_at write-clock — no changes to the update sites.
+            "ALTER TABLE dictations ADD COLUMN publish_state_json TEXT",
+            "ALTER TABLE meetings ADD COLUMN publish_state_json TEXT"
         ] {
             _ = sqlite3_exec(db, sql, nil, nil, nil)
         }
@@ -2694,7 +2701,8 @@ public final class DictationStore {
         var records: [SyncTextRecord] = []
         let dictationSQL = """
         SELECT cloud_record_name, raw_text, app_context, timestamp, started_at, ended_at,
-               duration_seconds, word_count, source, updated_at, deleted_at, cloud_change_tag
+               duration_seconds, word_count, source, updated_at, deleted_at, cloud_change_tag,
+               publish_state_json
         FROM dictations
         WHERE sync_dirty = 1 AND cloud_record_name IS NOT NULL
         ORDER BY updated_at DESC, id DESC
@@ -2726,7 +2734,8 @@ public final class DictationStore {
         SELECT m.cloud_record_name, m.title, m.raw_transcript, m.formatted_notes, m.manual_notes,
                m.start_time, m.duration_seconds, m.word_count, m.source, m.meeting_status,
                m.updated_at, m.deleted_at, m.cloud_change_tag,
-               COALESCE(m.follow_up_to_record_name, predecessor.cloud_record_name)
+               COALESCE(m.follow_up_to_record_name, predecessor.cloud_record_name),
+               m.publish_state_json
         FROM meetings AS m
         LEFT JOIN meetings AS predecessor ON predecessor.id = m.follow_up_to_id
         WHERE m.sync_dirty = 1 AND m.cloud_record_name IS NOT NULL
@@ -2798,7 +2807,8 @@ public final class DictationStore {
         var records: [SyncTextRecord] = []
         let dictationSQL = """
         SELECT cloud_record_name, raw_text, app_context, timestamp, started_at, ended_at,
-               duration_seconds, word_count, source, updated_at, deleted_at, cloud_change_tag
+               duration_seconds, word_count, source, updated_at, deleted_at, cloud_change_tag,
+               publish_state_json
         FROM dictations
         WHERE cloud_record_name IS NOT NULL
         ORDER BY updated_at DESC, id DESC
@@ -2829,7 +2839,8 @@ public final class DictationStore {
         SELECT m.cloud_record_name, m.title, m.raw_transcript, m.formatted_notes, m.manual_notes,
                m.start_time, m.duration_seconds, m.word_count, m.source, m.meeting_status,
                m.updated_at, m.deleted_at, m.cloud_change_tag,
-               COALESCE(m.follow_up_to_record_name, predecessor.cloud_record_name)
+               COALESCE(m.follow_up_to_record_name, predecessor.cloud_record_name),
+               m.publish_state_json
         FROM meetings AS m
         LEFT JOIN meetings AS predecessor ON predecessor.id = m.follow_up_to_id
         WHERE m.cloud_record_name IS NOT NULL
@@ -2954,6 +2965,225 @@ public final class DictationStore {
             throw lastError(db)
         }
         return sqlite3_changes(db) > 0
+    }
+
+    // MARK: - Export publication (one-way, per-target; rides the updated_at write-clock)
+
+    // NOTE: SQLite only ever stores/returns `publish_state_json` as opaque text — no SQLite
+    // JSON1 functions are used anywhere. All JSON work happens in Swift over
+    // `[String: PublishRef]` via Foundation's `JSONDecoder`/`JSONEncoder`. A record "needs
+    // export" for a target when that target's synced clock (`s`) is nil or strictly less than
+    // the record's `updated_at`. Equal-clock comparison is exact here: `markExported` stores
+    // `s` = the `updated_at` Double it was handed, and Swift's `JSONEncoder` emits a
+    // round-trippable shortest representation for Double, so a decoded `s` equals `updated_at`
+    // exactly and never re-exports forever (the old JSON1 path had to quantize to dodge this).
+
+    /// True when `target`'s synced clock is nil or older than the record's write-clock.
+    private static func needsExport(_ map: [String: PublishRef], target: String, updatedAt: Double) -> Bool {
+        guard let syncedAt = map[target]?.syncedAt else { return true }
+        return syncedAt < updatedAt
+    }
+
+    public func meetingsNeedingExport(target: String, limit: Int = 100) throws -> [ExportRecord] {
+        guard limit > 0 else { return [] }
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        // No SQL LIMIT on the needs-export predicate: the dirty test happens in Swift, so we
+        // iterate oldest-first and stop once we've collected `limit` records (bounds memory).
+        let sql = """
+        SELECT id, title, formatted_notes, manual_notes, raw_transcript, start_time,
+               updated_at, publish_state_json, selected_template_name
+        FROM meetings
+        WHERE deleted_at IS NULL
+          AND meeting_status NOT IN (?, ?)
+        ORDER BY updated_at ASC
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw lastError(db) }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, (MeetingStatus.recording.rawValue as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(stmt, 2, (MeetingStatus.processing.rawValue as NSString).utf8String, -1, nil)
+        var out: [ExportRecord] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let updatedAt = sqlite3_column_double(stmt, 6)
+            let map = PublishRef.decodeMap(columnText(stmt, 7))
+            guard Self.needsExport(map, target: target, updatedAt: updatedAt) else { continue }
+            out.append(ExportRecord(
+                kind: .meeting,
+                localID: sqlite3_column_int64(stmt, 0),
+                updatedAt: updatedAt,
+                existingRemoteID: map[target]?.id,
+                title: columnText(stmt, 1) ?? "Untitled meeting",
+                notesMarkdown: columnText(stmt, 2),
+                manualNotes: columnText(stmt, 3),
+                transcript: columnText(stmt, 4),
+                startTime: columnText(stmt, 5),
+                appContext: nil,
+                meetingType: columnText(stmt, 8)
+            ))
+            if out.count >= limit { break }
+        }
+        return out
+    }
+
+    public func dictationsNeedingExport(target: String, limit: Int = 100) throws -> [ExportRecord] {
+        guard limit > 0 else { return [] }
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = """
+        SELECT id, raw_text, app_context, timestamp, updated_at, publish_state_json
+        FROM dictations
+        WHERE deleted_at IS NULL
+        ORDER BY updated_at ASC
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw lastError(db) }
+        defer { sqlite3_finalize(stmt) }
+        var out: [ExportRecord] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let updatedAt = sqlite3_column_double(stmt, 4)
+            let map = PublishRef.decodeMap(columnText(stmt, 5))
+            guard Self.needsExport(map, target: target, updatedAt: updatedAt) else { continue }
+            let rawText = columnText(stmt, 1) ?? ""
+            out.append(ExportRecord(
+                kind: .dictation,
+                localID: sqlite3_column_int64(stmt, 0),
+                updatedAt: updatedAt,
+                existingRemoteID: map[target]?.id,
+                title: Self.exportDictationTitle(rawText: rawText),
+                notesMarkdown: nil,
+                manualNotes: nil,
+                transcript: rawText,
+                startTime: columnText(stmt, 3),
+                appContext: columnText(stmt, 2)
+            ))
+            if out.count >= limit { break }
+        }
+        return out
+    }
+
+    /// Enumerates soft-deleted rows (across meetings + dictations) that still carry a remote
+    /// page id for `target` in `publish_state_json`, so the target can archive those pages
+    /// (one-way delete propagation). A soft delete (`deleteMeeting`/`deleteDictation`) sets
+    /// `deleted_at` but leaves `publish_state_json` intact, so the remote id survives here.
+    /// Returns meetings first then dictations, capped at `limit` total.
+    public func recordsNeedingUnpublish(target: String, limit: Int = 200) throws -> [UnpublishTarget] {
+        guard limit > 0 else { return [] }
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        var out: [UnpublishTarget] = []
+
+        func collect(table: String, kind: SyncTextRecordKind) throws {
+            if out.count >= limit { return }
+            // No SQL LIMIT on the predicate: the "still has a remote id" test happens in Swift;
+            // iterate oldest-first and stop once we've collected `limit` total.
+            let sql = "SELECT id, publish_state_json FROM \(table) WHERE deleted_at IS NOT NULL ORDER BY updated_at ASC"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw lastError(db) }
+            defer { sqlite3_finalize(stmt) }
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let map = PublishRef.decodeMap(columnText(stmt, 1))
+                guard let remoteID = map[target]?.id, !remoteID.isEmpty else { continue }
+                out.append(UnpublishTarget(kind: kind, localID: sqlite3_column_int64(stmt, 0), remoteID: remoteID))
+                if out.count >= limit { break }
+            }
+        }
+
+        try collect(table: "meetings", kind: .meeting)
+        try collect(table: "dictations", kind: .dictation)
+        return out
+    }
+
+    /// Removes `target`'s entry from a row's `publish_state_json` (used after the remote page is
+    /// archived), so the row is no longer "published" and won't be re-unpublished. Via
+    /// `updatePublishState`'s `sync_dirty = 1`, the cleared state replicates to other devices so
+    /// they don't re-archive the same page.
+    @discardableResult
+    public func clearExportState(kind: SyncTextRecordKind, id: Int64, target: String) throws -> Bool {
+        try updatePublishState(kind: kind, id: id) { map in
+            map.removeValue(forKey: target)
+        }
+    }
+
+    /// Records a completed export for `target`. `syncedAt` should be the record's
+    /// `updated_at` captured when it was read for exporting — so a write that landed
+    /// mid-export leaves the target's `s` < `updated_at` and the record re-exports next round.
+    @discardableResult
+    public func markExported(kind: SyncTextRecordKind, id: Int64, target: String, remoteID: String, syncedAt: Double) throws -> Bool {
+        try updatePublishState(kind: kind, id: id) { map in
+            map[target] = PublishRef(id: remoteID, syncedAt: syncedAt)
+        }
+    }
+
+    /// Persists the remote page id for `target` WITHOUT marking the export complete: the
+    /// target's `id` is set but its `syncedAt` is preserved (left nil/old), so the record
+    /// still needs export. Used for crash/failure idempotency — the id must persist the moment
+    /// the remote page is created (dedup), while `syncedAt` advances only on full success
+    /// (completeness). A later retry then reuses the same page instead of creating a duplicate.
+    @discardableResult
+    public func recordExportPageID(kind: SyncTextRecordKind, id: Int64, target: String, remoteID: String) throws -> Bool {
+        try updatePublishState(kind: kind, id: id) { map in
+            var ref = map[target] ?? PublishRef()
+            ref.id = remoteID
+            // Preserve ref.syncedAt (do not advance it) so the record still needs export.
+            map[target] = ref
+        }
+    }
+
+    /// Read-modify-write of a row's `publish_state_json` inside a `BEGIN IMMEDIATE`
+    /// transaction so a concurrent CloudKit upsert of the same column can't clobber it.
+    /// `sync_dirty = 1` propagates the new state to other devices via iCloud (so they update
+    /// the same remote page instead of duplicating); `updated_at` is intentionally NOT bumped —
+    /// that would make the record look dirty to the target again.
+    @discardableResult
+    private func updatePublishState(kind: SyncTextRecordKind, id: Int64, mutate: (inout [String: PublishRef]) -> Void) throws -> Bool {
+        let table = kind == .meeting ? "meetings" : "dictations"
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { throw lastError(db) }
+        do {
+            let current = try selectPublishStateJSON(table: table, id: id, db: db)
+            var map = PublishRef.decodeMap(current)
+            mutate(&map)
+            let encoded = PublishRef.encodeMap(map)
+            let sql = "UPDATE \(table) SET publish_state_json = ?, sync_dirty = 1 WHERE id = ?"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw lastError(db) }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, (encoded as NSString).utf8String, -1, nil)
+            sqlite3_bind_int64(stmt, 2, id)
+            guard sqlite3_step(stmt) == SQLITE_DONE else { throw lastError(db) }
+            let changed = sqlite3_changes(db) > 0
+            guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else { throw lastError(db) }
+            return changed
+        } catch {
+            sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
+    }
+
+    /// Reads a single row's raw `publish_state_json` text (nil when absent/NULL).
+    private func selectPublishStateJSON(table: String, id: Int64, db: OpaquePointer?) throws -> String? {
+        let sql = "SELECT publish_state_json FROM \(table) WHERE id = ?"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw lastError(db) }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int64(stmt, 1, id)
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        return columnText(stmt, 0)
+    }
+
+    private func columnText(_ stmt: OpaquePointer?, _ index: Int32) -> String? {
+        guard sqlite3_column_type(stmt, index) != SQLITE_NULL,
+              let c = sqlite3_column_text(stmt, index) else { return nil }
+        return String(cString: c)
+    }
+
+    private static func exportDictationTitle(rawText: String) -> String {
+        let firstLine = rawText.split(whereSeparator: { $0 == "\n" || $0 == "\r" }).first.map(String.init) ?? ""
+        let trimmed = firstLine.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty { return "Dictation" }
+        return trimmed.count > 80 ? String(trimmed.prefix(80)) + "…" : trimmed
     }
 
     public func databasePath() -> URL {
@@ -3235,7 +3465,7 @@ public final class DictationStore {
             wordCount: Int(sqlite3_column_int(statement, 7)),
             isDeleted: sqlite3_column_type(statement, 10) != SQLITE_NULL,
             cloudChangeTag: optionalStringColumn(statement, index: 11)
-        )
+        ).withPublishStateJSON(optionalStringColumn(statement, index: 12))
     }
 
     private func makeSyncMeetingRecord(_ statement: OpaquePointer?) -> SyncTextRecord? {
@@ -3267,7 +3497,7 @@ public final class DictationStore {
             isDeleted: sqlite3_column_type(statement, 11) != SQLITE_NULL,
             cloudChangeTag: optionalStringColumn(statement, index: 12),
             followUpToRecordName: optionalStringColumn(statement, index: 13)
-        )
+        ).withPublishStateJSON(optionalStringColumn(statement, index: 14))
     }
 
     private func normalizedSourceColumn(from statement: OpaquePointer?, index: Int32) -> String? {
@@ -3395,9 +3625,9 @@ public final class DictationStore {
         INSERT INTO dictations (
             timestamp, duration_seconds, raw_text, app_context, word_count, source,
             started_at, ended_at, updated_at, deleted_at, cloud_record_name,
-            cloud_change_tag, last_synced_at, sync_dirty
+            cloud_change_tag, last_synced_at, publish_state_json, sync_dirty
         )
-        VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+        VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
         ON CONFLICT(cloud_record_name) DO UPDATE SET
             timestamp = excluded.timestamp,
             duration_seconds = excluded.duration_seconds,
@@ -3410,6 +3640,7 @@ public final class DictationStore {
             deleted_at = excluded.deleted_at,
             cloud_change_tag = excluded.cloud_change_tag,
             last_synced_at = excluded.last_synced_at,
+            publish_state_json = COALESCE(excluded.publish_state_json, dictations.publish_state_json),
             sync_dirty = 0
         WHERE excluded.updated_at > dictations.updated_at
            OR (excluded.updated_at = dictations.updated_at AND dictations.sync_dirty = 0)
@@ -3433,10 +3664,13 @@ public final class DictationStore {
         sqlite3_bind_text(statement, 10, (record.id as NSString).utf8String, -1, nil)
         bindOptionalText(record.cloudChangeTag, at: 11, statement: statement)
         sqlite3_bind_double(statement, 12, Date().timeIntervalSince1970)
+        bindOptionalText(record.publishStateJSON, at: 13, statement: statement)
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
-        return sqlite3_changes(db) > 0
+        let changed = sqlite3_changes(db) > 0
+        try backfillPublishState(table: "dictations", record: record, db: db)
+        return changed
     }
 
     private func upsertSyncedMeeting(_ record: SyncTextRecord, db: OpaquePointer?) throws -> Bool {
@@ -3454,11 +3688,11 @@ public final class DictationStore {
             raw_transcript, formatted_notes, mic_audio_path, system_audio_path,
             saved_recording_path, meeting_status, manual_notes, word_count, source,
             follow_up_to_id, follow_up_to_record_name, updated_at, deleted_at, cloud_record_name, cloud_change_tag,
-            last_synced_at, sync_dirty
+            last_synced_at, publish_state_json, sync_dirty
         )
         VALUES (?, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?,
                 (SELECT id FROM meetings WHERE cloud_record_name = ? AND deleted_at IS NULL LIMIT 1),
-                ?, ?, ?, ?, ?, ?, 0)
+                ?, ?, ?, ?, ?, ?, ?, 0)
         ON CONFLICT(cloud_record_name) DO UPDATE SET
             title = excluded.title,
             start_time = excluded.start_time,
@@ -3476,6 +3710,7 @@ public final class DictationStore {
             deleted_at = excluded.deleted_at,
             cloud_change_tag = excluded.cloud_change_tag,
             last_synced_at = excluded.last_synced_at,
+            publish_state_json = COALESCE(excluded.publish_state_json, meetings.publish_state_json),
             sync_dirty = 0
         WHERE excluded.updated_at > meetings.updated_at
            OR (excluded.updated_at = meetings.updated_at AND meetings.sync_dirty = 0)
@@ -3505,10 +3740,33 @@ public final class DictationStore {
         sqlite3_bind_text(statement, 15, (record.id as NSString).utf8String, -1, nil)
         bindOptionalText(record.cloudChangeTag, at: 16, statement: statement)
         sqlite3_bind_double(statement, 17, Date().timeIntervalSince1970)
+        bindOptionalText(record.publishStateJSON, at: 18, statement: statement)
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
-        return sqlite3_changes(db) > 0
+        let changed = sqlite3_changes(db) > 0
+        try backfillPublishState(table: "meetings", record: record, db: db)
+        return changed
+    }
+
+    /// Adopts a peer's publish-state (Notion page id, etc.) independently of the content-conflict
+    /// gate above. Publish-state is additive dedup info, not content: a device with its own
+    /// pending edit (sync_dirty=1, equal updated_at) fails the content gate and would otherwise
+    /// never learn the shared page id, then create a duplicate page. This backfill fills the id
+    /// only when the local row has none — it never overwrites existing content or an existing id.
+    private func backfillPublishState(table: String, record: SyncTextRecord, db: OpaquePointer?) throws {
+        guard let publishStateJSON = record.publishStateJSON else { return }
+        let sql = "UPDATE \(table) SET publish_state_json = ? WHERE cloud_record_name = ? AND publish_state_json IS NULL"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, (publishStateJSON as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 2, (record.id as NSString).utf8String, -1, nil)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
     }
 
     private func normalizedFollowUpRecordName(_ followUpRecordName: String?, recordName: String) -> String? {
@@ -3621,6 +3879,11 @@ public final class DictationStore {
         if sqlite3_exec(db, "PRAGMA journal_mode=WAL", nil, nil, nil) != SQLITE_OK {
             throw lastError(db)
         }
+        // Wait up to 5s for a lock instead of failing instantly with SQLITE_BUSY. Under
+        // concurrent writers (CloudKit sync engine + Notion push), a `BEGIN IMMEDIATE` or any
+        // write would otherwise fail immediately — e.g. dropping the Notion page id and
+        // creating a duplicate page. Benefits every write path in the store.
+        sqlite3_busy_timeout(db, 5000)
         return db
     }
 
