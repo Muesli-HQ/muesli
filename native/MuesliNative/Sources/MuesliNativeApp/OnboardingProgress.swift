@@ -9,6 +9,21 @@ struct OnboardingPermissionSnapshot: Equatable {
 }
 
 enum OnboardingPermissionGate {
+    private static func hasRequiredSetupPagePermissions(
+        _ permissions: OnboardingPermissionSnapshot,
+        for useCase: OnboardingUseCase
+    ) -> Bool {
+        if useCase.includesDictation {
+            return permissions.accessibility && permissions.inputMonitoring
+        }
+        if useCase.includesVoiceNotes {
+            return permissions.inputMonitoring
+        }
+        // Microphone access is requested on the live test/meeting setup screen,
+        // not in the tutorial carousel.
+        return true
+    }
+
     static func hasRequiredDictationPermissions(_ permissions: OnboardingPermissionSnapshot) -> Bool {
         permissions.microphone && permissions.accessibility && permissions.inputMonitoring
     }
@@ -38,7 +53,7 @@ enum OnboardingPermissionGate {
         dictationTestStep: Int
     ) -> Int {
         let gatedStep = useCase.includesPushToTalk ? dictationTestStep : permissionsStep + 1
-        if requestedStep >= gatedStep && !hasRequiredPermissions(permissions, for: useCase) {
+        if requestedStep >= gatedStep && !hasRequiredSetupPagePermissions(permissions, for: useCase) {
             return permissionsStep
         }
         return requestedStep

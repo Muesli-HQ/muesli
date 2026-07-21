@@ -30,10 +30,6 @@ struct SidebarView: View {
         )
     }
 
-    private var userName: String {
-        appState.config.userName
-    }
-
     private struct UpdateCTA {
         let label: String
         let icon: String
@@ -129,6 +125,7 @@ struct SidebarView: View {
             sidebarItem(tab: .settings, icon: "gearshape", label: "Settings")
             sidebarItem(tab: .about, icon: "info.circle", label: "About", updateCTA: pendingUpdateCTA)
             darkModeToggle
+                .padding(.top, MuesliTheme.spacing12)
                 .padding(.bottom, MuesliTheme.spacing16)
         }
         .frame(maxHeight: .infinity)
@@ -228,27 +225,12 @@ struct SidebarView: View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
                 HStack(spacing: MuesliTheme.spacing12) {
-                Group {
-                    if appState.config.menuBarIcon == "muesli",
-                       let img = MenuBarIconRenderer.make(choice: "muesli") {
-                        Image(nsImage: img)
-                            .resizable()
-                            .scaledToFit()
-                    } else {
-                        Image(systemName: appState.config.menuBarIcon)
-                    }
-                }
+                Image(systemName: "waveform")
                 .frame(width: 22, height: 22)
                 .foregroundStyle(MuesliTheme.accent)
                 Text("muesli")
                     .font(MuesliTheme.title2())
                     .foregroundStyle(MuesliTheme.textPrimary)
-                }
-                if !userName.isEmpty {
-                    Text("Hi, \(userName)")
-                        .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.textTertiary)
-                        .padding(.leading, 34)
                 }
             }
             Spacer(minLength: MuesliTheme.spacing8)

@@ -240,7 +240,7 @@ struct SettingsView: View {
     var body: some View {
         ScrollViewReader { scrollProxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing32) {
                     Text("Settings")
                         .font(MuesliTheme.title1())
                         .foregroundStyle(MuesliTheme.textPrimary)
@@ -248,8 +248,9 @@ struct SettingsView: View {
                     settingsPanePicker
                     paneContent
                 }
-                .padding(.horizontal, MuesliTheme.spacing32)
-                .frame(maxWidth: 840, alignment: .leading)
+                .padding(.horizontal, MuesliTheme.spacing48)
+                .frame(maxWidth: 1120, alignment: .leading)
+
                 .frame(maxWidth: .infinity, alignment: .center)
             .padding(.top, MuesliTheme.pageTop)
             .padding(.bottom, MuesliTheme.spacing32)
@@ -481,7 +482,7 @@ struct SettingsView: View {
                 selection: $selectedPane,
                 title: { $0.title }
             )
-            .frame(width: 760)
+            .frame(maxWidth: 760)
             Spacer()
         }
     }
@@ -505,7 +506,7 @@ struct SettingsView: View {
     }
 
     private var generalSettingsPane: some View {
-        VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing32) {
             settingsSection("General") {
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
                     settingsRow("Launch at login") {
@@ -517,7 +518,6 @@ struct SettingsView: View {
                         launchAtLoginApprovalPrompt
                     }
                 }
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Open dashboard on launch") {
                     settingsSwitch(isOn: appState.config.openDashboardOnLaunch) { newValue in
                         controller.updateConfig { $0.openDashboardOnLaunch = newValue }
@@ -583,7 +583,6 @@ struct SettingsView: View {
                 }
                 settingsDescription("Sync dictation text, meeting transcripts, notes, summaries, and manual notes with Muesli for iPhone through your private iCloud account. Audio recordings are never synced.")
 
-                Divider().background(MuesliTheme.surfaceBorder)
 
                 HStack(spacing: MuesliTheme.spacing12) {
                     VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
@@ -620,7 +619,6 @@ struct SettingsView: View {
                 }
                 settingsDescription("Keep the timeline bridge card available while users connect Muesli on iPhone.")
 
-                Divider().background(MuesliTheme.surfaceBorder)
 
                 HStack(spacing: MuesliTheme.spacing12) {
                     VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
@@ -693,13 +691,11 @@ struct SettingsView: View {
                 settingsDescription("Gemma 4 dictation is unavailable while Gemma 4 is the cleanup backend.")
             }
             if appState.selectedBackend.backend == BackendOption.cohereTranscribe.backend {
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Cohere language", controlWidth: meetingControlWidth) {
                     cohereLanguageMenu
                 }
             }
             if appState.selectedBackend.backend == BackendOption.indicASR.backend {
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Indic language", controlWidth: meetingControlWidth) {
                     indicLanguageMenu
                 }
@@ -743,6 +739,8 @@ struct SettingsView: View {
                 }
             }
             Divider().background(MuesliTheme.surfaceBorder)
+            settingsDescription("Show recent live captions beside the floating meeting waveform.")
+
             settingsRow(
                 "Live preview model",
                 description: meetingLiveTranscriptDescription,
@@ -775,7 +773,6 @@ struct SettingsView: View {
             }
             .id(FeatureTourTarget.liveCaptionsSetting.rawValue)
             .featureTourTarget(.liveCaptionsSetting)
-            Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Final transcript", controlWidth: meetingControlWidth) {
                 if usesUnifiedMeetingTranscript {
                     Text("\(MeetingLiveCaptionBackend.nemotron35.label) (same model)")
@@ -799,17 +796,14 @@ struct SettingsView: View {
                 }
             }
             if usesUnifiedMeetingTranscript {
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Language", controlWidth: meetingControlWidth) {
                     nemotron35LanguageMenu
                 }
             } else if appState.selectedMeetingTranscriptionBackend.backend == BackendOption.cohereTranscribe.backend {
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Cohere language", controlWidth: meetingControlWidth) {
                     cohereLanguageMenu
                 }
             } else if appState.selectedMeetingTranscriptionBackend.backend == BackendOption.indicASR.backend {
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Indic language", controlWidth: meetingControlWidth) {
                     indicLanguageMenu
                 }
@@ -845,7 +839,6 @@ struct SettingsView: View {
                 settingsDescription("Gemma 4 cleanup is unavailable while Gemma 4 is the dictation model.")
             }
             if appState.selectedPostProcessorBackend == .local {
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Cleanup model", controlWidth: meetingControlWidth) {
                     if downloadedPostProcOptions.isEmpty {
                         compactActionButton("View cleanup models", systemImage: "arrow.right") {
@@ -867,7 +860,6 @@ struct SettingsView: View {
                     }
                 }
             } else if appState.selectedPostProcessorBackend == .gemma4LiteRT {
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Cleanup model", controlWidth: meetingControlWidth) {
                     if Gemma4LiteRTModelStore.isAvailableLocally() {
                         Text("Gemma 4 E2B (Downloaded)")
@@ -933,11 +925,9 @@ struct SettingsView: View {
     private func hostedCleanupSettings(for backend: TranscriptCleanupBackendOption) -> some View {
         switch backend.llmBackend {
         case .some(.chatGPT):
-            Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Account", controlWidth: meetingControlWidth) {
                 chatGPTAccountControl(selectMeetingSummaryBackend: false)
             }
-            Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Cleanup model", controlWidth: meetingControlWidth) {
                 settingsModelMenu(
                     currentModel: appState.config.postProcessorChatGPTModel,
@@ -945,7 +935,6 @@ struct SettingsView: View {
                 ) { controller.updatePostProcessorModel($0, for: backend) }
             }
         case .some(.openAI):
-            Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("API Key", controlWidth: meetingControlWidth) {
                 PastableSecureField(
                     text: appState.config.openAIAPIKey,
@@ -954,7 +943,6 @@ struct SettingsView: View {
                 )
                 .frame(height: 22)
             }
-            Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Cleanup model", controlWidth: meetingControlWidth) {
                 settingsModelMenu(
                     currentModel: appState.config.postProcessorOpenAIModel,
@@ -963,7 +951,6 @@ struct SettingsView: View {
             }
             keyStatusRow(key: appState.config.openAIAPIKey)
         case .some(.openRouter):
-            Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("API Key", controlWidth: meetingControlWidth) {
                 PastableSecureField(
                     text: appState.config.openRouterAPIKey,
@@ -972,14 +959,12 @@ struct SettingsView: View {
                 )
                 .frame(height: 22)
             }
-            Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Model preset", controlWidth: meetingControlWidth) {
                 settingsModelMenu(
                     currentModel: appState.config.postProcessorOpenRouterModel,
                     presets: SummaryModelPreset.openRouterModels
                 ) { controller.updatePostProcessorModel($0, for: backend) }
             }
-            Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Custom model ID", controlWidth: meetingControlWidth) {
                 settingsModelTextField(
                     currentModel: appState.config.postProcessorOpenRouterModel,
@@ -988,7 +973,6 @@ struct SettingsView: View {
             }
             keyStatusRow(key: appState.config.openRouterAPIKey)
         case .some(.ollama):
-            Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Ollama URL", controlWidth: meetingControlWidth) {
                 PastableTextField(
                     text: appState.config.ollamaURL,
@@ -997,7 +981,6 @@ struct SettingsView: View {
                 )
                 .frame(height: 22)
             }
-            Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Cleanup model", controlWidth: meetingControlWidth) {
                 settingsModelTextField(
                     currentModel: appState.config.postProcessorOllamaModel,
@@ -1005,7 +988,6 @@ struct SettingsView: View {
                 ) { controller.updatePostProcessorModel($0, for: backend) }
             }
         case .some(.lmStudio):
-            Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("LM Studio URL", controlWidth: meetingControlWidth) {
                 PastableTextField(
                     text: appState.config.lmStudioURL,
@@ -1014,7 +996,6 @@ struct SettingsView: View {
                 )
                 .frame(height: 22)
             }
-            Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Cleanup model", controlWidth: meetingControlWidth) {
                 settingsModelTextField(
                     currentModel: appState.config.postProcessorLMStudioModel,
@@ -1078,13 +1059,11 @@ struct SettingsView: View {
                     }
                 }
             }
-            Divider().background(MuesliTheme.surfaceBorder)
 
             if appState.selectedMeetingSummaryBackend == .chatGPT {
                 settingsRow("Account", controlWidth: meetingControlWidth) {
                     chatGPTAccountControl()
                 }
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Model", controlWidth: meetingControlWidth) {
                     settingsModelMenu(
                         currentModel: appState.config.chatGPTModel,
@@ -1100,7 +1079,6 @@ struct SettingsView: View {
                     )
                     .frame(height: 22)
                 }
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Model", controlWidth: meetingControlWidth) {
                     settingsModelMenu(
                         currentModel: appState.config.openAIModel,
@@ -1117,7 +1095,6 @@ struct SettingsView: View {
                     )
                     .frame(height: 22)
                 }
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Model", controlWidth: meetingControlWidth) {
                     settingsModelTextField(
                         currentModel: appState.config.ollamaModel,
@@ -1133,7 +1110,6 @@ struct SettingsView: View {
                     )
                     .frame(height: 22)
                 }
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Model", controlWidth: meetingControlWidth) {
                     settingsModelTextField(
                         currentModel: appState.config.lmStudioModel,
@@ -1153,7 +1129,6 @@ struct SettingsView: View {
                     )
                     .frame(height: 22)
                 }
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Model", controlWidth: meetingControlWidth) {
                     openRouterFreeModelMenu
                 }
@@ -1164,7 +1139,6 @@ struct SettingsView: View {
 
     @ViewBuilder
     private func customLLMSettingsRows(model: String, onModelChange: @escaping (String) -> Void) -> some View {
-        Divider().background(MuesliTheme.surfaceBorder)
         settingsRow("API Format", controlWidth: meetingControlWidth) {
             settingsMenu(
                 selection: CustomLLMFormat(rawValue: appState.config.customLLMFormat)?.label ?? CustomLLMFormat.openAI.label,
@@ -1174,7 +1148,6 @@ struct SettingsView: View {
                 controller.updateConfig { $0.customLLMFormat = format.rawValue }
             }
         }
-        Divider().background(MuesliTheme.surfaceBorder)
         settingsRow("Endpoint", controlWidth: meetingControlWidth) {
             PastableTextField(
                 text: appState.config.customLLMURL,
@@ -1185,7 +1158,6 @@ struct SettingsView: View {
             )
             .frame(height: 22)
         }
-        Divider().background(MuesliTheme.surfaceBorder)
         settingsRow("API Key", controlWidth: meetingControlWidth) {
             PastableSecureField(
                 text: appState.config.customLLMAPIKey,
@@ -1196,7 +1168,6 @@ struct SettingsView: View {
             )
             .frame(height: 22)
         }
-        Divider().background(MuesliTheme.surfaceBorder)
         settingsRow("Model", controlWidth: meetingControlWidth) {
             settingsModelTextField(
                 currentModel: model,
@@ -1228,15 +1199,12 @@ struct SettingsView: View {
                     )
                     .frame(height: 24)
                 }
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("AI transcript cleanup") {
                     settingsSwitch(isOn: appState.config.enablePostProcessor) { newValue in
                         controller.setPostProcessorEnabled(newValue)
                     }
                 }
-                Divider().background(MuesliTheme.surfaceBorder)
                 cleanupPromptSettings
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow(
                     "Dictionary suggestions",
                     description: "Suggest words after corrections by briefly reading focused app text via Accessibility."
@@ -1256,15 +1224,12 @@ struct SettingsView: View {
                         controller.updateConfig { $0.pauseMediaDuringDictation = newValue }
                     }
                 }
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Mute system audio during dictation") {
                     settingsSwitch(isOn: appState.config.muteSystemAudioDuringDictation) { newValue in
                         controller.updateConfig { $0.muteSystemAudioDuringDictation = newValue }
                     }
                 }
-                Divider().background(MuesliTheme.surfaceBorder)
                 screenContextRow("App context")
-                Divider().background(MuesliTheme.surfaceBorder)
                 dictationOCRContextRow
             }
         }
@@ -1278,18 +1243,15 @@ struct SettingsView: View {
                         controller.updateConfig { $0.enableComputerUsePlanner = newValue }
                     }
                 }
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Account", controlWidth: meetingControlWidth) {
                     chatGPTAccountControl()
                 }
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Planner model", controlWidth: meetingControlWidth) {
                     settingsModelMenu(
                         currentModel: appState.config.computerUsePlannerModel,
                         presets: SummaryModelPreset.computerUsePlannerModels
                     ) { val in controller.updateConfig { $0.computerUsePlannerModel = val } }
                 }
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Timeout", controlWidth: meetingControlWidth) {
                     Stepper(
                         value: Binding(
@@ -1305,6 +1267,7 @@ struct SettingsView: View {
                             .font(MuesliTheme.body())
                             .foregroundStyle(MuesliTheme.textPrimary)
                     }
+                    .fixedSize()
                 }
             }
         }
@@ -1326,7 +1289,6 @@ struct SettingsView: View {
                         controller.updateDefaultMeetingTemplate(id: id)
                     }
                 }
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Summary retries", controlWidth: meetingControlWidth) {
                     Stepper(
                         value: Binding(
@@ -1345,9 +1307,9 @@ struct SettingsView: View {
                             .font(MuesliTheme.body())
                             .foregroundStyle(MuesliTheme.textPrimary)
                     }
+                    .fixedSize()
                 }
                 settingsDescription("Retry transient AI summary failures before saving failed notes.")
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Templates", controlWidth: meetingControlWidth) {
                     actionButton("Manage Templates…") {
                         controller.showMeetingTemplatesManager()
@@ -1361,7 +1323,6 @@ struct SettingsView: View {
                         controller.updateConfig { $0.autoRecordMeetings = newValue }
                     }
                 }
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Save meeting recording") {
                     settingsMenu(
                         selection: recordingSaveLabel(for: appState.config.meetingRecordingSavePolicy),
@@ -1372,7 +1333,6 @@ struct SettingsView: View {
                     }
                 }
                 if appState.config.meetingRecordingSavePolicy != .never {
-                    Divider().background(MuesliTheme.surfaceBorder)
                     settingsRow("Recording format") {
                         settingsMenu(
                             selection: appState.config.resolvedMeetingRecordingFileFormat.displayName,
@@ -1393,11 +1353,9 @@ struct SettingsView: View {
                     }
                 }
                 if appState.config.autoExportMarkdownEnabled {
-                    Divider().background(MuesliTheme.surfaceBorder)
                     settingsRow("Destination folder") {
                         autoExportFolderPicker
                     }
-                    Divider().background(MuesliTheme.surfaceBorder)
                     settingsRow("Content") {
                         settingsMenu(
                             selection: appState.config.resolvedAutoExportMarkdownContent.displayName,
@@ -1408,7 +1366,6 @@ struct SettingsView: View {
                             controller.updateConfig { $0.autoExportMarkdownContent = content.rawValue }
                         }
                     }
-                    Divider().background(MuesliTheme.surfaceBorder)
                     settingsRow("File format") {
                         settingsMenu(
                             selection: appState.config.resolvedAutoExportFileFormat.displayName,
@@ -1434,7 +1391,6 @@ struct SettingsView: View {
                 settingsDescription("Show notifications for calendar meetings with a join link.")
 
                 if appState.config.showScheduledMeetingNotifications {
-                    Divider().background(MuesliTheme.surfaceBorder)
 
                     settingsRow("Reminder timing") {
                         settingsMenu(
@@ -1448,7 +1404,6 @@ struct SettingsView: View {
                     settingsDescription("At start time avoids early calendar-only prompts before you join.")
                 }
 
-                Divider().background(MuesliTheme.surfaceBorder)
 
                 settingsRow("Default action") {
                     settingsMenu(
@@ -1471,7 +1426,6 @@ struct SettingsView: View {
                 settingsDescription("Show notifications when a call is detected from browser, camera, microphone, or app audio activity.")
 
                 if appState.config.showMeetingDetectionNotification {
-                    Divider().background(MuesliTheme.surfaceBorder)
                     mutedMeetingDetectionAppsControl
                 }
             }
@@ -1487,7 +1441,6 @@ struct SettingsView: View {
                     }
                 }
                 settingsDescription("Controls how many calendar days appear in Coming Up, the menu bar, and scheduled meeting checks.")
-                Divider().background(MuesliTheme.surfaceBorder)
                 calendarSourcesControl
                     .padding(.bottom, MuesliTheme.spacing8)
             }
@@ -1506,11 +1459,9 @@ struct SettingsView: View {
                         controller.updateConfig { $0.meetingHookEnabled = newValue }
                     }
                 }
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Hook script", controlWidth: meetingControlWidth) {
                     meetingHookPathPicker
                 }
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Timeout", controlWidth: meetingControlWidth) {
                     meetingHookTimeoutControl
                 }
@@ -1540,6 +1491,7 @@ struct SettingsView: View {
                     .disabled(!appState.config.showFloatingIndicator)
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
+
                 settingsRow("Indicator position") {
                     let isCustom = appState.config.indicatorAnchor == .custom
                     let selection = isCustom ? customIndicatorPositionLabel : appState.config.indicatorAnchor.label
@@ -1563,7 +1515,6 @@ struct SettingsView: View {
                         controller.updateConfig { $0.darkMode = newValue }
                     }
                 }
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Menu bar icon") {
                     menuBarIconPicker
                 }
@@ -1574,16 +1525,15 @@ struct SettingsView: View {
                     }
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
+
                 settingsRow("Accent color") {
                     glassTintPicker
                 }
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Play sound effects") {
                     settingsSwitch(isOn: appState.config.soundEnabled) { newValue in
                         controller.updateConfig { $0.soundEnabled = newValue }
                     }
                 }
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Show next meeting in menu bar") {
                     settingsSwitch(isOn: appState.config.showNextMeetingInMenuBar) { newValue in
                         controller.updateConfig { $0.showNextMeetingInMenuBar = newValue }
@@ -1596,7 +1546,6 @@ struct SettingsView: View {
                     settingsRow("Meeting countdown audio") {
                         maraudersMapControl
                     }
-                    Divider().background(MuesliTheme.surfaceBorder)
                     settingsRow("") {
                         Button {
                             SoundController.stopMaraudersMapClip()
@@ -1979,51 +1928,57 @@ struct SettingsView: View {
 
     private var permissionsSection: some View {
         settingsSection("Permissions") {
-            permissionStatusRow(
-                "Microphone",
-                granted: micGranted,
-                action: { AVCaptureDevice.requestAccess(for: .audio) { _ in } },
-                pane: "Privacy_Microphone"
-            )
-            Divider().background(MuesliTheme.surfaceBorder)
-            permissionStatusRow(
-                "Accessibility",
-                granted: accessibilityGranted,
-                action: {
-                    let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
-                    AXIsProcessTrustedWithOptions(opts)
-                },
-                pane: "Privacy_Accessibility"
-            )
-            Divider().background(MuesliTheme.surfaceBorder)
-            permissionStatusRow(
-                "Input Monitoring",
-                granted: inputMonitoringGranted,
-                action: {
-                    if !CGRequestListenEventAccess() {
-                        openPrivacyPane("Privacy_ListenEvent")
-                    }
-                },
-                pane: "Privacy_ListenEvent"
-            )
-            Divider().background(MuesliTheme.surfaceBorder)
-            permissionStatusRow(
-                "Screen Recording",
-                granted: screenRecordingGranted,
-                action: { CGRequestScreenCaptureAccess() },
-                pane: "Privacy_ScreenCapture"
-            )
-            if appState.config.useCoreAudioTap {
-                Divider().background(MuesliTheme.surfaceBorder)
+            VStack(spacing: MuesliTheme.spacing8) {
                 permissionStatusRow(
-                    "System Audio",
-                    granted: systemAudioGranted,
+                    "Microphone",
+                    granted: micGranted,
+                    action: { AVCaptureDevice.requestAccess(for: .audio) { _ in } },
+                    pane: "Privacy_Microphone"
+                )
+                permissionStatusRow(
+                    "Accessibility",
+                    granted: accessibilityGranted,
                     action: {
-                        Task { await CoreAudioSystemRecorder.requestSystemAudioAccess() }
+                        let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+                        AXIsProcessTrustedWithOptions(opts)
                     },
+                    pane: "Privacy_Accessibility"
+                )
+                permissionStatusRow(
+                    "Input Monitoring",
+                    granted: inputMonitoringGranted,
+                    action: {
+                        if !CGRequestListenEventAccess() {
+                            openPrivacyPane("Privacy_ListenEvent")
+                        }
+                    },
+                    pane: "Privacy_ListenEvent"
+                )
+                permissionStatusRow(
+                    "Screen Recording",
+                    granted: screenRecordingGranted,
+                    action: { CGRequestScreenCaptureAccess() },
                     pane: "Privacy_ScreenCapture"
                 )
+                if appState.config.useCoreAudioTap {
+                    permissionStatusRow(
+                        "System Audio",
+                        granted: systemAudioGranted,
+                        action: {
+                            Task { await CoreAudioSystemRecorder.requestSystemAudioAccess() }
+                        },
+                        pane: "Privacy_ScreenCapture"
+                    )
+                }
             }
+            .padding(.horizontal, MuesliTheme.spacing16)
+            .padding(.vertical, MuesliTheme.spacing8)
+            .background(MuesliTheme.backgroundRaised)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+            .overlay(
+                RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
+                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+            )
         }
     }
 
@@ -2239,19 +2194,16 @@ struct SettingsView: View {
 
     @ViewBuilder
     private func settingsSection(_ title: String, @ViewBuilder content: () -> some View) -> some View {
-        VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
             Text(title)
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(MuesliTheme.textTertiary)
                 .textCase(.uppercase)
                 .padding(.leading, 2)
 
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
                 content()
             }
-            .padding(.horizontal, MuesliTheme.spacing4)
-
-            Divider().background(MuesliTheme.surfaceBorder)
         }
     }
 
@@ -2266,14 +2218,18 @@ struct SettingsView: View {
                 .foregroundStyle(MuesliTheme.textPrimary)
                 .layoutPriority(1)
             Spacer(minLength: 20)
-            ZStack(alignment: .trailing) {
-                // Invisible spacer forces the ZStack to exactly controlWidth
-                Color.clear.frame(width: width, height: 1)
-                control()
-                    .frame(maxWidth: width)
-            }
+            control()
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(width: width, alignment: .trailing)
         }
         .frame(minHeight: 32)
+        .padding(MuesliTheme.spacing16)
+        .background(MuesliTheme.backgroundRaised)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+        .overlay(
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
+                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+        )
     }
 
     @ViewBuilder
@@ -2302,6 +2258,13 @@ struct SettingsView: View {
                 .frame(width: width, alignment: .trailing)
         }
         .frame(minHeight: 44)
+        .padding(MuesliTheme.spacing16)
+        .background(MuesliTheme.backgroundRaised)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+        .overlay(
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
+                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+        )
     }
 
     private func settingsDescription(_ text: String) -> some View {
@@ -2827,7 +2790,8 @@ struct SettingsView: View {
             .buttonStyle(.plain)
             .help("Choose hook script")
         }
-        .frame(maxWidth: .infinity, alignment: .trailing)
+        .fixedSize()
+        .frame(width: meetingControlWidth, alignment: .trailing)
     }
 
     private var meetingHookTimeoutControl: some View {

@@ -304,7 +304,7 @@ struct MeetingsView: View {
                     }
                 }
             }
-            .frame(maxWidth: 960, alignment: .leading)
+            .frame(maxWidth: 1120, alignment: .leading)
             .padding(.horizontal, MuesliTheme.spacing48)
             .padding(.top, MuesliTheme.pageTop)
             .padding(.bottom, MuesliTheme.spacing32)

@@ -8,7 +8,7 @@ struct DashboardRootView: View {
     @State private var isSidebarCollapsed = false
 
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 12) {
             SidebarView(
                 appState: appState,
                 controller: controller,
@@ -20,14 +20,23 @@ struct DashboardRootView: View {
                 }
             )
             .frame(width: isSidebarCollapsed ? 68 : 260)
-
-            Divider()
-                .overlay(MuesliTheme.surfaceBorder)
+            // Keep tab content from compressing the navigation rail. Settings
+            // has several dense control rows, but it must adapt to the detail
+            // width rather than borrowing width from the sidebar.
+            .layoutPriority(1)
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+            }
+            .padding(.leading, 12)
+            .padding(.vertical, 12)
 
             detailContent
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
                 .background(MuesliTheme.backgroundBase)
         }
+        .background(MuesliTheme.backgroundBase)
         .frame(minWidth: 900, minHeight: 600)
         .preferredColorScheme(appState.config.darkMode ? .dark : .light)
         .onPreferenceChange(FeatureTourTargetPreferenceKey.self) { frames in

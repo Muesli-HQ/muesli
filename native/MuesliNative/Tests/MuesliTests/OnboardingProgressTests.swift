@@ -190,8 +190,8 @@ struct OnboardingProgressTests {
         #expect(step == 3)
     }
 
-    @Test("meetings-only resume requires microphone before leaving permissions step")
-    func meetingsOnlyResumeRequiresMicrophone() {
+    @Test("meetings-only requests microphone after leaving permissions step")
+    func meetingsOnlyRequestsMicrophoneLater() {
         let permissions = OnboardingPermissionSnapshot(
             microphone: false,
             accessibility: false,
@@ -209,7 +209,7 @@ struct OnboardingProgressTests {
         )
 
         #expect(!OnboardingPermissionGate.hasRequiredPermissions(permissions, for: .meetings))
-        #expect(step == 3)
+        #expect(step == 5)
     }
 
     @Test("meetings-only does not require input monitoring")

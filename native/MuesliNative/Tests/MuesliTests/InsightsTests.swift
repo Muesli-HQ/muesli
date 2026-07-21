@@ -26,6 +26,7 @@ struct InsightsTests {
         #expect(snapshot.activeDaysInRange == 0)
         #expect(snapshot.dictationWords.isEmpty)
         #expect(snapshot.meetingWords.isEmpty)
+        #expect(snapshot.topApps.isEmpty)
     }
 
     @Test("range aggregates dictations and only finished meeting states")
@@ -37,8 +38,16 @@ struct InsightsTests {
         let recent = calendar.date(byAdding: .day, value: -2, to: now)!
         let old = calendar.date(byAdding: .day, value: -45, to: now)!
 
-        try store.insertDictation(text: "Nordic signal signal", durationSeconds: 60, startedAt: recent.addingTimeInterval(-60), endedAt: recent)
-        try store.insertDictation(text: "old archive", durationSeconds: 60, startedAt: old.addingTimeInterval(-60), endedAt: old)
+        try store.insertDictation(
+            text: "Nordic signal signal", durationSeconds: 60,
+            appContext: "Slack|com.tinyspeck.slackmacgap",
+            startedAt: recent.addingTimeInterval(-60), endedAt: recent
+        )
+        try store.insertDictation(
+            text: "old archive", durationSeconds: 60,
+            appContext: "Notes|com.apple.Notes",
+            startedAt: old.addingTimeInterval(-60), endedAt: old
+        )
         try store.insertMeeting(
             title: "Finished", calendarEventID: nil, startTime: recent,
             endTime: recent.addingTimeInterval(60), rawTranscript: "product rhythm rhythm",
@@ -55,6 +64,7 @@ struct InsightsTests {
         #expect(snapshot.dailyActivity.reduce(0) { $0 + $1.meetings } == 1)
         #expect(snapshot.dictationWords.first?.word == "signal")
         #expect(snapshot.meetingWords.first?.word == "rhythm")
+        #expect(snapshot.topApps == [InsightsAppUsage(name: "Slack", count: 1)])
     }
 
     @Test("average pace excludes words without a measured duration")

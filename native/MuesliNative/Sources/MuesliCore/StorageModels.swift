@@ -622,6 +622,17 @@ public struct InsightsWordFrequency: Codable, Sendable, Equatable, Identifiable 
     }
 }
 
+public struct InsightsAppUsage: Codable, Sendable, Equatable, Identifiable {
+    public var id: String { name }
+    public let name: String
+    public let count: Int
+
+    public init(name: String, count: Int) {
+        self.name = name
+        self.count = count
+    }
+}
+
 public struct InsightsSnapshot: Codable, Sendable, Equatable {
     public let range: InsightsRange
     public let generatedAt: Date
@@ -633,6 +644,7 @@ public struct InsightsSnapshot: Codable, Sendable, Equatable {
     public let activeDaysInRange: Int
     public let dictationWords: [InsightsWordFrequency]
     public let meetingWords: [InsightsWordFrequency]
+    public let topApps: [InsightsAppUsage]
 
     public init(
         range: InsightsRange,
@@ -644,7 +656,8 @@ public struct InsightsSnapshot: Codable, Sendable, Equatable {
         longestStreakDays: Int,
         activeDaysInRange: Int,
         dictationWords: [InsightsWordFrequency],
-        meetingWords: [InsightsWordFrequency]
+        meetingWords: [InsightsWordFrequency],
+        topApps: [InsightsAppUsage] = []
     ) {
         self.range = range
         self.generatedAt = generatedAt
@@ -656,5 +669,6 @@ public struct InsightsSnapshot: Codable, Sendable, Equatable {
         self.activeDaysInRange = activeDaysInRange
         self.dictationWords = dictationWords
         self.meetingWords = meetingWords
+        self.topApps = topApps
     }
 }

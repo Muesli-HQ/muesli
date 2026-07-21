@@ -842,7 +842,7 @@ struct AppConfigTests {
         #expect(config.computerUseHotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds)
         #expect(config.meetingRecordingHotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultMeetingThresholdMilliseconds)
         #expect(config.showFloatingIndicator == true)
-        #expect(config.indicatorAnchor == .midTrailing)
+        #expect(config.indicatorAnchor == .bottomCenter)
         #expect(config.hasCompletedOnboarding == false)
         #expect(config.resolvedOnboardingUseCase == .dictation)
         #expect(config.userName.isEmpty)

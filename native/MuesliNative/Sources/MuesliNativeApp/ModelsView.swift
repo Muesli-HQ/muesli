@@ -68,40 +68,39 @@ struct ModelsView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing32) {
                     Text("Models")
                         .font(MuesliTheme.title1())
                         .foregroundStyle(MuesliTheme.textPrimary)
 
-                    Text("Choose the transcription and cleanup models that fit how you speak and work.")
+                    Text("Download and choose the local intelligence behind dictation, captions, and meeting transcripts.")
                         .font(MuesliTheme.body())
                         .foregroundStyle(MuesliTheme.textSecondary)
 
-                    MuesliSegmentedTabs(
-                        options: ModelsCategory.allCases,
-                        selection: modelsCategorySelection,
-                        title: { $0.title }
-                    )
-                    .frame(maxWidth: 520)
-                    .id(FeatureTourTarget.modelLibrary.rawValue)
-                    .featureTourTarget(.modelLibrary)
+                    activeModelHero
+                    transcriptionOverviewSection
+                    liveAndCleanupOverviewSection
+                    modelPrivacyFooter
 
-                    HStack(spacing: MuesliTheme.spacing8) {
-                        Image(systemName: "lock.shield")
-                            .foregroundStyle(MuesliTheme.accent)
-                        Text("Models run privately on this Mac")
-                            .font(MuesliTheme.captionMedium())
-                            .foregroundStyle(MuesliTheme.textSecondary)
-                    }
-
-                    Divider().background(MuesliTheme.surfaceBorder)
 
                     VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
+                        Text("All models")
+                            .font(MuesliTheme.title2())
+                            .foregroundStyle(MuesliTheme.textPrimary)
+                        Text("Manage every downloaded, optional, streaming, and experimental model.")
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textSecondary)
+                        MuesliSegmentedTabs(
+                            options: ModelsCategory.allCases,
+                            selection: modelsCategorySelection,
+                            title: { $0.title }
+                        )
                         selectedCategoryContent
                     }
                 }
-                .padding(.horizontal, MuesliTheme.spacing32)
-                .frame(maxWidth: 1080, alignment: .leading)
+                .padding(.horizontal, MuesliTheme.spacing48)
+                .frame(maxWidth: 1120, alignment: .leading)
+
                 .frame(maxWidth: .infinity, alignment: .center)
             .padding(.top, MuesliTheme.pageTop)
             .padding(.bottom, MuesliTheme.spacing32)
@@ -183,6 +182,223 @@ struct ModelsView: View {
             get: { appState.selectedModelsCategory },
             set: { appState.selectedModelsCategory = $0 }
         )
+    }
+
+    private var overviewPrimaryModel: BackendOption {
+        appState.selectedBackend
+    }
+
+    private var overviewSecondaryModel: BackendOption {
+        appState.selectedBackend == .whisperSmall ? .parakeetMultilingual : .whisperSmall
+    }
+
+    private var activeModelHero: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                    Text("ACTIVE TRANSCRIPTION MODEL")
+                        .font(.system(size: 11, weight: .semibold))
+                        .tracking(0.6)
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                    Text(appState.selectedBackend.label)
+                        .font(.system(size: 28, weight: .medium, design: .rounded))
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                }
+                Spacer()
+                Text("On-device")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                    .padding(.horizontal, MuesliTheme.spacing12)
+                    .frame(height: 30)
+                    .background(MuesliTheme.backgroundRaised.opacity(0.5))
+                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            }
+            Text("Used for everyday dictation and final meeting transcripts. Change models below at any time.")
+                .font(MuesliTheme.body())
+                .foregroundStyle(MuesliTheme.textSecondary)
+        }
+        .padding(MuesliTheme.spacing24)
+        .background(MuesliTheme.accent.opacity(0.18))
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge))
+        .overlay(
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge)
+                .strokeBorder(MuesliTheme.accent.opacity(0.28), lineWidth: 1)
+        )
+    }
+
+    private var transcriptionOverviewSection: some View {
+        modelOverviewSection(title: "Transcription") {
+            compactBackendRow(overviewPrimaryModel, icon: "waveform")
+            Divider().background(MuesliTheme.surfaceBorder)
+            compactBackendRow(overviewSecondaryModel, icon: "quote.bubble")
+        }
+    }
+
+    private var liveAndCleanupOverviewSection: some View {
+        modelOverviewSection(title: "Live & cleanup") {
+            compactLiveCaptionRow
+            Divider().background(MuesliTheme.surfaceBorder)
+            compactPostProcessorRow(PostProcessorOption.defaultOption)
+        }
+    }
+
+    private func modelOverviewSection<Content: View>(
+        title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
+            Text(title)
+                .font(MuesliTheme.title2())
+                .foregroundStyle(MuesliTheme.textPrimary)
+            VStack(spacing: 0) {
+                content()
+            }
+            .padding(.horizontal, MuesliTheme.spacing16)
+            .background(MuesliTheme.backgroundRaised)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge))
+            .overlay(
+                RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge)
+                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+            )
+        }
+    }
+
+    private func compactBackendRow(_ option: BackendOption, icon: String) -> some View {
+        let isActive = appState.selectedBackend == option
+        let isDownloaded = downloadedModels.contains(option.model)
+        let isDownloading = downloadingModels.contains(option.model)
+        return HStack(spacing: MuesliTheme.spacing16) {
+            modelOverviewGlyph(icon)
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                HStack(spacing: MuesliTheme.spacing8) {
+                    Text(option.label)
+                        .font(MuesliTheme.headline())
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                    Text(option.sizeLabel)
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                }
+                Text(option.description)
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: MuesliTheme.spacing16)
+            if isActive {
+                Text("Active")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(MuesliTheme.success)
+            } else {
+                actionButtons(
+                    for: option,
+                    isActive: false,
+                    isDownloaded: isDownloaded,
+                    isDownloading: isDownloading
+                )
+            }
+        }
+        .padding(.vertical, MuesliTheme.spacing16)
+    }
+
+    private var compactLiveCaptionRow: some View {
+        let isActive = isLiveCaptionModelDownloaded
+            && appState.config.enableLiveStreamingPartials
+            && appState.config.resolvedMeetingLiveCaptionBackend == .parakeetRealtimeEOU
+        return HStack(spacing: MuesliTheme.spacing16) {
+            modelOverviewGlyph("text.bubble")
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                HStack(spacing: MuesliTheme.spacing8) {
+                    Text(MeetingLiveCaptionModelStore.label)
+                        .font(MuesliTheme.headline())
+                    Text(MeetingLiveCaptionModelStore.sizeLabel)
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                }
+                Text("Low-latency English preview while a meeting is in progress.")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+            }
+            Spacer(minLength: MuesliTheme.spacing16)
+            if isActive {
+                Text("Ready")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(MuesliTheme.success)
+            } else if isLiveCaptionModelDownloaded {
+                Button("Set Active") {
+                    controller.updateConfig {
+                        $0.meetingLiveCaptionBackend = MeetingLiveCaptionBackend.parakeetRealtimeEOU.rawValue
+                        $0.enableLiveStreamingPartials = true
+                    }
+                }
+                .modelOverviewButton()
+            } else {
+                Button(isDownloadingLiveCaptionModel ? "Downloading…" : "Download") {
+                    startLiveCaptionModelDownload()
+                }
+                .modelOverviewButton()
+                .disabled(isDownloadingLiveCaptionModel)
+            }
+        }
+        .padding(.vertical, MuesliTheme.spacing16)
+    }
+
+    private func compactPostProcessorRow(_ option: PostProcessorOption) -> some View {
+        let isDownloaded = downloadedPostProcModels.contains(option.id)
+        let isActive = appState.activePostProcessor.id == option.id && isDownloaded
+        let isDownloading = downloadingPostProcModels.contains(option.id)
+        return HStack(spacing: MuesliTheme.spacing16) {
+            modelOverviewGlyph("wand.and.sparkles")
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                HStack(spacing: MuesliTheme.spacing8) {
+                    Text(option.label)
+                        .font(MuesliTheme.headline())
+                    Text(option.sizeLabel)
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                }
+                Text(option.description)
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: MuesliTheme.spacing16)
+            if isActive {
+                Text("Ready")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(MuesliTheme.success)
+            } else if isDownloaded {
+                Button("Set Active") { controller.selectPostProcessor(option) }
+                    .modelOverviewButton()
+            } else {
+                Button(isDownloading ? "Downloading…" : "Download") { startPostProcDownload(option) }
+                    .modelOverviewButton()
+                    .disabled(isDownloading)
+            }
+        }
+        .padding(.vertical, MuesliTheme.spacing16)
+    }
+
+    private func modelOverviewGlyph(_ systemName: String) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 17, weight: .medium))
+            .foregroundStyle(MuesliTheme.accent)
+            .frame(width: 44, height: 44)
+            .background(MuesliTheme.accentSubtle)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+    }
+
+    private var modelPrivacyFooter: some View {
+        HStack(spacing: MuesliTheme.spacing12) {
+            Image(systemName: "lock.fill")
+                .foregroundStyle(MuesliTheme.accent)
+            Text("Downloaded models run on this Mac. Audio does not leave your device.")
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textSecondary)
+            Spacer()
+        }
+        .padding(MuesliTheme.spacing16)
+        .background(MuesliTheme.accentSubtle)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
     }
 
     @ViewBuilder
@@ -1863,3 +2079,120 @@ struct ModelsView: View {
         }
     }
 }
+<<<<<<< HEAD
+=======
+
+private extension View {
+    func modelOverviewButton() -> some View {
+        buttonStyle(.plain)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(Color.white)
+            .padding(.horizontal, MuesliTheme.spacing16)
+            .frame(height: 36)
+            .background(MuesliTheme.accent)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+    }
+}
+
+private final class URLSessionInvalidator: @unchecked Sendable {
+    private let lock = NSLock()
+    private var didInvalidate = false
+
+    func finish(_ session: URLSession) {
+        invalidate(session, action: { $0.finishTasksAndInvalidate() })
+    }
+
+    func cancel(_ session: URLSession) {
+        invalidate(session, action: { $0.invalidateAndCancel() })
+    }
+
+    private func invalidate(_ session: URLSession, action: (URLSession) -> Void) {
+        lock.lock()
+        guard !didInvalidate else {
+            lock.unlock()
+            return
+        }
+        didInvalidate = true
+        lock.unlock()
+        action(session)
+    }
+}
+
+/// URLSessionDownloadDelegate bridge for post-processor GGUF downloads.
+/// Uses OS-level buffered download task instead of byte-by-byte async iteration.
+private final class PostProcDownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let onProgress: (Double) -> Void
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<URL, Error>?
+
+    init(onProgress: @escaping (Double) -> Void) {
+        self.onProgress = onProgress
+    }
+
+    func setContinuation(_ c: CheckedContinuation<URL, Error>) {
+        lock.lock()
+        defer { lock.unlock() }
+        continuation = c
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        var dest: URL?
+        do {
+            if let response = downloadTask.response as? HTTPURLResponse,
+               !(200..<300).contains(response.statusCode) {
+                throw NSError(domain: "PostProcDownload", code: response.statusCode, userInfo: [
+                    NSLocalizedDescriptionKey: "Post-processor download failed with HTTP \(response.statusCode)",
+                ])
+            }
+
+            // URLSession deletes the temp file after this returns — move it first.
+            let movedURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString + ".gguf.tmp")
+            try FileManager.default.moveItem(at: location, to: movedURL)
+            dest = movedURL
+            try validateGGUFHeader(at: movedURL)
+            resumeOnce(.success(movedURL))
+        } catch {
+            if let dest { try? FileManager.default.removeItem(at: dest) }
+            resumeOnce(.failure(error))
+        }
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
+                    totalBytesExpectedToWrite: Int64) {
+        guard totalBytesExpectedToWrite > 0 else { return }
+        onProgress(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard let error else { return }
+        resumeOnce(.failure(error))
+    }
+
+    private func resumeOnce(_ result: Result<URL, Error>) {
+        lock.lock()
+        let continuation = continuation
+        self.continuation = nil
+        lock.unlock()
+
+        switch result {
+        case .success(let url):
+            continuation?.resume(returning: url)
+        case .failure(let error):
+            continuation?.resume(throwing: error)
+        }
+    }
+
+    private func validateGGUFHeader(at url: URL) throws {
+        let fh = try FileHandle(forReadingFrom: url)
+        defer { try? fh.close() }
+        let header = try fh.read(upToCount: 4) ?? Data()
+        guard header == Data([0x47, 0x47, 0x55, 0x46]) else {
+            throw NSError(domain: "PostProcDownload", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Downloaded post-processor file is not a GGUF model",
+            ])
+        }
+    }
+}
+>>>>>>> b51208da (Complete UX polish and indicator behavior)

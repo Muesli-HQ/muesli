@@ -178,16 +178,16 @@ struct IndicatorFrameSizeTests {
         // We test that the config round-trips correctly (the visual test is manual)
     }
 
-    @Test("default indicator center is right-middle of the screen")
+    @Test("default indicator center is bottom-center of the screen")
     @MainActor
     func defaultIndicatorCenterUsesScreenMidpoint() {
         let visibleFrame = NSRect(x: 100, y: 50, width: 1200, height: 800)
         let center = FloatingIndicatorController.defaultIndicatorCenter(in: visibleFrame)
-        #expect(center.x == 1270)
-        #expect(center.y == 450)
+        #expect(center.x == 700)
+        #expect(center.y == 72)
     }
 
-    @Test("off-screen saved indicator center falls back to right-middle default")
+    @Test("off-screen saved indicator center falls back to bottom-center default")
     @MainActor
     func offscreenSavedIndicatorCenterFallsBack() {
         let visibleFrame = NSRect(x: 100, y: 50, width: 1200, height: 800)
@@ -203,7 +203,7 @@ struct IndicatorFrameSizeTests {
         )
         #expect(
             FloatingIndicatorController.defaultIndicatorCenter(in: visibleFrame) ==
-            CGPoint(x: 1270, y: 450)
+            CGPoint(x: 700, y: 72)
         )
     }
 

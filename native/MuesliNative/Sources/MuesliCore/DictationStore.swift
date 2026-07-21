@@ -1795,6 +1795,50 @@ public final class DictationStore {
             _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
             throw error
         }
+
+    }
+
+    private func topDictationApps(db: OpaquePointer?, sinceDay: String?) throws -> [InsightsAppUsage] {
+        let sql = """
+        SELECT
+            TRIM(CASE
+                WHEN INSTR(app_context, '|') > 0
+                    THEN SUBSTR(app_context, 1, INSTR(app_context, '|') - 1)
+                ELSE app_context
+            END) AS app_name,
+            COUNT(*) AS use_count
+        FROM dictations
+        WHERE deleted_at IS NULL
+          AND TRIM(COALESCE(app_context, '')) <> ''
+          AND LOWER(TRIM(COALESCE(source, ''))) <> 'ios'
+          AND (? IS NULL OR SUBSTR(timestamp, 1, 10) >= ?)
+        GROUP BY LOWER(app_name)
+        HAVING app_name <> '' AND LOWER(app_name) <> 'unknown'
+        ORDER BY use_count DESC, app_name COLLATE NOCASE ASC
+        LIMIT 4
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        if let sinceDay {
+            sqlite3_bind_text(statement, 1, (sinceDay as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statement, 2, (sinceDay as NSString).utf8String, -1, nil)
+        } else {
+            sqlite3_bind_null(statement, 1)
+            sqlite3_bind_null(statement, 2)
+        }
+
+        var apps: [InsightsAppUsage] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let nameText = sqlite3_column_text(statement, 0) else { continue }
+            apps.append(InsightsAppUsage(
+                name: String(cString: nameText),
+                count: Int(sqlite3_column_int(statement, 1))
+            ))
+        }
+        return apps
     }
 
     private struct InsightsCacheSource {

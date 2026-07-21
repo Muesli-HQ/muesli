@@ -168,6 +168,8 @@ struct DictationsView: View {
                 }
             }
         }
+        .frame(maxWidth: 1120)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .sheet(isPresented: $isBridgeQRCodePresented) {
             IPhoneBridgeQRCodeSheet(
                 deepLinkURL: IPhoneBridgeLinks.iOSSyncDeepLinkURL,

@@ -41,8 +41,8 @@ private final class HoverIndicatorView: NSView {
             removeTrackingArea(trackingAreaRef)
         }
         let tracking = NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            rect: owner?.pointerTrackingRect(in: bounds) ?? bounds,
+            options: [.mouseEnteredAndExited, .activeAlways],
             owner: self,
             userInfo: nil
         )
@@ -109,6 +109,48 @@ private final class HoverIndicatorView: NSView {
 }
 
 @MainActor
+private final class IdleShortcutPillView: NSView {
+    var title = "" {
+        didSet { needsDisplay = true }
+    }
+
+    override var isOpaque: Bool { false }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+
+        // Draw one self-contained rounded rectangle. Keeping this out of the
+        // floating panel's layered host prevents the label from inheriting the
+        // circular mic surface and producing pointed, lens-shaped ends.
+        let pillRect = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let pillPath = NSBezierPath(
+            roundedRect: pillRect,
+            xRadius: 14,
+            yRadius: 14
+        )
+        NSColor.black.withAlphaComponent(0.97).setFill()
+        pillPath.fill()
+        NSColor.white.withAlphaComponent(0.16).setStroke()
+        pillPath.lineWidth = 1
+        pillPath.stroke()
+
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 15, weight: .regular),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.88),
+            .paragraphStyle: paragraph
+        ]
+        let attributedTitle = NSAttributedString(string: title, attributes: attributes)
+        let textSize = attributedTitle.size()
+        attributedTitle.draw(at: NSPoint(
+            x: floor((bounds.width - textSize.width) / 2),
+            y: floor((bounds.height - textSize.height) / 2)
+        ))
+    }
+}
+
+@MainActor
 final class FloatingIndicatorController: NSObject {
     private var panel: NSPanel?
     private var containerView: NSView?
@@ -136,7 +178,7 @@ final class FloatingIndicatorController: NSObject {
     )
     private var glassView: NSVisualEffectView?
     private var tintLayer: CALayer?
-    private var idleLabelBackgroundLayer: CALayer?
+    private var idleShortcutPillView: IdleShortcutPillView?
     private var idleIconBackgroundLayer: CALayer?
     private var micIconView: NSImageView?
     private var wandIconView: NSImageView?
@@ -162,6 +204,8 @@ final class FloatingIndicatorController: NSObject {
     private var computerUseTranscriptText: String?
     private var loadingSpinner: NSProgressIndicator?
     private var isShowingLoading = false
+    private var liveTranscriptPanel: NSPanel?
+    private var liveTranscriptLabel: NSTextField?
     private var isComputerUseCursorMode = false
     private var computerUseCursorReturnFrame: NSRect?
 
@@ -401,6 +445,92 @@ final class FloatingIndicatorController: NSObject {
         setState(.transcribing, config: config)
     }
 
+    func showLiveDictationTranscript(_ transcript: String, config: AppConfig) {
+        let normalized = Self.normalizedComputerUseTranscript(transcript)
+        guard !normalized.isEmpty, state == .recording else {
+            hideLiveDictationTranscript()
+            return
+        }
+
+        let previewPanel: NSPanel
+        let previewLabel: NSTextField
+        if let existingPanel = liveTranscriptPanel,
+           let existingLabel = liveTranscriptLabel {
+            previewPanel = existingPanel
+            previewLabel = existingLabel
+        } else {
+            let panel = NSPanel(
+                contentRect: .zero,
+                styleMask: [.borderless, .nonactivatingPanel],
+                backing: .buffered,
+                defer: false
+            )
+            panel.level = .floating
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.hasShadow = true
+            panel.ignoresMouseEvents = true
+            panel.hidesOnDeactivate = false
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+
+            let surface = NSView(frame: .zero)
+            surface.wantsLayer = true
+            surface.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.96).cgColor
+            surface.layer?.cornerRadius = 14
+            surface.layer?.cornerCurve = .continuous
+            surface.layer?.borderWidth = 1
+            surface.layer?.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
+
+            let label = NSTextField(wrappingLabelWithString: "")
+            label.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+            label.textColor = NSColor.white.withAlphaComponent(0.9)
+            label.maximumNumberOfLines = 3
+            label.lineBreakMode = .byTruncatingTail
+            surface.addSubview(label)
+            panel.contentView = surface
+
+            liveTranscriptPanel = panel
+            liveTranscriptLabel = label
+            previewPanel = panel
+            previewLabel = label
+        }
+
+        previewLabel.stringValue = normalized
+        let width: CGFloat = 320
+        let textWidth = width - 32
+        let bounding = (normalized as NSString).boundingRect(
+            with: NSSize(width: textWidth, height: 80),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: previewLabel.font ?? NSFont.systemFont(ofSize: 12)]
+        )
+        let height = min(max(48, ceil(bounding.height) + 24), 92)
+        guard let indicatorFrame = indicatorScreenFrame,
+              let visibleFrame = panel?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame else { return }
+        let gap: CGFloat = 8
+        let origin: CGPoint
+        switch idleHoverPlacement(for: config.indicatorAnchor) {
+        case .above:
+            origin = CGPoint(x: indicatorFrame.midX - width / 2, y: indicatorFrame.maxY + gap)
+        case .below:
+            origin = CGPoint(x: indicatorFrame.midX - width / 2, y: indicatorFrame.minY - height - gap)
+        case .leading:
+            origin = CGPoint(x: indicatorFrame.minX - width - gap, y: indicatorFrame.midY - height / 2)
+        case .trailing:
+            origin = CGPoint(x: indicatorFrame.maxX + gap, y: indicatorFrame.midY - height / 2)
+        }
+        let x = min(max(origin.x, visibleFrame.minX + 8), visibleFrame.maxX - width - 8)
+        let y = min(max(origin.y, visibleFrame.minY + 8), visibleFrame.maxY - height - 8)
+        let frame = NSRect(x: x, y: y, width: width, height: height)
+        previewPanel.setFrame(frame, display: true)
+        previewPanel.contentView?.frame = NSRect(origin: .zero, size: frame.size)
+        previewLabel.frame = NSRect(x: 16, y: 12, width: textWidth, height: height - 24)
+        previewPanel.orderFrontRegardless()
+    }
+
+    func hideLiveDictationTranscript() {
+        liveTranscriptPanel?.orderOut(nil)
+    }
+
     func setState(_ state: DictationState, config: AppConfig) {
         let previousState = self.state
         let previousHover = isHovered
@@ -409,6 +539,9 @@ final class FloatingIndicatorController: NSObject {
             exitComputerUseCursorMode(restoreFrame: false)
         }
         self.state = state
+        if state != .recording {
+            hideLiveDictationTranscript()
+        }
         if state != .transcribing {
             transcribingTitle = "Transcribing"
             computerUseTranscriptText = nil
@@ -470,16 +603,28 @@ final class FloatingIndicatorController: NSObject {
             wasHovered: previousHover,
             isHovered: isHovered
         )
+        let snapsIdleHoverGeometry = previousState == .idle
+            && state == .idle
+            && previousHover != isHovered
 
         NSAnimationContext.runAnimationGroup { context in
             context.duration = duration
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            context.allowsImplicitAnimation = true
+            context.allowsImplicitAnimation = !snapsIdleHoverGeometry
 
-            panel.animator().setFrame(targetFrame, display: true)
-            panel.animator().alphaValue = style.alpha
-
-            contentView.animator().frame = NSRect(origin: .zero, size: targetFrame.size)
+            if snapsIdleHoverGeometry {
+                // NSWindow's animator crossfades its old backing surface while
+                // resizing, which leaves a gray duplicate circle sliding across
+                // the screen. Replace the geometry atomically, then animate only
+                // the shortcut view's small scale pop.
+                panel.setFrame(targetFrame, display: true, animate: false)
+                panel.alphaValue = style.alpha
+                contentView.frame = NSRect(origin: .zero, size: targetFrame.size)
+            } else {
+                panel.animator().setFrame(targetFrame, display: true)
+                panel.animator().alphaValue = style.alpha
+                contentView.animator().frame = NSRect(origin: .zero, size: targetFrame.size)
+            }
             contentView.layer?.cornerRadius = targetFrame.height / 2
             contentView.layer?.backgroundColor = style.background.cgColor
             contentView.layer?.borderWidth = 1.0
@@ -528,6 +673,7 @@ final class FloatingIndicatorController: NSObject {
 
             // Apply glass state last so it can override iconLabel visibility set above.
             applyGlassState(state, frameSize: targetFrame.size)
+            contentView.updateTrackingAreas()
         }
 
         // Manage SF Symbol effects — stop everything first, then start for the new state.
@@ -637,12 +783,13 @@ final class FloatingIndicatorController: NSObject {
 
     /// Refresh the idle icon to match the user's selected menu bar icon.
     func refreshIcon() {
-        let config = configStore.load()
         let fallback = NSImage(systemSymbolName: "waveform.badge.microphone", accessibilityDescription: nil)?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)) ?? NSImage()
         let newImage = MenuBarIconRenderer.make(choice: config.menuBarIcon) ?? fallback
+
         newImage.isTemplate = true
         micIconView?.image = newImage
+        micIconView?.contentTintColor = .white
     }
 
     /// Flash a brief warning message on the indicator pill, then snap back to idle.
@@ -844,6 +991,41 @@ final class FloatingIndicatorController: NSObject {
         isHovered = hovered
         let config = configStore.load()
         setState(.idle, config: config)
+        if hovered {
+            animateIdleHoverPop()
+        }
+    }
+
+    private func animateIdleHoverPop() {
+        let bounce = CAKeyframeAnimation(keyPath: "transform.translation.y")
+        bounce.values = [0, 2, -0.5, 0]
+        bounce.keyTimes = [0, 0.45, 0.75, 1]
+        bounce.duration = 0.16
+        bounce.timingFunctions = [
+            CAMediaTimingFunction(name: .easeOut),
+            CAMediaTimingFunction(name: .easeInEaseOut),
+            CAMediaTimingFunction(name: .easeInEaseOut)
+        ]
+        idleIconBackgroundLayer?.add(bounce, forKey: "idle-hover-bounce")
+        micIconView?.layer?.add(bounce, forKey: "idle-hover-bounce")
+    }
+
+    fileprivate func pointerTrackingRect(in bounds: NSRect) -> NSRect {
+        guard state == .idle else { return bounds }
+        let config = configStore.load()
+        let title = "Dictate \(config.dictationHotkey.displayLabel)"
+        let frames = idleHoverFrames(
+            placement: idleHoverPlacement(for: config.indicatorAnchor),
+            frameSize: bounds.size,
+            labelWidth: idleLabelWidth(title: title)
+        )
+        let restingHandle = idleRestingHandleFrame(
+            placement: idleHoverPlacement(for: config.indicatorAnchor),
+            frameSize: bounds.size
+        )
+        return (isHovered ? frames.label.union(frames.icon) : restingHandle)
+            .insetBy(dx: -6, dy: -6)
+            .intersection(bounds)
     }
 
     func scheduleHoverExit() {
@@ -871,6 +1053,8 @@ final class FloatingIndicatorController: NSObject {
         hoverExitWorkItem?.cancel()
         hoverExitWorkItem = nil
         preservesCollapsedLeftEdge = false
+        hideLiveDictationTranscript()
+
         panel?.close()
         panel = nil
         containerView = nil
@@ -1080,9 +1264,25 @@ final class FloatingIndicatorController: NSObject {
         let radius = frameSize.height / 2
         let themeHex = config.recordingColorHex
 
+        // The idle panel is only a transparent positioning canvas around two
+        // independent controls. At the top/bottom anchors it is taller than it
+        // is wide, so giving this host a capsule radius clips the shortcut pill
+        // into pointed ends. Only the visible pill and icon own corner radii.
+        if state == .idle {
+            contentView?.layer?.cornerRadius = 0
+            contentView?.layer?.cornerCurve = .circular
+            contentView?.layer?.masksToBounds = false
+            contentView?.layer?.backgroundColor = NSColor.clear.cgColor
+            contentView?.layer?.borderWidth = 0
+            contentView?.layer?.borderColor = NSColor.clear.cgColor
+        }
+
         // During recording, hide frost and show solid accent. Otherwise frosted glass.
         let isRecording = (state == .recording)
-        glassView?.isHidden = isRecording
+        // Idle uses two intentionally separate surfaces: Pranav's compact icon
+        // capsule plus the shortcut label capsule on hover. A full-panel blur
+        // behind them visually merges both surfaces into one oversized bubble.
+        glassView?.isHidden = isRecording || state == .idle || state == .transcribing
         glassView?.frame = NSRect(origin: .zero, size: frameSize)
         glassView?.layer?.cornerRadius = radius
         glassView?.layer?.masksToBounds = true
@@ -1100,87 +1300,61 @@ final class FloatingIndicatorController: NSObject {
             tintAlpha = 0.85
             tintHex = themeHex
         case .transcribing:
-            tintAlpha = 0.62
-            tintHex = "1e1e2e"
+            tintAlpha = 0.96
+            tintHex = "08090A"
         }
         tintLayer?.isHidden = false
         tintLayer?.backgroundColor = NSColor.colorWith(hexString: tintHex, alpha: tintAlpha).cgColor
         applyTintLayerGeometry(size: frameSize, radius: radius)
 
-        let labelWidth = max(0, frameSize.width - 56)
+        let title = "Dictate \(config.dictationHotkey.displayLabel)"
+        let labelWidth = idleLabelWidth(title: title)
+        let placement = idleHoverPlacement(for: config.indicatorAnchor)
+        let idleFrames = idleHoverFrames(
+            placement: placement,
+            frameSize: frameSize,
+            labelWidth: labelWidth
+        )
+        idleShortcutPillView?.isHidden = state != .idle || !isHovered
+        idleShortcutPillView?.frame = idleFrames.label
+        idleShortcutPillView?.title = title
+        let restingHandleFrame = idleRestingHandleFrame(
+            placement: placement,
+            frameSize: frameSize
+        )
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        idleLabelBackgroundLayer?.isHidden = state != .idle || !isHovered
-        idleLabelBackgroundLayer?.frame = CGRect(x: 0, y: 6, width: labelWidth, height: 40)
-        idleLabelBackgroundLayer?.cornerRadius = 20
         idleIconBackgroundLayer?.isHidden = state != .idle
-        idleIconBackgroundLayer?.frame = isHovered
-            ? CGRect(x: frameSize.width - 48, y: 2, width: 48, height: 48)
-            : CGRect(x: 0, y: 0, width: frameSize.width, height: frameSize.height)
-        idleIconBackgroundLayer?.cornerRadius = isHovered ? 24 : frameSize.height / 2
+        idleIconBackgroundLayer?.backgroundColor = isHovered
+            ? NSColor.colorWith(hex: 0x111111, alpha: 1).cgColor
+            : NSColor.colorWith(hex: 0x696969, alpha: 0.82).cgColor
+        idleIconBackgroundLayer?.borderWidth = isHovered ? 1 : 0
+        idleIconBackgroundLayer?.frame = isHovered ? idleFrames.icon : restingHandleFrame
+        idleIconBackgroundLayer?.cornerRadius = isHovered ? 18 : 5
         CATransaction.commit()
 
-        let iconSize = NSSize(width: 18, height: 18)
+        let iconSize = NSSize(width: 15, height: 15)
 
         switch state {
         case .idle:
             // Mic symbol centred (or left-aligned when hovered beside text).
             wandIconView?.isHidden = true
             iconLabel?.isHidden = true
-            micIconView?.isHidden = false
+            micIconView?.isHidden = !isHovered
             if let mic = micIconView {
                 mic.alphaValue = 1
-                if isHovered {
-                    mic.frame = NSRect(
-                        x: 14,
-                        y: (frameSize.height - iconSize.height) / 2,
-                        width: iconSize.width,
-                        height: iconSize.height
-                    )
-                    if let textLabel {
-                        let textX: CGFloat = 42
-                        let textHeight: CGFloat = 16
-                        textLabel.frame = NSRect(
-                            x: textX,
-                            y: floor((frameSize.height - textHeight) / 2),
-                            width: max(0, frameSize.width - textX - 14),
-                            height: textHeight
-                        )
-                    }
+                mic.frame = NSRect(
+                    x: idleFrames.icon.midX - iconSize.width / 2,
+                    y: idleFrames.icon.midY - iconSize.height / 2,
+                    width: iconSize.width,
+                    height: iconSize.height
+                )
 
-                } else {
-                    let showsHotkey = config.showHotkeyOnFloatingIndicator
-                    let compactIconSize = NSSize(width: 14, height: 14)
-                    let iconX = showsHotkey
-                        ? CGFloat(6)
-                        : floor((frameSize.width - compactIconSize.width) / 2)
-                    mic.frame = NSRect(
-                        x: iconX,
-                        y: floor((frameSize.height - compactIconSize.height) / 2),
-                        width: compactIconSize.width,
-                        height: compactIconSize.height
-                    )
-                    if let textLabel, showsHotkey {
-                        textLabel.stringValue = MenuBarIconRenderer.hotkeyCueLabel(
-                            for: config.dictationHotkey
-                        )
-                        textLabel.font = NSFont.monospacedSystemFont(ofSize: 8, weight: .semibold)
-                        textLabel.textColor = .white.withAlphaComponent(0.78)
-                        textLabel.alignment = .center
-                        textLabel.isHidden = false
-                        textLabel.alphaValue = 1
-                        textLabel.frame = NSRect(x: 21, y: 7, width: 18, height: 13)
-                    } else {
-                        textLabel?.isHidden = true
-                        textLabel?.alphaValue = 0
-                    }
-                }
             }
-            if isHovered, let textLabel {
-                textLabel.font = NSFont.systemFont(ofSize: 15, weight: .regular)
-                textLabel.alignment = .center
-                textLabel.frame = NSRect(x: 10, y: 16, width: max(0, labelWidth - 20), height: 20)
-            }
+            // Idle hover text is rendered by IdleShortcutPillView so its
+            // rounded rectangle remains independent from the mic surface.
+            textLabel?.isHidden = true
+            textLabel?.alphaValue = 0
 
         case .recording:
             // Waveform bars replace mic icon during recording.
@@ -1300,7 +1474,10 @@ final class FloatingIndicatorController: NSObject {
         panel.level = .floating
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = true
+        // The idle UI contains two separate capsules. A window-level shadow
+        // traces their combined alpha and creates a pointed bridge between
+        // them, so each capsule draws its own clean border instead.
+        panel.hasShadow = false
         panel.hidesOnDeactivate = false
         panel.ignoresMouseEvents = false
         panel.isMovableByWindowBackground = false
@@ -1411,9 +1588,9 @@ final class FloatingIndicatorController: NSObject {
     }
 
     private func setupGlassLayer(in contentView: HoverIndicatorView, iconLabel: NSTextField) {
-        // masksToBounds clips both the glass blur and the tint layer to the pill shape.
-        // The panel's compositor-level shadow is unaffected.
-        contentView.layer?.masksToBounds = true
+        // Individual layers below provide the capsule geometry. Keeping the
+        // transparent host unclipped prevents it from imposing one shared shape.
+        contentView.layer?.masksToBounds = false
 
         // NSVisualEffectView — frosted blur behind the pill.
         let vev = NSVisualEffectView(frame: contentView.bounds)
@@ -1439,32 +1616,30 @@ final class FloatingIndicatorController: NSObject {
         contentView.layer?.insertSublayer(tint, at: 0)
         tintLayer = tint
 
-        let labelBackground = CALayer()
-        labelBackground.backgroundColor = NSColor.black.withAlphaComponent(0.97).cgColor
-        labelBackground.borderColor = NSColor.white.withAlphaComponent(0.16).cgColor
-        labelBackground.borderWidth = 1
-        labelBackground.cornerCurve = .continuous
-        labelBackground.isHidden = true
-        contentView.layer?.insertSublayer(labelBackground, above: tint)
-        idleLabelBackgroundLayer = labelBackground
+        let shortcutPill = IdleShortcutPillView(frame: .zero)
+        shortcutPill.wantsLayer = true
+        shortcutPill.isHidden = true
+        contentView.addSubview(shortcutPill)
+        idleShortcutPillView = shortcutPill
 
         let iconBackground = CALayer()
         iconBackground.backgroundColor = NSColor.colorWith(hex: 0x111111, alpha: 1).cgColor
         iconBackground.borderColor = NSColor.white.withAlphaComponent(0.10).cgColor
         iconBackground.borderWidth = 1
-        iconBackground.cornerCurve = .continuous
+        iconBackground.cornerCurve = .circular
         iconBackground.isHidden = true
-        contentView.layer?.insertSublayer(iconBackground, above: labelBackground)
+        contentView.layer?.insertSublayer(iconBackground, above: tint)
         idleIconBackgroundLayer = iconBackground
 
-        // Idle icon — uses the user's selected menu bar icon from config.
-        // Falls back to waveform.badge.microphone if the configured icon can't be loaded.
-        let config = configStore.load()
+        // Keep Pranav's original thin waveform for the floating control,
+        // independent of the separately configurable menu-bar icon.
         let fallbackImage = NSImage(systemSymbolName: "waveform.badge.microphone", accessibilityDescription: nil)?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)) ?? NSImage()
         let idleImage = MenuBarIconRenderer.make(choice: config.menuBarIcon) ?? fallbackImage
+
         idleImage.isTemplate = true
         let micView = NSImageView(image: idleImage)
+        micView.wantsLayer = true
         micView.contentTintColor = .white
         micView.imageScaling = .scaleProportionallyDown
         micView.isHidden = true
@@ -1620,13 +1795,22 @@ final class FloatingIndicatorController: NSObject {
             )
         } else {
             screen = mainVisibleFrame
+
         }
         let size: NSSize
         switch state {
         case .idle:
-            size = isHovered
-                ? Self.idleHoverPillSize(hotkeyLabel: config.dictationHotkey.label, screenWidth: screen.width)
-                : NSSize(width: 44, height: 28)
+            // The transparent positioning canvas remains the same size before,
+            // during, and after hover. Only its children change visibility, so
+            // the window cannot reveal or crossfade laterally.
+            let title = "Dictate \(config.dictationHotkey.displayLabel)"
+            let labelWidth = idleLabelWidth(title: title)
+            switch idleHoverPlacement(for: config.indicatorAnchor) {
+            case .above, .below:
+                size = NSSize(width: max(labelWidth, 36) + 4, height: 82)
+            case .leading, .trailing:
+                size = NSSize(width: labelWidth + 46, height: 40)
+            }
 
         case .preparing: size = NSSize(width: 76, height: 22)
         case .recording: size = NSSize(width: 76, height: 22)
@@ -1675,13 +1859,97 @@ final class FloatingIndicatorController: NSObject {
                     center = Self.defaultIndicatorCenter(in: screen, idleSize: size)
                 }
             default:
-                center = Self.anchorCenter(config.indicatorAnchor, in: screen, size: size)
+                center = Self.anchorCenter(config.indicatorAnchor, in: positioningFrame, size: size)
             }
         }
 
-        let x = min(max(center.x - size.width / 2, screen.minX), screen.maxX - size.width)
-        let y = min(max(center.y - size.height / 2, screen.minY), screen.maxY - size.height)
+        var resolvedCenter = center
+        switch config.indicatorAnchor {
+        case .bottomLeading, .bottomCenter, .bottomTrailing:
+            resolvedCenter.y = positioningFrame.minY + size.height / 2 + 2
+        default:
+            break
+        }
+
+        let x = min(max(resolvedCenter.x - size.width / 2, positioningFrame.minX), positioningFrame.maxX - size.width)
+        let y = min(max(resolvedCenter.y - size.height / 2, positioningFrame.minY), positioningFrame.maxY - size.height)
         return NSRect(x: x, y: y, width: size.width, height: size.height)
+    }
+
+    private enum IdleHoverPlacement {
+        case above
+        case below
+        case leading
+        case trailing
+    }
+
+    private func idleHoverPlacement(for anchor: IndicatorAnchor) -> IdleHoverPlacement {
+        switch anchor {
+        case .topLeading, .topCenter, .topTrailing:
+            return .below
+        case .midLeading:
+            return .trailing
+        case .midTrailing:
+            return .leading
+        case .bottomLeading, .bottomCenter, .bottomTrailing, .custom:
+            return .above
+        }
+    }
+
+    private func idleLabelWidth(title: String) -> CGFloat {
+        let font = NSFont.systemFont(ofSize: 15, weight: .regular)
+        let measured = ceil((title as NSString).size(withAttributes: [.font: font]).width)
+        return max(108, measured + 28)
+    }
+
+    private func idleHoverFrames(
+        placement: IdleHoverPlacement,
+        frameSize: NSSize,
+        labelWidth: CGFloat
+    ) -> (label: CGRect, icon: CGRect) {
+        let iconSize: CGFloat = 36
+        let labelHeight: CGFloat = 36
+        let gap: CGFloat = 6
+        let inset: CGFloat = 2
+        switch placement {
+        case .above:
+            return (
+                CGRect(x: (frameSize.width - labelWidth) / 2, y: inset + iconSize + gap, width: labelWidth, height: labelHeight),
+                CGRect(x: (frameSize.width - iconSize) / 2, y: inset, width: iconSize, height: iconSize)
+            )
+        case .below:
+            return (
+                CGRect(x: (frameSize.width - labelWidth) / 2, y: inset, width: labelWidth, height: labelHeight),
+                CGRect(x: (frameSize.width - iconSize) / 2, y: inset + labelHeight + gap, width: iconSize, height: iconSize)
+            )
+        case .leading:
+            return (
+                CGRect(x: inset, y: (frameSize.height - labelHeight) / 2, width: labelWidth, height: labelHeight),
+                CGRect(x: inset + labelWidth + gap, y: inset, width: iconSize, height: iconSize)
+            )
+        case .trailing:
+            return (
+                CGRect(x: inset + iconSize + gap, y: (frameSize.height - labelHeight) / 2, width: labelWidth, height: labelHeight),
+                CGRect(x: inset, y: inset, width: iconSize, height: iconSize)
+            )
+        }
+    }
+
+    private func idleRestingHandleFrame(
+        placement: IdleHoverPlacement,
+        frameSize: NSSize
+    ) -> CGRect {
+        let inset: CGFloat = 2
+        switch placement {
+        case .above:
+            return CGRect(x: (frameSize.width - 30) / 2, y: inset, width: 30, height: 8)
+        case .below:
+            return CGRect(x: (frameSize.width - 30) / 2, y: frameSize.height - inset - 8, width: 30, height: 8)
+        case .leading:
+            return CGRect(x: frameSize.width - inset - 8, y: (frameSize.height - 30) / 2, width: 8, height: 30)
+        case .trailing:
+            return CGRect(x: inset, y: (frameSize.height - 30) / 2, width: 8, height: 30)
+        }
     }
 
     private func styleForState(_ state: DictationState, config: AppConfig) -> (background: NSColor, border: NSColor, icon: String, title: String, iconColor: NSColor, textColor: NSColor, alpha: CGFloat) {
@@ -1723,7 +1991,9 @@ final class FloatingIndicatorController: NSObject {
             return 0
         }
         if oldState == .idle, newState == .idle, wasHovered != isHovered {
-            return isHovered ? 0.24 : 0.2
+            // Snap the panel to its final geometry; the visible shortcut pill
+            // uses a short scale pop instead of revealing from the dock edge.
+            return 0
         }
         if oldState == .idle || newState == .idle {
             return 0.18
@@ -1866,7 +2136,18 @@ final class FloatingIndicatorController: NSObject {
     }
 
     private func pointerIsInsidePanel() -> Bool {
-        indicatorScreenFrame?.contains(NSEvent.mouseLocation) == true
+        guard let indicatorFrame = indicatorScreenFrame else { return false }
+        guard state == .idle, let contentView else {
+            return indicatorFrame.contains(NSEvent.mouseLocation)
+        }
+        let localRect = pointerTrackingRect(in: contentView.bounds)
+        let interactiveScreenRect = NSRect(
+            x: indicatorFrame.minX + localRect.minX,
+            y: indicatorFrame.minY + localRect.minY,
+            width: localRect.width,
+            height: localRect.height
+        )
+        return interactiveScreenRect.contains(NSEvent.mouseLocation)
     }
 }
 

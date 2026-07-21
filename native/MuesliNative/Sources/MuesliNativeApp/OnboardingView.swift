@@ -62,9 +62,12 @@ struct OnboardingView: View {
     @State private var googleCalSignInDone = false
     @State private var googleCalSignInError: String?
     @State private var hasFinishedOnboarding = false
+    @State private var didRequestMicrophoneDuringTest = false
 
     static let permissionsStep = OnboardingFlow.Step.permissions.rawValue
     static let dictationTestStep = OnboardingFlow.dictationTestStep
+    private static let setupColumnWidth: CGFloat = 460
+
 
     private var orderedSteps: [Int] {
         OnboardingFlow.orderedSteps(for: selectedUseCase)
@@ -311,9 +314,11 @@ struct OnboardingView: View {
             }
         case 5:
             HStack(spacing: MuesliTheme.spacing12) {
-                skipButton { goToNextStep() }
+                skipButton { finishOnboarding(withKey: false) }
                 onboardingButton("Continue", enabled: true) {
-                    goToNextStep()
+                    let shouldSaveKey = (summaryBackend == .openAI || summaryBackend == .openRouter)
+                        && !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    finishOnboarding(withKey: shouldSaveKey)
                 }
             }
         case 6:
@@ -801,11 +806,6 @@ struct OnboardingView: View {
                 ),
             ]
         }
-        steps += [
-            ("mic.fill", "Microphone", "Test your microphone with a live transcription before setup finishes", micGranted, {
-                AVCaptureDevice.requestAccess(for: .audio) { _ in }
-            })
-        ]
         return steps
     }
 
@@ -890,7 +890,7 @@ struct OnboardingView: View {
                     .buttonStyle(.plain)
                     .disabled(isConfirmingGrant || isWaitingForNativePermissionPrompt(step.name) || (step.name == "Google Calendar" && isSigningInGoogleCal))
                 }
-                .frame(maxWidth: 720)
+                .frame(maxWidth: Self.setupColumnWidth)
                 .animation(.easeInOut(duration: 0.2), value: isConfirmingGrant)
 
                 if step.name == "Google Calendar" {
@@ -958,6 +958,7 @@ struct OnboardingView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity)
+        .padding(.horizontal, MuesliTheme.spacing32)
         .onAppear {
             refreshPermissionsAndAdvanceIfReady()
             startPermissionPolling()
@@ -1029,11 +1030,11 @@ struct OnboardingView: View {
             PermissionTutorialCard(
                 image: image,
                 firstInstruction: permissionName == "Accessibility"
-                    ? "Find MuesliDevC under Accessibility"
-                    : "Find MuesliDevC under Input Monitoring",
+                    ? "Find Muesli under Accessibility"
+                    : "Find Muesli under Input Monitoring",
                 secondInstruction: "Flip the toggle on, then come back"
             )
-            .frame(maxWidth: 720)
+            .frame(maxWidth: Self.setupColumnWidth)
         } else {
             VStack(spacing: MuesliTheme.spacing12) {
                 Image(systemName: permissionName == "Microphone" ? "mic.fill" : "calendar.badge.checkmark")
@@ -1045,7 +1046,7 @@ struct OnboardingView: View {
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textSecondary)
             }
-            .frame(maxWidth: 720, minHeight: 120)
+            .frame(maxWidth: Self.setupColumnWidth, minHeight: 120)
             .background(MuesliTheme.backgroundRaised)
             .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge))
         }
@@ -1053,10 +1054,10 @@ struct OnboardingView: View {
 
     private func permissionInstructions(for permissionName: String) -> some View {
         let instructions: [String] = switch permissionName {
-        case "Accessibility": ["Find MuesliDevC under Accessibility", "Turn the switch on, then return to Muesli"]
-        case "Input Monitoring": ["Find MuesliDevC under Input Monitoring", "Turn the switch on so your shortcut works in every app"]
+        case "Accessibility": ["Find Muesli under Accessibility", "Turn the switch on, then return to Muesli"]
+        case "Input Monitoring": ["Find Muesli under Input Monitoring", "Turn the switch on so your shortcut works in every app"]
         case "Google Calendar": ["A secure Google window will open", "Choose the calendar account you want to connect"]
-        default: ["Find MuesliDevC under Microphone", "Allow access, then speak during the live test"]
+        default: ["Find Muesli under Microphone", "Allow access, then speak during the live test"]
         }
         return VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
             ForEach(Array(instructions.enumerated()), id: \.offset) { index, instruction in
@@ -1367,22 +1368,55 @@ struct OnboardingView: View {
     }
 
     private func startRecordingHotkey() {
+        // Do not let the active dictation monitor consume the same modifier the
+        // user is trying to choose. The monitor is restarted with the new key
+        // as soon as capture completes.
+        controller.stopHotkeyMonitor()
         isRecordingHotkey = true
         hotkeyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
             let keyCode = event.keyCode
-            if let label = HotkeyConfig.label(for: keyCode) {
-                selectedHotkey = HotkeyConfig(keyCode: keyCode, label: label)
-                stopRecordingHotkey()
+            guard isModifierDown(event), let label = HotkeyConfig.label(for: keyCode) else {
+                return event
             }
+
+            let hotkey = HotkeyConfig(keyCode: keyCode, label: label)
+            selectedHotkey = hotkey
+            _ = controller.updateDictationHotkey(hotkey)
+            saveProgress(atStep: currentStep)
+            stopRecordingHotkey(restartTestMonitor: true)
             return event
         }
     }
 
-    private func stopRecordingHotkey() {
+    private func stopRecordingHotkey(restartTestMonitor: Bool = true) {
         isRecordingHotkey = false
         if let monitor = hotkeyEventMonitor {
             NSEvent.removeMonitor(monitor)
             hotkeyEventMonitor = nil
+        }
+        if restartTestMonitor {
+            // Restart on the next run-loop turn so the modifier-down event used
+            // to select the shortcut cannot also begin a recording.
+            DispatchQueue.main.async {
+                startDictationTestMonitorIfReady()
+            }
+        }
+    }
+
+    private func isModifierDown(_ event: NSEvent) -> Bool {
+        switch event.keyCode {
+        case 55, 54:
+            event.modifierFlags.contains(.command)
+        case 56, 60:
+            event.modifierFlags.contains(.shift)
+        case 58, 61:
+            event.modifierFlags.contains(.option)
+        case 59, 62:
+            event.modifierFlags.contains(.control)
+        case 63:
+            event.modifierFlags.contains(.function)
+        default:
+            false
         }
     }
 
@@ -1394,8 +1428,8 @@ struct OnboardingView: View {
     }
 
     private var dictationTestStep: some View {
-        VStack(spacing: MuesliTheme.spacing24) {
-            Spacer()
+        ScrollView(showsIndicators: false) {
+            VStack(spacing: MuesliTheme.spacing24) {
 
             VStack(spacing: MuesliTheme.spacing8) {
                 Text("Try your shortcut")
@@ -1408,35 +1442,50 @@ struct OnboardingView: View {
                     .multilineTextAlignment(.center)
             }
 
-            HStack {
+            HStack(spacing: MuesliTheme.spacing16) {
+                Image(systemName: "mic")
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundStyle(MuesliTheme.accent)
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                    Text("Hold to dictate")
+                    Text("Microphone")
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textSecondary)
-                    Text(selectedHotkey.displayLabel)
+                    Text(selectedDictationMicrophoneLabel)
                         .font(MuesliTheme.headline())
                         .foregroundStyle(MuesliTheme.textPrimary)
                 }
                 Spacer()
-                Button {
-                    if isRecordingHotkey { stopRecordingHotkey() } else { startRecordingHotkey() }
-                } label: {
-                    HStack(spacing: MuesliTheme.spacing8) {
-                        Text(isRecordingHotkey ? "Press a modifier key…" : "Change shortcut")
-                        Image(systemName: "arrow.right")
+                if micGranted {
+                    Menu {
+                        Button("Automatic") { controller.selectDictationInputDeviceUID(nil) }
+                        ForEach(dictationInputDevices) { device in
+                            Button(device.name) { controller.selectDictationInputDeviceUID(device.uid) }
+                        }
+                    } label: {
+                        Text("Choose")
+                            .font(MuesliTheme.headline())
+                            .foregroundStyle(MuesliTheme.textPrimary)
                     }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                } else {
+                    Button("Grant permission") {
+                        openSystemSettings("Privacy_Microphone")
+                    }
+                    .buttonStyle(.plain)
                     .font(MuesliTheme.headline())
-                    .foregroundStyle(MuesliTheme.textPrimary)
-                    .frame(width: 220)
-                    .padding(.vertical, MuesliTheme.spacing12)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                            .strokeBorder(MuesliTheme.accent, lineWidth: 1)
-                    )
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, MuesliTheme.spacing16)
+                    .frame(height: 36)
+                    .background(MuesliTheme.accent)
+                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                 }
-                .buttonStyle(.plain)
             }
-            .frame(maxWidth: 720)
+            .padding(.horizontal, MuesliTheme.spacing24)
+            .frame(maxWidth: Self.setupColumnWidth, minHeight: 76)
+            .background(MuesliTheme.backgroundRaised.opacity(0.72))
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge))
+            .overlay(RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge).strokeBorder(MuesliTheme.surfaceBorder))
 
             VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
                 HStack {
@@ -1455,14 +1504,20 @@ struct OnboardingView: View {
                         .fill(isDictationTesting ? MuesliTheme.success : MuesliTheme.surfacePrimary)
                         .frame(width: 12, height: 12)
                 }
-                HStack(alignment: .bottom, spacing: 5) {
-                    ForEach(0..<16, id: \.self) { index in
-                        Capsule()
-                            .fill(isDictationTesting ? MuesliTheme.accent : MuesliTheme.surfacePrimary)
-                            .frame(width: 5, height: isDictationTesting ? CGFloat(8 + (index % 5) * 3) : 7)
-                            .animation(.easeInOut(duration: 0.22).delay(Double(index) * 0.015), value: isDictationTesting)
+                TimelineView(.periodic(from: .now, by: 0.08)) { _ in
+                    let power = isDictationTesting ? controller.currentDictationMicrophonePower() : -160
+                    let level = microphoneMeterLevel(for: power)
+                    HStack(alignment: .bottom, spacing: 5) {
+                        ForEach(0..<16, id: \.self) { index in
+                            let position = Double(index + 1) / 16.0
+                            let isActive = level >= position
+                            Capsule()
+                                .fill(isActive ? MuesliTheme.accent : MuesliTheme.surfacePrimary)
+                                .frame(width: 5, height: CGFloat(7 + (index % 5) * 3))
+                        }
 
                     }
+                    .animation(.easeOut(duration: 0.08), value: level)
                 }
 
                     if let modelDownloadError {
@@ -1494,49 +1549,46 @@ struct OnboardingView: View {
                 }
             }
             .padding(MuesliTheme.spacing24)
-            .frame(maxWidth: 720, minHeight: 150, alignment: .topLeading)
+            .frame(maxWidth: Self.setupColumnWidth, minHeight: 150, alignment: .topLeading)
             .background(MuesliTheme.backgroundRaised.opacity(0.72))
             .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge))
             .overlay(RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge).strokeBorder(MuesliTheme.surfaceBorder))
 
-            HStack(spacing: MuesliTheme.spacing16) {
-                Image(systemName: "mic")
-                    .font(.system(size: 20, weight: .medium))
-                    .foregroundStyle(MuesliTheme.accent)
+            HStack {
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                    Text("Microphone")
+                    Text("Hold to dictate")
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textSecondary)
-                    Text(selectedDictationMicrophoneLabel)
+                    Text(selectedHotkey.displayLabel)
                         .font(MuesliTheme.headline())
                         .foregroundStyle(MuesliTheme.textPrimary)
                 }
                 Spacer()
-                Menu {
-                    Button("Automatic") { controller.selectDictationInputDeviceUID(nil) }
-                    ForEach(dictationInputDevices) { device in
-                        Button(device.name) { controller.selectDictationInputDeviceUID(device.uid) }
-                    }
+                Button {
+                    if isRecordingHotkey { stopRecordingHotkey() } else { startRecordingHotkey() }
                 } label: {
-                    Label("Choose", systemImage: "chevron.down")
-                        .labelStyle(.titleAndIcon)
+                    Text(isRecordingHotkey ? "Press a modifier key…" : "Change shortcut")
                         .font(MuesliTheme.headline())
                         .foregroundStyle(MuesliTheme.textPrimary)
+                        .padding(.horizontal, MuesliTheme.spacing16)
+                        .padding(.vertical, MuesliTheme.spacing12)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                                .strokeBorder(MuesliTheme.accent, lineWidth: 1)
+                        )
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
+                .buttonStyle(.plain)
             }
-            .padding(.horizontal, MuesliTheme.spacing24)
-            .frame(maxWidth: 720, minHeight: 76)
-            .background(MuesliTheme.backgroundRaised.opacity(0.72))
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge))
-            .overlay(RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge).strokeBorder(MuesliTheme.surfaceBorder))
+            .frame(maxWidth: Self.setupColumnWidth)
 
-            Spacer()
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, MuesliTheme.spacing32)
+            .padding(.vertical, MuesliTheme.spacing16)
         }
-        .frame(maxWidth: .infinity)
         .onAppear {
             dictationInputDevices = controller.availableDictationInputDevices()
+            requestMicrophoneForDictationTestIfNeeded()
             ensureModelDownloadStarted()
             controller.dictationTestBackend = selectedBackend
             controller.dictationTestCohereLanguage = selectedCohereLanguage
@@ -1559,6 +1611,12 @@ struct OnboardingView: View {
             }
             startDictationTestMonitorIfReady()
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+            if micGranted {
+                startDictationTestMonitorIfReady()
+            }
+        }
         .onDisappear {
             // Cancel any in-flight recording before clearing callbacks to prevent
             // the transcription Task from falling through to the production paste path
@@ -1575,6 +1633,37 @@ struct OnboardingView: View {
             }
             isDictationTestMonitorActive = false
         }
+    }
+
+    private func requestMicrophoneForDictationTestIfNeeded() {
+        guard !didRequestMicrophoneDuringTest else { return }
+        didRequestMicrophoneDuringTest = true
+
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            micGranted = true
+        case .notDetermined:
+            controller.prepareOnboardingForNativePermissionPrompt()
+            AVCaptureDevice.requestAccess(for: .audio) { granted in
+                Task { @MainActor in
+                    micGranted = granted
+                    if granted {
+                        startDictationTestMonitorIfReady()
+                    } else {
+                        openSystemSettings("Privacy_Microphone")
+                    }
+                }
+            }
+        case .denied, .restricted:
+            openSystemSettings("Privacy_Microphone")
+        @unknown default:
+            openSystemSettings("Privacy_Microphone")
+        }
+    }
+
+    private func microphoneMeterLevel(for decibels: Float) -> Double {
+        guard decibels.isFinite, decibels > -80 else { return 0 }
+        return min(max(Double(decibels + 60) / 54.0, 0), 1)
     }
 
     // MARK: - Step 6: Meeting Summaries
@@ -1732,6 +1821,7 @@ struct OnboardingView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity)
+        .padding(.horizontal, MuesliTheme.spacing32)
     }
 
     private func providerTab(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {

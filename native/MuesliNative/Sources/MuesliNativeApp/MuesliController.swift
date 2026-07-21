@@ -3854,6 +3854,12 @@ public final class MuesliController: NSObject {
         meetingRecordingHotkeyMonitor.stop()
     }
 
+    /// Live input power used by the onboarding microphone test. Keeping this
+    /// read-only avoids a second recorder competing for the selected device.
+    func currentDictationMicrophonePower() -> Float {
+        dictationAudioSessionManager.currentPower()
+    }
+
     func downloadModelForOnboarding(
         _ backend: BackendOption,
         onboardingUseCase: OnboardingUseCase,
@@ -8508,7 +8514,11 @@ public final class MuesliController: NSObject {
             break
         case .failed(_, let error):
             fputs("[muesli-native] recorder start failed: \(error)\n", stderr)
-            if !isDictationTestMode {
+            if isDictationTestMode {
+                dictationTestFailureCallback?(
+                    "Muesli couldn't start the selected microphone. Choose another input and try again."
+                )
+            } else {
                 recordDiagnosticIncident(
                     kind: .dictationAudioFailed,
                     stage: .dictationAudioSession,
@@ -8717,6 +8727,7 @@ public final class MuesliController: NSObject {
                     guard let self else { return }
                     DispatchQueue.main.async {
                         guard self.isNemotron35Streaming, self.nemotron35StreamingSessionID == sessionID else { return }
+                        self.indicator.showLiveDictationTranscript(fullText, config: self.config)
                         let delta = String(fullText.dropFirst(self.previousStreamText.count))
                         fputs("[muesli-native] streaming partial: +\"\(delta)\" (total \(fullText.count) chars)\n", stderr)
                         if !delta.isEmpty {
