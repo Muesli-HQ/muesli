@@ -14,13 +14,16 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
     case parakeetV3 = "parakeet-v3"
     case parakeetV2 = "parakeet-v2"
     case parakeetEou320ms = "parakeet-eou-320ms"
+    case senseVoice = "sensevoice"
+    case qwen3Asr = "qwen3-asr"
 
-    /// `nil` for streaming models, which have no single-shot `AsrModelVersion`.
+    /// `nil` for models that don't go through `FluidAudioCLITranscriber`'s
+    /// batch `AsrManager` path (streaming, or a different FluidAudio manager).
     var asrModelVersion: AsrModelVersion? {
         switch self {
         case .parakeetV3: return .v3
         case .parakeetV2: return .v2
-        case .parakeetEou320ms: return nil
+        case .parakeetEou320ms, .senseVoice, .qwen3Asr: return nil
         }
     }
 
@@ -29,7 +32,7 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
     /// only meaningful for these.
     var isStreaming: Bool {
         switch self {
-        case .parakeetV3, .parakeetV2: return false
+        case .parakeetV3, .parakeetV2, .senseVoice, .qwen3Asr: return false
         case .parakeetEou320ms: return true
         }
     }
@@ -88,7 +91,7 @@ struct TranscribeCommand: AsyncParsableCommand {
     var file: String
     @Option(name: .long, help: "Output format: text, json, or markdown.")
     var format: TranscribeOutputFormat = .text
-    @Option(name: .long, help: "Transcription model: parakeet-v3, parakeet-v2, or parakeet-eou-320ms (streaming).")
+    @Option(name: .long, help: "Transcription model: parakeet-v3, parakeet-v2, parakeet-eou-320ms (streaming), sensevoice, or qwen3-asr.")
     var model: TranscribeModel = .parakeetV3
     @Flag(name: .long, help: "Generate meeting notes using the configured Muesli summary backend when available.")
     var summarize = false
@@ -100,6 +103,8 @@ struct TranscribeCommand: AsyncParsableCommand {
     var output: String?
     @Option(name: .long, help: "Streaming models only: write one JSON object per partial ({t, text}) to this path as it transcribes.")
     var emitPartials: String?
+    @Option(name: .long, help: "Path to a JSON array of custom dictionary entries ({word, replacement, matching_threshold}) to apply to the transcript, same as Muesli's dictionary feature.")
+    var dictionary: String?
 
     mutating func validate() throws {
         let url = URL(fileURLWithPath: file)
@@ -126,7 +131,8 @@ struct TranscribeCommand: AsyncParsableCommand {
                 title: title,
                 summarize: summarize,
                 saveMeeting: saveMeeting,
-                emitPartialsURL: emitPartials.map { URL(fileURLWithPath: $0) }
+                emitPartialsURL: emitPartials.map { URL(fileURLWithPath: $0) },
+                dictionaryURL: dictionary.map { URL(fileURLWithPath: $0) }
             ),
             context: context
         )
@@ -196,6 +202,11 @@ struct MuesliAudioTranscriptionRequest {
     let summarize: Bool
     let saveMeeting: Bool
     var emitPartialsURL: URL? = nil
+    /// Path to a JSON array of `CustomWord`-shaped entries. When set, applied to the
+    /// transcript via `CustomWordMatcher.apply` after transcription — the same dictionary
+    /// correction step Muesli applies to dictations, so this measures "what if the
+    /// dictionary were enabled" against exactly the shipped implementation.
+    var dictionaryURL: URL? = nil
 }
 
 struct MuesliAudioTranscriptionResult {
@@ -294,9 +305,13 @@ struct MuesliAudioTranscriptionPipeline {
                 fputs("[muesli-cli] \(message)\n", stderr)
             }
         )
-        let transcript = transcription.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var transcript = transcription.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !transcript.isEmpty else {
             throw CLIError.invalidInput("No speech was transcribed from the selected audio file.", fix: "Check that the file contains audible speech and try again.")
+        }
+        if let dictionaryURL = request.dictionaryURL {
+            let customWords = try Self.loadCustomWords(from: dictionaryURL)
+            transcript = CustomWordMatcher.apply(text: transcript, customWords: customWords)
         }
 
         var warnings: [String] = []
@@ -380,6 +395,32 @@ struct MuesliAudioTranscriptionPipeline {
         }
         sections.append("## Raw Transcript\n\n\(transcript)")
         return sections.joined(separator: "\n\n")
+    }
+
+    /// Loads `--dictionary`'s JSON file: either a plain array of `CustomWord`-shaped
+    /// objects, or an object with a `custom_words` key (so a real `config.json`'s
+    /// dictionary can be pointed at directly).
+    static func loadCustomWords(from url: URL) throws -> [CustomWord] {
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            throw CLIError.notFound("Dictionary file does not exist: \(url.path)", fix: "Pass a JSON array of {word, replacement, matching_threshold} entries.")
+        }
+        let decoder = JSONDecoder()
+        if let words = try? decoder.decode([CustomWord].self, from: data) {
+            return words
+        }
+        struct ConfigShape: Decodable { let customWords: [CustomWord]
+            enum CodingKeys: String, CodingKey { case customWords = "custom_words" }
+        }
+        if let config = try? decoder.decode(ConfigShape.self, from: data) {
+            return config.customWords
+        }
+        throw CLIError.invalidInput(
+            "Could not parse \(url.path) as a dictionary.",
+            fix: "Provide a JSON array of {\"word\": ..., \"replacement\": ..., \"matching_threshold\": ...} objects, or an object with a \"custom_words\" key in that shape."
+        )
     }
 
     private func resolvedTitle(override: String?, sourceURL: URL) -> String {
@@ -558,12 +599,15 @@ struct MuesliAudioFilePreparer: AudioPreparing {
     }
 }
 
-/// Dispatches to the batch FluidAudio transcriber or the streaming EOU transcriber
-/// depending on the requested model. Kept as a thin router so each transcriber stays
-/// focused on one inference shape (single-pass batch vs. chunked streaming).
+/// Dispatches to a per-model-family transcriber. Kept as a thin router so each
+/// transcriber stays focused on one inference shape (single-pass FluidAudio
+/// `AsrManager` batch, chunked EOU streaming, or a different FluidAudio manager
+/// entirely for SenseVoice/Qwen3).
 struct RoutingAudioTranscriber: AudioTranscribing {
     var batch: AudioTranscribing = FluidAudioCLITranscriber()
     var streaming: AudioTranscribing = StreamingEouCLITranscriber()
+    var senseVoice: AudioTranscribing = SenseVoiceCLITranscriber()
+    var qwen3Asr: AudioTranscribing = Qwen3AsrCLITranscriber()
 
     func transcribe(
         wavURL: URL,
@@ -571,10 +615,14 @@ struct RoutingAudioTranscriber: AudioTranscribing {
         onPartial: (@Sendable (Double, String) -> Void)?,
         progress: @escaping (String) -> Void
     ) async throws -> HeadlessTranscription {
-        if model.isStreaming {
-            return try await streaming.transcribe(wavURL: wavURL, model: model, onPartial: onPartial, progress: progress)
+        let transcriber: AudioTranscribing
+        switch model {
+        case .parakeetV3, .parakeetV2: transcriber = batch
+        case .parakeetEou320ms: transcriber = streaming
+        case .senseVoice: transcriber = senseVoice
+        case .qwen3Asr: transcriber = qwen3Asr
         }
-        return try await batch.transcribe(wavURL: wavURL, model: model, onPartial: onPartial, progress: progress)
+        return try await transcriber.transcribe(wavURL: wavURL, model: model, onPartial: onPartial, progress: progress)
     }
 }
 
@@ -620,6 +668,83 @@ actor FluidAudioCLITranscriber: AudioTranscribing {
         loadedModel = model
         progress("model ready")
     }
+}
+
+/// Wraps FluidAudio's `SenseVoiceManager` directly — a thin wrapper, same shape as
+/// the app's `SenseVoiceTranscriber` (`SenseVoiceBackend.swift`), reusing the app's
+/// default model cache. `int8` matches the precision the app selects by default.
+actor SenseVoiceCLITranscriber: AudioTranscribing {
+    private var manager: SenseVoiceManager?
+
+    func transcribe(
+        wavURL: URL,
+        model: TranscribeModel,
+        onPartial: (@Sendable (Double, String) -> Void)?,
+        progress: @escaping (String) -> Void
+    ) async throws -> HeadlessTranscription {
+        if manager == nil {
+            progress("loading sensevoice")
+            manager = try await SenseVoiceManager.load(precision: .int8) { downloadProgress in
+                let percent = Int((downloadProgress.fractionCompleted * 100).rounded())
+                progress("model \(percent)%")
+            }
+            progress("model ready")
+        }
+        guard let manager else {
+            throw CLIError.invalidInput("SenseVoice model was not loaded.", fix: "Run the command again after the model finishes downloading.")
+        }
+        let start = CFAbsoluteTimeGetCurrent()
+        let text = try await manager.transcribe(audioURL: wavURL)
+        progress("transcription complete in \(String(format: "%.2f", CFAbsoluteTimeGetCurrent() - start))s")
+        return HeadlessTranscription(text: text, durationSeconds: nil)
+    }
+}
+
+/// Wraps FluidAudio's `Qwen3AsrManager` directly — a thin wrapper, same shape as
+/// the app's `Qwen3AsrTranscriber` (`Qwen3AsrBackend.swift`), reusing the app's
+/// default model cache. Requires macOS 15+ for CoreML stateful decoder support,
+/// same constraint FluidAudio's `Qwen3AsrManager` itself carries.
+actor Qwen3AsrCLITranscriber: AudioTranscribing {
+    func transcribe(
+        wavURL: URL,
+        model: TranscribeModel,
+        onPartial: (@Sendable (Double, String) -> Void)?,
+        progress: @escaping (String) -> Void
+    ) async throws -> HeadlessTranscription {
+        guard #available(macOS 15, *) else {
+            throw CLIError.invalidInput("qwen3-asr requires macOS 15 or later.", fix: "Run on macOS 15+, or choose a different --model.")
+        }
+        return try await transcribeOnSupportedOS(wavURL: wavURL, progress: progress)
+    }
+
+    @available(macOS 15, *)
+    private func transcribeOnSupportedOS(wavURL: URL, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
+        if manager == nil {
+            progress("loading qwen3-asr")
+            let modelDir = try await Qwen3AsrModels.download(variant: .int8) { downloadProgress in
+                let percent = Int((downloadProgress.fractionCompleted * 100).rounded())
+                progress("model \(percent)%")
+            }
+            let mgr = Qwen3AsrManager()
+            try await mgr.loadModels(from: modelDir)
+            manager = mgr
+            progress("model ready")
+        }
+        guard let manager else {
+            throw CLIError.invalidInput("Qwen3 ASR model was not loaded.", fix: "Run the command again after the model finishes downloading.")
+        }
+        let start = CFAbsoluteTimeGetCurrent()
+        let samples = try AudioConverter().resampleAudioFile(wavURL)
+        let text = try await (manager as! Qwen3AsrManager).transcribe(audioSamples: samples)
+        progress("transcription complete in \(String(format: "%.2f", CFAbsoluteTimeGetCurrent() - start))s")
+        return HeadlessTranscription(text: text, durationSeconds: nil)
+    }
+
+    // Stored as Any: `Qwen3AsrManager` itself is `@available(macOS 15, *)` in FluidAudio,
+    // and a stored property of that type would force this whole actor declaration behind
+    // the same guard — but `RoutingAudioTranscriber` needs to construct this actor
+    // unconditionally on any deployment target, and only fail at call time on older OSes.
+    private var manager: Any?
 }
 
 /// Feeds a WAV file through FluidAudio's Parakeet EOU streaming encoder in fixed
