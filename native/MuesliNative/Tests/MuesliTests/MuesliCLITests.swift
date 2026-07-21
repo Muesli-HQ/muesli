@@ -82,6 +82,10 @@ struct MuesliCLITests {
         #expect(TranscribeModel(argument: "sensevoice") == .senseVoice)
         #expect(TranscribeModel(argument: "qwen3-asr") == .qwen3Asr)
         #expect(TranscribeModel(argument: "nemotron35") == .nemotron35)
+        #expect(TranscribeModel(argument: "whisper-tiny") == .whisperTiny)
+        #expect(TranscribeModel(argument: "whisper-small") == .whisperSmall)
+        #expect(TranscribeModel(argument: "whisper-medium") == .whisperMedium)
+        #expect(TranscribeModel(argument: "whisper-large-turbo") == .whisperLargeTurbo)
         #expect(TranscribeModel(argument: "canary-qwen") == nil)
         #expect(TranscribeOutputFormat(argument: "text") == .text)
         #expect(TranscribeOutputFormat(argument: "json") == .json)
@@ -97,11 +101,22 @@ struct MuesliCLITests {
         #expect(TranscribeModel.senseVoice.isStreaming == false)
         #expect(TranscribeModel.qwen3Asr.isStreaming == false)
         #expect(TranscribeModel.nemotron35.isStreaming == false)
+        #expect(TranscribeModel.whisperTiny.isStreaming == false)
         #expect(TranscribeModel.parakeetV3.asrModelVersion != nil)
         #expect(TranscribeModel.parakeetEou320ms.asrModelVersion == nil)
         #expect(TranscribeModel.senseVoice.asrModelVersion == nil)
         #expect(TranscribeModel.qwen3Asr.asrModelVersion == nil)
         #expect(TranscribeModel.nemotron35.asrModelVersion == nil)
+        #expect(TranscribeModel.whisperTiny.asrModelVersion == nil)
+    }
+
+    @Test("Whisper models map to WhisperKit's own variant identifiers")
+    func whisperModelsMapToWhisperKitVariantNames() {
+        #expect(TranscribeModel.whisperTiny.whisperKitModelName == "tiny.en")
+        #expect(TranscribeModel.whisperSmall.whisperKitModelName == "small.en")
+        #expect(TranscribeModel.whisperMedium.whisperKitModelName == "medium.en")
+        #expect(TranscribeModel.whisperLargeTurbo.whisperKitModelName == "large-v3-v20240930_626MB")
+        #expect(TranscribeModel.parakeetV3.whisperKitModelName == nil)
     }
 
     @Test("--emit-partials is rejected for non-streaming models")

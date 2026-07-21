@@ -4,6 +4,7 @@ import FluidAudio
 import Foundation
 import MuesliASRKit
 import MuesliCore
+import WhisperKit
 
 enum TranscribeOutputFormat: String, CaseIterable, ExpressibleByArgument {
     case text
@@ -18,6 +19,10 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
     case senseVoice = "sensevoice"
     case qwen3Asr = "qwen3-asr"
     case nemotron35 = "nemotron35"
+    case whisperTiny = "whisper-tiny"
+    case whisperSmall = "whisper-small"
+    case whisperMedium = "whisper-medium"
+    case whisperLargeTurbo = "whisper-large-turbo"
 
     /// `nil` for models that don't go through `FluidAudioCLITranscriber`'s
     /// batch `AsrManager` path (streaming, or a different FluidAudio manager).
@@ -25,7 +30,9 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
         switch self {
         case .parakeetV3: return .v3
         case .parakeetV2: return .v2
-        case .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35: return nil
+        case .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35,
+             .whisperTiny, .whisperSmall, .whisperMedium, .whisperLargeTurbo:
+            return nil
         }
     }
 
@@ -34,8 +41,24 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
     /// only meaningful for these.
     var isStreaming: Bool {
         switch self {
-        case .parakeetV3, .parakeetV2, .senseVoice, .qwen3Asr, .nemotron35: return false
+        case .parakeetV3, .parakeetV2, .senseVoice, .qwen3Asr, .nemotron35,
+             .whisperTiny, .whisperSmall, .whisperMedium, .whisperLargeTurbo:
+            return false
         case .parakeetEou320ms: return true
+        }
+    }
+
+    /// WhisperKit's own model variant identifier — the same strings the app's
+    /// `WhisperKitTranscriber`/`Models.swift` `BackendOption`s use. `nil` for
+    /// non-Whisper models.
+    var whisperKitModelName: String? {
+        switch self {
+        case .whisperTiny: return "tiny.en"
+        case .whisperSmall: return "small.en"
+        case .whisperMedium: return "medium.en"
+        case .whisperLargeTurbo: return "large-v3-v20240930_626MB"
+        case .parakeetV3, .parakeetV2, .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35:
+            return nil
         }
     }
 }
@@ -93,7 +116,7 @@ struct TranscribeCommand: AsyncParsableCommand {
     var file: String
     @Option(name: .long, help: "Output format: text, json, or markdown.")
     var format: TranscribeOutputFormat = .text
-    @Option(name: .long, help: "Transcription model: parakeet-v3, parakeet-v2, parakeet-eou-320ms (streaming), sensevoice, qwen3-asr, or nemotron35.")
+    @Option(name: .long, help: "Transcription model: parakeet-v3, parakeet-v2, parakeet-eou-320ms (streaming), sensevoice, qwen3-asr, nemotron35, whisper-tiny, whisper-small, whisper-medium, or whisper-large-turbo.")
     var model: TranscribeModel = .parakeetV3
     @Flag(name: .long, help: "Generate meeting notes using the configured Muesli summary backend when available.")
     var summarize = false
@@ -611,6 +634,7 @@ struct RoutingAudioTranscriber: AudioTranscribing {
     var senseVoice: AudioTranscribing = SenseVoiceCLITranscriber()
     var qwen3Asr: AudioTranscribing = Qwen3AsrCLITranscriber()
     var nemotron35: AudioTranscribing = Nemotron35CLITranscriber()
+    var whisper: AudioTranscribing = WhisperCLITranscriber()
 
     func transcribe(
         wavURL: URL,
@@ -625,6 +649,7 @@ struct RoutingAudioTranscriber: AudioTranscribing {
         case .senseVoice: transcriber = senseVoice
         case .qwen3Asr: transcriber = qwen3Asr
         case .nemotron35: transcriber = nemotron35
+        case .whisperTiny, .whisperSmall, .whisperMedium, .whisperLargeTurbo: transcriber = whisper
         }
         return try await transcriber.transcribe(wavURL: wavURL, model: model, onPartial: onPartial, progress: progress)
     }
@@ -794,6 +819,75 @@ actor Nemotron35CLITranscriber: AudioTranscribing {
     // Stored as Any for the same reason as `Qwen3AsrCLITranscriber.manager`:
     // `Nemotron35StreamingTranscriber` is `@available(macOS 15, iOS 18, *)`.
     private var manager: Any?
+}
+
+/// Wraps WhisperKit directly — the same public API the app's `WhisperKitTranscriber`
+/// (`WhisperCppBackend.swift`, despite the filename) calls, and the same on-disk cache
+/// (`~/Documents/huggingface/models/argmaxinc/whisperkit-coreml/`), so this doesn't
+/// duplicate a download if a variant is already present from app use.
+actor WhisperCLITranscriber: AudioTranscribing {
+    private var whisperKit: WhisperKit?
+    private var loadedModel: String?
+
+    func transcribe(
+        wavURL: URL,
+        model: TranscribeModel,
+        onPartial: (@Sendable (Double, String) -> Void)?,
+        progress: @escaping (String) -> Void
+    ) async throws -> HeadlessTranscription {
+        guard let modelName = model.whisperKitModelName else {
+            throw CLIError.invalidInput(
+                "\(model.rawValue) is not a Whisper model.",
+                fix: "This indicates a routing bug in muesli-cli; please file an issue."
+            )
+        }
+        try await load(modelName: modelName, progress: progress)
+        guard let whisperKit else {
+            throw CLIError.invalidInput("WhisperKit model was not loaded.", fix: "Run the command again after the model finishes downloading.")
+        }
+        let start = CFAbsoluteTimeGetCurrent()
+        let results = try await whisperKit.transcribe(audioPath: wavURL.path)
+        let text = results.map(\.text).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        progress("transcription complete in \(String(format: "%.2f", CFAbsoluteTimeGetCurrent() - start))s")
+        return HeadlessTranscription(text: text, durationSeconds: nil)
+    }
+
+    private func load(modelName: String, progress: @escaping (String) -> Void) async throws {
+        if loadedModel == modelName, whisperKit != nil { return }
+        progress("loading \(modelName)")
+
+        let modelFolder: URL?
+        if Self.isModelDownloaded(modelName) {
+            modelFolder = nil
+        } else {
+            modelFolder = try await WhisperKit.download(variant: modelName) { downloadProgress in
+                let percent = Int((downloadProgress.fractionCompleted * 100).rounded())
+                progress("model \(percent)%")
+            }
+        }
+
+        let config = WhisperKitConfig(
+            model: modelFolder == nil ? modelName : nil,
+            modelFolder: modelFolder?.path,
+            computeOptions: ModelComputeOptions(
+                audioEncoderCompute: .cpuAndNeuralEngine,
+                textDecoderCompute: .cpuAndNeuralEngine
+            )
+        )
+        whisperKit = try await WhisperKit(config)
+        loadedModel = modelName
+        progress("model ready")
+    }
+
+    /// WhisperKit stores models under ~/Documents/huggingface/models/argmaxinc/whisperkit-coreml/,
+    /// one subdirectory per variant (e.g. openai_whisper-small.en/) — same check the app uses.
+    private static func isModelDownloaded(_ modelName: String) -> Bool {
+        let fm = FileManager.default
+        let fullName = modelName.hasPrefix("openai_whisper-") ? modelName : "openai_whisper-\(modelName)"
+        let modelDir = fm.homeDirectoryForCurrentUser
+            .appendingPathComponent("Documents/huggingface/models/argmaxinc/whisperkit-coreml/\(fullName)")
+        return fm.fileExists(atPath: modelDir.path)
+    }
 }
 
 /// Feeds a WAV file through FluidAudio's Parakeet EOU streaming encoder in fixed
