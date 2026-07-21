@@ -81,6 +81,7 @@ struct MuesliCLITests {
         #expect(TranscribeModel(argument: "parakeet-eou-320ms") == .parakeetEou320ms)
         #expect(TranscribeModel(argument: "sensevoice") == .senseVoice)
         #expect(TranscribeModel(argument: "qwen3-asr") == .qwen3Asr)
+        #expect(TranscribeModel(argument: "nemotron35") == .nemotron35)
         #expect(TranscribeModel(argument: "canary-qwen") == nil)
         #expect(TranscribeOutputFormat(argument: "text") == .text)
         #expect(TranscribeOutputFormat(argument: "json") == .json)
@@ -95,10 +96,12 @@ struct MuesliCLITests {
         #expect(TranscribeModel.parakeetEou320ms.isStreaming == true)
         #expect(TranscribeModel.senseVoice.isStreaming == false)
         #expect(TranscribeModel.qwen3Asr.isStreaming == false)
+        #expect(TranscribeModel.nemotron35.isStreaming == false)
         #expect(TranscribeModel.parakeetV3.asrModelVersion != nil)
         #expect(TranscribeModel.parakeetEou320ms.asrModelVersion == nil)
         #expect(TranscribeModel.senseVoice.asrModelVersion == nil)
         #expect(TranscribeModel.qwen3Asr.asrModelVersion == nil)
+        #expect(TranscribeModel.nemotron35.asrModelVersion == nil)
     }
 
     @Test("--emit-partials is rejected for non-streaming models")

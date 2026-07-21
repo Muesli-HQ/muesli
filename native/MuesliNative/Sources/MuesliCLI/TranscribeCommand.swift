@@ -2,6 +2,7 @@ import ArgumentParser
 import AVFoundation
 import FluidAudio
 import Foundation
+import MuesliASRKit
 import MuesliCore
 
 enum TranscribeOutputFormat: String, CaseIterable, ExpressibleByArgument {
@@ -16,6 +17,7 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
     case parakeetEou320ms = "parakeet-eou-320ms"
     case senseVoice = "sensevoice"
     case qwen3Asr = "qwen3-asr"
+    case nemotron35 = "nemotron35"
 
     /// `nil` for models that don't go through `FluidAudioCLITranscriber`'s
     /// batch `AsrManager` path (streaming, or a different FluidAudio manager).
@@ -23,7 +25,7 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
         switch self {
         case .parakeetV3: return .v3
         case .parakeetV2: return .v2
-        case .parakeetEou320ms, .senseVoice, .qwen3Asr: return nil
+        case .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35: return nil
         }
     }
 
@@ -32,7 +34,7 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
     /// only meaningful for these.
     var isStreaming: Bool {
         switch self {
-        case .parakeetV3, .parakeetV2, .senseVoice, .qwen3Asr: return false
+        case .parakeetV3, .parakeetV2, .senseVoice, .qwen3Asr, .nemotron35: return false
         case .parakeetEou320ms: return true
         }
     }
@@ -91,7 +93,7 @@ struct TranscribeCommand: AsyncParsableCommand {
     var file: String
     @Option(name: .long, help: "Output format: text, json, or markdown.")
     var format: TranscribeOutputFormat = .text
-    @Option(name: .long, help: "Transcription model: parakeet-v3, parakeet-v2, parakeet-eou-320ms (streaming), sensevoice, or qwen3-asr.")
+    @Option(name: .long, help: "Transcription model: parakeet-v3, parakeet-v2, parakeet-eou-320ms (streaming), sensevoice, qwen3-asr, or nemotron35.")
     var model: TranscribeModel = .parakeetV3
     @Flag(name: .long, help: "Generate meeting notes using the configured Muesli summary backend when available.")
     var summarize = false
@@ -608,6 +610,7 @@ struct RoutingAudioTranscriber: AudioTranscribing {
     var streaming: AudioTranscribing = StreamingEouCLITranscriber()
     var senseVoice: AudioTranscribing = SenseVoiceCLITranscriber()
     var qwen3Asr: AudioTranscribing = Qwen3AsrCLITranscriber()
+    var nemotron35: AudioTranscribing = Nemotron35CLITranscriber()
 
     func transcribe(
         wavURL: URL,
@@ -621,6 +624,7 @@ struct RoutingAudioTranscriber: AudioTranscribing {
         case .parakeetEou320ms: transcriber = streaming
         case .senseVoice: transcriber = senseVoice
         case .qwen3Asr: transcriber = qwen3Asr
+        case .nemotron35: transcriber = nemotron35
         }
         return try await transcriber.transcribe(wavURL: wavURL, model: model, onPartial: onPartial, progress: progress)
     }
@@ -744,6 +748,51 @@ actor Qwen3AsrCLITranscriber: AudioTranscribing {
     // and a stored property of that type would force this whole actor declaration behind
     // the same guard — but `RoutingAudioTranscriber` needs to construct this actor
     // unconditionally on any deployment target, and only fail at call time on older OSes.
+    private var manager: Any?
+}
+
+/// Wraps `MuesliASRKit`'s `Nemotron35StreamingTranscriber` — the same shared type the
+/// app's `transcribeWithNemotron35` (`TranscriptionRuntime.swift`) calls: `loadModels()`
+/// then `transcribe(wavURL:)`, its own full-file convenience method that internally
+/// chunks the WAV through the streaming RNNT pipeline. Requires macOS 15+, the same
+/// constraint `Nemotron35StreamingTranscriber` itself carries.
+actor Nemotron35CLITranscriber: AudioTranscribing {
+    func transcribe(
+        wavURL: URL,
+        model: TranscribeModel,
+        onPartial: (@Sendable (Double, String) -> Void)?,
+        progress: @escaping (String) -> Void
+    ) async throws -> HeadlessTranscription {
+        guard #available(macOS 15, *) else {
+            throw CLIError.invalidInput("nemotron35 requires macOS 15 or later.", fix: "Run on macOS 15+, or choose a different --model.")
+        }
+        return try await transcribeOnSupportedOS(wavURL: wavURL, progress: progress)
+    }
+
+    @available(macOS 15, *)
+    private func transcribeOnSupportedOS(wavURL: URL, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
+        let transcriber: Nemotron35StreamingTranscriber
+        if let existing = manager as? Nemotron35StreamingTranscriber {
+            transcriber = existing
+        } else {
+            progress("loading nemotron35")
+            let newTranscriber = Nemotron35StreamingTranscriber()
+            try await newTranscriber.loadModels { fraction, message in
+                let percent = Int((fraction * 100).rounded())
+                progress("\(message ?? "model") \(percent)%")
+            }
+            transcriber = newTranscriber
+            manager = newTranscriber
+            progress("model ready")
+        }
+        let start = CFAbsoluteTimeGetCurrent()
+        let result = try await transcriber.transcribe(wavURL: wavURL)
+        progress("transcription complete in \(String(format: "%.2f", CFAbsoluteTimeGetCurrent() - start))s")
+        return HeadlessTranscription(text: result.text, durationSeconds: nil)
+    }
+
+    // Stored as Any for the same reason as `Qwen3AsrCLITranscriber.manager`:
+    // `Nemotron35StreamingTranscriber` is `@available(macOS 15, iOS 18, *)`.
     private var manager: Any?
 }
 

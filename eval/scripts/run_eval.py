@@ -67,9 +67,21 @@ def run(cli: str, set_name: str, model: str) -> dict:
 
     refs, hyps, rows = [], [], []
     audio_secs = wall_secs = 0.0
+    failures = 0
     for entry in refs_raw:
         wav = ROOT / entry["wav"]
-        hyp, _, wall = transcribe(cli, wav, model)
+        failed = False
+        try:
+            hyp, _, wall = transcribe(cli, wav, model)
+        except RuntimeError as e:
+            # A real transcription failure (e.g. Nemotron's CoreML pipeline throwing on
+            # clips shorter than its chunk size) is itself a finding, not a harness bug.
+            # Score it as an empty hypothesis (maximally penalized) rather than aborting
+            # the whole sweep or silently skipping the clip.
+            failed = True
+            failures += 1
+            hyp, wall = "", 0.0
+            print(f"  {entry['id']}  FAILED: {str(e)[:200]}")
         ref_n, hyp_n = normalize(entry["text"]), normalize(hyp)
         refs.append(ref_n)
         hyps.append(hyp_n)
@@ -77,8 +89,9 @@ def run(cli: str, set_name: str, model: str) -> dict:
         wall_secs += wall
         clip_wer = jiwer.wer(ref_n, hyp_n) if ref_n else 0.0
         rows.append({"id": entry["id"], "ref": ref_n, "hyp": hyp_n,
-                     "wer": round(clip_wer, 4), "wall": round(wall, 2)})
-        print(f"  {entry['id']}  wer={clip_wer:6.1%}  wall={wall:5.1f}s")
+                     "wer": round(clip_wer, 4), "wall": round(wall, 2), "failed": failed})
+        if not failed:
+            print(f"  {entry['id']}  wer={clip_wer:6.1%}  wall={wall:5.1f}s")
 
     measures = jiwer.process_words(refs, hyps)
     summary = {
@@ -90,6 +103,7 @@ def run(cli: str, set_name: str, model: str) -> dict:
         "insertions": measures.insertions,
         "hits": measures.hits,
         "wall_seconds": round(wall_secs, 1),
+        "failures": failures,
     }
     with open(out_path, "w") as f:
         for row in rows:
@@ -112,10 +126,10 @@ def main() -> None:
             print(f"== {set_name} / {model} ==")
             summaries.append(run(args.cli, set_name, model))
 
-    print(f"\n{'set':<20} {'model':<14} {'clips':>5} {'audio':>7} {'WER':>7}  {'sub/del/ins':>13}")
+    print(f"\n{'set':<20} {'model':<14} {'clips':>5} {'audio':>7} {'WER':>7}  {'sub/del/ins':>13}  {'failed':>6}")
     for s in summaries:
         print(f"{s['set']:<20} {s['model']:<14} {s['clips']:>5} {s['audio_seconds']:>6.0f}s "
-              f"{s['wer']:>7.1%}  {s['substitutions']:>4}/{s['deletions']}/{s['insertions']}")
+              f"{s['wer']:>7.1%}  {s['substitutions']:>4}/{s['deletions']}/{s['insertions']}  {s['failures']:>6}")
 
 
 if __name__ == "__main__":
