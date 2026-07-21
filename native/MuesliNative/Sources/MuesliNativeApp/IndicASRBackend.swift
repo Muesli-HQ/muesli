@@ -2,6 +2,7 @@ import Accelerate
 import CoreML
 import FluidAudio
 import Foundation
+import MuesliCore
 
 enum IndicASRLanguage: String, CaseIterable, Codable, Sendable {
     case hindi = "hi"

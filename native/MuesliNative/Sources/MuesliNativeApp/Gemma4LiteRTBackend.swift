@@ -1,5 +1,6 @@
 import Foundation
 import CLiteRTLM
+import MuesliCore
 
 enum Gemma4LiteRTLogging {
     static let profilePathEnvVar = "MUESLI_GEMMA4_LITERT_PROFILE_PATH"

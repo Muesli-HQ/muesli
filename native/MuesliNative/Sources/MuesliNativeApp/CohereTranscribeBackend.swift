@@ -2,6 +2,7 @@ import Accelerate
 @preconcurrency import CoreML
 import FluidAudio
 import Foundation
+import MuesliCore
 
 // MARK: - Testable Utilities
 

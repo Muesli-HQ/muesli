@@ -1,5 +1,6 @@
 import Foundation
 import LLM
+import MuesliCore
 
 enum Qwen3PostProcessorLogging {
     private static let verboseEnv = "MUESLI_DEBUG_POSTPROC_LOGS"
@@ -201,52 +202,6 @@ enum Qwen3PostProcessorConfig {
         ) else { return nil }
         for case let f as URL in e where f.pathExtension.lowercased() == "gguf" { return f }
         return nil
-    }
-}
-
-actor InferenceGate {
-    private struct Waiter {
-        let id: UUID
-        let continuation: CheckedContinuation<Bool, Never>
-    }
-
-    private var isProcessing = false
-    private var waiters: [Waiter] = []
-
-    func acquire() async throws {
-        try Task.checkCancellation()
-        if !isProcessing {
-            isProcessing = true
-            return
-        }
-
-        let id = UUID()
-        let acquired = await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                waiters.append(Waiter(id: id, continuation: continuation))
-            }
-        } onCancel: {
-            Task { await self.cancelWaiter(id) }
-        }
-        guard acquired else { throw CancellationError() }
-    }
-
-    func release() {
-        if waiters.isEmpty {
-            isProcessing = false
-            return
-        }
-
-        waiters.removeFirst().continuation.resume(returning: true)
-    }
-
-    func queuedWaiterCount() -> Int {
-        waiters.count
-    }
-
-    private func cancelWaiter(_ id: UUID) {
-        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
-        waiters.remove(at: index).continuation.resume(returning: false)
     }
 }
 
