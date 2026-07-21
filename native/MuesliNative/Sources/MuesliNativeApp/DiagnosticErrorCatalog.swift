@@ -1,4 +1,5 @@
 import Foundation
+import MuesliASRKit
 
 struct DiagnosticErrorMeaning: Codable, Equatable, Sendable {
     let summary: String

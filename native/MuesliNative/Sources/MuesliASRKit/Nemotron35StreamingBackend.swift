@@ -3,6 +3,18 @@ import MuesliCore
 @preconcurrency import CoreML
 import Foundation
 
+/// Implemented by streaming RNNT transcribers so `StreamingDictationController`
+/// (mic-recording + at-cursor pasting, app-only) can drive chunk-by-chunk
+/// transcription without depending on a concrete transcriber type.
+@available(macOS 15, *)
+public protocol NemotronStreamingTranscribing: AnyObject {
+    func makeStreamState() async throws -> RNNTStreamState
+    func transcribeChunk(
+        samples: [Float],
+        state: inout RNNTStreamState
+    ) async throws -> String
+}
+
 /// Native RNNT streaming ASR backend for NVIDIA Nemotron 3.5 ASR Streaming (multilingual).
 /// Runs entirely on Apple Neural Engine via CoreML.
 ///
@@ -13,7 +25,7 @@ import Foundation
 /// chunk length, the language `prompt_id`, and `<…>` tag stripping. The shared
 /// chunk pipeline lives in `NemotronRNNTEngine`.
 @available(macOS 15, iOS 18, *)
-actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
+public actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
     private var preprocessor: MLModel?
     private var encoder: MLModel?
     private var decoder: MLModel?
@@ -46,15 +58,17 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
         )
     }
 
-    typealias StreamState = RNNTStreamState
-    typealias TranscriberError = NemotronRNNTError
+    public typealias StreamState = RNNTStreamState
+    public typealias TranscriberError = NemotronRNNTError
 
     /// Samples per streaming chunk — read cross-actor by the runtime/controller to
     /// size the audio buffer (must match config.chunkSamples).
-    nonisolated let chunkSamples = 35840
+    public nonisolated let chunkSamples = 35840
+
+    public init() {}
 
     /// Set the language prompt id used for subsequent transcriptions.
-    func setPromptId(_ id: Int32) {
+    public func setPromptId(_ id: Int32) {
         promptId = id
     }
 
@@ -67,7 +81,7 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
         return dir
     }()
 
-    func loadModels(progress: ((Double, String?) -> Void)? = nil) async throws {
+    public func loadModels(progress: ((Double, String?) -> Void)? = nil) async throws {
         if loaded, loadedRevision == Self.installedRevision() { return }
         if isLoading {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -159,12 +173,12 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
 
     // MARK: - Streaming API
 
-    func makeStreamState() throws -> StreamState {
+    public func makeStreamState() throws -> StreamState {
         try nemotronMakeStreamState(config: config)
     }
 
     /// Process one 2240ms audio chunk (35840 samples) and return newly decoded text.
-    func transcribeChunk(samples: [Float], state: inout StreamState) async throws -> String {
+    public func transcribeChunk(samples: [Float], state: inout StreamState) async throws -> String {
         guard loaded, let preprocessor, let encoder, let decoder, let joint else {
             throw TranscriberError.notLoaded
         }
@@ -189,7 +203,7 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
 
     // MARK: - Convenience (full-file transcription)
 
-    func transcribe(wavURL: URL) async throws -> (text: String, processingTime: Double) {
+    public func transcribe(wavURL: URL) async throws -> (text: String, processingTime: Double) {
         guard loaded else { throw TranscriberError.notLoaded }
 
         let samples = try nemotronLoadWavAsFloats(url: wavURL)
@@ -212,7 +226,7 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
         return (text: text, processingTime: elapsed)
     }
 
-    func shutdown() {
+    public func shutdown() {
         loadGeneration += 1
         clearLoadedModels()
         isLoading = false
@@ -221,21 +235,21 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
 
     // MARK: - Model Download
 
-    static let repoID = "FluidInference/Nemotron-3.5-ASR-Streaming-Multilingual-0.6b-CoreML"
+    public static let repoID = "FluidInference/Nemotron-3.5-ASR-Streaming-Multilingual-0.6b-CoreML"
     private static let variantPath = "multilingual/2240ms"
     private static var revisionFile: URL { cacheDir.appendingPathComponent(".revision") }
 
     // MARK: - Update detection
 
     /// The HuggingFace commit sha recorded when the model was last downloaded, if any.
-    nonisolated static func installedRevision() -> String? {
+    public nonisolated static func installedRevision() -> String? {
         guard let s = try? String(contentsOf: revisionFile, encoding: .utf8) else { return nil }
         let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
 
     /// The repo's current `main` commit sha (one lightweight HF API call), or nil on failure.
-    static func fetchRemoteRevision() async -> String? {
+    public static func fetchRemoteRevision() async -> String? {
         guard let url = URL(string: "https://huggingface.co/api/models/\(repoID)") else { return nil }
         guard let (data, _) = try? await URLSession.shared.data(from: url),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -247,7 +261,7 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
     /// repo's current `main`. Returns false when nothing is installed, the revision is
     /// unknown (downloaded before this was tracked), or the network check fails — so it
     /// never produces a false "update available".
-    static func updateAvailable() async -> Bool {
+    public static func updateAvailable() async -> Bool {
         guard let local = installedRevision(), let remote = await fetchRemoteRevision() else { return false }
         return local != remote
     }

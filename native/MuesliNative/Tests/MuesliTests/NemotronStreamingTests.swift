@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import CoreAudio
+@testable import MuesliASRKit
 @testable import MuesliNativeApp
 
 @Suite("StreamingDictationController")

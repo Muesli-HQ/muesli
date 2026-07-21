@@ -1,6 +1,7 @@
 import Accelerate
 @preconcurrency import CoreML
 import Foundation
+import MuesliCore
 
 /// Shared RNNT streaming engine for the NVIDIA Nemotron CoreML backends.
 ///
@@ -12,43 +13,76 @@ import Foundation
 /// the decode loop, mel padding, and cache wiring live here.
 
 /// Per-model geometry/behaviour. Values come from each variant's `metadata.json`.
-struct NemotronRNNTConfig {
+public struct NemotronRNNTConfig {
     /// Samples per streaming chunk (e.g. 8960 = 560ms, 35840 = 2240ms at 16kHz).
-    let chunkSamples: Int
+    public let chunkSamples: Int
     /// `cache_channel` third dimension (att_context left: 70 for EN, 42 for 3.5).
-    let cacheChannelFrames: Int
+    public let cacheChannelFrames: Int
     /// Mel frames fed to the encoder per chunk (chunk + pre-encode cache).
-    let totalMelFrames: Int
-    let encoderDim: Int          // d_model (1024)
-    let decoderHiddenSize: Int   // LSTM pred_hidden (640)
+    public let totalMelFrames: Int
+    public let encoderDim: Int          // d_model (1024)
+    public let decoderHiddenSize: Int   // LSTM pred_hidden (640)
     /// Blank/last logit index (= vocab_size): 1024 for EN, 13087 for 3.5.
-    let blankTokenId: Int
+    public let blankTokenId: Int
     /// Language prompt id fed to the encoder as `prompt_id`, or nil if the model
     /// has no language input (EN backend). 101 = auto-detect for the 3.5 model.
-    let promptId: Int32?
+    public let promptId: Int32?
     /// Drop `<…>` tag pieces on decode (3.5 emits `<lang>`/`<unk>` tags; EN does not).
-    let stripAngleBracketTags: Bool
+    public let stripAngleBracketTags: Bool
+
+    public init(
+        chunkSamples: Int,
+        cacheChannelFrames: Int,
+        totalMelFrames: Int,
+        encoderDim: Int,
+        decoderHiddenSize: Int,
+        blankTokenId: Int,
+        promptId: Int32?,
+        stripAngleBracketTags: Bool
+    ) {
+        self.chunkSamples = chunkSamples
+        self.cacheChannelFrames = cacheChannelFrames
+        self.totalMelFrames = totalMelFrames
+        self.encoderDim = encoderDim
+        self.decoderHiddenSize = decoderHiddenSize
+        self.blankTokenId = blankTokenId
+        self.promptId = promptId
+        self.stripAngleBracketTags = stripAngleBracketTags
+    }
 }
 
 /// Carries all mutable state between chunk-by-chunk transcription calls. Neutral
 /// (not owned by either transcriber) so both backends share one type.
-struct RNNTStreamState {
-    var cacheChannel: MLMultiArray   // [1, 24, cacheChannelFrames, 1024]
-    var cacheTime: MLMultiArray      // [1, 24, 1024, 8]
-    var cacheLen: MLMultiArray       // [1]
-    var hState: MLMultiArray         // [2, 1, 640]
-    var cState: MLMultiArray         // [2, 1, 640]
-    var lastToken: Int32             // SOS/blank = 0
-    var allTokens: [Int]             // accumulated token IDs
+public struct RNNTStreamState {
+    public var cacheChannel: MLMultiArray   // [1, 24, cacheChannelFrames, 1024]
+    public var cacheTime: MLMultiArray      // [1, 24, 1024, 8]
+    public var cacheLen: MLMultiArray       // [1]
+    public var hState: MLMultiArray         // [2, 1, 640]
+    public var cState: MLMultiArray         // [2, 1, 640]
+    public var lastToken: Int32             // SOS/blank = 0
+    public var allTokens: [Int]             // accumulated token IDs
+
+    public init(
+        cacheChannel: MLMultiArray, cacheTime: MLMultiArray, cacheLen: MLMultiArray,
+        hState: MLMultiArray, cState: MLMultiArray, lastToken: Int32, allTokens: [Int]
+    ) {
+        self.cacheChannel = cacheChannel
+        self.cacheTime = cacheTime
+        self.cacheLen = cacheLen
+        self.hState = hState
+        self.cState = cState
+        self.lastToken = lastToken
+        self.allTokens = allTokens
+    }
 }
 
-enum NemotronRNNTError: Error, LocalizedError {
+public enum NemotronRNNTError: Error, LocalizedError {
     case notLoaded
     case downloadFailed(String)
     case preprocessingFailed(String)
     case decodingFailed(String)
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .notLoaded: return "Nemotron models not loaded."
         case .downloadFailed(let m): return "Download failed: \(m)"
@@ -66,7 +100,7 @@ func nemotronZeroFill(_ array: MLMultiArray) {
 }
 
 /// Create a fresh streaming state with zero-initialized caches sized for `config`.
-func nemotronMakeStreamState(config: NemotronRNNTConfig) throws -> RNNTStreamState {
+public func nemotronMakeStreamState(config: NemotronRNNTConfig) throws -> RNNTStreamState {
     let cacheChannel = try MLMultiArray(
         shape: [1, 24, NSNumber(value: config.cacheChannelFrames), 1024], dataType: .float32)
     let cacheTime = try MLMultiArray(shape: [1, 24, 1024, 8], dataType: .float32)
@@ -89,7 +123,7 @@ func nemotronMakeStreamState(config: NemotronRNNTConfig) throws -> RNNTStreamSta
 /// Decode token IDs to text: map id→piece, `▁`→space. When `stripAngleBracketTags`
 /// is set, drop `<…>` special/language-tag pieces (the 3.5 vocab carries native
 /// punctuation in-vocab, so no punctuation stripping is done either way).
-func nemotronDecodeTokens(
+public func nemotronDecodeTokens(
     _ tokenIds: [Int],
     tokenizer: [Int: String],
     stripAngleBracketTags: Bool,
@@ -109,7 +143,7 @@ func nemotronDecodeTokens(
 
 /// Process one audio chunk and return the token IDs newly decoded from it.
 /// `state` is mutated in-place to carry the encoder cache + LSTM state forward.
-func nemotronTranscribeChunk(
+public func nemotronTranscribeChunk(
     preprocessor: MLModel,
     encoder: MLModel,
     decoder: MLModel,
@@ -263,7 +297,7 @@ func nemotronTranscribeChunk(
 
 // MARK: - WAV loading
 
-func nemotronLoadWavAsFloats(url: URL) throws -> [Float] {
+public func nemotronLoadWavAsFloats(url: URL) throws -> [Float] {
     let data = try Data(contentsOf: url)
     guard data.count > 44 else { throw NemotronRNNTError.decodingFailed("WAV too small") }
     let pcmData = data.dropFirst(44)
@@ -281,7 +315,7 @@ func nemotronLoadWavAsFloats(url: URL) throws -> [Float] {
 /// Recursively download a HuggingFace model subtree into `localDir`, preserving the
 /// directory structure under `remotePath`. Files already present are skipped, as are
 /// any whose relative path begins with `skipRelativePrefix` (e.g. an unused component).
-func nemotronDownloadHuggingFaceTree(
+public func nemotronDownloadHuggingFaceTree(
     repoID: String,
     apiURL: String,
     remotePath: String,

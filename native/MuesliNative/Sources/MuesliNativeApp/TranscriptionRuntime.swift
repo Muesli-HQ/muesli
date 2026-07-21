@@ -1,5 +1,6 @@
 import FluidAudio
 import Foundation
+import MuesliASRKit
 import MuesliCore
 
 struct SpeechSegment: Sendable {

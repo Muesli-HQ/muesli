@@ -1,4 +1,5 @@
 import SwiftUI
+import MuesliASRKit
 import MuesliCore
 
 struct ModelsView: View {

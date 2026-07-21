@@ -1,6 +1,7 @@
 import AVFoundation
 import FluidAudio
 import Foundation
+import MuesliASRKit
 import os
 
 enum MeetingLiveCaptionModelStore {

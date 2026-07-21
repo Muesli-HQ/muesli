@@ -1,5 +1,7 @@
 import Foundation
 import CoreAudio
+import MuesliASRKit
+import MuesliCore
 import os
 
 /// Merges real-time mic recording with Nemotron 3.5 chunk-by-chunk transcription.
@@ -11,15 +13,6 @@ import os
 ///   controller.start()
 ///   // ... user speaks ...
 ///   controller.stop { finalText in /* persist final text */ }
-@available(macOS 15, *)
-protocol NemotronStreamingTranscribing: AnyObject {
-    func makeStreamState() async throws -> RNNTStreamState
-    func transcribeChunk(
-        samples: [Float],
-        state: inout RNNTStreamState
-    ) async throws -> String
-}
-
 @available(macOS 15, *)
 final class StreamingDictationController {
     private enum DrainResult {

@@ -8,6 +8,7 @@ let package = Package(
     ],
     products: [
         .library(name: "MuesliCore", targets: ["MuesliCore"]),
+        .library(name: "MuesliASRKit", targets: ["MuesliASRKit"]),
         .executable(name: "MuesliNativeApp", targets: ["MuesliNativeApp"]),
         .executable(name: "muesli-cli", targets: ["MuesliCLI"]),
     ],
@@ -32,10 +33,16 @@ let package = Package(
                 .linkedLibrary("sqlite3"),
             ]
         ),
+        .target(
+            name: "MuesliASRKit",
+            dependencies: ["MuesliCore"],
+            path: "Sources/MuesliASRKit"
+        ),
         .executableTarget(
             name: "MuesliNativeApp",
             dependencies: [
                 "MuesliCore",
+                "MuesliASRKit",
                 .product(name: "FluidAudio", package: "FluidAudio"),
                 .product(name: "LLM", package: "LLM.swift"),
                 .target(name: "CLiteRTLM_mac", condition: .when(platforms: [.macOS])),
@@ -59,6 +66,7 @@ let package = Package(
             name: "MuesliCLI",
             dependencies: [
                 "MuesliCore",
+                "MuesliASRKit",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "FluidAudio", package: "FluidAudio"),
             ],
@@ -76,7 +84,7 @@ let package = Package(
         ),
         .testTarget(
             name: "MuesliTests",
-            dependencies: ["MuesliNativeApp", "MuesliCore", "MuesliCLI", "LocalVQEBridge"],
+            dependencies: ["MuesliNativeApp", "MuesliCore", "MuesliASRKit", "MuesliCLI", "LocalVQEBridge"],
             path: "Tests/MuesliTests",
             linkerSettings: [
                 .linkedLibrary("sqlite3"),

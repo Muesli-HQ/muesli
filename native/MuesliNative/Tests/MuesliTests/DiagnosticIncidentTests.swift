@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+@testable import MuesliASRKit
 @testable import MuesliNativeApp
 
 @Suite("DiagnosticIncident")

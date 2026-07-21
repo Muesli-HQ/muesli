@@ -5,6 +5,7 @@ import CoreAudio
 import Foundation
 import Sparkle
 import TelemetryDeck
+import MuesliASRKit
 import MuesliCore
 import os
 
