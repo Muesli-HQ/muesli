@@ -1265,9 +1265,11 @@ final class DictationCorrectionMonitor {
         let size = cgSizeAttribute(kAXSizeAttribute, from: element)
 
         if let position, let size,
-           position.x.isFinite, position.y.isFinite,
-           size.width.isFinite, size.height.isFinite {
-            return "\(pid)|\(role)|\(Int(position.x))|\(Int(position.y))|\(Int(size.width))|\(Int(size.height))"
+           let px = Int(exactly: position.x.rounded(.towardZero)),
+           let py = Int(exactly: position.y.rounded(.towardZero)),
+           let sw = Int(exactly: size.width.rounded(.towardZero)),
+           let sh = Int(exactly: size.height.rounded(.towardZero)) {
+            return "\(pid)|\(role)|\(px)|\(py)|\(sw)|\(sh)"
         }
         return "\(pid)|\(role)|\(CFHash(element))"
     }
