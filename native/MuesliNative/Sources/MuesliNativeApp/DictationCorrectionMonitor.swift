@@ -1264,7 +1264,9 @@ final class DictationCorrectionMonitor {
         let position = cgPointAttribute(kAXPositionAttribute, from: element)
         let size = cgSizeAttribute(kAXSizeAttribute, from: element)
 
-        if let position, let size {
+        if let position, let size,
+           position.x.isFinite, position.y.isFinite,
+           size.width.isFinite, size.height.isFinite {
             return "\(pid)|\(role)|\(Int(position.x))|\(Int(position.y))|\(Int(size.width))|\(Int(size.height))"
         }
         return "\(pid)|\(role)|\(CFHash(element))"
