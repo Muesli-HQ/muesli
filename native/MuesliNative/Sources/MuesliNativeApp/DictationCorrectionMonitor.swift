@@ -1264,14 +1264,30 @@ final class DictationCorrectionMonitor {
         let position = cgPointAttribute(kAXPositionAttribute, from: element)
         let size = cgSizeAttribute(kAXSizeAttribute, from: element)
 
+        return elementVisitKey(
+            processID: pid,
+            role: role,
+            position: position,
+            size: size,
+            fallbackHash: CFHash(element)
+        )
+    }
+
+    nonisolated static func elementVisitKey(
+        processID: pid_t,
+        role: String,
+        position: CGPoint?,
+        size: CGSize?,
+        fallbackHash: CFHashCode
+    ) -> String {
         if let position, let size,
            let px = Int(exactly: position.x.rounded(.towardZero)),
            let py = Int(exactly: position.y.rounded(.towardZero)),
            let sw = Int(exactly: size.width.rounded(.towardZero)),
            let sh = Int(exactly: size.height.rounded(.towardZero)) {
-            return "\(pid)|\(role)|\(px)|\(py)|\(sw)|\(sh)"
+            return "\(processID)|\(role)|\(px)|\(py)|\(sw)|\(sh)"
         }
-        return "\(pid)|\(role)|\(CFHash(element))"
+        return "\(processID)|\(role)|\(fallbackHash)"
     }
 
     nonisolated private static func axElementAttribute(_ attribute: String, from element: AXUIElement) -> AXUIElement? {
