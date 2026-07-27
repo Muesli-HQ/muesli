@@ -520,8 +520,9 @@ struct MeetingSummaryBackendTests {
 
     @Test("all options listed")
     func allOptions() {
-        #expect(MeetingSummaryBackendOption.all.count == 6)
+        #expect(MeetingSummaryBackendOption.all.count == 7)
         #expect(MeetingSummaryBackendOption.all.contains(.openAI))
+        #expect(MeetingSummaryBackendOption.all.contains(.anthropic))
         #expect(MeetingSummaryBackendOption.all.contains(.openRouter))
         #expect(MeetingSummaryBackendOption.all.contains(.chatGPT))
         #expect(MeetingSummaryBackendOption.all.contains(.ollama))
@@ -532,6 +533,7 @@ struct MeetingSummaryBackendTests {
     @Test("backend strings are lowercase")
     func backendStrings() {
         #expect(MeetingSummaryBackendOption.openAI.backend == "openai")
+        #expect(MeetingSummaryBackendOption.anthropic.backend == "anthropic")
         #expect(MeetingSummaryBackendOption.openRouter.backend == "openrouter")
         #expect(MeetingSummaryBackendOption.ollama.backend == "ollama")
         #expect(MeetingSummaryBackendOption.lmStudio.backend == "lmstudio")
@@ -541,6 +543,7 @@ struct MeetingSummaryBackendTests {
     @Test("configured values resolve with ChatGPT fallback")
     func resolvedValues() {
         #expect(MeetingSummaryBackendOption.resolved("chatgpt") == .chatGPT)
+        #expect(MeetingSummaryBackendOption.resolved("anthropic") == .anthropic)
         #expect(MeetingSummaryBackendOption.resolved("openrouter") == .openRouter)
         #expect(MeetingSummaryBackendOption.resolved("ollama") == .ollama)
         #expect(MeetingSummaryBackendOption.resolved("lmstudio") == .lmStudio)

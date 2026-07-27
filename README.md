@@ -34,7 +34,7 @@ Muesli is a **lightweight native macOS app** that combines **WisprFlow-style dic
 Hold your hotkey (or double-tap for hands-free mode) → speak → release → transcribed text is pasted at your cursor. **~0.13 second latency** via Parakeet TDT on the Apple Neural Engine.
 
 ### Meeting Transcription
-Start a meeting recording → Muesli captures your mic (You) and system audio (Others) simultaneously → VAD-driven chunked transcription happens during the meeting at natural speech boundaries → speaker diarization identifies individual remote speakers (Speaker 1, Speaker 2, etc.) → when you stop, the transcript is ready in seconds, not minutes. Generate structured meeting notes via OpenAI, free OpenRouter models, your ChatGPT Plus/Pro subscription, or local Ollama models.
+Start a meeting recording → Muesli captures your mic (You) and system audio (Others) simultaneously → VAD-driven chunked transcription happens during the meeting at natural speech boundaries → speaker diarization identifies individual remote speakers (Speaker 1, Speaker 2, etc.) → when you stop, the transcript is ready in seconds, not minutes. Generate structured meeting notes via OpenAI, Anthropic, free OpenRouter models, your ChatGPT Plus/Pro subscription, or local Ollama models.
 
 Live meeting transcripts have two explicit modes. **Nemotron 3.5** is a unified multilingual option: its continuous transcript is the normal final raw transcript before diarization and note generation, with the configured meeting model retained only for gap recovery. **Parakeet Realtime EOU** is a low-latency English preview: it powers the live floating transcript while a separately selected meeting model creates the final transcript. Settings always shows which model owns the final transcript.
 
@@ -60,7 +60,7 @@ Live transcription is off by default. Download Parakeet Realtime EOU or Nemotron
 - **Dismiss calendar events** — Hide irrelevant events from Coming Up, status bar, and menu bar. Dismissed events are pruned automatically.
 - **iCloud Text Sync & iPhone Bridge** — Privately sync dictation text, meeting transcripts, notes, summaries, and manual notes with Muesli for iPhone through iCloud. Audio recordings are never synced.
 - **Filler word removal** — Automatically strips "uh", "um", "er", "hmm" and verbal disfluencies.
-- **AI meeting notes** — BYOK with OpenAI or OpenRouter, sign in with your ChatGPT Plus/Pro subscription (no API key needed), or use local Ollama models. Auto-generated meeting titles. Re-summarize any meeting.
+- **AI meeting notes** — BYOK with OpenAI, Anthropic, or OpenRouter, sign in with your ChatGPT Plus/Pro subscription (no API key needed), or use local Ollama models. Auto-generated meeting titles. Re-summarize any meeting.
 - **ChatGPT OAuth** — Sign in with your existing ChatGPT subscription via browser-based OAuth (PKCE). Tokens stored in the app support directory with owner-only file permissions.
 - **Computer Use planner** — Optional voice-driven planner that can execute local app and browser actions from dictated commands with configurable model and timeout settings.
 - **Post-meeting hooks** — Run a user-supplied executable after completed meetings. Hooks receive a JSON payload on stdin and log results in the app support directory.
@@ -217,7 +217,7 @@ Generate markdown notes with the configured API/local summary backend when avail
 muesli-cli transcribe interview.mp4 --summarize --format markdown --output notes.md
 ```
 
-`--summarize` uses configured OpenAI, OpenRouter, Ollama, LM Studio, or Custom LLM settings. If the configured backend is unavailable in headless CLI mode, Muesli keeps the transcript and reports a warning instead of discarding the transcription.
+`--summarize` uses configured OpenAI, Anthropic, OpenRouter, Ollama, LM Studio, or Custom LLM settings. If the configured backend is unavailable in headless CLI mode, Muesli keeps the transcript and reports a warning instead of discarding the transcription.
 
 Save the import into Muesli as `source = audio_import`:
 
@@ -354,7 +354,7 @@ Muesli needs these macOS permissions (guided during onboarding):
 | Speaker diarization | pyannote via FluidAudio (CoreML on ANE) |
 | Camera detection | CoreMediaIO property listeners (event-driven) |
 | System audio | CoreAudio process tap by default; ScreenCaptureKit (`SCStream`) fallback |
-| Meeting notes | OpenAI / OpenRouter (BYOK), ChatGPT subscription (OAuth), or Ollama |
+| Meeting notes | OpenAI / Anthropic / OpenRouter (BYOK), ChatGPT subscription (OAuth), or Ollama |
 | Calendar | Google Calendar API (OAuth 2.0) |
 | Sync | CloudKit private database for text-only iCloud sync |
 | Automation | Computer Use planner and post-meeting executable hooks |

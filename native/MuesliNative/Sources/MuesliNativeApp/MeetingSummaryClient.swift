@@ -122,10 +122,12 @@ enum MeetingSummaryClient {
     private static let logger = Logger(subsystem: "com.muesli.native", category: "MeetingSummary")
     private static let openAIURL = URL(string: "https://api.openai.com/v1/responses")!
     private static let openRouterURL = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
+    private static let anthropicURL = URL(string: "https://api.anthropic.com/v1/messages")!
     private static let defaultOllamaBaseURL = URL(string: "http://localhost:11434")!
     private static let defaultLMStudioBaseURL = URL(string: "http://localhost:1234")!
     private static let defaultOpenAIModel = "gpt-5.4-mini"
     private static let defaultOpenRouterModel = "stepfun/step-3.5-flash:free"
+    private static let defaultAnthropicModel = "claude-haiku-4-5"
     private static let defaultChatGPTModel = "gpt-5.4-mini"
     private static let defaultOllamaModel = "qwen3.5"
     private static let defaultSummaryMaxOutputTokens = 2500
@@ -135,6 +137,8 @@ enum MeetingSummaryClient {
     private static let lmStudioTitleTimeout: TimeInterval = 120
     private static let customLLMSummaryTimeout: TimeInterval = 300
     private static let customLLMTitleTimeout: TimeInterval = 120
+    private static let anthropicSummaryTimeout: TimeInterval = 300
+    private static let anthropicTitleTimeout: TimeInterval = 120
 
     private static let titleInstructions = """
     Generate a short, descriptive meeting title (3-7 words) from these transcript excerpts. \
@@ -215,6 +219,19 @@ enum MeetingSummaryClient {
         let generatedNotes: String
         if backend == MeetingSummaryBackendOption.chatGPT.backend {
             generatedNotes = try await summarizeWithChatGPT(
+                transcript: transcript,
+                meetingTitle: meetingTitle,
+                existingNotes: existingNotes,
+                manualNotes: manualNotesToRetain,
+                config: config,
+                template: template,
+                visualContext: visualContext,
+                previousMeetingNotes: previousMeetingNotes
+            )
+            return notesByRetainingManualNotes(generatedNotes: generatedNotes, manualNotes: manualNotesToRetain)
+        }
+        if backend == MeetingSummaryBackendOption.anthropic.backend {
+            generatedNotes = try await summarizeWithAnthropic(
                 transcript: transcript,
                 meetingTitle: meetingTitle,
                 existingNotes: existingNotes,
@@ -615,6 +632,43 @@ enum MeetingSummaryClient {
             fputs("[summary] ChatGPT summarization failed: \(error)\n", stderr)
             throw summaryRequestError(backend: "ChatGPT", error: error)
         }
+    }
+
+    private static func summarizeWithAnthropic(
+        transcript: String,
+        meetingTitle: String,
+        existingNotes: String?,
+        manualNotes: String?,
+        config: AppConfig,
+        template: MeetingTemplateSnapshot,
+        visualContext: String? = nil,
+        previousMeetingNotes: String? = nil
+    ) async throws -> String {
+        let apiKey = ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] ?? config.anthropicAPIKey
+        guard !apiKey.isEmpty else {
+            return rawTranscriptFallback(transcript: transcript, meetingTitle: meetingTitle)
+        }
+
+        guard let requestURL = resolveAnthropicURL(config: config) else {
+            throw MeetingSummaryError.backendFailed(backend: "Anthropic", statusCode: nil, message: "Invalid Anthropic URL: \(config.anthropicURL)")
+        }
+        let configuredModel = config.anthropicModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let model = configuredModel.isEmpty ? defaultAnthropicModel : configuredModel
+        return try await summarizeWithAnthropicMessages(
+            backend: "Anthropic",
+            requestURL: requestURL,
+            apiKey: apiKey,
+            model: model,
+            transcript: transcript,
+            meetingTitle: meetingTitle,
+            existingNotes: existingNotes,
+            manualNotes: manualNotes,
+            config: config,
+            template: template,
+            visualContext: visualContext,
+            previousMeetingNotes: previousMeetingNotes,
+            timeout: anthropicSummaryTimeout
+        )
     }
 
     private static func summarizeWithOllama(
@@ -1051,6 +1105,15 @@ enum MeetingSummaryClient {
         return resolveEndpointURL(rawURL.isEmpty ? defaultURL : rawURL, endpointSuffix: endpointSuffix)
     }
 
+    static func resolveAnthropicURL(config: AppConfig) -> URL? {
+        let configuredURL = ProcessInfo.processInfo.environment["ANTHROPIC_BASE_URL"] ?? config.anthropicURL
+        let rawURL = configuredURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        return resolveEndpointURL(
+            rawURL.isEmpty ? anthropicURL.absoluteString : rawURL,
+            endpointSuffix: "v1/messages"
+        )
+    }
+
     static func resolveLMStudioURL(config: AppConfig) -> URL? {
         let rawURL = config.lmStudioURL.trimmingCharacters(in: .whitespacesAndNewlines)
         return resolveEndpointURL(
@@ -1101,6 +1164,27 @@ enum MeetingSummaryClient {
 
         if backend == MeetingSummaryBackendOption.chatGPT.backend {
             return await generateTitleWithChatGPT(transcript: excerpt, config: config)
+        }
+
+        if backend == MeetingSummaryBackendOption.anthropic.backend {
+            let apiKey = ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] ?? config.anthropicAPIKey
+            guard !apiKey.isEmpty else { return nil }
+            guard let requestURL = resolveAnthropicURL(config: config) else {
+                fputs("[summary] Anthropic title generation: invalid URL \(config.anthropicURL)\n", stderr)
+                return nil
+            }
+            let configuredModel = config.anthropicModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            let model = configuredModel.isEmpty ? defaultAnthropicModel : configuredModel
+            return await callAnthropicMessages(
+                backend: "Anthropic",
+                url: requestURL,
+                apiKey: apiKey,
+                model: model,
+                systemPrompt: titleInstructions,
+                userPrompt: excerpt,
+                maxTokens: 100,
+                timeout: anthropicTitleTimeout
+            )
         }
 
         if backend == MeetingSummaryBackendOption.openRouter.backend {
@@ -1231,6 +1315,7 @@ enum MeetingSummaryClient {
     }
 
     private static func callAnthropicMessages(
+        backend: String = "Custom LLM",
         url: URL,
         apiKey: String,
         model: String,
@@ -1262,7 +1347,7 @@ enum MeetingSummaryClient {
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
-            try validateHTTPResponse(response, data: data, backend: "Custom LLM")
+            try validateHTTPResponse(response, data: data, backend: backend)
             guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 fputs("[summary] Anthropic title generation: invalid JSON response\n", stderr)
                 return nil

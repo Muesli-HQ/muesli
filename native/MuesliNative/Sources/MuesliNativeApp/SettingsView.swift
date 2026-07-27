@@ -1080,6 +1080,32 @@ struct SettingsView: View {
                     ) { val in controller.updateConfig { $0.openAIModel = val } }
                 }
                 keyStatusRow(key: appState.config.openAIAPIKey)
+            } else if appState.selectedMeetingSummaryBackend == .anthropic {
+                settingsRow("Anthropic URL", controlWidth: meetingControlWidth) {
+                    PastableTextField(
+                        text: appState.config.anthropicURL,
+                        placeholder: "https://api.anthropic.com",
+                        onChange: { val in controller.updateConfig { $0.anthropicURL = val } }
+                    )
+                    .frame(height: 22)
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("API Key", controlWidth: meetingControlWidth) {
+                    PastableSecureField(
+                        text: appState.config.anthropicAPIKey,
+                        placeholder: "sk-ant-...",
+                        onChange: { val in controller.updateConfig { $0.anthropicAPIKey = val } }
+                    )
+                    .frame(height: 22)
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Model", controlWidth: meetingControlWidth) {
+                    settingsModelMenu(
+                        currentModel: appState.config.anthropicModel,
+                        presets: SummaryModelPreset.anthropicModels
+                    ) { val in controller.updateConfig { $0.anthropicModel = val } }
+                }
+                keyStatusRow(key: appState.config.anthropicAPIKey)
             } else if appState.selectedMeetingSummaryBackend == .ollama {
                 settingsRow("Ollama URL", controlWidth: meetingControlWidth) {
                     PastableTextField(

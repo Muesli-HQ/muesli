@@ -327,6 +327,22 @@ struct MeetingSummaryClientTests {
         #expect(prompt.contains("Raw transcript:\nTranscript body"))
     }
 
+    @Test("summarize routes to Anthropic when configured")
+    func routesToAnthropic() async throws {
+        var config = AppConfig()
+        config.anthropicAPIKey = ""
+        config.meetingSummaryBackend = "anthropic"
+
+        let result = try await MeetingSummaryClient.summarize(
+            transcript: "Test transcript",
+            meetingTitle: "My Meeting",
+            config: config
+        )
+
+        // No key → falls back to raw transcript
+        #expect(result.contains("## Raw Transcript"))
+    }
+
     @Test("summarize routes to OpenRouter when configured")
     func routesToOpenRouter() async throws {
         var config = AppConfig()
@@ -749,6 +765,35 @@ struct MeetingSummaryClientTests {
         #expect(
             MeetingSummaryClient.resolveLMStudioURL(config: config)?.absoluteString ==
                 "http://localhost:1234/v1/chat/completions"
+        )
+    }
+
+    @Test("resolveAnthropicURL expands Messages endpoints")
+    func resolveAnthropicURLExpansion() {
+        var config = AppConfig()
+
+        config.anthropicURL = ""
+        #expect(
+            MeetingSummaryClient.resolveAnthropicURL(config: config)?.absoluteString ==
+                "https://api.anthropic.com/v1/messages"
+        )
+
+        config.anthropicURL = "https://proxy.example.com"
+        #expect(
+            MeetingSummaryClient.resolveAnthropicURL(config: config)?.absoluteString ==
+                "https://proxy.example.com/v1/messages"
+        )
+
+        config.anthropicURL = "https://proxy.example.com/v1"
+        #expect(
+            MeetingSummaryClient.resolveAnthropicURL(config: config)?.absoluteString ==
+                "https://proxy.example.com/v1/messages"
+        )
+
+        config.anthropicURL = "https://proxy.example.com/v1/messages"
+        #expect(
+            MeetingSummaryClient.resolveAnthropicURL(config: config)?.absoluteString ==
+                "https://proxy.example.com/v1/messages"
         )
     }
 

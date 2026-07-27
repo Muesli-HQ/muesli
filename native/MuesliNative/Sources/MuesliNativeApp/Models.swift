@@ -367,6 +367,12 @@ struct SummaryModelPreset {
         SummaryModelPreset(id: "gpt-5.2", label: "GPT-5.2"),
     ]
 
+    static let anthropicModels: [SummaryModelPreset] = [
+        SummaryModelPreset(id: "claude-haiku-4-5", label: "Claude Haiku 4.5 (default)"),
+        SummaryModelPreset(id: "claude-sonnet-5", label: "Claude Sonnet 5"),
+        SummaryModelPreset(id: "claude-opus-5", label: "Claude Opus 5"),
+    ]
+
     static let openRouterModels: [SummaryModelPreset] = [
         SummaryModelPreset(id: "stepfun/step-3.5-flash:free", label: "Step 3.5 Flash (256k ctx)"),
         SummaryModelPreset(id: "nvidia/nemotron-3-super-120b-a12b:free", label: "Nemotron 3 Super 120B (262k ctx)"),
@@ -489,6 +495,11 @@ struct MeetingSummaryBackendOption: Equatable {
         label: "OpenAI"
     )
 
+    static let anthropic = MeetingSummaryBackendOption(
+        backend: "anthropic",
+        label: "Anthropic"
+    )
+
     static let openRouter = MeetingSummaryBackendOption(
         backend: "openrouter",
         label: "OpenRouter"
@@ -514,7 +525,7 @@ struct MeetingSummaryBackendOption: Equatable {
         label: "Custom LLM"
     )
 
-    static let all: [MeetingSummaryBackendOption] = [.chatGPT, .openAI, .openRouter, .ollama, .lmStudio, .customLLM]
+    static let all: [MeetingSummaryBackendOption] = [.chatGPT, .openAI, .anthropic, .openRouter, .ollama, .lmStudio, .customLLM]
 
     static func resolved(_ backend: String?) -> MeetingSummaryBackendOption {
         guard let backend, let option = all.first(where: { $0.backend == backend }) else {
@@ -1034,8 +1045,11 @@ struct AppConfig: Codable {
     var indicatorOrigin: CGPointCodable? = nil
     var openAIAPIKey: String = ""
     var openRouterAPIKey: String = ""
+    var anthropicAPIKey: String = ""
+    var anthropicURL: String = ""
     var openAIModel: String = ""
     var openRouterModel: String = ""
+    var anthropicModel: String = ""
     var chatGPTModel: String = ""
     var meetingSummaryRetryCount: Int = MeetingSummaryRetryPolicy.defaultRetryCount
     var ollamaURL: String = "http://localhost:11434"
@@ -1154,8 +1168,11 @@ struct AppConfig: Codable {
         case indicatorOrigin = "indicator_origin"
         case openAIAPIKey = "openai_api_key"
         case openRouterAPIKey = "openrouter_api_key"
+        case anthropicAPIKey = "anthropic_api_key"
+        case anthropicURL = "anthropic_url"
         case openAIModel = "openai_model"
         case openRouterModel = "openrouter_model"
+        case anthropicModel = "anthropic_model"
         case chatGPTModel = "chatgpt_model"
         case meetingSummaryRetryCount = "meeting_summary_retry_count"
         case ollamaURL = "ollama_url"
@@ -1305,8 +1322,11 @@ struct AppConfig: Codable {
         indicatorOrigin = try? c.decode(CGPointCodable.self, forKey: .indicatorOrigin)
         openAIAPIKey = (try? c.decode(String.self, forKey: .openAIAPIKey)) ?? defaults.openAIAPIKey
         openRouterAPIKey = (try? c.decode(String.self, forKey: .openRouterAPIKey)) ?? defaults.openRouterAPIKey
+        anthropicAPIKey = (try? c.decode(String.self, forKey: .anthropicAPIKey)) ?? defaults.anthropicAPIKey
+        anthropicURL = (try? c.decode(String.self, forKey: .anthropicURL)) ?? defaults.anthropicURL
         openAIModel = (try? c.decode(String.self, forKey: .openAIModel)) ?? defaults.openAIModel
         openRouterModel = (try? c.decode(String.self, forKey: .openRouterModel)) ?? defaults.openRouterModel
+        anthropicModel = (try? c.decode(String.self, forKey: .anthropicModel)) ?? defaults.anthropicModel
         chatGPTModel = SummaryModelPreset.supportedChatGPTModel(
             (try? c.decode(String.self, forKey: .chatGPTModel)) ?? defaults.chatGPTModel
         )
