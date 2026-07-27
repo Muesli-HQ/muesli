@@ -1411,6 +1411,10 @@ struct OnboardingView: View {
                     summaryBackend = .openAI
                     apiKey = ""
                 }
+                providerTab("Anthropic", selected: summaryBackend == .anthropic) {
+                    summaryBackend = .anthropic
+                    apiKey = ""
+                }
                 providerTab("OpenRouter", selected: summaryBackend == .openRouter) {
                     summaryBackend = .openRouter
                     apiKey = ""
@@ -1521,7 +1525,7 @@ struct OnboardingView: View {
 
                     PastableSecureField(
                         text: apiKey,
-                        placeholder: summaryBackend == .openAI ? "sk-..." : "sk-or-...",
+                        placeholder: onboardingAPIKeyPlaceholder,
                         onChange: { apiKey = $0 }
                     )
                     .frame(width: 320, height: 28)
@@ -1540,6 +1544,14 @@ struct OnboardingView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity)
+    }
+
+    private var onboardingAPIKeyPlaceholder: String {
+        switch summaryBackend {
+        case .openAI: return "sk-..."
+        case .anthropic: return "sk-ant-..."
+        default: return "sk-or-..."
+        }
     }
 
     private func providerTab(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {

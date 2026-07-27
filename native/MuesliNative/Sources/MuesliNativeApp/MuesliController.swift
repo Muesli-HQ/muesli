@@ -3545,6 +3545,8 @@ final class MuesliController: NSObject {
             if let apiKey, !apiKey.isEmpty {
                 if summaryBackend == .openAI {
                     config.openAIAPIKey = apiKey
+                } else if summaryBackend == .anthropic {
+                    config.anthropicAPIKey = apiKey
                 } else if summaryBackend == .openRouter {
                     config.openRouterAPIKey = apiKey
                 }
