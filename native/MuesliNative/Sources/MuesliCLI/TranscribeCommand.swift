@@ -742,19 +742,22 @@ enum CLISummaryClient {
                 title: title
             )
         case "anthropic":
-            let key = ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] ?? config.anthropicAPIKey
-            guard !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            let key = (ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] ?? config.anthropicAPIKey)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty else {
                 throw CLISummaryError.unavailable("Anthropic summary settings are missing an API key.")
             }
-            let configuredURL = ProcessInfo.processInfo.environment["ANTHROPIC_BASE_URL"] ?? config.anthropicURL
+            let configuredURL = (ProcessInfo.processInfo.environment["ANTHROPIC_BASE_URL"] ?? config.anthropicURL)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             guard let url = resolveEndpointURL(configuredURL.isEmpty ? "https://api.anthropic.com" : configuredURL, endpointSuffix: "v1/messages") else {
                 throw CLISummaryError.unavailable("Invalid Anthropic URL.")
             }
+            let model = config.anthropicModel.trimmingCharacters(in: .whitespacesAndNewlines)
             return try await anthropicSummary(
                 backend: "Anthropic",
                 url: url,
                 apiKey: key,
-                model: config.anthropicModel.isEmpty ? defaultAnthropicModel : config.anthropicModel,
+                model: model.isEmpty ? defaultAnthropicModel : model,
                 transcript: transcript,
                 title: title
             )
