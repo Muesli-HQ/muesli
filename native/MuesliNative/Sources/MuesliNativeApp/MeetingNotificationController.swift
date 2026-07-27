@@ -19,11 +19,22 @@ final class MeetingNotificationController {
     private var onJoinOnly: (() -> Void)?
     private var onDismiss: (() -> Void)?
     private var onAutoDismiss: (() -> Void)?
+    private var splitButtonAlternatives: [MeetingJoinDefaultAction] = []
     private(set) var isVisible = false
     private(set) var currentPromptID: String?
     private(set) var shownAt: Date?
 
     private static let dismissDuration: TimeInterval = 15
+
+    /// Fixed geometry for the split button, so swapping which action is armed never
+    /// reflows the card. `splitButtonLabelFits` guards the assumption in tests.
+    static let splitButtonWidth: CGFloat = 98
+    static let splitButtonFont = NSFont.systemFont(ofSize: 11, weight: .medium)
+
+    static func splitButtonLabelFits(_ label: String, horizontalPadding: CGFloat = 12) -> Bool {
+        let labelWidth = (label as NSString).size(withAttributes: [.font: splitButtonFont]).width
+        return labelWidth + horizontalPadding <= splitButtonWidth
+    }
 
     static func singleActionTextWidth(
         cardWidth: CGFloat,
@@ -58,6 +69,7 @@ final class MeetingNotificationController {
         preferredScreen: NSScreen? = nil,
         platform explicitPlatform: MeetingPlatform? = nil,
         dismissAfter: TimeInterval? = nil,
+        defaultAction: MeetingJoinDefaultAction = .fallback,
         onStartRecording: @escaping () -> Void,
         onJoinAndRecord: (() -> Void)? = nil,
         onJoinOnly: (() -> Void)? = nil,
@@ -77,7 +89,16 @@ final class MeetingNotificationController {
         self.onDismiss = onDismiss
         self.onAutoDismiss = onAutoDismiss
 
-        let hasJoinButton = meetingURL != nil && onJoinAndRecord != nil
+        let hasJoinAndRecord = meetingURL != nil && onJoinAndRecord != nil
+        let hasJoinOnly = meetingURL != nil && onJoinOnly != nil
+        let armedAction = defaultAction.resolved(hasJoinAndRecord: hasJoinAndRecord, hasJoinOnly: hasJoinOnly)
+        splitButtonAlternatives = defaultAction.availableAlternatives(
+            hasJoinAndRecord: hasJoinAndRecord,
+            hasJoinOnly: hasJoinOnly
+        )
+        // Nothing to drop down (a prompt with no join link, or "Stop Recording")
+        // keeps the plain single-action button.
+        let hasJoinButton = !splitButtonAlternatives.isEmpty
         let platform = explicitPlatform ?? meetingURL.flatMap { MeetingPlatform.detect(from: $0) }
         let platformIcon = platform?.loadIcon()
         let iconSize: CGFloat = 26
@@ -199,8 +220,8 @@ final class MeetingNotificationController {
         cardView.addSubview(subtitleLabel)
 
         if hasJoinButton {
-            // Split button: "Join & Record" (main) + chevron dropdown with "Join Only"
-            let buttonWidth: CGFloat = 98
+            // Split button: the armed action (main) + chevron dropdown with the others
+            let buttonWidth = Self.splitButtonWidth
             let chevronWidth: CGFloat = 24
             let totalWidth = buttonWidth + chevronWidth
             let buttonX = cardWidth - totalWidth - 12
@@ -212,9 +233,13 @@ final class MeetingNotificationController {
             titleLabel.frame.size.width = textMaxX - textX
             subtitleLabel.frame.size.width = textMaxX - textX
 
-            // Main "Join & Record" button
-            let joinButton = NSButton(title: "Join & Record", target: self, action: #selector(handleJoinAndRecord))
-            joinButton.font = .systemFont(ofSize: 11, weight: .medium)
+            // Main button for the user's default action
+            let joinButton = NSButton(
+                title: armedAction.buttonLabel,
+                target: self,
+                action: Self.selector(for: armedAction)
+            )
+            joinButton.font = Self.splitButtonFont
             joinButton.frame = NSRect(x: buttonX, y: 15, width: buttonWidth, height: 30)
             joinButton.wantsLayer = true
             joinButton.layer?.backgroundColor = greenColor.cgColor
@@ -234,6 +259,7 @@ final class MeetingNotificationController {
             chevronButton.layer?.maskedCorners = [.layerMaxXMinYCorner, .layerMaxXMaxYCorner]
             chevronButton.isBordered = false
             chevronButton.contentTintColor = NSColor.white.withAlphaComponent(0.8)
+            chevronButton.toolTip = splitButtonAlternatives.map(\.buttonLabel).joined(separator: " · ")
             cardView.addSubview(chevronButton)
         } else {
             // Single "Start Recording" button
@@ -298,6 +324,7 @@ final class MeetingNotificationController {
         onJoinOnly = nil
         onDismiss = nil
         onAutoDismiss = nil
+        splitButtonAlternatives = []
         isVisible = false
         currentPromptID = nil
         shownAt = nil
@@ -413,15 +440,26 @@ final class MeetingNotificationController {
         }
     }
 
+    /// Maps a join action to the handler that performs it. The record-only handler is
+    /// the same `onStartRecording` used by single-action prompts.
+    private static func selector(for action: MeetingJoinDefaultAction) -> Selector {
+        switch action {
+        case .joinAndRecord:
+            return #selector(handleJoinAndRecord)
+        case .joinOnly:
+            return #selector(handleJoinOnly)
+        case .recordOnly:
+            return #selector(handleStartRecording)
+        }
+    }
+
     @objc private func handleChevronClick(_ sender: NSButton) {
         let menu = NSMenu()
-        let joinOnlyItem = NSMenuItem(title: "Join Only", action: #selector(handleJoinOnly), keyEquivalent: "")
-        joinOnlyItem.target = self
-        menu.addItem(joinOnlyItem)
-
-        let recordOnlyItem = NSMenuItem(title: "Record Only", action: #selector(handleStartRecording), keyEquivalent: "")
-        recordOnlyItem.target = self
-        menu.addItem(recordOnlyItem)
+        for action in splitButtonAlternatives {
+            let item = NSMenuItem(title: action.buttonLabel, action: Self.selector(for: action), keyEquivalent: "")
+            item.target = self
+            menu.addItem(item)
+        }
 
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
     }

@@ -2788,6 +2788,7 @@ final class MuesliController: NSObject {
             subtitle: title,
             meetingURL: meetingURL,
             dismissAfter: 30,
+            defaultAction: config.meetingJoinDefaultAction,
             onStartRecording: { [weak self] in
                 guard let self else { return }
                 self.isShowingCalendarNotification = false
@@ -5396,6 +5397,19 @@ final class MuesliController: NSObject {
             endDate: endDate,
             autoStopSource: MeetingAutoStopSource(meetingURL: meetingURL),
             startOrigin: .joinAndRecord
+        )
+    }
+
+    /// Start recording without opening the meeting URL — for people who join calls in
+    /// a separate browser or client.
+    /// Single entry point for "Record Only" from both notification panel and Coming Up section.
+    func recordOnly(title: String, meetingURL: URL?, endDate: Date?, calendarEventID: String? = nil) {
+        startForegroundMeetingRecording(
+            title: title,
+            calendarEventID: calendarEventID,
+            endDate: endDate,
+            autoStopSource: meetingURL.flatMap { MeetingAutoStopSource(meetingURL: $0) },
+            startOrigin: .scheduledMeetingPrompt
         )
     }
 
@@ -8272,6 +8286,7 @@ final class MuesliController: NSObject {
             title: notificationTitle,
             subtitle: "\(title) · \(timeLabel)",
             meetingURL: meetingURL,
+            defaultAction: config.meetingJoinDefaultAction,
             onStartRecording: { [weak self] in
                 guard let self else { return }
                 self.isShowingCalendarNotification = false
