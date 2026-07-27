@@ -1099,10 +1099,17 @@ struct SettingsView: View {
                     .frame(height: 22)
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Model", controlWidth: meetingControlWidth) {
+                settingsRow("Model preset", controlWidth: meetingControlWidth) {
                     settingsModelMenu(
                         currentModel: appState.config.anthropicModel,
                         presets: SummaryModelPreset.anthropicModels
+                    ) { val in controller.updateConfig { $0.anthropicModel = val } }
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Custom model ID", controlWidth: meetingControlWidth) {
+                    settingsModelTextField(
+                        currentModel: appState.config.anthropicModel,
+                        placeholder: "claude-haiku-4-5"
                     ) { val in controller.updateConfig { $0.anthropicModel = val } }
                 }
                 keyStatusRow(key: appState.config.anthropicAPIKey)

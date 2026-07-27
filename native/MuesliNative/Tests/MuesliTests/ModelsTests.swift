@@ -552,6 +552,23 @@ struct MeetingSummaryBackendTests {
         #expect(MeetingSummaryBackendOption.resolved(nil) == .chatGPT)
     }
 
+    @Test("Anthropic config persistence defaults and round trips")
+    func anthropicConfigPersistence() throws {
+        let defaults = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+        #expect(defaults.anthropicAPIKey.isEmpty)
+        #expect(defaults.anthropicURL.isEmpty)
+        #expect(defaults.anthropicModel.isEmpty)
+
+        var config = AppConfig()
+        config.anthropicAPIKey = "sk-ant-test"
+        config.anthropicURL = "https://proxy.example.com"
+        config.anthropicModel = "claude-custom-model"
+        let restored = try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(config))
+        #expect(restored.anthropicAPIKey == config.anthropicAPIKey)
+        #expect(restored.anthropicURL == config.anthropicURL)
+        #expect(restored.anthropicModel == config.anthropicModel)
+    }
+
     @Test("Custom LLM format labels")
     func customLLMFormatLabels() {
         #expect(CustomLLMFormat.openAI.label == "OpenAI-compatible")
