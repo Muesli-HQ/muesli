@@ -88,8 +88,22 @@ enum ContributionSocialShare {
         return components.url!
     }
 
+    /// Grouping locale for milestone counts. Every caller interpolates the result into
+    /// fixed English copy, including the share text posted to X and LinkedIn, so the
+    /// separator must not follow `Locale.current`: a locale-grouped "31.000" reads as
+    /// thirty-one point zero in an English sentence.
+    ///
+    /// Deliberately `en_US` and not `en_US_POSIX` — the POSIX locale drops grouping
+    /// entirely and formats 31000 as "31000".
+    static let countGroupingLocale = Locale(identifier: "en_US")
+
     static func formatCount(_ value: Int) -> String {
+        formatCount(value, locale: countGroupingLocale)
+    }
+
+    static func formatCount(_ value: Int, locale: Locale) -> String {
         let formatter = NumberFormatter()
+        formatter.locale = locale
         formatter.numberStyle = .decimal
         return formatter.string(from: NSNumber(value: value)) ?? "\(value)"
     }
