@@ -7,7 +7,17 @@ import os
 /// user-configured folder. Mirrors the meeting-hook dispatch pattern by
 /// dispatching export work away from the meeting persistence path.
 protocol MeetingMarkdownAutoExporting {
-    func exportIfConfigured(meeting: MeetingRecord, config: AppConfig)
+    /// Participants arrive as a provider rather than a materialized list. This type
+    /// owns no database handle, so the caller supplies the read — but running it here
+    /// rather than at the call site keeps a SQLite query off the main-actor meeting
+    /// persistence path, and lets `resolveParticipants` retry lock contention before
+    /// committing to a one-shot artifact that would otherwise silently lose its
+    /// People line.
+    func exportIfConfigured(
+        meeting: MeetingRecord,
+        loadParticipants: @escaping @Sendable () throws -> [MeetingParticipant],
+        config: AppConfig
+    )
     func recordMeetingLookupFailure(meetingID: Int64, error: Error?)
 }
 
@@ -33,10 +43,14 @@ final class MeetingMarkdownAutoExporter: MeetingMarkdownAutoExporting {
         supportDirectory.appendingPathComponent("meeting-markdown-export.log")
     }
 
-    func exportIfConfigured(meeting: MeetingRecord, config: AppConfig) {
+    func exportIfConfigured(
+        meeting: MeetingRecord,
+        loadParticipants: @escaping @Sendable () throws -> [MeetingParticipant],
+        config: AppConfig
+    ) {
         guard config.autoExportMarkdownEnabled else { return }
         Task.detached(priority: .utility) { [self] in
-            await performExport(meeting: meeting, config: config)
+            await performExport(meeting: meeting, loadParticipants: loadParticipants, config: config)
         }
     }
 
@@ -48,10 +62,66 @@ final class MeetingMarkdownAutoExporter: MeetingMarkdownAutoExporting {
         }
     }
 
+    /// Records that participants could not be loaded for an export that still went
+    /// ahead without them. Deliberately logs only the meeting id, the attempt count,
+    /// and the error, never participant names.
+    func recordParticipantLookupFailure(meetingID: Int64, error: Error, attempts: Int = 1) {
+        writeLog(
+            "export incomplete: could not load participants id=\(meetingID) attempts=\(attempts) "
+                + "error=\(error.localizedDescription); exported without the People line"
+        )
+    }
+
+    // MARK: - Participants
+
+    /// Backoff between participant lookup attempts. Sized to outlast a transcript
+    /// checkpoint flush — which can still be draining when a meeting ends — without
+    /// holding a background export for a noticeable stretch.
+    private static let participantRetryDelays: [Duration] = [
+        .milliseconds(200),
+        .milliseconds(600),
+        .milliseconds(1500),
+    ]
+
+    /// Resolves the participant snapshot for an export, retrying lock contention.
+    ///
+    /// An automatic export is written exactly once and never revisited, so a single
+    /// `SQLITE_BUSY` read would cost that file its People line permanently. Retrying
+    /// is what actually repairs that case; the log below is only for the residue that
+    /// no retry can fix. A deterministic fault gives up on the first attempt rather
+    /// than stalling the export behind three pointless sleeps.
+    private func resolveParticipants(
+        meetingID: Int64,
+        load: @Sendable () throws -> [MeetingParticipant]
+    ) async -> [MeetingParticipant] {
+        var attempt = 0
+        while true {
+            do {
+                return try load()
+            } catch {
+                guard attempt < Self.participantRetryDelays.count,
+                      DictationStore.isTransientLockFailure(error) else {
+                    recordParticipantLookupFailure(
+                        meetingID: meetingID,
+                        error: error,
+                        attempts: attempt + 1
+                    )
+                    return []
+                }
+                try? await Task.sleep(for: Self.participantRetryDelays[attempt])
+                attempt += 1
+            }
+        }
+    }
+
     /// Builds the export payloads and writes them to disk. Returns the written URLs on
     /// success (exposed for testing); logs and returns nil on any failure.
     @discardableResult
-    func performExport(meeting: MeetingRecord, config: AppConfig) async -> [URL]? {
+    func performExport(
+        meeting: MeetingRecord,
+        loadParticipants: @Sendable () throws -> [MeetingParticipant] = { [] },
+        config: AppConfig
+    ) async -> [URL]? {
         let trimmedFolder = config.autoExportMarkdownFolderPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedFolder.isEmpty else {
             writeLog("skipped: auto-export enabled but no destination folder configured")
@@ -70,9 +140,17 @@ final class MeetingMarkdownAutoExporter: MeetingMarkdownAutoExporting {
             return nil
         }
 
+        // Deliberately after the destination checks above: an export that is going to
+        // be skipped should not touch the database at all.
+        let participants = await resolveParticipants(meetingID: meeting.id, load: loadParticipants)
+
         let content = config.resolvedAutoExportMarkdownContent
         let fileFormat = config.resolvedAutoExportFileFormat
-        let markdown = MeetingExporter.buildMarkdown(meeting: meeting, content: content)
+        let markdown = MeetingExporter.buildMarkdown(
+            meeting: meeting,
+            content: content,
+            participants: participants
+        )
         var writtenURLs: [URL] = []
 
         if fileFormat.includesMarkdown {

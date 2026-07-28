@@ -466,6 +466,29 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
     }
 }
 
+public struct MeetingParticipant: Identifiable, Equatable, Sendable {
+    public let meetingID: Int64
+    public let contactIdentifier: String
+    public let displayName: String
+    public let insertionOrder: Int
+
+    public var id: String {
+        "\(meetingID):\(contactIdentifier)"
+    }
+
+    public init(
+        meetingID: Int64,
+        contactIdentifier: String,
+        displayName: String,
+        insertionOrder: Int
+    ) {
+        self.meetingID = meetingID
+        self.contactIdentifier = contactIdentifier
+        self.displayName = displayName
+        self.insertionOrder = insertionOrder
+    }
+}
+
 public struct MeetingFolder: Identifiable, Codable, Sendable {
     public let id: Int64
     public var name: String
