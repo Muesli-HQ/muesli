@@ -40,7 +40,7 @@ enum TranscriptCleanupClient {
         }
         switch backend.llmBackend {
         case .some(.chatGPT):
-            return SummaryModelPreset.chatGPTModels.first?.id ?? "gpt-5.4-mini"
+            return SummaryModelPreset.chatGPTTranscriptCleanupModels.first?.id ?? "gpt-5.6-terra"
         case .some(.openAI):
             return SummaryModelPreset.openAIModels.first?.id ?? "gpt-5.4-mini"
         case .some(.openRouter):
@@ -263,12 +263,15 @@ enum TranscriptCleanupClient {
         guard !apiKey.isEmpty else {
             throw TranscriptCleanupError.missingConfiguration("OpenAI API key is not configured.")
         }
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": model,
             "instructions": systemPrompt,
             "input": userPrompt,
             "max_output_tokens": defaultMaxOutputTokens,
         ]
+        if let effort = SummaryModelPreset.reasoningEffort(for: model) {
+            body["reasoning"] = ["effort": effort]
+        }
         var request = URLRequest(url: openAIResponsesURL)
         request.timeoutInterval = requestTimeout
         request.httpMethod = "POST"

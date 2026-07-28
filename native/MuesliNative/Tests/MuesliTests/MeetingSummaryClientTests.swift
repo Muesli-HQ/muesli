@@ -94,6 +94,31 @@ struct MeetingSummaryClientTests {
         #expect(prompt.contains("- User typed decision"))
     }
 
+    @Test("ChatGPT WHAM requests fix GPT-5.6 reasoning to High")
+    func chatGPTWHAMRequestUsesHighReasoningForGPT56() {
+        for model in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+            let body = ChatGPTResponsesClient.requestBody(
+                systemPrompt: "System",
+                userPrompt: "User",
+                model: model
+            )
+            let reasoning = body["reasoning"] as? [String: String]
+
+            #expect(reasoning?["effort"] == "high")
+        }
+    }
+
+    @Test("ChatGPT WHAM requests preserve GPT-5.4 Mini reasoning behavior")
+    func chatGPTWHAMRequestPreservesGPT54MiniReasoning() {
+        let body = ChatGPTResponsesClient.requestBody(
+            systemPrompt: "System",
+            userPrompt: "User",
+            model: "gpt-5.4-mini"
+        )
+
+        #expect(body["reasoning"] == nil)
+    }
+
     @Test("ChatGPT WHAM parser reads top-level output text")
     func chatGPTWHAMParserReadsTopLevelOutputText() {
         let payload: [String: Any] = [
