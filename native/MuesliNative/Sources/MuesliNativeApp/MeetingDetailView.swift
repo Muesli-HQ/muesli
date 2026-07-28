@@ -222,6 +222,11 @@ struct MeetingDetailView: View {
                     folderPill(for: meeting)
 
                     threadBreadcrumb
+
+                    MeetingParticipantsView(
+                        meetingID: meeting.id,
+                        controller: controller
+                    )
                 }
 
                 Spacer(minLength: MuesliTheme.spacing16)
@@ -835,18 +840,32 @@ struct MeetingDetailView: View {
         .help(label)
     }
 
+    /// Export is best-effort on participants: a lookup failure should never block
+    /// exporting the meeting itself.
+    private func exportParticipants(for meeting: MeetingRecord) -> [MeetingParticipant] {
+        (try? controller.meetingParticipants(meetingID: meeting.id)) ?? []
+    }
+
     @ViewBuilder
     private func exportMenu(for meeting: MeetingRecord) -> some View {
         let currentContent: MeetingExportContent = documentMode == .transcript ? .transcript : .notes
         let currentLabel = documentMode == .transcript ? "Export Transcript" : "Export Notes"
         Menu {
             Button {
-                MeetingExporter.export(meeting: meeting, content: currentContent)
+                MeetingExporter.export(
+                    meeting: meeting,
+                    content: currentContent,
+                    participants: exportParticipants(for: meeting)
+                )
             } label: {
                 Label(currentLabel, systemImage: documentMode == .transcript ? "text.quote" : "doc.text")
             }
             Button {
-                MeetingExporter.export(meeting: meeting, content: .fullMeeting)
+                MeetingExporter.export(
+                    meeting: meeting,
+                    content: .fullMeeting,
+                    participants: exportParticipants(for: meeting)
+                )
             } label: {
                 Label("Export Full Meeting", systemImage: "doc.on.doc")
             }

@@ -2863,4 +2863,39 @@ struct DictationStoreTests {
         #expect(lower.count == 1)
         #expect(mixed.count == 1)
     }
+
+    // MARK: - Transient failure classification
+
+    @Test("lock contention is classified as transient", arguments: [SQLITE_BUSY, SQLITE_LOCKED])
+    func lockContentionIsTransient(code: Int32) {
+        #expect(DictationStore.isTransientLockFailure(storeError(code: code)))
+    }
+
+    @Test(
+        "extended lock result codes are classified as transient",
+        arguments: [SQLITE_BUSY | (2 << 8), SQLITE_LOCKED | (1 << 8)]
+    )
+    func extendedLockCodesAreTransient(code: Int32) {
+        #expect(DictationStore.isTransientLockFailure(storeError(code: code)))
+    }
+
+    @Test(
+        "deterministic faults are not classified as transient",
+        arguments: [SQLITE_CORRUPT, SQLITE_CANTOPEN, SQLITE_READONLY, SQLITE_ERROR]
+    )
+    func deterministicFaultsAreNotTransient(code: Int32) {
+        #expect(DictationStore.isTransientLockFailure(storeError(code: code)) == false)
+    }
+
+    @Test("a foreign error that happens to share a SQLite code is not transient")
+    func foreignErrorIsNotTransient() {
+        let foreign = NSError(domain: NSPOSIXErrorDomain, code: Int(SQLITE_BUSY))
+
+        #expect(DictationStore.isTransientLockFailure(foreign) == false)
+        #expect(DictationStore.isTransientLockFailure(DictationStoreError.meetingNotFound(id: 1)) == false)
+    }
+
+    private func storeError(code: Int32) -> NSError {
+        NSError(domain: DictationStore.errorDomain, code: Int(code))
+    }
 }

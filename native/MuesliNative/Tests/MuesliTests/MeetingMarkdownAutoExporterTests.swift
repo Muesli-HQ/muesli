@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import Testing
 import MuesliCore
 @testable import MuesliNativeApp
@@ -15,7 +16,7 @@ struct MeetingMarkdownAutoExporterTests {
         config.autoExportMarkdownEnabled = false
         config.autoExportMarkdownFolderPath = destination.path
 
-        exporter.exportIfConfigured(meeting: makeMeeting(), config: config)
+        exporter.exportIfConfigured(meeting: makeMeeting(), loadParticipants: { [] }, config: config)
 
         #expect(FileManager.default.fileExists(atPath: exporter.logURL.path) == false)
         #expect(try FileManager.default.contentsOfDirectory(atPath: destination.path).isEmpty)
@@ -70,6 +71,149 @@ struct MeetingMarkdownAutoExporterTests {
         #expect(contents.contains("# Weekly Standup"))
         #expect(contents.contains("## Key Points"))
         #expect(contents.contains("Ship export feature"))
+    }
+
+    @Test("attached participants appear in the automatic export")
+    func writesParticipants() async throws {
+        let support = makeTemporaryDirectory()
+        let destination = makeTemporaryDirectory()
+        let exporter = MeetingMarkdownAutoExporter(supportDirectory: support)
+        var config = AppConfig()
+        config.autoExportMarkdownEnabled = true
+        config.autoExportMarkdownFolderPath = destination.path
+
+        let url = try #require(await exporter.performExport(
+            meeting: makeMeeting(),
+            loadParticipants: { Self.sampleParticipants },
+            config: config
+        )?.first)
+
+        let contents = try String(contentsOf: url, encoding: .utf8)
+        #expect(contents.contains("**People:** Alice Example, Bob Example"))
+    }
+
+    @Test("exportIfConfigured carries participants through the production path")
+    func exportIfConfiguredWritesParticipants() async throws {
+        let support = makeTemporaryDirectory()
+        let destination = makeTemporaryDirectory()
+        let exporter = MeetingMarkdownAutoExporter(supportDirectory: support)
+        var config = AppConfig()
+        config.autoExportMarkdownEnabled = true
+        config.autoExportMarkdownFolderPath = destination.path
+
+        exporter.exportIfConfigured(
+            meeting: makeMeeting(),
+            loadParticipants: { Self.sampleParticipants },
+            config: config
+        )
+
+        let url = try #require(await waitForFirstFile(in: destination))
+        let contents = try String(contentsOf: url, encoding: .utf8)
+        #expect(contents.contains("**People:** Alice Example, Bob Example"))
+    }
+
+    @Test("a locked database is retried until the People line survives")
+    func retriesTransientParticipantLookupFailure() async throws {
+        let support = makeTemporaryDirectory()
+        let destination = makeTemporaryDirectory()
+        let exporter = MeetingMarkdownAutoExporter(supportDirectory: support)
+        var config = AppConfig()
+        config.autoExportMarkdownEnabled = true
+        config.autoExportMarkdownFolderPath = destination.path
+
+        let recorder = LookupRecorder()
+        let url = try #require(await exporter.performExport(
+            meeting: makeMeeting(),
+            loadParticipants: {
+                guard recorder.recordAttempt() >= 3 else { throw Self.lockedDatabaseError }
+                return Self.sampleParticipants
+            },
+            config: config
+        )?.first)
+        exporter.waitForPendingLogWrites()
+
+        #expect(recorder.attempts == 3)
+        let contents = try String(contentsOf: url, encoding: .utf8)
+        #expect(contents.contains("**People:** Alice Example, Bob Example"))
+        let log = try String(contentsOf: exporter.logURL, encoding: .utf8)
+        #expect(log.contains("could not load participants") == false)
+    }
+
+    @Test("a deterministic lookup failure is not retried")
+    func deterministicParticipantLookupFailureIsNotRetried() async throws {
+        let support = makeTemporaryDirectory()
+        let destination = makeTemporaryDirectory()
+        let exporter = MeetingMarkdownAutoExporter(supportDirectory: support)
+        var config = AppConfig()
+        config.autoExportMarkdownEnabled = true
+        config.autoExportMarkdownFolderPath = destination.path
+
+        let recorder = LookupRecorder()
+        let url = try #require(await exporter.performExport(
+            meeting: makeMeeting(),
+            loadParticipants: {
+                _ = recorder.recordAttempt()
+                throw DictationStoreError.meetingNotFound(id: 1)
+            },
+            config: config
+        )?.first)
+        exporter.waitForPendingLogWrites()
+
+        #expect(recorder.attempts == 1)
+        let contents = try String(contentsOf: url, encoding: .utf8)
+        #expect(contents.contains("**People:**") == false)
+        let log = try String(contentsOf: exporter.logURL, encoding: .utf8)
+        #expect(log.contains("could not load participants id=1 attempts=1"))
+    }
+
+    @Test("an export still lands when every retry is exhausted")
+    func exhaustedParticipantRetriesStillExport() async throws {
+        let support = makeTemporaryDirectory()
+        let destination = makeTemporaryDirectory()
+        let exporter = MeetingMarkdownAutoExporter(supportDirectory: support)
+        var config = AppConfig()
+        config.autoExportMarkdownEnabled = true
+        config.autoExportMarkdownFolderPath = destination.path
+
+        let recorder = LookupRecorder()
+        let url = try #require(await exporter.performExport(
+            meeting: makeMeeting(),
+            loadParticipants: {
+                _ = recorder.recordAttempt()
+                throw Self.lockedDatabaseError
+            },
+            config: config
+        )?.first)
+        exporter.waitForPendingLogWrites()
+
+        #expect(recorder.attempts == 4)
+        let contents = try String(contentsOf: url, encoding: .utf8)
+        #expect(contents.contains("# Weekly Standup"))
+        #expect(contents.contains("**People:**") == false)
+        let log = try String(contentsOf: exporter.logURL, encoding: .utf8)
+        #expect(log.contains("could not load participants id=1 attempts=4"))
+    }
+
+    @Test("a skipped export never touches the database")
+    func skippedExportDoesNotLoadParticipants() async throws {
+        let support = makeTemporaryDirectory()
+        let exporter = MeetingMarkdownAutoExporter(supportDirectory: support)
+        var config = AppConfig()
+        config.autoExportMarkdownEnabled = true
+        config.autoExportMarkdownFolderPath = "relative/notes"
+
+        let recorder = LookupRecorder()
+        let result = await exporter.performExport(
+            meeting: makeMeeting(),
+            loadParticipants: {
+                _ = recorder.recordAttempt()
+                return []
+            },
+            config: config
+        )
+
+        #expect(result == nil)
+        #expect(recorder.attempts == 0)
     }
 
     @Test("filename includes date prefix and -notes suffix")
@@ -161,6 +305,22 @@ struct MeetingMarkdownAutoExporterTests {
         #expect(log.contains("persisted meeting not found id=42"))
     }
 
+    @Test("participant lookup failures are written to export log")
+    func participantLookupFailureWritesLog() throws {
+        let support = makeTemporaryDirectory()
+        let exporter = MeetingMarkdownAutoExporter(supportDirectory: support)
+
+        exporter.recordParticipantLookupFailure(
+            meetingID: 42,
+            error: DictationStoreError.meetingNotFound(id: 42)
+        )
+        exporter.waitForPendingLogWrites()
+
+        let log = try String(contentsOf: exporter.logURL, encoding: .utf8)
+        #expect(log.contains("could not load participants id=42"))
+        #expect(log.contains("exported without the People line"))
+    }
+
     @Test("creates destination folder when missing")
     func createsMissingFolder() async throws {
         let support = makeTemporaryDirectory()
@@ -215,6 +375,66 @@ struct MeetingMarkdownAutoExporterTests {
     }
 
     // MARK: - Helpers
+
+    /// Counts participant-provider invocations. The provider is `@Sendable` and runs
+    /// on the exporter's task, so the counter needs its own synchronization.
+    private final class LookupRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+
+        var attempts: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return count
+        }
+
+        @discardableResult
+        func recordAttempt() -> Int {
+            lock.lock()
+            defer { lock.unlock() }
+            count += 1
+            return count
+        }
+    }
+
+    /// Shaped exactly like the error `DictationStore` raises for lock contention, so
+    /// the retry path is exercised through the real classification rather than a
+    /// test-only hook.
+    private static let lockedDatabaseError = NSError(
+        domain: DictationStore.errorDomain,
+        code: Int(SQLITE_BUSY),
+        userInfo: [NSLocalizedDescriptionKey: "database is locked"]
+    )
+
+    private static let sampleParticipants = [
+        MeetingParticipant(
+            meetingID: 1,
+            contactIdentifier: "contact-a",
+            displayName: "Alice Example",
+            insertionOrder: 0
+        ),
+        MeetingParticipant(
+            meetingID: 1,
+            contactIdentifier: "contact-b",
+            displayName: "Bob Example",
+            insertionOrder: 1
+        ),
+    ]
+
+    /// `exportIfConfigured` hands the work to a detached task, so the file appears
+    /// asynchronously. Polls instead of sleeping a fixed interval.
+    private func waitForFirstFile(in folder: URL, timeout: Duration = .seconds(10)) async -> URL? {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while ContinuousClock.now < deadline {
+            let contents = (try? FileManager.default.contentsOfDirectory(
+                at: folder,
+                includingPropertiesForKeys: nil
+            )) ?? []
+            if let first = contents.first { return first }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        return nil
+    }
 
     private func makeMeeting(
         title: String = "Weekly Standup",

@@ -51,9 +51,13 @@ struct MeetingExporter {
     static let mdType = UTType(filenameExtension: "md") ?? .plainText
     static let pdfType = UTType.pdf
 
-    static func export(meeting: MeetingRecord, content: MeetingExportContent) {
+    static func export(
+        meeting: MeetingRecord,
+        content: MeetingExportContent,
+        participants: [MeetingParticipant] = []
+    ) {
         DispatchQueue.main.async {
-            let markdown = buildMarkdown(meeting: meeting, content: content)
+            let markdown = buildMarkdown(meeting: meeting, content: content, participants: participants)
             let filename = suggestedFilename(meeting: meeting, content: content)
 
             let panel = NSSavePanel()
@@ -81,7 +85,11 @@ struct MeetingExporter {
 
     // MARK: - Markdown composition
 
-    static func buildMarkdown(meeting: MeetingRecord, content: MeetingExportContent) -> String {
+    static func buildMarkdown(
+        meeting: MeetingRecord,
+        content: MeetingExportContent,
+        participants: [MeetingParticipant] = []
+    ) -> String {
         var parts: [String] = []
 
         parts.append("# \(meeting.title)")
@@ -91,6 +99,9 @@ struct MeetingExporter {
         parts.append("**Words:** \(meeting.wordCount)")
         if let name = meeting.selectedTemplateName, !name.isEmpty {
             parts.append("**Template:** \(name)")
+        }
+        if !participants.isEmpty {
+            parts.append("**People:** \(participants.map(\.displayName).joined(separator: ", "))")
         }
         parts.append("")
         parts.append("---")

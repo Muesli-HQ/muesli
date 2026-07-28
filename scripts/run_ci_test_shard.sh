@@ -19,6 +19,7 @@ case "${shard}" in
     filters=(
       ConfigStoreTests
       DictationStoreTests
+      MeetingParticipantStoreTests
       MuesliCLITests
       ChatGPTAuthTests
       ChatGPTTokenStorageTests
@@ -66,7 +67,10 @@ case "${shard}" in
       AudioGraphExceptionBridgeTests
       DiagnosticIncidentTests
       DictationAudioRouteControllerTests
+      MeetingContactIdentityTests
+      MeetingContactStoreTests
       MeetingDetectorTests
+      MeetingMarkdownAutoExporterTests
       MeetingRecordingWriterTests
       MeetingResumePolicyTests
       MeetingStreamingPartialSessionTests

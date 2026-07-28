@@ -4036,6 +4036,33 @@ final class MuesliController: NSObject {
 
     // MARK: - Meeting Editing
 
+    func meetingParticipants(meetingID: Int64) throws -> [MeetingParticipant] {
+        try dictationStore.listMeetingParticipants(meetingID: meetingID)
+    }
+
+    @discardableResult
+    func attachMeetingParticipant(
+        meetingID: Int64,
+        contactIdentifier: String,
+        displayName: String
+    ) throws -> Bool {
+        try dictationStore.attachMeetingParticipant(
+            meetingID: meetingID,
+            contactIdentifier: contactIdentifier,
+            displayName: displayName
+        )
+    }
+
+    func removeMeetingParticipant(
+        meetingID: Int64,
+        contactIdentifier: String
+    ) throws {
+        try dictationStore.removeMeetingParticipant(
+            meetingID: meetingID,
+            contactIdentifier: contactIdentifier
+        )
+    }
+
     private func notesContextForResummary(_ meeting: MeetingRecord) -> String? {
         Self.notesContextForResummary(meeting)
     }
@@ -6064,7 +6091,21 @@ final class MuesliController: NSObject {
         if config.autoExportMarkdownEnabled {
             do {
                 if let record = try dictationStore.meeting(id: persistenceResult.meetingID) {
-                    meetingMarkdownAutoExporter.exportIfConfigured(meeting: record, config: config)
+                    // Hand the exporter a provider rather than a list. This method runs
+                    // on the main actor, and the exporter retries the read on lock
+                    // contention, so the query belongs in its background task. A fresh
+                    // store is built from the database URL there because `DictationStore`
+                    // is not `Sendable` — the same pattern `insightsSnapshot` uses.
+                    let databaseURL = dictationStore.resolvedDatabaseURL
+                    let meetingID = persistenceResult.meetingID
+                    meetingMarkdownAutoExporter.exportIfConfigured(
+                        meeting: record,
+                        loadParticipants: {
+                            try DictationStore(databaseURL: databaseURL)
+                                .listMeetingParticipants(meetingID: meetingID)
+                        },
+                        config: config
+                    )
                 } else {
                     meetingMarkdownAutoExporter.recordMeetingLookupFailure(
                         meetingID: persistenceResult.meetingID,

@@ -54,6 +54,8 @@ let package = Package(
             ],
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
+                .linkedFramework("Contacts"),
+                .linkedFramework("ContactsUI"),
             ]
         ),
         .executableTarget(

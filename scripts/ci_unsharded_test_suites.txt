@@ -46,7 +46,6 @@ MeetingChunkTimingTrackerTests
 MeetingExporterTests
 MeetingHookIntegrationTests
 MeetingHookRunnerTests
-MeetingMarkdownAutoExporterTests
 MeetingMediaSessionTrackerTests
 MeetingMediaSignalFilterTests
 MeetingMicHealthTrackerTests
