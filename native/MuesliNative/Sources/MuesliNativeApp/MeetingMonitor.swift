@@ -599,6 +599,16 @@ private actor MeetingDetectionService {
             activityCandidate,
             mutedBundleIDs: context.mutedBundleIDs
         ) ? nil : activityCandidate
+        if context.isRecording,
+           let unmutedActivityCandidate {
+            // Manual recordings can begin before the meeting app becomes active.
+            // Consume a media-backed session only after capture has really started,
+            // so failed startups remain retryable and recurring URL-only candidates
+            // are not suppressed for the lifetime of the app.
+            if promptState.markRecordingStarted(unmutedActivityCandidate) {
+                log("recording_session_consumed id=\(unmutedActivityCandidate.id)")
+            }
+        }
         emitActivityUpdate(unmutedActivityCandidate)
         let candidate = isGloballySuppressed(now: now) ? nil : unmutedActivityCandidate
         logCandidateIfChanged(candidate)
@@ -702,6 +712,8 @@ private actor MeetingDetectionService {
             log("prompt_suppressed id=\(candidate.id) reason=auto_dismissed")
         case .userDismissedSuppression:
             log("prompt_suppressed id=\(candidate.id) reason=user_dismissed")
+        case .recordingStartedSuppression:
+            log("prompt_suppressed id=\(candidate.id) reason=recording_started")
         case .calendarNotificationVisible:
             log("prompt_suppressed id=\(candidate.id) reason=calendar_notification_visible")
         case .recording:

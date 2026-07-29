@@ -22,16 +22,11 @@ enum ChatGPTResponsesClient {
         logCategory: String
     ) async throws -> String {
         let (token, accountId) = try await ChatGPTAuthManager.shared.validAccessToken()
-        let body: [String: Any] = [
-            "model": model,
-            "store": false,
-            "stream": true,
-            "instructions": systemPrompt,
-            "input": [[
-                "role": "user",
-                "content": [["type": "input_text", "text": userPrompt]],
-            ] as [String: Any]],
-        ]
+        let body = requestBody(
+            systemPrompt: systemPrompt,
+            userPrompt: userPrompt,
+            model: model
+        )
 
         var request = URLRequest(url: whamURL)
         request.timeoutInterval = requestTimeout
@@ -70,6 +65,27 @@ enum ChatGPTResponsesClient {
         let trimmed = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
         fputs("[\(logCategory)] ChatGPT WHAM: collected \(trimmed.count) chars\n", stderr)
         return trimmed
+    }
+
+    static func requestBody(
+        systemPrompt: String,
+        userPrompt: String,
+        model: String
+    ) -> [String: Any] {
+        var body: [String: Any] = [
+            "model": model,
+            "store": false,
+            "stream": true,
+            "instructions": systemPrompt,
+            "input": [[
+                "role": "user",
+                "content": [["type": "input_text", "text": userPrompt]],
+            ] as [String: Any]],
+        ]
+        if let effort = SummaryModelPreset.reasoningEffort(for: model) {
+            body["reasoning"] = ["effort": effort]
+        }
+        return body
     }
 
     static func applyStreamPayload(_ payload: [String: Any], deltaText: inout String, finalText: inout String) {

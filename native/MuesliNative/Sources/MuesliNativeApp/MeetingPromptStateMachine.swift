@@ -23,6 +23,7 @@ struct MeetingPromptDecision: Equatable {
         case candidatePending
         case autoDismissedSuppression
         case userDismissedSuppression
+        case recordingStartedSuppression
     }
 
     let action: Action
@@ -33,6 +34,11 @@ struct MeetingPromptDecision: Equatable {
 final class MeetingPromptStateMachine {
     private(set) var visiblePromptID: String?
     private var userDismissedSuppressionIDs: Set<String> = []
+    // Media-session IDs are unique for each continuous call and intentionally
+    // remain consumed for this app process. Evicting them on a timer or count
+    // could re-prompt a long-running meeting; app restart is the cleanup bound,
+    // matching the existing user-dismissed suppression lifetime.
+    private var recordingStartedSuppressionIDs: Set<String> = []
     private var autoDismissedSuppressionIDs: [String: Date] = [:]
     private var lastCandidateID: String?
     private let candidateStabilityDelay: TimeInterval
@@ -95,6 +101,11 @@ final class MeetingPromptStateMachine {
             return MeetingPromptDecision(action: .none, candidate: candidate, reason: .userDismissedSuppression)
         }
 
+        if recordingStartedSuppressionIDs.contains(candidate.suppressionID) {
+            resetPendingCandidate()
+            return MeetingPromptDecision(action: .none, candidate: candidate, reason: .recordingStartedSuppression)
+        }
+
         if autoDismissedSuppressionIDs.keys.contains(candidate.suppressionID) {
             resetPendingCandidate()
             return MeetingPromptDecision(action: .none, candidate: candidate, reason: .autoDismissedSuppression)
@@ -129,6 +140,21 @@ final class MeetingPromptStateMachine {
         userDismissedSuppressionIDs.insert(candidate.suppressionID)
         autoDismissedSuppressionIDs.removeValue(forKey: candidate.suppressionID)
         resetPendingCandidate()
+    }
+
+    @discardableResult
+    func markRecordingStarted(_ candidate: MeetingCandidate) -> Bool {
+        if visiblePromptID == candidate.id { visiblePromptID = nil }
+        lastCandidateID = candidate.id
+        guard candidate.suppressionID.hasPrefix("meeting-session:") else {
+            resetPendingCandidate()
+            return false
+        }
+        let inserted = recordingStartedSuppressionIDs.insert(candidate.suppressionID).inserted
+        userDismissedSuppressionIDs.remove(candidate.suppressionID)
+        autoDismissedSuppressionIDs.removeValue(forKey: candidate.suppressionID)
+        resetPendingCandidate()
+        return inserted
     }
 
     func markClosed(_ candidate: MeetingCandidate) {

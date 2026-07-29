@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-shard="${1:-}"
+list_filters=false
+if [[ "${1:-}" == "--list-filters" ]]; then
+  list_filters=true
+  shard="${2:-}"
+else
+  shard="${1:-}"
+fi
 
 if [[ -z "${shard}" ]]; then
-  echo "usage: $0 <core|dictation-transcription|meetings>" >&2
+  echo "usage: $0 [--list-filters] <core|dictation-transcription|meetings>" >&2
   exit 2
 fi
 
@@ -28,10 +34,8 @@ case "${shard}" in
     ;;
   dictation-transcription)
     filters=(
-      WhisperCppTranscriberTests
       FluidAudioTranscriberTests
       BackendCoverageTests
-      CanaryQwenBackendTests
       FillerWordFilterTests
       JaroWinklerTests
       CustomWordMatcherApplyTests
@@ -54,10 +58,14 @@ case "${shard}" in
       DictationStateTests
       HotkeyConfigTests
       DictationStateIdleTests
+      DictationCorrectionMonitorTests
     )
     ;;
   meetings)
     filters=(
+      AudioGraphExceptionBridgeTests
+      DiagnosticIncidentTests
+      DictationAudioRouteControllerTests
       MeetingDetectorTests
       MeetingRecordingWriterTests
       MeetingResumePolicyTests
@@ -72,6 +80,7 @@ case "${shard}" in
       MeetingSummaryBackendTests
       MeetingResummarizationPolicyTests
       MeetingTemplateResolutionTests
+      RouteAwareMeetingMicRecorderTests
       DisabledCalendarFilterTests
       GoogleCalendarTests
     )
@@ -82,7 +91,15 @@ case "${shard}" in
     ;;
 esac
 
+if [[ "${list_filters}" == true ]]; then
+  printf '%s\n' "${filters[@]}"
+  exit 0
+fi
+
 args=(--package-path native/MuesliNative)
+if [[ -n "${MUESLI_SWIFTPM_SCRATCH_PATH:-}" ]]; then
+  args+=(--scratch-path "${MUESLI_SWIFTPM_SCRATCH_PATH}")
+fi
 for filter in "${filters[@]}"; do
   args+=(--filter "${filter}")
 done

@@ -384,7 +384,10 @@ struct SummaryModelPresetTests {
     func openAIModels() {
         #expect(!SummaryModelPreset.openAIModels.isEmpty)
         #expect(SummaryModelPreset.openAIModels.first?.id == "gpt-5.4-mini")
-        #expect(SummaryModelPreset.openAIModels.contains { $0.id == "gpt-5.5" })
+        #expect(SummaryModelPreset.openAIModels.contains { $0.id == "gpt-5.6-sol" })
+        #expect(SummaryModelPreset.openAIModels.contains { $0.id == "gpt-5.6-terra" })
+        #expect(SummaryModelPreset.openAIModels.contains { $0.id == "gpt-5.6-luna" })
+        #expect(!SummaryModelPreset.openAIModels.contains { $0.id == "gpt-5.5" })
         #expect(SummaryModelPreset.openAIModels.contains { $0.id == "chat-latest" })
         for preset in SummaryModelPreset.openAIModels {
             #expect(!preset.id.isEmpty)
@@ -396,7 +399,10 @@ struct SummaryModelPresetTests {
     func chatGPTModels() {
         #expect(!SummaryModelPreset.chatGPTModels.isEmpty)
         #expect(SummaryModelPreset.chatGPTModels.first?.id == "gpt-5.4-mini")
-        #expect(SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.5" })
+        #expect(SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.6-sol" })
+        #expect(SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.6-terra" })
+        #expect(SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.6-luna" })
+        #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.5" })
         #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.4-nano" })
         #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "chat-latest" })
         #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.4" })
@@ -408,6 +414,23 @@ struct SummaryModelPresetTests {
         }
     }
 
+    @Test("ChatGPT transcript cleanup uses GPT-5.6 Terra by default")
+    func chatGPTTranscriptCleanupModels() {
+        let presets = SummaryModelPreset.chatGPTTranscriptCleanupModels
+        #expect(presets.first?.id == "gpt-5.6-terra")
+        #expect(presets.first?.label.contains("default") == true)
+        #expect(Set(presets.map(\.id)) == Set([
+            "gpt-5.4-mini",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+        ]))
+
+        let backend = TranscriptCleanupBackendOption.hosted(.chatGPT)
+        #expect(TranscriptCleanupClient.defaultModel(for: backend) == "gpt-5.6-terra")
+        #expect(TranscriptCleanupClient.configuredModel(for: backend, config: AppConfig()) == "gpt-5.6-terra")
+    }
+
     @Test("OpenRouter presets have valid model IDs")
     func openRouterModels() {
         #expect(!SummaryModelPreset.openRouterModels.isEmpty)
@@ -417,14 +440,26 @@ struct SummaryModelPresetTests {
         }
     }
 
-    @Test("Computer use planner presets include GPT-5.5 default")
+    @Test("Computer use planner presets use GPT-5.6 Sol by default")
     func computerUsePlannerModels() {
-        #expect(SummaryModelPreset.computerUsePlannerModels.first?.id == "gpt-5.5")
+        #expect(SummaryModelPreset.computerUsePlannerModels.first?.id == "gpt-5.6-sol")
+        #expect(SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-5.6-terra" })
+        #expect(SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-5.6-luna" })
         #expect(SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-5.4-mini" })
+        #expect(!SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-5.5" })
         for preset in SummaryModelPreset.computerUsePlannerModels {
             #expect(!preset.id.isEmpty)
             #expect(!preset.label.isEmpty)
         }
+    }
+
+    @Test("GPT-5.6 family uses fixed High reasoning")
+    func gpt56ReasoningEffort() {
+        #expect(SummaryModelPreset.reasoningEffort(for: "gpt-5.6-sol") == "high")
+        #expect(SummaryModelPreset.reasoningEffort(for: "gpt-5.6-terra") == "high")
+        #expect(SummaryModelPreset.reasoningEffort(for: "gpt-5.6-luna") == "high")
+        #expect(SummaryModelPreset.reasoningEffort(for: "gpt-5.4-mini") == nil)
+        #expect(SummaryModelPreset.reasoningEffort(for: "gpt-5.5") == nil)
     }
 
     @Test("model menu includes custom configured model")
@@ -564,6 +599,7 @@ struct AppConfigTests {
         let config = AppConfig()
         #expect(config.sttBackend == BackendOption.whisper.backend)
         #expect(config.sttModel == BackendOption.whisper.model)
+        #expect(config.meetingInputDeviceUID == nil)
         #expect(config.cohereLanguage == CohereTranscribeLanguage.defaultLanguage.rawValue)
         #expect(config.indicASRLanguage == IndicASRLanguage.defaultLanguage.rawValue)
         #expect(config.meetingTranscriptionBackend == BackendOption.whisper.backend)
@@ -818,6 +854,7 @@ struct AppConfigTests {
         config.enableScreenContext = true
         config.enableDictationOCRContext = true
         config.enableLiveStreamingPartials = true
+        config.meetingInputDeviceUID = "meeting-mic"
         config.enableAutomaticDiagnosticIssuePrompts = true
         config.meetingLiveCaptionBackend = MeetingLiveCaptionBackend.nemotron35.rawValue
         config.showMeetingTranscriptOnIndicatorHover = false
@@ -894,6 +931,7 @@ struct AppConfigTests {
         #expect(decoded.enableScreenContext == true)
         #expect(decoded.enableDictationOCRContext == true)
         #expect(decoded.enableLiveStreamingPartials == true)
+        #expect(decoded.meetingInputDeviceUID == "meeting-mic")
         #expect(decoded.enableAutomaticDiagnosticIssuePrompts == true)
         #expect(decoded.resolvedMeetingLiveCaptionBackend == .nemotron35)
         #expect(decoded.showMeetingTranscriptOnIndicatorHover == false)
@@ -1195,6 +1233,26 @@ struct AppConfigTests {
 
         #expect(config.chatGPTModel.isEmpty)
         #expect(config.postProcessorChatGPTModel.isEmpty)
+    }
+
+    @Test("stored GPT-5.5 selections migrate to GPT-5.6 Sol")
+    func storedGPT55SelectionsMigrateToSol() throws {
+        let json = """
+        {
+          "computer_use_planner_model": "gpt-5.5",
+          "openai_model": "gpt-5.5",
+          "chatgpt_model": "gpt-5.5",
+          "post_processor_openai_model": "gpt-5.5",
+          "post_processor_chatgpt_model": "gpt-5.5"
+        }
+        """
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.computerUsePlannerModel == "gpt-5.6-sol")
+        #expect(config.openAIModel == "gpt-5.6-sol")
+        #expect(config.chatGPTModel == "gpt-5.6-sol")
+        #expect(config.postProcessorOpenAIModel == "gpt-5.6-sol")
+        #expect(config.postProcessorChatGPTModel == "gpt-5.6-sol")
     }
 
     @Test("legacy completed onboarding enables meetings when use case is missing")

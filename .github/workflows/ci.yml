@@ -73,6 +73,9 @@ jobs:
       - name: Test changed-file classifier
         run: ./scripts/test_classify_changed_files.sh
 
+      - name: Test CI test shard assignments
+        run: ./scripts/test_ci_test_shards.sh
+
   # Release build — validate the app product compiles in release mode
   build_release:
     needs: changes

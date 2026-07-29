@@ -170,6 +170,83 @@ struct MeetingPromptStateMachineTests {
         #expect(result.candidate?.id == laterSession.id)
     }
 
+    @Test("recording start suppresses the accepted meeting session after recording ends")
+    func recordingStartSuppressesAcceptedMeetingSession() {
+        let machine = immediateMachine()
+        let accepted = candidate(
+            "meeting-session:browser:com.google.Chrome:room:meet.google.com/abc-defg-hij:1",
+            suppressionID: "meeting-session:browser:com.google.Chrome:room:meet.google.com/abc-defg-hij:1"
+        )
+        let sameSessionWithUpdatedCandidateID = candidate(
+            "cal:event-123",
+            suppressionID: accepted.suppressionID
+        )
+
+        machine.markShown(accepted)
+        machine.markRecordingStarted(accepted)
+
+        let result = decision(machine, candidate: sameSessionWithUpdatedCandidateID)
+
+        #expect(machine.visiblePromptID == nil)
+        #expect(result.action == .none)
+        #expect(result.reason == .recordingStartedSuppression)
+    }
+
+    @Test("meeting activity discovered during manual recording remains suppressed after recording ends")
+    func activityDiscoveredDuringManualRecordingRemainsSuppressed() {
+        let machine = immediateMachine()
+        let discoveredDuringRecording = candidate(
+            "meeting-session:browser:com.google.Chrome:room:meet.google.com/abc-defg-hij:1",
+            suppressionID: "meeting-session:browser:com.google.Chrome:room:meet.google.com/abc-defg-hij:1"
+        )
+
+        machine.markRecordingStarted(discoveredDuringRecording)
+
+        let result = decision(machine, candidate: discoveredDuringRecording)
+
+        #expect(machine.visiblePromptID == nil)
+        #expect(result.action == .none)
+        #expect(result.reason == .recordingStartedSuppression)
+    }
+
+    @Test("recording start does not permanently suppress a URL-only recurring meeting")
+    func recordingStartDoesNotPermanentlySuppressURLOnlyCandidate() {
+        let machine = immediateMachine()
+        let urlOnlyCandidate = candidate(
+            "googleMeet:meet.google.com/abc-defg-hij",
+            suppressionID: "googleMeet:meet.google.com/abc-defg-hij",
+            evidence: [.browserURL, .foregroundApp]
+        )
+
+        let didConsumeSession = machine.markRecordingStarted(urlOnlyCandidate)
+        let result = decision(machine, candidate: urlOnlyCandidate)
+
+        #expect(!didConsumeSession)
+        #expect(result.action == .show)
+        #expect(result.reason == .eligible)
+    }
+
+    @Test("recording start does not suppress a genuinely later meeting session")
+    func recordingStartDoesNotSuppressLaterMeetingSession() {
+        let machine = immediateMachine()
+        let accepted = candidate(
+            "meeting-session:browser:com.google.Chrome:room:meet.google.com/abc-defg-hij:1",
+            suppressionID: "meeting-session:browser:com.google.Chrome:room:meet.google.com/abc-defg-hij:1"
+        )
+        let laterSession = candidate(
+            "meeting-session:browser:com.google.Chrome:room:meet.google.com/abc-defg-hij:2",
+            suppressionID: "meeting-session:browser:com.google.Chrome:room:meet.google.com/abc-defg-hij:2"
+        )
+
+        machine.markShown(accepted)
+        machine.markRecordingStarted(accepted)
+
+        let result = decision(machine, candidate: laterSession)
+
+        #expect(result.action == .show)
+        #expect(result.candidate?.suppressionID == laterSession.suppressionID)
+    }
+
     @Test("auto-dismiss suppression survives candidate dropout")
     func autoDismissSuppressionSurvivesCandidateDropout() {
         let machine = immediateMachine()
