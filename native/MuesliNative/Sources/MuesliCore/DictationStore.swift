@@ -33,7 +33,7 @@ public final class DictationStore {
     t.id, t.final_status, t.final_message, t.trace_json, t.created_at
     """
     private static let meetingColumns = """
-    id, title, start_time, duration_seconds, raw_transcript, formatted_notes, word_count, folder_id, calendar_event_id, mic_audio_path, system_audio_path, saved_recording_path, meeting_status, manual_notes, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, follow_up_to_id, follow_up_to_record_name
+    id, title, start_time, duration_seconds, raw_transcript, formatted_notes, word_count, folder_id, calendar_event_id, mic_audio_path, system_audio_path, saved_recording_path, meeting_status, manual_notes, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, follow_up_to_id, follow_up_to_record_name, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start
     """
 
     public init() {
@@ -91,6 +91,11 @@ public final class DictationStore {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL,
             calendar_event_id TEXT,
+            calendar_occurrence_key TEXT,
+            calendar_source TEXT,
+            calendar_id TEXT,
+            calendar_series_id TEXT,
+            calendar_occurrence_start REAL,
             start_time TEXT NOT NULL,
             end_time TEXT,
             duration_seconds REAL,
@@ -119,7 +124,7 @@ public final class DictationStore {
             created_at TEXT DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_meetings_start_time ON meetings(start_time DESC);
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_meetings_calendar_event_id ON meetings(calendar_event_id) WHERE calendar_event_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_meetings_calendar_event_lookup ON meetings(calendar_event_id) WHERE calendar_event_id IS NOT NULL;
 
         CREATE TABLE IF NOT EXISTS meeting_transcript_checkpoints (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -202,10 +207,30 @@ public final class DictationStore {
             "ALTER TABLE meetings ADD COLUMN cloud_change_tag TEXT",
             "ALTER TABLE meetings ADD COLUMN cloud_transcript_record_name TEXT",
             "ALTER TABLE meetings ADD COLUMN last_synced_at REAL",
-            "ALTER TABLE meetings ADD COLUMN sync_dirty INTEGER NOT NULL DEFAULT 1"
+            "ALTER TABLE meetings ADD COLUMN sync_dirty INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE meetings ADD COLUMN calendar_occurrence_key TEXT",
+            "ALTER TABLE meetings ADD COLUMN calendar_source TEXT",
+            "ALTER TABLE meetings ADD COLUMN calendar_id TEXT",
+            "ALTER TABLE meetings ADD COLUMN calendar_series_id TEXT",
+            "ALTER TABLE meetings ADD COLUMN calendar_occurrence_start REAL"
         ] {
             _ = sqlite3_exec(db, sql, nil, nil, nil)
         }
+        // Calendar metadata is not a meeting identity: one occurrence may be
+        // recorded more than once, and recurring providers may reuse ids.
+        // Replace the legacy uniqueness constraint with lookup-only indexes.
+        try exec(
+            """
+            DROP INDEX IF EXISTS idx_meetings_calendar_event_id;
+            CREATE INDEX IF NOT EXISTS idx_meetings_calendar_event_lookup
+                ON meetings(calendar_event_id)
+                WHERE calendar_event_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_meetings_calendar_occurrence_key
+                ON meetings(calendar_occurrence_key)
+                WHERE calendar_occurrence_key IS NOT NULL;
+            """,
+            db: db
+        )
         if sqlite3_exec(db, "ALTER TABLE meeting_folders ADD COLUMN parent_id INTEGER REFERENCES meeting_folders(id)", nil, nil, nil) != SQLITE_OK {
             let msg = String(cString: sqlite3_errmsg(db))
             if !msg.localizedCaseInsensitiveContains("duplicate column") {
@@ -707,6 +732,40 @@ public final class DictationStore {
         return makeMeetingRecord(statement)
     }
 
+    public func meetingByCalendarOccurrence(_ occurrence: CalendarOccurrenceReference) throws -> MeetingRecord? {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+
+        let sql = """
+        SELECT \(Self.meetingColumns)
+        FROM meetings
+        WHERE deleted_at IS NULL
+          AND (
+            calendar_occurrence_key = ?
+            OR (
+              calendar_occurrence_key IS NULL
+              AND calendar_event_id = ?
+              AND ABS(strftime('%s', start_time) - ?) < 1
+            )
+          )
+        ORDER BY id DESC
+        LIMIT 1
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, (occurrence.identityKey as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 2, (occurrence.eventID as NSString).utf8String, -1, nil)
+        sqlite3_bind_double(statement, 3, occurrence.originalStartTime.timeIntervalSince1970)
+
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return nil
+        }
+        return makeMeetingRecord(statement)
+    }
+
     @discardableResult
     public func insertMeeting(
         title: String,
@@ -722,15 +781,16 @@ public final class DictationStore {
         selectedTemplateName: String? = nil,
         selectedTemplateKind: MeetingTemplateKind? = nil,
         selectedTemplatePrompt: String? = nil,
-        source: MeetingSource = .meeting
+        source: MeetingSource = .meeting,
+        calendarOccurrence: CalendarOccurrenceReference? = nil
     ) throws -> Int64 {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
 
         let sql = """
         INSERT INTO meetings
-        (title, calendar_event_id, start_time, end_time, duration_seconds, raw_transcript, formatted_notes, mic_audio_path, system_audio_path, saved_recording_path, word_count, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, updated_at, sync_dirty)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        (title, calendar_event_id, start_time, end_time, duration_seconds, raw_transcript, formatted_notes, mic_audio_path, system_audio_path, saved_recording_path, word_count, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, updated_at, sync_dirty, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -744,7 +804,7 @@ public final class DictationStore {
         let wordCount = Self.countWords(in: rawTranscript)
 
         sqlite3_bind_text(statement, 1, (title as NSString).utf8String, -1, nil)
-        bindOptionalText(calendarEventID, at: 2, statement: statement)
+        bindOptionalText(calendarOccurrence?.eventID ?? calendarEventID, at: 2, statement: statement)
         sqlite3_bind_text(statement, 3, (startString as NSString).utf8String, -1, nil)
         sqlite3_bind_text(statement, 4, (endString as NSString).utf8String, -1, nil)
         sqlite3_bind_double(statement, 5, durationSeconds)
@@ -760,6 +820,15 @@ public final class DictationStore {
         bindOptionalText(selectedTemplatePrompt, at: 15, statement: statement)
         sqlite3_bind_text(statement, 16, (source.rawValue as NSString).utf8String, -1, nil)
         sqlite3_bind_double(statement, 17, Date().timeIntervalSince1970)
+        bindOptionalText(calendarOccurrence?.identityKey, at: 18, statement: statement)
+        bindOptionalText(calendarOccurrence?.provider.rawValue, at: 19, statement: statement)
+        bindOptionalText(calendarOccurrence?.calendarID, at: 20, statement: statement)
+        bindOptionalText(calendarOccurrence?.seriesID, at: 21, statement: statement)
+        if let calendarOccurrence {
+            sqlite3_bind_double(statement, 22, calendarOccurrence.originalStartTime.timeIntervalSince1970)
+        } else {
+            sqlite3_bind_null(statement, 22)
+        }
 
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
@@ -777,7 +846,8 @@ public final class DictationStore {
         selectedTemplateKind: MeetingTemplateKind? = nil,
         selectedTemplatePrompt: String? = nil,
         folderID: Int64? = nil,
-        followUpToID: Int64? = nil
+        followUpToID: Int64? = nil,
+        calendarOccurrence: CalendarOccurrenceReference? = nil
     ) throws -> Int64 {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
@@ -785,8 +855,8 @@ public final class DictationStore {
 
         let sql = """
         INSERT INTO meetings
-        (title, calendar_event_id, start_time, end_time, duration_seconds, raw_transcript, formatted_notes, mic_audio_path, system_audio_path, saved_recording_path, meeting_status, manual_notes, word_count, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, updated_at, sync_dirty, folder_id, follow_up_to_id, follow_up_to_record_name)
-        VALUES (?, ?, ?, NULL, 0, '', '', NULL, NULL, NULL, ?, '', 0, ?, ?, ?, ?, 'meeting', ?, 1, ?, ?, ?)
+        (title, calendar_event_id, start_time, end_time, duration_seconds, raw_transcript, formatted_notes, mic_audio_path, system_audio_path, saved_recording_path, meeting_status, manual_notes, word_count, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, updated_at, sync_dirty, folder_id, follow_up_to_id, follow_up_to_record_name, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start)
+        VALUES (?, ?, ?, NULL, 0, '', '', NULL, NULL, NULL, ?, '', 0, ?, ?, ?, ?, 'meeting', ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -796,7 +866,7 @@ public final class DictationStore {
 
         let startString = ISO8601DateFormatter().string(from: startTime)
         sqlite3_bind_text(statement, 1, (title as NSString).utf8String, -1, nil)
-        bindOptionalText(calendarEventID, at: 2, statement: statement)
+        bindOptionalText(calendarOccurrence?.eventID ?? calendarEventID, at: 2, statement: statement)
         sqlite3_bind_text(statement, 3, (startString as NSString).utf8String, -1, nil)
         sqlite3_bind_text(statement, 4, (MeetingStatus.recording.rawValue as NSString).utf8String, -1, nil)
         bindOptionalText(selectedTemplateID, at: 5, statement: statement)
@@ -815,6 +885,15 @@ public final class DictationStore {
             sqlite3_bind_null(statement, 11)
         }
         bindOptionalText(followUpRecordName, at: 12, statement: statement)
+        bindOptionalText(calendarOccurrence?.identityKey, at: 13, statement: statement)
+        bindOptionalText(calendarOccurrence?.provider.rawValue, at: 14, statement: statement)
+        bindOptionalText(calendarOccurrence?.calendarID, at: 15, statement: statement)
+        bindOptionalText(calendarOccurrence?.seriesID, at: 16, statement: statement)
+        if let calendarOccurrence {
+            sqlite3_bind_double(statement, 17, calendarOccurrence.originalStartTime.timeIntervalSince1970)
+        } else {
+            sqlite3_bind_null(statement, 17)
+        }
 
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
@@ -3578,6 +3657,23 @@ public final class DictationStore {
         let source = MeetingSource(rawValue: stringColumn(statement, index: 18)) ?? .meeting
         let followUpToID: Int64? = sqlite3_column_type(statement, 19) == SQLITE_NULL ? nil : sqlite3_column_int64(statement, 19)
         let followUpToRecordName = optionalStringColumn(statement, index: 20)
+        let calendarSource = optionalStringColumn(statement, index: 22)
+            .flatMap(CalendarOccurrenceReference.Provider.init(rawValue:))
+        let calendarOccurrenceStart: Date? = sqlite3_column_type(statement, 25) == SQLITE_NULL
+            ? nil
+            : Date(timeIntervalSince1970: sqlite3_column_double(statement, 25))
+        let calendarOccurrence: CalendarOccurrenceReference?
+        if let calendarSource, let calendarEventID, let calendarOccurrenceStart {
+            calendarOccurrence = CalendarOccurrenceReference(
+                provider: calendarSource,
+                calendarID: optionalStringColumn(statement, index: 23),
+                eventID: calendarEventID,
+                seriesID: optionalStringColumn(statement, index: 24),
+                originalStartTime: calendarOccurrenceStart
+            )
+        } else {
+            calendarOccurrence = nil
+        }
         return MeetingRecord(
             id: sqlite3_column_int64(statement, 0),
             title: stringColumn(statement, index: 1),
@@ -3588,6 +3684,7 @@ public final class DictationStore {
             wordCount: Int(sqlite3_column_int(statement, 6)),
             folderID: folderID,
             calendarEventID: calendarEventID,
+            calendarOccurrence: calendarOccurrence,
             micAudioPath: micAudioPath,
             systemAudioPath: systemAudioPath,
             savedRecordingPath: savedRecordingPath,

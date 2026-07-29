@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import MuesliCore
 @testable import MuesliNativeApp
 
 @Suite("Google Calendar integration")
@@ -309,6 +310,94 @@ struct GoogleCalendarTests {
         ]
         let event = GoogleCalendarClient().parseEvent(item, calendarID: "team@dockstreet.com")
         #expect(event?.calendarID == "team@dockstreet.com")
+    }
+
+    @Test("parsed recurring event keeps its immutable occurrence identity")
+    func parsedRecurringEventCarriesOriginalStartTime() throws {
+        let item: [String: Any] = [
+            "id": "series_20260410T140000Z",
+            "recurringEventId": "series",
+            "summary": "Daily sync",
+            "originalStartTime": ["dateTime": "2026-04-10T14:00:00Z"],
+            "start": ["dateTime": "2026-04-10T15:30:00Z"],
+            "end": ["dateTime": "2026-04-10T16:00:00Z"],
+        ]
+
+        let event = try #require(
+            GoogleCalendarClient().parseEvent(item, calendarID: "team@dockstreet.com")
+        )
+        let occurrence = try #require(event.calendarOccurrence)
+
+        #expect(occurrence.provider == .googleCalendar)
+        #expect(occurrence.calendarID == "team@dockstreet.com")
+        #expect(occurrence.eventID == "series_20260410T140000Z")
+        #expect(occurrence.seriesID == "series")
+        #expect(occurrence.originalStartTime == date("2026-04-10T14:00:00Z"))
+        #expect(event.startDate == date("2026-04-10T15:30:00Z"))
+    }
+
+    @Test("calendar placeholders deduplicate one occurrence but allow the next recurrence")
+    func calendarPlaceholderOccurrenceDeduplication() throws {
+        let databaseURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-calendar-occurrence-\(UUID().uuidString).db")
+        let store = DictationStore(databaseURL: databaseURL)
+        try store.migrateIfNeeded()
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            dictationStore: store
+        )
+        let firstStart = date("2026-04-10T14:00:00Z")
+        let firstOccurrence = CalendarOccurrenceReference(
+            provider: .eventKit,
+            calendarID: "work",
+            eventID: "shared-series-id",
+            seriesID: "shared-series-id",
+            originalStartTime: firstStart
+        )
+        let firstEvent = UnifiedCalendarEvent(
+            id: "shared-series-id",
+            title: "Daily sync",
+            startDate: firstStart,
+            endDate: firstStart.addingTimeInterval(30 * 60),
+            isAllDay: false,
+            source: .eventKit,
+            calendarID: "work",
+            calendarOccurrence: firstOccurrence
+        )
+        controller.createMeetingFromCalendarEvent(firstEvent, folderID: nil)
+        controller.createMeetingFromCalendarEvent(firstEvent, folderID: nil)
+
+        let nextStart = firstStart.addingTimeInterval(24 * 60 * 60)
+        let nextOccurrence = CalendarOccurrenceReference(
+            provider: .eventKit,
+            calendarID: "work",
+            eventID: "shared-series-id",
+            seriesID: "shared-series-id",
+            originalStartTime: nextStart
+        )
+        let nextEvent = UnifiedCalendarEvent(
+            id: "shared-series-id",
+            title: "Daily sync",
+            startDate: nextStart,
+            endDate: nextStart.addingTimeInterval(30 * 60),
+            isAllDay: false,
+            source: .eventKit,
+            calendarID: "work",
+            calendarOccurrence: nextOccurrence
+        )
+        controller.createMeetingFromCalendarEvent(nextEvent, folderID: nil)
+
+        let meetings = try store.recentMeetings(limit: 10)
+        #expect(meetings.count == 2)
+        #expect(Set(meetings.compactMap(\.calendarOccurrence?.identityKey)) == Set([
+            firstOccurrence.identityKey,
+            nextOccurrence.identityKey,
+        ]))
     }
 
     @Test("event sync cache resets when upcoming window changes")
