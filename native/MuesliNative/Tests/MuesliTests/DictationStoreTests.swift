@@ -250,6 +250,86 @@ struct DictationStoreTests {
         #expect(movedSingleEvent.identityKey == originalSingleEvent.identityKey)
     }
 
+    @Test("calendar occurrence lookup finds a legacy placeholder")
+    func calendarOccurrenceLookupFindsLegacyPlaceholder() throws {
+        let store = try makeStore()
+        let originalStart = Date(timeIntervalSince1970: 1_775_817_600)
+        let occurrence = CalendarOccurrenceReference(
+            provider: .eventKit,
+            calendarID: "work",
+            eventID: "legacy-event",
+            seriesID: "legacy-series",
+            originalStartTime: originalStart
+        )
+        try store.insertMeeting(
+            title: "Legacy placeholder",
+            calendarEventID: occurrence.eventID,
+            startTime: originalStart,
+            endTime: originalStart.addingTimeInterval(30 * 60),
+            rawTranscript: "",
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+
+        let matched = try #require(try store.meetingByCalendarOccurrence(occurrence))
+        #expect(matched.title == "Legacy placeholder")
+        #expect(matched.calendarEventID == occurrence.eventID)
+        #expect(matched.calendarOccurrence == nil)
+    }
+
+    @Test("MeetingRecord decodes legacy JSON without a calendar occurrence")
+    func meetingRecordDecodesWithoutCalendarOccurrence() throws {
+        let json = """
+        {
+          "id": 42,
+          "title": "Legacy meeting",
+          "startTime": "2026-04-10T14:00:00Z",
+          "durationSeconds": 1800,
+          "rawTranscript": "",
+          "formattedNotes": "",
+          "wordCount": 0
+        }
+        """
+
+        let record = try JSONDecoder().decode(
+            MeetingRecord.self,
+            from: try #require(json.data(using: .utf8))
+        )
+
+        #expect(record.calendarOccurrence == nil)
+    }
+
+    @Test("MeetingRecord preserves a calendar occurrence through Codable")
+    func meetingRecordCalendarOccurrenceCodableRoundTrip() throws {
+        let occurrence = CalendarOccurrenceReference(
+            provider: .googleCalendar,
+            calendarID: "primary",
+            eventID: "instance",
+            seriesID: "series",
+            originalStartTime: Date(timeIntervalSince1970: 1_775_817_600)
+        )
+        let original = MeetingRecord(
+            id: 42,
+            title: "Daily sync",
+            startTime: "2026-04-10T14:00:00Z",
+            durationSeconds: 1800,
+            rawTranscript: "",
+            formattedNotes: "",
+            wordCount: 0,
+            folderID: nil,
+            calendarEventID: occurrence.eventID,
+            calendarOccurrence: occurrence
+        )
+
+        let decoded = try JSONDecoder().decode(
+            MeetingRecord.self,
+            from: JSONEncoder().encode(original)
+        )
+
+        #expect(decoded.calendarOccurrence == occurrence)
+    }
+
     @Test("migration adds template columns to legacy meeting schema")
     func migrationAddsTemplateColumns() throws {
         let store = try makeLegacyStore()

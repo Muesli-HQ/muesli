@@ -200,18 +200,22 @@ final class CalendarMonitor {
             .sorted { $0.startDate < $1.startDate }
     }
 
-    private static func occurrenceReference(
+    static func occurrenceReference(
         for event: EKEvent,
         eventID: String,
         startDate: Date
     ) -> CalendarOccurrenceReference {
-        let originalOccurrenceDate = event.occurrenceDate
+        let isRecurring = event.hasRecurrenceRules || event.isDetached
         return CalendarOccurrenceReference(
             provider: .eventKit,
             calendarID: event.calendar?.calendarIdentifier,
             eventID: eventID,
-            seriesID: originalOccurrenceDate == nil ? nil : eventID,
-            originalStartTime: originalOccurrenceDate ?? startDate
+            seriesID: isRecurring
+                ? (event.calendarItemExternalIdentifier ?? eventID)
+                : nil,
+            originalStartTime: isRecurring
+                ? (event.occurrenceDate ?? startDate)
+                : startDate
         )
     }
 

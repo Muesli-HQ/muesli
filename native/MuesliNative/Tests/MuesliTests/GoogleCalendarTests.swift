@@ -1,4 +1,5 @@
 import Testing
+import EventKit
 import Foundation
 import MuesliCore
 @testable import MuesliNativeApp
@@ -166,6 +167,59 @@ struct GoogleCalendarTests {
     func returnsNilForNonMeetingText() {
         let url = CalendarMonitor.findMeetingURL(in: "Conference room 3B on the second floor")
         #expect(url == nil)
+    }
+
+    // MARK: - EventKit occurrence identity
+
+    @Test("EventKit one-off event identity survives rescheduling")
+    func eventKitOneOffIdentitySurvivesRescheduling() {
+        let eventStore = EKEventStore()
+        let event = EKEvent(eventStore: eventStore)
+        let originalStart = date("2026-04-10T14:00:00Z")
+        event.startDate = originalStart
+        event.endDate = originalStart.addingTimeInterval(30 * 60)
+
+        let originalReference = CalendarMonitor.occurrenceReference(
+            for: event,
+            eventID: "one-off-event",
+            startDate: originalStart
+        )
+
+        let movedStart = originalStart.addingTimeInterval(90 * 60)
+        event.startDate = movedStart
+        event.endDate = movedStart.addingTimeInterval(30 * 60)
+        let movedReference = CalendarMonitor.occurrenceReference(
+            for: event,
+            eventID: "one-off-event",
+            startDate: movedStart
+        )
+
+        #expect(originalReference.seriesID == nil)
+        #expect(movedReference.seriesID == nil)
+        #expect(originalReference.identityKey == movedReference.identityKey)
+    }
+
+    @Test("EventKit recurrence uses the server-stable series identifier")
+    func eventKitRecurrenceUsesExternalSeriesIdentifier() throws {
+        let eventStore = EKEventStore()
+        let event = EKEvent(eventStore: eventStore)
+        let start = date("2026-04-10T14:00:00Z")
+        event.startDate = start
+        event.endDate = start.addingTimeInterval(30 * 60)
+        event.addRecurrenceRule(
+            EKRecurrenceRule(recurrenceWith: .daily, interval: 1, end: nil)
+        )
+
+        let externalIdentifier = try #require(event.calendarItemExternalIdentifier)
+        let reference = CalendarMonitor.occurrenceReference(
+            for: event,
+            eventID: "store-local-event-id",
+            startDate: start
+        )
+
+        #expect(reference.seriesID == externalIdentifier)
+        #expect(reference.seriesID != reference.eventID)
+        #expect(reference.originalStartTime == event.occurrenceDate)
     }
 
     // MARK: - Merge & dedup
