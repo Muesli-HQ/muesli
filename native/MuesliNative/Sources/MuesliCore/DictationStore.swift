@@ -736,6 +736,9 @@ public final class DictationStore {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
 
+        let legacyStartPredicate = occurrence.seriesID == nil
+            ? ""
+            : "AND ABS(strftime('%s', start_time) - ?) < 1"
         let sql = """
         SELECT \(Self.meetingColumns)
         FROM meetings
@@ -745,7 +748,7 @@ public final class DictationStore {
             OR (
               calendar_occurrence_key IS NULL
               AND calendar_event_id = ?
-              AND ABS(strftime('%s', start_time) - ?) < 1
+              \(legacyStartPredicate)
             )
           )
         ORDER BY id DESC
@@ -758,7 +761,9 @@ public final class DictationStore {
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_text(statement, 1, (occurrence.identityKey as NSString).utf8String, -1, nil)
         sqlite3_bind_text(statement, 2, (occurrence.eventID as NSString).utf8String, -1, nil)
-        sqlite3_bind_double(statement, 3, occurrence.originalStartTime.timeIntervalSince1970)
+        if occurrence.seriesID != nil {
+            sqlite3_bind_double(statement, 3, occurrence.originalStartTime.timeIntervalSince1970)
+        }
 
         guard sqlite3_step(statement) == SQLITE_ROW else {
             return nil

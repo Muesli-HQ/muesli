@@ -276,6 +276,42 @@ struct DictationStoreTests {
         #expect(matched.title == "Legacy placeholder")
         #expect(matched.calendarEventID == occurrence.eventID)
         #expect(matched.calendarOccurrence == nil)
+
+        let differentRecurrence = CalendarOccurrenceReference(
+            provider: occurrence.provider,
+            calendarID: occurrence.calendarID,
+            eventID: occurrence.eventID,
+            seriesID: occurrence.seriesID,
+            originalStartTime: originalStart.addingTimeInterval(24 * 60 * 60)
+        )
+        #expect(try store.meetingByCalendarOccurrence(differentRecurrence) == nil)
+    }
+
+    @Test("calendar occurrence lookup finds a rescheduled legacy one-off event")
+    func calendarOccurrenceLookupFindsRescheduledLegacyOneOffEvent() throws {
+        let store = try makeStore()
+        let originalStart = Date(timeIntervalSince1970: 1_775_817_600)
+        try store.insertMeeting(
+            title: "Legacy one-off placeholder",
+            calendarEventID: "legacy-one-off",
+            startTime: originalStart,
+            endTime: originalStart.addingTimeInterval(30 * 60),
+            rawTranscript: "",
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+        let rescheduledOccurrence = CalendarOccurrenceReference(
+            provider: .eventKit,
+            calendarID: "work",
+            eventID: "legacy-one-off",
+            originalStartTime: originalStart.addingTimeInterval(24 * 60 * 60)
+        )
+
+        let matched = try #require(try store.meetingByCalendarOccurrence(rescheduledOccurrence))
+        #expect(matched.title == "Legacy one-off placeholder")
+        #expect(matched.calendarEventID == rescheduledOccurrence.eventID)
+        #expect(matched.calendarOccurrence == nil)
     }
 
     @Test("MeetingRecord decodes legacy JSON without a calendar occurrence")
