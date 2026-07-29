@@ -4801,10 +4801,6 @@ final class MuesliController: NSObject {
         return true
     }
 
-    func startQuickNoteMeeting() {
-        startForegroundMeetingRecording(title: "Meeting")
-    }
-
     /// Whether a finished meeting can be resumed right now (used to gate the UI control too).
     func canResumeFinishedMeeting(_ meeting: MeetingRecord) -> Bool {
         MeetingResumePolicy.canResume(status: meeting.status)

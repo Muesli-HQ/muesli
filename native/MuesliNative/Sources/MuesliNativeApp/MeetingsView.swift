@@ -609,12 +609,12 @@ struct MeetingsView: View {
     private var browserHeaderActions: some View {
         HStack(spacing: MuesliTheme.spacing8) {
             Button {
-                controller.startQuickNoteMeeting()
+                controller.startForegroundMeetingRecording()
             } label: {
                 HStack(spacing: 6) {
-                    Image(systemName: "plus")
+                    Image(systemName: "record.circle")
                         .font(.system(size: 11, weight: .semibold))
-                    Text("Quick Note")
+                    Text("Record Meeting")
                         .font(.system(size: 12, weight: .semibold))
                         .lineLimit(1)
                 }
@@ -626,7 +626,7 @@ struct MeetingsView: View {
             }
             .buttonStyle(.plain)
             .disabled(appState.isMeetingRecording || appState.isMeetingStarting)
-            .help("Start a quick meeting note")
+            .help("Record a meeting with microphone and system audio")
             .fixedSize()
 
             Button {
