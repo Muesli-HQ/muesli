@@ -437,6 +437,7 @@ final class MuesliController: NSObject {
         self.audioDuckingController = audioDuckingController
         self.dictationAudioRoutingController = dictationAudioRoutingController
         self.dictationAudioRoutingController.selectedInputDeviceUID = loadedConfig.dictationInputDeviceUID
+        self.dictationAudioRoutingController.selectedMeetingInputDeviceUID = loadedConfig.meetingInputDeviceUID
         self.config = loadedConfig
         if loadedConfig.recordingColorHex != "1e1e2e" {
             MuesliTheme.accentOverrideHex = loadedConfig.recordingColorHex
@@ -473,6 +474,11 @@ final class MuesliController: NSObject {
                     intent: .idlePrewarm(.routeChange),
                     delay: DictationAudioRouteTiming.stabilizationDelay
                 )
+            }
+        }
+        dictationAudioRoutingController.onMeetingPreferredInputDeviceChanged = { [weak self] deviceID in
+            Task { @MainActor [weak self] in
+                self?.applyMeetingInputDevice(deviceID)
             }
         }
     }
@@ -1222,6 +1228,7 @@ final class MuesliController: NSObject {
 
     func updateConfig(_ mutate: (inout AppConfig) -> Void) {
         let wasICloudSyncEnabled = config.iCloudSyncEnabled
+        let previousMeetingInputDeviceUID = config.meetingInputDeviceUID
         let previousHotkeyTriggerThresholdMS = config.hotkeyTriggerThresholdMS
         let previousComputerUseHotkeyTriggerThresholdMS = config.computerUseHotkeyTriggerThresholdMS
         let previousMeetingRecordingHotkeyTriggerThresholdMS = config.meetingRecordingHotkeyTriggerThresholdMS
@@ -1280,6 +1287,10 @@ final class MuesliController: NSObject {
             wasICloudSyncEnabled: wasICloudSyncEnabled,
             hotkeyTriggerThresholdChanged: hotkeyTriggerThresholdChanged
         )
+        if previousMeetingInputDeviceUID != config.meetingInputDeviceUID {
+            dictationAudioRoutingController.selectedMeetingInputDeviceUID = config.meetingInputDeviceUID
+            applyMeetingInputDevice(dictationAudioRoutingController.preferredInputDeviceIDForMeeting())
+        }
     }
 
     private func applyConfigRuntimeSideEffects(wasICloudSyncEnabled: Bool, hotkeyTriggerThresholdChanged: Bool) {
@@ -1919,6 +1930,17 @@ final class MuesliController: NSObject {
 
     func selectDictationInputDeviceUID(_ uid: String?) {
         updateConfig { $0.dictationInputDeviceUID = uid }
+    }
+
+    func selectMeetingInputDeviceUID(_ uid: String?) {
+        updateConfig { $0.meetingInputDeviceUID = uid }
+    }
+
+    private func applyMeetingInputDevice(_ deviceID: AudioObjectID?) {
+        preparingMeetingSession?.setPreferredMicrophoneInputDeviceID(deviceID)
+        if activeMeetingSession !== preparingMeetingSession {
+            activeMeetingSession?.setPreferredMicrophoneInputDeviceID(deviceID)
+        }
     }
 
     func updateUpcomingMeetingsWindow(dayCount: Int) {
@@ -5303,6 +5325,14 @@ final class MuesliController: NSObject {
                         guard let self,
                               self.activeMeetingID == meetingID || self.meetingStartMeetingID == meetingID else { return }
                         self.updateActiveMeetingAudioWarning(meetingID: meetingID, health: snapshot)
+                        if warningMessage != nil {
+                            self.recordDiagnosticIncident(
+                                kind: .meetingMicrophoneCaptureFailed,
+                                severity: .warning,
+                                stage: .meetingMicrophoneCapture,
+                                promptUser: false
+                            )
+                        }
                     }
                 }
                 try await meetingSession.start()

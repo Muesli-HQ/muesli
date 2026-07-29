@@ -195,7 +195,7 @@ struct DictationAudioRouteControllerTests {
 
         #expect(controller.preferredInputDeviceIDForDictation() == 91)
         #expect(controller.cachedPreferredInputDeviceIDForDictation() == 91)
-        #expect(controller.preferredInputDeviceIDForMeeting() == 91)
+        #expect(controller.preferredInputDeviceIDForMeeting() == 82)
     }
 
     @Test("user selected default microphone uses system default recorder")
@@ -216,7 +216,7 @@ struct DictationAudioRouteControllerTests {
             queue: routeQueue,
             observesDefaultOutputChanges: false
         )
-        controller.selectedInputDeviceUID = "external-mic"
+        controller.selectedMeetingInputDeviceUID = "external-mic"
         routeQueue.sync {}
 
         #expect(controller.preferredInputDeviceIDForMeeting() == nil)
@@ -254,7 +254,7 @@ struct DictationAudioRouteControllerTests {
         }
         let inspectionCountBeforeSelection = inspector.inspectionCallCount
 
-        controller.selectedInputDeviceUID = "external-mic"
+        controller.selectedMeetingInputDeviceUID = "external-mic"
 
         #expect(controller.preferredInputDeviceIDForMeeting() == 91)
         let externalSnapshot = controller.meetingInputRouteSnapshot()
@@ -262,7 +262,7 @@ struct DictationAudioRouteControllerTests {
         #expect(externalSnapshot.selectedInputDeviceResolved)
         #expect(externalSnapshot.preferredInputDeviceName == "External Mic")
 
-        controller.selectedInputDeviceUID = "built-in-mic"
+        controller.selectedMeetingInputDeviceUID = "built-in-mic"
 
         #expect(controller.preferredInputDeviceIDForMeeting() == nil)
         let builtInSnapshot = controller.meetingInputRouteSnapshot()
@@ -340,7 +340,7 @@ struct DictationAudioRouteControllerTests {
             queue: routeQueue,
             observesDefaultOutputChanges: false
         )
-        controller.selectedInputDeviceUID = "external-mic"
+        controller.selectedMeetingInputDeviceUID = "external-mic"
         routeQueue.sync {}
 
         #expect(controller.preferredInputDeviceIDForMeeting() == 91)
@@ -382,6 +382,7 @@ struct DictationAudioRouteControllerTests {
             observesDefaultOutputChanges: false
         )
         controller.selectedInputDeviceUID = "external-mic"
+        controller.selectedMeetingInputDeviceUID = "external-mic"
         routeQueue.sync {}
         #expect(controller.cachedPreferredInputDeviceIDForDictation() == 91)
 

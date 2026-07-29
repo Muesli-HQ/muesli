@@ -1,4 +1,5 @@
 import AVFoundation
+import AudioGraphExceptionBridge
 import CoreAudio
 import Foundation
 import os
@@ -26,6 +27,22 @@ protocol PausableStreamingDictationRecording: AnyObject {
     func resume()
 }
 
+struct StreamingMicRecorderRunState: Equatable {
+    private(set) var isRunning = false
+
+    mutating func markStarted() {
+        isRunning = true
+    }
+
+    mutating func markStopped() {
+        isRunning = false
+    }
+
+    mutating func markConfigurationChangeRestartFailed() {
+        isRunning = false
+    }
+}
+
 final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting, PausableStreamingDictationRecording {
     /// Called with 4096-sample Float chunks (256ms at 16kHz) for VAD processing.
     var onAudioBuffer: (([Float]) -> Void)?
@@ -37,14 +54,17 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
 
     private let engine = AVAudioEngine()
     private let directoryName: String
+    private let recoversFromInputConfigurationChanges: Bool
     private let graphLock = NSRecursiveLock()
     private let lock = OSAllocatedUnfairLock(initialState: FileState())
     private let failureLock = OSAllocatedUnfairLock(initialState: FailureState())
     private let failureCallbackQueue = DispatchQueue(label: "com.muesli.streaming-mic-recorder-failures")
-    private var isRunning = false
+    private var runState = StreamingMicRecorderRunState()
     private var tapInstalled = false
     private var graphPreparedInputDeviceID: AudioObjectID?
     private var isGraphPrepared = false
+    private var configurationChangeObserver: (any NSObjectProtocol)?
+    private let configurationChangeQueue = DispatchQueue(label: "com.muesli.streaming-mic-recorder-config-change")
 
     private struct FailureState {
         var activeRecordingID: UUID?
@@ -62,8 +82,19 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
     private static let sampleRate: Double = 16_000
     private static let bufferSize: AVAudioFrameCount = 4096 // 256ms at 16kHz
 
-    init(directoryName: String = "muesli-meeting-mic") {
+    init(
+        directoryName: String = "muesli-meeting-mic",
+        recoversFromInputConfigurationChanges: Bool = false
+    ) {
         self.directoryName = directoryName
+        self.recoversFromInputConfigurationChanges = recoversFromInputConfigurationChanges
+    }
+
+    deinit {
+        // Safety net for callers that drop the recorder without stop()/cancel().
+        if let observer = configurationChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 
     func prepare() throws {
@@ -81,15 +112,21 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         }
 
         emitLatency("app_scoped_prepare_begin")
-        AudioInputDeviceSelection.applyPreferredInputDeviceID(
-            preferredInputDeviceID,
-            to: engine,
-            logPrefix: "streaming-mic"
-        )
+        if recoversFromInputConfigurationChanges {
+            if let preferredInputDeviceID,
+               let error = MuesliAudioGraphSetInputDevice(engine, preferredInputDeviceID) {
+                throw error
+            }
+        } else {
+            AudioInputDeviceSelection.applyPreferredInputDeviceID(
+                preferredInputDeviceID,
+                to: engine,
+                logPrefix: "streaming-mic"
+            )
+        }
         emitLatency("app_scoped_preferred_input_applied")
 
-        let inputNode = engine.inputNode
-        let hwFormat = inputNode.outputFormat(forBus: 0)
+        let hwFormat = try inputFormatLocked()
         guard hwFormat.sampleRate > 0 else {
             isGraphPrepared = false
             graphPreparedInputDeviceID = nil
@@ -97,7 +134,11 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
                 NSLocalizedDescriptionKey: "No audio input available",
             ])
         }
-        engine.prepare()
+        if recoversFromInputConfigurationChanges {
+            if let error = MuesliAudioGraphPrepareEngine(engine) { throw error }
+        } else {
+            engine.prepare()
+        }
         isGraphPrepared = true
         graphPreparedInputDeviceID = preferredInputDeviceID
         emitLatency("app_scoped_prepare_end")
@@ -107,7 +148,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         graphLock.lock()
         defer { graphLock.unlock() }
 
-        guard !isRunning else { return }
+        guard !runState.isRunning else { return }
         try prepareLocked()
         let recordingID = UUID()
         failureLock.withLock {
@@ -115,8 +156,35 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
             $0.hasReportedFailure = false
         }
 
-        let inputNode = engine.inputNode
-        let hwFormat = inputNode.outputFormat(forBus: 0)
+        let fileState = try createNewFile()
+        lock.withLock { $0 = fileState }
+
+        installConfigurationChangeObserverIfNeeded(recordingID: recordingID)
+        do {
+            try startEngineWithTapLocked(recordingID: recordingID)
+            runState.markStarted()
+        } catch {
+            removeTapIfNeeded()
+            stopEngineSafely()
+            removeConfigurationChangeObserverIfNeeded()
+            clearFailureState()
+            let state = lock.withLock { state -> FileState in
+                let old = state
+                state = FileState()
+                return old
+            }
+            if let url = state.fileURL {
+                try? FileManager.default.removeItem(at: url)
+            }
+            throw error
+        }
+    }
+
+    /// Installs the input tap (with conversion to 16kHz mono) and starts the engine.
+    /// Callers hold `graphLock`. Shared by `start()` and the configuration-change
+    /// restart path, so the tap keeps appending to the current file.
+    private func startEngineWithTapLocked(recordingID: UUID) throws {
+        let hwFormat = try inputFormatLocked()
 
         // Target format: 16kHz mono Float32
         guard let targetFormat = AVAudioFormat(
@@ -136,11 +204,8 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
             ? AVAudioConverter(from: hwFormat, to: targetFormat)
             : nil
 
-        let fileState = try createNewFile()
-        lock.withLock { $0 = fileState }
-
         emitLatency("app_scoped_tap_install_begin")
-        inputNode.installTap(onBus: 0, bufferSize: Self.bufferSize, format: nil) { [weak self] buffer, _ in
+        let tapBlock: AVAudioNodeTapBlock = { [weak self] buffer, _ in
             guard let self else { return }
             guard self.isCurrentRecording(recordingID) else { return }
 
@@ -223,33 +288,104 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
             let floats = Array(UnsafeBufferPointer(start: floatData, count: frameCount))
             self.onAudioBuffer?(floats)
         }
+        if recoversFromInputConfigurationChanges {
+            if let tapError = MuesliAudioGraphInstallInputTap(engine, 0, Self.bufferSize, nil, tapBlock) {
+                throw tapError
+            }
+        } else {
+            engine.inputNode.installTap(onBus: 0, bufferSize: Self.bufferSize, format: nil, block: tapBlock)
+        }
         tapInstalled = true
         emitLatency("app_scoped_tap_install_end")
 
-        do {
-            emitLatency("app_scoped_engine_start_begin")
+        emitLatency("app_scoped_engine_start_begin")
+        if recoversFromInputConfigurationChanges {
+            if let error = MuesliAudioGraphStartEngine(engine) { throw error }
+        } else {
             try engine.start()
-            emitLatency("app_scoped_engine_start_end")
-            isRunning = true
+        }
+        emitLatency("app_scoped_engine_start_end")
+    }
+
+    private func inputFormatLocked() throws -> AVAudioFormat {
+        if recoversFromInputConfigurationChanges {
+            let state = MuesliAudioGraphReadInputState(engine)
+            if let error = state.error { throw error }
+            guard let format = state.outputFormat else {
+                throw Self.runtimeError(code: 6, message: "Microphone input format is unavailable")
+            }
+            return format
+        }
+        return engine.inputNode.outputFormat(forBus: 0)
+    }
+
+    // MARK: - Input Configuration Changes
+
+    /// AVAudioEngine stops delivering input buffers when its I/O configuration
+    /// changes mid-recording (e.g. AirPods connect and become the default input).
+    /// Without handling this, the microphone side of a meeting recording dies
+    /// silently while system audio keeps flowing. Rebuild the tap and restart
+    /// the engine so capture continues into the same file.
+    private func installConfigurationChangeObserverIfNeeded(recordingID: UUID) {
+        guard recoversFromInputConfigurationChanges else { return }
+        guard configurationChangeObserver == nil else { return }
+        let callbackQueue = configurationChangeQueue
+        configurationChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            callbackQueue.async { [weak self] in
+                self?.handleEngineConfigurationChange(recordingID: recordingID)
+            }
+        }
+    }
+
+    private func removeConfigurationChangeObserverIfNeeded() {
+        guard let observer = configurationChangeObserver else { return }
+        NotificationCenter.default.removeObserver(observer)
+        configurationChangeObserver = nil
+    }
+
+    private func handleEngineConfigurationChange(recordingID: UUID) {
+        graphLock.lock()
+        defer { graphLock.unlock() }
+
+        guard runState.isRunning else { return }
+        let mayRestart = failureLock.withLock {
+            $0.activeRecordingID == recordingID && !$0.hasReportedFailure
+        }
+        guard mayRestart else { return }
+
+        fputs("[streaming-mic] engine configuration changed; restarting input capture\n", stderr)
+        emitLatency("engine_config_change_restart_begin")
+        removeTapIfNeeded()
+        stopEngineSafely()
+        isGraphPrepared = false
+        graphPreparedInputDeviceID = nil
+
+        do {
+            try prepareLocked()
+            try startEngineWithTapLocked(recordingID: recordingID)
+            emitLatency("engine_config_change_restart_end")
+            fputs("[streaming-mic] microphone capture restarted after configuration change\n", stderr)
         } catch {
+            fputs("[streaming-mic] failed to restart microphone capture after configuration change: \(error)\n", stderr)
+            // startEngineWithTapLocked() can fail after installing the tap; drop it so
+            // tapInstalled stays consistent with the stopped engine. Remove the observer
+            // too: once the failure is reported this recording must not silently resume
+            // on a later configuration change.
             removeTapIfNeeded()
-            engine.stop()
-            clearFailureState()
-            let state = lock.withLock { state -> FileState in
-                let old = state
-                state = FileState()
-                return old
-            }
-            if let url = state.fileURL {
-                try? FileManager.default.removeItem(at: url)
-            }
-            throw error
+            stopEngineSafely()
+            removeConfigurationChangeObserverIfNeeded()
+            runState.markConfigurationChangeRestartFailed()
+            reportRecordingFailure(error, recordingID: recordingID)
         }
     }
 
     /// Rotate to a new file. Returns the completed WAV URL. No audio gap.
     func rotateFile() -> URL? {
-        guard isRunning else { return nil }
+        guard runState.isRunning else { return nil }
 
         let newState: FileState
         do {
@@ -273,12 +409,13 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         graphLock.lock()
         defer { graphLock.unlock() }
 
-        guard isRunning else { return nil }
-        isRunning = false
+        guard runState.isRunning else { return nil }
+        runState.markStopped()
         clearFailureState()
+        removeConfigurationChangeObserverIfNeeded()
 
         removeTapIfNeeded()
-        engine.stop()
+        stopEngineSafely()
 
         let finalState = lock.withLock { state -> FileState in
             let old = state
@@ -290,7 +427,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
     }
 
     func pause() {
-        guard isRunning else { return }
+        guard runState.isRunning else { return }
         lock.withLock { state in
             state.isPaused = true
             state.latestPowerDB = -160
@@ -298,7 +435,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
     }
 
     func resume() {
-        guard isRunning else { return }
+        guard runState.isRunning else { return }
         lock.withLock { state in
             state.isPaused = false
         }
@@ -308,10 +445,11 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         graphLock.lock()
         defer { graphLock.unlock() }
 
-        isRunning = false
+        runState.markStopped()
         clearFailureState()
+        removeConfigurationChangeObserverIfNeeded()
         removeTapIfNeeded()
-        engine.stop()
+        stopEngineSafely()
         isGraphPrepared = false
         graphPreparedInputDeviceID = nil
         onAudioBuffer = nil
@@ -335,8 +473,20 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
 
     private func removeTapIfNeeded() {
         guard tapInstalled else { return }
-        engine.inputNode.removeTap(onBus: 0)
+        if recoversFromInputConfigurationChanges {
+            _ = MuesliAudioGraphRemoveInputTap(engine, 0)
+        } else {
+            engine.inputNode.removeTap(onBus: 0)
+        }
         tapInstalled = false
+    }
+
+    private func stopEngineSafely() {
+        if recoversFromInputConfigurationChanges {
+            _ = MuesliAudioGraphStopEngine(engine)
+        } else {
+            engine.stop()
+        }
     }
 
     private func isCurrentRecording(_ recordingID: UUID) -> Bool {

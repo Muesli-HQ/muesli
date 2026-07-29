@@ -117,118 +117,218 @@ final class StreamingMeetingMicRecorderAdapter: MeetingMicRecording {
 }
 
 final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
-    enum ActiveRecorderKind: Equatable {
-        case systemDefault
-        case appScoped
+    enum ActiveRecorderKind: Equatable { case systemDefault, appScoped }
+    private enum LifecycleState { case idle, prepared, running, paused, failed, stopping }
+    private struct Child {
+        let id: UUID
+        let generation: UInt64
+        let kind: ActiveRecorderKind
+        let recorder: MeetingMicRecording
+        let deviceID: AudioObjectID?
     }
+    typealias RecorderFactory = () -> MeetingMicRecording
+    typealias HandoffTimeoutScheduler = (TimeInterval, DispatchWorkItem) -> Void
 
     var preferredInputDeviceID: AudioObjectID? {
-        get {
-            lock.lock()
-            defer { lock.unlock() }
-            return preferredInputDeviceIDStorage
-        }
+        get { lock.withLock { $0.preferredInputDeviceIDStorage } }
         set {
-            lifecycleQueue.sync {
-                lock.lock()
-                preferredInputDeviceIDStorage = newValue
-                let recorder = activeRecorderLocked()
-                lock.unlock()
-                recorder.preferredInputDeviceID = newValue
+            let shouldHandoff = lock.withLock { state -> Bool in
+                let changed = state.preferredInputDeviceIDStorage != newValue
+                guard changed || state.lifecycleState == .failed else { return false }
+                if changed { state.preferredInputDeviceIDStorage = newValue }
+                guard state.lifecycleState == .running || state.lifecycleState == .failed else { return false }
+                state.generation &+= 1
+                return true
+            }
+            if shouldHandoff {
+                lifecycleQueue.async { [weak self] in
+                    self?.restartHandoffIfNeeded(force: true)
+                }
             }
         }
     }
+    var onRawPCMSamples: (([Int16]) -> Void)? {
+        get { lock.withLock { $0.onRawPCMSamplesStorage } }
+        set { lock.withLock { $0.onRawPCMSamplesStorage = newValue } }
+    }
+    var onRecordingFailed: ((Error) -> Void)? {
+        get { lock.withLock { $0.onRecordingFailedStorage } }
+        set { lock.withLock { $0.onRecordingFailedStorage = newValue } }
+    }
 
-    var onRawPCMSamples: (([Int16]) -> Void)?
-    var onRecordingFailed: ((Error) -> Void)?
-
-    private let systemDefaultRecorder: MeetingMicRecording
-    private let appScopedRecorder: MeetingMicRecording
+    private let systemDefaultRecorderFactory: RecorderFactory
+    private let appScopedRecorderFactory: RecorderFactory
+    private var seededSystemDefaultRecorder: MeetingMicRecording?
+    private var seededAppScopedRecorder: MeetingMicRecording?
     private let routeSnapshotProvider: () -> MeetingMicRouteDiagnosticsSnapshot?
     private let lifecycleQueue: DispatchQueue
-    private let lock = NSRecursiveLock()
-    private var preferredInputDeviceIDStorage: AudioObjectID?
-    private var activeRecorderKindStorage: ActiveRecorderKind = .systemDefault
+    private let handoffWorkerQueue: DispatchQueue
+    private let cleanupQueue: DispatchQueue
+    private let handoffTimeout: TimeInterval
+    private let scheduleHandoffTimeout: HandoffTimeoutScheduler
+    private let lock = OSAllocatedUnfairLock(initialState: State())
+
+    private struct State {
+        var preferredInputDeviceIDStorage: AudioObjectID?
+        var lifecycleState: LifecycleState = .idle
+        var active: Child?
+        var pending: Child?
+        var generation: UInt64 = 0
+        var shouldRecoverOnResume = false
+        var onRawPCMSamplesStorage: (([Int16]) -> Void)?
+        var onRecordingFailedStorage: ((Error) -> Void)?
+    }
+
+    private var preferredInputDeviceIDStorage: AudioObjectID? {
+        get { lock.withLock { $0.preferredInputDeviceIDStorage } }
+        set { lock.withLock { $0.preferredInputDeviceIDStorage = newValue } }
+    }
+    private var lifecycleState: LifecycleState { lock.withLock { $0.lifecycleState } }
+    private var onRawPCMSamplesStorage: (([Int16]) -> Void)? { lock.withLock { $0.onRawPCMSamplesStorage } }
+    private var onRecordingFailedStorage: ((Error) -> Void)? { lock.withLock { $0.onRecordingFailedStorage } }
 
     init(
-        systemDefaultRecorder: MeetingMicRecording = StreamingMeetingMicRecorderAdapter(
-            recorder: StreamingMicRecorder(directoryName: "muesli-meeting-mic"),
-            kind: .systemDefaultStreaming
-        ),
-        appScopedRecorder: MeetingMicRecording = StreamingMeetingMicRecorderAdapter(
-            recorder: FallbackStreamingDictationRecorder(
-                primary: AudioQueueInputRecorder(directoryName: "muesli-meeting-mic-audioqueue"),
-                fallback: StreamingMicRecorder(directoryName: "muesli-meeting-mic-app-scoped-fallback")
-            ),
-            kind: .appScopedAudioQueue
-        ),
+        systemDefaultRecorder: MeetingMicRecording? = nil,
+        appScopedRecorder: MeetingMicRecording? = nil,
+        systemDefaultRecorderFactory: RecorderFactory? = nil,
+        appScopedRecorderFactory: RecorderFactory? = nil,
         routeSnapshotProvider: @escaping () -> MeetingMicRouteDiagnosticsSnapshot? = { nil },
-        lifecycleQueue: DispatchQueue = DispatchQueue(label: "com.muesli.route-aware-meeting-mic-recorder-lifecycle")
+        lifecycleQueue: DispatchQueue = DispatchQueue(label: "com.muesli.route-aware-meeting-mic-recorder-lifecycle"),
+        handoffWorkerQueue: DispatchQueue = DispatchQueue(
+            label: "com.muesli.route-aware-meeting-mic-recorder-handoff",
+            attributes: .concurrent
+        ),
+        cleanupQueue: DispatchQueue = DispatchQueue(
+            label: "com.muesli.route-aware-meeting-mic-recorder-cleanup",
+            attributes: .concurrent
+        ),
+        handoffTimeout: TimeInterval = 2,
+        handoffTimeoutScheduler: HandoffTimeoutScheduler? = nil
     ) {
-        self.systemDefaultRecorder = systemDefaultRecorder
-        self.appScopedRecorder = appScopedRecorder
+        self.seededSystemDefaultRecorder = systemDefaultRecorder
+        self.seededAppScopedRecorder = appScopedRecorder
+        self.systemDefaultRecorderFactory = systemDefaultRecorderFactory ?? Self.makeSystemDefaultRecorder
+        self.appScopedRecorderFactory = appScopedRecorderFactory ?? Self.makeAppScopedRecorder
         self.routeSnapshotProvider = routeSnapshotProvider
         self.lifecycleQueue = lifecycleQueue
-        wireCallbacks()
+        self.handoffWorkerQueue = handoffWorkerQueue
+        self.cleanupQueue = cleanupQueue
+        self.handoffTimeout = handoffTimeout
+        self.scheduleHandoffTimeout = handoffTimeoutScheduler ?? { delay, workItem in
+            lifecycleQueue.asyncAfter(deadline: .now() + delay, execute: workItem)
+        }
     }
 
     func activeRecorderKindForDebug() -> ActiveRecorderKind {
-        lock.lock()
-        defer { lock.unlock() }
-        return activeRecorderKindStorage
+        lock.withLock { $0.active?.kind ?? Self.kind(for: $0.preferredInputDeviceIDStorage) }
+    }
+
+    func isTerminallyFailedForDebug() -> Bool {
+        lock.withLock { $0.lifecycleState == .failed }
     }
 
     func prepare() throws {
         try lifecycleQueue.sync {
-            let recorder = selectRecorder(preferredInputDeviceID: currentPreferredInputDeviceID())
-            try recorder.prepare()
+            let child = try ensureCurrentChild()
+            try child.recorder.prepare()
+            lock.withLock { $0.lifecycleState = .prepared }
         }
     }
 
     func start() throws {
         try lifecycleQueue.sync {
-            let recorder = selectRecorder(preferredInputDeviceID: currentPreferredInputDeviceID())
-            try recorder.start()
+            let child = try ensureCurrentChild()
+            try child.recorder.start()
+            lock.withLock { $0.lifecycleState = .running }
         }
     }
 
     func pause() {
         lifecycleQueue.sync {
-            activeRecorder().pause()
+            let result = lock.withLock { state -> (MeetingMicRecording?, Child?) in
+                guard state.lifecycleState == .running || state.lifecycleState == .failed else { return (nil, nil) }
+                state.shouldRecoverOnResume = state.lifecycleState == .failed
+                state.lifecycleState = .paused
+                state.generation &+= 1
+                let pending = state.pending
+                state.pending = nil
+                return (state.active?.recorder, pending)
+            }
+            cancelAsync(result.1)
+            result.0?.pause()
         }
     }
 
     func resume() {
         lifecycleQueue.sync {
-            activeRecorder().resume()
+            let result = lock.withLock { state -> (recorder: MeetingMicRecording?, shouldRecover: Bool)? in
+                guard state.lifecycleState == .paused else { return nil }
+                let shouldRecover = state.shouldRecoverOnResume
+                state.shouldRecoverOnResume = false
+                state.lifecycleState = shouldRecover ? .failed : .running
+                return (state.active?.recorder, shouldRecover)
+            }
+            guard let result else { return }
+            if result.shouldRecover {
+                restartHandoffIfNeeded(force: true)
+            } else {
+                result.recorder?.resume()
+                restartHandoffIfNeeded()
+            }
         }
     }
 
     func stop() -> URL? {
-        lifecycleQueue.sync {
-            lock.lock()
-            let activeRecorder = activeRecorderLocked()
-            let inactiveRecorder = inactiveRecorderLocked()
-            lock.unlock()
-            let url = activeRecorder.stop()
-            inactiveRecorder.cancel()
-            return url
+        let resources = lifecycleQueue.sync { () -> (active: Child?, pending: Child?, unused: [MeetingMicRecording]) in
+            let children = lock.withLock { state -> (Child?, Child?) in
+                state.lifecycleState = .stopping
+                state.generation &+= 1
+                let result = (state.active, state.pending)
+                state.active = nil
+                state.pending = nil
+                state.shouldRecoverOnResume = false
+                return result
+            }
+            return (children.0, children.1, takeUnusedSeedRecorders())
         }
+        cancelAsync(resources.pending)
+        cancelAsync(resources.unused)
+        let url = resources.active?.recorder.stop()
+        resources.active?.recorder.cancel()
+        lock.withLock { $0.lifecycleState = .idle }
+        return url
     }
 
     func cancel() {
-        lifecycleQueue.sync {
-            systemDefaultRecorder.cancel()
-            appScopedRecorder.cancel()
+        let resources = lifecycleQueue.sync { () -> (Child?, Child?, [MeetingMicRecording]) in
+            let children = lock.withLock { state -> (Child?, Child?) in
+                state.lifecycleState = .stopping
+                state.generation &+= 1
+                let result = (state.active, state.pending)
+                state.active = nil
+                state.pending = nil
+                state.shouldRecoverOnResume = false
+                return result
+            }
+            lock.withLock { $0.lifecycleState = .idle }
+            return (children.0, children.1, takeUnusedSeedRecorders())
         }
+        cancelAsync(resources.0)
+        cancelAsync(resources.1)
+        cancelAsync(resources.2)
     }
 
     func currentPower() -> Float {
-        activeRecorder().currentPower()
+        lock.withLock { $0.active?.recorder }?.currentPower() ?? -160
     }
 
     func diagnosticsSnapshot() -> MeetingMicRecorderDiagnosticsSnapshot {
-        var snapshot = activeRecorder().diagnosticsSnapshot()
+        let child = lock.withLock { $0.active }
+        var snapshot = child?.recorder.diagnosticsSnapshot() ?? MeetingMicRecorderDiagnosticsSnapshot(
+            recorderKind: Self.kind(for: preferredInputDeviceID).diagnosticsKind,
+            preferredInputDeviceID: preferredInputDeviceID,
+            route: nil
+        )
         if snapshot.route == nil {
             snapshot = MeetingMicRecorderDiagnosticsSnapshot(
                 recorderKind: snapshot.recorderKind,
@@ -239,77 +339,242 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         return snapshot
     }
 
-    private func wireCallbacks() {
-        wireCallbacks(for: systemDefaultRecorder, kind: .systemDefault)
-        wireCallbacks(for: appScopedRecorder, kind: .appScoped)
-    }
-
-    private func wireCallbacks(for recorder: MeetingMicRecording, kind: ActiveRecorderKind) {
-        recorder.onRawPCMSamples = { [weak self] samples in
-            self?.forwardIfActive(kind) { $0.onRawPCMSamples?(samples) }
+    private func ensureCurrentChild() throws -> Child {
+        let desired = preferredInputDeviceID
+        if let active = lock.withLock({ $0.active }), active.deviceID == desired { return active }
+        let previous = lock.withLock { state -> Child? in
+            let old = state.active
+            state.active = nil
+            return old
         }
-        recorder.onRecordingFailed = { [weak self] error in
-            self?.forwardIfActive(kind) { $0.onRecordingFailed?(error) }
+        previous?.recorder.cancel()
+        let child = makeChild(deviceID: desired, generation: lock.withLock { $0.generation })
+        lock.withLock { $0.active = child }
+        return child
+    }
+
+    private func restartHandoffIfNeeded(force: Bool = false) {
+        let stalePending = lock.withLock { state -> Child? in
+            let pending = state.pending
+            state.pending = nil
+            return pending
+        }
+        cancelAsync(stalePending)
+        beginHandoffIfNeeded(force: force)
+    }
+
+    private func beginHandoffIfNeeded(force: Bool = false) {
+        let request = lock.withLock { state -> (AudioObjectID, UInt64)? in
+            guard state.lifecycleState == .running || state.lifecycleState == .failed,
+                  state.pending == nil,
+                  force || state.active?.deviceID != state.preferredInputDeviceIDStorage else { return nil }
+            return (state.preferredInputDeviceIDStorage ?? kAudioObjectUnknown, state.generation)
+        }
+        guard let (encodedDeviceID, generation) = request else { return }
+        let deviceID = encodedDeviceID == kAudioObjectUnknown ? nil : encodedDeviceID
+        let candidate = makeChild(deviceID: deviceID, generation: generation)
+        lock.withLock { $0.pending = candidate }
+
+        // Schedule the wall-clock deadline before starting the graph. CoreAudio
+        // can block inside AudioQueueStart, so a timeout scheduled afterward is
+        // not a real bound and can also hold stop/discard behind it.
+        scheduleHandoffTimeout(
+            handoffTimeout,
+            DispatchWorkItem { [weak self] in
+                self?.failPendingHandoff(
+                    candidateID: candidate.id,
+                    generation: generation,
+                    error: NSError(domain: "MeetingMicrophoneRoute", code: 1, userInfo: [
+                        NSLocalizedDescriptionKey: "The selected microphone did not produce audio."
+                    ])
+                )
+            }
+        )
+        handoffWorkerQueue.async { [weak self] in
+            do {
+                try candidate.recorder.prepare()
+                try candidate.recorder.start()
+            } catch {
+                self?.lifecycleQueue.async { [weak self] in
+                    self?.failPendingHandoff(
+                        candidateID: candidate.id,
+                        generation: generation,
+                        error: error
+                    )
+                }
+            }
         }
     }
 
-    private func forwardIfActive(_ kind: ActiveRecorderKind, _ body: (RouteAwareMeetingMicRecorder) -> Void) {
-        lock.lock()
-        let shouldForward = activeRecorderKindStorage == kind
-        lock.unlock()
-        guard shouldForward else { return }
-        body(self)
-    }
-
-    private func currentPreferredInputDeviceID() -> AudioObjectID? {
-        lock.lock()
-        defer { lock.unlock() }
-        return preferredInputDeviceIDStorage
-    }
-
-    private func selectRecorder(preferredInputDeviceID: AudioObjectID?) -> MeetingMicRecording {
-        lock.lock()
-        let nextKind: ActiveRecorderKind = preferredInputDeviceID == nil ? .systemDefault : .appScoped
-        let inactiveRecorderToCancel = nextKind == activeRecorderKindStorage ? nil : activeRecorderLocked()
-        preferredInputDeviceIDStorage = preferredInputDeviceID
-        activeRecorderKindStorage = nextKind
-        let selectedRecorder = activeRecorderLocked()
-        lock.unlock()
-
-        selectedRecorder.preferredInputDeviceID = preferredInputDeviceID
-        inactiveRecorderToCancel?.cancel()
-        return selectedRecorder
-    }
-
-    private func activeRecorder() -> MeetingMicRecording {
-        lock.lock()
-        defer { lock.unlock() }
-        return activeRecorderLocked()
-    }
-
-    private func activeRecorderLocked() -> MeetingMicRecording {
-        recorder(for: activeRecorderKindStorage)
-    }
-
-    private func inactiveRecorderLocked() -> MeetingMicRecording {
-        inactiveRecorder(for: activeRecorderKindStorage)
-    }
-
-    private func recorder(for kind: ActiveRecorderKind) -> MeetingMicRecording {
+    private func makeChild(deviceID: AudioObjectID?, generation: UInt64) -> Child {
+        let kind = Self.kind(for: deviceID)
+        let recorder: MeetingMicRecording
         switch kind {
         case .systemDefault:
-            return systemDefaultRecorder
+            recorder = seededSystemDefaultRecorder ?? systemDefaultRecorderFactory()
+            seededSystemDefaultRecorder = nil
         case .appScoped:
-            return appScopedRecorder
+            recorder = seededAppScopedRecorder ?? appScopedRecorderFactory()
+            seededAppScopedRecorder = nil
+        }
+        recorder.preferredInputDeviceID = deviceID
+        let child = Child(id: UUID(), generation: generation, kind: kind, recorder: recorder, deviceID: deviceID)
+        recorder.onRawPCMSamples = { [weak self] samples in self?.receive(samples, from: child.id) }
+        recorder.onRecordingFailed = { [weak self] error in self?.receive(error, from: child.id) }
+        return child
+    }
+
+    private func receive(_ samples: [Int16], from childID: UUID) {
+        let role = lock.withLock { state -> (isActive: Bool, isPending: Bool, UInt64) in
+            (state.active?.id == childID, state.pending?.id == childID, state.pending?.generation ?? state.generation)
+        }
+        if role.isActive {
+            onRawPCMSamplesStorage?(samples)
+        } else if role.isPending {
+            lifecycleQueue.async { [weak self] in
+                self?.completePendingHandoff(childID: childID, generation: role.2, firstSamples: samples)
+            }
         }
     }
 
-    private func inactiveRecorder(for kind: ActiveRecorderKind) -> MeetingMicRecording {
-        switch kind {
-        case .systemDefault:
-            return appScopedRecorder
-        case .appScoped:
-            return systemDefaultRecorder
+    private func receive(_ error: Error, from childID: UUID) {
+        let role = lock.withLock { state -> (
+            isActive: Bool,
+            isPending: Bool,
+            generation: UInt64,
+            failureHandler: ((Error) -> Void)?,
+            shouldRecover: Bool
+        ) in
+            if state.pending?.id == childID {
+                return (false, true, state.pending?.generation ?? state.generation, nil, false)
+            }
+            guard state.active?.id == childID else {
+                return (false, false, state.generation, nil, false)
+            }
+            if state.lifecycleState == .paused {
+                guard !state.shouldRecoverOnResume else {
+                    return (false, false, state.generation, nil, false)
+                }
+                state.shouldRecoverOnResume = true
+                return (true, false, state.generation, state.onRecordingFailedStorage, false)
+            }
+            guard state.lifecycleState == .running else {
+                return (false, false, state.generation, nil, false)
+            }
+            state.lifecycleState = .failed
+            let shouldRecover = state.pending == nil
+            if shouldRecover { state.generation &+= 1 }
+            return (true, false, state.generation, state.onRecordingFailedStorage, shouldRecover)
+        }
+        if role.isActive {
+            role.failureHandler?(error)
+            if role.shouldRecover {
+                lifecycleQueue.async { [weak self] in
+                    self?.beginHandoffIfNeeded(force: true)
+                }
+            }
+        } else if role.isPending {
+            lifecycleQueue.async { [weak self] in
+                self?.failPendingHandoff(candidateID: childID, generation: role.generation, error: error)
+            }
+        }
+    }
+
+    private func completePendingHandoff(childID: UUID, generation: UInt64, firstSamples: [Int16]) {
+        guard !firstSamples.isEmpty else { return }
+        let transition = lock.withLock { state -> (completed: Bool, old: Child?) in
+            guard state.generation == generation,
+                  state.lifecycleState == .running || state.lifecycleState == .failed,
+                  state.pending?.id == childID,
+                  let candidate = state.pending else { return (false, nil) }
+            let old = state.active
+            state.active = candidate
+            state.pending = nil
+            state.lifecycleState = .running
+            return (true, old)
+        }
+        guard transition.completed else { return }
+        onRawPCMSamplesStorage?(firstSamples)
+        retireAfterHandoffAsync(transition.old)
+    }
+
+    private func failPendingHandoff(candidateID: UUID, generation: UInt64, error: Error) {
+        let result = lock.withLock { state -> (candidate: Child, isTerminalRecovery: Bool)? in
+            guard state.generation == generation,
+                  state.pending?.id == candidateID,
+                  let candidate = state.pending else { return nil }
+            state.pending = nil
+            return (candidate, state.lifecycleState == .failed)
+        }
+        guard let result else { return }
+        cancelAsync(result.candidate)
+        let outcome = result.isTerminalRecovery
+            ? "microphone recovery failed"
+            : "microphone handoff failed; continuing current route"
+        fputs("[meeting-mic] \(outcome): \(error)\n", stderr)
+    }
+
+    private static func kind(for deviceID: AudioObjectID?) -> ActiveRecorderKind {
+        deviceID == nil ? .systemDefault : .appScoped
+    }
+
+    private func takeUnusedSeedRecorders() -> [MeetingMicRecording] {
+        let recorders = [seededSystemDefaultRecorder, seededAppScopedRecorder].compactMap { $0 }
+        seededSystemDefaultRecorder = nil
+        seededAppScopedRecorder = nil
+        return recorders
+    }
+
+    private func cancelAsync(_ child: Child?) {
+        guard let child else { return }
+        cleanupQueue.async { child.recorder.cancel() }
+    }
+
+    private func cancelAsync(_ recorders: [MeetingMicRecording]) {
+        guard !recorders.isEmpty else { return }
+        cleanupQueue.async {
+            for recorder in recorders { recorder.cancel() }
+        }
+    }
+
+    private func retireAfterHandoffAsync(_ child: Child?) {
+        guard let child else { return }
+        cleanupQueue.async {
+            let url = child.recorder.stop()
+            child.recorder.cancel()
+            if let url { try? FileManager.default.removeItem(at: url) }
+        }
+    }
+
+    private static func makeSystemDefaultRecorder() -> MeetingMicRecording {
+        StreamingMeetingMicRecorderAdapter(
+            recorder: StreamingMicRecorder(
+                directoryName: "muesli-meeting-mic",
+                recoversFromInputConfigurationChanges: true
+            ),
+            kind: .systemDefaultStreaming
+        )
+    }
+
+    private static func makeAppScopedRecorder() -> MeetingMicRecording {
+        StreamingMeetingMicRecorderAdapter(
+            recorder: FallbackStreamingDictationRecorder(
+                primary: AudioQueueInputRecorder(directoryName: "muesli-meeting-mic-audioqueue"),
+                fallback: StreamingMicRecorder(
+                    directoryName: "muesli-meeting-mic-app-scoped-fallback",
+                    recoversFromInputConfigurationChanges: true
+                )
+            ),
+            kind: .appScopedAudioQueue
+        )
+    }
+}
+
+private extension RouteAwareMeetingMicRecorder.ActiveRecorderKind {
+    var diagnosticsKind: MeetingMicRecorderKind {
+        switch self {
+        case .systemDefault: return .systemDefaultStreaming
+        case .appScoped: return .appScopedAudioQueue
         }
     }
 }
