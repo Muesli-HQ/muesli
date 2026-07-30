@@ -105,12 +105,12 @@ struct MeetingExporter {
                 parts.append("")
                 parts.append("## Raw Transcript")
                 parts.append("")
-                parts.append(meeting.rawTranscript)
+                parts.append(meeting.displayTranscript)
             }
         case .transcript:
             parts.append("## Raw Transcript")
             parts.append("")
-            parts.append(meeting.rawTranscript)
+            parts.append(meeting.displayTranscript)
         case .fullMeeting:
             if meeting.notesState == .structuredNotes {
                 parts.append(meeting.formattedNotes)
@@ -122,7 +122,7 @@ struct MeetingExporter {
             parts.append("")
             parts.append("## Raw Transcript")
             parts.append("")
-            parts.append(meeting.rawTranscript)
+            parts.append(meeting.displayTranscript)
         }
 
         return parts.joined(separator: "\n")

@@ -393,7 +393,19 @@ struct MeetingDetailView: View {
                         .allowsHitTesting(documentMode == .notes)
                         .accessibilityHidden(documentMode != .notes)
 
-                    MeetingTranscriptView(transcript: meeting.rawTranscript)
+                    MeetingTranscriptView(
+                        transcript: meeting.rawTranscript,
+                        speakerNames: meeting.speakerNames,
+                        onRenameSpeaker: { canonical, name in
+                            var names = meeting.speakerNames
+                            if name.isEmpty {
+                                names.removeValue(forKey: canonical)
+                            } else {
+                                names[canonical] = name
+                            }
+                            controller.updateMeetingSpeakerNames(id: meeting.id, names: names)
+                        }
+                    )
                         .opacity(documentMode == .transcript ? 1 : 0)
                         .allowsHitTesting(documentMode == .transcript)
                         .accessibilityHidden(documentMode != .transcript)
@@ -1833,10 +1845,18 @@ struct TranscriptChatMessage: Identifiable, Equatable {
 
 private struct MeetingTranscriptView: View {
     let transcript: String
+    var speakerNames: [String: String] = [:]
+    var onRenameSpeaker: ((String, String) -> Void)?
     @State private var messages: [TranscriptChatMessage]
 
-    init(transcript: String) {
+    init(
+        transcript: String,
+        speakerNames: [String: String] = [:],
+        onRenameSpeaker: ((String, String) -> Void)? = nil
+    ) {
         self.transcript = transcript
+        self.speakerNames = speakerNames
+        self.onRenameSpeaker = onRenameSpeaker
         _messages = State(initialValue: TranscriptChatMessage.messages(from: transcript))
     }
 
@@ -1851,7 +1871,11 @@ private struct MeetingTranscriptView: View {
                         .padding(MuesliTheme.spacing24)
                 } else {
                     ForEach(messages) { message in
-                        TranscriptChatBubble(message: message)
+                        TranscriptChatBubble(
+                            message: message,
+                            speakerNames: speakerNames,
+                            onRenameSpeaker: onRenameSpeaker
+                        )
                     }
                 }
             }
@@ -1868,6 +1892,10 @@ private struct MeetingTranscriptView: View {
 
 struct TranscriptChatBubble: View {
     let message: TranscriptChatMessage
+    var speakerNames: [String: String] = [:]
+    var onRenameSpeaker: ((String, String) -> Void)?
+    @State private var isRenaming = false
+    @State private var draftName = ""
 
     var body: some View {
         HStack(alignment: .bottom, spacing: MuesliTheme.spacing8) {
@@ -1881,6 +1909,13 @@ struct TranscriptChatBubble: View {
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .textSelection(.enabled)
+                        .modifier(SpeakerRenameModifier(
+                            canonicalSpeaker: renameableSpeaker,
+                            displayName: displaySpeaker,
+                            isRenaming: $isRenaming,
+                            draftName: $draftName,
+                            onRename: onRenameSpeaker
+                        ))
                 }
                 Text(message.text)
                     .font(.system(size: 14))
@@ -1905,8 +1940,21 @@ struct TranscriptChatBubble: View {
         .frame(maxWidth: .infinity, alignment: message.isUser ? .trailing : .leading)
     }
 
+    /// Canonical label if this bubble's speaker can be renamed, else nil.
+    private var renameableSpeaker: String? {
+        guard onRenameSpeaker != nil,
+              let speaker = message.speaker,
+              TranscriptFormatter.isRenameableSpeaker(speaker) else { return nil }
+        return speaker
+    }
+
+    private var displaySpeaker: String? {
+        guard let speaker = message.speaker else { return nil }
+        return speakerNames[speaker] ?? speaker
+    }
+
     private var metadata: String? {
-        switch (message.speaker, message.timestamp) {
+        switch (displaySpeaker, message.timestamp) {
         case let (speaker?, timestamp?):
             return "\(speaker) \(timestamp)"
         case let (speaker?, nil):
@@ -1916,5 +1964,81 @@ struct TranscriptChatBubble: View {
         case (nil, nil):
             return nil
         }
+    }
+}
+
+/// Attaches the rename affordance to a speaker label, and nothing at all when
+/// the speaker is not a renameable diarization label (You/Others, live views).
+private struct SpeakerRenameModifier: ViewModifier {
+    let canonicalSpeaker: String?
+    let displayName: String?
+    @Binding var isRenaming: Bool
+    @Binding var draftName: String
+    let onRename: ((String, String) -> Void)?
+
+    func body(content: Content) -> some View {
+        guard let canonicalSpeaker, let onRename else { return AnyView(content) }
+        return AnyView(
+            content
+                .contextMenu {
+                    Button("Rename Speaker…") {
+                        draftName = displayName == canonicalSpeaker ? "" : (displayName ?? "")
+                        isRenaming = true
+                    }
+                }
+                .popover(isPresented: $isRenaming) {
+                    SpeakerRenamePopover(
+                        canonicalSpeaker: canonicalSpeaker,
+                        name: $draftName,
+                        onSubmit: { name in
+                            isRenaming = false
+                            onRename(canonicalSpeaker, name)
+                        }
+                    )
+                }
+        )
+    }
+}
+
+private struct SpeakerRenamePopover: View {
+    let canonicalSpeaker: String
+    @Binding var name: String
+    let onSubmit: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+            Text("Rename \(canonicalSpeaker)")
+                .font(MuesliTheme.body())
+                .foregroundStyle(MuesliTheme.textSecondary)
+            TextField("Name", text: $name)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 200)
+                .onSubmit { submit() }
+            HStack {
+                Text("Leave empty to reset")
+                    .font(.system(size: 10))
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                Spacer()
+                Button("Save") { submit() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!isValid)
+            }
+        }
+        .padding(MuesliTheme.spacing12)
+    }
+
+    /// A name that collides with a canonical label would be indistinguishable
+    /// from a real diarization label once rendered.
+    private var isValid: Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return true }
+        if trimmed.localizedCaseInsensitiveCompare("You") == .orderedSame { return false }
+        if trimmed.localizedCaseInsensitiveCompare("Others") == .orderedSame { return false }
+        return !TranscriptFormatter.isRenameableSpeaker(trimmed) && !trimmed.contains(":")
+    }
+
+    private func submit() {
+        guard isValid else { return }
+        onSubmit(name.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 }

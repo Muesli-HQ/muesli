@@ -3894,7 +3894,7 @@ final class MuesliController: NSObject {
             let plan = MeetingResummarizationPolicy.plan(for: meeting)
             do {
                 let notes = try await MeetingSummaryClient.summarize(
-                    transcript: meeting.rawTranscript,
+                    transcript: meeting.displayTranscript,
                     meetingTitle: plan.promptTitle,
                     config: self.config,
                     template: templateSnapshot,
@@ -4004,6 +4004,9 @@ final class MuesliController: NSObject {
                         selectedTemplateKind: templateSnapshot.kind,
                         selectedTemplatePrompt: templateSnapshot.prompt
                     )
+                    // Re-running diarization renumbers speakers, so previous
+                    // names would attach to the wrong voices.
+                    try self.dictationStore.updateMeetingSpeakerNames(id: meeting.id, speakerNamesJSON: nil)
                 } catch {
                     throw MeetingRetranscriptionError.failedToSave(underlying: error)
                 }
@@ -4103,6 +4106,21 @@ final class MuesliController: NSObject {
             scheduleICloudSyncAfterLocalChange()
         } catch {
             fputs("[muesli-native] failed to update meeting transcript \(id): \(error)\n", stderr)
+        }
+        syncAppState()
+    }
+
+    /// Persists the speaker rename map. The transcript keeps canonical labels;
+    /// names are applied when rendering, exporting, and summarizing.
+    func updateMeetingSpeakerNames(id: Int64, names: [String: String]) {
+        do {
+            let json = names.isEmpty
+                ? nil
+                : String(data: try JSONEncoder().encode(names), encoding: .utf8)
+            try dictationStore.updateMeetingSpeakerNames(id: id, speakerNamesJSON: json)
+            scheduleICloudSyncAfterLocalChange()
+        } catch {
+            fputs("[muesli-native] failed to update meeting speaker names \(id): \(error)\n", stderr)
         }
         syncAppState()
     }

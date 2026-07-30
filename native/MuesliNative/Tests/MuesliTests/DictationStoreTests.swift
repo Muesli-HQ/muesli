@@ -3079,6 +3079,57 @@ struct DictationStoreTests {
         #expect(results.map(\.id).contains(id))
     }
 
+    @Test("speaker names round-trip and clear")
+    func speakerNamesRoundTrip() throws {
+        let store = try makeStore()
+        let start = Date(timeIntervalSince1970: 1_775_817_600)
+        let id = try store.insertMeeting(
+            title: "Standup",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(600),
+            rawTranscript: "[00:00:01] Speaker 1: Hello",
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+
+        let initial = try #require(try store.meeting(id: id))
+        #expect(initial.speakerNames.isEmpty)
+
+        try store.updateMeetingSpeakerNames(id: id, speakerNamesJSON: #"{"Speaker 1":"Priya"}"#)
+        let named = try #require(try store.meeting(id: id))
+        #expect(named.speakerNames == ["Speaker 1": "Priya"])
+        // The transcript itself must keep canonical labels.
+        #expect(named.rawTranscript == "[00:00:01] Speaker 1: Hello")
+
+        try store.updateMeetingSpeakerNames(id: id, speakerNamesJSON: nil)
+        let cleared = try #require(try store.meeting(id: id))
+        #expect(cleared.speakerNames.isEmpty)
+    }
+
+    @Test("speaker names migrate onto a legacy meetings table")
+    func speakerNamesLegacyMigration() throws {
+        let store = try makeLegacyStore()
+        try store.migrateIfNeeded()
+        let start = Date(timeIntervalSince1970: 1_775_817_600)
+        let id = try store.insertMeeting(
+            title: "Legacy",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(600),
+            rawTranscript: "[00:00:01] Speaker 1: Hello",
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+
+        try store.updateMeetingSpeakerNames(id: id, speakerNamesJSON: #"{"Speaker 1":"Sam"}"#)
+
+        let migrated = try #require(try store.meeting(id: id))
+        #expect(migrated.speakerNames == ["Speaker 1": "Sam"])
+    }
+
     @Test("search is case-insensitive for ASCII")
     func searchCaseInsensitive() throws {
         let store = try makeStore()

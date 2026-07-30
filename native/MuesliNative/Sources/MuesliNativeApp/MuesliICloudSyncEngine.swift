@@ -1138,6 +1138,7 @@ final class MuesliICloudSyncEngine {
             cloud["title"] = nil as NSString?
             cloud["text"] = nil as NSString?
             cloud["speakerTranscript"] = nil as NSString?
+            cloud["speakerNames"] = nil as NSString?
             cloud["summaryText"] = nil as NSString?
             cloud["manualNotes"] = nil as NSString?
             cloud["followUpToRecordName"] = nil as NSString?
@@ -1146,6 +1147,7 @@ final class MuesliICloudSyncEngine {
         cloud["title"] = record.title as NSString?
         cloud["text"] = record.text as NSString
         cloud["speakerTranscript"] = record.speakerTranscript as NSString?
+        cloud["speakerNames"] = record.speakerNames as NSString?
         cloud["summaryText"] = record.summaryText as NSString?
         cloud["manualNotes"] = record.manualNotes as NSString?
         return cloud
@@ -1189,7 +1191,8 @@ final class MuesliICloudSyncEngine {
             wordCount: (record["wordCount"] as? NSNumber)?.intValue ?? 0,
             isDeleted: isDeleted,
             cloudChangeTag: record.recordChangeTag,
-            followUpToRecordName: record["followUpToRecordName"] as? String
+            followUpToRecordName: record["followUpToRecordName"] as? String,
+            speakerNames: record["speakerNames"] as? String
         )
     }
 
@@ -1311,6 +1314,7 @@ final class MuesliICloudSyncEngine {
             "title",
             "text",
             "speakerTranscript",
+            "speakerNames",
             "summaryText",
             "manualNotes",
             "source",

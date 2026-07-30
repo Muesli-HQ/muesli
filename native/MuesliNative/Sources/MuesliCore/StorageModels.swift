@@ -66,6 +66,8 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
     public var isDeleted: Bool
     public var cloudChangeTag: String?
     public var followUpToRecordName: String?
+    /// JSON speaker rename map for meetings. See `MeetingRecord.speakerNamesJSON`.
+    public var speakerNames: String?
 
     public init(
         id: String,
@@ -87,7 +89,8 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
         wordCount: Int,
         isDeleted: Bool = false,
         cloudChangeTag: String? = nil,
-        followUpToRecordName: String? = nil
+        followUpToRecordName: String? = nil,
+        speakerNames: String? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -109,6 +112,7 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
         self.isDeleted = isDeleted
         self.cloudChangeTag = cloudChangeTag
         self.followUpToRecordName = followUpToRecordName
+        self.speakerNames = speakerNames
     }
 }
 
@@ -288,6 +292,16 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
     /// Stable sync identity for the predecessor. Local row ids differ across
     /// devices, so sync uses the predecessor's cloud record name.
     public let followUpToRecordName: String?
+    /// JSON object mapping canonical diarization labels to user-chosen display
+    /// names, e.g. `{"Speaker 1": "Priya"}`. `rawTranscript` always keeps the
+    /// canonical labels; names are applied at render/export time.
+    public let speakerNamesJSON: String?
+
+    /// Decoded speaker rename map. Empty when unset or unparseable.
+    public var speakerNames: [String: String] {
+        guard let speakerNamesJSON, let data = speakerNamesJSON.data(using: .utf8) else { return [:] }
+        return (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
+    }
 
     public init(
         id: Int64,
@@ -311,7 +325,8 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
         selectedTemplatePrompt: String? = nil,
         source: MeetingSource = .meeting,
         followUpToID: Int64? = nil,
-        followUpToRecordName: String? = nil
+        followUpToRecordName: String? = nil,
+        speakerNamesJSON: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -335,6 +350,7 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
         self.source = source
         self.followUpToID = followUpToID
         self.followUpToRecordName = followUpToRecordName
+        self.speakerNamesJSON = speakerNamesJSON
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -360,6 +376,7 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
         case source
         case followUpToID
         case followUpToRecordName
+        case speakerNamesJSON
     }
 
     public init(from decoder: Decoder) throws {

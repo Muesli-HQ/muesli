@@ -33,7 +33,7 @@ public final class DictationStore {
     t.id, t.final_status, t.final_message, t.trace_json, t.created_at
     """
     private static let meetingColumns = """
-    id, title, start_time, duration_seconds, raw_transcript, formatted_notes, word_count, folder_id, calendar_event_id, mic_audio_path, system_audio_path, saved_recording_path, meeting_status, manual_notes, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, follow_up_to_id, follow_up_to_record_name, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start
+    id, title, start_time, duration_seconds, raw_transcript, formatted_notes, word_count, folder_id, calendar_event_id, mic_audio_path, system_audio_path, saved_recording_path, meeting_status, manual_notes, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, follow_up_to_id, follow_up_to_record_name, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start, speaker_names
     """
 
     public init() {
@@ -121,6 +121,7 @@ public final class DictationStore {
             sync_dirty INTEGER NOT NULL DEFAULT 1,
             follow_up_to_id INTEGER REFERENCES meetings(id) ON DELETE SET NULL,
             follow_up_to_record_name TEXT,
+            speaker_names TEXT,
             created_at TEXT DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_meetings_start_time ON meetings(start_time DESC);
@@ -212,7 +213,8 @@ public final class DictationStore {
             "ALTER TABLE meetings ADD COLUMN calendar_source TEXT",
             "ALTER TABLE meetings ADD COLUMN calendar_id TEXT",
             "ALTER TABLE meetings ADD COLUMN calendar_series_id TEXT",
-            "ALTER TABLE meetings ADD COLUMN calendar_occurrence_start REAL"
+            "ALTER TABLE meetings ADD COLUMN calendar_occurrence_start REAL",
+            "ALTER TABLE meetings ADD COLUMN speaker_names TEXT"
         ] {
             _ = sqlite3_exec(db, sql, nil, nil, nil)
         }
@@ -1781,6 +1783,32 @@ public final class DictationStore {
         try deleteResumeSnapshot(meetingID: id, db: db)
     }
 
+    /// Stores the speaker rename map for a meeting. Pass `nil` to clear it.
+    /// The raw transcript is untouched: renames are applied at render time.
+    public func updateMeetingSpeakerNames(id: Int64, speakerNamesJSON: String?) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = "UPDATE meetings SET speaker_names = ?, updated_at = ?, sync_dirty = 1 WHERE id = ?"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        if let speakerNamesJSON {
+            sqlite3_bind_text(statement, 1, (speakerNamesJSON as NSString).utf8String, -1, nil)
+        } else {
+            sqlite3_bind_null(statement, 1)
+        }
+        sqlite3_bind_double(statement, 2, Date().timeIntervalSince1970)
+        sqlite3_bind_int64(statement, 3, id)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
+        guard sqlite3_changes(db) > 0 else {
+            throw DictationStoreError.meetingNotFound(id: id)
+        }
+    }
+
     /// Returns the stored raw transcript for a meeting, or `nil` if the meeting does not exist.
     /// Used by the resume-recording flow to append new transcript onto the prior one.
     public func meetingRawTranscript(id: Int64) throws -> String? {
@@ -2810,7 +2838,8 @@ public final class DictationStore {
         SELECT m.cloud_record_name, m.title, m.raw_transcript, m.formatted_notes, m.manual_notes,
                m.start_time, m.duration_seconds, m.word_count, m.source, m.meeting_status,
                m.updated_at, m.deleted_at, m.cloud_change_tag,
-               COALESCE(m.follow_up_to_record_name, predecessor.cloud_record_name)
+               COALESCE(m.follow_up_to_record_name, predecessor.cloud_record_name),
+               m.speaker_names
         FROM meetings AS m
         LEFT JOIN meetings AS predecessor ON predecessor.id = m.follow_up_to_id
         WHERE m.sync_dirty = 1 AND m.cloud_record_name IS NOT NULL
@@ -2913,7 +2942,8 @@ public final class DictationStore {
         SELECT m.cloud_record_name, m.title, m.raw_transcript, m.formatted_notes, m.manual_notes,
                m.start_time, m.duration_seconds, m.word_count, m.source, m.meeting_status,
                m.updated_at, m.deleted_at, m.cloud_change_tag,
-               COALESCE(m.follow_up_to_record_name, predecessor.cloud_record_name)
+               COALESCE(m.follow_up_to_record_name, predecessor.cloud_record_name),
+               m.speaker_names
         FROM meetings AS m
         LEFT JOIN meetings AS predecessor ON predecessor.id = m.follow_up_to_id
         WHERE m.cloud_record_name IS NOT NULL
@@ -3350,7 +3380,8 @@ public final class DictationStore {
             wordCount: Int(sqlite3_column_int(statement, 7)),
             isDeleted: sqlite3_column_type(statement, 11) != SQLITE_NULL,
             cloudChangeTag: optionalStringColumn(statement, index: 12),
-            followUpToRecordName: optionalStringColumn(statement, index: 13)
+            followUpToRecordName: optionalStringColumn(statement, index: 13),
+            speakerNames: optionalStringColumn(statement, index: 14)
         )
     }
 
@@ -3538,11 +3569,11 @@ public final class DictationStore {
             raw_transcript, formatted_notes, mic_audio_path, system_audio_path,
             saved_recording_path, meeting_status, manual_notes, word_count, source,
             follow_up_to_id, follow_up_to_record_name, updated_at, deleted_at, cloud_record_name, cloud_change_tag,
-            last_synced_at, sync_dirty
+            last_synced_at, sync_dirty, speaker_names
         )
         VALUES (?, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?,
                 (SELECT id FROM meetings WHERE cloud_record_name = ? AND deleted_at IS NULL LIMIT 1),
-                ?, ?, ?, ?, ?, ?, 0)
+                ?, ?, ?, ?, ?, ?, 0, ?)
         ON CONFLICT(cloud_record_name) DO UPDATE SET
             title = excluded.title,
             start_time = excluded.start_time,
@@ -3560,6 +3591,7 @@ public final class DictationStore {
             deleted_at = excluded.deleted_at,
             cloud_change_tag = excluded.cloud_change_tag,
             last_synced_at = excluded.last_synced_at,
+            speaker_names = excluded.speaker_names,
             sync_dirty = 0
         WHERE excluded.updated_at > meetings.updated_at
            OR (excluded.updated_at = meetings.updated_at AND meetings.sync_dirty = 0)
@@ -3589,6 +3621,7 @@ public final class DictationStore {
         sqlite3_bind_text(statement, 15, (record.id as NSString).utf8String, -1, nil)
         bindOptionalText(record.cloudChangeTag, at: 16, statement: statement)
         sqlite3_bind_double(statement, 17, Date().timeIntervalSince1970)
+        bindOptionalText(record.speakerNames, at: 18, statement: statement)
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
@@ -3701,7 +3734,8 @@ public final class DictationStore {
             selectedTemplatePrompt: selectedTemplatePrompt,
             source: source,
             followUpToID: followUpToID,
-            followUpToRecordName: followUpToRecordName
+            followUpToRecordName: followUpToRecordName,
+            speakerNamesJSON: optionalStringColumn(statement, index: 26)
         )
     }
 

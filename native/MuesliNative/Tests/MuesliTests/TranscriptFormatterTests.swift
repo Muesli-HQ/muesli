@@ -489,6 +489,60 @@ struct TranscriptFormatterTests {
 
     // MARK: - Helpers
 
+    // MARK: - Speaker Renames
+
+    @Test("applies speaker names to matching labels only")
+    func appliesSpeakerNames() {
+        let transcript = """
+        [00:00:01] Speaker 1: Morning everyone
+        [00:00:04] Speaker 2: Morning
+        [00:00:06] You: Let us start
+        """
+
+        let result = TranscriptFormatter.applying(names: ["Speaker 1": "Priya"], to: transcript)
+
+        #expect(result.contains("[00:00:01] Priya: Morning everyone"))
+        #expect(result.contains("[00:00:04] Speaker 2: Morning"))
+        #expect(result.contains("[00:00:06] You: Let us start"))
+    }
+
+    @Test("rename never rewrites body text that looks like a label")
+    func renameLeavesBodyTextAlone() {
+        let transcript = "[00:00:01] Speaker 2: I told Speaker 1: check the docs"
+
+        let result = TranscriptFormatter.applying(names: ["Speaker 1": "Priya"], to: transcript)
+
+        #expect(result == transcript)
+    }
+
+    @Test("empty and unknown names leave the transcript untouched")
+    func renameNoOps() {
+        let transcript = "[00:00:01] Speaker 1: Hello"
+
+        #expect(TranscriptFormatter.applying(names: [:], to: transcript) == transcript)
+        #expect(TranscriptFormatter.applying(names: ["Speaker 9": "Sam"], to: transcript) == transcript)
+        #expect(TranscriptFormatter.applying(names: ["Speaker 1": ""], to: transcript) == transcript)
+    }
+
+    @Test("rename is idempotent")
+    func renameIsIdempotent() {
+        let transcript = "[00:00:01] Speaker 1: Hello\n[00:00:02] Speaker 1: Again"
+        let names = ["Speaker 1": "Priya"]
+
+        let once = TranscriptFormatter.applying(names: names, to: transcript)
+
+        #expect(TranscriptFormatter.applying(names: names, to: once) == once)
+    }
+
+    @Test("only diarization labels are renameable")
+    func renameableSpeakers() {
+        #expect(TranscriptFormatter.isRenameableSpeaker("Speaker 1"))
+        #expect(TranscriptFormatter.isRenameableSpeaker("Speaker 12"))
+        #expect(!TranscriptFormatter.isRenameableSpeaker("You"))
+        #expect(!TranscriptFormatter.isRenameableSpeaker("Others"))
+        #expect(!TranscriptFormatter.isRenameableSpeaker("Priya"))
+    }
+
     private func makeDiarSeg(speakerId: String, start: Float, end: Float) -> TimedSpeakerSegment {
         TimedSpeakerSegment(
             speakerId: speakerId,
