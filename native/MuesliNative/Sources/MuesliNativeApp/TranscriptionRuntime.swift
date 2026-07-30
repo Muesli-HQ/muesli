@@ -408,10 +408,14 @@ actor TranscriptionCoordinator {
         at url: URL,
         backend: BackendOption,
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
-        indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage
+        indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage,
+        customWords: [CustomWord] = []
     ) async throws -> SpeechTranscriptionResult {
-        // Meetings intentionally skip Qwen/custom-word post-processing. Keep deterministic artifact/filler cleanup only.
-        cleanMeetingTranscript(try await route(url: url, backend: backend, cohereLanguage: cohereLanguage, indicASRLanguage: indicASRLanguage))
+        // Meetings intentionally skip Qwen post-processing. Keep deterministic artifact/filler cleanup only.
+        // Live meetings pass no custom words here: they correct segments once at
+        // finalize instead, so replacements are never applied twice.
+        let result = cleanMeetingTranscript(try await route(url: url, backend: backend, cohereLanguage: cohereLanguage, indicASRLanguage: indicASRLanguage))
+        return CustomWordMatcher.apply(result: result, customWords: customWords)
     }
 
     func transcribeMeetingChunk(

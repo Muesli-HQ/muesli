@@ -487,6 +487,24 @@ struct TranscriptFormatterTests {
         #expect(lines.allSatisfy { $0.contains("Others:") })
     }
 
+    @Test("dictionary corrections applied to segments reach the merged transcript")
+    func dictionaryCorrectionsSurviveMerge() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let words = [CustomWord(word: "jira", replacement: "Jira")]
+        let mic = [SpeechSegment(start: 0.0, end: 2.0, text: "I filed a jira ticket")]
+        let system = [SpeechSegment(start: 3.0, end: 4.0, text: "which jira project")]
+
+        let result = TranscriptFormatter.merge(
+            micSegments: CustomWordMatcher.apply(segments: mic, customWords: words),
+            systemSegments: CustomWordMatcher.apply(segments: system, customWords: words),
+            meetingStart: meetingStart
+        )
+
+        #expect(result.contains("You: I filed a Jira ticket"))
+        #expect(result.contains("Others: which Jira project"))
+        #expect(!result.contains("jira"))
+    }
+
     // MARK: - Helpers
 
     private func makeDiarSeg(speakerId: String, start: Float, end: Float) -> TimedSpeakerSegment {

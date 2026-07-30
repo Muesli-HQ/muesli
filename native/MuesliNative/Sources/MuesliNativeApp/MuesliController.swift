@@ -3963,7 +3963,8 @@ final class MuesliController: NSObject {
                     at: recordingURL,
                     backend: backend,
                     cohereLanguage: self.config.resolvedCohereLanguage,
-                    indicASRLanguage: self.config.resolvedIndicASRLanguage
+                    indicASRLanguage: self.config.resolvedIndicASRLanguage,
+                    customWords: self.config.customWords
                 )
                 let rawTranscript = transcription.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !rawTranscript.isEmpty else {
@@ -7965,8 +7966,13 @@ final class MuesliController: NSObject {
         previousStreamText = ""
         let duration = max(Date().timeIntervalSince(startedAt), 0)
         fputs("[muesli-native] Nemotron streaming stop, got \(finalText.count) chars\n", stderr)
-        let cleaned = FillerWordFilter.apply(finalText)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // Corrects the stored dictation only: the streamed text was already
+        // typed out, same as the filler filter above it.
+        let cleaned = CustomWordMatcher.apply(
+            text: FillerWordFilter.apply(finalText),
+            customWords: config.customWords
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines)
 
         if !config.maraudersMapUnlocked { checkMaraudersMapActivation(cleaned) }
 

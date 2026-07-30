@@ -184,4 +184,46 @@ struct CustomWordMatcherApplyTests {
         let result = CustomWordMatcher.apply(text: "try open, telemetry now", customWords: words)
         #expect(result == "try open, telemetry now")
     }
+
+    @Test("corrects segment text and preserves timings")
+    func correctsSegmentsPreservingTimings() {
+        let words = [CustomWord(word: "jira", replacement: "Jira")]
+        let segments = [
+            SpeechSegment(start: 0.0, end: 1.5, text: "open jira please"),
+            SpeechSegment(start: 1.5, end: 3.0, text: "nothing to change"),
+        ]
+
+        let corrected = CustomWordMatcher.apply(segments: segments, customWords: words)
+
+        #expect(corrected.map(\.text) == ["open Jira please", "nothing to change"])
+        #expect(corrected.map(\.start) == segments.map(\.start))
+        #expect(corrected.map(\.end) == segments.map(\.end))
+    }
+
+    @Test("corrects both flat text and segments of a transcription result")
+    func correctsResultTextAndSegments() {
+        let words = [CustomWord(word: "jira", replacement: "Jira")]
+        let result = SpeechTranscriptionResult(
+            text: "open jira",
+            segments: [SpeechSegment(start: 0.0, end: 1.0, text: "open jira")]
+        )
+
+        let corrected = CustomWordMatcher.apply(result: result, customWords: words)
+
+        #expect(corrected.text == "open Jira")
+        #expect(corrected.segments.first?.text == "open Jira")
+    }
+
+    @Test("no custom words leaves the result untouched")
+    func emptyCustomWordsIsNoOp() {
+        let result = SpeechTranscriptionResult(
+            text: "open jira",
+            segments: [SpeechSegment(start: 0.0, end: 1.0, text: "open jira")]
+        )
+
+        let corrected = CustomWordMatcher.apply(result: result, customWords: [])
+
+        #expect(corrected.text == result.text)
+        #expect(corrected.segments.map(\.text) == result.segments.map(\.text))
+    }
 }

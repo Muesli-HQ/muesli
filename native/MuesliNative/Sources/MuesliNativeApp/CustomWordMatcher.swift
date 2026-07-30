@@ -59,6 +59,24 @@ struct CustomWordMatcher {
         return result.joined(separator: " ")
     }
 
+    /// Corrects both the flat text and the per-segment text. Meeting transcripts
+    /// are assembled from segments, so correcting only `text` would not reach
+    /// the stored transcript.
+    static func apply(result: SpeechTranscriptionResult, customWords: [CustomWord]) -> SpeechTranscriptionResult {
+        guard !customWords.isEmpty else { return result }
+        return SpeechTranscriptionResult(
+            text: apply(text: result.text, customWords: customWords),
+            segments: apply(segments: result.segments, customWords: customWords)
+        )
+    }
+
+    static func apply(segments: [SpeechSegment], customWords: [CustomWord]) -> [SpeechSegment] {
+        guard !customWords.isEmpty else { return segments }
+        return segments.map {
+            SpeechSegment(start: $0.start, end: $0.end, text: apply(text: $0.text, customWords: customWords))
+        }
+    }
+
     private struct TokenParts {
         let prefix: String
         let core: String

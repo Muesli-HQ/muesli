@@ -694,9 +694,13 @@ final class MeetingSession {
         )
         let protectedTranscriptInputs = reconciledTranscriptInputs
 
+        // Dictionary corrections land here, once, rather than per chunk: every
+        // capture path (chunked, unified streaming, repair, fallback) converges
+        // on this merge, and the matcher is not idempotent.
+        let customWords = config.customWords
         let rawTranscript = TranscriptFormatter.merge(
-            micSegments: protectedTranscriptInputs.micSegments,
-            systemSegments: protectedTranscriptInputs.systemSegments,
+            micSegments: CustomWordMatcher.apply(segments: protectedTranscriptInputs.micSegments, customWords: customWords),
+            systemSegments: CustomWordMatcher.apply(segments: protectedTranscriptInputs.systemSegments, customWords: customWords),
             diarizationSegments: protectedTranscriptInputs.diarizationSegments,
             meetingStart: meetingStart
         )
