@@ -534,6 +534,20 @@ struct TranscriptFormatterTests {
         #expect(TranscriptFormatter.applying(names: names, to: once) == once)
     }
 
+    @Test("speaker name validation rejects names that shadow canonical labels")
+    func speakerNameValidation() {
+        #expect(TranscriptFormatter.isValidSpeakerName("Priya"))
+        // Empty means "reset to the canonical label".
+        #expect(TranscriptFormatter.isValidSpeakerName(""))
+        #expect(TranscriptFormatter.isValidSpeakerName("   "))
+
+        #expect(!TranscriptFormatter.isValidSpeakerName("You"))
+        #expect(!TranscriptFormatter.isValidSpeakerName("others"))
+        #expect(!TranscriptFormatter.isValidSpeakerName("Speaker 2"))
+        // A colon would break line-anchored label parsing.
+        #expect(!TranscriptFormatter.isValidSpeakerName("Priya: lead"))
+    }
+
     @Test("speaker labels are numbered by first appearance")
     func speakerLabelsByFirstAppearance() {
         let segments = [

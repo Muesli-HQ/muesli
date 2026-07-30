@@ -1364,7 +1364,7 @@ struct MeetingDetailView: View {
         case .notes:
             return isEditingNotes ? editableNotes : Self.notesContent(for: meeting)
         case .transcript:
-            return isEditingTranscript ? editableTranscript : meeting.rawTranscript
+            return isEditingTranscript ? editableTranscript : meeting.displayTranscript
         }
     }
 
@@ -1407,7 +1407,7 @@ struct MeetingDetailView: View {
             return meeting.manualNotes
         }
         if meeting.notesState != .structuredNotes {
-            return "# \(meeting.title)\n\n## Raw Transcript\n\n\(meeting.rawTranscript)"
+            return "# \(meeting.title)\n\n## Raw Transcript\n\n\(meeting.displayTranscript)"
         }
         return meeting.formattedNotes
     }
@@ -2019,14 +2019,8 @@ private struct SpeakerRenamePopover: View {
         .padding(MuesliTheme.spacing12)
     }
 
-    /// A name that collides with a canonical label would be indistinguishable
-    /// from a real diarization label once rendered.
     private var isValid: Bool {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return true }
-        if trimmed.localizedCaseInsensitiveCompare("You") == .orderedSame { return false }
-        if trimmed.localizedCaseInsensitiveCompare("Others") == .orderedSame { return false }
-        return !TranscriptFormatter.isRenameableSpeaker(trimmed) && !trimmed.contains(":")
+        TranscriptFormatter.isValidSpeakerName(name)
     }
 
     private func submit() {

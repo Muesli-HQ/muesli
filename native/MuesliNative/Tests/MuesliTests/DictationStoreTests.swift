@@ -3130,6 +3130,139 @@ struct DictationStoreTests {
         #expect(migrated.speakerNames == ["Speaker 1": "Sam"])
     }
 
+    @Test("deleting a meeting clears speaker names and voiceprints")
+    func deletingMeetingClearsSpeakerIdentities() throws {
+        let store = try makeStore()
+        let start = Date(timeIntervalSince1970: 1_775_817_600)
+        let id = try store.insertMeeting(
+            title: "Standup",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(600),
+            rawTranscript: "[00:00:01] Speaker 1: Hello",
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+        try store.updateMeetingSpeakerNames(id: id, speakerNamesJSON: #"{"Speaker 1":"Priya"}"#)
+        try store.replaceMeetingSpeakers(
+            meetingID: id,
+            speakers: [MeetingSpeakerRecord(label: "Speaker 1", speakerID: "spk-a", embedding: [0.5])]
+        )
+
+        try store.deleteMeeting(id: id)
+
+        // A soft-deleted row must not keep participant names or voiceprints.
+        #expect(try store.meetingSpeakers(meetingID: id).isEmpty)
+        let raw = try store.meeting(id: id)
+        #expect(raw?.speakerNames.isEmpty ?? true)
+    }
+
+    @Test("clearing all meetings removes stored voiceprints")
+    func clearingMeetingsRemovesVoiceprints() throws {
+        let store = try makeStore()
+        let start = Date(timeIntervalSince1970: 1_775_817_600)
+        let id = try store.insertMeeting(
+            title: "Standup",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(600),
+            rawTranscript: "",
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+        try store.updateMeetingSpeakerNames(id: id, speakerNamesJSON: #"{"Speaker 1":"Priya"}"#)
+        try store.replaceMeetingSpeakers(
+            meetingID: id,
+            speakers: [MeetingSpeakerRecord(label: "Speaker 1", speakerID: "spk-a", embedding: [0.5])]
+        )
+
+        try store.clearMeetings()
+
+        #expect(try store.meetingSpeakers(meetingID: id).isEmpty)
+    }
+
+    @Test("re-transcribing clears speaker names in the same update")
+    func retranscribeClearsSpeakerNames() throws {
+        let store = try makeStore()
+        let start = Date(timeIntervalSince1970: 1_775_817_600)
+        let id = try store.insertMeeting(
+            title: "Standup",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(600),
+            rawTranscript: "[00:00:01] Speaker 1: Hello",
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+        try store.updateMeetingSpeakerNames(id: id, speakerNamesJSON: #"{"Speaker 1":"Priya"}"#)
+
+        try store.updateMeetingTranscriptAndSummary(
+            id: id,
+            rawTranscript: "[00:00:01] Speaker 1: Fresh",
+            formattedNotes: "notes",
+            selectedTemplateID: "t",
+            selectedTemplateName: "T",
+            selectedTemplateKind: .builtin,
+            selectedTemplatePrompt: "p",
+            clearSpeakerNames: true
+        )
+
+        let updated = try #require(try store.meeting(id: id))
+        #expect(updated.speakerNames.isEmpty)
+        #expect(updated.rawTranscript == "[00:00:01] Speaker 1: Fresh")
+    }
+
+    @Test("meeting record survives a Codable round-trip with speaker names")
+    func meetingRecordCodableRoundTrip() throws {
+        let store = try makeStore()
+        let start = Date(timeIntervalSince1970: 1_775_817_600)
+        let id = try store.insertMeeting(
+            title: "Standup",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(600),
+            rawTranscript: "[00:00:01] Speaker 1: Hello",
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+        try store.updateMeetingSpeakerNames(id: id, speakerNamesJSON: #"{"Speaker 1":"Priya"}"#)
+        let original = try #require(try store.meeting(id: id))
+
+        let decoded = try JSONDecoder().decode(
+            MeetingRecord.self,
+            from: try JSONEncoder().encode(original)
+        )
+
+        #expect(decoded.speakerNames == ["Speaker 1": "Priya"])
+    }
+
+    @Test("meeting record decodes without a speaker names key")
+    func meetingRecordDecodesWithoutSpeakerNames() throws {
+        let json = """
+        {
+            "id": 1,
+            "title": "Standup",
+            "startTime": "2026-07-30T10:00:00Z",
+            "durationSeconds": 600,
+            "rawTranscript": "[00:00:01] Speaker 1: Hello",
+            "formattedNotes": "",
+            "wordCount": 4,
+            "status": "completed",
+            "manualNotes": "",
+            "source": "meeting"
+        }
+        """
+
+        let decoded = try JSONDecoder().decode(MeetingRecord.self, from: Data(json.utf8))
+
+        #expect(decoded.speakerNamesJSON == nil)
+        #expect(decoded.speakerNames.isEmpty)
+    }
+
     @Test("meeting speakers and known speakers round-trip voiceprints")
     func speakerVoiceprintsRoundTrip() throws {
         let store = try makeStore()

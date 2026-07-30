@@ -4006,11 +4006,11 @@ final class MuesliController: NSObject {
                         selectedTemplateID: templateSnapshot.id,
                         selectedTemplateName: templateSnapshot.name,
                         selectedTemplateKind: templateSnapshot.kind,
-                        selectedTemplatePrompt: templateSnapshot.prompt
+                        selectedTemplatePrompt: templateSnapshot.prompt,
+                        // Re-running diarization renumbers speakers, so previous
+                        // names would attach to the wrong voices.
+                        clearSpeakerNames: true
                     )
-                    // Re-running diarization renumbers speakers, so previous
-                    // names would attach to the wrong voices.
-                    try self.dictationStore.updateMeetingSpeakerNames(id: meeting.id, speakerNamesJSON: nil)
                 } catch {
                     throw MeetingRetranscriptionError.failedToSave(underlying: error)
                 }
@@ -6070,7 +6070,11 @@ final class MuesliController: NSObject {
                 selectedTemplateID: result.templateSnapshot.id,
                 selectedTemplateName: result.templateSnapshot.name,
                 selectedTemplateKind: result.templateSnapshot.kind,
-                selectedTemplatePrompt: result.templateSnapshot.prompt
+                selectedTemplatePrompt: result.templateSnapshot.prompt,
+                // The resumed transcript is re-merged from scratch, restarting
+                // speaker numbering. Voice recognition below re-fills any names
+                // it can identify; positional carry-over would be wrong.
+                clearSpeakerNames: true
             )
             meetingID = existingMeetingID
             clearCachedMeetingManualNotes(id: existingMeetingID)

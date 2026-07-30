@@ -78,6 +78,18 @@ enum TranscriptFormatter {
         speaker.range(of: #"^Speaker\s+\d+$"#, options: [.regularExpression, .caseInsensitive]) != nil
     }
 
+    /// Whether a user-supplied speaker name is safe to store. An empty name is
+    /// valid and means "reset to the canonical label". Names that would shadow a
+    /// canonical label, or contain a colon and so break line-anchored parsing,
+    /// are rejected.
+    static func isValidSpeakerName(_ name: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return true }
+        if trimmed.localizedCaseInsensitiveCompare("You") == .orderedSame { return false }
+        if trimmed.localizedCaseInsensitiveCompare("Others") == .orderedSame { return false }
+        return !isRenameableSpeaker(trimmed) && !trimmed.contains(":")
+    }
+
     /// Rewrites canonical `Speaker N:` line labels to user-chosen names.
     ///
     /// The stored transcript always keeps canonical labels; names live in a

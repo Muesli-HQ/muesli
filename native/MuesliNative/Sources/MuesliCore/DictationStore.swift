@@ -1602,12 +1602,16 @@ public final class DictationStore {
         do {
             try deleteResumeSnapshot(meetingID: id, db: db)
             try deleteLiveTranscriptCheckpoints(meetingID: id, db: db)
+            // Voiceprints are participant data: drop them with the transcript
+            // rather than leaving them on a soft-deleted row.
+            try exec("DELETE FROM meeting_speakers WHERE meeting_id = \(id)", db: db)
             let sql = """
             UPDATE meetings
             SET title = 'Deleted Meeting',
                 raw_transcript = '',
                 formatted_notes = NULL,
                 manual_notes = '',
+                speaker_names = NULL,
                 mic_audio_path = NULL,
                 system_audio_path = NULL,
                 saved_recording_path = NULL,
@@ -1717,6 +1721,7 @@ public final class DictationStore {
         defer { sqlite3_close(db) }
         try exec("DELETE FROM meeting_resume_snapshots", db: db)
         try exec("DELETE FROM meeting_transcript_checkpoints", db: db)
+        try exec("DELETE FROM meeting_speakers", db: db)
         try exec(
             """
             UPDATE meetings
@@ -1724,6 +1729,7 @@ public final class DictationStore {
                 raw_transcript = '',
                 formatted_notes = NULL,
                 manual_notes = '',
+                speaker_names = NULL,
                 mic_audio_path = NULL,
                 system_audio_path = NULL,
                 saved_recording_path = NULL,
@@ -2172,13 +2178,18 @@ public final class DictationStore {
         selectedTemplateID: String? = nil,
         selectedTemplateName: String? = nil,
         selectedTemplateKind: MeetingTemplateKind? = nil,
-        selectedTemplatePrompt: String? = nil
+        selectedTemplatePrompt: String? = nil,
+        clearSpeakerNames: Bool = false
     ) throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
+        // Cleared in the same statement as the transcript it belongs to: a
+        // re-merged transcript renumbers speakers, so a stale map would point
+        // names at the wrong voices if a follow-up update failed.
+        let speakerNamesAssignment = clearSpeakerNames ? "speaker_names = NULL, " : ""
         let sql = """
         UPDATE meetings
-        SET title = ?, calendar_event_id = ?, start_time = ?, end_time = ?, duration_seconds = ?, raw_transcript = ?, formatted_notes = ?, mic_audio_path = ?, system_audio_path = ?, saved_recording_path = ?, meeting_status = ?, word_count = ?, selected_template_id = ?, selected_template_name = ?, selected_template_kind = ?, selected_template_prompt = ?, updated_at = ?, sync_dirty = 1
+        SET title = ?, calendar_event_id = ?, start_time = ?, end_time = ?, duration_seconds = ?, raw_transcript = ?, formatted_notes = ?, mic_audio_path = ?, system_audio_path = ?, saved_recording_path = ?, meeting_status = ?, word_count = ?, selected_template_id = ?, selected_template_name = ?, selected_template_kind = ?, selected_template_prompt = ?, \(speakerNamesAssignment)updated_at = ?, sync_dirty = 1
         WHERE id = ?
         """
         var statement: OpaquePointer?
@@ -2611,15 +2622,20 @@ public final class DictationStore {
         selectedTemplateID: String,
         selectedTemplateName: String,
         selectedTemplateKind: MeetingTemplateKind,
-        selectedTemplatePrompt: String
+        selectedTemplatePrompt: String,
+        clearSpeakerNames: Bool = false
     ) throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         let manualNotes = try manualNotesForMeeting(id: id, db: db)
         let wordCount = Self.countWords(in: rawTranscript) + Self.countWords(in: manualNotes)
+        // Clearing the rename map has to happen in the same statement as the new
+        // transcript: a separate update could fail and leave names attached to
+        // speakers that re-diarization has since renumbered.
+        let speakerNamesAssignment = clearSpeakerNames ? "speaker_names = NULL, " : ""
         let sql = """
         UPDATE meetings
-        SET raw_transcript = ?, formatted_notes = ?, meeting_status = ?, word_count = ?, selected_template_id = ?, selected_template_name = ?, selected_template_kind = ?, selected_template_prompt = ?, updated_at = ?, sync_dirty = 1
+        SET raw_transcript = ?, formatted_notes = ?, meeting_status = ?, word_count = ?, selected_template_id = ?, selected_template_name = ?, selected_template_kind = ?, selected_template_prompt = ?, \(speakerNamesAssignment)updated_at = ?, sync_dirty = 1
         WHERE id = ?
         """
         var statement: OpaquePointer?
