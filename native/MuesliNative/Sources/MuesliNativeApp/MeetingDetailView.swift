@@ -1896,6 +1896,7 @@ struct TranscriptChatBubble: View {
     var onRenameSpeaker: ((String, String) -> Void)?
     @State private var isRenaming = false
     @State private var draftName = ""
+    @State private var isHoveringSpeaker = false
 
     var body: some View {
         HStack(alignment: .bottom, spacing: MuesliTheme.spacing8) {
@@ -1904,18 +1905,42 @@ struct TranscriptChatBubble: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                if let metadata = metadata {
+                if let canonicalSpeaker = renameableSpeaker, let onRenameSpeaker {
+                    // A selectable Text swallows clicks and supplies its own
+                    // context menu, so the rename affordance has to be a button.
+                    HStack(spacing: 4) {
+                        Button {
+                            draftName = displaySpeaker == canonicalSpeaker ? "" : (displaySpeaker ?? "")
+                            isRenaming = true
+                        } label: {
+                            Text(displaySpeaker ?? canonicalSpeaker)
+                                .underline(isHoveringSpeaker)
+                        }
+                        .buttonStyle(.plain)
+                        .onHover { isHoveringSpeaker = $0 }
+                        .help("Rename speaker")
+                        .popover(isPresented: $isRenaming) {
+                            SpeakerRenamePopover(
+                                canonicalSpeaker: canonicalSpeaker,
+                                name: $draftName,
+                                onSubmit: { name in
+                                    isRenaming = false
+                                    onRenameSpeaker(canonicalSpeaker, name)
+                                }
+                            )
+                        }
+
+                        if let timestamp = message.timestamp {
+                            Text(timestamp)
+                        }
+                    }
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                } else if let metadata = metadata {
                     Text(metadata)
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .textSelection(.enabled)
-                        .modifier(SpeakerRenameModifier(
-                            canonicalSpeaker: renameableSpeaker,
-                            displayName: displaySpeaker,
-                            isRenaming: $isRenaming,
-                            draftName: $draftName,
-                            onRename: onRenameSpeaker
-                        ))
                 }
                 Text(message.text)
                     .font(.system(size: 14))
@@ -1964,39 +1989,6 @@ struct TranscriptChatBubble: View {
         case (nil, nil):
             return nil
         }
-    }
-}
-
-/// Attaches the rename affordance to a speaker label, and nothing at all when
-/// the speaker is not a renameable diarization label (You/Others, live views).
-private struct SpeakerRenameModifier: ViewModifier {
-    let canonicalSpeaker: String?
-    let displayName: String?
-    @Binding var isRenaming: Bool
-    @Binding var draftName: String
-    let onRename: ((String, String) -> Void)?
-
-    func body(content: Content) -> some View {
-        guard let canonicalSpeaker, let onRename else { return AnyView(content) }
-        return AnyView(
-            content
-                .contextMenu {
-                    Button("Rename Speaker…") {
-                        draftName = displayName == canonicalSpeaker ? "" : (displayName ?? "")
-                        isRenaming = true
-                    }
-                }
-                .popover(isPresented: $isRenaming) {
-                    SpeakerRenamePopover(
-                        canonicalSpeaker: canonicalSpeaker,
-                        name: $draftName,
-                        onSubmit: { name in
-                            isRenaming = false
-                            onRename(canonicalSpeaker, name)
-                        }
-                    )
-                }
-        )
     }
 }
 
