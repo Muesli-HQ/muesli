@@ -7,6 +7,14 @@ actor WhisperKitTranscriber {
     private var whisperKit: WhisperKit?
     private var loadedModel: String?
 
+    static var transcriptionDecodingOptions: DecodingOptions {
+        DecodingOptions(
+            task: .transcribe,
+            language: nil,
+            detectLanguage: true
+        )
+    }
+
     enum TranscriberError: Error, LocalizedError {
         case notLoaded
         case transcriptionFailed(String)
@@ -92,7 +100,10 @@ actor WhisperKitTranscriber {
         guard let whisperKit else { throw TranscriberError.notLoaded }
 
         let start = CFAbsoluteTimeGetCurrent()
-        let results = try await whisperKit.transcribe(audioPath: wavURL.path)
+        let results = try await whisperKit.transcribe(
+            audioPath: wavURL.path,
+            decodeOptions: Self.transcriptionDecodingOptions
+        )
         let elapsed = CFAbsoluteTimeGetCurrent() - start
 
         let text = results.map(\.text).joined(separator: " ")
