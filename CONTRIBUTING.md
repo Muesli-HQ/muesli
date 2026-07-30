@@ -161,10 +161,10 @@ request description. Include the source and applicable license or terms.
 
 ## Developer Certificate of Origin
 
-Every commit contributed to Muesli must be signed off under the
+Every non-merge commit contributed to Muesli must be signed off under the
 [Developer Certificate of Origin 1.1](DCO). The sign-off certifies that you
 created the contribution or otherwise have the right to submit it under the
-repository's open source license.
+repository's open-source license.
 
 Add the sign-off automatically when creating a commit:
 
@@ -179,7 +179,7 @@ email address associated with the commit:
 Signed-off-by: Your Name <your-email@example.com>
 ```
 
-A DCO sign-off is different from a cryptographic Git commit signature. Each
+A DCO sign-off is different from a cryptographic Git commit signature. Every
 non-merge commit in a pull request must contain a valid `Signed-off-by` trailer.
 The contributor who authored a commit must provide its sign-off; maintainers
 will not sign on another contributor's behalf or override a missing sign-off.
