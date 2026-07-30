@@ -110,3 +110,6 @@ context.md
 *~
 .vercel
 docs/reports/meeting-transcription-pipeline.svg
+
+# Xcode/SwiftPM per-user state
+native/MuesliNative/.swiftpm/
