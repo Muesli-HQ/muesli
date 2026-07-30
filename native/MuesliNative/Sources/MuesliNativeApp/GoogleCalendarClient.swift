@@ -1,4 +1,5 @@
 import Foundation
+import MuesliCore
 
 // MARK: - Shared Calendar Event Model
 
@@ -13,11 +14,30 @@ struct UnifiedCalendarEvent: Identifiable, Equatable {
     /// EventKit: `EKCalendar.calendarIdentifier`. Google: the calendar list `id`.
     /// Optional because legacy events deserialized from older state may not have it.
     var calendarID: String? = nil
+    var calendarOccurrence: CalendarOccurrenceReference? = nil
     var meetingURL: URL? = nil
 
     enum CalendarSource: String {
         case eventKit
         case googleCalendar
+
+        var occurrenceProvider: CalendarOccurrenceReference.Provider {
+            switch self {
+            case .eventKit:
+                return .eventKit
+            case .googleCalendar:
+                return .googleCalendar
+            }
+        }
+    }
+
+    var resolvedCalendarOccurrence: CalendarOccurrenceReference {
+        calendarOccurrence ?? CalendarOccurrenceReference(
+            provider: source.occurrenceProvider,
+            calendarID: calendarID,
+            eventID: id,
+            originalStartTime: startDate
+        )
     }
 
     /// Drop events whose `calendarID` is in `disabledCalendarIDs`. Events with `nil`
@@ -502,6 +522,28 @@ final class GoogleCalendarClient {
             }
             return nil
         }()
+        let recurringEventID = item["recurringEventId"] as? String
+        let originalStartTime: Date = {
+            guard let originalStart = item["originalStartTime"] as? [String: Any] else {
+                return startDate
+            }
+            if let value = originalStart["dateTime"] as? String,
+               let date = isoFormatter.date(from: value) {
+                return date
+            }
+            if let value = originalStart["date"] as? String,
+               let date = dateOnlyFormatter.date(from: value) {
+                return date
+            }
+            return startDate
+        }()
+        let occurrence = CalendarOccurrenceReference(
+            provider: .googleCalendar,
+            calendarID: calendarID,
+            eventID: id,
+            seriesID: recurringEventID,
+            originalStartTime: originalStartTime
+        )
 
         return UnifiedCalendarEvent(
             id: id,
@@ -511,6 +553,7 @@ final class GoogleCalendarClient {
             isAllDay: isAllDay,
             source: .googleCalendar,
             calendarID: calendarID,
+            calendarOccurrence: occurrence,
             meetingURL: meetingURL
         )
     }

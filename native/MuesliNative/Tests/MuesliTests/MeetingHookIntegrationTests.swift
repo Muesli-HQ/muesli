@@ -75,8 +75,8 @@ struct MeetingHookIntegrationTests {
         #expect(try store.meeting(id: persistence.meetingID) != nil)
     }
 
-    @Test("no hook runs when meeting persistence fails")
-    func noHookRunsWhenPersistenceFails() throws {
+    @Test("duplicate calendar metadata does not block persistence or hooks")
+    func duplicateCalendarMetadataDoesNotBlockPersistence() throws {
         let store = try makeStore()
         let spy = MeetingHookDispatcherSpy()
         let controller = makeController(store: store, dispatcher: spy)
@@ -92,13 +92,14 @@ struct MeetingHookIntegrationTests {
             systemAudioPath: nil
         )
 
-        #expect(throws: Error.self) {
-            try controller.persistCompletedMeetingResultAndDispatchHook(
-                makeMeetingResult(calendarEventID: "duplicate-event"),
-                preparedRecordingSave: .none
-            )
-        }
-        #expect(spy.invocations.isEmpty)
+        let persistence = try controller.persistCompletedMeetingResultAndDispatchHook(
+            makeMeetingResult(calendarEventID: "duplicate-event"),
+            preparedRecordingSave: .none
+        )
+
+        #expect(try store.meeting(id: persistence.meetingID) != nil)
+        #expect(try store.recentMeetings(limit: 10).count == 2)
+        #expect(spy.invocations.count == 1)
     }
 
     private func makeController(store: DictationStore, dispatcher: MeetingHookDispatching) -> MuesliController {
