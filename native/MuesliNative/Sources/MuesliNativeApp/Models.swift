@@ -1017,6 +1017,20 @@ enum OnboardingUseCase: String, Codable, CaseIterable {
     }
 }
 
+enum DashboardCloseBehavior: String, Codable, CaseIterable, Sendable {
+    case menuBarOnly = "menu_bar_only"
+    case keepInDock = "keep_in_dock"
+
+    var label: String {
+        switch self {
+        case .menuBarOnly:
+            return "Menu bar only"
+        case .keepInDock:
+            return "Keep in Dock"
+        }
+    }
+}
+
 struct AppConfig: Codable {
     var dictationHotkey: HotkeyConfig = .default
     var computerUseHotkey: HotkeyConfig = .computerUseDefault
@@ -1056,6 +1070,7 @@ struct AppConfig: Codable {
     var meetingRecordingHotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultMeetingThresholdMilliseconds
     var launchAtLogin: Bool = false
     var openDashboardOnLaunch: Bool = true
+    var dashboardCloseBehavior: DashboardCloseBehavior = .menuBarOnly
     var showFloatingIndicator: Bool = true
     var indicatorAnchor: IndicatorAnchor = .midTrailing
     var dashboardWindowFrame: WindowFrame? = nil
@@ -1176,6 +1191,7 @@ struct AppConfig: Codable {
         case meetingRecordingHotkeyTriggerThresholdMS = "meeting_recording_hotkey_trigger_threshold_ms"
         case launchAtLogin = "launch_at_login"
         case openDashboardOnLaunch = "open_dashboard_on_launch"
+        case dashboardCloseBehavior = "dashboard_close_behavior"
         case showFloatingIndicator = "show_floating_indicator"
         case indicatorAnchor = "indicator_anchor"
         case dashboardWindowFrame = "dashboard_window_frame"
@@ -1328,6 +1344,9 @@ struct AppConfig: Codable {
         )
         launchAtLogin = (try? c.decode(Bool.self, forKey: .launchAtLogin)) ?? defaults.launchAtLogin
         openDashboardOnLaunch = (try? c.decode(Bool.self, forKey: .openDashboardOnLaunch)) ?? defaults.openDashboardOnLaunch
+        dashboardCloseBehavior =
+            (try? c.decode(DashboardCloseBehavior.self, forKey: .dashboardCloseBehavior))
+            ?? defaults.dashboardCloseBehavior
         showFloatingIndicator = (try? c.decode(Bool.self, forKey: .showFloatingIndicator)) ?? defaults.showFloatingIndicator
         indicatorAnchor = (try? c.decode(IndicatorAnchor.self, forKey: .indicatorAnchor))
             ?? ((try? c.decodeIfPresent(CGPointCodable.self, forKey: .indicatorOrigin)) != nil ? .custom : .midTrailing)

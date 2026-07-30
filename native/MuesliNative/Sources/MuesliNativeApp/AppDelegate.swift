@@ -74,6 +74,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller?.handleICloudRemoteNotification(userInfo: userInfo)
     }
 
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        controller?.openHistoryWindow()
+        return true
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if controller?.shouldTerminateApplication() == false {
             return .terminateCancel

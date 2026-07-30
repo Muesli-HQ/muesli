@@ -518,6 +518,21 @@ struct SettingsView: View {
                         controller.updateConfig { $0.openDashboardOnLaunch = newValue }
                     }
                 }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow(
+                    "After closing the dashboard",
+                    description: "Muesli keeps running in both modes. Use Quit Muesli to exit."
+                ) {
+                    settingsMenu(
+                        selection: appState.config.dashboardCloseBehavior.label,
+                        options: DashboardCloseBehavior.allCases.map(\.label)
+                    ) { selection in
+                        guard let behavior = DashboardCloseBehavior.allCases.first(where: {
+                            $0.label == selection
+                        }) else { return }
+                        controller.updateConfig { $0.dashboardCloseBehavior = behavior }
+                    }
+                }
             }
 
             permissionsSection

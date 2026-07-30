@@ -618,6 +618,7 @@ final class MuesliController: NSObject {
         statusBarController = StatusBarController(controller: self, runtime: runtime)
         preferencesWindowController = PreferencesWindowController(controller: self)
         historyWindowController = RecentHistoryWindowController(store: dictationStore, controller: self)
+        applyDashboardWindowPresencePolicy()
         let latestFeatureTour = FeatureTourCatalog.latest(
             includeCloudCleanup: chatGPTAuth.isAuthenticated
         )
@@ -1311,6 +1312,7 @@ final class MuesliController: NSObject {
         appState.selectedPostProcessorBackend = selectedPostProcessorBackend
         appState.config = config
         appState.isChatGPTAuthenticated = chatGPTAuth.isAuthenticated
+        applyDashboardWindowPresencePolicy()
         syncCalendarMonitor()
         syncMeetingDetectionMonitor()
         updateMeetingNotificationVisibility()
@@ -6472,16 +6474,23 @@ final class MuesliController: NSObject {
 
     func noteWindowOpened() {
         openWindowCount += 1
-        if NSApplication.shared.activationPolicy() != .regular {
-            NSApplication.shared.setActivationPolicy(.regular)
-        }
+        applyDashboardWindowPresencePolicy()
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
     func noteWindowClosed() {
         openWindowCount = max(0, openWindowCount - 1)
-        if openWindowCount == 0 {
-            NSApplication.shared.setActivationPolicy(.accessory)
+        applyDashboardWindowPresencePolicy()
+    }
+
+    private func applyDashboardWindowPresencePolicy() {
+        let application = NSApplication.shared
+        let desiredPolicy = DashboardWindowPresencePolicy.activationPolicy(
+            openWindowCount: openWindowCount,
+            closeBehavior: config.dashboardCloseBehavior
+        )
+        if application.activationPolicy() != desiredPolicy {
+            application.setActivationPolicy(desiredPolicy)
         }
     }
 
