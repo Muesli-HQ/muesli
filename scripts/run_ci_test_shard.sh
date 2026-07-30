@@ -77,6 +77,7 @@ case "${shard}" in
       MeetingsNavigationTests
       MeetingBrowserLogicTests
       TranscriptFormatterTests
+      SpeakerEnrollmentPolicyTests
       MeetingSummaryBackendTests
       MeetingResummarizationPolicyTests
       MeetingTemplateResolutionTests

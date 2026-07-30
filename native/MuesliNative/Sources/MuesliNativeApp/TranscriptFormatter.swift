@@ -6,6 +6,9 @@ extension MeetingRecord {
     /// Transcript with the user's speaker renames applied. Use this everywhere
     /// the transcript is shown, exported, or summarized; `rawTranscript` keeps
     /// the canonical diarization labels the parser and Insights rely on.
+    ///
+    /// Lives here rather than on `MeetingRecord` in MuesliCore because the
+    /// substitution belongs to `TranscriptFormatter`, which is app-layer.
     var displayTranscript: String {
         TranscriptFormatter.applying(names: speakerNames, to: rawTranscript)
     }

@@ -1830,8 +1830,6 @@ public final class DictationStore {
         }
     }
 
-    // MARK: - Speaker voiceprints
-
     /// Records the diarization clusters for a meeting so a later rename can
     /// enroll the matching voice.
     public func replaceMeetingSpeakers(meetingID: Int64, speakers: [MeetingSpeakerRecord]) throws {
@@ -2206,9 +2204,8 @@ public final class DictationStore {
     ) throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
-        // Cleared in the same statement as the transcript it belongs to: a
-        // re-merged transcript renumbers speakers, so a stale map would point
-        // names at the wrong voices if a follow-up update failed.
+        // Cleared alongside the transcript it belongs to: a re-merged transcript
+        // renumbers speakers, so a stale map points names at the wrong voices.
         let speakerNamesAssignment = clearSpeakerNames ? "speaker_names = NULL, " : ""
         let sql = """
         UPDATE meetings
@@ -2255,8 +2252,7 @@ public final class DictationStore {
         try deleteLiveTranscriptCheckpoints(meetingID: id, db: db)
         try deleteResumeSnapshot(meetingID: id, db: db)
         if clearSpeakerNames {
-            // Same reason as the name map: the re-merged transcript renumbers
-            // speakers, so old voiceprints would enroll the wrong voice.
+            // Stale voiceprints would enroll the wrong voice on a later rename.
             try deleteMeetingSpeakers(meetingID: id, db: db)
         }
     }
@@ -2657,10 +2653,8 @@ public final class DictationStore {
         defer { sqlite3_close(db) }
         let manualNotes = try manualNotesForMeeting(id: id, db: db)
         let wordCount = Self.countWords(in: rawTranscript) + Self.countWords(in: manualNotes)
-        // The rename map is cleared in the same statement as the new transcript,
-        // and the voiceprints in the same transaction: re-diarization renumbers
-        // speakers, so leaving either behind would attach a name — or enroll a
-        // voice — against the wrong speaker.
+        // Names and voiceprints go in one transaction with the new transcript:
+        // re-diarization renumbers speakers, so either left behind is wrong.
         let speakerNamesAssignment = clearSpeakerNames ? "speaker_names = NULL, " : ""
         let sql = """
         UPDATE meetings

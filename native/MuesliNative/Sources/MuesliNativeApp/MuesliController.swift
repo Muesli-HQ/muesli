@@ -4137,19 +4137,23 @@ final class MuesliController: NSObject {
         guard let speakers = try? dictationStore.meetingSpeakers(meetingID: meetingID), !speakers.isEmpty else {
             return
         }
-        for speaker in speakers where !speaker.embedding.isEmpty {
+        let plan = SpeakerEnrollmentPolicy.plan(speakers: speakers, names: names)
+        for speaker in plan.enroll {
             do {
-                if let name = names[speaker.label], !name.isEmpty {
-                    try dictationStore.upsertKnownSpeaker(
-                        id: speaker.speakerID,
-                        name: name,
-                        embedding: speaker.embedding
-                    )
-                } else {
-                    try dictationStore.deleteKnownSpeaker(id: speaker.speakerID)
-                }
+                try dictationStore.upsertKnownSpeaker(
+                    id: speaker.id,
+                    name: speaker.name,
+                    embedding: speaker.embedding
+                )
             } catch {
-                fputs("[muesli-native] failed to enroll speaker \(speaker.speakerID): \(error)\n", stderr)
+                fputs("[muesli-native] failed to enroll speaker \(speaker.id): \(error)\n", stderr)
+            }
+        }
+        for speakerID in plan.forget {
+            do {
+                try dictationStore.deleteKnownSpeaker(id: speakerID)
+            } catch {
+                fputs("[muesli-native] failed to forget speaker \(speakerID): \(error)\n", stderr)
             }
         }
     }
@@ -6073,9 +6077,8 @@ final class MuesliController: NSObject {
                 selectedTemplateName: result.templateSnapshot.name,
                 selectedTemplateKind: result.templateSnapshot.kind,
                 selectedTemplatePrompt: result.templateSnapshot.prompt,
-                // The resumed transcript is re-merged from scratch, restarting
-                // speaker numbering. Voice recognition below re-fills any names
-                // it can identify; positional carry-over would be wrong.
+                // Resume re-merges from scratch, so numbering restarts. Voice
+                // recognition below re-fills the names it can identify.
                 clearSpeakerNames: true
             )
             meetingID = existingMeetingID
