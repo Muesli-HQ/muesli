@@ -31,15 +31,7 @@ enum TranscriptFormatter {
 
         let taggedSystem: [TaggedSegment]
         if let diarizationSegments, !diarizationSegments.isEmpty {
-            // Build speaker label map: raw ID → "Speaker 1", "Speaker 2", etc. in first-appearance order
-            var speakerLabelMap: [String: String] = [:]
-            var nextSpeakerNumber = 1
-            for seg in diarizationSegments.sorted(by: { $0.startTimeSeconds < $1.startTimeSeconds }) {
-                if speakerLabelMap[seg.speakerId] == nil {
-                    speakerLabelMap[seg.speakerId] = "Speaker \(nextSpeakerNumber)"
-                    nextSpeakerNumber += 1
-                }
-            }
+            let speakerLabelMap = speakerLabels(for: diarizationSegments)
 
             taggedSystem = systemSegments.map { segment in
                 let speaker = findSpeaker(for: segment, in: diarizationSegments, labelMap: speakerLabelMap)
@@ -64,6 +56,21 @@ enum TranscriptFormatter {
             let text = taggedSegment.segment.text.trimmingCharacters(in: .whitespaces)
             return "[\(formatter.string(from: timestamp))] \(taggedSegment.speaker): \(text)"
         }.joined(separator: "\n")
+    }
+
+    /// Maps each diarizer speaker id to its canonical label, numbered in
+    /// first-appearance order. Callers that need to tie a label back to the
+    /// voice behind it (to enroll or recognize a speaker) use the same map.
+    static func speakerLabels(for diarizationSegments: [TimedSpeakerSegment]) -> [String: String] {
+        var speakerLabelMap: [String: String] = [:]
+        var nextSpeakerNumber = 1
+        for seg in diarizationSegments.sorted(by: { $0.startTimeSeconds < $1.startTimeSeconds }) {
+            if speakerLabelMap[seg.speakerId] == nil {
+                speakerLabelMap[seg.speakerId] = "Speaker \(nextSpeakerNumber)"
+                nextSpeakerNumber += 1
+            }
+        }
+        return speakerLabelMap
     }
 
     /// Canonical diarization labels the user is allowed to rename.

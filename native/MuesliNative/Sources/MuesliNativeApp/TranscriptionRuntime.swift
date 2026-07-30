@@ -28,7 +28,22 @@ actor TranscriptionCoordinator {
     private let senseVoiceTranscriber = SenseVoiceTranscriber()
     private var vadManager: VadManager?
     private var diarizerManager: DiarizerManager?
+    private var diarizerConfig = DiarizerConfig()
     private var activeBackend: String?
+
+    /// Diarization tuning. Lower `clusteringThreshold` splits similar-sounding
+    /// voices more readily; lower `minSpeechDuration` lets short turns create a
+    /// speaker at all. Both are exposed in config.json because the right values
+    /// depend on the audio: compressed, mixed sources push voices closer
+    /// together than a clean multi-mic call does.
+    func setDiarizerTuning(clusteringThreshold: Float, minSpeechDuration: Float) {
+        guard diarizerConfig.clusteringThreshold != clusteringThreshold
+            || diarizerConfig.minSpeechDuration != minSpeechDuration else { return }
+        diarizerConfig.clusteringThreshold = clusteringThreshold
+        diarizerConfig.minSpeechDuration = minSpeechDuration
+        // Rebuilt on next preload so a settings change takes effect.
+        diarizerManager = nil
+    }
 
     private var _nemotron35Transcriber: Any?
     /// Selected Nemotron 3.5 language prompt id (101 = auto). Stored so it survives
@@ -316,7 +331,7 @@ actor TranscriptionCoordinator {
 
         if diarizerManager == nil {
             do {
-                let diarizer = DiarizerManager()
+                let diarizer = DiarizerManager(config: diarizerConfig)
                 let models = try await DiarizerModels.download()
                 diarizer.initialize(models: models)
                 diarizerManager = diarizer
@@ -437,12 +452,25 @@ actor TranscriptionCoordinator {
         return cleanMeetingTranscript(try await route(url: url, backend: backend, cohereLanguage: cohereLanguage, indicASRLanguage: indicASRLanguage))
     }
 
-    func diarizeSystemAudio(at url: URL) async throws -> DiarizationResult? {
+    func diarizeSystemAudio(
+        at url: URL,
+        knownSpeakers: [KnownSpeakerRecord] = []
+    ) async throws -> DiarizationResult? {
         guard let diarizerManager, diarizerManager.isAvailable else {
             fputs("[muesli-native] diarization not available, skipping\n", stderr)
             return nil
         }
         fputs("[muesli-native] running speaker diarization on system audio...\n", stderr)
+        // Seeding previously named voices makes the diarizer reuse their ids, so
+        // a speaker the user named once keeps that name in later meetings.
+        if !knownSpeakers.isEmpty {
+            diarizerManager.initializeKnownSpeakers(
+                knownSpeakers.map {
+                    Speaker(id: $0.id, name: $0.name, currentEmbedding: $0.embedding, isPermanent: true)
+                }
+            )
+            fputs("[muesli-native] seeded \(knownSpeakers.count) known speakers\n", stderr)
+        }
         let converter = AudioConverter()
         let samples = try converter.resampleAudioFile(url)
         let result = try diarizerManager.performCompleteDiarization(samples, sampleRate: 16000)

@@ -104,6 +104,10 @@ struct MeetingSessionResult {
     let retainedRecordingError: Error?
     let systemRecordingURL: URL?
     let templateSnapshot: MeetingTemplateSnapshot
+    /// Diarization clusters with the voiceprint behind each canonical label.
+    var speakers: [MeetingSpeakerRecord] = []
+    /// Labels resolved to names because their voice matched a known speaker.
+    var recognizedSpeakerNames: [String: String] = [:]
 }
 
 extension MeetingSessionResult {
@@ -130,7 +134,9 @@ extension MeetingSessionResult {
             retainedRecordingURL: retainedRecordingURL,
             retainedRecordingError: retainedRecordingError,
             systemRecordingURL: systemRecordingURL,
-            templateSnapshot: templateSnapshot
+            templateSnapshot: templateSnapshot,
+            speakers: speakers,
+            recognizedSpeakerNames: recognizedSpeakerNames
         )
     }
 }
@@ -183,6 +189,9 @@ final class MeetingSession {
     var onMicHealthChanged: ((MeetingMicHealthSnapshot) -> Void)?
     var manualNotesProvider: (() async -> String?)?
     var liveTitleProvider: (() async -> String?)?
+    /// Voices the user has already named. Seeded into the diarizer so they keep
+    /// their names in this meeting.
+    var knownSpeakersProvider: (() -> [KnownSpeakerRecord])?
     /// Formatted notes of the predecessor meeting when this session records a
     /// follow-up; injected into the summary prompt for action-item carry-forward.
     var previousMeetingNotes: String?
@@ -629,11 +638,25 @@ final class MeetingSession {
         }
 
         var diarizationSegments: [TimedSpeakerSegment]?
+        let knownSpeakers = knownSpeakersProvider?() ?? []
         if let systemAudioURL {
             // Run speaker diarization on system audio (batch post-processing)
-            if let diarizationResult = try? await transcriptionCoordinator.diarizeSystemAudio(at: systemAudioURL) {
+            if let diarizationResult = try? await transcriptionCoordinator.diarizeSystemAudio(
+                at: systemAudioURL,
+                knownSpeakers: knownSpeakers
+            ) {
                 diarizationSegments = diarizationResult.segments
             }
+        }
+        let meetingSpeakers = Self.speakerVoiceprints(from: diarizationSegments ?? [])
+        let knownNamesByID = Dictionary(uniqueKeysWithValues: knownSpeakers.map { ($0.id, $0.name) })
+        let recognizedSpeakerNames = meetingSpeakers.reduce(into: [String: String]()) { names, speaker in
+            if let name = knownNamesByID[speaker.speakerID] {
+                names[speaker.label] = name
+            }
+        }
+        if !recognizedSpeakerNames.isEmpty {
+            fputs("[meeting] recognized \(recognizedSpeakerNames.count) previously named speakers\n", stderr)
         }
 
         micSegments.append(contentsOf: await micChunkCollector.closeAndDrainSortedSegments())
@@ -774,8 +797,32 @@ final class MeetingSession {
             retainedRecordingURL: retainedRecordingURL,
             retainedRecordingError: retainedRecordingWriterError,
             systemRecordingURL: systemAudioURL,
-            templateSnapshot: templateSnapshot
+            templateSnapshot: templateSnapshot,
+            speakers: meetingSpeakers,
+            recognizedSpeakerNames: recognizedSpeakerNames
         )
+    }
+
+    /// Picks one representative voiceprint per diarization cluster: the segment
+    /// the model was most confident about, which is the best evidence of what
+    /// that person sounds like.
+    static func speakerVoiceprints(from diarizationSegments: [TimedSpeakerSegment]) -> [MeetingSpeakerRecord] {
+        guard !diarizationSegments.isEmpty else { return [] }
+        let labels = TranscriptFormatter.speakerLabels(for: diarizationSegments)
+
+        var bestBySpeaker: [String: TimedSpeakerSegment] = [:]
+        for segment in diarizationSegments where !segment.embedding.isEmpty {
+            if let existing = bestBySpeaker[segment.speakerId], existing.qualityScore >= segment.qualityScore {
+                continue
+            }
+            bestBySpeaker[segment.speakerId] = segment
+        }
+
+        return bestBySpeaker.compactMap { speakerID, segment in
+            guard let label = labels[speakerID] else { return nil }
+            return MeetingSpeakerRecord(label: label, speakerID: speakerID, embedding: segment.embedding)
+        }
+        .sorted { $0.label < $1.label }
     }
 
     static func calendarTitleCandidate(originalTitle: String, calendarEventID: String?) -> String? {

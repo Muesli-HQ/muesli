@@ -1083,6 +1083,14 @@ struct AppConfig: Codable {
     var customWords: [CustomWord] = [
         CustomWord(word: "muesli", replacement: "muesli"),
     ]
+    /// Voice-similarity cutoff for treating two speech segments as the same
+    /// person. Lower splits voices more readily, at the cost of sometimes
+    /// splitting one person in two.
+    var diarizationClusteringThreshold: Double = 0.7
+    /// Shortest turn (seconds) that can establish a new speaker. Lower catches
+    /// brief interjections that would otherwise be absorbed into whoever spoke
+    /// around them.
+    var diarizationMinSpeechDuration: Double = 1.0
     var dictionarySuggestions: [DictionarySuggestion] = []
     var dismissedDictionarySuggestionKeys: [String] = []
     var enableDictionaryCorrectionPrompts: Bool = false
@@ -1201,6 +1209,8 @@ struct AppConfig: Codable {
         case userName = "user_name"
         case customMeetingTemplates = "custom_meeting_templates"
         case customWords = "custom_words"
+        case diarizationClusteringThreshold = "diarization_clustering_threshold"
+        case diarizationMinSpeechDuration = "diarization_min_speech_duration"
         case dictionarySuggestions = "dictionary_suggestions"
         case dismissedDictionarySuggestionKeys = "dismissed_dictionary_suggestion_keys"
         case enableDictionaryCorrectionPrompts = "enable_dictionary_correction_prompts"

@@ -534,6 +534,48 @@ struct TranscriptFormatterTests {
         #expect(TranscriptFormatter.applying(names: names, to: once) == once)
     }
 
+    @Test("speaker labels are numbered by first appearance")
+    func speakerLabelsByFirstAppearance() {
+        let segments = [
+            makeDiarSeg(speakerId: "b", start: 5.0, end: 6.0),
+            makeDiarSeg(speakerId: "a", start: 1.0, end: 2.0),
+            makeDiarSeg(speakerId: "b", start: 8.0, end: 9.0),
+        ]
+
+        let labels = TranscriptFormatter.speakerLabels(for: segments)
+
+        #expect(labels == ["a": "Speaker 1", "b": "Speaker 2"])
+    }
+
+    @Test("voiceprint per cluster picks the highest quality segment")
+    func voiceprintsPickBestSegment() {
+        let segments = [
+            TimedSpeakerSegment(
+                speakerId: "a", embedding: [0.1, 0.2], startTimeSeconds: 0, endTimeSeconds: 1, qualityScore: 0.2
+            ),
+            TimedSpeakerSegment(
+                speakerId: "a", embedding: [0.9, 0.8], startTimeSeconds: 2, endTimeSeconds: 3, qualityScore: 0.9
+            ),
+            TimedSpeakerSegment(
+                speakerId: "b", embedding: [0.5, 0.5], startTimeSeconds: 4, endTimeSeconds: 5, qualityScore: 0.7
+            ),
+        ]
+
+        let prints = MeetingSession.speakerVoiceprints(from: segments)
+
+        #expect(prints.map(\.label) == ["Speaker 1", "Speaker 2"])
+        #expect(prints.first?.speakerID == "a")
+        #expect(prints.first?.embedding == [0.9, 0.8])
+    }
+
+    @Test("segments without embeddings yield no voiceprints")
+    func voiceprintsSkipEmptyEmbeddings() {
+        let segments = [makeDiarSeg(speakerId: "a", start: 0, end: 1)]
+
+        #expect(MeetingSession.speakerVoiceprints(from: segments).isEmpty)
+        #expect(MeetingSession.speakerVoiceprints(from: []).isEmpty)
+    }
+
     @Test("only diarization labels are renameable")
     func renameableSpeakers() {
         #expect(TranscriptFormatter.isRenameableSpeaker("Speaker 1"))

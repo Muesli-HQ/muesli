@@ -116,6 +116,34 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
     }
 }
 
+/// A diarization cluster from one meeting: which canonical label it was shown
+/// as, the diarizer's id for it, and the voiceprint that identified it.
+public struct MeetingSpeakerRecord: Sendable, Equatable {
+    public let label: String
+    public let speakerID: String
+    public let embedding: [Float]
+
+    public init(label: String, speakerID: String, embedding: [Float]) {
+        self.label = label
+        self.speakerID = speakerID
+        self.embedding = embedding
+    }
+}
+
+/// A speaker the user has named. Seeding the diarizer with these lets the same
+/// voice keep its name in later meetings.
+public struct KnownSpeakerRecord: Sendable, Equatable {
+    public let id: String
+    public let name: String
+    public let embedding: [Float]
+
+    public init(id: String, name: String, embedding: [Float]) {
+        self.id = id
+        self.name = name
+        self.embedding = embedding
+    }
+}
+
 public struct LiveTranscriptCheckpointEntry: Sendable, Equatable {
     public let timestampLabel: String
     public let speaker: String

@@ -140,6 +140,21 @@ public final class DictationStore {
         CREATE INDEX IF NOT EXISTS idx_meeting_transcript_checkpoints_meeting
             ON meeting_transcript_checkpoints(meeting_id, start_seconds, id);
 
+        CREATE TABLE IF NOT EXISTS meeting_speakers (
+            meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+            label TEXT NOT NULL,
+            speaker_id TEXT NOT NULL,
+            embedding BLOB NOT NULL,
+            PRIMARY KEY (meeting_id, label)
+        );
+
+        CREATE TABLE IF NOT EXISTS known_speakers (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            embedding BLOB NOT NULL,
+            updated_at REAL NOT NULL DEFAULT 0
+        );
+
         CREATE TABLE IF NOT EXISTS meeting_resume_snapshots (
             meeting_id INTEGER PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE,
             raw_transcript TEXT NOT NULL DEFAULT '',
@@ -1807,6 +1822,120 @@ public final class DictationStore {
         guard sqlite3_changes(db) > 0 else {
             throw DictationStoreError.meetingNotFound(id: id)
         }
+    }
+
+    // MARK: - Speaker voiceprints
+
+    /// Records the diarization clusters for a meeting so a later rename can
+    /// enroll the matching voice.
+    public func replaceMeetingSpeakers(meetingID: Int64, speakers: [MeetingSpeakerRecord]) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("DELETE FROM meeting_speakers WHERE meeting_id = \(meetingID)", db: db)
+        guard !speakers.isEmpty else { return }
+
+        let sql = "INSERT INTO meeting_speakers (meeting_id, label, speaker_id, embedding) VALUES (?, ?, ?, ?)"
+        for speaker in speakers {
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+            defer { sqlite3_finalize(statement) }
+            sqlite3_bind_int64(statement, 1, meetingID)
+            sqlite3_bind_text(statement, 2, (speaker.label as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statement, 3, (speaker.speakerID as NSString).utf8String, -1, nil)
+            let data = Self.embeddingData(speaker.embedding)
+            _ = data.withUnsafeBytes { bytes in
+                sqlite3_bind_blob(statement, 4, bytes.baseAddress, Int32(data.count), Self.sqliteTransient)
+            }
+            guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+        }
+    }
+
+    public func meetingSpeakers(meetingID: Int64) throws -> [MeetingSpeakerRecord] {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = "SELECT label, speaker_id, embedding FROM meeting_speakers WHERE meeting_id = ? ORDER BY label"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, meetingID)
+
+        var rows: [MeetingSpeakerRecord] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            rows.append(
+                MeetingSpeakerRecord(
+                    label: stringColumn(statement, index: 0),
+                    speakerID: stringColumn(statement, index: 1),
+                    embedding: Self.embeddingFloats(blobColumn(statement, index: 2))
+                )
+            )
+        }
+        return rows
+    }
+
+    /// Enrolls (or renames) a known voice. Seeding the diarizer with these
+    /// keeps a speaker's id, and therefore their name, stable across meetings.
+    public func upsertKnownSpeaker(id: String, name: String, embedding: [Float]) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = """
+        INSERT INTO known_speakers (id, name, embedding, updated_at) VALUES (?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET name = excluded.name, embedding = excluded.embedding, updated_at = excluded.updated_at
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, (id as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 2, (name as NSString).utf8String, -1, nil)
+        let data = Self.embeddingData(embedding)
+        _ = data.withUnsafeBytes { bytes in
+            sqlite3_bind_blob(statement, 3, bytes.baseAddress, Int32(data.count), Self.sqliteTransient)
+        }
+        sqlite3_bind_double(statement, 4, Date().timeIntervalSince1970)
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+    }
+
+    public func deleteKnownSpeaker(id: String) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("DELETE FROM known_speakers WHERE id = '\(id.replacingOccurrences(of: "'", with: "''"))'", db: db)
+    }
+
+    public func knownSpeakers() throws -> [KnownSpeakerRecord] {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT id, name, embedding FROM known_speakers", -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+
+        var rows: [KnownSpeakerRecord] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            rows.append(
+                KnownSpeakerRecord(
+                    id: stringColumn(statement, index: 0),
+                    name: stringColumn(statement, index: 1),
+                    embedding: Self.embeddingFloats(blobColumn(statement, index: 2))
+                )
+            )
+        }
+        return rows
+    }
+
+    private static let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
+    private static func embeddingData(_ embedding: [Float]) -> Data {
+        embedding.withUnsafeBufferPointer { Data(buffer: $0) }
+    }
+
+    private static func embeddingFloats(_ data: Data) -> [Float] {
+        guard !data.isEmpty, data.count % MemoryLayout<Float>.size == 0 else { return [] }
+        return data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+    }
+
+    private func blobColumn(_ statement: OpaquePointer?, index: Int32) -> Data {
+        guard let bytes = sqlite3_column_blob(statement, index) else { return Data() }
+        return Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, index)))
     }
 
     /// Returns the stored raw transcript for a meeting, or `nil` if the meeting does not exist.

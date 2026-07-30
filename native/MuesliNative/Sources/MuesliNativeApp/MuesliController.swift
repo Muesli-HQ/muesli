@@ -2010,6 +2010,10 @@ final class MuesliController: NSObject {
             // Push the selected Nemotron 3.5 language before preload so the loaded
             // transcriber is conditioned on the right prompt_id.
             await self.transcriptionCoordinator.setNemotron35PromptId(self.config.resolvedNemotron35Language.promptId)
+            await self.transcriptionCoordinator.setDiarizerTuning(
+                clusteringThreshold: Float(self.config.diarizationClusteringThreshold),
+                minSpeechDuration: Float(self.config.diarizationMinSpeechDuration)
+            )
             let needsWarmup = option.backend == "whisper"
             if needsWarmup {
                 await MainActor.run {
@@ -4118,11 +4122,36 @@ final class MuesliController: NSObject {
                 ? nil
                 : String(data: try JSONEncoder().encode(names), encoding: .utf8)
             try dictationStore.updateMeetingSpeakerNames(id: id, speakerNamesJSON: json)
+            enrollNamedSpeakers(meetingID: id, names: names)
             scheduleICloudSyncAfterLocalChange()
         } catch {
             fputs("[muesli-native] failed to update meeting speaker names \(id): \(error)\n", stderr)
         }
         syncAppState()
+    }
+
+    /// Naming a speaker teaches the app that voice: the cluster's voiceprint is
+    /// enrolled under the chosen name, so the same person is recognized (and
+    /// named automatically) in later meetings. Clearing a name un-enrolls it.
+    private func enrollNamedSpeakers(meetingID: Int64, names: [String: String]) {
+        guard let speakers = try? dictationStore.meetingSpeakers(meetingID: meetingID), !speakers.isEmpty else {
+            return
+        }
+        for speaker in speakers where !speaker.embedding.isEmpty {
+            do {
+                if let name = names[speaker.label], !name.isEmpty {
+                    try dictationStore.upsertKnownSpeaker(
+                        id: speaker.speakerID,
+                        name: name,
+                        embedding: speaker.embedding
+                    )
+                } else {
+                    try dictationStore.deleteKnownSpeaker(id: speaker.speakerID)
+                }
+            } catch {
+                fputs("[muesli-native] failed to enroll speaker \(speaker.speakerID): \(error)\n", stderr)
+            }
+        }
     }
 
     func updateMeetingManualNotes(id: Int64, notes: String) {
@@ -5272,6 +5301,10 @@ final class MuesliController: NSObject {
                         return self.liveMeetingTitle(id: meetingID)
                     }
                 }
+                meetingSession.knownSpeakersProvider = { [weak self] in
+                    guard let self else { return [] }
+                    return (try? self.dictationStore.knownSpeakers()) ?? []
+                }
                 meetingSession.onChunkTranscribed = { [weak self, weak meetingSession] segments, speaker in
                     Task { @MainActor [weak self, weak meetingSession] in
                         guard let self else { return }
@@ -6059,8 +6092,26 @@ final class MuesliController: NSObject {
                 selectedTemplatePrompt: result.templateSnapshot.prompt
             )
         }
+        persistSpeakerIdentities(for: meetingID, result: result)
         scheduleICloudSyncAfterLocalChange()
         return CompletedMeetingPersistenceResult(meetingID: meetingID, recordingSaveError: recordingSaveError)
+    }
+
+    /// Stores this meeting's voiceprints so a later rename can enroll them, and
+    /// pre-fills names for voices the user already named in an earlier meeting.
+    private func persistSpeakerIdentities(for meetingID: Int64, result: MeetingSessionResult) {
+        guard !result.speakers.isEmpty else { return }
+        do {
+            try dictationStore.replaceMeetingSpeakers(meetingID: meetingID, speakers: result.speakers)
+            guard !result.recognizedSpeakerNames.isEmpty else { return }
+            let json = String(
+                data: try JSONEncoder().encode(result.recognizedSpeakerNames),
+                encoding: .utf8
+            )
+            try dictationStore.updateMeetingSpeakerNames(id: meetingID, speakerNamesJSON: json)
+        } catch {
+            fputs("[muesli-native] failed to persist speaker identities for \(meetingID): \(error)\n", stderr)
+        }
     }
 
     private func liveMeetingTitle(id: Int64) -> String? {

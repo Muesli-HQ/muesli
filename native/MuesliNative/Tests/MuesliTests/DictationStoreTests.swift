@@ -3130,6 +3130,77 @@ struct DictationStoreTests {
         #expect(migrated.speakerNames == ["Speaker 1": "Sam"])
     }
 
+    @Test("meeting speakers and known speakers round-trip voiceprints")
+    func speakerVoiceprintsRoundTrip() throws {
+        let store = try makeStore()
+        let start = Date(timeIntervalSince1970: 1_775_817_600)
+        let id = try store.insertMeeting(
+            title: "Standup",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(600),
+            rawTranscript: "[00:00:01] Speaker 1: Hello",
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+        let embedding: [Float] = [0.25, -0.5, 0.75]
+
+        try store.replaceMeetingSpeakers(
+            meetingID: id,
+            speakers: [MeetingSpeakerRecord(label: "Speaker 1", speakerID: "spk-a", embedding: embedding)]
+        )
+
+        let stored = try store.meetingSpeakers(meetingID: id)
+        #expect(stored.count == 1)
+        #expect(stored.first?.speakerID == "spk-a")
+        #expect(stored.first?.embedding == embedding)
+
+        try store.upsertKnownSpeaker(id: "spk-a", name: "Priya", embedding: embedding)
+        let known = try store.knownSpeakers()
+        #expect(known.count == 1)
+        #expect(known.first?.name == "Priya")
+        #expect(known.first?.embedding == embedding)
+
+        // Renaming the same voice updates rather than duplicating it.
+        try store.upsertKnownSpeaker(id: "spk-a", name: "Priya S", embedding: embedding)
+        #expect(try store.knownSpeakers().map(\.name) == ["Priya S"])
+
+        try store.deleteKnownSpeaker(id: "spk-a")
+        #expect(try store.knownSpeakers().isEmpty)
+    }
+
+    @Test("replacing meeting speakers clears the previous set")
+    func replacingMeetingSpeakersClearsPrevious() throws {
+        let store = try makeStore()
+        let start = Date(timeIntervalSince1970: 1_775_817_600)
+        let id = try store.insertMeeting(
+            title: "Standup",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(600),
+            rawTranscript: "",
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+
+        try store.replaceMeetingSpeakers(
+            meetingID: id,
+            speakers: [
+                MeetingSpeakerRecord(label: "Speaker 1", speakerID: "a", embedding: [0.1]),
+                MeetingSpeakerRecord(label: "Speaker 2", speakerID: "b", embedding: [0.2]),
+            ]
+        )
+        try store.replaceMeetingSpeakers(
+            meetingID: id,
+            speakers: [MeetingSpeakerRecord(label: "Speaker 1", speakerID: "c", embedding: [0.3])]
+        )
+
+        let stored = try store.meetingSpeakers(meetingID: id)
+        #expect(stored.map(\.speakerID) == ["c"])
+    }
+
     @Test("search is case-insensitive for ASCII")
     func searchCaseInsensitive() throws {
         let store = try makeStore()
