@@ -191,7 +191,7 @@ final class MeetingSession {
     var liveTitleProvider: (() async -> String?)?
     /// Voices the user has already named. Seeded into the diarizer so they keep
     /// their names in this meeting.
-    var knownSpeakersProvider: (() -> [KnownSpeakerRecord])?
+    var knownSpeakersProvider: (() async -> [KnownSpeakerRecord])?
     /// Formatted notes of the predecessor meeting when this session records a
     /// follow-up; injected into the summary prompt for action-item carry-forward.
     var previousMeetingNotes: String?
@@ -638,7 +638,7 @@ final class MeetingSession {
         }
 
         var diarizationSegments: [TimedSpeakerSegment]?
-        let knownSpeakers = knownSpeakersProvider?() ?? []
+        let knownSpeakers = await knownSpeakersProvider?() ?? []
         if let systemAudioURL {
             // Run speaker diarization on system audio (batch post-processing)
             if let diarizationResult = try? await transcriptionCoordinator.diarizeSystemAudio(
@@ -649,7 +649,9 @@ final class MeetingSession {
             }
         }
         let meetingSpeakers = Self.speakerVoiceprints(from: diarizationSegments ?? [])
-        let knownNamesByID = Dictionary(uniqueKeysWithValues: knownSpeakers.map { ($0.id, $0.name) })
+        // Not uniqueKeysWithValues: a duplicate id would trap here and take the
+        // whole meeting down at finalize.
+        let knownNamesByID = Dictionary(knownSpeakers.map { ($0.id, $0.name) }, uniquingKeysWith: { _, latest in latest })
         let recognizedSpeakerNames = meetingSpeakers.reduce(into: [String: String]()) { names, speaker in
             if let name = knownNamesByID[speaker.speakerID] {
                 names[speaker.label] = name

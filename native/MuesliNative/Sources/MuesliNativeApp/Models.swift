@@ -1381,6 +1381,8 @@ struct AppConfig: Codable {
         userName = (try? c.decode(String.self, forKey: .userName)) ?? defaults.userName
         customMeetingTemplates = (try? c.decode([CustomMeetingTemplate].self, forKey: .customMeetingTemplates)) ?? defaults.customMeetingTemplates
         customWords = (try? c.decode([CustomWord].self, forKey: .customWords)) ?? defaults.customWords
+        diarizationClusteringThreshold = (try? c.decode(Double.self, forKey: .diarizationClusteringThreshold)) ?? defaults.diarizationClusteringThreshold
+        diarizationMinSpeechDuration = (try? c.decode(Double.self, forKey: .diarizationMinSpeechDuration)) ?? defaults.diarizationMinSpeechDuration
         dictionarySuggestions = (try? c.decode([DictionarySuggestion].self, forKey: .dictionarySuggestions)) ?? defaults.dictionarySuggestions
         dismissedDictionarySuggestionKeys = (try? c.decode([String].self, forKey: .dismissedDictionarySuggestionKeys)) ?? defaults.dismissedDictionarySuggestionKeys
         enableDictionaryCorrectionPrompts = (try? c.decode(Bool.self, forKey: .enableDictionaryCorrectionPrompts)) ?? defaults.enableDictionaryCorrectionPrompts

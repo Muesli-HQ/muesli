@@ -5302,8 +5302,10 @@ final class MuesliController: NSObject {
                     }
                 }
                 meetingSession.knownSpeakersProvider = { [weak self] in
-                    guard let self else { return [] }
-                    return (try? self.dictationStore.knownSpeakers()) ?? []
+                    await MainActor.run {
+                        guard let self else { return [] }
+                        return (try? self.dictationStore.knownSpeakers()) ?? []
+                    }
                 }
                 meetingSession.onChunkTranscribed = { [weak self, weak meetingSession] segments, speaker in
                     Task { @MainActor [weak self, weak meetingSession] in

@@ -41,6 +41,29 @@ struct ConfigStoreTests {
         store.save(original)
     }
 
+    @Test("diarization tuning survives a config encode/decode round-trip")
+    func diarizationTuningRoundTrip() throws {
+        var config = AppConfig()
+        config.diarizationClusteringThreshold = 0.6
+        config.diarizationMinSpeechDuration = 0.5
+
+        let decoded = try JSONDecoder().decode(
+            AppConfig.self,
+            from: try JSONEncoder().encode(config)
+        )
+
+        #expect(decoded.diarizationClusteringThreshold == 0.6)
+        #expect(decoded.diarizationMinSpeechDuration == 0.5)
+    }
+
+    @Test("diarization tuning falls back to defaults when absent")
+    func diarizationTuningDefaults() throws {
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+
+        #expect(decoded.diarizationClusteringThreshold == 0.7)
+        #expect(decoded.diarizationMinSpeechDuration == 1.0)
+    }
+
     @Test("config path is in Application Support")
     func configPath() {
         let store = ConfigStore()

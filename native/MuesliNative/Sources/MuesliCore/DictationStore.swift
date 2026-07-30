@@ -1604,7 +1604,7 @@ public final class DictationStore {
             try deleteLiveTranscriptCheckpoints(meetingID: id, db: db)
             // Voiceprints are participant data: drop them with the transcript
             // rather than leaving them on a soft-deleted row.
-            try exec("DELETE FROM meeting_speakers WHERE meeting_id = \(id)", db: db)
+            try deleteMeetingSpeakers(meetingID: id, db: db)
             let sql = """
             UPDATE meetings
             SET title = 'Deleted Meeting',
@@ -1837,23 +1837,40 @@ public final class DictationStore {
     public func replaceMeetingSpeakers(meetingID: Int64, speakers: [MeetingSpeakerRecord]) throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
-        try exec("DELETE FROM meeting_speakers WHERE meeting_id = \(meetingID)", db: db)
-        guard !speakers.isEmpty else { return }
-
-        let sql = "INSERT INTO meeting_speakers (meeting_id, label, speaker_id, embedding) VALUES (?, ?, ?, ?)"
-        for speaker in speakers {
-            var statement: OpaquePointer?
-            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
-            defer { sqlite3_finalize(statement) }
-            sqlite3_bind_int64(statement, 1, meetingID)
-            sqlite3_bind_text(statement, 2, (speaker.label as NSString).utf8String, -1, nil)
-            sqlite3_bind_text(statement, 3, (speaker.speakerID as NSString).utf8String, -1, nil)
-            let data = Self.embeddingData(speaker.embedding)
-            _ = data.withUnsafeBytes { bytes in
-                sqlite3_bind_blob(statement, 4, bytes.baseAddress, Int32(data.count), Self.sqliteTransient)
+        // Delete and insert as one unit: a failure part-way through would
+        // otherwise drop the meeting's voiceprints with nothing to replace them.
+        try exec("BEGIN IMMEDIATE", db: db)
+        do {
+            try deleteMeetingSpeakers(meetingID: meetingID, db: db)
+            let sql = "INSERT INTO meeting_speakers (meeting_id, label, speaker_id, embedding) VALUES (?, ?, ?, ?)"
+            for speaker in speakers {
+                var statement: OpaquePointer?
+                guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+                defer { sqlite3_finalize(statement) }
+                sqlite3_bind_int64(statement, 1, meetingID)
+                sqlite3_bind_text(statement, 2, (speaker.label as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(statement, 3, (speaker.speakerID as NSString).utf8String, -1, nil)
+                let data = Self.embeddingData(speaker.embedding)
+                _ = data.withUnsafeBytes { bytes in
+                    sqlite3_bind_blob(statement, 4, bytes.baseAddress, Int32(data.count), Self.sqliteTransient)
+                }
+                guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
             }
-            guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+            try exec("COMMIT", db: db)
+        } catch {
+            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
         }
+    }
+
+    private func deleteMeetingSpeakers(meetingID: Int64, db: OpaquePointer?) throws {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "DELETE FROM meeting_speakers WHERE meeting_id = ?", -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, meetingID)
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
     }
 
     public func meetingSpeakers(meetingID: Int64) throws -> [MeetingSpeakerRecord] {
@@ -1903,7 +1920,13 @@ public final class DictationStore {
     public func deleteKnownSpeaker(id: String) throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
-        try exec("DELETE FROM known_speakers WHERE id = '\(id.replacingOccurrences(of: "'", with: "''"))'", db: db)
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "DELETE FROM known_speakers WHERE id = ?", -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, (id as NSString).utf8String, -1, nil)
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
     }
 
     public func knownSpeakers() throws -> [KnownSpeakerRecord] {
@@ -2231,6 +2254,11 @@ public final class DictationStore {
         }
         try deleteLiveTranscriptCheckpoints(meetingID: id, db: db)
         try deleteResumeSnapshot(meetingID: id, db: db)
+        if clearSpeakerNames {
+            // Same reason as the name map: the re-merged transcript renumbers
+            // speakers, so old voiceprints would enroll the wrong voice.
+            try deleteMeetingSpeakers(meetingID: id, db: db)
+        }
     }
 
     private func manualNoteWordCountIfNeeded(for status: MeetingStatus, id: Int64, db: OpaquePointer?) throws -> Int? {
@@ -2629,35 +2657,46 @@ public final class DictationStore {
         defer { sqlite3_close(db) }
         let manualNotes = try manualNotesForMeeting(id: id, db: db)
         let wordCount = Self.countWords(in: rawTranscript) + Self.countWords(in: manualNotes)
-        // Clearing the rename map has to happen in the same statement as the new
-        // transcript: a separate update could fail and leave names attached to
-        // speakers that re-diarization has since renumbered.
+        // The rename map is cleared in the same statement as the new transcript,
+        // and the voiceprints in the same transaction: re-diarization renumbers
+        // speakers, so leaving either behind would attach a name — or enroll a
+        // voice — against the wrong speaker.
         let speakerNamesAssignment = clearSpeakerNames ? "speaker_names = NULL, " : ""
         let sql = """
         UPDATE meetings
         SET raw_transcript = ?, formatted_notes = ?, meeting_status = ?, word_count = ?, selected_template_id = ?, selected_template_name = ?, selected_template_kind = ?, selected_template_prompt = ?, \(speakerNamesAssignment)updated_at = ?, sync_dirty = 1
         WHERE id = ?
         """
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
-            throw lastError(db)
-        }
-        defer { sqlite3_finalize(statement) }
-        sqlite3_bind_text(statement, 1, (rawTranscript as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(statement, 2, (formattedNotes as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(statement, 3, (MeetingStatus.completed.rawValue as NSString).utf8String, -1, nil)
-        sqlite3_bind_int(statement, 4, Int32(wordCount))
-        sqlite3_bind_text(statement, 5, (selectedTemplateID as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(statement, 6, (selectedTemplateName as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(statement, 7, (selectedTemplateKind.rawValue as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(statement, 8, (selectedTemplatePrompt as NSString).utf8String, -1, nil)
-        sqlite3_bind_double(statement, 9, Date().timeIntervalSince1970)
-        sqlite3_bind_int64(statement, 10, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
-            throw lastError(db)
-        }
-        guard sqlite3_changes(db) > 0 else {
-            throw DictationStoreError.meetingNotFound(id: id)
+        try exec("BEGIN IMMEDIATE", db: db)
+        do {
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+                throw lastError(db)
+            }
+            defer { sqlite3_finalize(statement) }
+            sqlite3_bind_text(statement, 1, (rawTranscript as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statement, 2, (formattedNotes as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statement, 3, (MeetingStatus.completed.rawValue as NSString).utf8String, -1, nil)
+            sqlite3_bind_int(statement, 4, Int32(wordCount))
+            sqlite3_bind_text(statement, 5, (selectedTemplateID as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statement, 6, (selectedTemplateName as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statement, 7, (selectedTemplateKind.rawValue as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statement, 8, (selectedTemplatePrompt as NSString).utf8String, -1, nil)
+            sqlite3_bind_double(statement, 9, Date().timeIntervalSince1970)
+            sqlite3_bind_int64(statement, 10, id)
+            guard sqlite3_step(statement) == SQLITE_DONE else {
+                throw lastError(db)
+            }
+            guard sqlite3_changes(db) > 0 else {
+                throw DictationStoreError.meetingNotFound(id: id)
+            }
+            if clearSpeakerNames {
+                try deleteMeetingSpeakers(meetingID: id, db: db)
+            }
+            try exec("COMMIT", db: db)
+        } catch {
+            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
         }
     }
 
