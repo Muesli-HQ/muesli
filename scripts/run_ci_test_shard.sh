@@ -53,6 +53,7 @@ case "${shard}" in
       TranscriptionEngineArtifactsFilterTests
       DiarizerRuntimePolicyTests
       DiarizerPreloadDiagnosticsTests
+      DiarizerPreloadCoordinationTests
       PasteControllerTests
       BackendOptionTests
       SummaryModelPresetTests

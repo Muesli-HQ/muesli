@@ -18,6 +18,10 @@ enum DiarizerComputePolicy: String, Sendable, Equatable {
     }
 }
 
+enum DiarizerPreloadFailure: Error {
+    case operationTimedOut
+}
+
 struct DiarizerRuntimeEnvironment: Sendable {
     let cpuBrand: String?
     let hardwareModel: String?
@@ -37,7 +41,7 @@ struct DiarizerRuntimeEnvironment: Sendable {
 
         var value = [CChar](repeating: 0, count: size)
         guard sysctlbyname(name, &value, &size, nil, 0) == 0 else { return nil }
-        return String(cString: value)
+        return String(validatingCString: value)
     }
 }
 
@@ -135,6 +139,7 @@ enum DiarizerModelCacheState: String, Sendable {
 
 struct DiarizerPreloadContext: Sendable {
     static let telemetrySchemaVersion = "1"
+    // Keep synchronized with the exact FluidAudio pin in Package.swift.
     static let fluidAudioVersion = "0.15.1"
 
     let trigger: DiarizerPreloadTrigger
@@ -266,6 +271,7 @@ struct DiarizerPreloadDiagnostics {
 
     static func failureCategory(for error: Error) -> String {
         if error is CancellationError { return "cancelled" }
+        if error is DiarizerPreloadFailure { return "timeout" }
         if error is URLError { return "network" }
 
         if let diarizerError = error as? DiarizerError {
@@ -291,7 +297,8 @@ struct DiarizerPreloadDiagnostics {
         if nsError.domain.localizedCaseInsensitiveContains("coreml") {
             return "coreml"
         }
-        if nsError.domain == NSCocoaErrorDomain {
+        if nsError.domain == NSCocoaErrorDomain,
+           (NSFileErrorMinimum...NSFileErrorMaximum).contains(nsError.code) {
             return "filesystem"
         }
         return "other"
