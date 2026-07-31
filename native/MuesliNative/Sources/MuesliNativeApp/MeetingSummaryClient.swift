@@ -129,6 +129,7 @@ enum MeetingSummaryClient {
     private static let defaultChatGPTModel = "gpt-5.4-mini"
     private static let defaultOllamaModel = "qwen3.5"
     private static let defaultSummaryMaxOutputTokens = 2500
+    private static let titlePromptCharacterLimit = 6_000
     private static let ollamaSummaryTimeout: TimeInterval = 300
     private static let ollamaTitleTimeout: TimeInterval = 120
     private static let lmStudioSummaryTimeout: TimeInterval = 300
@@ -1156,13 +1157,15 @@ enum MeetingSummaryClient {
         let trimmedManualNotes = manualNotes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !trimmedManualNotes.isEmpty else { return excerpt }
 
-        return """
-        Meeting transcript excerpts:
-        \(excerpt)
+        let transcriptLabel = "Meeting transcript excerpts:\n"
+        let notesLabel = "\n\nWritten notes captured by the user during the meeting. Treat these as high-priority context when choosing the main topic and outcome:\n"
+        let availableNotesCharacters = max(
+            0,
+            titlePromptCharacterLimit - transcriptLabel.count - excerpt.count - notesLabel.count
+        )
+        let boundedManualNotes = String(trimmedManualNotes.prefix(availableNotesCharacters))
 
-        Written notes captured by the user during the meeting. Treat these as high-priority context when choosing the main topic and outcome:
-        \(trimmedManualNotes)
-        """
+        return transcriptLabel + excerpt + notesLabel + boundedManualNotes
     }
 
     static func titleTranscriptExcerpt(from transcript: String, segmentLength: Int = 900) -> String {

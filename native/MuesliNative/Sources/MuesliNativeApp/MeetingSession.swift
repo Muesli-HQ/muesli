@@ -701,7 +701,7 @@ final class MeetingSession {
             meetingStart: meetingStart
         )
 
-        let manualNotes = await manualNotesProvider?()
+        let titleManualNotes = await manualNotesProvider?()
         let generatedTitle: String
         onProgress?(.generatingTitle)
         if let liveTitle = await userEditedLiveTitle() {
@@ -713,7 +713,7 @@ final class MeetingSession {
             generatedTitle = calendarTitle
         } else if let autoTitle = await MeetingSummaryClient.generateTitle(
             transcript: rawTranscript,
-            manualNotes: manualNotes,
+            manualNotes: titleManualNotes,
             config: config
         ),
            !autoTitle.isEmpty {
@@ -727,6 +727,7 @@ final class MeetingSession {
         Self.logger.info("visual context drained chars=\(visualContext.count) includedInPrompt=\(!visualContext.isEmpty) useOCR=\(self.config.useCoreAudioTap)")
         fputs("[meeting] visual context drained chars=\(visualContext.count) includedInPrompt=\(!visualContext.isEmpty) useOCR=\(config.useCoreAudioTap)\n", stderr)
         onProgress?(.summarizingNotes)
+        let manualNotes = await manualNotesProvider?()
         let formattedNotes: String
         do {
             formattedNotes = try await MeetingSummaryClient.summarize(
