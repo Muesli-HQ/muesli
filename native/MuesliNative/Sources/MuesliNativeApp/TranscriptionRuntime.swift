@@ -28,6 +28,9 @@ actor TranscriptionCoordinator {
     private let senseVoiceTranscriber = SenseVoiceTranscriber()
     private var vadManager: VadManager?
     private var diarizerManager: DiarizerManager?
+    private var isDiarizerLoadInProgress = false
+    private var diarizerLoadWaiters: [CheckedContinuation<Void, Never>] = []
+    private let diarizerDiagnostics = DiarizerPreloadDiagnostics()
     private var activeBackend: String?
 
     private var _nemotron35Transcriber: Any?
@@ -209,6 +212,7 @@ actor TranscriptionCoordinator {
         backend: BackendOption,
         enablePostProcessor: Bool = false,
         includeMeetingHelpers: Bool = true,
+        meetingHelperTrigger: DiarizerPreloadTrigger = .unspecified,
         progress: ((Double, String?) -> Void)? = nil
     ) async {
         do {
@@ -216,6 +220,7 @@ actor TranscriptionCoordinator {
                 backend: backend,
                 enablePostProcessor: enablePostProcessor,
                 includeMeetingHelpers: includeMeetingHelpers,
+                meetingHelperTrigger: meetingHelperTrigger,
                 progress: progress
             )
         } catch {
@@ -227,12 +232,13 @@ actor TranscriptionCoordinator {
         backend: BackendOption,
         enablePostProcessor: Bool = false,
         includeMeetingHelpers: Bool = true,
+        meetingHelperTrigger: DiarizerPreloadTrigger = .unspecified,
         progress: ((Double, String?) -> Void)? = nil
     ) async throws {
         activeBackend = backend.backend
 
         if includeMeetingHelpers {
-            await preloadMeetingHelpers()
+            await preloadMeetingHelpers(trigger: meetingHelperTrigger)
         }
 
         switch backend.backend {
@@ -304,7 +310,7 @@ actor TranscriptionCoordinator {
         await preloadPostProcessorIfNeeded(enabled: enablePostProcessor, transcriptionBackend: backend)
     }
 
-    func preloadMeetingHelpers() async {
+    func preloadMeetingHelpers(trigger: DiarizerPreloadTrigger = .unspecified) async {
         if vadManager == nil {
             do {
                 vadManager = try await VadManager()
@@ -314,16 +320,53 @@ actor TranscriptionCoordinator {
             }
         }
 
-        if diarizerManager == nil {
-            do {
-                let diarizer = DiarizerManager()
-                let models = try await DiarizerModels.download()
-                diarizer.initialize(models: models)
-                diarizerManager = diarizer
-                fputs("[muesli-native] Speaker diarization loaded\n", stderr)
-            } catch {
-                fputs("[muesli-native] Diarization load failed (non-critical): \(error)\n", stderr)
+        let policy = DiarizerRuntimePolicy.resolve(for: .current())
+        let context = DiarizerPreloadContext(
+            trigger: trigger,
+            policy: policy,
+            cacheState: .resolve()
+        )
+
+        if diarizerManager != nil {
+            diarizerDiagnostics.skipped(context, reason: "already_loaded")
+            return
+        }
+
+        if isDiarizerLoadInProgress {
+            await withCheckedContinuation { continuation in
+                diarizerLoadWaiters.append(continuation)
             }
+            diarizerDiagnostics.skipped(
+                context,
+                reason: diarizerManager == nil ? "joined_failed_load" : "joined_active_load"
+            )
+            return
+        }
+
+        isDiarizerLoadInProgress = true
+        defer {
+            isDiarizerLoadInProgress = false
+            let waiters = diarizerLoadWaiters
+            diarizerLoadWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+        }
+
+        let startedAt = diarizerDiagnostics.begin(context)
+        do {
+            let diarizer = DiarizerManager()
+            let models = try await DiarizerModels.download(
+                configuration: policy.modelConfiguration
+            )
+            diarizer.initialize(models: models)
+            diarizerManager = diarizer
+            diarizerDiagnostics.ready(context, startedAt: startedAt)
+            fputs(
+                "[muesli-native] Speaker diarization loaded (compute: \(policy.computePolicy.rawValue))\n",
+                stderr
+            )
+        } catch {
+            diarizerDiagnostics.failed(context, startedAt: startedAt, error: error)
+            fputs("[muesli-native] Diarization load failed (non-critical): \(error)\n", stderr)
         }
     }
 

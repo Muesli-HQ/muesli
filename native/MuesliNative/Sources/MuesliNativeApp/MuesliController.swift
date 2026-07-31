@@ -707,7 +707,8 @@ final class MuesliController: NSObject {
                 await self.preloadOptionalTranscriptionResources(
                     for: dictationBackend,
                     enablePostProcessor: self.canRunTranscriptCleanup(option: ppOption),
-                    includeMeetingHelpers: includesMeetings
+                    includeMeetingHelpers: includesMeetings,
+                    meetingHelperTrigger: .appLaunch
                 )
                 if includesMeetings, self.selectedMeetingTranscriptionBackend != self.selectedBackend {
                     await self.transcriptionCoordinator.preload(
@@ -2023,7 +2024,8 @@ final class MuesliController: NSObject {
                 await self.preloadOptionalTranscriptionResources(
                     for: option,
                     enablePostProcessor: self.canRunTranscriptCleanup(option: ppOption),
-                    includeMeetingHelpers: self.config.resolvedOnboardingUseCase.includesMeetings
+                    includeMeetingHelpers: self.config.resolvedOnboardingUseCase.includesMeetings,
+                    meetingHelperTrigger: .backendChange
                 )
             }
             await MainActor.run {
@@ -2059,14 +2061,15 @@ final class MuesliController: NSObject {
     private func preloadOptionalTranscriptionResources(
         for backend: BackendOption,
         enablePostProcessor: Bool,
-        includeMeetingHelpers: Bool
+        includeMeetingHelpers: Bool,
+        meetingHelperTrigger: DiarizerPreloadTrigger
     ) async {
         await transcriptionCoordinator.preloadPostProcessorIfNeeded(
             enabled: enablePostProcessor,
             transcriptionBackend: backend
         )
         if includeMeetingHelpers {
-            await transcriptionCoordinator.preloadMeetingHelpers()
+            await transcriptionCoordinator.preloadMeetingHelpers(trigger: meetingHelperTrigger)
         }
     }
 
@@ -3434,6 +3437,7 @@ final class MuesliController: NSObject {
             backend: backend,
             enablePostProcessor: isPostProcessorReady,
             includeMeetingHelpers: onboardingUseCase.includesMeetings,
+            meetingHelperTrigger: .onboarding,
             progress: { value, status in
                 if wasDownloaded,
                    value < 0.85,
@@ -3957,7 +3961,8 @@ final class MuesliController: NSObject {
                 try await self.transcriptionCoordinator.preloadRequired(
                     backend: backend,
                     enablePostProcessor: false,
-                    includeMeetingHelpers: true
+                    includeMeetingHelpers: true,
+                    meetingHelperTrigger: .retranscription
                 )
                 let transcription = try await self.transcriptionCoordinator.transcribeMeeting(
                     at: recordingURL,
@@ -5209,7 +5214,8 @@ final class MuesliController: NSObject {
         try await transcriptionCoordinator.preloadRequired(
             backend: backend,
             enablePostProcessor: false,
-            includeMeetingHelpers: true
+            includeMeetingHelpers: true,
+            meetingHelperTrigger: .meetingStart
         )
         try Task.checkCancellation()
         try checkMeetingStartStillCurrent(meetingID)

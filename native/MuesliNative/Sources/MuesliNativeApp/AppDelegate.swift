@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         TelemetryDeck.initialize(config: telemetryConfig)
         if runtimeTelemetry.isEnabled {
             TelemetryDeck.signal("app.launched")
+            DiarizerPreloadDiagnostics().reportInterruptedAttemptIfNeeded()
         }
 
         do {

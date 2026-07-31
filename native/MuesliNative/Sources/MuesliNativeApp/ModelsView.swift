@@ -1228,7 +1228,8 @@ struct ModelsView: View {
             do {
                 try await controller.transcriptionCoordinator.preloadRequired(
                     backend: option,
-                    includeMeetingHelpers: controller.config.resolvedOnboardingUseCase.includesMeetings
+                    includeMeetingHelpers: controller.config.resolvedOnboardingUseCase.includesMeetings,
+                    meetingHelperTrigger: .modelLibrary
                 ) { progress, _ in
                     DispatchQueue.main.async {
                         downloadProgress[option.model] = max(progress, 0.05)
