@@ -136,6 +136,236 @@ struct DictationStoreTests {
         try store.migrateIfNeeded() // idempotent
     }
 
+    @Test("migration replaces calendar event uniqueness with occurrence lookup")
+    func migrationReplacesCalendarEventUniqueness() throws {
+        let store = try makeLegacyStore()
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.databasePath().path, &db) == SQLITE_OK)
+        #expect(sqlite3_exec(
+            db,
+            "CREATE UNIQUE INDEX idx_meetings_calendar_event_id ON meetings(calendar_event_id) WHERE calendar_event_id IS NOT NULL",
+            nil,
+            nil,
+            nil
+        ) == SQLITE_OK)
+        sqlite3_close(db)
+
+        try store.migrateIfNeeded()
+
+        let originalStart = Date(timeIntervalSince1970: 1_775_817_600)
+        let occurrence = CalendarOccurrenceReference(
+            provider: .eventKit,
+            calendarID: "calendar",
+            eventID: "reused-event-id",
+            seriesID: "reused-event-id",
+            originalStartTime: originalStart
+        )
+        let firstID = try store.createLiveMeeting(
+            title: "First recording",
+            calendarEventID: occurrence.eventID,
+            startTime: originalStart,
+            calendarOccurrence: occurrence
+        )
+        let secondID = try store.createLiveMeeting(
+            title: "Second recording",
+            calendarEventID: occurrence.eventID,
+            startTime: originalStart.addingTimeInterval(5),
+            calendarOccurrence: occurrence
+        )
+        let sameDayOccurrence = CalendarOccurrenceReference(
+            provider: .eventKit,
+            calendarID: "calendar",
+            eventID: "reused-event-id",
+            seriesID: "reused-event-id",
+            originalStartTime: originalStart.addingTimeInterval(60 * 60)
+        )
+        let sameDayID = try store.createLiveMeeting(
+            title: "Later occurrence",
+            calendarEventID: sameDayOccurrence.eventID,
+            startTime: originalStart.addingTimeInterval(60 * 60),
+            calendarOccurrence: sameDayOccurrence
+        )
+        let nextDayOccurrence = CalendarOccurrenceReference(
+            provider: .eventKit,
+            calendarID: "calendar",
+            eventID: "reused-event-id",
+            seriesID: "reused-event-id",
+            originalStartTime: originalStart.addingTimeInterval(24 * 60 * 60)
+        )
+        let nextDayID = try store.createLiveMeeting(
+            title: "Next recurrence",
+            calendarEventID: nextDayOccurrence.eventID,
+            startTime: originalStart.addingTimeInterval(24 * 60 * 60),
+            calendarOccurrence: nextDayOccurrence
+        )
+
+        #expect(firstID != secondID)
+        #expect(Set([firstID, secondID, sameDayID, nextDayID]).count == 4)
+        #expect(try store.recentMeetings(limit: 10).count == 4)
+        #expect(try store.meeting(id: firstID)?.calendarOccurrence == occurrence)
+        #expect(try store.meetingByCalendarOccurrence(occurrence)?.id == secondID)
+        #expect(try store.meetingByCalendarOccurrence(sameDayOccurrence)?.id == sameDayID)
+        #expect(try store.meetingByCalendarOccurrence(nextDayOccurrence)?.id == nextDayID)
+    }
+
+    @Test("calendar occurrence identity distinguishes recurrences and survives moves")
+    func calendarOccurrenceIdentitySemantics() {
+        let originalStart = Date(timeIntervalSince1970: 1_775_817_600)
+        let movedOccurrence = CalendarOccurrenceReference(
+            provider: .googleCalendar,
+            calendarID: "primary",
+            eventID: "instance-after-move",
+            seriesID: "daily-series",
+            originalStartTime: originalStart
+        )
+        let sameOccurrenceBeforeMove = CalendarOccurrenceReference(
+            provider: .googleCalendar,
+            calendarID: "primary",
+            eventID: "instance-before-move",
+            seriesID: "daily-series",
+            originalStartTime: originalStart
+        )
+        let nextOccurrence = CalendarOccurrenceReference(
+            provider: .googleCalendar,
+            calendarID: "primary",
+            eventID: "next-instance",
+            seriesID: "daily-series",
+            originalStartTime: originalStart.addingTimeInterval(24 * 60 * 60)
+        )
+        let movedSingleEvent = CalendarOccurrenceReference(
+            provider: .googleCalendar,
+            calendarID: "primary",
+            eventID: "single-event",
+            originalStartTime: originalStart.addingTimeInterval(60 * 60)
+        )
+        let originalSingleEvent = CalendarOccurrenceReference(
+            provider: .googleCalendar,
+            calendarID: "primary",
+            eventID: "single-event",
+            originalStartTime: originalStart
+        )
+
+        #expect(movedOccurrence.identityKey == sameOccurrenceBeforeMove.identityKey)
+        #expect(movedOccurrence.identityKey != nextOccurrence.identityKey)
+        #expect(movedSingleEvent.identityKey == originalSingleEvent.identityKey)
+    }
+
+    @Test("calendar occurrence lookup finds a legacy placeholder")
+    func calendarOccurrenceLookupFindsLegacyPlaceholder() throws {
+        let store = try makeStore()
+        let originalStart = Date(timeIntervalSince1970: 1_775_817_600)
+        let occurrence = CalendarOccurrenceReference(
+            provider: .eventKit,
+            calendarID: "work",
+            eventID: "legacy-event",
+            seriesID: "legacy-series",
+            originalStartTime: originalStart
+        )
+        try store.insertMeeting(
+            title: "Legacy placeholder",
+            calendarEventID: occurrence.eventID,
+            startTime: originalStart,
+            endTime: originalStart.addingTimeInterval(30 * 60),
+            rawTranscript: "",
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+
+        let matched = try #require(try store.meetingByCalendarOccurrence(occurrence))
+        #expect(matched.title == "Legacy placeholder")
+        #expect(matched.calendarEventID == occurrence.eventID)
+        #expect(matched.calendarOccurrence == nil)
+
+        let differentRecurrence = CalendarOccurrenceReference(
+            provider: occurrence.provider,
+            calendarID: occurrence.calendarID,
+            eventID: occurrence.eventID,
+            seriesID: occurrence.seriesID,
+            originalStartTime: originalStart.addingTimeInterval(24 * 60 * 60)
+        )
+        #expect(try store.meetingByCalendarOccurrence(differentRecurrence) == nil)
+    }
+
+    @Test("calendar occurrence lookup finds a rescheduled legacy one-off event")
+    func calendarOccurrenceLookupFindsRescheduledLegacyOneOffEvent() throws {
+        let store = try makeStore()
+        let originalStart = Date(timeIntervalSince1970: 1_775_817_600)
+        try store.insertMeeting(
+            title: "Legacy one-off placeholder",
+            calendarEventID: "legacy-one-off",
+            startTime: originalStart,
+            endTime: originalStart.addingTimeInterval(30 * 60),
+            rawTranscript: "",
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+        let rescheduledOccurrence = CalendarOccurrenceReference(
+            provider: .eventKit,
+            calendarID: "work",
+            eventID: "legacy-one-off",
+            originalStartTime: originalStart.addingTimeInterval(24 * 60 * 60)
+        )
+
+        let matched = try #require(try store.meetingByCalendarOccurrence(rescheduledOccurrence))
+        #expect(matched.title == "Legacy one-off placeholder")
+        #expect(matched.calendarEventID == rescheduledOccurrence.eventID)
+        #expect(matched.calendarOccurrence == nil)
+    }
+
+    @Test("MeetingRecord decodes legacy JSON without a calendar occurrence")
+    func meetingRecordDecodesWithoutCalendarOccurrence() throws {
+        let json = """
+        {
+          "id": 42,
+          "title": "Legacy meeting",
+          "startTime": "2026-04-10T14:00:00Z",
+          "durationSeconds": 1800,
+          "rawTranscript": "",
+          "formattedNotes": "",
+          "wordCount": 0
+        }
+        """
+
+        let record = try JSONDecoder().decode(
+            MeetingRecord.self,
+            from: try #require(json.data(using: .utf8))
+        )
+
+        #expect(record.calendarOccurrence == nil)
+    }
+
+    @Test("MeetingRecord preserves a calendar occurrence through Codable")
+    func meetingRecordCalendarOccurrenceCodableRoundTrip() throws {
+        let occurrence = CalendarOccurrenceReference(
+            provider: .googleCalendar,
+            calendarID: "primary",
+            eventID: "instance",
+            seriesID: "series",
+            originalStartTime: Date(timeIntervalSince1970: 1_775_817_600)
+        )
+        let original = MeetingRecord(
+            id: 42,
+            title: "Daily sync",
+            startTime: "2026-04-10T14:00:00Z",
+            durationSeconds: 1800,
+            rawTranscript: "",
+            formattedNotes: "",
+            wordCount: 0,
+            folderID: nil,
+            calendarEventID: occurrence.eventID,
+            calendarOccurrence: occurrence
+        )
+
+        let decoded = try JSONDecoder().decode(
+            MeetingRecord.self,
+            from: JSONEncoder().encode(original)
+        )
+
+        #expect(decoded.calendarOccurrence == occurrence)
+    }
+
     @Test("migration adds template columns to legacy meeting schema")
     func migrationAddsTemplateColumns() throws {
         let store = try makeLegacyStore()

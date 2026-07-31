@@ -4,13 +4,13 @@ import MuesliCore
 
 final class CalendarMenuMeetingPayload: NSObject {
     let title: String
-    let calendarEventID: String
+    let calendarOccurrence: CalendarOccurrenceReference
     let endDate: Date
     let autoStopSource: MeetingAutoStopSource?
 
     init(event: UnifiedCalendarEvent) {
         self.title = event.title
-        self.calendarEventID = event.id
+        self.calendarOccurrence = event.resolvedCalendarOccurrence
         self.endDate = event.endDate
         self.autoStopSource = event.meetingURL.flatMap { MeetingAutoStopSource(meetingURL: $0) }
     }
