@@ -12,6 +12,8 @@ struct InteractiveAudioSessionOwnershipTests {
 
         #expect(ownership.canStart(.dictation))
         #expect(ownership.canStart(.computerUse))
+        #expect(!ownership.shouldIgnoreCleanup(for: .dictation))
+        #expect(!ownership.shouldIgnoreCleanup(for: .computerUse))
     }
 
     @Test("dictation ownership rejects computer use start and cleanup")
@@ -21,6 +23,7 @@ struct InteractiveAudioSessionOwnershipTests {
             computerUseIsActive: false
         )
 
+        #expect(ownership.canStart(.dictation))
         #expect(!ownership.canStart(.computerUse))
         #expect(ownership.shouldIgnoreCleanup(for: .computerUse))
         #expect(!ownership.shouldIgnoreCleanup(for: .dictation))
@@ -34,6 +37,7 @@ struct InteractiveAudioSessionOwnershipTests {
         )
 
         #expect(!ownership.canStart(.dictation))
+        #expect(ownership.canStart(.computerUse))
         #expect(ownership.shouldIgnoreCleanup(for: .dictation))
         #expect(!ownership.shouldIgnoreCleanup(for: .computerUse))
     }
