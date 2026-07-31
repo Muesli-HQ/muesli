@@ -90,8 +90,21 @@ struct MeetingSummaryClientTests {
         )
 
         #expect(prompt.contains("Current generated notes to preserve and reformat:"))
-        #expect(prompt.contains("Protected written notes typed by the user during the meeting"))
+        #expect(prompt.contains("First-class meeting context from written notes typed by the user during the meeting"))
+        #expect(prompt.contains("identify the meeting's topic, decisions, action items, risks, and outcomes"))
         #expect(prompt.contains("- User typed decision"))
+    }
+
+    @Test("title prompt includes written notes as meeting context")
+    func titlePromptIncludesWrittenNotes() {
+        let prompt = MeetingSummaryClient.titlePrompt(
+            transcript: "Transcript body",
+            manualNotes: "Decision: launch the new workflow"
+        )
+
+        #expect(prompt.contains("Meeting transcript excerpts:"))
+        #expect(prompt.contains("Written notes captured by the user during the meeting"))
+        #expect(prompt.contains("Decision: launch the new workflow"))
     }
 
     @Test("ChatGPT WHAM requests fix GPT-5.6 reasoning to High")

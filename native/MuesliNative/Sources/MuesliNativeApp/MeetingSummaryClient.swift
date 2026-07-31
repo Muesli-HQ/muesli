@@ -137,7 +137,8 @@ enum MeetingSummaryClient {
     private static let customLLMTitleTimeout: TimeInterval = 120
 
     private static let titleInstructions = """
-    Generate a short, descriptive meeting title (3-7 words) from these transcript excerpts. \
+    Generate a short, descriptive meeting title (3-7 words) from these transcript excerpts and any written notes. \
+    Treat written notes as high-priority context: they may contain the clearest statement of the meeting's topic or outcome. \
     Prefer the main topic and outcome across the whole meeting over opening small talk or setup. \
     Return ONLY the title text, nothing else. No quotes, no prefix, no explanation. \
     Examples: "Q3 Sprint Planning", "Customer Onboarding Review", "Security Audit Discussion"
@@ -316,7 +317,7 @@ enum MeetingSummaryClient {
             notePreservationInstructions = ""
         }
         let manualNoteInstructions = hasManualNotes
-            ? "\n\nProtected written notes may also be provided. These are notes the user typed by hand during the meeting. Use them as high-priority context. Place each written note near the most relevant section of the summary, preserving the user's wording verbatim when possible. Do not rewrite, polish, summarize away, or omit concrete user-written notes. Avoid creating a large standalone Manual Notes appendix unless there is no relevant section for a note."
+            ? "\n\nProtected written notes may also be provided. These are notes the user typed by hand during the meeting. Treat them as first-class meeting context, not only as text to retain: use their concrete details to inform the summary, decisions, action items, risks, and outcomes, including details that are not stated verbatim in the transcript. Place each written note near the most relevant section of the summary, preserving the user's wording verbatim when possible. Do not rewrite, polish, summarize away, or omit concrete user-written notes. Avoid creating a large standalone Manual Notes appendix unless there is no relevant section for a note."
             : ""
         let hasPreviousNotes = !(previousMeetingNotes?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
         let followUpInstructions = hasPreviousNotes
@@ -360,7 +361,7 @@ enum MeetingSummaryClient {
 
         let trimmedManualNotes = manualNotes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !trimmedManualNotes.isEmpty {
-            prompt += "Protected written notes typed by the user during the meeting. Preserve these verbatim and place them where they belong in the summary:\n\(trimmedManualNotes)\n\n"
+            prompt += "First-class meeting context from written notes typed by the user during the meeting. Use these notes together with the transcript to identify the meeting's topic, decisions, action items, risks, and outcomes. Preserve the written notes verbatim in the final summary:\n\(trimmedManualNotes)\n\n"
         }
 
         prompt += "Raw transcript:\n\(transcript)"
@@ -1096,9 +1097,13 @@ enum MeetingSummaryClient {
     }
 
     static func generateTitle(transcript: String, config: AppConfig) async -> String? {
+        await generateTitle(transcript: transcript, manualNotes: nil, config: config)
+    }
+
+    static func generateTitle(transcript: String, manualNotes: String?, config: AppConfig) async -> String? {
         let backend = (config.meetingSummaryBackend.isEmpty ? MeetingSummaryBackendOption.chatGPT.backend : config.meetingSummaryBackend).lowercased()
 
-        let excerpt = titleTranscriptExcerpt(from: transcript)
+        let excerpt = titlePrompt(transcript: transcript, manualNotes: manualNotes)
 
         if backend == MeetingSummaryBackendOption.chatGPT.backend {
             return await generateTitleWithChatGPT(transcript: excerpt, config: config)
@@ -1144,6 +1149,20 @@ enum MeetingSummaryClient {
             maxTokens: nil,
             extraHeaders: [:]
         )
+    }
+
+    static func titlePrompt(transcript: String, manualNotes: String? = nil) -> String {
+        let excerpt = titleTranscriptExcerpt(from: transcript)
+        let trimmedManualNotes = manualNotes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmedManualNotes.isEmpty else { return excerpt }
+
+        return """
+        Meeting transcript excerpts:
+        \(excerpt)
+
+        Written notes captured by the user during the meeting. Treat these as high-priority context when choosing the main topic and outcome:
+        \(trimmedManualNotes)
+        """
     }
 
     static func titleTranscriptExcerpt(from transcript: String, segmentLength: Int = 900) -> String {
