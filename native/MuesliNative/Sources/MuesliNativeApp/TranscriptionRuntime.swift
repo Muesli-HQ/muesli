@@ -15,6 +15,7 @@ struct SpeechTranscriptionResult: Sendable {
 
 actor TranscriptionCoordinator {
     typealias DiarizerModelLoader = @Sendable (DiarizerRuntimePolicy) async throws -> DiarizerModels
+    typealias VADLoader = @Sendable () async throws -> VadManager
 
     private enum DiarizerLoadWaitOutcome {
         case succeeded
@@ -54,6 +55,7 @@ actor TranscriptionCoordinator {
     private var didDiarizerLoadTimeOut = false
     private var diarizerLoadWaiters: [UUID: DiarizerLoadWaiter] = [:]
     private let diarizerModelLoader: DiarizerModelLoader
+    private let vadLoader: VADLoader
     private let diarizerLoadOperationTimeout: Duration
     private let diarizerDiagnostics: DiarizerPreloadDiagnostics
     private var activeBackend: String?
@@ -62,10 +64,12 @@ actor TranscriptionCoordinator {
         diarizerModelLoader: @escaping DiarizerModelLoader = { policy in
             try await DiarizerModels.download(configuration: policy.modelConfiguration)
         },
+        vadLoader: @escaping VADLoader = { try await VadManager() },
         diarizerLoadOperationTimeout: Duration = TranscriptionCoordinator.defaultDiarizerLoadOperationTimeout,
         diarizerDiagnostics: DiarizerPreloadDiagnostics = DiarizerPreloadDiagnostics()
     ) {
         self.diarizerModelLoader = diarizerModelLoader
+        self.vadLoader = vadLoader
         self.diarizerLoadOperationTimeout = diarizerLoadOperationTimeout
         self.diarizerDiagnostics = diarizerDiagnostics
     }
@@ -277,6 +281,7 @@ actor TranscriptionCoordinator {
         if includeMeetingHelpers {
             await preloadMeetingHelpers(trigger: meetingHelperTrigger)
         }
+        try Task.checkCancellation()
 
         switch backend.backend {
         case "fluidaudio":
@@ -350,7 +355,7 @@ actor TranscriptionCoordinator {
     func preloadMeetingHelpers(trigger: DiarizerPreloadTrigger = .unspecified) async {
         if vadManager == nil {
             do {
-                vadManager = try await VadManager()
+                vadManager = try await vadLoader()
                 fputs("[muesli-native] Silero VAD loaded\n", stderr)
             } catch {
                 fputs("[muesli-native] VAD load failed (non-critical): \(error)\n", stderr)

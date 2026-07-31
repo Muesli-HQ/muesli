@@ -382,6 +382,62 @@ struct DiarizerPreloadCoordinationTests {
         diagnostics.cleanup()
     }
 
+    @Test("cancelled joined required preload never enters backend loading")
+    func cancelledRequiredPreloadStopsBeforeBackend() async throws {
+        let loader = BlockingLoader()
+        let diagnostics = try makeDiagnostics(suffix: "cancelled-required-preload")
+        let coordinator = TranscriptionCoordinator(
+            diarizerModelLoader: { _ in
+                await loader.waitUntilReleased()
+                throw TestLoadError.failed
+            },
+            vadLoader: { throw TestLoadError.failed },
+            diarizerDiagnostics: diagnostics.value
+        )
+        let invalidBackend = BackendOption(
+            backend: "must-not-load",
+            model: "none",
+            label: "Test",
+            sizeLabel: "0 MB",
+            description: "Cancellation boundary test",
+            recommended: false
+        )
+
+        let initiatingCaller = Task {
+            await coordinator.preloadDiarizer(trigger: .appLaunch, waitTimeout: .seconds(5))
+        }
+        #expect(await waitUntil {
+            let state = await coordinator.diarizerPreloadStateForTesting()
+            return await loader.attempts == 1 && state.waiterCount == 1
+        })
+
+        let joinedCaller = Task { () -> String in
+            do {
+                try await coordinator.preloadRequired(
+                    backend: invalidBackend,
+                    includeMeetingHelpers: true,
+                    meetingHelperTrigger: .meetingStart
+                )
+                return "completed"
+            } catch is CancellationError {
+                return "cancelled"
+            } catch {
+                return "unexpected_error"
+            }
+        }
+        #expect(await waitUntil {
+            await coordinator.diarizerPreloadStateForTesting().waiterCount == 2
+        })
+
+        joinedCaller.cancel()
+        #expect(await joinedCaller.value == "cancelled")
+        #expect(await coordinator.diarizerPreloadStateForTesting().waiterCount == 1)
+
+        await loader.release()
+        await initiatingCaller.value
+        diagnostics.cleanup()
+    }
+
     private func makeDiagnostics(
         suffix: String
     ) throws -> (
