@@ -52,6 +52,34 @@ private enum DictationAudioRouteTiming {
     static let stabilizationDelay: TimeInterval = 1.0
 }
 
+enum InteractiveAudioSessionOwner {
+    case dictation
+    case computerUse
+}
+
+struct InteractiveAudioSessionOwnership: Equatable {
+    let dictationIsActive: Bool
+    let computerUseIsActive: Bool
+
+    func canStart(_ owner: InteractiveAudioSessionOwner) -> Bool {
+        switch owner {
+        case .dictation:
+            return !computerUseIsActive
+        case .computerUse:
+            return !dictationIsActive
+        }
+    }
+
+    func shouldIgnoreCleanup(for owner: InteractiveAudioSessionOwner) -> Bool {
+        switch owner {
+        case .dictation:
+            return !dictationIsActive && computerUseIsActive
+        case .computerUse:
+            return !computerUseIsActive && dictationIsActive
+        }
+    }
+}
+
 struct MeetingResummarizationPlan: Equatable {
     let promptTitle: String
     let persistedTitle: String
@@ -7001,6 +7029,11 @@ final class MuesliController: NSObject {
 
     private func handleComputerUseCancel() {
         fputs("[cua] cancel\n", stderr)
+        guard !interactiveAudioSessionOwnership.shouldIgnoreCleanup(for: .computerUse) else {
+            fputs("[cua] ignoring cleanup while dictation owns interactive audio\n", stderr)
+            computerUseHotkeyMonitor.cancelToggleMode()
+            return
+        }
         computerUseCommandTask?.cancel()
         computerUseCommandTask = nil
         computerUseCommandTaskID = nil
@@ -7198,6 +7231,7 @@ final class MuesliController: NSObject {
             && pendingComputerUseStopSessionID == nil
             && computerUseCommandTask == nil
             && !isNemotron35Streaming
+            && interactiveAudioSessionOwnership.canStart(.computerUse)
             && dictationState == .idle
     }
 
@@ -7209,7 +7243,38 @@ final class MuesliController: NSObject {
             && pendingComputerUseStopSessionID == nil
             && computerUseCommandTask == nil
             && !isNemotron35Streaming
+            && interactiveAudioSessionOwnership.canStart(.computerUse)
             && (dictationState == .idle || dictationState == .preparing)
+    }
+
+    private var interactiveAudioSessionOwnership: InteractiveAudioSessionOwnership {
+        let computerUseIsActive = computerUseAudioSessionManager.hasActiveSession
+            || computerUseCommandStartedAt != nil
+            || pendingComputerUseStopSessionID != nil
+            || computerUseCommandTask != nil
+        let dictationIsActive = dictationAudioSessionManager.hasActiveSession
+            || dictationStartedAt != nil
+            || pendingDictationStopSessionID != nil
+            || isNemotron35Streaming
+            || (!computerUseIsActive && dictationState != .idle)
+        return InteractiveAudioSessionOwnership(
+            dictationIsActive: dictationIsActive,
+            computerUseIsActive: computerUseIsActive
+        )
+    }
+
+    private func shouldRejectDictationForComputerUseActivity() -> Bool {
+        guard !interactiveAudioSessionOwnership.canStart(.dictation) else { return false }
+        fputs("[muesli-native] ignoring dictation start while computer use owns interactive audio\n", stderr)
+        hotkeyMonitor.cancelToggleMode()
+        return true
+    }
+
+    private func shouldIgnoreDictationCleanupForComputerUseActivity() -> Bool {
+        guard interactiveAudioSessionOwnership.shouldIgnoreCleanup(for: .dictation) else { return false }
+        fputs("[muesli-native] ignoring dictation cleanup while computer use owns interactive audio\n", stderr)
+        hotkeyMonitor.cancelToggleMode()
+        return true
     }
 
     @MainActor
@@ -7469,6 +7534,7 @@ final class MuesliController: NSObject {
     }
 
     private func handlePrepare() {
+        if shouldRejectDictationForComputerUseActivity() { return }
         guard ensureDictationBackendReady() else { return }
         if isMeetingRecording() { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
@@ -7489,6 +7555,7 @@ final class MuesliController: NSObject {
     }
 
     private func handleArm() {
+        if shouldRejectDictationForComputerUseActivity() { return }
         guard ensureDictationBackendReady() else { return }
         if isMeetingRecording() { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
@@ -7835,6 +7902,7 @@ final class MuesliController: NSObject {
     }
 
     private func handleStart() {
+        if shouldRejectDictationForComputerUseActivity() { return }
         guard ensureDictationBackendReady() else { return }
         if isMeetingRecording() { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
@@ -7982,6 +8050,7 @@ final class MuesliController: NSObject {
 
     private func handleCancel() {
         if isMeetingRecording() { return }
+        if shouldIgnoreDictationCleanupForComputerUseActivity() { return }
         fputs("[muesli-native] cancel\n", stderr)
         resetDictationOutputMode()
 
@@ -8009,6 +8078,7 @@ final class MuesliController: NSObject {
     }
 
     private func handleToggleStart(outputMode: DictationOutputMode? = nil) {
+        if shouldRejectDictationForComputerUseActivity() { return }
         guard ensureDictationBackendReady() else { return }
         if isMeetingRecording() { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
@@ -8074,6 +8144,7 @@ final class MuesliController: NSObject {
             cancelDictationAudioSessionForMeetingRecordingIfNeeded()
             return
         }
+        if shouldIgnoreDictationCleanupForComputerUseActivity() { return }
         fputs("[muesli-native] stop\n", stderr)
         let startedAt = dictationStartedAt ?? Date()
         dictationStartedAt = nil
@@ -8114,10 +8185,7 @@ final class MuesliController: NSObject {
     }
 
     private func cancelDictationAudioSessionForMeetingRecordingIfNeeded() {
-        let hasComputerUseActivity = computerUseAudioSessionManager.hasActiveSession
-            || computerUseCommandStartedAt != nil
-            || pendingComputerUseStopSessionID != nil
-            || computerUseCommandTask != nil
+        let hasComputerUseActivity = interactiveAudioSessionOwnership.computerUseIsActive
         guard dictationAudioSessionManager.hasActiveSession
             || isNemotron35Streaming
             || hasComputerUseActivity else { return }
