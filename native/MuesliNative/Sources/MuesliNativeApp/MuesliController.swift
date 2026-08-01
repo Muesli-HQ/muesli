@@ -279,9 +279,6 @@ final class MuesliController: NSObject {
     private static let pendingDictionaryCorrectionAccessibilityRequestedAtKey = "dictionaryCorrectionPrompts.pendingAccessibilityRequestedAt"
     private static let pendingDictionaryCorrectionAccessibilityRequestProcessIDKey = "dictionaryCorrectionPrompts.pendingAccessibilityRequestProcessID"
     private static let dictionaryCorrectionAccessibilityIntentTimeout: TimeInterval = 24 * 60 * 60
-    private static let computerUsePreparationLeaseDuration: TimeInterval = 2
-    private static let computerUseRecordingLeaseDuration: TimeInterval = 60
-
     private let runtime: RuntimePaths
     private let configStore: ConfigStore
     private let dictationStore: DictationStore
@@ -386,8 +383,6 @@ final class MuesliController: NSObject {
     private var computerUseCommandStartedAt: Date?
     private var pendingComputerUseStopStartedAt: Date?
     private var pendingComputerUseStopSessionID: UUID?
-    private var computerUsePreparationLeaseWorkItem: DispatchWorkItem?
-    private var computerUseRecordingLeaseWorkItem: DispatchWorkItem?
     private var computerUseCommandTask: Task<Void, Never>?
     private var computerUseCommandTaskID: UUID?
     private var computerUseFloatingStatusWorkItem: DispatchWorkItem?
@@ -821,7 +816,6 @@ final class MuesliController: NSObject {
         computerUseCommandTask?.cancel()
         computerUseCommandTask = nil
         computerUseCommandTaskID = nil
-        cancelComputerUseAudioLeases()
         activeComputerUseAudioSessionID = nil
         pendingComputerUseStopSessionID = nil
         pendingComputerUseStopStartedAt = nil
@@ -6988,15 +6982,12 @@ final class MuesliController: NSObject {
         setState(.preparing)
         computerUseAudioSessionManager.arm(source: "computer_use_hotkey_prepare")
         activeComputerUseAudioSessionID = computerUseAudioSessionManager.currentSessionID
-        scheduleComputerUsePreparationLease(for: activeComputerUseAudioSessionID)
     }
 
     private func handleComputerUseStart() {
         guard canStartComputerUseCommand else { return }
         fputs("[cua] recording start\n", stderr)
         meetingMonitor.suppressWhileActive()
-        computerUsePreparationLeaseWorkItem?.cancel()
-        computerUsePreparationLeaseWorkItem = nil
         computerUseCommandStartedAt = Date()
         indicator.powerProvider = { [weak self] in
             self?.computerUseAudioSessionManager.currentPower() ?? -160
@@ -7008,7 +6999,6 @@ final class MuesliController: NSObject {
             mediaPauseEnabled: false
         )
         activeComputerUseAudioSessionID = computerUseAudioSessionManager.currentSessionID
-        scheduleComputerUseRecordingLease(for: activeComputerUseAudioSessionID)
     }
 
     private func handleComputerUseToggleStart() {
@@ -7037,7 +7027,6 @@ final class MuesliController: NSObject {
         computerUseCommandTask?.cancel()
         computerUseCommandTask = nil
         computerUseCommandTaskID = nil
-        cancelComputerUseAudioLeases()
         computerUseAudioSessionManager.cancel(reason: "computer_use_cancel")
         activeComputerUseAudioSessionID = nil
         computerUseCommandStartedAt = nil
@@ -7066,53 +7055,10 @@ final class MuesliController: NSObject {
         indicator.isToggleDictation = false
         let startedAt = computerUseCommandStartedAt ?? Date()
         computerUseCommandStartedAt = nil
-        cancelComputerUseAudioLeases()
         activeComputerUseAudioSessionID = nil
         pendingComputerUseStopSessionID = sessionID
         pendingComputerUseStopStartedAt = startedAt
         computerUseAudioSessionManager.stop()
-    }
-
-    private func scheduleComputerUsePreparationLease(for sessionID: UUID?) {
-        computerUsePreparationLeaseWorkItem?.cancel()
-        guard let sessionID else { return }
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self,
-                  self.activeComputerUseAudioSessionID == sessionID,
-                  self.computerUseCommandStartedAt == nil else { return }
-            fputs("[cua] preparation lease expired; releasing microphone\n", stderr)
-            self.handleComputerUseCancel()
-        }
-        computerUsePreparationLeaseWorkItem = workItem
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + Self.computerUsePreparationLeaseDuration,
-            execute: workItem
-        )
-    }
-
-    private func scheduleComputerUseRecordingLease(for sessionID: UUID?) {
-        computerUseRecordingLeaseWorkItem?.cancel()
-        guard let sessionID else { return }
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self,
-                  self.activeComputerUseAudioSessionID == sessionID,
-                  self.computerUseCommandStartedAt != nil else { return }
-            fputs("[cua] recording lease expired; releasing microphone\n", stderr)
-            self.handleComputerUseCancel()
-            self.indicator.showWarning("CUA recording timed out", icon: "!")
-        }
-        computerUseRecordingLeaseWorkItem = workItem
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + Self.computerUseRecordingLeaseDuration,
-            execute: workItem
-        )
-    }
-
-    private func cancelComputerUseAudioLeases() {
-        computerUsePreparationLeaseWorkItem?.cancel()
-        computerUsePreparationLeaseWorkItem = nil
-        computerUseRecordingLeaseWorkItem?.cancel()
-        computerUseRecordingLeaseWorkItem = nil
     }
 
     private func finishComputerUseAudioStop(wavURL: URL?, startedAt: Date) {
@@ -7708,7 +7654,6 @@ final class MuesliController: NSObject {
                   activeComputerUseAudioSessionID == sessionID
                     || pendingComputerUseStopSessionID == sessionID else { break }
             fputs("[cua] recorder start failed: \(error)\n", stderr)
-            cancelComputerUseAudioLeases()
             activeComputerUseAudioSessionID = nil
             computerUseCommandStartedAt = nil
             pendingComputerUseStopSessionID = nil
