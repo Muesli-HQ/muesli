@@ -6,32 +6,51 @@
         <language>en</language>
         <!-- Items are added by generate_appcast or the release script -->
         <item>
+            <title>0.8.1</title>
+            <pubDate>Sat, 01 Aug 2026 14:41:27 +0530</pubDate>
+            <description><![CDATA[
+<h2>Muesli 0.8.1</h2>
+<p>Muesli 0.8.1 is a focused reliability update for meetings, microphone capture, dictation, and Computer Use.</p>
+<h2>More reliable meetings and audio</h2>
+<ul>
+<li>Scheduled and recurring meetings start reliably: Calendar providers can reuse event identifiers across recurring meetings. Muesli now distinguishes individual occurrences so legitimate recordings are no longer rejected with “Meeting failed to start.”</li>
+<li>Stronger microphone capture: Muesli avoids competing unnecessarily with conferencing apps for the default microphone and can recover when the active input changes during a meeting, including transitions to devices such as AirPods.</li>
+<li>Separate meeting microphone selection: Meetings can use their own preferred microphone without changing Dictation, macOS, or the conferencing app.</li>
+<li>Quieter automatic meeting starts: Meetings started from detection, calendar notifications, or automatic recording now begin in the background without pulling focus into Notes. Manually started meetings continue to open Notes.</li>
+</ul>
+<h2>Dictation and Computer Use reliability</h2>
+<ul>
+<li>Fixed a dictation-related crash caused when another app exposed invalid Accessibility geometry.</li>
+<li>Computer Use now shares Dictation’s route-aware microphone lifecycle, releases the microphone cleanly, and cannot compete with an active Dictation session.</li>
+</ul>
+<h2>Stability on affected M1 Macs</h2>
+<ul>
+<li>M1-family Macs running macOS 15.1 now avoid the Core ML GPU path implicated in a diarization model-loading crash.</li>
+<li>Model preloading now coordinates concurrent requests and handles cancellation and timeouts more predictably.</li>
+</ul>
+<h2>Also improved</h2>
+<ul>
+<li>Manual meeting notes now provide first-class context for generated titles, decisions, action items, risks, and summaries.</li>
+<li>Added GPT-5.6 Sol, Terra, and Luna across supported cloud-model selectors. GPT-5.6 Terra is the default for new or unset ChatGPT dictation-cleanup selections, while GPT-5.4 Mini remains available as the faster option.</li>
+</ul>
+<h2>Privacy and release quality</h2>
+<ul>
+<li>Expanded meeting and model-loading diagnostics use categorical, privacy-preserving signals. They do not include audio, transcripts, meeting titles, file paths, hardware identifiers, or raw error descriptions.</li>
+<li>The incremental Sparkle update was validated through MuesliPreprod with existing app data preserved.</li>
+</ul>
+<p>Muesli 0.8.1 requires Apple silicon and macOS 14.2 or later. The release is signed with Developer ID, notarized by Apple, and stapled.</p>
+]]></description>
+            <sparkle:version>0.8.1</sparkle:version>
+            <sparkle:shortVersionString>0.8.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.8.1/Muesli-0.8.1.dmg" length="94741664" type="application/octet-stream" sparkle:edSignature="tkxg1ppmcntR5VBt39qt1HFl1O04755rR75GLMf2BcmN0zmMS975GXaTwZAbvLWx8J5WXnFcCJEp6YzCTk4OAg=="/>
+            <sparkle:deltas>
+            </sparkle:deltas>
+        </item>
+        <item>
             <title>0.8.0</title>
             <pubDate>Tue, 14 Jul 2026 21:29:34 -0700</pubDate>
-            <description><![CDATA[
-<h2>Muesli 0.8</h2>
-<p>Muesli 0.8 turns your local voice history into a private workspace for understanding, cleaning up, and continuing your work.</p>
-<h3>What's new</h3>
-<ul>
-<li>Private, on-device Insights: Explore activity trends, word patterns, meeting totals, and shareable contribution cards without sending your history anywhere.</li>
-<li>Live meeting captions: Follow meetings as they happen with optional local streaming transcription, then rely on the selected meeting model for the final transcript.</li>
-<li>Meetings that continue with you: Pause and resume recordings, continue an existing meeting, create linked follow-ups, revisit upcoming meetings, and export notes and audio more flexibly.</li>
-<li>Smarter dictation cleanup: Use optional ChatGPT-hosted cleanup or downloadable local cleanup models, with a clearer model catalog and direct links from Settings.</li>
-<li>Dictionary suggestions: Muesli can notice repeated corrections and suggest additions to your personal dictionary. Suggestions remain opt-in and require Accessibility permission.</li>
-<li>Private iCloud sync: Sync text records with the iPhone companion app, filter Dictations and Meetings by this Mac or iPhone, and recover cleanly if initial sync setup takes too long.</li>
-<li>A guided tour of 0.8: After updating, choose whether to walk through the new features in their actual locations. Skip at any point or replay it later from What's New in Muesli.</li>
-<li>More local model options: Try experimental Gemma 4 E2B dictation and cleanup, Indic ASR, and Nemotron 3.5 multilingual streaming. Large model weights remain optional downloads.</li>
-</ul>
-<h3>Reliability and privacy</h3>
-<ul>
-<li>The first dictation after an update now waits for the selected transcription backend to be ready instead of beginning an unusable recording.</li>
-<li>Live captions and cloud cleanup remain off until you choose them.</li>
-<li>Error telemetry remains available, while automatic GitHub issue prompts are off by default.</li>
-</ul>
-<h3>Install</h3>
-<p>Download <code>Muesli-0.8.0.dmg</code>, open it, and drag Muesli to Applications. Muesli 0.8 requires Apple silicon and macOS 14.2 or later.</p>
-<p>The release is signed with Developer ID, notarized, and stapled by Apple.</p>
-]]></description>
             <sparkle:version>0.8.0</sparkle:version>
             <sparkle:shortVersionString>0.8.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
@@ -67,34 +86,6 @@
             <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
             <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.7.1/Muesli-0.7.1.dmg" length="70087020" type="application/octet-stream" sparkle:edSignature="du0g2qkGP0pib0PF6Nfp8nErOIt6F2nWNzQggsEOcDUx7ZKqhDTD0HbjEgKbdQBNyXTRnEbi0xEe9raRrdXtDg=="/>
-        </item>
-        <item>
-            <title>0.7.0</title>
-            <pubDate>Thu, 11 Jun 2026 23:46:47 -0700</pubDate>
-            <description><![CDATA[
-<h2>Muesli 0.7.0</h2>
-<p>This release focuses on faster dictation start, more reliable meeting microphone capture, and the completed move to the Muesli HQ release/update infrastructure.</p>
-<h3>What's New</h3>
-<ul>
-<li>Faster dictation activation: dictation now uses the AudioQueue-backed recorder path by default for both Automatic and explicitly selected microphones, reducing hotkey-to-mic latency.</li>
-<li>Better microphone routing: Muesli now keeps dictation and meeting capture app-scoped where possible, honors your selected microphone, and avoids holding idle mic resources after dictation.</li>
-<li>More reliable meeting capture: meetings now choose a safer microphone route before recording starts, with health checks that can warn when the local mic path is silent or degraded.</li>
-<li>Live meeting transcript view: active meetings can show an incremental Live transcript, and checkpoint recovery can preserve partial transcript text if the app is interrupted.</li>
-<li>Fewer false meeting prompts: scheduled meeting and browser-audio detection have been tightened to avoid prompts from unrelated audio or stale meeting signals.</li>
-<li>Update infrastructure migration: Sparkle feeds, release assets, download links, and Homebrew metadata now use the Muesli-HQ organization paths.</li>
-</ul>
-<h3>Quality and Release Validation</h3>
-<ul>
-<li>Updated Sparkle to 2.9.3.</li>
-<li>Expanded tests around AudioQueue fallback, route-aware dictation, route-aware meeting mic capture, live transcript recovery, scheduled meeting notifications, VAD boundaries, and update-flow validation.</li>
-<li>Signed, notarized, stapled, and verified by Apple.</li>
-</ul>
-]]></description>
-            <sparkle:version>0.7.0</sparkle:version>
-            <sparkle:shortVersionString>0.7.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.7.0/Muesli-0.7.0.dmg" length="73691616" type="application/octet-stream" sparkle:edSignature="PcVwwF7cnOdOH20cN95tUwDohLh4KfJ5Y5Hc+H95Uy2eGZQINvUK25HJCSCqecszxSovLonnmq2JcyBsXFWMDw=="/>
         </item>
         <item>
             <title>0.6.9</title>
