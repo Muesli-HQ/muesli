@@ -1076,6 +1076,10 @@ struct AppConfig: Codable {
     var enableMeetingRecordingHotkey: Bool = false
     var cotypistHotkey: HotkeyConfig = .cotypistDefault
     var enableCotypist: Bool = false
+    /// When enabled, Cotypist schedules a suggestion after ordinary edits.
+    /// This defaults on for existing Cotypist users; the feature itself remains
+    /// opt-in through `enableCotypist`.
+    var enableCotypistAmbient: Bool = true
     var cotypistModel: String = CotypistModelOption.qwen35TextFIM.rawValue
     var cotypistExcludedBundleIDs: [String] = []
     var computerUseHotkeyDefaultDisabledMigrationApplied: Bool = true
@@ -1203,6 +1207,7 @@ struct AppConfig: Codable {
         case enableMeetingRecordingHotkey = "enable_meeting_recording_hotkey"
         case cotypistHotkey = "cotypist_hotkey"
         case enableCotypist = "enable_cotypist"
+        case enableCotypistAmbient = "enable_cotypist_ambient"
         case cotypistModel = "cotypist_model"
         case cotypistExcludedBundleIDs = "cotypist_excluded_bundle_ids"
         case computerUseHotkeyDefaultDisabledMigrationApplied = "computer_use_hotkey_default_disabled_migration_applied"
@@ -1335,6 +1340,7 @@ struct AppConfig: Codable {
         enableMeetingRecordingHotkey = (try? c.decode(Bool.self, forKey: .enableMeetingRecordingHotkey)) ?? defaults.enableMeetingRecordingHotkey
         cotypistHotkey = (try? c.decode(HotkeyConfig.self, forKey: .cotypistHotkey)) ?? defaults.cotypistHotkey
         enableCotypist = (try? c.decode(Bool.self, forKey: .enableCotypist)) ?? defaults.enableCotypist
+        enableCotypistAmbient = (try? c.decode(Bool.self, forKey: .enableCotypistAmbient)) ?? defaults.enableCotypistAmbient
         cotypistModel = CotypistModelOption.resolved(try? c.decode(String.self, forKey: .cotypistModel)).rawValue
         cotypistExcludedBundleIDs = (try? c.decode([String].self, forKey: .cotypistExcludedBundleIDs))
             ?? defaults.cotypistExcludedBundleIDs

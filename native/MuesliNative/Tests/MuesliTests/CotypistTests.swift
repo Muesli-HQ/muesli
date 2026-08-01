@@ -12,6 +12,7 @@ struct CotypistConfigurationTests {
         #expect(config.resolvedCotypistModel == .qwen35TextFIM)
         #expect(CotypistModelOption.allCases == [.gemma4E2B, .qwen35TextFIM])
         #expect(config.cotypistHotkey == .cotypistDefault)
+        #expect(config.enableCotypistAmbient)
         #expect(config.cotypistExcludedBundleIDs.isEmpty)
     }
 
@@ -52,6 +53,7 @@ struct CotypistConfigurationTests {
         #expect(object["enable_cotypist"] as? Bool == true)
         #expect(object["cotypist_model"] as? String == "qwen35_0_8b_base_fim")
         #expect(object["cotypist_hotkey"] != nil)
+        #expect(object["enable_cotypist_ambient"] as? Bool == true)
         #expect(object["cotypist_excluded_bundle_ids"] as? [String] == ["com.example.private"])
     }
 
@@ -357,6 +359,19 @@ struct FocusedTextContextTests {
 
 @Suite("Cotypist event tap policy")
 struct CotypistEventPolicyTests {
+    @Test("ambient typing observes printable edits without consuming them")
+    func ambientTypingClassification() {
+        #expect(CotypistTypingEvent(keyCode: 0).isLikelyTextEdit)
+        #expect(CotypistTypingEvent(keyCode: 49).isLikelyTextEdit)
+        #expect(CotypistTypingEvent(keyCode: 51).isLikelyTextEdit)
+        #expect(CotypistTypingEvent(keyCode: 36).isLikelyTextEdit)
+        #expect(CotypistTypingEvent(keyCode: 0, modifiers: [.shift]).isLikelyTextEdit)
+        #expect(!CotypistTypingEvent(keyCode: 0, modifiers: [.command]).isLikelyTextEdit)
+        #expect(!CotypistTypingEvent(keyCode: 123).isLikelyTextEdit)
+        #expect(!CotypistTypingEvent(keyCode: 48).isLikelyTextEdit)
+        #expect(!CotypistTypingEvent(keyCode: 0, isRepeat: true).isLikelyTextEdit)
+    }
+
     @Test("invocation consumes repeats and matching key-up")
     func invocationPairing() {
         var policy = CotypistEventPolicy(isEnabled: true)

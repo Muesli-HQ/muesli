@@ -529,10 +529,19 @@ struct SettingsView: View {
             settingsSection("Experimental") {
                 settingsRow(
                     "Cotypist",
-                    description: "Request a private, local continuation in the focused text field. Configure its shortcut in Shortcuts; Tab accepts and Escape dismisses."
+                    description: "Suggest a private, local continuation in the focused text field. Suggestions appear after a short pause; Tab accepts and Escape dismisses."
                 ) {
                     settingsSwitch(isOn: appState.config.enableCotypist) { enabled in
                         cotypistStatusMessage = controller.updateCotypistEnabled(enabled).message
+                    }
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow(
+                    "Ambient suggestions",
+                    description: "Watch ordinary text edits without consuming them. Turn this off to use the Cotypist shortcut only."
+                ) {
+                    settingsSwitch(isOn: appState.config.enableCotypistAmbient) { enabled in
+                        controller.updateConfig { $0.enableCotypistAmbient = enabled }
                     }
                 }
                 Divider().background(MuesliTheme.surfaceBorder)

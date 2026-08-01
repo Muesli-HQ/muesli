@@ -52,6 +52,40 @@ enum CotypistInputEvent: Equatable, Sendable {
     case tapDisabled
 }
 
+/// A key event that may change the text immediately before the focused caret.
+///
+/// The event tap never consumes these events. They are only used to schedule a
+/// debounced ambient request after the target application has handled the edit.
+struct CotypistTypingEvent: Equatable, Sendable {
+    let keyCode: UInt16
+    let modifiers: CotypistEventModifiers
+    let isRepeat: Bool
+
+    /// Hardware key codes for printable keys plus backward/forward delete.
+    /// Tab, Escape, arrows, and other navigation keys are deliberately
+    /// excluded so ordinary navigation does not start a completion. Return is
+    /// retained because a new paragraph is a legitimate text edit.
+    private static let textEditKeyCodes: Set<UInt16> =
+        Set(0...47).union([49, 50, 51, 76, 117])
+
+    var isLikelyTextEdit: Bool {
+        guard !isRepeat,
+              modifiers.intersection([.command, .control, .option]).isEmpty else { return false }
+        return Self.textEditKeyCodes.contains(keyCode)
+    }
+
+    init?(input: CotypistInputEvent) {
+        guard case .keyDown(let keyCode, let modifiers, let isRepeat) = input else { return nil }
+        self.init(keyCode: keyCode, modifiers: modifiers, isRepeat: isRepeat)
+    }
+
+    init(keyCode: UInt16, modifiers: CotypistEventModifiers = [], isRepeat: Bool = false) {
+        self.keyCode = keyCode
+        self.modifiers = modifiers
+        self.isRepeat = isRepeat
+    }
+}
+
 enum CotypistEventAction: Equatable, Sendable {
     case pass
     case passAndInvalidate
@@ -126,6 +160,7 @@ final class CotypistEventTap: @unchecked Sendable {
     var onAccept: (@Sendable () -> Void)?
     var onCancel: (@Sendable () -> Void)?
     var onInvalidate: (@Sendable () -> Void)?
+    var onTyping: (@Sendable (CotypistTypingEvent) -> Void)?
 
     private let lock = NSLock()
     private var snapshot = Snapshot()
@@ -209,13 +244,28 @@ final class CotypistEventTap: @unchecked Sendable {
 
         lock.lock()
         let action = snapshot.policy.handle(input)
+        let typingEvent = CotypistTypingEvent(input: input)
+        let shouldObserveTyping = snapshot.policy.isEnabled
+            && (action == .pass || action == .passAndInvalidate)
+            && typingEvent?.isLikelyTextEdit == true
         lock.unlock()
 
         switch action {
         case .pass:
+            if let typingEvent, shouldObserveTyping {
+                DispatchQueue.main.async { [weak self] in self?.onTyping?(typingEvent) }
+            }
             return Unmanaged.passUnretained(event)
         case .passAndInvalidate:
-            DispatchQueue.main.async { [weak self] in self?.onInvalidate?() }
+            if let typingEvent, shouldObserveTyping {
+                // Text edits are handled by the ambient coordinator, which
+                // cancels the old preview before scheduling the next one. Keep
+                // this as one ordered callback so a separate invalidation job
+                // cannot cancel the newly scheduled debounce task.
+                DispatchQueue.main.async { [weak self] in self?.onTyping?(typingEvent) }
+            } else {
+                DispatchQueue.main.async { [weak self] in self?.onInvalidate?() }
+            }
             return Unmanaged.passUnretained(event)
         case .consume:
             return nil
@@ -634,6 +684,13 @@ private extension FocusedTextColor {
 @MainActor
 final class CotypistCoordinator {
     private static let loadingPresentationDelay = Duration.milliseconds(250)
+    private static let ambientDebounce = Duration.milliseconds(280)
+    private static let ambientInsertionSuppression: TimeInterval = 0.8
+
+    private enum Trigger: Sendable {
+        case manual
+        case ambient
+    }
 
     private let transcriptionRuntime: TranscriptionCoordinator
     private let contextService: FocusedTextContextService
@@ -642,7 +699,10 @@ final class CotypistCoordinator {
     private var config = AppConfig()
     private var requestTask: Task<Void, Never>?
     private var loadingTask: Task<Void, Never>?
+    private var ambientTask: Task<Void, Never>?
+    private var ambientSuppressedUntil = Date.distantPast
     private var requestID: UUID?
+    private var requestTrigger: Trigger?
     private var previewContext: FocusedTextContext?
     private var workspaceObserver: NSObjectProtocol?
 
@@ -660,6 +720,9 @@ final class CotypistCoordinator {
         eventTap.onAccept = { [weak self] in Task { @MainActor in self?.accept() } }
         eventTap.onCancel = { [weak self] in Task { @MainActor in self?.cancel() } }
         eventTap.onInvalidate = { [weak self] in Task { @MainActor in self?.cancel() } }
+        eventTap.onTyping = { [weak self] event in
+            Task { @MainActor in self?.handleTyping(event) }
+        }
         workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil,
@@ -678,6 +741,14 @@ final class CotypistCoordinator {
         let wasEnabled = self.config.enableCotypist
         self.config = config
         eventTap.update(enabled: config.enableCotypist, hotkey: config.cotypistHotkey, state: state)
+
+        if !config.enableCotypist || !config.enableCotypistAmbient {
+            ambientTask?.cancel()
+            ambientTask = nil
+            if requestTrigger == .ambient {
+                cancel()
+            }
+        }
 
         guard config.enableCotypist else {
             eventTap.stop()
@@ -706,27 +777,40 @@ final class CotypistCoordinator {
     }
 
     func invoke() {
+        invoke(trigger: .manual)
+    }
+
+    private func invoke(trigger: Trigger) {
         guard config.enableCotypist, config.resolvedCotypistModel.isDownloaded else { return }
+        ambientTask?.cancel()
+        ambientTask = nil
         requestTask?.cancel()
         loadingTask?.cancel()
         previewPanel.hide()
         let excluded = Set(config.cotypistExcludedBundleIDs)
         guard let context = contextService.capture(excludedBundleIDs: excluded) else {
-            fail("No supported text field at the cursor")
+            if trigger == .manual {
+                fail("No supported text field at the cursor")
+            } else {
+                resetUI()
+            }
             return
         }
 
         let id = UUID()
         requestID = id
+        requestTrigger = trigger
         previewContext = nil
         state = .generating
-        loadingTask = Task { [weak self] in
-            do {
-                try await Task.sleep(for: Self.loadingPresentationDelay)
-                guard let self, requestID == id, state.isGenerating else { return }
-                previewPanel.show(text: "Completing…", context: context, isLoading: true)
-            } catch {
-                return
+        if trigger == .manual {
+            loadingTask = Task { [weak self] in
+                do {
+                    try await Task.sleep(for: Self.loadingPresentationDelay)
+                    guard let self, requestID == id, state.isGenerating else { return }
+                    previewPanel.show(text: "Completing…", context: context, isLoading: true)
+                } catch {
+                    return
+                }
             }
         }
         let request = CotypistCompletionRequest(context: context, model: config.resolvedCotypistModel)
@@ -743,6 +827,7 @@ final class CotypistCoordinator {
                 }
                 loadingTask?.cancel()
                 loadingTask = nil
+                requestTrigger = nil
                 previewContext = fresh
                 state = .previewing(completion)
                 previewPanel.show(
@@ -755,7 +840,13 @@ final class CotypistCoordinator {
             } catch CotypistCompletionError.noSuggestion {
                 if requestID == id { resetUI() }
             } catch {
-                if requestID == id { fail(error.localizedDescription) }
+                if requestID == id {
+                    if trigger == .manual {
+                        fail(error.localizedDescription)
+                    } else {
+                        resetUI()
+                    }
+                }
             }
         }
     }
@@ -769,6 +860,7 @@ final class CotypistCoordinator {
         requestTask?.cancel()
         requestTask = nil
         requestID = nil
+        requestTrigger = nil
         previewContext = nil
 
         let fresh = contextService.capture(excludedBundleIDs: Set(config.cotypistExcludedBundleIDs))
@@ -777,20 +869,51 @@ final class CotypistCoordinator {
             return
         }
         state = .idle
+        ambientSuppressedUntil = Date().addingTimeInterval(Self.ambientInsertionSuppression)
+        ambientTask?.cancel()
+        ambientTask = nil
         PasteController.typeText(completion.text)
     }
 
     func cancel() {
         let hadActiveRequest = requestTask != nil || state != .idle
+        ambientTask?.cancel()
+        ambientTask = nil
         loadingTask?.cancel()
         loadingTask = nil
         requestTask?.cancel()
         requestTask = nil
         requestID = nil
+        requestTrigger = nil
         previewContext = nil
         resetUI()
         if hadActiveRequest {
             Task { await transcriptionRuntime.cancelCotypistCompletion() }
+        }
+    }
+
+    private func handleTyping(_ event: CotypistTypingEvent) {
+        guard config.enableCotypist,
+              config.enableCotypistAmbient,
+              event.isLikelyTextEdit,
+              Date() >= ambientSuppressedUntil else { return }
+
+        ambientTask?.cancel()
+        ambientTask = nil
+        if state.isGenerating || state.isPreviewing {
+            cancel()
+        }
+
+        ambientTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: Self.ambientDebounce)
+                guard !Task.isCancelled else { return }
+                guard let self else { return }
+                self.ambientTask = nil
+                self.invoke(trigger: .ambient)
+            } catch {
+                return
+            }
         }
     }
 
@@ -800,6 +923,7 @@ final class CotypistCoordinator {
         requestTask?.cancel()
         requestTask = nil
         requestID = nil
+        requestTrigger = nil
         previewContext = nil
         state = .failed(message)
         previewPanel.hide()
