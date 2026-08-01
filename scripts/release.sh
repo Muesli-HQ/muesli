@@ -124,6 +124,9 @@ TAG="v${VERSION}"
 RELEASE_TITLE="Muesli ${VERSION}"
 DEFAULT_RELEASE_NOTES_FILE="$ROOT/docs/release-notes/${VERSION}.md"
 RELEASE_NOTES_FILE="${MUESLI_RELEASE_NOTES_FILE:-$DEFAULT_RELEASE_NOTES_FILE}"
+RELEASE_NOTES=""
+RELEASE_NOTES_FROM_FILE=0
+RELEASE_NOTES_ARGS=()
 
 if [[ -n "${MUESLI_RELEASE_NOTES_FILE:-}" && ! -f "$RELEASE_NOTES_FILE" ]]; then
   echo "ERROR: release notes file not found: $RELEASE_NOTES_FILE" >&2
@@ -131,7 +134,8 @@ if [[ -n "${MUESLI_RELEASE_NOTES_FILE:-}" && ! -f "$RELEASE_NOTES_FILE" ]]; then
 fi
 
 if [[ -f "$RELEASE_NOTES_FILE" ]]; then
-  RELEASE_NOTES="$(cat "$RELEASE_NOTES_FILE")"
+  RELEASE_NOTES_FROM_FILE=1
+  RELEASE_NOTES_ARGS=(--notes-file "$RELEASE_NOTES_FILE")
   echo "Using release notes from $RELEASE_NOTES_FILE"
 else
   RELEASE_NOTES="$(cat <<EOF
@@ -147,6 +151,7 @@ Native macOS app — dictation + meeting transcription on Apple Silicon.
 Signed, notarized, and stapled by Apple.
 EOF
 )"
+  RELEASE_NOTES_ARGS=(--notes "$RELEASE_NOTES")
 fi
 
 verify_homebrew_autobump() {
@@ -335,7 +340,7 @@ gh release create "$TAG" \
   --draft \
   --verify-tag \
   --title "$RELEASE_TITLE" \
-  --notes "$RELEASE_NOTES" \
+  "${RELEASE_NOTES_ARGS[@]}" \
   "$DMG_PATH"
 
 DRAFT_RELEASE_URL=$(gh release view "$TAG" --json url -q .url)
@@ -413,7 +418,7 @@ echo "[11/13] Publishing verified GitHub release..."
 gh release edit "$TAG" \
   --draft=false \
   --title "$RELEASE_TITLE" \
-  --notes "$RELEASE_NOTES"
+  "${RELEASE_NOTES_ARGS[@]}"
 
 RELEASE_URL=$(gh release view "$TAG" --json url -q .url)
 echo "  Release published: $RELEASE_URL"
@@ -427,10 +432,18 @@ perl -0pi -e 's{https://muesli-hq\.github\.io/muesli/(Muesli-([0-9][0-9A-Za-z\.\
 
 # Delta artifacts are not hosted, so strip delta enclosures from the appcast.
 perl -0pi -e 's{^\h*<enclosure\b[^>]*\bsparkle:deltaFrom="[^"]*"[^>]*/>\n}{}mg' "$ROOT/docs/appcast.xml"
-printf '%s\n' "$RELEASE_NOTES" | python3 "$UPDATE_APPCAST_RELEASE_NOTES" \
-  "$ROOT/docs/appcast.xml" \
-  --sparkle-version "$VERSION" \
-  --short-version "$VERSION"
+if [[ "$RELEASE_NOTES_FROM_FILE" == "1" ]]; then
+  python3 "$UPDATE_APPCAST_RELEASE_NOTES" \
+    "$ROOT/docs/appcast.xml" \
+    --sparkle-version "$VERSION" \
+    --short-version "$VERSION" \
+    < "$RELEASE_NOTES_FILE"
+else
+  printf '%s\n' "$RELEASE_NOTES" | python3 "$UPDATE_APPCAST_RELEASE_NOTES" \
+    "$ROOT/docs/appcast.xml" \
+    --sparkle-version "$VERSION" \
+    --short-version "$VERSION"
+fi
 
 # Keep the marketing/docs surface aligned with the published GitHub Release.
 sed -i '' "s|https://github.com/Muesli-HQ/muesli/releases/download/[^\"]*\\.dmg|$DOWNLOAD_URL|g" "$ROOT/docs/index.html"
