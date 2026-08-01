@@ -159,7 +159,8 @@ enum AudioFileImportController {
         try await transcriptionCoordinator.preloadRequired(
             backend: backend,
             enablePostProcessor: false,
-            includeMeetingHelpers: true
+            includeMeetingHelpers: true,
+            meetingHelperTrigger: .audioImport
         )
 
         try Task.checkCancellation()

@@ -52,6 +52,34 @@ private enum DictationAudioRouteTiming {
     static let stabilizationDelay: TimeInterval = 1.0
 }
 
+enum InteractiveAudioSessionOwner {
+    case dictation
+    case computerUse
+}
+
+struct InteractiveAudioSessionOwnership: Equatable {
+    let dictationIsActive: Bool
+    let computerUseIsActive: Bool
+
+    func canStart(_ owner: InteractiveAudioSessionOwner) -> Bool {
+        switch owner {
+        case .dictation:
+            return !computerUseIsActive
+        case .computerUse:
+            return !dictationIsActive
+        }
+    }
+
+    func shouldIgnoreCleanup(for owner: InteractiveAudioSessionOwner) -> Bool {
+        switch owner {
+        case .dictation:
+            return !dictationIsActive && computerUseIsActive
+        case .computerUse:
+            return !computerUseIsActive && dictationIsActive
+        }
+    }
+}
+
 struct MeetingResummarizationPlan: Equatable {
     let promptTitle: String
     let persistedTitle: String
@@ -251,7 +279,6 @@ final class MuesliController: NSObject {
     private static let pendingDictionaryCorrectionAccessibilityRequestedAtKey = "dictionaryCorrectionPrompts.pendingAccessibilityRequestedAt"
     private static let pendingDictionaryCorrectionAccessibilityRequestProcessIDKey = "dictionaryCorrectionPrompts.pendingAccessibilityRequestProcessID"
     private static let dictionaryCorrectionAccessibilityIntentTimeout: TimeInterval = 24 * 60 * 60
-
     private let runtime: RuntimePaths
     private let configStore: ConfigStore
     private let dictationStore: DictationStore
@@ -262,7 +289,7 @@ final class MuesliController: NSObject {
     private let hotkeyMonitor = HotkeyMonitor()
     private let computerUseHotkeyMonitor = HotkeyMonitor()
     private let meetingRecordingHotkeyMonitor = HotkeyMonitor()
-    private let computerUseRecorder = MicrophoneRecorder()
+    private let computerUseRecorder = RouteAwareDictationRecorder()
     private let dictationRecorder = RouteAwareDictationRecorder()
     private let dictationCorrectionMonitor = DictationCorrectionMonitor()
     private let dictionarySuggestionPrompt = DictionarySuggestionPromptController()
@@ -273,6 +300,11 @@ final class MuesliController: NSObject {
     private let dictationAudioRoutingController: DictationAudioRouting
     private lazy var dictationAudioSessionManager = DictationAudioSessionManager(
         recorder: dictationRecorder,
+        duckingController: audioDuckingController,
+        routingController: dictationAudioRoutingController
+    )
+    private lazy var computerUseAudioSessionManager = DictationAudioSessionManager(
+        recorder: computerUseRecorder,
         duckingController: audioDuckingController,
         routingController: dictationAudioRoutingController
     )
@@ -347,8 +379,12 @@ final class MuesliController: NSObject {
     private var pendingDictationStopSessionID: UUID?
     private var pendingReleaseSoundSessionID: UUID?
     private var pendingPreparingIndicatorWorkItem: DispatchWorkItem?
+    private var activeComputerUseAudioSessionID: UUID?
     private var computerUseCommandStartedAt: Date?
+    private var pendingComputerUseStopStartedAt: Date?
+    private var pendingComputerUseStopSessionID: UUID?
     private var computerUseCommandTask: Task<Void, Never>?
+    private var computerUseCommandTaskID: UUID?
     private var computerUseFloatingStatusWorkItem: DispatchWorkItem?
     private var computerUseLastFloatingStatusAt = Date.distantPast
     private var computerUseLastFloatingStatus = ""
@@ -465,6 +501,11 @@ final class MuesliController: NSObject {
         dictationAudioSessionManager.onEvent = { [weak self] event in
             Task { @MainActor [weak self] in
                 self?.handleDictationAudioSessionEvent(event)
+            }
+        }
+        computerUseAudioSessionManager.onEvent = { [weak self] event in
+            Task { @MainActor [weak self] in
+                self?.handleComputerUseAudioSessionEvent(event)
             }
         }
         dictationAudioRoutingController.onPreferredInputDeviceChanged = { [weak self] _ in
@@ -707,7 +748,8 @@ final class MuesliController: NSObject {
                 await self.preloadOptionalTranscriptionResources(
                     for: dictationBackend,
                     enablePostProcessor: self.canRunTranscriptCleanup(option: ppOption),
-                    includeMeetingHelpers: includesMeetings
+                    includeMeetingHelpers: includesMeetings,
+                    meetingHelperTrigger: .appLaunch
                 )
                 if includesMeetings, self.selectedMeetingTranscriptionBackend != self.selectedBackend {
                     await self.transcriptionCoordinator.preload(
@@ -773,6 +815,10 @@ final class MuesliController: NSObject {
         meetingRecordingHotkeyMonitor.stop()
         computerUseCommandTask?.cancel()
         computerUseCommandTask = nil
+        computerUseCommandTaskID = nil
+        activeComputerUseAudioSessionID = nil
+        pendingComputerUseStopSessionID = nil
+        pendingComputerUseStopStartedAt = nil
         calendarMonitor.stop()
         calendarCheckTimer?.invalidate()
         calendarCheckTimer = nil
@@ -797,7 +843,7 @@ final class MuesliController: NSObject {
         activeMeetingAudioWarning = nil
         endMeetingActivity()
         dictationAudioSessionManager.cancel(reason: "shutdown")
-        computerUseRecorder.cancel()
+        computerUseAudioSessionManager.cancel(reason: "shutdown")
         Task {
             await transcriptionCoordinator.shutdown()
         }
@@ -2023,7 +2069,8 @@ final class MuesliController: NSObject {
                 await self.preloadOptionalTranscriptionResources(
                     for: option,
                     enablePostProcessor: self.canRunTranscriptCleanup(option: ppOption),
-                    includeMeetingHelpers: self.config.resolvedOnboardingUseCase.includesMeetings
+                    includeMeetingHelpers: self.config.resolvedOnboardingUseCase.includesMeetings,
+                    meetingHelperTrigger: .backendChange
                 )
             }
             await MainActor.run {
@@ -2059,14 +2106,15 @@ final class MuesliController: NSObject {
     private func preloadOptionalTranscriptionResources(
         for backend: BackendOption,
         enablePostProcessor: Bool,
-        includeMeetingHelpers: Bool
+        includeMeetingHelpers: Bool,
+        meetingHelperTrigger: DiarizerPreloadTrigger
     ) async {
         await transcriptionCoordinator.preloadPostProcessorIfNeeded(
             enabled: enablePostProcessor,
             transcriptionBackend: backend
         )
         if includeMeetingHelpers {
-            await transcriptionCoordinator.preloadMeetingHelpers()
+            await transcriptionCoordinator.preloadMeetingHelpers(trigger: meetingHelperTrigger)
         }
     }
 
@@ -2714,7 +2762,7 @@ final class MuesliController: NSObject {
                 startMeetingRecording(
                     title: event.title,
                     calendarOccurrence: event.resolvedCalendarOccurrence,
-                    openDocument: true,
+                    openDocument: false,
                     endDate: event.endDate,
                     autoStopSource: event.meetingURL.flatMap { MeetingAutoStopSource(meetingURL: $0) },
                     startOrigin: .calendarAutoRecord
@@ -2801,11 +2849,12 @@ final class MuesliController: NSObject {
             onStartRecording: { [weak self] in
                 guard let self else { return }
                 self.isShowingCalendarNotification = false
-                self.startForegroundMeetingRecording(
+                self.startMeetingRecordingFromEntryPoint(
                     title: title,
                     calendarOccurrence: calendarOccurrence,
                     endDate: endDate,
                     autoStopSource: autoStopSource,
+                    presentation: .backgroundPill,
                     startOrigin: .scheduledMeetingPrompt
                 )
             },
@@ -2816,7 +2865,8 @@ final class MuesliController: NSObject {
                     title: title,
                     meetingURL: meetingURL!,
                     endDate: endDate,
-                    calendarOccurrence: calendarOccurrence
+                    calendarOccurrence: calendarOccurrence,
+                    presentation: .backgroundPill
                 )
             } : nil,
             onJoinOnly: meetingURL != nil ? { [weak self] in
@@ -3438,6 +3488,7 @@ final class MuesliController: NSObject {
             backend: backend,
             enablePostProcessor: isPostProcessorReady,
             includeMeetingHelpers: onboardingUseCase.includesMeetings,
+            meetingHelperTrigger: .onboarding,
             progress: { value, status in
                 if wasDownloaded,
                    value < 0.85,
@@ -3961,7 +4012,8 @@ final class MuesliController: NSObject {
                 try await self.transcriptionCoordinator.preloadRequired(
                     backend: backend,
                     enablePostProcessor: false,
-                    includeMeetingHelpers: true
+                    includeMeetingHelpers: true,
+                    meetingHelperTrigger: .retranscription
                 )
                 let transcription = try await self.transcriptionCoordinator.transcribeMeeting(
                     at: recordingURL,
@@ -4609,7 +4661,7 @@ final class MuesliController: NSObject {
             stopMeetingRecording()
         } else {
             let wasMeetingRecording = isMeetingRecording()
-            startForegroundMeetingRecording()
+            startMeetingRecordingFromEntryPoint()
             if !isMeetingRecording() && !isStartingMeetingRecording && !wasMeetingRecording {
                 meetingRecordingHotkeyMonitor.cancelToggleMode()
             }
@@ -4650,7 +4702,7 @@ final class MuesliController: NSObject {
 
     @objc func startMeetingFromCalendarMenuItem(_ sender: NSMenuItem) {
         if let payload = sender.representedObject as? CalendarMenuMeetingPayload {
-            startForegroundMeetingRecording(
+            startMeetingRecordingFromEntryPoint(
                 title: payload.title,
                 calendarOccurrence: payload.calendarOccurrence,
                 endDate: payload.endDate,
@@ -4661,21 +4713,24 @@ final class MuesliController: NSObject {
         }
 
         guard let title = sender.representedObject as? String else { return }
-        startForegroundMeetingRecording(title: title)
+        startMeetingRecordingFromEntryPoint(title: title)
     }
 
     @discardableResult
-    func startForegroundMeetingRecording(
+    func startMeetingRecordingFromEntryPoint(
         title: String = "Meeting",
         calendarEventID: String? = nil,
         calendarOccurrence: CalendarOccurrenceReference? = nil,
         endDate: Date? = nil,
         autoStopSource: MeetingAutoStopSource? = nil,
+        presentation: MeetingStartPresentation = .foregroundNotes,
         startOrigin: MeetingRecordingStartOrigin = .manual
     ) -> Bool {
         guard ensureBasicDictationPermissionsBeforeDashboard() else { return false }
         if isMeetingRecording() {
-            presentHistoryWindow(tab: .meetings)
+            if presentation.presentsHistoryWindow {
+                presentHistoryWindow(tab: .meetings)
+            }
             return false
         }
         guard !isStartingMeetingRecording else { return false }
@@ -4683,13 +4738,15 @@ final class MuesliController: NSObject {
             title: title,
             calendarEventID: calendarEventID,
             calendarOccurrence: calendarOccurrence,
-            openDocument: true,
+            openDocument: presentation.opensMeetingDocument,
             endDate: endDate,
             autoStopSource: autoStopSource,
             startOrigin: startOrigin
         )
         guard didStart else { return false }
-        presentHistoryWindow(tab: .meetings)
+        if presentation.presentsHistoryWindow {
+            presentHistoryWindow(tab: .meetings)
+        }
         return true
     }
 
@@ -4822,7 +4879,7 @@ final class MuesliController: NSObject {
     }
 
     func startQuickNoteMeeting() {
-        startForegroundMeetingRecording(title: "Meeting")
+        startMeetingRecordingFromEntryPoint(title: "Meeting")
     }
 
     /// Whether a finished meeting can be resumed right now (used to gate the UI control too).
@@ -5210,7 +5267,8 @@ final class MuesliController: NSObject {
         try await transcriptionCoordinator.preloadRequired(
             backend: backend,
             enablePostProcessor: false,
-            includeMeetingHelpers: true
+            includeMeetingHelpers: true,
+            meetingHelperTrigger: .meetingStart
         )
         try Task.checkCancellation()
         try checkMeetingStartStillCurrent(meetingID)
@@ -5412,14 +5470,16 @@ final class MuesliController: NSObject {
         title: String,
         meetingURL: URL,
         endDate: Date?,
-        calendarOccurrence: CalendarOccurrenceReference? = nil
+        calendarOccurrence: CalendarOccurrenceReference? = nil,
+        presentation: MeetingStartPresentation = .foregroundNotes
     ) {
         NSWorkspace.shared.open(meetingURL)
-        startForegroundMeetingRecording(
+        startMeetingRecordingFromEntryPoint(
             title: title,
             calendarOccurrence: calendarOccurrence,
             endDate: endDate,
             autoStopSource: MeetingAutoStopSource(meetingURL: meetingURL),
+            presentation: presentation,
             startOrigin: .joinAndRecord
         )
     }
@@ -6851,9 +6911,10 @@ final class MuesliController: NSObject {
             platform: MeetingPlatform(candidate.platform),
             onStartRecording: { [weak self] in
                 guard let self else { return }
-                if self.startForegroundMeetingRecording(
+                if self.startMeetingRecordingFromEntryPoint(
                     title: title,
                     autoStopSource: MeetingAutoStopSource(candidate: candidate),
+                    presentation: .backgroundPill,
                     startOrigin: .detectedPrompt
                 ) {
                     self.meetingMonitor.markRecordingStarted(candidate)
@@ -6919,40 +6980,26 @@ final class MuesliController: NSObject {
         fputs("[cua] prepare\n", stderr)
         meetingMonitor.suppressWhileActive()
         meetingMonitor.refreshState()
-        computerUseRecorder.preferredInputDeviceID = nil
         setState(.preparing)
-        do {
-            try computerUseRecorder.prepare()
-        } catch {
-            fputs("[cua] recorder prepare failed: \(error)\n", stderr)
-            computerUseRecorder.cancel()
-            setState(.idle)
-            meetingMonitor.resumeAfterCooldown()
-            meetingMonitor.refreshState()
-        }
+        computerUseAudioSessionManager.arm(source: "computer_use_hotkey_prepare")
+        activeComputerUseAudioSessionID = computerUseAudioSessionManager.currentSessionID
     }
 
     private func handleComputerUseStart() {
         guard canStartComputerUseCommand else { return }
         fputs("[cua] recording start\n", stderr)
         meetingMonitor.suppressWhileActive()
-        computerUseRecorder.preferredInputDeviceID = nil
-        do {
-            try computerUseRecorder.start()
-            computerUseCommandStartedAt = Date()
-            indicator.powerProvider = { [weak self] in
-                self?.computerUseRecorder.currentPower() ?? -160
-            }
-            setState(.recording)
-            SoundController.playDictationStart(enabled: shouldPlayDictationLifecycleSounds && !isDictationTestMode)
-        } catch {
-            fputs("[cua] recorder start failed: \(error)\n", stderr)
-            computerUseRecorder.cancel()
-            computerUseCommandStartedAt = nil
-            setState(.idle)
-            meetingMonitor.resumeAfterCooldown()
-            meetingMonitor.refreshState()
+        computerUseCommandStartedAt = Date()
+        indicator.powerProvider = { [weak self] in
+            self?.computerUseAudioSessionManager.currentPower() ?? -160
         }
+        setState(.preparing)
+        computerUseAudioSessionManager.beginRecording(
+            mode: "computer_use",
+            duckingEnabled: false,
+            mediaPauseEnabled: false
+        )
+        activeComputerUseAudioSessionID = computerUseAudioSessionManager.currentSessionID
     }
 
     private func handleComputerUseToggleStart() {
@@ -6973,25 +7020,54 @@ final class MuesliController: NSObject {
 
     private func handleComputerUseCancel() {
         fputs("[cua] cancel\n", stderr)
+        guard !interactiveAudioSessionOwnership.shouldIgnoreCleanup(for: .computerUse) else {
+            fputs("[cua] ignoring cleanup while dictation owns interactive audio\n", stderr)
+            computerUseHotkeyMonitor.cancelToggleMode()
+            return
+        }
         computerUseCommandTask?.cancel()
         computerUseCommandTask = nil
-        computerUseRecorder.cancel()
+        computerUseCommandTaskID = nil
+        computerUseAudioSessionManager.cancel(reason: "computer_use_cancel")
+        activeComputerUseAudioSessionID = nil
         computerUseCommandStartedAt = nil
+        pendingComputerUseStopSessionID = nil
+        pendingComputerUseStopStartedAt = nil
         indicator.isToggleDictation = false
+        computerUseHotkeyMonitor.cancelToggleMode()
+        indicator.hideComputerUseCursor()
+        resetComputerUseFloatingStatus()
         setState(.idle)
         meetingMonitor.resumeAfterCooldown()
+        meetingMonitor.refreshState()
     }
 
     private func handleComputerUseStop() {
         fputs("[cua] stop\n", stderr)
+        guard pendingComputerUseStopSessionID == nil else {
+            fputs("[cua] stop already pending\n", stderr)
+            return
+        }
+        guard let sessionID = activeComputerUseAudioSessionID,
+              computerUseAudioSessionManager.currentSessionID == sessionID else {
+            fputs("[cua] stop without owned audio session\n", stderr)
+            return
+        }
         indicator.isToggleDictation = false
         let startedAt = computerUseCommandStartedAt ?? Date()
         computerUseCommandStartedAt = nil
+        activeComputerUseAudioSessionID = nil
+        pendingComputerUseStopSessionID = sessionID
+        pendingComputerUseStopStartedAt = startedAt
+        computerUseAudioSessionManager.stop()
+    }
 
-        guard let wavURL = computerUseRecorder.stop() else {
+    private func finishComputerUseAudioStop(wavURL: URL?, startedAt: Date) {
+        guard let wavURL else {
             fputs("[cua] stop without wav\n", stderr)
             setState(.idle)
             meetingMonitor.resumeAfterCooldown()
+            meetingMonitor.refreshState()
             return
         }
         let duration = max(Date().timeIntervalSince(startedAt), 0)
@@ -7000,11 +7076,15 @@ final class MuesliController: NSObject {
             try? FileManager.default.removeItem(at: wavURL)
             setState(.idle)
             meetingMonitor.resumeAfterCooldown()
+            meetingMonitor.refreshState()
             return
         }
 
         indicator.setTranscribingTitle("Parsing command", config: config)
         setState(.transcribing)
+        computerUseCommandTask?.cancel()
+        let taskID = UUID()
+        computerUseCommandTaskID = taskID
         let task = Task { [weak self] in
             guard let self else { return }
             defer {
@@ -7024,6 +7104,7 @@ final class MuesliController: NSObject {
                 try Task.checkCancellation()
                 let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 await MainActor.run {
+                    guard self.computerUseCommandTaskID == taskID else { return }
                     TelemetryDeck.signal("computer_use.command_parsed", parameters: [
                         "planner_enabled": self.config.enableComputerUsePlanner ? "true" : "false",
                     ])
@@ -7031,12 +7112,19 @@ final class MuesliController: NSObject {
                 guard !text.isEmpty else {
                     fputs("[cua] empty transcript, skipping planner\n", stderr)
                     await MainActor.run {
+                        guard self.computerUseCommandTaskID == taskID else { return }
                         self.computerUseCommandTask = nil
+                        self.computerUseCommandTaskID = nil
                         self.setState(.idle)
                         self.meetingMonitor.resumeAfterCooldown()
+                        self.meetingMonitor.refreshState()
                     }
                     return
                 }
+                guard await MainActor.run(body: {
+                    self.computerUseCommandTaskID == taskID
+                }) else { return }
+                try Task.checkCancellation()
                 let commandEndedAt = Date()
                 let dictationID = try? self.dictationStore.insertDictation(
                     text: text,
@@ -7045,28 +7133,40 @@ final class MuesliController: NSObject {
                     startedAt: startedAt,
                     endedAt: commandEndedAt
                 )
+                guard await MainActor.run(body: {
+                    self.computerUseCommandTaskID == taskID
+                }) else { return }
                 await MainActor.run {
                     self.scheduleICloudSyncAfterLocalChange()
                 }
-                await self.handleComputerUseCommand(transcript: text, dictationID: dictationID)
+                await self.handleComputerUseCommand(
+                    transcript: text,
+                    dictationID: dictationID,
+                    taskID: taskID
+                )
             } catch is CancellationError {
                 fputs("[cua] command parsing cancelled\n", stderr)
                 await MainActor.run {
+                    guard self.computerUseCommandTaskID == taskID else { return }
                     self.computerUseCommandTask = nil
+                    self.computerUseCommandTaskID = nil
                     self.setState(.idle)
                     self.meetingMonitor.resumeAfterCooldown()
+                    self.meetingMonitor.refreshState()
                 }
             } catch {
                 fputs("[cua] transcription failed: \(error)\n", stderr)
                 await MainActor.run {
+                    guard self.computerUseCommandTaskID == taskID else { return }
                     self.computerUseCommandTask = nil
+                    self.computerUseCommandTaskID = nil
                     self.setState(.idle)
                     self.indicator.showWarning("CUA command failed", icon: "!")
                     self.meetingMonitor.resumeAfterCooldown()
+                    self.meetingMonitor.refreshState()
                 }
             }
         }
-        computerUseCommandTask?.cancel()
         computerUseCommandTask = task
     }
 
@@ -7075,7 +7175,10 @@ final class MuesliController: NSObject {
             && !isDictationTestMode
             && dictationStartedAt == nil
             && computerUseCommandStartedAt == nil
+            && pendingComputerUseStopSessionID == nil
+            && computerUseCommandTask == nil
             && !isNemotron35Streaming
+            && interactiveAudioSessionOwnership.canStart(.computerUse)
             && dictationState == .idle
     }
 
@@ -7084,36 +7187,80 @@ final class MuesliController: NSObject {
             && !isDictationTestMode
             && dictationStartedAt == nil
             && computerUseCommandStartedAt == nil
+            && pendingComputerUseStopSessionID == nil
+            && computerUseCommandTask == nil
             && !isNemotron35Streaming
+            && interactiveAudioSessionOwnership.canStart(.computerUse)
             && (dictationState == .idle || dictationState == .preparing)
     }
 
+    private var interactiveAudioSessionOwnership: InteractiveAudioSessionOwnership {
+        let computerUseIsActive = computerUseAudioSessionManager.hasActiveSession
+            || computerUseCommandStartedAt != nil
+            || pendingComputerUseStopSessionID != nil
+            || computerUseCommandTask != nil
+        let dictationIsActive = dictationAudioSessionManager.hasActiveSession
+            || dictationStartedAt != nil
+            || pendingDictationStopSessionID != nil
+            || isNemotron35Streaming
+            || (!computerUseIsActive && dictationState != .idle)
+        return InteractiveAudioSessionOwnership(
+            dictationIsActive: dictationIsActive,
+            computerUseIsActive: computerUseIsActive
+        )
+    }
+
+    private func shouldRejectDictationForComputerUseActivity() -> Bool {
+        guard !interactiveAudioSessionOwnership.canStart(.dictation) else { return false }
+        fputs("[muesli-native] ignoring dictation start while computer use owns interactive audio\n", stderr)
+        hotkeyMonitor.cancelToggleMode()
+        return true
+    }
+
+    private func shouldIgnoreDictationCleanupForComputerUseActivity() -> Bool {
+        guard interactiveAudioSessionOwnership.shouldIgnoreCleanup(for: .dictation) else { return false }
+        fputs("[muesli-native] ignoring dictation cleanup while computer use owns interactive audio\n", stderr)
+        hotkeyMonitor.cancelToggleMode()
+        return true
+    }
+
     @MainActor
-    private func handleComputerUseCommand(transcript: String, dictationID: Int64?) async {
+    private func handleComputerUseCommand(
+        transcript: String,
+        dictationID: Int64?,
+        taskID: UUID
+    ) async {
+        guard computerUseCommandTaskID == taskID else { return }
         resetComputerUseFloatingStatus()
         presentComputerUseTranscript(transcript)
         setState(.transcribing)
         let runtime = ComputerUsePlannerRuntime(config: config) { [weak self] status in
-            guard let self else { return }
+            guard let self, self.computerUseCommandTaskID == taskID else { return }
             self.presentComputerUseFloatingStatus(status)
         }
 
         let result = await runtime.run(command: transcript)
+        guard computerUseCommandTaskID == taskID else { return }
         indicator.hideComputerUseCursor()
         if result.status == .cancelled {
             computerUseCommandTask = nil
+            computerUseCommandTaskID = nil
             setState(.idle)
             meetingMonitor.resumeAfterCooldown()
+            meetingMonitor.refreshState()
             TelemetryDeck.signal("computer_use.command_finished", parameters: [
                 "status": "\(result.status)",
             ])
             return
         }
         persistComputerUseTrace(result, dictationID: dictationID)
-        computerUseCommandTask = nil
         await waitForComputerUseFloatingStatusDwell()
+        guard computerUseCommandTaskID == taskID else { return }
+        computerUseCommandTask = nil
+        computerUseCommandTaskID = nil
         presentComputerUseRuntimeResult(result)
         meetingMonitor.resumeAfterCooldown()
+        meetingMonitor.refreshState()
         TelemetryDeck.signal("computer_use.command_finished", parameters: [
             "status": "\(result.status)",
         ])
@@ -7334,6 +7481,7 @@ final class MuesliController: NSObject {
     }
 
     private func handlePrepare() {
+        if shouldRejectDictationForComputerUseActivity() { return }
         guard ensureDictationBackendReady() else { return }
         if isMeetingRecording() { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
@@ -7354,6 +7502,7 @@ final class MuesliController: NSObject {
     }
 
     private func handleArm() {
+        if shouldRejectDictationForComputerUseActivity() { return }
         guard ensureDictationBackendReady() else { return }
         if isMeetingRecording() { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
@@ -7457,6 +7606,67 @@ final class MuesliController: NSObject {
 
     private var shouldPlayDictationLifecycleSounds: Bool {
         config.soundEnabled && !dictationAudioRoutingController.isDefaultOutputHeadphoneLike()
+    }
+
+    private func handleComputerUseAudioSessionEvent(_ event: DictationAudioSessionEvent) {
+        switch event {
+        case .armed(let sessionID, _):
+            guard activeComputerUseAudioSessionID == sessionID else { break }
+            break
+        case .acquiringAudio(let sessionID):
+            guard activeComputerUseAudioSessionID == sessionID else { break }
+            setState(.preparing)
+        case .streamActive(let sessionID, _):
+            guard activeComputerUseAudioSessionID == sessionID,
+                  computerUseCommandStartedAt != nil else { break }
+            setState(.recording)
+            SoundController.playDictationStart(
+                enabled: shouldPlayDictationLifecycleSounds && !isDictationTestMode
+            )
+        case .speechDetected(let sessionID, _):
+            guard activeComputerUseAudioSessionID == sessionID else { break }
+            break
+        case .noAudioTimeout(let sessionID, _):
+            guard activeComputerUseAudioSessionID == sessionID else { break }
+            statusBarController?.setStatus("Mic waiting for speech")
+        case .stopped(let eventSessionID, let wavURL):
+            guard pendingComputerUseStopSessionID == eventSessionID else {
+                fputs("[cua] ignoring stale stopped event\n", stderr)
+                if let wavURL {
+                    try? FileManager.default.removeItem(at: wavURL)
+                }
+                break
+            }
+            guard computerUseAudioSessionManager.currentSessionID == nil else {
+                fputs("[cua] ignoring stopped event while a new session is active\n", stderr)
+                if let wavURL {
+                    try? FileManager.default.removeItem(at: wavURL)
+                }
+                break
+            }
+            let startedAt = pendingComputerUseStopStartedAt ?? Date()
+            pendingComputerUseStopSessionID = nil
+            pendingComputerUseStopStartedAt = nil
+            finishComputerUseAudioStop(wavURL: wavURL, startedAt: startedAt)
+        case .audioRestored, .cancelled:
+            break
+        case .failed(let sessionID, let error):
+            guard let sessionID,
+                  activeComputerUseAudioSessionID == sessionID
+                    || pendingComputerUseStopSessionID == sessionID else { break }
+            fputs("[cua] recorder start failed: \(error)\n", stderr)
+            activeComputerUseAudioSessionID = nil
+            computerUseCommandStartedAt = nil
+            pendingComputerUseStopSessionID = nil
+            pendingComputerUseStopStartedAt = nil
+            indicator.isToggleDictation = false
+            computerUseHotkeyMonitor.cancelToggleMode()
+            setState(.idle)
+            meetingMonitor.resumeAfterCooldown()
+            meetingMonitor.refreshState()
+        case .latency(let event, _):
+            fputs("[cua-audio] \(event)\n", stderr)
+        }
     }
 
     private func handleDictationAudioSessionEvent(_ event: DictationAudioSessionEvent) {
@@ -7638,6 +7848,7 @@ final class MuesliController: NSObject {
     }
 
     private func handleStart() {
+        if shouldRejectDictationForComputerUseActivity() { return }
         guard ensureDictationBackendReady() else { return }
         if isMeetingRecording() { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
@@ -7785,6 +7996,7 @@ final class MuesliController: NSObject {
 
     private func handleCancel() {
         if isMeetingRecording() { return }
+        if shouldIgnoreDictationCleanupForComputerUseActivity() { return }
         fputs("[muesli-native] cancel\n", stderr)
         resetDictationOutputMode()
 
@@ -7812,6 +8024,7 @@ final class MuesliController: NSObject {
     }
 
     private func handleToggleStart(outputMode: DictationOutputMode? = nil) {
+        if shouldRejectDictationForComputerUseActivity() { return }
         guard ensureDictationBackendReady() else { return }
         if isMeetingRecording() { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
@@ -7877,6 +8090,7 @@ final class MuesliController: NSObject {
             cancelDictationAudioSessionForMeetingRecordingIfNeeded()
             return
         }
+        if shouldIgnoreDictationCleanupForComputerUseActivity() { return }
         fputs("[muesli-native] stop\n", stderr)
         let startedAt = dictationStartedAt ?? Date()
         dictationStartedAt = nil
@@ -7917,8 +8131,15 @@ final class MuesliController: NSObject {
     }
 
     private func cancelDictationAudioSessionForMeetingRecordingIfNeeded() {
-        guard dictationAudioSessionManager.hasActiveSession || isNemotron35Streaming else { return }
+        let hasComputerUseActivity = interactiveAudioSessionOwnership.computerUseIsActive
+        guard dictationAudioSessionManager.hasActiveSession
+            || isNemotron35Streaming
+            || hasComputerUseActivity else { return }
         fputs("[muesli-native] cancelling dictation audio session because meeting is active\n", stderr)
+
+        if hasComputerUseActivity {
+            handleComputerUseCancel()
+        }
 
         if isNemotron35Streaming {
             isNemotron35Streaming = false
@@ -7930,7 +8151,7 @@ final class MuesliController: NSObject {
             previousStreamText = ""
             indicator.setToggleDictation(false, config: config)
             dictationAudioSessionManager.endExternalSession(reason: "meeting-active")
-        } else {
+        } else if dictationAudioSessionManager.hasActiveSession {
             dictationAudioSessionManager.cancel(reason: "meeting-active")
         }
 
@@ -8301,11 +8522,12 @@ final class MuesliController: NSObject {
             onStartRecording: { [weak self] in
                 guard let self else { return }
                 self.isShowingCalendarNotification = false
-                self.startForegroundMeetingRecording(
+                self.startMeetingRecordingFromEntryPoint(
                     title: title,
                     calendarOccurrence: calendarOccurrence,
                     endDate: calendarEndDate,
                     autoStopSource: autoStopSource,
+                    presentation: .backgroundPill,
                     startOrigin: .scheduledMeetingPrompt
                 )
             },
@@ -8316,7 +8538,8 @@ final class MuesliController: NSObject {
                     title: title,
                     meetingURL: meetingURL!,
                     endDate: calendarEndDate,
-                    calendarOccurrence: calendarOccurrence
+                    calendarOccurrence: calendarOccurrence,
+                    presentation: .backgroundPill
                 )
             } : nil,
             onJoinOnly: meetingURL != nil ? { [weak self] in

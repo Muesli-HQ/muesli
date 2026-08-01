@@ -22,6 +22,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if runtimeTelemetry.isEnabled {
             TelemetryDeck.signal("app.launched")
         }
+        // Always drain a pending marker. TelemetryDeck's global privacy gate
+        // suppresses the signal when analytics are disabled.
+        DiarizerPreloadDiagnostics().reportInterruptedAttemptIfNeeded()
 
         do {
             let runtime = try RuntimePaths.resolve()

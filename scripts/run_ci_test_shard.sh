@@ -51,10 +51,14 @@ case "${shard}" in
       SpeechTranscriptionResultTests
       TranscriptionCoordinatorTests
       TranscriptionEngineArtifactsFilterTests
+      DiarizerRuntimePolicyTests
+      DiarizerPreloadDiagnosticsTests
+      DiarizerPreloadCoordinationTests
       PasteControllerTests
       BackendOptionTests
       SummaryModelPresetTests
       HotkeyMonitorTests
+      InteractiveAudioSessionOwnershipTests
       DictationStateTests
       HotkeyConfigTests
       DictationStateIdleTests
