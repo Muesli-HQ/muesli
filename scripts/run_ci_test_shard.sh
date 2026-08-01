@@ -58,6 +58,7 @@ case "${shard}" in
       BackendOptionTests
       SummaryModelPresetTests
       HotkeyMonitorTests
+      InteractiveAudioSessionOwnershipTests
       DictationStateTests
       HotkeyConfigTests
       DictationStateIdleTests
