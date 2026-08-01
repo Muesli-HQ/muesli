@@ -534,7 +534,7 @@ struct ModelsView: View {
     }
 
     private var cotypistTextFIMModelCard: some View {
-        let model = CotypistModelOption.qwen3TextFIM
+        let model = CotypistModelOption.qwen35TextFIM
         let isSelected = appState.config.resolvedCotypistModel == model && isCotypistTextFIMDownloaded
         let isActive = isSelected && appState.config.enableCotypist
 
@@ -558,7 +558,7 @@ struct ModelsView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 4))
                     }
 
-                    Text("Community English fill-in-the-middle checkpoint for fast inline Cotypist completions. It uses raw FIM inference rather than a chat prompt.")
+                    Text("Pretrained Qwen3.5 Base checkpoint for fast inline Cotypist completions. It uses native FIM inference rather than a chat prompt.")
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textSecondary)
 
@@ -1266,7 +1266,7 @@ struct ModelsView: View {
     }
 
     private func deleteCotypistTextFIMModel() {
-        if appState.config.resolvedCotypistModel == .qwen3TextFIM {
+        if appState.config.resolvedCotypistModel == .qwen35TextFIM {
             _ = controller.selectCotypistModel(.gemma4E2B)
         }
         try? FileManager.default.removeItem(at: CotypistTextFIMModelStore.cacheDirectory)

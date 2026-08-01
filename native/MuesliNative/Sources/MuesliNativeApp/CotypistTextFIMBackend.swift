@@ -2,15 +2,18 @@ import Foundation
 import LLM
 
 enum CotypistTextFIMModelStore {
-    static let id = "qwen3-0.6b-text-fim"
-    static let label = "Qwen3 0.6B Text FIM"
-    static let sizeLabel = "~397 MB"
-    static let filename = "Qwen3-0.6B-Text-FIM-Q4_K_M.gguf"
+    // Qwen3.5 Base is pretrained-only and supports the tokenizer's native FIM
+    // sequence. It is intentionally separate from the conversational Qwen3.5
+    // checkpoint used by dictation post-processing.
+    static let id = "qwen35-0.8b-base-fim"
+    static let label = "Qwen3.5 0.8B Base FIM"
+    static let sizeLabel = "~563 MB"
+    static let filename = "Qwen3.5-0.8B-Base-Q4_0.gguf"
     static let downloadURL = URL(
-        string: "https://huggingface.co/OleFranz/Qwen3-0.6B-Text-FIM-GGUF/resolve/main/Qwen3-0.6B-Text-FIM-Q4_K_M.gguf"
+        string: "https://huggingface.co/ggml-org/Qwen3.5-0.8B-Base-GGUF/resolve/main/Qwen3.5-0.8B-Base-Q4_0.gguf"
     )!
-    static let sourceURL = URL(string: "https://huggingface.co/OleFranz/Qwen3-0.6B-Text-FIM-GGUF")!
-    static let licenseLabel = "GPL-3.0"
+    static let sourceURL = URL(string: "https://huggingface.co/ggml-org/Qwen3.5-0.8B-Base-GGUF")!
+    static let licenseLabel = "Apache-2.0"
     static let developmentOverrideEnvironmentKey = "MUESLI_COTYPIST_QWEN_FIM_GGUF"
 
     static var cacheDirectory: URL {

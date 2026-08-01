@@ -752,6 +752,8 @@ final class CotypistCoordinator {
                 )
             } catch is CancellationError {
                 if requestID == id { resetUI() }
+            } catch CotypistCompletionError.noSuggestion {
+                if requestID == id { resetUI() }
             } catch {
                 if requestID == id { fail(error.localizedDescription) }
             }

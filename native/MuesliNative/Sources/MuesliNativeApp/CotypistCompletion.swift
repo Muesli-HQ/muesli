@@ -2,7 +2,7 @@ import Foundation
 
 enum CotypistModelOption: String, Codable, CaseIterable, Identifiable, Sendable {
     case gemma4E2B = "gemma4_e2b"
-    case qwen3TextFIM = "qwen3_0_6b_text_fim"
+    case qwen35TextFIM = "qwen35_0_8b_base_fim"
 
     var id: String { rawValue }
 
@@ -10,8 +10,8 @@ enum CotypistModelOption: String, Codable, CaseIterable, Identifiable, Sendable 
         switch self {
         case .gemma4E2B:
             return "Gemma 4 E2B"
-        case .qwen3TextFIM:
-            return "Qwen3 0.6B Text FIM"
+        case .qwen35TextFIM:
+            return "Qwen3.5 0.8B Base FIM"
         }
     }
 
@@ -19,8 +19,8 @@ enum CotypistModelOption: String, Codable, CaseIterable, Identifiable, Sendable 
         switch self {
         case .gemma4E2B:
             return "General-purpose LiteRT model for higher-quality continuations."
-        case .qwen3TextFIM:
-            return "Community English fill-in-the-middle checkpoint optimized for low-latency inline completion."
+        case .qwen35TextFIM:
+            return "Pretrained Qwen3.5 Base checkpoint used with native fill-in-the-middle tokens for inline completion."
         }
     }
 
@@ -28,13 +28,24 @@ enum CotypistModelOption: String, Codable, CaseIterable, Identifiable, Sendable 
         switch self {
         case .gemma4E2B:
             return Gemma4LiteRTModelStore.isAvailableLocally()
-        case .qwen3TextFIM:
+        case .qwen35TextFIM:
             return CotypistTextFIMModelStore.isAvailableLocally()
         }
     }
 
     static func resolved(_ rawValue: String?) -> CotypistModelOption {
-        rawValue.flatMap(CotypistModelOption.init(rawValue:)) ?? .gemma4E2B
+        switch rawValue {
+        case CotypistModelOption.qwen35TextFIM.rawValue,
+             // Migrate the previous experimental FIM checkpoint and the old
+             // pre-FIM Qwen3.5 setting to the current Base FIM asset.
+             "qwen3_0_6b_text_fim",
+             "qwen35_0_8b":
+            return .qwen35TextFIM
+        case CotypistModelOption.gemma4E2B.rawValue:
+            return .gemma4E2B
+        default:
+            return .qwen35TextFIM
+        }
     }
 }
 
@@ -105,6 +116,20 @@ enum CotypistCompletionQuality: Equatable, Sendable {
 struct CotypistCompletion: Equatable, Sendable {
     let text: String
     let quality: CotypistCompletionQuality
+}
+
+enum CotypistCompletionError: Error, Equatable, Sendable, LocalizedError {
+    case noSuggestion
+    case invalidOutput
+
+    var errorDescription: String? {
+        switch self {
+        case .noSuggestion:
+            return "No continuation was suggested."
+        case .invalidOutput:
+            return "The local model returned an unsafe or invalid continuation."
+        }
+    }
 }
 
 struct CotypistCompletionRequest: Equatable, Sendable {

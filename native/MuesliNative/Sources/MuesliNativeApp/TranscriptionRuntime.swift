@@ -237,7 +237,7 @@ actor TranscriptionCoordinator {
                 _cotypistTextFIMEngine = nil
             }
             try await cotypistGemmaEngine.prepare()
-        case .qwen3TextFIM:
+        case .qwen35TextFIM:
             if let engine = _cotypistGemmaEngine as? Gemma4LiteRTTranscriber {
                 await engine.shutdown()
                 _cotypistGemmaEngine = nil
@@ -257,13 +257,14 @@ actor TranscriptionCoordinator {
         switch request.model {
         case .gemma4E2B:
             raw = try await cotypistGemmaEngine.completeText(request)
-        case .qwen3TextFIM:
+        case .qwen35TextFIM:
             raw = try await cotypistTextFIMEngine.completeText(request)
         }
+        guard !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw CotypistCompletionError.noSuggestion
+        }
         guard let completion = CotypistOutputSanitizer.sanitize(raw, for: request.context) else {
-            throw NSError(domain: "Cotypist", code: 2, userInfo: [
-                NSLocalizedDescriptionKey: "The local model returned an unsafe or invalid continuation.",
-            ])
+            throw CotypistCompletionError.invalidOutput
         }
         return completion
     }
