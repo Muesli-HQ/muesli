@@ -122,7 +122,19 @@ fi
 DOWNLOAD_URL="https://github.com/Muesli-HQ/muesli/releases/download/v${VERSION}/Muesli-${VERSION}.dmg"
 TAG="v${VERSION}"
 RELEASE_TITLE="Muesli ${VERSION}"
-RELEASE_NOTES="$(cat <<EOF
+DEFAULT_RELEASE_NOTES_FILE="$ROOT/docs/release-notes/${VERSION}.md"
+RELEASE_NOTES_FILE="${MUESLI_RELEASE_NOTES_FILE:-$DEFAULT_RELEASE_NOTES_FILE}"
+
+if [[ -n "${MUESLI_RELEASE_NOTES_FILE:-}" && ! -f "$RELEASE_NOTES_FILE" ]]; then
+  echo "ERROR: release notes file not found: $RELEASE_NOTES_FILE" >&2
+  exit 1
+fi
+
+if [[ -f "$RELEASE_NOTES_FILE" ]]; then
+  RELEASE_NOTES="$(cat "$RELEASE_NOTES_FILE")"
+  echo "Using release notes from $RELEASE_NOTES_FILE"
+else
+  RELEASE_NOTES="$(cat <<EOF
 ## Muesli ${VERSION}
 
 Native macOS app — dictation + meeting transcription on Apple Silicon.
@@ -135,6 +147,7 @@ Native macOS app — dictation + meeting transcription on Apple Silicon.
 Signed, notarized, and stapled by Apple.
 EOF
 )"
+fi
 
 verify_homebrew_autobump() {
   if [[ "$SKIP_HOMEBREW_CHECK" == "1" ]]; then
