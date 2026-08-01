@@ -64,7 +64,7 @@ struct ConfigStoreTests {
         #expect(permissions?.intValue == 0o600)
     }
 
-    @Test("load persists retired Cotypist model migration")
+    @Test("load persists the Cotypist model migration")
     func persistsRetiredCotypistModelMigration() throws {
         let supportDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("muesli-config-store-\(UUID().uuidString)", isDirectory: true)
@@ -78,13 +78,13 @@ struct ConfigStoreTests {
         let loaded = store.load()
 
         #expect(loaded.enableCotypist)
-        #expect(loaded.cotypistModel == CotypistModelOption.gemma4E2B.rawValue)
+        #expect(loaded.cotypistModel == CotypistModelOption.qwen35TextFIM.rawValue)
 
         let persistedData = try Data(contentsOf: configURL)
         let persisted = try #require(
             JSONSerialization.jsonObject(with: persistedData) as? [String: Any]
         )
-        #expect(persisted["cotypist_model"] as? String == CotypistModelOption.gemma4E2B.rawValue)
+        #expect(persisted["cotypist_model"] as? String == CotypistModelOption.qwen35TextFIM.rawValue)
         #expect(persisted["enable_cotypist"] as? Bool == true)
     }
 }

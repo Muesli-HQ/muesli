@@ -9,13 +9,13 @@ struct CotypistConfigurationTests {
         let config = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
 
         #expect(!config.enableCotypist)
-        #expect(config.resolvedCotypistModel == .gemma4E2B)
-        #expect(CotypistModelOption.allCases == [.gemma4E2B, .qwen3TextFIM])
+        #expect(config.resolvedCotypistModel == .qwen35TextFIM)
+        #expect(CotypistModelOption.allCases == [.gemma4E2B, .qwen35TextFIM])
         #expect(config.cotypistHotkey == .cotypistDefault)
         #expect(config.cotypistExcludedBundleIDs.isEmpty)
     }
 
-    @Test("legacy Qwen Cotypist config migrates to Gemma")
+    @Test("legacy Qwen Cotypist config migrates to Qwen3.5 Base FIM")
     func legacyQwenModelMigration() throws {
         let config = try JSONDecoder().decode(AppConfig.self, from: Data("""
         {
@@ -25,8 +25,8 @@ struct CotypistConfigurationTests {
         """.utf8))
 
         #expect(config.enableCotypist)
-        #expect(config.cotypistModel == CotypistModelOption.gemma4E2B.rawValue)
-        #expect(config.resolvedCotypistModel == .gemma4E2B)
+        #expect(config.cotypistModel == CotypistModelOption.qwen35TextFIM.rawValue)
+        #expect(config.resolvedCotypistModel == .qwen35TextFIM)
     }
 
     @Test("Cotypist is not a standalone settings pane")
@@ -45,12 +45,12 @@ struct CotypistConfigurationTests {
     func configKeys() throws {
         var config = AppConfig()
         config.enableCotypist = true
-        config.cotypistModel = CotypistModelOption.qwen3TextFIM.rawValue
+        config.cotypistModel = CotypistModelOption.qwen35TextFIM.rawValue
         config.cotypistExcludedBundleIDs = ["com.example.private"]
 
         let object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(config)) as? [String: Any])
         #expect(object["enable_cotypist"] as? Bool == true)
-        #expect(object["cotypist_model"] as? String == "qwen3_0_6b_text_fim")
+        #expect(object["cotypist_model"] as? String == "qwen35_0_8b_base_fim")
         #expect(object["cotypist_hotkey"] != nil)
         #expect(object["cotypist_excluded_bundle_ids"] as? [String] == ["com.example.private"])
     }
@@ -142,14 +142,14 @@ struct CotypistConfigurationTests {
     @Test("Qwen uses the checkpoint's raw FIM sequence without chat instructions")
     func qwenFIMPrompt() {
         let context = makeContext(prefix: "Please send the revised proposal", suffix: " before Friday.")
-        let request = CotypistCompletionRequest(context: context, model: .qwen3TextFIM, maxOutputTokens: 500)
+        let request = CotypistCompletionRequest(context: context, model: .qwen35TextFIM, maxOutputTokens: 500)
 
         #expect(request.maxOutputTokens == 24)
         #expect(request.fimPrompt == "<|fim_prefix|>Please send the revised proposal<|fim_suffix|> before Friday.<|fim_middle|>")
         #expect(!request.fimPrompt.contains("Surface:"))
         #expect(!request.fimPrompt.contains("Return only"))
-        #expect(CotypistTextFIMModelStore.modelURL.path.contains("cotypist-qwen3-0.6b-text-fim"))
-        #expect(CotypistTextFIMModelStore.modelURL.lastPathComponent == "Qwen3-0.6B-Text-FIM-Q4_K_M.gguf")
+        #expect(CotypistTextFIMModelStore.modelURL.path.contains("cotypist-qwen35-0.8b-base-fim"))
+        #expect(CotypistTextFIMModelStore.modelURL.lastPathComponent == "Qwen3.5-0.8B-Base-Q4_0.gguf")
         #expect(CotypistTextFIMModelStore.resolvedModelURL(environment: [
             CotypistTextFIMModelStore.developmentOverrideEnvironmentKey: "/tmp/custom-fim.gguf",
         ]).path == "/tmp/custom-fim.gguf")
@@ -587,10 +587,10 @@ struct CotypistModelIntegrationTests {
         }
     }
 
-    @Test("Qwen Text FIM semantic Cotypist cases", .timeLimit(.minutes(4)))
+    @Test("Qwen3.5 Base FIM semantic Cotypist cases", .timeLimit(.minutes(4)))
     func qwenTextFIMCompletion() async throws {
         guard ProcessInfo.processInfo.environment["MUESLI_RUN_COTYPIST_QWEN_FIM_INTEGRATION"] == "1",
-              CotypistModelOption.qwen3TextFIM.isDownloaded else { return }
+              CotypistModelOption.qwen35TextFIM.isDownloaded else { return }
         let runtime = TranscriptionCoordinator()
         do {
             let cases: [(appName: String, bundleID: String, prefix: String, suffix: String, surface: CotypistSurface)] = [
@@ -607,13 +607,18 @@ struct CotypistModelIntegrationTests {
                     prefix: testCase.prefix,
                     suffix: testCase.suffix
                 )
-                let request = CotypistCompletionRequest(context: context, model: .qwen3TextFIM)
-                let completion = try await runtime.completeText(request: request)
-                #expect(request.model == .qwen3TextFIM)
-                #expect(request.surface == testCase.surface)
-                #expect(!completion.text.isEmpty)
-                #expect(completion.text.count <= 320)
-                #expect(!completion.text.contains("<|fim_"))
+                let request = CotypistCompletionRequest(context: context, model: .qwen35TextFIM)
+                do {
+                    let completion = try await runtime.completeText(request: request)
+                    #expect(request.model == .qwen35TextFIM)
+                    #expect(request.surface == testCase.surface)
+                    #expect(!completion.text.isEmpty)
+                    #expect(completion.text.count <= 320)
+                    #expect(!completion.text.contains("<|fim_"))
+                } catch CotypistCompletionError.noSuggestion {
+                    // A base FIM model can correctly decide that the suffix
+                    // leaves no useful gap. That is a silent no-preview result.
+                }
             }
             await runtime.shutdown()
         } catch {

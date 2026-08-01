@@ -636,7 +636,7 @@ struct ModelsView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 4))
                     }
 
-                    Text("Community English fill-in-the-middle checkpoint for fast inline Cotypist completions. It uses raw FIM inference rather than a chat prompt.")
+                    Text("Pretrained Qwen3.5 Base checkpoint for fast inline Cotypist completions. It uses native FIM inference rather than a chat prompt.")
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textSecondary)
 
