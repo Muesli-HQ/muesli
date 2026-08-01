@@ -323,8 +323,9 @@ final class DictationAudioSessionManager: @unchecked Sendable {
     }
 
     func stop() {
+        let requestedSessionID = detachSessionHint()
         queue.async { [self] in
-            let sessionID = self.stateStorage.sessionID
+            let sessionID = self.stateStorage.sessionID ?? requestedSessionID
             guard sessionID != nil else {
                 self.restoreSessionAudioState(completion: nil)
                 return
@@ -335,7 +336,6 @@ final class DictationAudioSessionManager: @unchecked Sendable {
             self.activeRecorderRunID = nil
             self.recorder.preferredInputDeviceID = nil
             self.stateStorage = .idle
-            self.clearSessionHint(sessionID)
             self.emit(.stopped(sessionID, wavURL: wavURL))
             self.restoreSessionAudioState {
                 self.emit(.audioRestored(sessionID))
@@ -344,16 +344,15 @@ final class DictationAudioSessionManager: @unchecked Sendable {
     }
 
     func cancel(reason: String) {
+        let requestedSessionID = detachSessionHint(clearExternalSession: true)
         queue.async { [self] in
-            let sessionID = self.stateStorage.sessionID
+            let sessionID = self.stateStorage.sessionID ?? requestedSessionID
             self.recorder.keepsAudioGraphWarm = false
             self.recorder.cancel()
             self.activeRecorderRunID = nil
             self.recorder.preferredInputDeviceID = nil
             self.stateStorage = .idle
             self.externalSessionActive = false
-            self.clearSessionHint(sessionID)
-            self.setExternalSessionHint(false)
             self.restoreSessionAudioState()
             self.emitLatency("cancelled:\(reason)")
             self.emit(.cancelled(sessionID, reason: reason))
@@ -409,6 +408,17 @@ final class DictationAudioSessionManager: @unchecked Sendable {
         sessionHintLock.withLock {
             guard self.sessionHint == sessionID || sessionID == nil else { return }
             self.sessionHint = nil
+        }
+    }
+
+    private func detachSessionHint(clearExternalSession: Bool = false) -> UUID? {
+        sessionHintLock.withLock {
+            let detachedSessionID = sessionHint
+            sessionHint = nil
+            if clearExternalSession {
+                externalSessionHint = false
+            }
+            return detachedSessionID
         }
     }
 

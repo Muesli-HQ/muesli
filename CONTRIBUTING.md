@@ -143,3 +143,60 @@ swift test --package-path native/MuesliNative \
   entitlements.
 - Avoid committing generated build artifacts, app bundles, model files, or
   local application data.
+
+## Contribution License
+
+Muesli is licensed under the [MIT License](LICENSE). By submitting a
+contribution, you agree that your contribution is licensed under the same MIT
+License. Your DCO sign-off certifies that you have the right to submit the
+contribution under those terms.
+
+Do not submit material that you do not have the right to contribute. If the
+contribution was created in the course of employment, contracting, research,
+or another relationship that may affect ownership, obtain any permission
+required by that relationship before submitting it.
+
+Identify third-party code, models, datasets, media, or other assets in the pull
+request description. Include the source and applicable license or terms.
+
+## Developer Certificate of Origin
+
+Every non-merge commit contributed to Muesli must be signed off under the
+[Developer Certificate of Origin 1.1](DCO). The sign-off certifies that you
+created the contribution or otherwise have the right to submit it under the
+repository's open-source license.
+
+Add the sign-off automatically when creating a commit:
+
+```bash
+git commit --signoff -m "Describe the change"
+```
+
+The resulting commit message must contain a trailer using your real name and an
+email address associated with the commit:
+
+```text
+Signed-off-by: Your Name <your-email@example.com>
+```
+
+A DCO sign-off is different from a cryptographic Git commit signature. Every
+non-merge commit in a pull request must contain a valid `Signed-off-by` trailer.
+The contributor who authored a commit must provide its sign-off; maintainers
+will not sign on another contributor's behalf or override a missing sign-off.
+
+This requirement applies to every pull request merged after adoption of this
+policy, including pull requests that were already open when the policy was
+adopted. If an existing pull request contains unsigned commits, amend or rebase
+those commits with `--signoff`, or follow the individual remediation
+instructions reported by the DCO check.
+
+## AI-Assisted Contributions
+
+You remain responsible for every contribution you submit, including work
+created with an AI coding tool or agent. In the pull request description:
+
+- disclose material AI assistance and name the tool or service;
+- confirm that you reviewed and tested the resulting changes;
+- identify any third-party code, data, model output, or license obligations;
+- do not submit secrets, confidential information, or material you lack the
+  right to contribute.

@@ -90,8 +90,58 @@ struct MeetingSummaryClientTests {
         )
 
         #expect(prompt.contains("Current generated notes to preserve and reformat:"))
-        #expect(prompt.contains("Protected written notes typed by the user during the meeting"))
+        #expect(prompt.contains("First-class meeting context from written notes typed by the user during the meeting"))
+        #expect(prompt.contains("identify the meeting's topic, decisions, action items, risks, and outcomes"))
         #expect(prompt.contains("- User typed decision"))
+    }
+
+    @Test("title prompt includes written notes as meeting context")
+    func titlePromptIncludesWrittenNotes() {
+        let prompt = MeetingSummaryClient.titlePrompt(
+            transcript: "Transcript body",
+            manualNotes: "Decision: launch the new workflow"
+        )
+
+        #expect(prompt.contains("Meeting transcript excerpts:"))
+        #expect(prompt.contains("Transcript body"))
+        #expect(prompt.contains("Written notes captured by the user during the meeting"))
+        #expect(prompt.contains("Decision: launch the new workflow"))
+    }
+
+    @Test("title prompt bounds oversized written notes")
+    func titlePromptBoundsOversizedWrittenNotes() {
+        let prompt = MeetingSummaryClient.titlePrompt(
+            transcript: "Transcript body",
+            manualNotes: String(repeating: "Decision: launch the new workflow\n", count: 1_000)
+        )
+
+        #expect(prompt.contains("Transcript body"))
+        #expect(prompt.count <= 6_000)
+    }
+
+    @Test("ChatGPT WHAM requests fix GPT-5.6 reasoning to High")
+    func chatGPTWHAMRequestUsesHighReasoningForGPT56() {
+        for model in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+            let body = ChatGPTResponsesClient.requestBody(
+                systemPrompt: "System",
+                userPrompt: "User",
+                model: model
+            )
+            let reasoning = body["reasoning"] as? [String: String]
+
+            #expect(reasoning?["effort"] == "high")
+        }
+    }
+
+    @Test("ChatGPT WHAM requests preserve GPT-5.4 Mini reasoning behavior")
+    func chatGPTWHAMRequestPreservesGPT54MiniReasoning() {
+        let body = ChatGPTResponsesClient.requestBody(
+            systemPrompt: "System",
+            userPrompt: "User",
+            model: "gpt-5.4-mini"
+        )
+
+        #expect(body["reasoning"] == nil)
     }
 
     @Test("ChatGPT WHAM parser reads top-level output text")

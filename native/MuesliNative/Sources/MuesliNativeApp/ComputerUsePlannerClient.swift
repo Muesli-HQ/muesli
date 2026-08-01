@@ -25,7 +25,7 @@ enum ComputerUsePlannerError: LocalizedError, Equatable {
 
 enum ComputerUsePlannerClient {
     private static let whamURL = URL(string: "https://chatgpt.com/backend-api/wham/responses")!
-    static let defaultModel = "gpt-5.5"
+    static let defaultModel = "gpt-5.6-sol"
 
     static var instructions: String {
         """
@@ -100,27 +100,12 @@ enum ComputerUsePlannerClient {
         model: String
     ) async throws -> ComputerUsePlannerResponse {
         let (token, accountId) = try await ChatGPTAuthManager.shared.validAccessToken()
-        var content: [[String: Any]] = [
-            ["type": "input_text", "text": userPrompt],
-        ]
-        if let imageDataURL {
-            content.append(["type": "input_image", "image_url": imageDataURL])
-        }
-        let body: [String: Any] = [
-            "model": model,
-            "store": false,
-            "stream": true,
-            "instructions": systemPrompt,
-            "tools": ComputerUseToolRegistry.nativeToolDefinitions(),
-            "tool_choice": "required",
-            "parallel_tool_calls": false,
-            "input": [
-                [
-                    "role": "user",
-                    "content": content,
-                ] as [String: Any],
-            ],
-        ]
+        let body = requestBody(
+            systemPrompt: systemPrompt,
+            userPrompt: userPrompt,
+            imageDataURL: imageDataURL,
+            model: model
+        )
 
         var urlRequest = URLRequest(url: whamURL)
         urlRequest.httpMethod = "POST"
@@ -186,6 +171,39 @@ enum ComputerUsePlannerClient {
                 ? "The model did not return a native tool call."
                 : "The model returned text instead of a native tool call: \(String(trimmedText.prefix(800)))"
         )
+    }
+
+    static func requestBody(
+        systemPrompt: String,
+        userPrompt: String,
+        imageDataURL: String?,
+        model: String
+    ) -> [String: Any] {
+        var content: [[String: Any]] = [
+            ["type": "input_text", "text": userPrompt],
+        ]
+        if let imageDataURL {
+            content.append(["type": "input_image", "image_url": imageDataURL])
+        }
+        var body: [String: Any] = [
+            "model": model,
+            "store": false,
+            "stream": true,
+            "instructions": systemPrompt,
+            "tools": ComputerUseToolRegistry.nativeToolDefinitions(),
+            "tool_choice": "required",
+            "parallel_tool_calls": false,
+            "input": [
+                [
+                    "role": "user",
+                    "content": content,
+                ] as [String: Any],
+            ],
+        ]
+        if let effort = SummaryModelPreset.reasoningEffort(for: model) {
+            body["reasoning"] = ["effort": effort]
+        }
+        return body
     }
 
     private static func nativeToolCall(in value: Any, depth: Int = 0) -> (name: String, arguments: String)? {

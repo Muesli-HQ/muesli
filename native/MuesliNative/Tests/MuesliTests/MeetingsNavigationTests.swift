@@ -65,6 +65,22 @@ struct MeetingsNavigationTests {
         #expect(appState.selectedMeeting == nil)
     }
 
+    @Test("foreground meeting starts open and present notes")
+    func foregroundMeetingStartPresentation() {
+        let presentation = MeetingStartPresentation.foregroundNotes
+
+        #expect(presentation.opensMeetingDocument)
+        #expect(presentation.presentsHistoryWindow)
+    }
+
+    @Test("background meeting starts only transition the recording pill")
+    func backgroundMeetingStartPresentation() {
+        let presentation = MeetingStartPresentation.backgroundPill
+
+        #expect(!presentation.opensMeetingDocument)
+        #expect(!presentation.presentsHistoryWindow)
+    }
+
     @Test("each dashboard statistic opens insights with its originating section")
     func dashboardStatisticsOpenInsights() {
         let controller = makeController()

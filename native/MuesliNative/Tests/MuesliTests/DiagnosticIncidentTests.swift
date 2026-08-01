@@ -157,6 +157,23 @@ struct DiagnosticIncidentTests {
         #expect(incident.telemetryParameters["diagnostic.user_impact"] == "degraded_result")
     }
 
+    @Test("meeting microphone failure is privacy-safe degraded telemetry")
+    func meetingMicrophoneFailureIsDegraded() {
+        let incident = DiagnosticIncident(
+            kind: .meetingMicrophoneCaptureFailed,
+            severity: .warning,
+            stage: .meetingMicrophoneCapture,
+            error: nil,
+            metadata: metadata
+        )
+
+        #expect(incident.userImpact == .degradedResult)
+        #expect(incident.telemetryCategory == .appState)
+        #expect(incident.telemetryParameters["diagnostic.stage"] == "meeting_microphone_capture")
+        #expect(incident.telemetryParameters["diagnostic.error_domain"] == nil)
+        #expect(incident.telemetryParameters["diagnostic.error_code"] == nil)
+    }
+
     @Test("domain fallback covers Swift enum style diagnostic errors")
     func domainFallbackCoversSwiftEnumErrors() {
         let meaning = DiagnosticErrorCatalog.meaning(

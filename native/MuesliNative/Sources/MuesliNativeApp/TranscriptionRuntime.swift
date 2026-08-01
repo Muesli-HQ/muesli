@@ -15,6 +15,26 @@ struct SpeechTranscriptionResult: Sendable {
 }
 
 actor TranscriptionCoordinator {
+    typealias DiarizerModelLoader = @Sendable (DiarizerRuntimePolicy) async throws -> DiarizerModels
+    typealias VADLoader = @Sendable () async throws -> VadManager
+
+    private enum DiarizerLoadWaitOutcome {
+        case succeeded
+        case failed
+        case cancelled
+        case timedOut
+    }
+
+    private struct DiarizerLoadWaiter {
+        let continuation: CheckedContinuation<DiarizerLoadWaitOutcome, Never>
+        let timeoutTask: Task<Void, Never>
+    }
+
+    // Product flows stop waiting after two minutes and continue without optional
+    // diarization. The shared background load gets a longer cooperative deadline.
+    private static let defaultDiarizerLoadWaitTimeout: Duration = .seconds(120)
+    private static let defaultDiarizerLoadOperationTimeout: Duration = .seconds(300)
+
     static let explicitlyRoutedBackendIdentifiers: Set<String> = [
         "whisper", "nemotron35", "qwen", "cohere", "indicasr", "sensevoice", "gemma4-litert",
     ]
@@ -31,7 +51,31 @@ actor TranscriptionCoordinator {
     private let senseVoiceTranscriber = SenseVoiceTranscriber()
     private var vadManager: VadManager?
     private var diarizerManager: DiarizerManager?
+    private var isDiarizerLoadInProgress = false
+    private var activeDiarizerLoadID: UUID?
+    private var diarizerLoadTask: Task<Void, Never>?
+    private var diarizerLoadTimeoutTask: Task<Void, Never>?
+    private var didDiarizerLoadTimeOut = false
+    private var diarizerLoadWaiters: [UUID: DiarizerLoadWaiter] = [:]
+    private let diarizerModelLoader: DiarizerModelLoader
+    private let vadLoader: VADLoader
+    private let diarizerLoadOperationTimeout: Duration
+    private let diarizerDiagnostics: DiarizerPreloadDiagnostics
     private var activeBackend: String?
+
+    init(
+        diarizerModelLoader: @escaping DiarizerModelLoader = { policy in
+            try await DiarizerModels.download(configuration: policy.modelConfiguration)
+        },
+        vadLoader: @escaping VADLoader = { try await VadManager() },
+        diarizerLoadOperationTimeout: Duration = TranscriptionCoordinator.defaultDiarizerLoadOperationTimeout,
+        diarizerDiagnostics: DiarizerPreloadDiagnostics = DiarizerPreloadDiagnostics()
+    ) {
+        self.diarizerModelLoader = diarizerModelLoader
+        self.vadLoader = vadLoader
+        self.diarizerLoadOperationTimeout = diarizerLoadOperationTimeout
+        self.diarizerDiagnostics = diarizerDiagnostics
+    }
 
     private var _nemotron35Transcriber: Any?
     /// Selected Nemotron 3.5 language prompt id (101 = auto). Stored so it survives
@@ -293,6 +337,7 @@ actor TranscriptionCoordinator {
         backend: BackendOption,
         enablePostProcessor: Bool = false,
         includeMeetingHelpers: Bool = true,
+        meetingHelperTrigger: DiarizerPreloadTrigger = .unspecified,
         progress: ((Double, String?) -> Void)? = nil
     ) async {
         do {
@@ -300,6 +345,7 @@ actor TranscriptionCoordinator {
                 backend: backend,
                 enablePostProcessor: enablePostProcessor,
                 includeMeetingHelpers: includeMeetingHelpers,
+                meetingHelperTrigger: meetingHelperTrigger,
                 progress: progress
             )
         } catch {
@@ -311,13 +357,15 @@ actor TranscriptionCoordinator {
         backend: BackendOption,
         enablePostProcessor: Bool = false,
         includeMeetingHelpers: Bool = true,
+        meetingHelperTrigger: DiarizerPreloadTrigger = .unspecified,
         progress: ((Double, String?) -> Void)? = nil
     ) async throws {
         activeBackend = backend.backend
 
         if includeMeetingHelpers {
-            await preloadMeetingHelpers()
+            await preloadMeetingHelpers(trigger: meetingHelperTrigger)
         }
+        try Task.checkCancellation()
 
         switch backend.backend {
         case "fluidaudio":
@@ -388,28 +436,205 @@ actor TranscriptionCoordinator {
         await preloadPostProcessorIfNeeded(enabled: enablePostProcessor, transcriptionBackend: backend)
     }
 
-    func preloadMeetingHelpers() async {
+    func preloadMeetingHelpers(trigger: DiarizerPreloadTrigger = .unspecified) async {
         if vadManager == nil {
             do {
-                vadManager = try await VadManager()
+                vadManager = try await vadLoader()
                 fputs("[muesli-native] Silero VAD loaded\n", stderr)
             } catch {
                 fputs("[muesli-native] VAD load failed (non-critical): \(error)\n", stderr)
             }
         }
 
-        if diarizerManager == nil {
+        await preloadDiarizer(trigger: trigger)
+    }
+
+    func preloadDiarizer(
+        trigger: DiarizerPreloadTrigger = .unspecified,
+        waitTimeout: Duration = TranscriptionCoordinator.defaultDiarizerLoadWaitTimeout
+    ) async {
+        let policy = DiarizerRuntimePolicy.resolve(for: .current())
+        let context = DiarizerPreloadContext(
+            trigger: trigger,
+            policy: policy,
+            cacheState: .resolve()
+        )
+
+        if diarizerManager != nil {
+            diarizerDiagnostics.skipped(context, reason: "already_loaded")
+            return
+        }
+
+        let startedLoad = !isDiarizerLoadInProgress
+        if startedLoad {
+            startDiarizerLoad(policy: policy, context: context)
+        }
+
+        let outcome = await waitForActiveDiarizerLoad(timeout: waitTimeout)
+        let resolvedOutcome: DiarizerLoadWaitOutcome = Task.isCancelled ? .cancelled : outcome
+        switch (startedLoad, resolvedOutcome) {
+        case (true, .succeeded), (true, .failed):
+            // The load lifecycle itself emits the terminal diagnostic.
+            break
+        case (false, .succeeded):
+            diarizerDiagnostics.skipped(context, reason: "joined_load_succeeded")
+        case (false, .failed):
+            diarizerDiagnostics.skipped(context, reason: "joined_load_failed")
+        case (true, .cancelled):
+            diarizerDiagnostics.skipped(context, reason: "load_wait_cancelled")
+        case (false, .cancelled):
+            diarizerDiagnostics.skipped(context, reason: "joined_load_cancelled")
+        case (true, .timedOut):
+            diarizerDiagnostics.skipped(context, reason: "load_wait_timed_out")
+        case (false, .timedOut):
+            diarizerDiagnostics.skipped(context, reason: "joined_load_timed_out")
+        }
+    }
+
+    private func startDiarizerLoad(
+        policy: DiarizerRuntimePolicy,
+        context: DiarizerPreloadContext
+    ) {
+        isDiarizerLoadInProgress = true
+        didDiarizerLoadTimeOut = false
+        let loadID = UUID()
+        activeDiarizerLoadID = loadID
+        let startedAt = diarizerDiagnostics.begin(context)
+
+        let loader = diarizerModelLoader
+        diarizerLoadTask = Task { [weak self] in
             do {
-                let diarizer = DiarizerManager()
-                let models = try await DiarizerModels.download()
-                diarizer.initialize(models: models)
-                diarizerManager = diarizer
-                fputs("[muesli-native] Speaker diarization loaded\n", stderr)
+                let models = try await loader(policy)
+                try Task.checkCancellation()
+                await self?.finishDiarizerLoad(
+                    id: loadID,
+                    result: .success(models),
+                    policy: policy,
+                    context: context,
+                    startedAt: startedAt
+                )
             } catch {
-                fputs("[muesli-native] Diarization load failed (non-critical): \(error)\n", stderr)
+                await self?.finishDiarizerLoad(
+                    id: loadID,
+                    result: .failure(error),
+                    policy: policy,
+                    context: context,
+                    startedAt: startedAt
+                )
+            }
+        }
+
+        let operationTimeout = diarizerLoadOperationTimeout
+        diarizerLoadTimeoutTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: operationTimeout)
+            } catch {
+                return
+            }
+            await self?.timeoutDiarizerLoad(id: loadID)
+        }
+    }
+
+    private func finishDiarizerLoad(
+        id: UUID,
+        result: Result<DiarizerModels, Error>,
+        policy: DiarizerRuntimePolicy,
+        context: DiarizerPreloadContext,
+        startedAt: Date
+    ) {
+        guard activeDiarizerLoadID == id else { return }
+
+        let didTimeOut = didDiarizerLoadTimeOut
+        diarizerLoadTimeoutTask?.cancel()
+        diarizerLoadTimeoutTask = nil
+        diarizerLoadTask = nil
+        activeDiarizerLoadID = nil
+        isDiarizerLoadInProgress = false
+        didDiarizerLoadTimeOut = false
+
+        let outcome: DiarizerLoadWaitOutcome
+        switch result {
+        case .success(let models):
+            let diarizer = DiarizerManager()
+            diarizer.initialize(models: models)
+            diarizerManager = diarizer
+            diarizerDiagnostics.ready(context, startedAt: startedAt)
+            fputs(
+                "[muesli-native] Speaker diarization loaded (compute: \(policy.computePolicy.rawValue))\n",
+                stderr
+            )
+            outcome = .succeeded
+        case .failure(let error):
+            let reportedError: Error = didTimeOut ? DiarizerPreloadFailure.operationTimedOut : error
+            diarizerDiagnostics.failed(context, startedAt: startedAt, error: reportedError)
+            fputs("[muesli-native] Diarization load failed (non-critical): \(reportedError)\n", stderr)
+            outcome = .failed
+        }
+
+        resumeAllDiarizerLoadWaiters(with: outcome)
+    }
+
+    private func timeoutDiarizerLoad(id: UUID) {
+        guard activeDiarizerLoadID == id else { return }
+        didDiarizerLoadTimeOut = true
+        diarizerLoadTask?.cancel()
+        // A third-party model load may not observe cancellation while CoreML is
+        // compiling. Release product callers immediately while retaining the
+        // active-load guard so another expensive load cannot start in parallel.
+        resumeAllDiarizerLoadWaiters(with: .timedOut)
+    }
+
+    private func waitForActiveDiarizerLoad(timeout: Duration) async -> DiarizerLoadWaitOutcome {
+        if didDiarizerLoadTimeOut { return .timedOut }
+
+        let waiterID = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(returning: .cancelled)
+                    return
+                }
+
+                let timeoutTask = Task { [weak self] in
+                    do {
+                        try await Task.sleep(for: timeout)
+                    } catch {
+                        return
+                    }
+                    await self?.resumeDiarizerLoadWaiter(id: waiterID, with: .timedOut)
+                }
+                diarizerLoadWaiters[waiterID] = DiarizerLoadWaiter(
+                    continuation: continuation,
+                    timeoutTask: timeoutTask
+                )
+            }
+        } onCancel: { [weak self] in
+            Task {
+                await self?.resumeDiarizerLoadWaiter(id: waiterID, with: .cancelled)
             }
         }
     }
+
+    private func resumeDiarizerLoadWaiter(id: UUID, with outcome: DiarizerLoadWaitOutcome) {
+        guard let waiter = diarizerLoadWaiters.removeValue(forKey: id) else { return }
+        waiter.timeoutTask.cancel()
+        waiter.continuation.resume(returning: outcome)
+    }
+
+    private func resumeAllDiarizerLoadWaiters(with outcome: DiarizerLoadWaitOutcome) {
+        let waiters = diarizerLoadWaiters.values
+        diarizerLoadWaiters.removeAll()
+        for waiter in waiters {
+            waiter.timeoutTask.cancel()
+            waiter.continuation.resume(returning: outcome)
+        }
+    }
+
+    #if DEBUG
+    func diarizerPreloadStateForTesting() -> (isActive: Bool, waiterCount: Int) {
+        (isDiarizerLoadInProgress, diarizerLoadWaiters.count)
+    }
+    #endif
 
     func preloadPostProcessorIfNeeded(
         enabled: Bool,

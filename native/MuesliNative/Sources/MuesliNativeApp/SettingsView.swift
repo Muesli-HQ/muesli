@@ -11,7 +11,7 @@ private struct MeetingDetectionAppOption: Identifiable {
     var id: String { bundleID }
 }
 
-private struct DictationMicrophoneOption: Identifiable {
+private struct MicrophoneOption: Identifiable {
     let uid: String?
     let label: String
 
@@ -65,7 +65,7 @@ struct SettingsView: View {
     @State private var downloadedBackendOptions: [BackendOption] = []
     @State private var downloadedPostProcOptions: [PostProcessorOption] = []
     @State private var downloadedMeetingLiveCaptionBackends: [MeetingLiveCaptionBackend] = []
-    @State private var dictationInputDevices: [AudioInputDeviceInfo] = []
+    @State private var audioInputDevices: [AudioInputDeviceInfo] = []
     @State private var permissionPollTimer: Timer?
     @State private var isCleanupPromptManagerPresented = false
     @State private var micGranted = false
@@ -140,12 +140,12 @@ struct SettingsView: View {
         let selected = appState.config.resolvedMeetingLiveCaptionBackend
         guard appState.config.enableLiveStreamingPartials,
               downloadedMeetingLiveCaptionBackends.contains(selected) else {
-            return "Live captions are off. Select a streaming model to preview speech as it is spoken."
+            return "Shows completed transcript segments only."
         }
         if usesUnifiedMeetingTranscript {
-            return "Nemotron transcribes continuously and becomes the final raw transcript."
+            return "Creates the live and final transcript."
         }
-        return "Parakeet provides a low-latency preview; the final model transcribes separately."
+        return "Adds a low-latency preview."
     }
 
     private var selectedMeetingBackendLabel: String {
@@ -204,21 +204,31 @@ struct SettingsView: View {
         appState.config.resolvedNemotron35Language
     }
 
-    private var dictationMicrophoneOptions: [DictationMicrophoneOption] {
-        var options = [DictationMicrophoneOption(uid: nil, label: "Automatic")]
-        options += dictationInputDevices.map { device in
-            DictationMicrophoneOption(uid: device.uid, label: device.name)
-        }
-        if let selectedUID = appState.config.dictationInputDeviceUID,
-           !options.contains(where: { $0.uid == selectedUID }) {
-            options.append(DictationMicrophoneOption(uid: selectedUID, label: "Selected microphone unavailable"))
-        }
-        return options
+    private var dictationMicrophoneOptions: [MicrophoneOption] {
+        microphoneOptions(selectedUID: appState.config.dictationInputDeviceUID)
     }
 
     private var selectedDictationMicrophoneLabel: String {
         let selectedUID = appState.config.dictationInputDeviceUID
         return dictationMicrophoneOptions.first(where: { $0.uid == selectedUID })?.label ?? "Automatic"
+    }
+
+    private var meetingMicrophoneOptions: [MicrophoneOption] {
+        microphoneOptions(selectedUID: appState.config.meetingInputDeviceUID)
+    }
+
+    private var selectedMeetingMicrophoneLabel: String {
+        let selectedUID = appState.config.meetingInputDeviceUID
+        return meetingMicrophoneOptions.first(where: { $0.uid == selectedUID })?.label ?? "Automatic"
+    }
+
+    private func microphoneOptions(selectedUID: String?) -> [MicrophoneOption] {
+        var options = [MicrophoneOption(uid: nil, label: "Automatic")]
+        options += audioInputDevices.map { MicrophoneOption(uid: $0.uid, label: $0.name) }
+        if let selectedUID, !options.contains(where: { $0.uid == selectedUID }) {
+            options.append(MicrophoneOption(uid: selectedUID, label: "Selected microphone unavailable"))
+        }
+        return options
     }
 
     private var activeFeatureTourTarget: FeatureTourTarget? {
@@ -241,7 +251,7 @@ struct SettingsView: View {
             .background(MuesliTheme.backgroundBase)
             .onAppear {
                 refreshDownloadedModelOptions()
-                refreshDictationInputDevices()
+                refreshAudioInputDevices()
                 startPermissionPolling()
                 if appState.selectedMeetingSummaryBackend == .openRouter {
                     loadOpenRouterFreeModelsIfNeeded()
@@ -257,7 +267,7 @@ struct SettingsView: View {
                 if tab == .settings {
                     selectedPane = appState.selectedSettingsPane
                     refreshDownloadedModelOptions()
-                    refreshDictationInputDevices()
+                    refreshAudioInputDevices()
                     refreshPermissionStatuses()
                 }
             }
@@ -266,6 +276,9 @@ struct SettingsView: View {
             }
             .onChange(of: selectedPane) { _, pane in
                 appState.selectedSettingsPane = pane
+                if pane == .dictation || pane == .meetings {
+                    refreshAudioInputDevices()
+                }
                 scrollToFeatureTourTarget(activeFeatureTourTarget, using: scrollProxy)
             }
             .onChange(of: activeFeatureTourTarget) { _, target in
@@ -273,6 +286,7 @@ struct SettingsView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                 guard appState.selectedTab == .settings else { return }
+                refreshAudioInputDevices()
                 refreshPermissionStatuses(refreshLaunchAtLogin: true)
             }
             .onChange(of: appState.selectedBackend) { _, _ in
@@ -350,8 +364,8 @@ struct SettingsView: View {
         downloadedMeetingLiveCaptionBackends = MeetingLiveCaptionBackend.allCases.filter(\.isDownloaded)
     }
 
-    private func refreshDictationInputDevices() {
-        dictationInputDevices = controller.availableDictationInputDevices()
+    private func refreshAudioInputDevices() {
+        audioInputDevices = controller.availableDictationInputDevices()
     }
 
     private func backendOptions(including selection: BackendOption) -> [BackendOption] {
@@ -725,15 +739,33 @@ struct SettingsView: View {
 
     private var meetingTranscriptionSettingsSection: some View {
         settingsSection("Transcription") {
-            settingsRow("Live transcript on waveform hover") {
+            settingsRow(
+                "Microphone",
+                description: "Only affects Muesli. Changes apply immediately.",
+                controlWidth: meetingControlWidth
+            ) {
+                let options = meetingMicrophoneOptions
+                FixedWidthPopUp(
+                    selection: selectedMeetingMicrophoneLabel,
+                    options: options.map(\.label),
+                    onSelectIndex: { index in
+                        guard options.indices.contains(index) else { return }
+                        controller.selectMeetingInputDeviceUID(options[index].uid)
+                        refreshAudioInputDevices()
+                    }
+                )
+                .frame(height: 24)
+            }
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("Show transcript on hover") {
                 settingsSwitch(isOn: appState.config.showMeetingTranscriptOnIndicatorHover) { newValue in
                     controller.updateConfig { $0.showMeetingTranscriptOnIndicatorHover = newValue }
                 }
             }
-            settingsDescription("Show recent live captions beside the floating meeting waveform.")
+            settingsDescription("Show recent transcript beside the waveform.")
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow(
-                "Live transcript",
+                "Live preview model",
                 description: meetingLiveTranscriptDescription,
                 controlWidth: meetingControlWidth
             ) {
@@ -915,7 +947,7 @@ struct SettingsView: View {
             settingsRow("Cleanup model", controlWidth: meetingControlWidth) {
                 settingsModelMenu(
                     currentModel: appState.config.postProcessorChatGPTModel,
-                    presets: SummaryModelPreset.chatGPTModels
+                    presets: SummaryModelPreset.chatGPTTranscriptCleanupModels
                 ) { controller.updatePostProcessorModel($0, for: backend) }
             }
         case .some(.openAI):
@@ -1197,7 +1229,7 @@ struct SettingsView: View {
                         onSelectIndex: { index in
                             guard index >= 0, index < options.count else { return }
                             controller.selectDictationInputDeviceUID(options[index].uid)
-                            refreshDictationInputDevices()
+                            refreshAudioInputDevices()
                         }
                     )
                     .frame(height: 24)

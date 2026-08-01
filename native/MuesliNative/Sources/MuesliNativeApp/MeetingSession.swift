@@ -1,5 +1,6 @@
 import FluidAudio
 import ApplicationServices
+import CoreAudio
 import Foundation
 import MuesliCore
 import os
@@ -245,6 +246,10 @@ final class MeetingSession {
 
     func updateBackend(_ backend: BackendOption) {
         backendLock.withLock { $0 = backend }
+    }
+
+    func setPreferredMicrophoneInputDeviceID(_ deviceID: AudioObjectID?) {
+        meetingMicRecorder.preferredInputDeviceID = deviceID
     }
 
     private func currentBackend() -> BackendOption {
@@ -696,6 +701,7 @@ final class MeetingSession {
             meetingStart: meetingStart
         )
 
+        let titleManualNotes = await manualNotesProvider?()
         let generatedTitle: String
         onProgress?(.generatingTitle)
         if let liveTitle = await userEditedLiveTitle() {
@@ -705,7 +711,11 @@ final class MeetingSession {
             calendarEventID: calendarEventID
         ) {
             generatedTitle = calendarTitle
-        } else if let autoTitle = await MeetingSummaryClient.generateTitle(transcript: rawTranscript, config: config),
+        } else if let autoTitle = await MeetingSummaryClient.generateTitle(
+            transcript: rawTranscript,
+            manualNotes: titleManualNotes,
+            config: config
+        ),
            !autoTitle.isEmpty {
             generatedTitle = autoTitle
             fputs("[meeting] auto-generated title: \(generatedTitle)\n", stderr)

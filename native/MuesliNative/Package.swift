@@ -45,6 +45,7 @@ let package = Package(
                 .product(name: "Atomics", package: "swift-atomics"),
                 .product(name: "DTLNAecCoreML", package: "dtln-aec-coreml"),
                 .product(name: "DTLNAec512", package: "dtln-aec-coreml"),
+                "AudioGraphExceptionBridge",
                 "LocalVQEBridge",
             ],
             path: "Sources/MuesliNativeApp",
@@ -65,6 +66,15 @@ let package = Package(
             path: "Sources/MuesliCLI"
         ),
         .target(
+            name: "AudioGraphExceptionBridge",
+            path: "Sources/AudioGraphExceptionBridge",
+            publicHeadersPath: "include",
+            linkerSettings: [
+                .linkedFramework("AudioToolbox"),
+                .linkedFramework("AVFAudio"),
+            ]
+        ),
+        .target(
             name: "LocalVQEBridge",
             path: "Sources/LocalVQEBridge",
             publicHeadersPath: "include"
@@ -76,7 +86,7 @@ let package = Package(
         ),
         .testTarget(
             name: "MuesliTests",
-            dependencies: ["MuesliNativeApp", "MuesliCore", "MuesliCLI", "LocalVQEBridge"],
+            dependencies: ["MuesliNativeApp", "MuesliCore", "MuesliCLI", "AudioGraphExceptionBridge", "LocalVQEBridge"],
             path: "Tests/MuesliTests",
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
