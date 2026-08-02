@@ -157,12 +157,29 @@ struct MeetingAutoStopPolicyTests {
         ) == nil)
     }
 
-    @Test("source-backed start origins can auto-stop after warning")
-    func sourceBackedStartOriginsCanAutoStopAfterWarning() {
+    @Test("detected prompt tracks source and only warns on signal loss")
+    func detectedPromptTracksSourceAndOnlyWarnsOnSignalLoss() {
+        let explicitSource = MeetingAutoStopSource(candidate: teamsCandidate())
+        let recentSource = MeetingAutoStopSource(candidate: googleMeetCandidate())
+        let origin = MeetingRecordingStartOrigin.detectedPrompt
+
+        #expect(origin.enablesMeetingAutoStop)
+        #expect(origin.signalLossResponse == .warnOnly)
+        #expect(origin.signalLossSource(
+            explicitSource: explicitSource,
+            recentSource: recentSource
+        ) == explicitSource)
+        #expect(origin.signalLossSource(
+            explicitSource: nil,
+            recentSource: recentSource
+        ) == recentSource)
+    }
+
+    @Test("remaining source-backed start origins can auto-stop after warning")
+    func remainingSourceBackedStartOriginsCanAutoStopAfterWarning() {
         let explicitSource = MeetingAutoStopSource(candidate: googleMeetCandidate())
         let recentSource = MeetingAutoStopSource(candidate: teamsCandidate())
         let origins: [MeetingRecordingStartOrigin] = [
-            .detectedPrompt,
             .calendarAutoRecord,
             .scheduledMeetingPrompt,
             .joinAndRecord,
