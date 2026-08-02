@@ -84,6 +84,7 @@ case "${shard}" in
       MeetingSummaryBackendTests
       MeetingResummarizationPolicyTests
       MeetingTemplateResolutionTests
+      MeetingTemplatesDefaultFallbackTests
       RouteAwareMeetingMicRecorderTests
       DisabledCalendarFilterTests
       GoogleCalendarTests

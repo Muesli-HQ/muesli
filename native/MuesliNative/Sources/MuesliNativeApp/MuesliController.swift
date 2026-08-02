@@ -2407,7 +2407,11 @@ final class MuesliController: NSObject {
     }
 
     func meetingTemplateSnapshot(for meeting: MeetingRecord) -> MeetingTemplateSnapshot {
-        MeetingTemplates.snapshot(for: meeting, customTemplates: config.customMeetingTemplates)
+        MeetingTemplates.snapshot(
+            for: meeting,
+            customTemplates: config.customMeetingTemplates,
+            defaultTemplateID: config.defaultMeetingTemplateID
+        )
     }
 
     func updateDefaultMeetingTemplate(id: String) {
@@ -4022,10 +4026,7 @@ final class MuesliController: NSObject {
                     throw MeetingRetranscriptionError.emptyTranscript
                 }
 
-                let templateSnapshot = MeetingTemplates.snapshot(
-                    for: meeting,
-                    customTemplates: self.config.customMeetingTemplates
-                )
+                let templateSnapshot = self.meetingTemplateSnapshot(for: meeting)
                 let formattedNotes: String
                 do {
                     formattedNotes = try await MeetingSummaryClient.summarize(
