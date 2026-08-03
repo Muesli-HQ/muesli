@@ -192,6 +192,41 @@ struct MediaPlaybackControllerTests {
         #expect(client.playbackState == .playing)
     }
 
+    @Test("a superseded resume does not block the next restore")
+    func supersededResumeDoesNotBlockNextRestore() {
+        // A new dictation retires the in-flight resume, but its callback has
+        // not run yet, so the token still points at the abandoned generation.
+        // Blocking on that would strand the obligation: the stale callback
+        // clears the token without resuming, and nothing left would retry.
+        let client = FakeMediaPlaybackClient(playbackState: .playing)
+        let controller = makeController(client: client)
+
+        controller.beginDictationMediaPause(enabled: true, routeKind: .speakerLike)
+        controller.waitForIdle()
+        #expect(client.playbackState == .notPlaying)
+
+        client.completesImmediately = false
+        controller.restoreDictationMediaPause()
+        #expect(waitUntil { client.pendingQueryCount == 1 })
+
+        // A new dictation supersedes that resume. Resolve only its own query,
+        // leaving the retired resume's callback still outstanding.
+        controller.beginDictationMediaPause(enabled: true, routeKind: .speakerLike)
+        #expect(waitUntil { client.pendingQueryCount == 2 })
+        client.completeLast(with: .notPlaying)
+
+        // It ends before the stale callback has run.
+        controller.restoreDictationMediaPause()
+
+        client.completesImmediately = true
+        while client.pendingQueryCount > 0 {
+            client.completeNext(with: .notPlaying)
+        }
+        controller.waitForIdle()
+
+        #expect(client.playbackState == .playing)
+    }
+
     @Test("a duplicate restore does not race the first resume")
     func duplicateRestoreDoesNotRaceFirstResume() {
         // stop, cancel, external-session end and the failure path all restore,
@@ -422,6 +457,15 @@ private final class FakeMediaPlaybackClient: MediaPlaybackClient, @unchecked Sen
     func completeNext(with playbackState: MediaPlaybackState) {
         lock.lock()
         let completion = pendingCompletions.removeFirst()
+        lock.unlock()
+        completion(playbackState)
+    }
+
+    /// Completes the most recently queued query, leaving earlier ones pending.
+    /// Lets a test resolve a newer session while an older one is still stalled.
+    func completeLast(with playbackState: MediaPlaybackState) {
+        lock.lock()
+        let completion = pendingCompletions.removeLast()
         lock.unlock()
         completion(playbackState)
     }
