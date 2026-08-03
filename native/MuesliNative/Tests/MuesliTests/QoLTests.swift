@@ -418,17 +418,108 @@ struct FloatingIndicatorPointerInteractionTests {
     }
 
     @MainActor
-    @Test("single-click retains its existing meeting command")
-    func singleClickStillRuns() {
+    @Test("clicking the stop control stops the meeting")
+    func stopControlStopsMeeting() throws {
         let indicator = makeIndicator()
         var stopCount = 0
         indicator.onStopMeeting = { stopCount += 1 }
         indicator.setMeetingRecording(true, config: AppConfig())
 
-        indicator.handleClick(atX: 50)
+        let size = try #require(indicator.controlHitTestSizeForTesting)
+        let stopFrame = FloatingIndicatorControlLayout.trailingControlFrame(in: size)
+        indicator.handleClick(at: CGPoint(x: stopFrame.midX, y: stopFrame.midY))
 
         #expect(stopCount == 1)
         indicator.close()
+    }
+
+    @MainActor
+    @Test("clicking the pill body no longer stops the meeting")
+    func bodyClickLeavesMeetingRecording() throws {
+        let indicator = makeIndicator()
+        var stopCount = 0
+        var pauseCount = 0
+        indicator.onStopMeeting = { stopCount += 1 }
+        indicator.onToggleMeetingPause = { pauseCount += 1 }
+        indicator.setMeetingRecording(true, config: AppConfig())
+
+        let size = try #require(indicator.controlHitTestSizeForTesting)
+        let bodyPoint = CGPoint(x: size.width / 2, y: size.height / 2)
+        // Guard the assumption that the pill centre really is body, so a future
+        // narrower pill fails here rather than silently weakening the test.
+        #expect(FloatingIndicatorControlLayout.hit(at: bodyPoint, in: size) == .body)
+
+        indicator.handleClick(at: bodyPoint)
+
+        #expect(stopCount == 0)
+        #expect(pauseCount == 0)
+        indicator.close()
+    }
+
+    @Test("stop hit region tracks the drawn control instead of the pill body")
+    func stopHitRegionMatchesDrawnControl() {
+        let size = CGSize(width: 190, height: 34)
+        let stopFrame = FloatingIndicatorControlLayout.trailingControlFrame(in: size)
+
+        // The drawn dot and its immediate surround stop the recording.
+        #expect(FloatingIndicatorControlLayout.hit(
+            at: CGPoint(x: stopFrame.midX, y: stopFrame.midY),
+            in: size
+        ) == .trailingControl)
+
+        // The old behaviour treated everything past x=30 as a stop.
+        for x in stride(from: 30.0, through: 150.0, by: 20.0) {
+            #expect(FloatingIndicatorControlLayout.hit(
+                at: CGPoint(x: x, y: size.height / 2),
+                in: size
+            ) == .body)
+        }
+    }
+
+    @Test("leading control keeps its own hit region")
+    func leadingHitRegionMatchesDrawnControl() {
+        let size = CGSize(width: 190, height: 34)
+        let leadingFrame = FloatingIndicatorControlLayout.leadingControlFrame(in: size)
+
+        #expect(FloatingIndicatorControlLayout.hit(
+            at: CGPoint(x: leadingFrame.midX, y: leadingFrame.midY),
+            in: size
+        ) == .leadingControl)
+
+        // Just outside the widened target is body, not a control.
+        #expect(FloatingIndicatorControlLayout.hit(
+            at: CGPoint(x: 40, y: size.height / 2),
+            in: size
+        ) == .body)
+    }
+
+    @Test("controls stay reachable across the pill's full height")
+    func controlsSpanFullPillHeight() {
+        let size = CGSize(width: 190, height: 34)
+        let stopFrame = FloatingIndicatorControlLayout.trailingControlFrame(in: size)
+
+        for y in [0.5, size.height / 2, size.height - 0.5] {
+            #expect(FloatingIndicatorControlLayout.hit(
+                at: CGPoint(x: stopFrame.midX, y: y),
+                in: size
+            ) == .trailingControl)
+        }
+    }
+
+    @Test("a narrow pill resolves overlapping targets to the nearer control")
+    func narrowPillPrefersNearerControl() {
+        let size = CGSize(width: 36, height: 34)
+        let leadingFrame = FloatingIndicatorControlLayout.leadingControlFrame(in: size)
+        let trailingFrame = FloatingIndicatorControlLayout.trailingControlFrame(in: size)
+
+        #expect(FloatingIndicatorControlLayout.hit(
+            at: CGPoint(x: leadingFrame.midX, y: size.height / 2),
+            in: size
+        ) == .leadingControl)
+        #expect(FloatingIndicatorControlLayout.hit(
+            at: CGPoint(x: trailingFrame.midX, y: size.height / 2),
+            in: size
+        ) == .trailingControl)
     }
 
     @MainActor

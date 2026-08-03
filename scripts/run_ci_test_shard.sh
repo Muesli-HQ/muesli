@@ -23,6 +23,7 @@ case "${shard}" in
       ChatGPTAuthTests
       ChatGPTTokenStorageTests
       FloatingIndicatorVisibilityTests
+      FloatingIndicatorPointerInteractionTests
       IndicatorFrameSizeTests
       OpenAILogoShapeTests
       MeetingChunkCollectorTests
