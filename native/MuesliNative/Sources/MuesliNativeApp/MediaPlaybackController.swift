@@ -94,6 +94,9 @@ final class MediaPlaybackController: MediaPlaybackManaging {
     private var pauseState: PauseState = .idle
     private var generation = 0
     private var inFlight = 0
+    /// We paused media and have not yet confirmed it resumed. Survives session
+    /// boundaries so a cancelled resume is retried rather than dropped.
+    private var owesResume = false
 
     init(
         client: MediaPlaybackClient = SystemMediaPlaybackClient(),
@@ -143,14 +146,30 @@ final class MediaPlaybackController: MediaPlaybackManaging {
                 MediaPlaybackLogging.log("restore cancelled pending pause")
                 pauseState = .idle
                 generation += 1
+                resumeIfOwed()
             case let .paused(token):
                 guard token == generation else { return }
                 pauseState = .idle
                 ensure(.play, token: token)
             case .idle:
-                return
+                resumeIfOwed()
             }
         }
+    }
+
+    /// Resumes media this controller paused but has not yet confirmed resumed.
+    ///
+    /// A dictation that starts while a resume is still in flight bumps
+    /// `generation` and cancels that resume — possibly before its toggle was
+    /// ever sent, since the resume begins with a state query. Discarding the
+    /// obligation there would leave media paused indefinitely: the next
+    /// session's begin reads `notPlaying` and correctly declines to pause, so
+    /// nothing afterwards owns the resume. Carrying it forward means the next
+    /// restore finishes the job.
+    private func resumeIfOwed() {
+        guard owesResume else { return }
+        MediaPlaybackLogging.log("restore honouring outstanding resume obligation")
+        ensure(.play, token: generation)
     }
 
     private func startBeginPlaybackCheck() {
@@ -177,6 +196,7 @@ final class MediaPlaybackController: MediaPlaybackManaging {
             return
         }
         pauseState = .paused(token)
+        owesResume = true
         ensure(.pause, token: token)
     }
 
@@ -186,6 +206,12 @@ final class MediaPlaybackController: MediaPlaybackManaging {
         attempt(command, token: token, attemptsRemaining: policy.maxToggleAttempts) { [weak self] settled in
             guard let self else { return }
             MediaPlaybackLogging.log("\(command) settled=\(settled)")
+            if command == .play, settled {
+                // Discharged only on confirmation. A resume that was abandoned
+                // or whose toggle was lost keeps the obligation, so the next
+                // restore retries it rather than stranding media paused.
+                self.owesResume = false
+            }
             self.endOperation()
         }
     }

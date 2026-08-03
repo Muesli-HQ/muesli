@@ -157,6 +157,41 @@ struct MediaPlaybackControllerTests {
         #expect(client.playbackState == .notPlaying)
     }
 
+    @Test("a dictation starting during an in-flight resume does not strand media paused")
+    func dictationDuringInFlightResumeDoesNotStrandMedia() {
+        // The resume begins with a state query, so a dictation starting inside
+        // that window cancels it before any toggle is sent. The next begin then
+        // reads not-playing and correctly declines to pause — leaving nobody
+        // owning the resume unless the obligation is carried forward.
+        let client = FakeMediaPlaybackClient(playbackState: .playing)
+        let controller = makeController(client: client)
+
+        controller.beginDictationMediaPause(enabled: true, routeKind: .speakerLike)
+        controller.waitForIdle()
+        #expect(client.playbackState == .notPlaying)
+
+        // Hold the resume's query open so its toggle is never sent.
+        client.completesImmediately = false
+        controller.restoreDictationMediaPause()
+        #expect(waitUntil { client.pendingQueryCount == 1 })
+
+        // A new dictation starts inside that window.
+        controller.beginDictationMediaPause(enabled: true, routeKind: .speakerLike)
+        client.completesImmediately = true
+        while client.pendingQueryCount > 0 {
+            client.completeNext(with: .notPlaying)
+        }
+        controller.waitForIdle()
+
+        // Correctly declines to pause media that is already paused.
+        #expect(client.playbackState == .notPlaying)
+
+        // The outstanding resume must still be honoured on release.
+        controller.restoreDictationMediaPause()
+        controller.waitForIdle()
+        #expect(client.playbackState == .playing)
+    }
+
     @Test("begin does not block while playback state is pending")
     func beginDoesNotBlockWhilePlaybackStatePending() {
         let client = FakeMediaPlaybackClient(playbackState: .playing, completesImmediately: false)
