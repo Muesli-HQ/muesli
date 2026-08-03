@@ -655,6 +655,9 @@ actor TranscriptionCoordinator {
             } else {
                 throw AppleSpeechAnalyzerError.unavailable
             }
+        case "openai":
+            // Cloud provider — nothing to download or warm up locally.
+            break
         default:
             throw NSError(domain: "MuesliTranscriptionRuntime", code: 5, userInfo: [
                 NSLocalizedDescriptionKey: "Unknown transcription backend: \(backend.backend)",
@@ -913,7 +916,8 @@ actor TranscriptionCoordinator {
         appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier,
         enablePostProcessor: Bool = false,
         customWords: [[String: Any]] = [],
-        appContext: String? = nil
+        appContext: String? = nil,
+        openAIConfiguration: OpenAIDictationConfiguration? = nil
     ) async throws -> SpeechTranscriptionResult {
         // Qwen3 post-processing is intentionally dictation-only. Meeting transcription should keep raw backend/Parakeet output.
         // Cohere decodes hallucinated text from silence — skip if VAD detects no speech
@@ -937,7 +941,8 @@ actor TranscriptionCoordinator {
             whisperLanguage: whisperLanguage,
             qwen3AsrLanguage: qwen3AsrLanguage,
             parakeetLanguage: parakeetLanguage,
-            appleSpeechLanguage: appleSpeechLanguage
+            appleSpeechLanguage: appleSpeechLanguage,
+            openAIConfiguration: openAIConfiguration
         )
         result = removeArtifacts(result)
         if !result.text.isEmpty {
@@ -1355,7 +1360,8 @@ actor TranscriptionCoordinator {
         whisperLanguage: WhisperKitLanguage,
         qwen3AsrLanguage: Qwen3AsrLanguage,
         parakeetLanguage: ParakeetLanguage,
-        appleSpeechLanguage: String
+        appleSpeechLanguage: String,
+        openAIConfiguration: OpenAIDictationConfiguration? = nil
     ) async throws -> SpeechTranscriptionResult {
         switch backend.backend {
         case "whisper":
@@ -1385,9 +1391,35 @@ actor TranscriptionCoordinator {
                 )
             }
             throw AppleSpeechAnalyzerError.unavailable
+        case "openai":
+            guard let openAIConfiguration else {
+                throw OpenAITranscriptionError.missingAPIKey
+            }
+            return try await transcribeWithOpenAI(
+                url: url,
+                model: openAIConfiguration.model,
+                apiKey: openAIConfiguration.apiKey
+            )
         default:
             return try await transcribeWithFluidAudio(url: url, language: parakeetLanguage)
         }
+    }
+
+    // MARK: - OpenAI (Cloud Speech-to-Text)
+
+    private func transcribeWithOpenAI(url: URL, model: String, apiKey: String) async throws -> SpeechTranscriptionResult {
+        fputs("[muesli-native] transcribing with OpenAI (\(model)): \(url.lastPathComponent)\n", stderr)
+        let start = CFAbsoluteTimeGetCurrent()
+        let text = try await OpenAITranscriptionClient.transcribe(
+            audioURL: url,
+            configuration: OpenAIDictationConfiguration(apiKey: apiKey, model: model)
+        )
+        let elapsedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
+        fputs("[muesli-native] OpenAI result: \(text.prefix(80)) (took \(String(format: "%.1f", elapsedMs))ms)\n", stderr)
+        return SpeechTranscriptionResult(
+            text: text,
+            segments: text.isEmpty ? [] : [SpeechSegment(start: 0, end: 0, text: text)]
+        )
     }
 
     // MARK: - FluidAudio (Parakeet on ANE)

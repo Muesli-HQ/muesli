@@ -3098,3 +3098,77 @@ struct ParakeetLanguageTests {
         #expect(decoded.resolvedParakeetLanguage == .german)
     }
 }
+
+@Suite("OpenAIDictationProvider")
+struct OpenAIDictationProviderTests {
+    @Test("openAITranscription backend is openai")
+    func openAITranscriptionBackend() {
+        let option = BackendOption.openAITranscription()
+        #expect(option.backend == "openai")
+        #expect(option.label == "OpenAI")
+    }
+
+    @Test("openAITranscription keeps configured model")
+    func openAITranscriptionKeepsModel() {
+        #expect(BackendOption.openAITranscription(model: "whisper-1").model == "whisper-1")
+    }
+
+    @Test("openai backend requires no download")
+    func openAIIsDownloaded() {
+        #expect(BackendOption.openAITranscription().isDownloaded)
+    }
+
+    @Test("openai backend is excluded from meeting transcription")
+    func openAIExcludedFromMeetings() {
+        #expect(!BackendOption.openAITranscription().supportsMeetingTranscription)
+        #expect(!BackendOption.openAITranscription().isStreamingDictationBackend)
+    }
+
+    @Test("DictationProvider resolves raw values")
+    func providerResolution() {
+        #expect(DictationProvider.resolved("local") == .local)
+        #expect(DictationProvider.resolved("openAI") == .openAI)
+        #expect(DictationProvider.resolved(nil) == .local)
+        #expect(DictationProvider.resolved("bogus") == .local)
+    }
+
+    @Test("AppConfig persists provider settings")
+    func configRoundTrip() throws {
+        var config = AppConfig()
+        config.dictationProvider = DictationProvider.openAI.rawValue
+        config.openaiDictationModel = "whisper-1"
+        let data = try JSONEncoder().encode(config)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        #expect(json?["dictation_provider"] as? String == "openAI")
+        #expect(json?["openai_dictation_model"] as? String == "whisper-1")
+
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+        #expect(decoded.resolvedDictationProvider == .openAI)
+        #expect(decoded.openaiDictationModel == "whisper-1")
+    }
+
+    @Test("OpenAITranscriptionClient normalizes empty model")
+    func normalizeModel() {
+        #expect(OpenAITranscriptionClient.normalizeModel("") == OpenAITranscriptionClient.defaultModel)
+        #expect(OpenAITranscriptionClient.normalizeModel("  whisper-1  ") == "whisper-1")
+    }
+
+    @Test("OpenAI multipart body includes required fields and audio")
+    func multipartBody() {
+        let audio = Data([0x00, 0x01, 0xFF])
+        let body = OpenAITranscriptionClient.makeMultipartBody(
+            boundary: "test-boundary",
+            filename: "dictation.wav",
+            fileData: audio,
+            model: "gpt-4o-mini-transcribe"
+        )
+        let text = String(decoding: body, as: UTF8.self)
+
+        #expect(text.contains("name=\"model\""))
+        #expect(text.contains("gpt-4o-mini-transcribe"))
+        #expect(text.contains("name=\"response_format\""))
+        #expect(text.contains("filename=\"dictation.wav\""))
+        #expect(text.contains("Content-Type: audio/wav"))
+        #expect(body.range(of: audio) != nil)
+    }
+}

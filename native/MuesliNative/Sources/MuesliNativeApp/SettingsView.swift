@@ -177,6 +177,13 @@ struct SettingsView: View {
     let appState: AppState
     let controller: MuesliController
 
+    private enum OpenAIConnectionTestState: Equatable {
+        case idle
+        case testing
+        case success
+        case failed(String)
+    }
+
     @State private var chatGPTSignInError: String?
     @State private var isSigningInChatGPT = false
     @State private var openRouterSignInError: String?
@@ -212,11 +219,14 @@ struct SettingsView: View {
     @State private var isShowingICloudSyncReconnectConfirmation = false
     @State private var isShowingICloudSyncResetConfirmation = false
     @State private var isShowingIPhoneBridgeQRCode = false
+    @State private var openAIDictationAPIKey: String = ""
+    @State private var openAITestState: OpenAIConnectionTestState = .idle
 
     init(appState: AppState, controller: MuesliController) {
         self.appState = appState
         self.controller = controller
         _selectedPane = State(initialValue: appState.selectedSettingsPane)
+        _openAIDictationAPIKey = State(initialValue: controller.openAIDictationAPIKey())
     }
 
     // Uniform width for standard right-side controls.
@@ -988,6 +998,21 @@ struct SettingsView: View {
 
     private var dictationModelSettingsSection: some View {
         settingsSection("Speech Recognition") {
+            settingsRow("Provider", controlWidth: meetingControlWidth) {
+                settingsMenu(
+                    selection: appState.dictationProvider.label,
+                    options: DictationProvider.allCases.map(\.label)
+                ) { label in
+                    if let provider = DictationProvider.allCases.first(where: { $0.label == label }) {
+                        controller.selectDictationProvider(provider)
+                    }
+                }
+            }
+            Divider().background(MuesliTheme.surfaceBorder)
+            if appState.dictationProvider == .openAI {
+                openAIDictationSettingsRows
+                Divider().background(MuesliTheme.surfaceBorder)
+            }
             settingsRow("Dictation model", controlWidth: meetingControlWidth) {
                 settingsMenu(
                     selection: appState.selectedBackend.label,
@@ -998,6 +1023,9 @@ struct SettingsView: View {
                         controller.selectBackend(option)
                     }
                 }
+            }
+            if appState.dictationProvider == .openAI {
+                settingsDescription("Local model used when Local is selected.")
             }
             if !disabledDictationBackendLabels.isEmpty {
                 settingsDescription("Gemma 4 dictation is unavailable while Gemma 4 is the cleanup backend.")
@@ -1019,6 +1047,94 @@ struct SettingsView: View {
                 settingsRow("Whisper language", controlWidth: meetingControlWidth) {
                     whisperLanguageMenu
                 }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var openAIDictationSettingsRows: some View {
+        settingsRow("API Key", controlWidth: meetingControlWidth) {
+            PastableSecureField(
+                text: openAIDictationAPIKey,
+                placeholder: "sk-...",
+                onChange: { val in
+                    openAIDictationAPIKey = val
+                    controller.setOpenAIDictationAPIKey(val)
+                }
+            )
+            .frame(height: 22)
+        }
+        Divider().background(MuesliTheme.surfaceBorder)
+        settingsRow("Model", controlWidth: meetingControlWidth) {
+            settingsModelMenu(
+                currentModel: appState.config.openaiDictationModel,
+                presets: openAIDictationModelPresets
+            ) { controller.selectOpenAIDictationModel($0) }
+        }
+        Divider().background(MuesliTheme.surfaceBorder)
+        settingsRow("Connection", controlWidth: meetingControlWidth) {
+            openAITestControl
+        }
+    }
+
+    private var openAIDictationModelPresets: [SummaryModelPreset] {
+        OpenAITranscriptionClient.modelPresets.map { SummaryModelPreset(id: $0, label: $0) }
+    }
+
+    @ViewBuilder
+    private var openAITestControl: some View {
+        switch openAITestState {
+        case .idle:
+            HStack {
+                Spacer()
+                compactActionButton("Test connection") {
+                    testOpenAIConnection()
+                }
+            }
+        case .testing:
+            HStack(spacing: 8) {
+                Spacer()
+                ProgressView()
+                    .controlSize(.small)
+                Text("Testing…")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(MuesliTheme.textTertiary)
+            }
+        case .success:
+            HStack(spacing: 6) {
+                Spacer()
+                Circle()
+                    .fill(MuesliTheme.success)
+                    .frame(width: 6, height: 6)
+                Text("Connected")
+                    .font(.system(size: 11))
+                    .foregroundStyle(MuesliTheme.success)
+                compactActionButton("Test again") {
+                    testOpenAIConnection()
+                }
+            }
+        case .failed(let message):
+            HStack(spacing: 6) {
+                Spacer()
+                Text("Failed")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(MuesliTheme.recording)
+                    .help(message)
+                compactActionButton("Retry") {
+                    testOpenAIConnection()
+                }
+            }
+        }
+    }
+
+    private func testOpenAIConnection() {
+        openAITestState = .testing
+        Task {
+            do {
+                try await controller.testOpenAIConnection()
+                await MainActor.run { openAITestState = .success }
+            } catch {
+                await MainActor.run { openAITestState = .failed(error.localizedDescription) }
             }
         }
     }
@@ -3783,6 +3899,32 @@ struct SettingsView: View {
 /// Required because the app runs as .accessory (no menu bar), so key equivalents
 /// don't route to text fields by default.
 class EditableNSSecureTextField: NSSecureTextField {
+    private var outsideClickMonitor: Any?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        removeOutsideClickMonitor()
+        guard window != nil else { return }
+
+        outsideClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            guard let self,
+                  self.currentEditor() != nil,
+                  event.window === self.window else {
+                return event
+            }
+
+            let hitView = event.window?.contentView?.hitTest(event.locationInWindow)
+            guard !Self.isTextInputView(hitView) else { return event }
+
+            self.window?.makeFirstResponder(nil)
+            return event
+        }
+    }
+
+    deinit {
+        removeOutsideClickMonitor()
+    }
+
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.modifierFlags.contains(.command) {
             switch event.charactersIgnoringModifiers {
@@ -3799,6 +3941,24 @@ class EditableNSSecureTextField: NSSecureTextField {
             }
         }
         return super.performKeyEquivalent(with: event)
+    }
+
+    private func removeOutsideClickMonitor() {
+        if let outsideClickMonitor {
+            NSEvent.removeMonitor(outsideClickMonitor)
+            self.outsideClickMonitor = nil
+        }
+    }
+
+    private static func isTextInputView(_ view: NSView?) -> Bool {
+        var candidate = view
+        while let current = candidate {
+            if current is NSTextField || current is NSTextView {
+                return true
+            }
+            candidate = current.superview
+        }
+        return false
     }
 }
 

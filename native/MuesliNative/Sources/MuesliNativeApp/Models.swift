@@ -143,6 +143,19 @@ struct BackendOption: Equatable {
         recommended: false
     )
 
+    /// OpenAI cloud dictation provider. The model is user-configurable, so this
+    /// is built dynamically at selection time rather than being a fixed static.
+    static func openAITranscription(model: String = OpenAITranscriptionClient.defaultModel) -> BackendOption {
+        BackendOption(
+            backend: "openai",
+            model: OpenAITranscriptionClient.normalizeModel(model),
+            label: "OpenAI",
+            sizeLabel: "Cloud",
+            description: "OpenAI Speech-to-Text using your own API key. Requires an OpenAI API key in Settings → Dictation.",
+            recommended: false
+        )
+    }
+
     static let gemma4E4BLiteRT = BackendOption(
         backend: "gemma4-litert",
         model: Gemma4LiteRTModel.e4b.repoID,
@@ -279,7 +292,7 @@ struct BackendOption: Equatable {
     }
 
     var supportsMeetingTranscription: Bool {
-        !isStreamingDictationBackend
+        !isStreamingDictationBackend && backend != "openai"
     }
 
     var isSystemManaged: Bool {
@@ -338,6 +351,9 @@ struct BackendOption: Equatable {
                 return AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem
             }
             return false
+        case "openai":
+            // Cloud provider — no local download required.
+            return true
         default:
             return false
         }
@@ -1411,6 +1427,8 @@ struct AppConfig: Codable {
     var computerUseTimeoutSeconds: Int = 120
     var sttBackend: String = BackendOption.parakeetUnified.backend
     var sttModel: String = BackendOption.parakeetUnified.model
+    var dictationProvider: String = DictationProvider.defaultProvider.rawValue
+    var openaiDictationModel: String = OpenAITranscriptionClient.defaultModel
     var dictationInputDeviceUID: String? = nil
     var meetingInputDeviceUID: String? = nil
     var cohereLanguage: String = CohereTranscribeLanguage.defaultLanguage.rawValue
@@ -1546,6 +1564,8 @@ struct AppConfig: Codable {
         case computerUseTimeoutSeconds = "computer_use_timeout_seconds"
         case sttBackend = "stt_backend"
         case sttModel = "stt_model"
+        case dictationProvider = "dictation_provider"
+        case openaiDictationModel = "openai_dictation_model"
         case dictationInputDeviceUID = "dictation_input_device_uid"
         case meetingInputDeviceUID = "meeting_input_device_uid"
         case cohereLanguage = "cohere_language"
@@ -1687,6 +1707,8 @@ struct AppConfig: Codable {
         computerUseTimeoutSeconds = (try? c.decode(Int.self, forKey: .computerUseTimeoutSeconds)) ?? defaults.computerUseTimeoutSeconds
         sttBackend = (try? c.decode(String.self, forKey: .sttBackend)) ?? defaults.sttBackend
         sttModel = (try? c.decode(String.self, forKey: .sttModel)) ?? defaults.sttModel
+        dictationProvider = DictationProvider.resolved(try? c.decode(String.self, forKey: .dictationProvider)).rawValue
+        openaiDictationModel = (try? c.decode(String.self, forKey: .openaiDictationModel)) ?? defaults.openaiDictationModel
         dictationInputDeviceUID = try? c.decode(String.self, forKey: .dictationInputDeviceUID)
         meetingInputDeviceUID = try? c.decode(String.self, forKey: .meetingInputDeviceUID)
         cohereLanguage = CohereTranscribeLanguage.resolvedCode(try? c.decode(String.self, forKey: .cohereLanguage))
@@ -1885,6 +1907,10 @@ struct AppConfig: Codable {
 
     var resolvedCohereLanguage: CohereTranscribeLanguage {
         CohereTranscribeLanguage.resolved(cohereLanguage)
+    }
+
+    var resolvedDictationProvider: DictationProvider {
+        DictationProvider.resolved(dictationProvider)
     }
 
     var resolvedIndicASRLanguage: IndicASRLanguage {
