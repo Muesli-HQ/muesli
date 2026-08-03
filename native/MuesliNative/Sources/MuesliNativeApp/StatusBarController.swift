@@ -154,6 +154,22 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.setSubmenu(backendMenu, for: backendItem)
         menu.addItem(backendItem)
 
+        let providerItem = NSMenuItem(title: "Dictation Provider", action: nil, keyEquivalent: "")
+        let providerMenu = NSMenu()
+        for provider in DictationProvider.allCases {
+            let prefix = controller.selectedDictationProvider == provider ? "✓ " : ""
+            let item = NSMenuItem(
+                title: "\(prefix)\(provider.label)",
+                action: #selector(MuesliController.selectDictationProviderFromMenu(_:)),
+                keyEquivalent: ""
+            )
+            item.target = controller
+            item.representedObject = provider.rawValue
+            providerMenu.addItem(item)
+        }
+        menu.setSubmenu(providerMenu, for: providerItem)
+        menu.addItem(providerItem)
+
         let meetingBackendItem = NSMenuItem(title: "Meetings Backend", action: nil, keyEquivalent: "")
         let meetingBackendMenu = NSMenu()
         for option in MeetingSummaryBackendOption.all {

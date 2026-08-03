@@ -2409,3 +2409,83 @@ struct AppConfigAppearanceTests {
         #expect(json?["recording_color_hex"] as? String == "eff1f5")
     }
 }
+
+@Suite("OpenAIDictationProvider")
+struct OpenAIDictationProviderTests {
+
+    @Test("openAITranscription backend is openai")
+    func openAITranscriptionBackend() {
+        let option = BackendOption.openAITranscription()
+        #expect(option.backend == "openai")
+        #expect(option.label == "OpenAI")
+    }
+
+    @Test("openAITranscription keeps configured model")
+    func openAITranscriptionKeepsModel() {
+        let option = BackendOption.openAITranscription(model: "whisper-1")
+        #expect(option.model == "whisper-1")
+    }
+
+    @Test("openai backend requires no download")
+    func openAIIsDownloaded() {
+        #expect(BackendOption.openAITranscription().isDownloaded)
+    }
+
+    @Test("openai backend is excluded from meeting transcription")
+    func openAIExcludedFromMeetings() {
+        #expect(!BackendOption.openAITranscription().supportsMeetingTranscription)
+        #expect(!BackendOption.openAITranscription().isStreamingDictationBackend)
+    }
+
+    @Test("isOpenAI detects the openai backend")
+    func isOpenAI() {
+        #expect(BackendOption.isOpenAI(BackendOption.openAITranscription()))
+        #expect(!BackendOption.isOpenAI(BackendOption.parakeetMultilingual))
+    }
+
+    @Test("DictationProvider resolves raw values")
+    func providerResolution() {
+        #expect(DictationProvider.resolved("local") == .local)
+        #expect(DictationProvider.resolved("openAI") == .openAI)
+        #expect(DictationProvider.resolved(nil) == .local)
+        #expect(DictationProvider.resolved("bogus") == .local)
+    }
+
+    @Test("AppConfig default provider is local")
+    func configDefaultProvider() {
+        #expect(AppConfig().resolvedDictationProvider == .local)
+        #expect(AppConfig().openaiDictationModel == OpenAITranscriptionClient.defaultModel)
+        #expect(AppConfig().openaiDictationFallbackToLocal)
+    }
+
+    @Test("dictationProvider CodingKey is dictation_provider")
+    func dictationProviderCodingKey() throws {
+        var config = AppConfig()
+        config.dictationProvider = DictationProvider.openAI.rawValue
+        config.openaiDictationModel = "whisper-1"
+        config.openaiDictationFallbackToLocal = false
+        let data = try JSONEncoder().encode(config)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        #expect(json?["dictation_provider"] as? String == "openAI")
+        #expect(json?["openai_dictation_model"] as? String == "whisper-1")
+        #expect(json?["openai_dictation_fallback_to_local"] as? Bool == false)
+    }
+
+    @Test("decoded AppConfig preserves provider settings")
+    func dictationProviderRoundTrip() throws {
+        let json = """
+        {"dictation_provider":"openAI","openai_dictation_model":"gpt-4o-transcribe","openai_dictation_fallback_to_local":false}
+        """
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+        #expect(config.resolvedDictationProvider == .openAI)
+        #expect(config.openaiDictationModel == "gpt-4o-transcribe")
+        #expect(!config.openaiDictationFallbackToLocal)
+    }
+
+    @Test("OpenAITranscriptionClient normalizes empty model")
+    func normalizeModel() {
+        #expect(OpenAITranscriptionClient.normalizeModel("") == OpenAITranscriptionClient.defaultModel)
+        #expect(OpenAITranscriptionClient.normalizeModel("  whisper-1  ") == "whisper-1")
+        #expect(OpenAITranscriptionClient.normalizeModel("gpt-4o-transcribe") == "gpt-4o-transcribe")
+    }
+}

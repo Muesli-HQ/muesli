@@ -109,6 +109,23 @@ struct BackendOption: Equatable {
         recommended: false
     )
 
+    /// OpenAI cloud dictation provider. The model is user-configurable, so this
+    /// is built dynamically at selection time rather than being a fixed static.
+    static func openAITranscription(model: String = OpenAITranscriptionClient.defaultModel) -> BackendOption {
+        BackendOption(
+            backend: "openai",
+            model: OpenAITranscriptionClient.normalizeModel(model),
+            label: "OpenAI",
+            sizeLabel: "Cloud",
+            description: "OpenAI Speech-to-Text using your own API key. Requires an OpenAI API key in Settings → Dictation.",
+            recommended: false
+        )
+    }
+
+    static func isOpenAI(_ option: BackendOption) -> Bool {
+        option.backend == "openai"
+    }
+
     // Default alias
     static let whisper = parakeetMultilingual
 
@@ -170,7 +187,7 @@ struct BackendOption: Equatable {
     }
 
     var supportsMeetingTranscription: Bool {
-        !isStreamingDictationBackend
+        !isStreamingDictationBackend && backend != "openai"
     }
 
     static func resolveDownloaded(
@@ -222,6 +239,9 @@ struct BackendOption: Equatable {
             return SenseVoiceTranscriber.isModelDownloaded()
         case "gemma4-litert":
             return Gemma4LiteRTModelStore.isAvailableLocally()
+        case "openai":
+            // Cloud provider — no local download required.
+            return true
         default:
             return false
         }
@@ -1029,6 +1049,9 @@ struct AppConfig: Codable {
     var computerUseTimeoutSeconds: Int = 120
     var sttBackend: String = BackendOption.whisper.backend
     var sttModel: String = BackendOption.whisper.model
+    var dictationProvider: String = DictationProvider.defaultProvider.rawValue
+    var openaiDictationModel: String = OpenAITranscriptionClient.defaultModel
+    var openaiDictationFallbackToLocal: Bool = true
     var dictationInputDeviceUID: String? = nil
     var meetingInputDeviceUID: String? = nil
     var cohereLanguage: String = CohereTranscribeLanguage.defaultLanguage.rawValue
@@ -1149,6 +1172,9 @@ struct AppConfig: Codable {
         case computerUseTimeoutSeconds = "computer_use_timeout_seconds"
         case sttBackend = "stt_backend"
         case sttModel = "stt_model"
+        case dictationProvider = "dictation_provider"
+        case openaiDictationModel = "openai_dictation_model"
+        case openaiDictationFallbackToLocal = "openai_dictation_fallback_to_local"
         case dictationInputDeviceUID = "dictation_input_device_uid"
         case meetingInputDeviceUID = "meeting_input_device_uid"
         case cohereLanguage = "cohere_language"
@@ -1275,6 +1301,9 @@ struct AppConfig: Codable {
         computerUseTimeoutSeconds = (try? c.decode(Int.self, forKey: .computerUseTimeoutSeconds)) ?? defaults.computerUseTimeoutSeconds
         sttBackend = (try? c.decode(String.self, forKey: .sttBackend)) ?? defaults.sttBackend
         sttModel = (try? c.decode(String.self, forKey: .sttModel)) ?? defaults.sttModel
+        dictationProvider = DictationProvider.resolved(try? c.decode(String.self, forKey: .dictationProvider)).rawValue
+        openaiDictationModel = (try? c.decode(String.self, forKey: .openaiDictationModel)) ?? defaults.openaiDictationModel
+        openaiDictationFallbackToLocal = (try? c.decode(Bool.self, forKey: .openaiDictationFallbackToLocal)) ?? defaults.openaiDictationFallbackToLocal
         dictationInputDeviceUID = try? c.decode(String.self, forKey: .dictationInputDeviceUID)
         meetingInputDeviceUID = try? c.decode(String.self, forKey: .meetingInputDeviceUID)
         cohereLanguage = CohereTranscribeLanguage.resolvedCode(try? c.decode(String.self, forKey: .cohereLanguage))
@@ -1442,6 +1471,10 @@ struct AppConfig: Codable {
 
     var resolvedCohereLanguage: CohereTranscribeLanguage {
         CohereTranscribeLanguage.resolved(cohereLanguage)
+    }
+
+    var resolvedDictationProvider: DictationProvider {
+        DictationProvider.resolved(dictationProvider)
     }
 
     var resolvedIndicASRLanguage: IndicASRLanguage {
