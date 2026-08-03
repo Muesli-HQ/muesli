@@ -279,6 +279,13 @@ struct MuesliAudioTranscriptionPipeline {
     }
 
     func run(request: MuesliAudioTranscriptionRequest, context: CLIContext) async throws -> MuesliAudioTranscriptionResult {
+        let customWords: [CustomWord]?
+        if let dictionaryURL = request.dictionaryURL {
+            customWords = try Self.loadCustomWords(from: dictionaryURL)
+        } else {
+            customWords = nil
+        }
+
         fputs("[muesli-cli] preparing audio...\n", stderr)
         let prepared = try await audioPreparer.prepareAudio(sourceURL: request.sourceURL)
         defer {
@@ -299,8 +306,7 @@ struct MuesliAudioTranscriptionPipeline {
         guard !transcript.isEmpty else {
             throw CLIError.invalidInput("No speech was transcribed from the selected audio file.", fix: "Check that the file contains audible speech and try again.")
         }
-        if let dictionaryURL = request.dictionaryURL {
-            let customWords = try Self.loadCustomWords(from: dictionaryURL)
+        if let customWords {
             transcript = CustomWordMatcher.apply(text: transcript, customWords: customWords)
             transcript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !transcript.isEmpty else {

@@ -157,6 +157,35 @@ struct MuesliCLITests {
         }
     }
 
+    @Test("pipeline validates the dictionary before transcription")
+    func pipelineValidatesDictionaryBeforeTranscription() async throws {
+        let fixture = try TranscribeFixture()
+        let missingDictionaryURL = fixture.directory.appendingPathComponent("missing-dictionary.json")
+        let pipeline = MuesliAudioTranscriptionPipeline(
+            audioPreparer: FakeAudioPreparer(wavURL: fixture.wavURL, durationSeconds: 3),
+            transcriber: FailingTranscriber(),
+            summarizer: SuccessfulSummarizer(notes: "should not run"),
+            dataChangePoster: {}
+        )
+
+        do {
+            _ = try await pipeline.run(
+                request: MuesliAudioTranscriptionRequest(
+                    sourceURL: fixture.sourceURL,
+                    model: .parakeetV3,
+                    title: "Fail Fast Demo",
+                    summarize: false,
+                    saveMeeting: false,
+                    dictionaryURL: missingDictionaryURL
+                ),
+                context: fixture.context
+            )
+            Issue.record("Expected the missing dictionary to fail before transcription")
+        } catch let error as CLIError {
+            #expect(error.errorBody.code == "not_found")
+        }
+    }
+
     @Test("pipeline applies the dictionary to the transcript")
     func pipelineAppliesDictionary() async throws {
         let fixture = try TranscribeFixture()
@@ -422,6 +451,12 @@ private struct FakeTranscriber: AudioTranscribing {
     func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
         progress("fake")
         return HeadlessTranscription(text: text, durationSeconds: nil)
+    }
+}
+
+private struct FailingTranscriber: AudioTranscribing {
+    func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
+        throw CLIError.invalidInput("Transcription should not run when dictionary validation fails.")
     }
 }
 
