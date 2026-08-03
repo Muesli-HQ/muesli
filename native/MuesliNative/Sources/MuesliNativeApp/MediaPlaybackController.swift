@@ -108,7 +108,12 @@ final class MediaPlaybackController: MediaPlaybackManaging {
     func beginDictationMediaPause(enabled: Bool, routeKind: AudioOutputRouteKind) {
         queue.async { [self] in
             guard enabled else { return }
-            guard routeKind == .speakerLike else { return }
+            // Deliberately not gated on the output route. Ducking is route
+            // dependent because it exists to stop speaker bleed into the
+            // microphone, and there is no bleed on headphones. Pausing is not:
+            // a user who asks for media to pause while they dictate is talking
+            // over that media on headphones just the same.
+            _ = routeKind
 
             switch pauseState {
             case .checkingBegin:
