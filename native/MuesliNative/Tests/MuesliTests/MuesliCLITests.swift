@@ -142,6 +142,21 @@ struct MuesliCLITests {
         }
     }
 
+    @Test("loadCustomWords distinguishes unreadable paths from missing files")
+    func loadCustomWordsRejectsUnreadablePath() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-cli-dictionary-directory-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+
+        do {
+            _ = try MuesliAudioTranscriptionPipeline.loadCustomWords(from: url)
+            Issue.record("Expected reading a directory as a dictionary to fail")
+        } catch let error as CLIError {
+            #expect(error.errorBody.code == "invalid_input")
+            #expect(error.errorBody.message.contains("Could not read dictionary file"))
+        }
+    }
+
     @Test("pipeline applies the dictionary to the transcript")
     func pipelineAppliesDictionary() async throws {
         let fixture = try TranscribeFixture()
@@ -170,6 +185,40 @@ struct MuesliCLITests {
         )
 
         #expect(result.transcript == "I love muesli")
+    }
+
+    @Test("pipeline rejects a dictionary that removes the entire transcript")
+    func pipelineRejectsDictionaryEmptiedTranscript() async throws {
+        let fixture = try TranscribeFixture()
+        let dictionaryURL = fixture.directory.appendingPathComponent("empty-dictionary.json")
+        try Data("""
+        [{"word": "hello", "replacement": ""}]
+        """.utf8).write(to: dictionaryURL)
+
+        let pipeline = MuesliAudioTranscriptionPipeline(
+            audioPreparer: FakeAudioPreparer(wavURL: fixture.wavURL, durationSeconds: 3),
+            transcriber: FakeTranscriber(text: "hello"),
+            summarizer: SuccessfulSummarizer(notes: "should not run"),
+            dataChangePoster: {}
+        )
+
+        do {
+            _ = try await pipeline.run(
+                request: MuesliAudioTranscriptionRequest(
+                    sourceURL: fixture.sourceURL,
+                    model: .parakeetV3,
+                    title: "Empty Dictionary Demo",
+                    summarize: true,
+                    saveMeeting: true,
+                    dictionaryURL: dictionaryURL
+                ),
+                context: fixture.context
+            )
+            Issue.record("Expected the post-dictionary empty transcript to be rejected")
+        } catch let error as CLIError {
+            #expect(error.errorBody.code == "invalid_input")
+            #expect(error.errorBody.message.contains("No speech remains"))
+        }
     }
 
     @Test("transcribe text output is transcript only")

@@ -302,6 +302,10 @@ struct MuesliAudioTranscriptionPipeline {
         if let dictionaryURL = request.dictionaryURL {
             let customWords = try Self.loadCustomWords(from: dictionaryURL)
             transcript = CustomWordMatcher.apply(text: transcript, customWords: customWords)
+            transcript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !transcript.isEmpty else {
+                throw CLIError.invalidInput("No speech remains after applying the selected dictionary.", fix: "Remove dictionary entries that replace all recognized speech with empty text.")
+            }
         }
 
         var warnings: [String] = []
@@ -391,11 +395,18 @@ struct MuesliAudioTranscriptionPipeline {
     /// objects, or an object with a `custom_words` key (so a real `config.json`'s
     /// dictionary can be pointed at directly).
     static func loadCustomWords(from url: URL) throws -> [CustomWord] {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw CLIError.notFound("Dictionary file does not exist: \(url.path)", fix: "Pass a JSON array of {word, replacement, matching_threshold} entries.")
+        }
+
         let data: Data
         do {
             data = try Data(contentsOf: url)
         } catch {
-            throw CLIError.notFound("Dictionary file does not exist: \(url.path)", fix: "Pass a JSON array of {word, replacement, matching_threshold} entries.")
+            throw CLIError.invalidInput(
+                "Could not read dictionary file \(url.path): \(error.localizedDescription)",
+                fix: "Check that the path is a readable file and pass a JSON array of {word, replacement, matching_threshold} entries."
+            )
         }
         let decoder = JSONDecoder()
         if let words = try? decoder.decode([CustomWord].self, from: data) {
