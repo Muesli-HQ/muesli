@@ -180,11 +180,15 @@ final class MediaPlaybackController: MediaPlaybackManaging {
         guard owesResume else { return }
         // Several terminal paths restore — stop, cancel, external-session end,
         // failure — and more than one can fire for the same dictation. A second
-        // verifier started here would share the current generation, so both
-        // would stay live, both could read paused media, and the later toggle
-        // would stop playback again. The resume already running will finish the
-        // job, and if it is cancelled the obligation outlives it.
-        guard activeResumeToken == nil else { return }
+        // verifier for the *current* generation would race the first: both stay
+        // live, both read paused media, and the later toggle stops playback
+        // again. So defer to a resume that is still live.
+        //
+        // Only a live one, though. A resume from a superseded generation has
+        // already been abandoned and will never make progress, so blocking on
+        // it would strand the obligation: its callback clears the token without
+        // resuming, and nothing left would retry.
+        guard activeResumeToken != generation else { return }
         MediaPlaybackLogging.log("restore honouring outstanding resume obligation")
         ensure(.play, token: generation)
     }
