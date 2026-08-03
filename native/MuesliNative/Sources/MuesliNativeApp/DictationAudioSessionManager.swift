@@ -537,8 +537,12 @@ final class DictationAudioSessionManager: @unchecked Sendable {
     }
 
     private func restoreSessionAudioState(completion: (() -> Void)? = nil) {
-        duckingController.restoreDictationDucking { [self] in
-            self.mediaPlaybackController.restoreDictationMediaPause()
+        // Resuming the user's media is independent of ducking cleanup and must
+        // not queue behind it. Nesting it inside the ducking completion delayed
+        // the resume by however long ducking restore took — including when
+        // ducking was disabled for the session and had nothing to undo.
+        mediaPlaybackController.restoreDictationMediaPause()
+        duckingController.restoreDictationDucking {
             completion?()
         }
         routingController.refreshRouteAfterDictationSession()

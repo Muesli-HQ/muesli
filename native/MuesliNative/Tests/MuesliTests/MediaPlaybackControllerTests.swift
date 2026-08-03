@@ -13,15 +13,15 @@ struct MediaPlaybackControllerTests {
         controller.restoreDictationMediaPause()
         controller.waitForIdle()
 
-        #expect(client.toggleCalls == 0)
+        #expect(client.toggles.isEmpty)
     }
 
     @Test("already-paused media is left alone throughout")
     func alreadyPausedMediaIsLeftAlone() {
-        // Paused video reports "not playing" via now-playing state, even though
-        // IsRunningOutput would (incorrectly) read active. The press must be a
-        // no-op so the blind play/pause key does not start the paused media,
-        // and the release must not toggle either.
+        // Regression guard for issue #225. A paused video still reports its
+        // audio pipeline as active, so the decision must come from now-playing
+        // state. Neither the press nor the release may toggle, or the paused
+        // media starts playing.
         let client = FakeMediaPlaybackClient(playbackState: .notPlaying)
         let controller = makeController(client: client)
 
@@ -30,13 +30,14 @@ struct MediaPlaybackControllerTests {
         controller.restoreDictationMediaPause()
         controller.waitForIdle()
 
-        #expect(client.toggleCalls == 0)
+        #expect(client.toggles.isEmpty)
+        #expect(client.playbackState == .notPlaying)
     }
 
-    @Test("unknown playback state is a no-op on press")
-    func unknownPlaybackStateIsNoOpOnPress() {
-        // If we cannot positively confirm audio is playing, do not risk
-        // un-pausing already-paused media.
+    @Test("unknown playback state never toggles")
+    func unknownPlaybackStateNeverToggles() {
+        // A toggle is as likely to start silent media as to stop playing media,
+        // so an unreadable state must not be guessed at.
         let client = FakeMediaPlaybackClient(playbackState: .unknown)
         let controller = makeController(client: client)
 
@@ -45,150 +46,163 @@ struct MediaPlaybackControllerTests {
         controller.restoreDictationMediaPause()
         controller.waitForIdle()
 
-        #expect(client.toggleCalls == 0)
+        #expect(client.toggles.isEmpty)
     }
 
-    @Test("headphone output is skipped")
-    func headphoneOutputIsSkipped() {
-        let client = FakeMediaPlaybackClient(playbackState: .playing)
-        let controller = makeController(client: client)
-
-        controller.beginDictationMediaPause(enabled: true, routeKind: .headphoneLike)
-        controller.waitForIdle()
-
-        #expect(client.toggleCalls == 0)
-    }
-
-    @Test("playing media pauses and restores")
-    func playingMediaPausesAndRestores() {
+    @Test("playing media pauses and resumes")
+    func playingMediaPausesAndResumes() {
         let client = FakeMediaPlaybackClient(playbackState: .playing)
         let controller = makeController(client: client)
 
         controller.beginDictationMediaPause(enabled: true, routeKind: .speakerLike)
         controller.waitForIdle()
-        #expect(client.toggleCalls == 1)
+        #expect(client.toggles == [.pause])
+        #expect(client.playbackState == .notPlaying)
 
-        // After pausing, now-playing reports not playing; the resume toggle fires.
-        client.playbackState = .notPlaying
         controller.restoreDictationMediaPause()
         controller.waitForIdle()
 
-        #expect(client.toggleCalls == 2)
+        #expect(client.toggles == [.pause, .play])
+        #expect(client.playbackState == .playing)
+    }
+
+    @Test("a dropped toggle is retried until the state confirms")
+    func droppedToggleIsRetried() {
+        // The HID play/pause key is fire-and-forget: there is no delivery
+        // acknowledgement, and a lost event is otherwise invisible.
+        let client = FakeMediaPlaybackClient(playbackState: .playing)
+        client.togglesToDrop = 1
+        let controller = makeController(client: client)
+
+        controller.beginDictationMediaPause(enabled: true, routeKind: .speakerLike)
+        controller.waitForIdle()
+
+        #expect(client.toggles == [.pause, .pause])
+        #expect(client.playbackState == .notPlaying)
+    }
+
+    @Test("a toggle dropped on resume is retried")
+    func droppedResumeToggleIsRetried() {
+        let client = FakeMediaPlaybackClient(playbackState: .playing)
+        let controller = makeController(client: client)
+
+        controller.beginDictationMediaPause(enabled: true, routeKind: .speakerLike)
+        controller.waitForIdle()
+        #expect(client.playbackState == .notPlaying)
+
+        client.togglesToDrop = 1
+        controller.restoreDictationMediaPause()
+        controller.waitForIdle()
+
+        #expect(client.toggles == [.pause, .play, .play])
+        #expect(client.playbackState == .playing)
+    }
+
+    @Test("resume is not sent when the user already resumed playback")
+    func resumeIsSkippedWhenUserAlreadyResumed() {
+        // Verify-before-toggle means a manual resume during dictation does not
+        // get toggled back off on release.
+        let client = FakeMediaPlaybackClient(playbackState: .playing)
+        let controller = makeController(client: client)
+
+        controller.beginDictationMediaPause(enabled: true, routeKind: .speakerLike)
+        controller.waitForIdle()
+        #expect(client.toggles == [.pause])
+
+        client.playbackState = .playing
+        controller.restoreDictationMediaPause()
+        controller.waitForIdle()
+
+        #expect(client.toggles == [.pause])
+        #expect(client.playbackState == .playing)
+    }
+
+    @Test("repeated pause and resume cycles remain reusable")
+    func repeatedCyclesRemainReusable() {
+        let client = FakeMediaPlaybackClient(playbackState: .playing)
+        let controller = makeController(client: client)
+
+        for _ in 0 ..< 4 {
+            controller.beginDictationMediaPause(enabled: true, routeKind: .speakerLike)
+            controller.waitForIdle()
+            #expect(client.playbackState == .notPlaying)
+
+            controller.restoreDictationMediaPause()
+            controller.waitForIdle()
+            #expect(client.playbackState == .playing)
+        }
+
+        #expect(client.toggles == [.pause, .play, .pause, .play, .pause, .play, .pause, .play])
+    }
+
+    @Test("a missed restore self-heals on the next dictation")
+    func missedRestoreSelfHeals() {
+        // If a dictation ends without a restore — cancelled, errored, or a
+        // release we never saw — the controller must not stay latched in its
+        // paused state and silently stop pausing forever after.
+        let client = FakeMediaPlaybackClient(playbackState: .playing)
+        let controller = makeController(client: client)
+
+        controller.beginDictationMediaPause(enabled: true, routeKind: .speakerLike)
+        controller.waitForIdle()
+        #expect(client.toggles == [.pause])
+
+        // No restore. The user resumes playback by hand.
+        client.playbackState = .playing
+
+        controller.beginDictationMediaPause(enabled: true, routeKind: .speakerLike)
+        controller.waitForIdle()
+
+        #expect(client.toggles == [.pause, .pause])
+        #expect(client.playbackState == .notPlaying)
     }
 
     @Test("begin does not block while playback state is pending")
-    func beginDoesNotBlockWhilePlaybackStateIsPending() {
+    func beginDoesNotBlockWhilePlaybackStatePending() {
         let client = FakeMediaPlaybackClient(playbackState: .playing, completesImmediately: false)
         let controller = makeController(client: client)
 
         controller.beginDictationMediaPause(enabled: true, routeKind: .speakerLike)
-        controller.waitForIdle()
 
-        #expect(client.pendingQueryCount == 1)
-        #expect(client.toggleCalls == 0)
+        // The call returns without waiting on the query, so the query is still
+        // outstanding and nothing has been toggled.
+        #expect(waitUntil { client.pendingQueryCount == 1 })
+        #expect(client.toggles.isEmpty)
 
+        // Let the verification pass resolve normally once the query answers.
+        client.completesImmediately = true
         client.completeNext(with: .playing)
         controller.waitForIdle()
 
-        #expect(client.toggleCalls == 1)
+        #expect(client.toggles == [.pause])
     }
 
-    @Test("restore does not block while playback state is pending")
-    func restoreDoesNotBlockWhilePlaybackStateIsPending() {
-        let client = FakeMediaPlaybackClient(playbackState: .playing)
-        let controller = makeController(client: client)
-
-        controller.beginDictationMediaPause(enabled: true, routeKind: .speakerLike)
-        controller.waitForIdle()
-        #expect(client.toggleCalls == 1)
-
-        client.completesImmediately = false
-        controller.restoreDictationMediaPause()
-        controller.waitForIdle()
-
-        #expect(client.pendingQueryCount == 1)
-        #expect(client.toggleCalls == 1)
-
-        client.completeNext(with: .notPlaying)
-        controller.waitForIdle()
-
-        #expect(client.toggleCalls == 2)
-    }
-
-    @Test("restore does not toggle if user already resumed playback")
-    func restoreDoesNotToggleResumedPlayback() {
-        let client = FakeMediaPlaybackClient(playbackState: .playing)
-        let controller = makeController(client: client)
-
-        controller.beginDictationMediaPause(enabled: true, routeKind: .speakerLike)
-        controller.waitForIdle()
-        // The user resumed/started playback during the session; resuming again
-        // would instead pause it, so the restore must be skipped.
-        controller.restoreDictationMediaPause()
-        controller.waitForIdle()
-
-        #expect(client.toggleCalls == 1)
-    }
-
-    @Test("restore resumes when playback state is unknown")
-    func restoreResumesWhenPlaybackStateIsUnknown() {
-        let client = FakeMediaPlaybackClient(playbackState: .playing)
-        let controller = makeController(client: client)
-
-        controller.beginDictationMediaPause(enabled: true, routeKind: .speakerLike)
-        controller.waitForIdle()
-        client.playbackState = .unknown
-        controller.restoreDictationMediaPause()
-        controller.waitForIdle()
-
-        #expect(client.toggleCalls == 2)
-    }
-
-    @Test("release before playback query completes does not toggle")
-    func releaseBeforePlaybackQueryCompletesDoesNotToggle() {
+    @Test("release before the playback query completes sends no toggle")
+    func releaseBeforeQueryCompletesSendsNoToggle() {
         let client = FakeMediaPlaybackClient(playbackState: .playing, completesImmediately: false)
         let controller = makeController(client: client)
 
         controller.beginDictationMediaPause(enabled: true, routeKind: .speakerLike)
+        #expect(waitUntil { client.pendingQueryCount == 1 })
         controller.restoreDictationMediaPause()
-        controller.waitForIdle()
 
         client.completeNext(with: .playing)
         controller.waitForIdle()
 
-        #expect(client.toggleCalls == 0)
+        #expect(client.toggles.isEmpty)
+        #expect(client.playbackState == .playing)
     }
 
-    @Test("new begin during restore keeps media paused for next session")
-    func newBeginDuringRestoreKeepsMediaPausedForNextSession() {
-        let client = FakeMediaPlaybackClient(playbackState: .playing)
-        let controller = makeController(client: client)
-
-        controller.beginDictationMediaPause(enabled: true, routeKind: .speakerLike)
-        controller.waitForIdle()
-        #expect(client.toggleCalls == 1)
-
-        client.completesImmediately = false
-        controller.restoreDictationMediaPause()
-        controller.waitForIdle()
-        #expect(client.pendingQueryCount == 1)
-
-        controller.beginDictationMediaPause(enabled: true, routeKind: .speakerLike)
-        controller.waitForIdle()
-
-        client.completeNext(with: .notPlaying)
-        controller.waitForIdle()
-
-        #expect(client.toggleCalls == 1)
-
-        controller.restoreDictationMediaPause()
-        controller.waitForIdle()
-        #expect(client.pendingQueryCount == 1)
-
-        client.completeNext(with: .notPlaying)
-        controller.waitForIdle()
-
-        #expect(client.toggleCalls == 2)
+    /// Polls `condition` until it holds or the timeout elapses. Used where the
+    /// assertion is about work still being outstanding, which `waitForIdle`
+    /// cannot express.
+    private func waitUntil(timeout: TimeInterval = 5, _ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            usleep(1_000)
+        }
+        return condition()
     }
 
     @Test("duplicate begin only pauses once")
@@ -200,46 +214,105 @@ struct MediaPlaybackControllerTests {
         controller.beginDictationMediaPause(enabled: true, routeKind: .speakerLike)
         controller.waitForIdle()
 
-        #expect(client.toggleCalls == 1)
+        #expect(client.toggles == [.pause])
+    }
+
+    @Test("headphone output is skipped")
+    func headphoneOutputIsSkipped() {
+        let client = FakeMediaPlaybackClient(playbackState: .playing)
+        let controller = makeController(client: client)
+
+        controller.beginDictationMediaPause(enabled: true, routeKind: .headphoneLike)
+        controller.waitForIdle()
+
+        #expect(client.toggles.isEmpty)
     }
 
     private func makeController(client: FakeMediaPlaybackClient) -> MediaPlaybackController {
         MediaPlaybackController(
             client: client,
-            queue: DispatchQueue(label: "test.media-playback")
+            queue: DispatchQueue(label: "test.media-playback"),
+            policy: MediaPlaybackController.VerificationPolicy(
+                maxToggleAttempts: 2,
+                pollsPerAttempt: 3,
+                pollInterval: .milliseconds(0)
+            )
         )
     }
 }
 
-private final class FakeMediaPlaybackClient: MediaPlaybackClient {
-    var playbackState: MediaPlaybackState
-    var completesImmediately: Bool
-    var toggleCalls = 0
+/// Models a real player: a toggle flips playback state, unless the event is
+/// dropped in flight.
+private final class FakeMediaPlaybackClient: MediaPlaybackClient, @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedState: MediaPlaybackState
+    private var storedToggles: [MediaPlaybackCommand] = []
+    private var storedDrops = 0
+    private var storedCompletesImmediately: Bool
     private var pendingCompletions: [(MediaPlaybackState) -> Void] = []
 
     init(playbackState: MediaPlaybackState, completesImmediately: Bool = true) {
-        self.playbackState = playbackState
-        self.completesImmediately = completesImmediately
+        self.storedState = playbackState
+        self.storedCompletesImmediately = completesImmediately
+    }
+
+    var playbackState: MediaPlaybackState {
+        get { lock.withLock { storedState } }
+        set { lock.withLock { storedState = newValue } }
+    }
+
+    var toggles: [MediaPlaybackCommand] {
+        lock.withLock { storedToggles }
+    }
+
+    /// Number of subsequent toggles that will be recorded but not take effect.
+    var togglesToDrop: Int {
+        get { lock.withLock { storedDrops } }
+        set { lock.withLock { storedDrops = newValue } }
+    }
+
+    var completesImmediately: Bool {
+        get { lock.withLock { storedCompletesImmediately } }
+        set { lock.withLock { storedCompletesImmediately = newValue } }
     }
 
     var pendingQueryCount: Int {
-        pendingCompletions.count
+        lock.withLock { pendingCompletions.count }
     }
 
     func nowPlayingPlaybackState(completion: @escaping (MediaPlaybackState) -> Void) {
-        guard completesImmediately else {
+        lock.lock()
+        guard storedCompletesImmediately else {
             pendingCompletions.append(completion)
+            lock.unlock()
             return
         }
-        completion(playbackState)
+        let state = storedState
+        lock.unlock()
+        // Called outside the lock: the controller reenters the client from its
+        // completion handler.
+        completion(state)
     }
 
-    func sendMediaPlayPauseToggle() {
-        toggleCalls += 1
+    func sendPlayPauseToggle(intent: MediaPlaybackCommand) {
+        lock.withLock {
+            storedToggles.append(intent)
+            guard storedDrops == 0 else {
+                storedDrops -= 1
+                return
+            }
+            switch storedState {
+            case .playing: storedState = .notPlaying
+            case .notPlaying: storedState = .playing
+            case .unknown: break
+            }
+        }
     }
 
     func completeNext(with playbackState: MediaPlaybackState) {
+        lock.lock()
         let completion = pendingCompletions.removeFirst()
+        lock.unlock()
         completion(playbackState)
     }
 }
