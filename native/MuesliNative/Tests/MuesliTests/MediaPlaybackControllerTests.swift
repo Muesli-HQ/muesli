@@ -192,6 +192,44 @@ struct MediaPlaybackControllerTests {
         #expect(client.playbackState == .playing)
     }
 
+    @Test("release retires the pause verification instead of racing it")
+    func releaseRetiresPauseVerification() {
+        // If the release arrives while the pause is still being verified, the
+        // pause verifier must not stay authorised to retry: its toggle would
+        // land after the resume and leave media stopped, or the two would
+        // oscillate.
+        let client = FakeMediaPlaybackClient(playbackState: .playing)
+        client.togglesToDrop = 1
+        let controller = makeController(client: client)
+
+        client.completesImmediately = false
+        controller.beginDictationMediaPause(enabled: true, routeKind: .speakerLike)
+        #expect(waitUntil { client.pendingQueryCount == 1 })
+
+        // Begin decides to pause, then `ensure` re-reads state before toggling.
+        client.completeNext(with: .playing)
+        #expect(waitUntil { client.pendingQueryCount == 1 })
+        client.completeNext(with: .playing)
+
+        // That toggle is lost, so the verifier wants to retry. Its polling
+        // queries stay stalled.
+        #expect(waitUntil { client.toggles == [.pause] })
+
+        // Release lands mid-verification.
+        controller.restoreDictationMediaPause()
+
+        client.completesImmediately = true
+        while client.pendingQueryCount > 0 {
+            client.completeNext(with: .playing)
+        }
+        controller.waitForIdle()
+
+        // The retired pause verifier must not have sent a retry, and media —
+        // never actually paused, since the toggle was lost — is left playing.
+        #expect(client.toggles == [.pause])
+        #expect(client.playbackState == .playing)
+    }
+
     @Test("begin does not block while playback state is pending")
     func beginDoesNotBlockWhilePlaybackStatePending() {
         let client = FakeMediaPlaybackClient(playbackState: .playing, completesImmediately: false)
