@@ -199,6 +199,32 @@ enum MeetingAutoStopPolicy {
             return true
         }
 
+        if matchesDedicatedAppIdentity(candidate: candidate, source: source) {
+            return true
+        }
+
         return false
+    }
+
+    /// A dedicated meeting app has no meeting URL, and `MeetingMediaSessionTracker`
+    /// mints a new session ID once its quiet window lapses. A call that briefly
+    /// stops reporting microphone input — being muted, or a transient input device
+    /// reconfiguration — therefore reappears under an ID that can never match the
+    /// armed source again, so the still-running meeting gets torn down and cannot
+    /// recover. Fall back to the app identity for that case.
+    ///
+    /// Browsers are excluded: a single browser hosts many unrelated sessions, so
+    /// its bundle ID is not a meeting identity.
+    private static func matchesDedicatedAppIdentity(
+        candidate: MeetingCandidate,
+        source: MeetingAutoStopSource
+    ) -> Bool {
+        guard source.normalizedURL == nil,
+              candidate.url == nil,
+              let sourceBundleID = source.sourceBundleID,
+              MeetingCandidateResolver.browserApps[sourceBundleID] == nil else {
+            return false
+        }
+        return candidate.sourceBundleID == sourceBundleID
     }
 }

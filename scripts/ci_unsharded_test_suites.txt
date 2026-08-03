@@ -40,7 +40,6 @@ InferenceGateTests
 InsightsTests
 LaunchAtLoginManagerTests
 MediaPlaybackControllerTests
-MeetingAutoStopPolicyTests
 MeetingCandidateResolverTests
 MeetingChunkTimingTrackerTests
 MeetingExporterTests

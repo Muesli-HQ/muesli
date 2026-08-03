@@ -70,6 +70,81 @@ struct MeetingAutoStopPolicyTests {
         #expect(!MeetingAutoStopPolicy.matches(candidate: otherTabAudio, source: source))
     }
 
+    @Test("dedicated app source still matches after its media session ID rotates")
+    func matchesDedicatedAppAfterSessionRotation() {
+        let source = MeetingAutoStopSource(candidate: teamsCandidate())
+        // MeetingMediaSessionTracker mints a fresh session ID once its quiet
+        // window lapses, so a call that briefly stops reporting microphone input
+        // reappears under a different ID. A dedicated app has no meeting URL to
+        // fall back on, so without app identity the source can never re-match and
+        // the still-running meeting is torn down.
+        let afterRotation = MeetingCandidate(
+            id: "app:com.microsoft.teams2:session:1800000045",
+            platform: .teams,
+            appName: "Teams",
+            url: nil,
+            evidence: [.audioInputProcess, .dedicatedApp],
+            startedAt: Date(timeIntervalSince1970: 1_800_000_045),
+            meetingTitle: nil,
+            sourceBundleID: "com.microsoft.teams2",
+            sourcePID: 4321,
+            suppressionID: "app:com.microsoft.teams2:session:1800000045"
+        )
+
+        #expect(MeetingAutoStopPolicy.matches(candidate: afterRotation, source: source))
+    }
+
+    @Test("ignores a different meeting app than the tracked source")
+    func ignoresDifferentDedicatedApp() {
+        let source = MeetingAutoStopSource(candidate: teamsCandidate())
+        let zoom = MeetingCandidate(
+            id: "app:us.zoom.xos:session:1800000045",
+            platform: .zoom,
+            appName: "Zoom",
+            url: nil,
+            evidence: [.audioInputProcess, .dedicatedApp],
+            startedAt: Date(timeIntervalSince1970: 1_800_000_045),
+            meetingTitle: nil,
+            sourceBundleID: "us.zoom.xos",
+            sourcePID: 555,
+            suppressionID: "app:us.zoom.xos:session:1800000045"
+        )
+
+        #expect(!MeetingAutoStopPolicy.matches(candidate: zoom, source: source))
+    }
+
+    @Test("app identity fallback does not apply to browsers")
+    func ignoresUnrelatedBrowserAudioWhenSourceHasNoURL() {
+        // A browser-audio-only source also has no URL, but one browser hosts many
+        // unrelated tabs, so its bundle ID is not a meeting identity.
+        let browserAudioSource = MeetingAutoStopSource(candidate: MeetingCandidate(
+            id: "browser:com.google.Chrome:session:1800000000",
+            platform: .unknown,
+            appName: "Chrome",
+            url: nil,
+            evidence: [.audioInputProcess],
+            startedAt: Date(timeIntervalSince1970: 1_800_000_000),
+            meetingTitle: nil,
+            sourceBundleID: "com.google.Chrome",
+            sourcePID: 1234,
+            suppressionID: "browser:com.google.Chrome:session:1800000000"
+        ))
+        let otherTabAudio = MeetingCandidate(
+            id: "browser:com.google.Chrome:session:1800000999",
+            platform: .unknown,
+            appName: "Chrome",
+            url: nil,
+            evidence: [.audioInputProcess],
+            startedAt: Date(timeIntervalSince1970: 1_800_000_999),
+            meetingTitle: nil,
+            sourceBundleID: "com.google.Chrome",
+            sourcePID: 9876,
+            suppressionID: "browser:com.google.Chrome:session:1800000999"
+        )
+
+        #expect(!MeetingAutoStopPolicy.matches(candidate: otherTabAudio, source: browserAudioSource))
+    }
+
     @Test("ignores unrelated calendar-only activity")
     func ignoresUnrelatedCalendarOnlyActivity() {
         let source = MeetingAutoStopSource(candidate: googleMeetCandidate())
