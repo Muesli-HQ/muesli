@@ -217,15 +217,21 @@ struct MediaPlaybackControllerTests {
         #expect(client.toggles == [.pause])
     }
 
-    @Test("headphone output is skipped")
-    func headphoneOutputIsSkipped() {
+    @Test("headphone output still pauses")
+    func headphoneOutputStillPauses() {
+        // Ducking is route dependent because it exists to stop speaker bleed
+        // into the microphone. Pausing is not: a user dictating over their own
+        // music wants it paused on headphones too.
         let client = FakeMediaPlaybackClient(playbackState: .playing)
         let controller = makeController(client: client)
 
         controller.beginDictationMediaPause(enabled: true, routeKind: .headphoneLike)
         controller.waitForIdle()
+        #expect(client.toggles == [.pause])
 
-        #expect(client.toggles.isEmpty)
+        controller.restoreDictationMediaPause()
+        controller.waitForIdle()
+        #expect(client.toggles == [.pause, .play])
     }
 
     private func makeController(client: FakeMediaPlaybackClient) -> MediaPlaybackController {
