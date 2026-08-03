@@ -3,6 +3,7 @@ import AVFoundation
 import FluidAudio
 import Foundation
 import MuesliCore
+import WhisperKit
 
 enum TranscribeOutputFormat: String, CaseIterable, ExpressibleByArgument {
     case text
@@ -16,6 +17,11 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
     case parakeetEou320ms = "parakeet-eou-320ms"
     case senseVoice = "sensevoice"
     case qwen3Asr = "qwen3-asr"
+    case nemotron35 = "nemotron35"
+    case whisperTiny = "whisper-tiny"
+    case whisperSmall = "whisper-small"
+    case whisperMedium = "whisper-medium"
+    case whisperLargeTurbo = "whisper-large-turbo"
 
     /// `nil` for models that don't go through `FluidAudioCLITranscriber`'s
     /// batch `AsrManager` path (streaming, or a different FluidAudio manager).
@@ -23,19 +29,24 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
         switch self {
         case .parakeetV3: return .v3
         case .parakeetV2: return .v2
-        case .parakeetEou320ms, .senseVoice, .qwen3Asr: return nil
+        case .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35,
+             .whisperTiny, .whisperSmall, .whisperMedium, .whisperLargeTurbo:
+            return nil
         }
     }
 
-    /// Streaming models process audio in fixed-size chunks and emit a growing
-    /// partial transcript instead of one batch result. `--emit-partials` is
-    /// only meaningful for these.
-    var isStreaming: Bool {
+    /// WhisperKit's model identifiers, shared with the app's Whisper backend.
+    var whisperKitModelName: String? {
         switch self {
-        case .parakeetV3, .parakeetV2, .senseVoice, .qwen3Asr: return false
-        case .parakeetEou320ms: return true
+        case .whisperTiny: return "tiny.en"
+        case .whisperSmall: return "small.en"
+        case .whisperMedium: return "medium.en"
+        case .whisperLargeTurbo: return "large-v3-v20240930_626MB"
+        case .parakeetV3, .parakeetV2, .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35:
+            return nil
         }
     }
+
 }
 
 struct TranscribeJSONPayload: Encodable {
@@ -91,7 +102,7 @@ struct TranscribeCommand: AsyncParsableCommand {
     var file: String
     @Option(name: .long, help: "Output format: text, json, or markdown.")
     var format: TranscribeOutputFormat = .text
-    @Option(name: .long, help: "Transcription model: parakeet-v3, parakeet-v2, parakeet-eou-320ms (streaming), sensevoice, or qwen3-asr.")
+    @Option(name: .long, help: "Transcription model: parakeet-v3, parakeet-v2, parakeet-eou-320ms (streaming), sensevoice, qwen3-asr, nemotron35, whisper-tiny, whisper-small, whisper-medium, or whisper-large-turbo.")
     var model: TranscribeModel = .parakeetV3
     @Flag(name: .long, help: "Generate meeting notes using the configured Muesli summary backend when available.")
     var summarize = false
@@ -101,8 +112,6 @@ struct TranscribeCommand: AsyncParsableCommand {
     var title: String?
     @Option(name: .long, help: "Write command output to a file instead of stdout.")
     var output: String?
-    @Option(name: .long, help: "Streaming models only: write one JSON object per partial ({t, text}) to this path as it transcribes.")
-    var emitPartials: String?
     @Option(name: .long, help: "Path to a JSON array of custom dictionary entries ({word, replacement, matching_threshold}) to apply to the transcript, same as Muesli's dictionary feature.")
     var dictionary: String?
 
@@ -110,9 +119,6 @@ struct TranscribeCommand: AsyncParsableCommand {
         let url = URL(fileURLWithPath: file)
         guard MuesliAudioFilePreparer.isSupportedFileURL(url) else {
             throw ValidationError("Unsupported audio file extension. Supported extensions: mp3, mp4, m4a, wav.")
-        }
-        if emitPartials != nil, !model.isStreaming {
-            throw ValidationError("--emit-partials is only supported for streaming models (parakeet-eou-320ms).")
         }
     }
 
@@ -131,7 +137,6 @@ struct TranscribeCommand: AsyncParsableCommand {
                 title: title,
                 summarize: summarize,
                 saveMeeting: saveMeeting,
-                emitPartialsURL: emitPartials.map { URL(fileURLWithPath: $0) },
                 dictionaryURL: dictionary.map { URL(fileURLWithPath: $0) }
             ),
             context: context
@@ -201,7 +206,6 @@ struct MuesliAudioTranscriptionRequest {
     let title: String?
     let summarize: Bool
     let saveMeeting: Bool
-    var emitPartialsURL: URL? = nil
     /// Path to a JSON array of `CustomWord`-shaped entries. When set, applied to the
     /// transcript via `CustomWordMatcher.apply` after transcription — the same dictionary
     /// correction step Muesli applies to dictations, so this measures "what if the
@@ -244,16 +248,7 @@ protocol AudioPreparing {
 }
 
 protocol AudioTranscribing {
-    /// - Parameter onPartial: For streaming models, called after each processed chunk with
-    ///   the audio position fed so far (seconds) and the current cumulative partial transcript.
-    ///   Ignored by batch models. `nil` when the caller does not want partials (e.g. `--emit-partials`
-    ///   was not passed).
-    func transcribe(
-        wavURL: URL,
-        model: TranscribeModel,
-        onPartial: (@Sendable (Double, String) -> Void)?,
-        progress: @escaping (String) -> Void
-    ) async throws -> HeadlessTranscription
+    func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription
 }
 
 protocol MeetingSummarizing {
@@ -293,14 +288,9 @@ struct MuesliAudioTranscriptionPipeline {
         }
 
         fputs("[muesli-cli] loading \(request.model.rawValue) and transcribing...\n", stderr)
-        let partialsWriter = try request.emitPartialsURL.map { try PartialsJSONLWriter(url: $0) }
-        defer { partialsWriter?.close() }
         let transcription = try await transcriber.transcribe(
             wavURL: prepared.wavURL,
             model: request.model,
-            onPartial: partialsWriter.map { writer in
-                { @Sendable t, text in writer.record(t: t, text: text) }
-            },
             progress: { message in
                 fputs("[muesli-cli] \(message)\n", stderr)
             }
@@ -608,21 +598,20 @@ struct RoutingAudioTranscriber: AudioTranscribing {
     var streaming: AudioTranscribing = StreamingEouCLITranscriber()
     var senseVoice: AudioTranscribing = SenseVoiceCLITranscriber()
     var qwen3Asr: AudioTranscribing = Qwen3AsrCLITranscriber()
+    var nemotron35: AudioTranscribing = Nemotron35CLITranscriber()
+    var whisper: AudioTranscribing = WhisperCLITranscriber()
 
-    func transcribe(
-        wavURL: URL,
-        model: TranscribeModel,
-        onPartial: (@Sendable (Double, String) -> Void)?,
-        progress: @escaping (String) -> Void
-    ) async throws -> HeadlessTranscription {
+    func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
         let transcriber: AudioTranscribing
         switch model {
         case .parakeetV3, .parakeetV2: transcriber = batch
         case .parakeetEou320ms: transcriber = streaming
         case .senseVoice: transcriber = senseVoice
         case .qwen3Asr: transcriber = qwen3Asr
+        case .nemotron35: transcriber = nemotron35
+        case .whisperTiny, .whisperSmall, .whisperMedium, .whisperLargeTurbo: transcriber = whisper
         }
-        return try await transcriber.transcribe(wavURL: wavURL, model: model, onPartial: onPartial, progress: progress)
+        return try await transcriber.transcribe(wavURL: wavURL, model: model, progress: progress)
     }
 }
 
@@ -630,12 +619,7 @@ actor FluidAudioCLITranscriber: AudioTranscribing {
     private var asrManager: AsrManager?
     private var loadedModel: TranscribeModel?
 
-    func transcribe(
-        wavURL: URL,
-        model: TranscribeModel,
-        onPartial: (@Sendable (Double, String) -> Void)?,
-        progress: @escaping (String) -> Void
-    ) async throws -> HeadlessTranscription {
+    func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
         try await load(model: model, progress: progress)
         guard let asrManager else {
             throw CLIError.invalidInput("FluidAudio model was not loaded.", fix: "Run the command again after the model finishes downloading.")
@@ -676,12 +660,7 @@ actor FluidAudioCLITranscriber: AudioTranscribing {
 actor SenseVoiceCLITranscriber: AudioTranscribing {
     private var manager: SenseVoiceManager?
 
-    func transcribe(
-        wavURL: URL,
-        model: TranscribeModel,
-        onPartial: (@Sendable (Double, String) -> Void)?,
-        progress: @escaping (String) -> Void
-    ) async throws -> HeadlessTranscription {
+    func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
         if manager == nil {
             progress("loading sensevoice")
             manager = try await SenseVoiceManager.load(precision: .int8) { downloadProgress in
@@ -705,12 +684,7 @@ actor SenseVoiceCLITranscriber: AudioTranscribing {
 /// default model cache. Requires macOS 15+ for CoreML stateful decoder support,
 /// same constraint FluidAudio's `Qwen3AsrManager` itself carries.
 actor Qwen3AsrCLITranscriber: AudioTranscribing {
-    func transcribe(
-        wavURL: URL,
-        model: TranscribeModel,
-        onPartial: (@Sendable (Double, String) -> Void)?,
-        progress: @escaping (String) -> Void
-    ) async throws -> HeadlessTranscription {
+    func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
         guard #available(macOS 15, *) else {
             throw CLIError.invalidInput("qwen3-asr requires macOS 15 or later.", fix: "Run on macOS 15+, or choose a different --model.")
         }
@@ -747,6 +721,102 @@ actor Qwen3AsrCLITranscriber: AudioTranscribing {
     private var manager: Any?
 }
 
+/// Wraps FluidAudio's public multilingual Nemotron manager. The app and CLI use
+/// the same 2240ms model variant and FluidAudio cache; no second RNNT engine is
+/// maintained in the Muesli app target.
+actor Nemotron35CLITranscriber: AudioTranscribing {
+    private var manager: StreamingNemotronMultilingualAsrManager?
+
+    func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
+        let manager = try await loadedManager(progress: progress)
+        let start = CFAbsoluteTimeGetCurrent()
+        let samples = try AudioConverter().resampleAudioFile(wavURL)
+        _ = try await manager.process(samples: samples)
+        let text = try await manager.finish()
+        await manager.reset()
+        progress("transcription complete in \(String(format: "%.2f", CFAbsoluteTimeGetCurrent() - start))s")
+        return HeadlessTranscription(
+            text: text,
+            durationSeconds: Double(samples.count) / Double(CLIWavWriter.sampleRate)
+        )
+    }
+
+    private func loadedManager(progress: @escaping (String) -> Void) async throws -> StreamingNemotronMultilingualAsrManager {
+        if let manager { return manager }
+        progress("loading nemotron35")
+        let shared = try await StreamingNemotronMultilingualAsrManager.downloadAndPreloadShared(
+            languageCode: "auto",
+            chunkMs: 2240,
+            progressHandler: { update in
+                let percent = Int((update.fractionCompleted * 100).rounded())
+                progress("model \(percent)%")
+            }
+        )
+        let newManager = StreamingNemotronMultilingualAsrManager()
+        try await newManager.loadFromShared(shared)
+        manager = newManager
+        progress("model ready")
+        return newManager
+    }
+}
+
+/// Wraps the same WhisperKit API and model cache used by the app's Whisper backend.
+actor WhisperCLITranscriber: AudioTranscribing {
+    private var whisperKit: WhisperKit?
+    private var loadedModel: String?
+
+    func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
+        guard let modelName = model.whisperKitModelName else {
+            throw CLIError.invalidInput(
+                "\(model.rawValue) is not a Whisper model.",
+                fix: "This indicates a routing bug in muesli-cli; please file an issue."
+            )
+        }
+        try await load(modelName: modelName, progress: progress)
+        guard let whisperKit else {
+            throw CLIError.invalidInput("WhisperKit model was not loaded.", fix: "Run the command again after the model finishes downloading.")
+        }
+        let start = CFAbsoluteTimeGetCurrent()
+        let results = try await whisperKit.transcribe(audioPath: wavURL.path)
+        let text = results.map(\.text).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        progress("transcription complete in \(String(format: "%.2f", CFAbsoluteTimeGetCurrent() - start))s")
+        return HeadlessTranscription(text: text, durationSeconds: nil)
+    }
+
+    private func load(modelName: String, progress: @escaping (String) -> Void) async throws {
+        if loadedModel == modelName, whisperKit != nil { return }
+        progress("loading \(modelName)")
+
+        let modelFolder: URL?
+        if Self.isModelDownloaded(modelName) {
+            modelFolder = nil
+        } else {
+            modelFolder = try await WhisperKit.download(variant: modelName) { update in
+                let percent = Int((update.fractionCompleted * 100).rounded())
+                progress("model \(percent)%")
+            }
+        }
+
+        whisperKit = try await WhisperKit(WhisperKitConfig(
+            model: modelFolder == nil ? modelName : nil,
+            modelFolder: modelFolder?.path,
+            computeOptions: ModelComputeOptions(
+                audioEncoderCompute: .cpuAndNeuralEngine,
+                textDecoderCompute: .cpuAndNeuralEngine
+            )
+        ))
+        loadedModel = modelName
+        progress("model ready")
+    }
+
+    private static func isModelDownloaded(_ modelName: String) -> Bool {
+        let fullName = modelName.hasPrefix("openai_whisper-") ? modelName : "openai_whisper-\(modelName)"
+        let directory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Documents/huggingface/models/argmaxinc/whisperkit-coreml/\(fullName)")
+        return FileManager.default.fileExists(atPath: directory.path)
+    }
+}
+
 /// Feeds a WAV file through FluidAudio's Parakeet EOU streaming encoder in fixed
 /// 320ms chunks, simulating how the live meeting-caption path consumes audio in
 /// the app. This is the same model, chunk size, and cache directory as
@@ -763,33 +833,15 @@ actor StreamingEouCLITranscriber: AudioTranscribing {
 
     private var manager: StreamingEouAsrManager?
 
-    func transcribe(
-        wavURL: URL,
-        model: TranscribeModel,
-        onPartial: (@Sendable (Double, String) -> Void)?,
-        progress: @escaping (String) -> Void
-    ) async throws -> HeadlessTranscription {
+    func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
         let manager = try await loadedManager(progress: progress)
         let samples = try CLIWavReader.readMonoFloatSamples(url: wavURL)
         guard !samples.isEmpty else {
             return HeadlessTranscription(text: "", durationSeconds: 0)
         }
 
-        // The partial callback fires synchronously inside `manager.process(audioBuffer:)`
-        // (see FluidAudio's `processChunkAndDecode`), so it always runs strictly within
-        // one of the `await manager.process(...)` calls below — never concurrently with
-        // this loop. `position` only needs to be read/written from that single-threaded
-        // sequence, so a plain unsynchronized box is safe here.
-        final class ChunkPosition: @unchecked Sendable {
-            var chunkIndex = 0
-        }
-        let position = ChunkPosition()
-        let chunkDurationSeconds = Double(Self.chunkSize.durationMs) / 1000.0
-        await manager.setPartialCallback { text in
-            onPartial?(Double(position.chunkIndex) * chunkDurationSeconds, text)
-        }
-
         let chunkSamples = Self.chunkSize.chunkSamples
+        var chunkCount = 0
         var offset = 0
         while offset < samples.count {
             try Task.checkCancellation()
@@ -801,13 +853,13 @@ actor StreamingEouCLITranscriber: AudioTranscribing {
             guard let buffer = Self.makeBuffer(samples: chunk) else {
                 throw CLIError.invalidInput("Could not allocate a streaming audio buffer.", fix: "Try a shorter audio file.")
             }
-            position.chunkIndex += 1
+            chunkCount += 1
             _ = try await manager.process(audioBuffer: buffer)
             offset = end
         }
 
         let finalText = try await manager.finish()
-        progress("streaming transcription complete (\(position.chunkIndex) chunks of \(Self.chunkSize.durationMs)ms)")
+        progress("streaming transcription complete (\(chunkCount) chunks of \(Self.chunkSize.durationMs)ms)")
         return HeadlessTranscription(
             text: finalText,
             durationSeconds: Double(samples.count) / Double(CLIWavWriter.sampleRate)
@@ -878,36 +930,6 @@ enum CLIWavReader {
         try file.read(into: buffer)
         guard let channel = buffer.floatChannelData?[0] else { return [] }
         return Array(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
-    }
-}
-
-/// Writes one JSON object per line (`{"t": <audio seconds>, "text": <cumulative partial>}`)
-/// for `--emit-partials`. `t` is the simulated audio position the partial corresponds to,
-/// not wall-clock CLI runtime — streaming inference here runs far faster than real time,
-/// so wall-clock would not be comparable to how a live listener actually experiences it.
-final class PartialsJSONLWriter: @unchecked Sendable {
-    private let handle: FileHandle
-    private let lock = NSLock()
-
-    init(url: URL) throws {
-        let directory = url.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        FileManager.default.createFile(atPath: url.path, contents: nil)
-        handle = try FileHandle(forWritingTo: url)
-    }
-
-    func record(t: Double, text: String) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let data = try? JSONSerialization.data(withJSONObject: ["t": t, "text": text]) else { return }
-        handle.write(data)
-        handle.write(Data("\n".utf8))
-    }
-
-    func close() {
-        lock.lock()
-        defer { lock.unlock() }
-        try? handle.close()
     }
 }
 
