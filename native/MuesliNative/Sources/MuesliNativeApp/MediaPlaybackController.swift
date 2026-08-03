@@ -97,6 +97,9 @@ final class MediaPlaybackController: MediaPlaybackManaging {
     /// We paused media and have not yet confirmed it resumed. Survives session
     /// boundaries so a cancelled resume is retried rather than dropped.
     private var owesResume = false
+    /// Token of the resume currently being verified, if any. Keeps duplicate
+    /// restores from starting a second verifier that would race the first.
+    private var activeResumeToken: Int?
 
     init(
         client: MediaPlaybackClient = SystemMediaPlaybackClient(),
@@ -175,6 +178,13 @@ final class MediaPlaybackController: MediaPlaybackManaging {
     /// restore finishes the job.
     private func resumeIfOwed() {
         guard owesResume else { return }
+        // Several terminal paths restore — stop, cancel, external-session end,
+        // failure — and more than one can fire for the same dictation. A second
+        // verifier started here would share the current generation, so both
+        // would stay live, both could read paused media, and the later toggle
+        // would stop playback again. The resume already running will finish the
+        // job, and if it is cancelled the obligation outlives it.
+        guard activeResumeToken == nil else { return }
         MediaPlaybackLogging.log("restore honouring outstanding resume obligation")
         ensure(.play, token: generation)
     }
@@ -209,15 +219,26 @@ final class MediaPlaybackController: MediaPlaybackManaging {
 
     /// Drives playback to `command.targetState`, verifying and retrying.
     private func ensure(_ command: MediaPlaybackCommand, token: Int) {
+        if command == .play {
+            activeResumeToken = token
+        }
         beginOperation()
         attempt(command, token: token, attemptsRemaining: policy.maxToggleAttempts) { [weak self] settled in
             guard let self else { return }
             MediaPlaybackLogging.log("\(command) settled=\(settled)")
-            if command == .play, settled {
-                // Discharged only on confirmation. A resume that was abandoned
-                // or whose toggle was lost keeps the obligation, so the next
-                // restore retries it rather than stranding media paused.
-                self.owesResume = false
+            if command == .play {
+                // Compared by token so a superseded resume finishing late
+                // cannot clear the marker belonging to the one that replaced it.
+                if self.activeResumeToken == token {
+                    self.activeResumeToken = nil
+                }
+                if settled {
+                    // Discharged only on confirmation. A resume that was
+                    // abandoned or whose toggle was lost keeps the obligation,
+                    // so the next restore retries it rather than stranding
+                    // media paused.
+                    self.owesResume = false
+                }
             }
             self.endOperation()
         }

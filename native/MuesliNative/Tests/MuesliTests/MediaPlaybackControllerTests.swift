@@ -192,6 +192,37 @@ struct MediaPlaybackControllerTests {
         #expect(client.playbackState == .playing)
     }
 
+    @Test("a duplicate restore does not race the first resume")
+    func duplicateRestoreDoesNotRaceFirstResume() {
+        // stop, cancel, external-session end and the failure path all restore,
+        // and more than one can fire for the same dictation. A second verifier
+        // would share the generation, so both stay live, both read paused
+        // media, and the later toggle stops playback again.
+        let client = FakeMediaPlaybackClient(playbackState: .playing)
+        let controller = makeController(client: client)
+
+        controller.beginDictationMediaPause(enabled: true, routeKind: .speakerLike)
+        controller.waitForIdle()
+        #expect(client.playbackState == .notPlaying)
+
+        // Stall the first resume so it is still in flight.
+        client.completesImmediately = false
+        controller.restoreDictationMediaPause()
+        #expect(waitUntil { client.pendingQueryCount == 1 })
+
+        // A second terminal path restores the same dictation.
+        controller.restoreDictationMediaPause()
+
+        client.completesImmediately = true
+        while client.pendingQueryCount > 0 {
+            client.completeNext(with: .notPlaying)
+        }
+        controller.waitForIdle()
+
+        #expect(client.toggles == [.pause, .play])
+        #expect(client.playbackState == .playing)
+    }
+
     @Test("release retires the pause verification instead of racing it")
     func releaseRetiresPauseVerification() {
         // If the release arrives while the pause is still being verified, the
