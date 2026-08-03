@@ -54,6 +54,13 @@ struct SettingsView: View {
     let appState: AppState
     let controller: MuesliController
 
+    private enum OpenAIConnectionTestState: Equatable {
+        case idle
+        case testing
+        case success
+        case failed(String)
+    }
+
     @State private var chatGPTSignInError: String?
     @State private var isSigningInChatGPT = false
     @State private var googleCalSignInError: String?
@@ -80,11 +87,14 @@ struct SettingsView: View {
     @State private var isLoadingOpenRouterFreeModels = false
     @State private var openRouterFreeModelsError: String?
     @State private var hasRefreshedMeetingCalendarSources = false
+    @State private var openAIDictationAPIKey: String = ""
+    @State private var openAITestState: OpenAIConnectionTestState = .idle
 
     init(appState: AppState, controller: MuesliController) {
         self.appState = appState
         self.controller = controller
         _selectedPane = State(initialValue: appState.selectedSettingsPane)
+        _openAIDictationAPIKey = State(initialValue: controller.openAIDictationAPIKey())
     }
 
     // Uniform width for standard right-side controls.
@@ -674,6 +684,21 @@ struct SettingsView: View {
 
     private var dictationModelSettingsSection: some View {
         settingsSection("Speech Recognition") {
+            settingsRow("Provider", controlWidth: meetingControlWidth) {
+                settingsMenu(
+                    selection: appState.dictationProvider.label,
+                    options: DictationProvider.allCases.map(\.label)
+                ) { label in
+                    if let provider = DictationProvider.allCases.first(where: { $0.label == label }) {
+                        controller.selectDictationProvider(provider)
+                    }
+                }
+            }
+            Divider().background(MuesliTheme.surfaceBorder)
+            if appState.dictationProvider == .openAI {
+                openAIDictationSettingsRows
+                Divider().background(MuesliTheme.surfaceBorder)
+            }
             settingsRow("Dictation model", controlWidth: meetingControlWidth) {
                 settingsMenu(
                     selection: appState.selectedBackend.label,
@@ -684,6 +709,9 @@ struct SettingsView: View {
                         controller.selectBackend(option)
                     }
                 }
+            }
+            if appState.dictationProvider == .openAI {
+                settingsDescription("Local model used for offline dictation and as the fallback if OpenAI is unavailable.")
             }
             if !disabledDictationBackendLabels.isEmpty {
                 settingsDescription("Gemma 4 dictation is unavailable while Gemma 4 is the cleanup backend.")
@@ -699,6 +727,100 @@ struct SettingsView: View {
                 settingsRow("Indic language", controlWidth: meetingControlWidth) {
                     indicLanguageMenu
                 }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var openAIDictationSettingsRows: some View {
+        settingsRow("API Key", controlWidth: meetingControlWidth) {
+            PastableSecureField(
+                text: openAIDictationAPIKey,
+                placeholder: "sk-...",
+                onChange: { val in
+                    openAIDictationAPIKey = val
+                    controller.setOpenAIDictationAPIKey(val)
+                }
+            )
+            .frame(height: 22)
+        }
+        Divider().background(MuesliTheme.surfaceBorder)
+        settingsRow("Model", controlWidth: meetingControlWidth) {
+            settingsModelMenu(
+                currentModel: appState.config.openaiDictationModel,
+                presets: openAIDictationModelPresets
+            ) { controller.selectOpenAIDictationModel($0) }
+        }
+        Divider().background(MuesliTheme.surfaceBorder)
+        settingsRow("Fall back to local", controlWidth: meetingControlWidth) {
+            settingsSwitch(isOn: appState.config.openaiDictationFallbackToLocal) { newValue in
+                controller.updateConfig { $0.openaiDictationFallbackToLocal = newValue }
+            }
+        }
+        Divider().background(MuesliTheme.surfaceBorder)
+        settingsRow("Connection", controlWidth: meetingControlWidth) {
+            openAITestControl
+        }
+    }
+
+    private var openAIDictationModelPresets: [SummaryModelPreset] {
+        OpenAITranscriptionClient.modelPresets.map { SummaryModelPreset(id: $0, label: $0) }
+    }
+
+    @ViewBuilder
+    private var openAITestControl: some View {
+        switch openAITestState {
+        case .idle:
+            HStack {
+                Spacer()
+                compactActionButton("Test connection") {
+                    testOpenAIConnection()
+                }
+            }
+        case .testing:
+            HStack(spacing: 8) {
+                Spacer()
+                ProgressView()
+                    .controlSize(.small)
+                Text("Testing…")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(MuesliTheme.textTertiary)
+            }
+        case .success:
+            HStack(spacing: 6) {
+                Spacer()
+                Circle()
+                    .fill(MuesliTheme.success)
+                    .frame(width: 6, height: 6)
+                Text("Connected")
+                    .font(.system(size: 11))
+                    .foregroundStyle(MuesliTheme.success)
+                compactActionButton("Test again") {
+                    testOpenAIConnection()
+                }
+            }
+        case .failed(let message):
+            HStack(spacing: 6) {
+                Spacer()
+                Text("Failed")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(MuesliTheme.recording)
+                    .help(message)
+                compactActionButton("Retry") {
+                    testOpenAIConnection()
+                }
+            }
+        }
+    }
+
+    private func testOpenAIConnection() {
+        openAITestState = .testing
+        Task {
+            do {
+                try await controller.testOpenAIConnection()
+                await MainActor.run { openAITestState = .success }
+            } catch {
+                await MainActor.run { openAITestState = .failed(error.localizedDescription) }
             }
         }
     }
