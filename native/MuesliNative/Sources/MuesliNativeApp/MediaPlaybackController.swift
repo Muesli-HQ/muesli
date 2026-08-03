@@ -150,7 +150,14 @@ final class MediaPlaybackController: MediaPlaybackManaging {
             case let .paused(token):
                 guard token == generation else { return }
                 pauseState = .idle
-                ensure(.play, token: token)
+                // Retire the pause verification before starting the resume.
+                // Sharing a token would leave the pause verifier authorised to
+                // keep retrying its toggle while the resume runs; if its retry
+                // lands last, media ends up stopped after dictation, or the two
+                // oscillate. `owesResume` still carries the obligation, so
+                // cancelling the pause here cannot strand playback.
+                generation += 1
+                ensure(.play, token: generation)
             case .idle:
                 resumeIfOwed()
             }
@@ -345,11 +352,16 @@ final class SystemMediaPlaybackClient: MediaPlaybackClient {
     private let jxa = MediaRemoteJXAClient()
     private let nowPlaying = NowPlayingMediaRemoteClient()
 
+    /// Verification polls this repeatedly, so the success path is deliberately
+    /// silent — only the fallback, which indicates the preferred backend is
+    /// unavailable, is worth a line. The controller logs the decisions.
+    ///
+    /// The now-playing application is not recorded: it reveals what the user is
+    /// listening to, and the controller does not need it to make a decision.
     func nowPlayingPlaybackState(completion: @escaping (MediaPlaybackState) -> Void) {
         jxa.playbackState { [weak self] result in
             switch result {
-            case let .available(state, appName):
-                MediaPlaybackLogging.log("query backend=jxa state=\(state) app=\(appName ?? "unknown")")
+            case let .available(state):
                 completion(state)
             case let .unavailable(reason):
                 self?.nowPlaying.playbackState { state in
@@ -397,7 +409,7 @@ private enum MediaPlaybackLogging {
 }
 
 private enum MediaRemoteJXAPlaybackStateResult {
-    case available(MediaPlaybackState, appName: String?)
+    case available(MediaPlaybackState)
     case unavailable(String)
 }
 
@@ -409,7 +421,6 @@ private final class MediaRemoteJXAClient {
     private struct PlaybackPayload: Decodable {
         let available: Bool
         let state: String?
-        let appName: String?
         let reason: String?
     }
 
@@ -446,7 +457,7 @@ private final class MediaRemoteJXAClient {
                     default:
                         state = .unknown
                     }
-                    completion(.available(state, appName: payload.appName))
+                    completion(.available(state))
                 } catch {
                     completion(.unavailable("invalid_output=\(error.localizedDescription)"))
                 }
@@ -520,23 +531,18 @@ private final class MediaRemoteJXAClient {
 
       const playerPath = request.localNowPlayingPlayerPath;
       const item = request.localNowPlayingItem;
-      if (!playerPath || !item) return JSON.stringify({available: true, state: 'unknown', appName: null});
+      if (!playerPath || !item) return JSON.stringify({available: true, state: 'unknown'});
 
       const info = item.nowPlayingInfo;
       const rateObject = info && info.objectForKey
         ? info.objectForKey('kMRMediaRemoteNowPlayingInfoPlaybackRate')
         : null;
       const rate = rateObject ? rateObject.js : null;
-      let appName = null;
-      try {
-        const client = playerPath.client;
-        if (client && client.displayName) appName = client.displayName.js;
-      } catch (_) {}
 
       const state = typeof rate === 'number'
         ? (rate > 0 ? 'playing' : 'not-playing')
         : 'unknown';
-      return JSON.stringify({available: true, state: state, appName: appName});
+      return JSON.stringify({available: true, state: state});
     }
     """
 }
