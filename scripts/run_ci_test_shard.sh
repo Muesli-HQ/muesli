@@ -51,10 +51,14 @@ case "${shard}" in
       SpeechTranscriptionResultTests
       TranscriptionCoordinatorTests
       TranscriptionEngineArtifactsFilterTests
+      DiarizerRuntimePolicyTests
+      DiarizerPreloadDiagnosticsTests
+      DiarizerPreloadCoordinationTests
       PasteControllerTests
       BackendOptionTests
       SummaryModelPresetTests
       HotkeyMonitorTests
+      InteractiveAudioSessionOwnershipTests
       DictationStateTests
       HotkeyConfigTests
       DictationStateIdleTests
@@ -81,6 +85,7 @@ case "${shard}" in
       MeetingSummaryBackendTests
       MeetingResummarizationPolicyTests
       MeetingTemplateResolutionTests
+      MeetingTemplatesDefaultFallbackTests
       RouteAwareMeetingMicRecorderTests
       DisabledCalendarFilterTests
       GoogleCalendarTests

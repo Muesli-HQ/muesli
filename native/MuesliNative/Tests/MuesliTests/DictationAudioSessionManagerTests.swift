@@ -606,6 +606,33 @@ struct DictationAudioSessionManagerTests {
         #expect(harness.recorder.cancelCalls == 1)
         #expect(!harness.recorder.keepsAudioGraphWarm)
     }
+
+    @Test("cancel detaches ownership before queued teardown so immediate rearm gets a new session")
+    func cancelThenImmediateRearmGetsNewSession() {
+        let harness = Harness(routeKind: .speakerLike)
+        harness.managerQueue.suspend()
+
+        harness.manager.arm(source: "first")
+        let firstSessionID = harness.manager.currentSessionID
+        harness.manager.cancel(reason: "replace")
+
+        #expect(firstSessionID != nil)
+        #expect(harness.manager.currentSessionID == nil)
+
+        harness.manager.arm(source: "second")
+        let secondSessionID = harness.manager.currentSessionID
+
+        #expect(secondSessionID != nil)
+        #expect(secondSessionID != firstSessionID)
+
+        harness.managerQueue.resume()
+        harness.wait()
+
+        #expect(harness.manager.currentSessionID == secondSessionID)
+        if let secondSessionID {
+            #expect(harness.manager.currentState == .armed(secondSessionID))
+        }
+    }
 }
 
 private final class Harness {
