@@ -7,7 +7,8 @@ import MuesliCore
 struct MuesliCLITests {
     @Test("spec exposes the agent-facing command set")
     func specPayloadIncludesCommands() {
-        let names = Set(MuesliCLI.specPayload().commands.map(\.name))
+        let payload = MuesliCLI.specPayload()
+        let names = Set(payload.commands.map(\.name))
 
         #expect(names.contains("spec"))
         #expect(names.contains("info"))
@@ -17,6 +18,10 @@ struct MuesliCLITests {
         #expect(names.contains("meetings update-notes"))
         #expect(names.contains("dictations list"))
         #expect(names.contains("dictations get"))
+
+        let transcribeSpec = payload.commands.first { $0.name == "transcribe" }
+        #expect(transcribeSpec?.usage.contains("nemotron35") == true)
+        #expect(transcribeSpec?.usage.contains("--dictionary") == true)
     }
 
     @Test("explicit db path overrides support directory resolution")

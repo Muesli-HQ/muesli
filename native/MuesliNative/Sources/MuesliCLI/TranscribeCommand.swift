@@ -94,7 +94,7 @@ struct TranscribeJSONPayload: Encodable {
 struct TranscribeCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "transcribe",
-        abstract: "Transcribe a local audio file with Muesli's bundled Parakeet models."
+        abstract: "Transcribe a local audio file with Muesli's bundled local ASR models."
     )
 
     @OptionGroup var global: GlobalOptions
