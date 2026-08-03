@@ -520,6 +520,19 @@ struct FloatingIndicatorPointerInteractionTests {
             at: CGPoint(x: trailingFrame.midX, y: size.height / 2),
             in: size
         ) == .trailingControl)
+
+        // Both points above sit in exactly one touch target, so they never reach
+        // the tie-break. Probe either side of the boundary between the two
+        // control centres, which is inside the overlapping region.
+        let boundary = (leadingFrame.midX + trailingFrame.midX) / 2
+        #expect(FloatingIndicatorControlLayout.hit(
+            at: CGPoint(x: boundary - 2, y: size.height / 2),
+            in: size
+        ) == .leadingControl)
+        #expect(FloatingIndicatorControlLayout.hit(
+            at: CGPoint(x: boundary + 2, y: size.height / 2),
+            in: size
+        ) == .trailingControl)
     }
 
     @MainActor
