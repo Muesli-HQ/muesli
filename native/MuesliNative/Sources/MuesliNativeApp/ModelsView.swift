@@ -589,7 +589,11 @@ struct ModelsView: View {
             }
 
             if showsDownloadStatus {
-                downloadProgressView(for: option.id, fallbackProgress: progress)
+                downloadProgressView(
+                    for: option.id,
+                    fallbackProgress: progress,
+                    fallbackMessage: downloadMessages[option.id]
+                )
             }
 
             HStack(spacing: MuesliTheme.spacing8) {
@@ -828,8 +832,9 @@ struct ModelsView: View {
             if snapshot.bytesPerSecond > 0 {
                 details.append("\(ModelDownloadDisplayFormatting.rate(snapshot.bytesPerSecond))")
             }
-            if let eta = snapshot.estimatedSecondsRemaining, eta.isFinite, eta >= 0 {
-                details.append("\(ModelDownloadDisplayFormatting.eta(eta)) left")
+            if let eta = snapshot.estimatedSecondsRemaining,
+               let formattedETA = ModelDownloadDisplayFormatting.eta(eta) {
+                details.append("\(formattedETA) left")
             }
             if snapshot.retryCount > 0 {
                 details.append("retry \(snapshot.retryCount)/3")
@@ -845,7 +850,9 @@ struct ModelsView: View {
     }
 
     private func shouldShowDownloadStatus(for modelID: String, isDownloading: Bool) -> Bool {
-        guard let phase = downloadSnapshots[modelID]?.phase else { return isDownloading }
+        guard let phase = downloadSnapshots[modelID]?.phase else {
+            return isDownloading || downloadMessages[modelID] != nil
+        }
         return isDownloading || phase == .paused || phase == .failed
     }
 
@@ -1159,6 +1166,8 @@ struct ModelsView: View {
     private func startPostProcDownload(_ option: PostProcessorOption) {
         withAnimation { _ = downloadingPostProcModels.insert(option.id) }
         downloadProgressPostProc[option.id] = 0.02
+        downloadMessages.removeValue(forKey: option.id)
+        downloadSnapshots.removeValue(forKey: option.id)
         let generation = UUID()
         downloadGenerations[option.id] = generation
 
@@ -1176,6 +1185,7 @@ struct ModelsView: View {
                         downloadingPostProcModels.remove(option.id)
                         downloadedPostProcModels.insert(option.id)
                         downloadProgressPostProc.removeValue(forKey: option.id)
+                        downloadMessages.removeValue(forKey: option.id)
                         downloadSnapshots.removeValue(forKey: option.id)
                         if downloadGenerations[option.id] == generation {
                             downloadGenerations.removeValue(forKey: option.id)
@@ -1188,19 +1198,27 @@ struct ModelsView: View {
                     }
                 }
             } catch {
+                let isCancelled = error is CancellationError || (error as? URLError)?.code == .cancelled
                 await MainActor.run {
                     guard downloadGenerations[option.id] == generation else { return }
                     withAnimation {
                         downloadingPostProcModels.remove(option.id)
                         downloadProgressPostProc.removeValue(forKey: option.id)
-                        downloadSnapshots.removeValue(forKey: option.id)
+                        downloadMessages[option.id] = isCancelled
+                            ? "Paused — select Download to resume"
+                            : error.localizedDescription
+                        if let snapshot = downloadSnapshots[option.id] {
+                            downloadSnapshots[option.id] = snapshot.replacing(
+                                phase: isCancelled ? .paused : .failed,
+                                message: downloadMessages[option.id]
+                            )
+                        }
                         if downloadGenerations[option.id] == generation {
                             downloadGenerations.removeValue(forKey: option.id)
                         }
                         downloadTasksPostProc.removeValue(forKey: option.id)
                     }
                 }
-                let isCancelled = error is CancellationError || (error as? URLError)?.code == .cancelled
                 if !isCancelled {
                     fputs("[muesli-native] Post-processor download failed: \(error)\n", stderr)
                 }
@@ -1254,7 +1272,10 @@ struct ModelsView: View {
                 guard downloadGenerations[option.id] == cancellationGeneration else { return }
                 if option.isDownloaded {
                     downloadedPostProcModels.insert(option.id)
+                    downloadMessages.removeValue(forKey: option.id)
                     downloadSnapshots.removeValue(forKey: option.id)
+                } else {
+                    downloadMessages[option.id] = "Paused — select Download to resume"
                 }
                 downloadGenerations.removeValue(forKey: option.id)
             }

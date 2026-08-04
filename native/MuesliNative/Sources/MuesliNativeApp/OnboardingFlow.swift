@@ -1,6 +1,12 @@
 import Foundation
 
 enum OnboardingFlow {
+    enum DictationTestMonitorAction: Equatable {
+        case start
+        case stop(cancelTestDictation: Bool)
+        case none
+    }
+
     enum Step: Int {
         case welcome = 0
         case model = 1
@@ -19,6 +25,20 @@ enum OnboardingFlow {
         modelReady: Bool
     ) -> Bool {
         modelReady && currentStep >= dictationTestStep
+    }
+
+    static func dictationTestMonitorAction(
+        currentStep: Int,
+        dictationTestStep: Int,
+        modelReady: Bool,
+        monitorActive: Bool,
+        dictationTesting: Bool
+    ) -> DictationTestMonitorAction {
+        guard currentStep >= dictationTestStep else { return .none }
+        guard modelReady else {
+            return .stop(cancelTestDictation: dictationTesting)
+        }
+        return monitorActive ? .none : .start
     }
 
     static func orderedSteps(for useCase: OnboardingUseCase) -> [Int] {

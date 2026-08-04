@@ -10,8 +10,14 @@ enum ModelDownloadDisplayFormatting {
         return "\(bytes) B"
     }
 
-    static func eta(_ seconds: Double) -> String {
-        let totalSeconds = Int(max(0, seconds).rounded())
+    static func eta(_ seconds: Double) -> String? {
+        guard seconds.isFinite, seconds >= 0 else { return nil }
+        let roundedSeconds = seconds.rounded()
+        // An ETA beyond one year is not useful to display and must not be
+        // converted to Int, where an extreme finite Double can overflow.
+        let maximumDisplayableSeconds = Double(365 * 24 * 60 * 60)
+        guard roundedSeconds <= maximumDisplayableSeconds else { return nil }
+        let totalSeconds = Int(roundedSeconds)
         if totalSeconds < 60 { return "\(totalSeconds)s" }
         let minutes = totalSeconds / 60
         let remainingSeconds = totalSeconds % 60

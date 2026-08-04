@@ -23,6 +23,18 @@ private final class DownloadTestTracker: @unchecked Sendable {
     }
 }
 
+private final class DownloadResponseSequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func next() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        value += 1
+        return value
+    }
+}
+
 private final class ModelDownloadTestURLProtocol: URLProtocol {
     struct Response {
         let statusCode: Int
@@ -51,7 +63,20 @@ private final class ModelDownloadTestURLProtocol: URLProtocol {
 
     private static let lock = NSLock()
     private static var provider: ((URLRequest) -> Response)?
-    private var stopped = false
+    private let stateLock = NSLock()
+    private var stoppedStorage = false
+    private var stopped: Bool {
+        get {
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            return stoppedStorage
+        }
+        set {
+            stateLock.lock()
+            stoppedStorage = newValue
+            stateLock.unlock()
+        }
+    }
 
     static func install(_ provider: @escaping (URLRequest) -> Response) {
         lock.lock()
@@ -466,6 +491,45 @@ struct ModelDownloadCoordinatorTests {
         try await coordinator.download(manifest, to: directory)
         #expect(try Data(contentsOf: directory.appendingPathComponent("model.bin")) == Data("hello".utf8))
         #expect(tracker.requestCount == 2)
+    }
+
+    @Test("recovers from HTTP 416 on the final retry")
+    func finalAttempt416ResetsAndRetriesFromZero() async throws {
+        let tracker = DownloadTestTracker()
+        let sequence = DownloadResponseSequence()
+        ModelDownloadTestURLProtocol.install { request in
+            switch sequence.next() {
+            case 1, 2:
+                return ModelDownloadTestURLProtocol.Response(statusCode: 503, tracker: tracker)
+            case 3:
+                #expect(request.value(forHTTPHeaderField: "Range") != nil)
+                return ModelDownloadTestURLProtocol.Response(statusCode: 416, tracker: tracker)
+            default:
+                #expect(request.value(forHTTPHeaderField: "Range") == nil)
+                return ModelDownloadTestURLProtocol.Response(data: Data("hello".utf8), tracker: tracker)
+            }
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let coordinator = makeCoordinator()
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("stale".utf8).write(to: directory.appendingPathComponent("model.bin.part"))
+        let manifest = ModelDownloadManifest(
+            id: "final-attempt-416",
+            version: "1",
+            files: [ModelDownloadFile(
+                relativePath: "model.bin",
+                remoteURL: try #require(URL(string: "https://example.com/model")),
+                expectedByteCount: 5
+            )],
+            maximumConcurrency: 1
+        )
+
+        try await coordinator.download(manifest, to: directory)
+
+        #expect(try Data(contentsOf: directory.appendingPathComponent("model.bin")) == Data("hello".utf8))
+        #expect(tracker.requestCount == 4)
     }
 
     @Test("cancellation preserves the partial file and does not finalize it")

@@ -422,12 +422,14 @@ public actor ModelDownloadCoordinator {
         try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         var lastError: Error?
 
-        for attempt in 0..<3 {
+        var attempt = 0
+        while attempt < 3 {
             if attempt > 0 {
                 let base = UInt64(1 << (attempt - 1)) * 1_000_000_000
                 let jitter = UInt64.random(in: 0...250_000_000)
                 try await Task.sleep(nanoseconds: base + jitter)
             }
+            var resetPartialForAttempt = false
             do {
                 try Task.checkCancellation()
                 try await stream(file, manifest: manifest, directory: directory, partURL: partURL, etag: etag, attempt: attempt)
@@ -442,6 +444,7 @@ public actor ModelDownloadCoordinator {
                 throw CancellationError()
             } catch let error as URLError where error.code == .timedOut {
                 lastError = ModelDownloadError.stalled(file.relativePath)
+                attempt += 1
             } catch let error as ModelDownloadError {
                 lastError = error
                 switch error {
@@ -450,20 +453,28 @@ public actor ModelDownloadCoordinator {
                     throw error
                 case .invalidHTTPStatus(416, _):
                     // A stale or oversized partial file cannot be resumed.
-                    // Reset it once and let the next attempt request the
-                    // complete artifact from byte zero.
+                    // Reset it and immediately retry the same attempt from
+                    // byte zero, including when the 416 arrived on the final
+                    // normal retry. This keeps stale-part recovery distinct
+                    // from ordinary transient retries.
                     try? fm.removeItem(at: partURL)
-                    lastError = error
+                    guard !resetPartialForAttempt else {
+                        attempt += 1
+                        continue
+                    }
+                    resetPartialForAttempt = true
+                    continue
                 case .etagMismatch:
                     try? fm.removeItem(at: partURL)
-                    lastError = error
+                    attempt += 1
                 case .invalidContentLength, .sizeMismatch, .checksumMismatch, .insufficientDiskSpace, .diskSpaceUnavailable:
                     throw error
                 default:
-                    break
+                    attempt += 1
                 }
             } catch {
                 lastError = error
+                attempt += 1
             }
         }
         throw ModelDownloadError.retriesExhausted(file.relativePath, lastError?.localizedDescription ?? "unknown error")

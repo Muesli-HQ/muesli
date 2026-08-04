@@ -39,6 +39,7 @@ struct OnboardingView: View {
 
     // Dictation test
     @State private var isDictationTesting = false
+    @State private var isDictationTestMonitorActive = false
     @State private var dictationTestResult: String?
     @State private var dictationTestError: String?
     @State private var isModelStillDownloading = false
@@ -491,8 +492,9 @@ struct OnboardingView: View {
             if snapshot.bytesPerSecond > 0 {
                 details.append(ModelDownloadDisplayFormatting.rate(snapshot.bytesPerSecond))
             }
-            if let eta = snapshot.estimatedSecondsRemaining, eta.isFinite, eta >= 0 {
-                details.append("\(ModelDownloadDisplayFormatting.eta(eta)) left")
+            if let eta = snapshot.estimatedSecondsRemaining,
+               let formattedETA = ModelDownloadDisplayFormatting.eta(eta) {
+                details.append("\(formattedETA) left")
             }
             if snapshot.retryCount > 0 {
                 details.append("retry \(snapshot.retryCount)/3")
@@ -1437,6 +1439,7 @@ struct OnboardingView: View {
             if !hasFinishedOnboarding {
                 controller.stopHotkeyMonitor()
             }
+            isDictationTestMonitorActive = false
         }
     }
 
@@ -1618,24 +1621,32 @@ struct OnboardingView: View {
     }
 
     private func startDictationTestMonitorIfReady() {
-        guard OnboardingFlow.shouldStartDictationTestMonitor(
+        let action = OnboardingFlow.dictationTestMonitorAction(
             currentStep: currentStep,
             dictationTestStep: Self.dictationTestStep,
-            modelReady: isSelectedModelReadyForDictationTest
-        ) else {
-            guard currentStep >= Self.dictationTestStep else { return }
-            if isDictationTesting {
+            modelReady: isSelectedModelReadyForDictationTest,
+            monitorActive: isDictationTestMonitorActive,
+            dictationTesting: isDictationTesting
+        )
+
+        switch action {
+        case .none:
+            return
+        case .stop(let cancelTestDictation):
+            if cancelTestDictation {
                 controller.cancelTestDictation()
                 isDictationTesting = false
             }
             controller.stopHotkeyMonitor()
+            isDictationTestMonitorActive = false
             return
+        case .start:
+            dictationTestError = nil
+            controller.dictationTestBackend = selectedBackend
+            controller.dictationTestCohereLanguage = selectedCohereLanguage
+            controller.startHotkeyMonitor(keyCode: selectedHotkey.keyCode)
+            isDictationTestMonitorActive = true
         }
-
-        dictationTestError = nil
-        controller.dictationTestBackend = selectedBackend
-        controller.dictationTestCohereLanguage = selectedCohereLanguage
-        controller.startHotkeyMonitor(keyCode: selectedHotkey.keyCode)
     }
 
     private func advanceAfterSuccessfulDictationTest(text: String) {
