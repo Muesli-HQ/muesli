@@ -216,7 +216,7 @@ struct StreamingDictationControllerTests {
 
         #expect(controller.start() == true)
         recorder.emit(samples: [Float](repeating: 0.2, count: 8960))
-        try? await Task.sleep(for: .milliseconds(50))
+        #expect(await waitUntil { recorder.cancelCalls == 1 && failures.value == 1 })
 
         #expect(await transcriber.transcribeCalls == 1)
         #expect(recorder.cancelCalls == 1)
@@ -723,6 +723,18 @@ private func stop(_ controller: StreamingDictationController) async -> String {
             continuation.resume(returning: text)
         }
     }
+}
+
+private func waitUntil(
+    timeout: TimeInterval = 2.0,
+    _ condition: @escaping @Sendable () -> Bool
+) async -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        if condition() { return true }
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+    return condition()
 }
 
 private func makeTestNemotronStreamState() throws -> RNNTStreamState {

@@ -86,4 +86,18 @@ struct CustomWordDictionaryTests {
         #expect(result.words.count == 1)
         #expect(result.words[0].id != importedID)
     }
+
+    @Test("preserves explicit empty replacements through app import")
+    func preservesExplicitEmptyReplacement() throws {
+        let data = Data(
+            #"[{"word":"delete","replacement":""}]"#.utf8
+        )
+
+        let imported = try CustomWordDictionaryCodec.decode(data)
+        let result = CustomWordDictionaryCodec.merge(imported, into: [])
+
+        #expect(imported[0].replacement == "")
+        #expect(result.words[0].replacement == "")
+        #expect(CustomWordMatcher.apply(text: "delete", customWords: result.words) == "")
+    }
 }

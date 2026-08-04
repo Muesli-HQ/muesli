@@ -77,11 +77,10 @@ public enum CustomWordDictionaryCodec {
             }
 
             let replacement = importedWord.replacement?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let normalizedReplacement = replacement?.isEmpty == true ? nil : replacement
             let normalizedWord = CustomWord(
                 id: importedWord.id,
                 word: word,
-                replacement: normalizedReplacement,
+                replacement: replacement,
                 matchingThreshold: importedWord.matchingThreshold
             )
             let key = normalizedWordKey(word)

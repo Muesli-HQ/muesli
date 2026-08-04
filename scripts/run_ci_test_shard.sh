@@ -30,6 +30,7 @@ case "${shard}" in
       CGPointCodableTests
       UpdateFailureGuidanceTests
       WordCountTests
+      CustomWordDictionaryTests
     )
     ;;
   dictation-transcription)
@@ -63,6 +64,7 @@ case "${shard}" in
       HotkeyConfigTests
       DictationStateIdleTests
       DictationCorrectionMonitorTests
+      Nemotron35ModelStoreTests
     )
     ;;
   meetings)
