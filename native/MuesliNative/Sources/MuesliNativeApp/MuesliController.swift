@@ -1738,10 +1738,14 @@ final class MuesliController: NSObject {
     /// Settings — this feature never requests macOS location permission.
     func recomputeAutoTheme() {
         guard config.autoThemeByDaylight,
-              let latitude = config.themeLatitude,
-              let longitude = config.themeLongitude else {
+              let rawLatitude = config.themeLatitude,
+              let rawLongitude = config.themeLongitude else {
             return
         }
+        // Defensive clamp in case a coordinate predates the Settings-field range
+        // validation (e.g. a hand-edited config.json).
+        let latitude = min(max(rawLatitude, -90), 90)
+        let longitude = min(max(rawLongitude, -180), 180)
         let shouldBeDark = SolarCalculator.isNight(latitude: latitude, longitude: longitude)
         guard shouldBeDark != config.darkMode else { return }
         updateConfig { $0.darkMode = shouldBeDark }

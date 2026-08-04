@@ -9,7 +9,17 @@ public enum SolarCalculator {
     public static func sunriseSunset(latitude: Double, longitude: Double, date: Date, calendar: Calendar = Calendar(identifier: .gregorian)) -> (sunrise: Date, sunset: Date)? {
         var utcCalendar = calendar
         utcCalendar.timeZone = TimeZone(identifier: "UTC")!
-        let dayOfYear = Double(utcCalendar.ordinality(of: .day, in: .year, for: date) ?? 1)
+
+        // The UTC calendar day of `date` is not necessarily the correct local solar
+        // day for this longitude — e.g. checking a UTC instant just after UTC
+        // midnight at a far-eastern longitude can already be local afternoon of the
+        // *next* local day, or a far-western longitude just before UTC midnight can
+        // still be local morning of the *previous* local day. Shift by the
+        // longitude's solar-time offset (4 minutes per degree) before reading the
+        // calendar day so the declination/sunrise/sunset pair anchors to the local
+        // day actually containing `date`.
+        let localDate = date.addingTimeInterval(longitude * 240)
+        let dayOfYear = Double(utcCalendar.ordinality(of: .day, in: .year, for: localDate) ?? 1)
         let latRad = latitude * .pi / 180
 
         let fractionalYear = 2 * .pi / 365 * (dayOfYear - 1)
@@ -37,7 +47,7 @@ public enum SolarCalculator {
         let sunriseMinutesUTC = 720 - 4 * (longitude + hourAngle) - eqTime
         let sunsetMinutesUTC = 720 - 4 * (longitude - hourAngle) - eqTime
 
-        guard let startOfDay = utcCalendar.date(bySettingHour: 0, minute: 0, second: 0, of: date) else {
+        guard let startOfDay = utcCalendar.date(bySettingHour: 0, minute: 0, second: 0, of: localDate) else {
             return nil
         }
         let sunrise = startOfDay.addingTimeInterval(sunriseMinutesUTC * 60)

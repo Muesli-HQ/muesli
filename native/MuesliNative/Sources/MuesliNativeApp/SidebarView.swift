@@ -575,8 +575,17 @@ struct SidebarView: View {
             .buttonStyle(.plain)
 
             Button {
+                let hasCoordinates = appState.config.themeLatitude != nil && appState.config.themeLongitude != nil
                 withAnimation(.easeInOut(duration: 0.2)) {
-                    controller.updateConfig { $0.autoThemeByDaylight = true }
+                    if hasCoordinates {
+                        controller.updateConfig { $0.autoThemeByDaylight = true }
+                    } else {
+                        // Enabling auto mode without coordinates would silently do
+                        // nothing (recomputeAutoTheme no-ops until both are set) —
+                        // send the user to Settings to configure a location instead.
+                        appState.selectedSettingsPane = .appearance
+                        appState.selectedTab = .settings
+                    }
                 }
             } label: {
                 Image(systemName: "circle.lefthalf.filled")

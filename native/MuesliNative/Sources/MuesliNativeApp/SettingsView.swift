@@ -1522,7 +1522,9 @@ struct SettingsView: View {
                             currentModel: appState.config.themeLatitude.map { String($0) } ?? "",
                             placeholder: "e.g. 37.7749"
                         ) { value in
-                            controller.updateConfig { $0.themeLatitude = Double(value) }
+                            controller.updateConfig {
+                                $0.themeLatitude = Double(value).map { min(max($0, -90), 90) }
+                            }
                         }
                     }
                     Divider().background(MuesliTheme.surfaceBorder)
@@ -1531,7 +1533,9 @@ struct SettingsView: View {
                             currentModel: appState.config.themeLongitude.map { String($0) } ?? "",
                             placeholder: "e.g. -122.4194"
                         ) { value in
-                            controller.updateConfig { $0.themeLongitude = Double(value) }
+                            controller.updateConfig {
+                                $0.themeLongitude = Double(value).map { min(max($0, -180), 180) }
+                            }
                         }
                     }
                     settingsDescription("Muesli never requests macOS Location permission for this. Enter your coordinates once and the app switches theme locally using sunrise/sunset math.")

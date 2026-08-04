@@ -61,6 +61,35 @@ struct SolarCalculatorTests {
         #expect(SolarCalculator.isNight(latitude: 37.7749, longitude: -122.4194, date: midnight) == true)
     }
 
+    @Test("far-eastern longitude stays continuous across the UTC calendar-day boundary")
+    func farEastLongitudeIsContinuousAcrossUTCMidnight() {
+        // At longitude +170 (near the date line), local solar time is UTC+11h20m.
+        // Two instants two minutes apart straddling UTC midnight (Jan 1 23:59 / Jan 2
+        // 00:01) are both ~11:20am local the next day — clearly midday, nowhere near
+        // sunrise or sunset. A version of the calculator that anchors sunrise/sunset
+        // to the *raw* UTC calendar day (instead of the local solar day) recomputes
+        // against a different day for each instant and can report a spurious flip
+        // from day to night (or vice versa) right at the boundary.
+        let beforeUTCMidnight = utcDate(2026, 1, 1, 23, 59)
+        let afterUTCMidnight = utcDate(2026, 1, 2, 0, 1)
+        let latitude = 35.0
+        let longitude = 170.0
+        #expect(SolarCalculator.isNight(latitude: latitude, longitude: longitude, date: beforeUTCMidnight) == false)
+        #expect(SolarCalculator.isNight(latitude: latitude, longitude: longitude, date: afterUTCMidnight) == false)
+    }
+
+    @Test("far-western longitude stays continuous across the UTC calendar-day boundary")
+    func farWestLongitudeIsContinuousAcrossUTCMidnight() {
+        // Mirror case at longitude -170: local solar time is UTC-11h20m, so UTC
+        // midnight is ~12:40pm local the *previous* day — again clearly midday.
+        let beforeUTCMidnight = utcDate(2026, 1, 1, 23, 59)
+        let afterUTCMidnight = utcDate(2026, 1, 2, 0, 1)
+        let latitude = 35.0
+        let longitude = -170.0
+        #expect(SolarCalculator.isNight(latitude: latitude, longitude: longitude, date: beforeUTCMidnight) == false)
+        #expect(SolarCalculator.isNight(latitude: latitude, longitude: longitude, date: afterUTCMidnight) == false)
+    }
+
     @Test("polar day at the pole never registers as night")
     func polarDayDefaultsToFalse() {
         let summerAtPole = utcDate(2026, 6, 21, 12, 0)
