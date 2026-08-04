@@ -89,6 +89,28 @@ private enum IndicASRConfig {
     // must not block first-time installs when it is not needed for inference.
     static let requiredMetadataFiles = [vocabFile, preprocessorConstantsFile]
 
+    // File sizes from the pinned Hugging Face revision above. The manifest
+    // uses them for disk preflight, byte-level progress, and final validation.
+    static func expectedByteCount(for relativePath: String) -> Int64? {
+        if relativePath.hasSuffix("/Manifest.json") { return 617 }
+        if relativePath == metadataRelativePath("vocab.json") { return 96_743 }
+        if relativePath == metadataRelativePath("preprocessor_constants.bin") { return 83_876 }
+        if relativePath.hasSuffix("/Data/com.apple.CoreML/model.mlmodel") {
+            if relativePath.contains(encoderPackage) { return 980_991 }
+            if relativePath.contains(rnntDecoderPackage) { return 12_875 }
+            if relativePath.contains(jointPreNetPackage) { return 958 }
+            return 1_437
+        }
+        if relativePath.hasSuffix("/Data/com.apple.CoreML/weights/weight.bin") {
+            if relativePath.contains(encoderPackage) { return 590_860_480 }
+            if relativePath.contains(rnntDecoderPackage) { return 20_328_192 }
+            if relativePath.contains(jointEncPackage) { return 1_312_192 }
+            if relativePath.contains(jointPredPackage) { return 820_672 }
+            if relativePath.contains("joint_post_net_") { return 329_666 }
+        }
+        return nil
+    }
+
     static func packageRelativeDirectory(_ packageName: String) -> String {
         if packageName == encoderPackage {
             return "coreml/encoder/\(packageName)"
@@ -323,7 +345,15 @@ enum IndicASRModelStore {
         }
 
         let files = missing.map { relativePath in
-            ModelDownloadFile(relativePath: relativePath, remoteURL: remoteURL(for: relativePath))
+            ModelDownloadFile(
+                relativePath: relativePath,
+                remoteURL: remoteURL(for: relativePath),
+                expectedByteCount: IndicASRConfig.expectedByteCount(for: relativePath)
+            )
+        }
+        guard !files.isEmpty else {
+            progress?(1.0, "Indic ASR download complete")
+            return
         }
         let manifest = ModelDownloadManifest(
             id: IndicASRConfig.repoId,

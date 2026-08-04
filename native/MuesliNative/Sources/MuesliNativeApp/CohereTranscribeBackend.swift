@@ -243,6 +243,25 @@ private enum CohereTranscribeConfig {
     static let requiredModelPackages = [dynamicEncoderPackage, prefillPackage, decodePackage]
     static let requiredRelativeFiles = [tokenizerFile, melFilterFile, melWindowFile]
 
+    // File sizes from the current Hugging Face `main` snapshot. Keeping these
+    // in the manifest makes the disk-space check and overall progress useful
+    // before the first response arrives. Update them when the repository
+    // artifact revision changes.
+    static let expectedByteCounts: [String: Int64] = [
+        "cohere_encoder_dynamic.mlpackage/Manifest.json": 617,
+        "cohere_encoder_dynamic.mlpackage/Data/com.apple.CoreML/model.mlmodel": 1_452_501,
+        "cohere_encoder_dynamic.mlpackage/Data/com.apple.CoreML/weights/weight.bin": 3_743_424_960,
+        "cohere_decoder_prefill_int8.mlpackage/Manifest.json": 617,
+        "cohere_decoder_prefill_int8.mlpackage/Data/com.apple.CoreML/model.mlmodel": 242_152,
+        "cohere_decoder_prefill_int8.mlpackage/Data/com.apple.CoreML/weights/weight.bin": 151_622_720,
+        "cohere_decoder_decode_int8.mlpackage/Manifest.json": 617,
+        "cohere_decoder_decode_int8.mlpackage/Data/com.apple.CoreML/model.mlmodel": 193_148,
+        "cohere_decoder_decode_int8.mlpackage/Data/com.apple.CoreML/weights/weight.bin": 135_294_656,
+        tokenizerFile: 492_827,
+        melFilterFile: 131_584,
+        melWindowFile: 1_600,
+    ]
+
     static var defaultCacheDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".cache/muesli/models", isDirectory: true)
@@ -764,7 +783,11 @@ enum CohereTranscribeModelStore {
         }
 
         let files = missing.map { relativePath in
-            ModelDownloadFile(relativePath: relativePath, remoteURL: remoteURL(for: relativePath))
+            ModelDownloadFile(
+                relativePath: relativePath,
+                remoteURL: remoteURL(for: relativePath),
+                expectedByteCount: CohereTranscribeConfig.expectedByteCounts[relativePath]
+            )
         }
         let manifest = ModelDownloadManifest(
             id: CohereTranscribeConfig.repoId,

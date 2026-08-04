@@ -30,6 +30,26 @@ public enum Nemotron35ModelStore {
     public static let variantPath = "multilingual/2240ms"
     public static let cacheRelativePath = ".cache/muesli/models/nemotron35-multilingual-2240ms"
     public static let requiredFileRelativePath = "encoder.mlmodelc/coremldata.bin"
+    public static let requiredFileRelativePaths = [
+        "encoder.mlmodelc/analytics/coremldata.bin",
+        "encoder.mlmodelc/coremldata.bin",
+        "encoder.mlmodelc/model.mil",
+        "encoder.mlmodelc/weights/weight.bin",
+        "decoder.mlmodelc/analytics/coremldata.bin",
+        "decoder.mlmodelc/coremldata.bin",
+        "decoder.mlmodelc/model.mil",
+        "decoder.mlmodelc/weights/weight.bin",
+        "joint.mlmodelc/analytics/coremldata.bin",
+        "joint.mlmodelc/coremldata.bin",
+        "joint.mlmodelc/model.mil",
+        "joint.mlmodelc/weights/weight.bin",
+        "preprocessor.mlmodelc/analytics/coremldata.bin",
+        "preprocessor.mlmodelc/coremldata.bin",
+        "preprocessor.mlmodelc/model.mil",
+        "preprocessor.mlmodelc/weights/weight.bin",
+        "metadata.json",
+        "tokenizer.json",
+    ]
 
     public static func cacheDirectory(fileManager: FileManager = .default) -> URL {
         fileManager.homeDirectoryForCurrentUser
@@ -41,11 +61,16 @@ public enum Nemotron35ModelStore {
     }
 
     public static func isModelDownloaded(fileManager: FileManager = .default) -> Bool {
-        fileManager.fileExists(
-            atPath: cacheDirectory(fileManager: fileManager)
-                .appendingPathComponent(requiredFileRelativePath)
-                .path
-        )
+        let directory = cacheDirectory(fileManager: fileManager)
+        return requiredFileRelativePaths.allSatisfy { relativePath in
+            let url = directory.appendingPathComponent(relativePath)
+            guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+                  let type = attributes[.type] as? FileAttributeType,
+                  type == .typeRegular else {
+                return false
+            }
+            return true
+        }
     }
 
     /// Ensure the app-compatible multilingual/2240ms model exists locally.
@@ -64,18 +89,25 @@ public enum Nemotron35ModelStore {
         progress?(0.0, "Downloading Nemotron 3.5 model...")
 
         let apiURL = "https://huggingface.co/api/models/\(repoID)/tree/main/\(variantPath)"
-        var filesDownloaded = 0
-        try await downloadTree(
+        let files = try await collectFiles(
             apiURL: apiURL,
             remotePath: variantPath,
-            localDirectory: directory,
-            skipRelativePrefix: "decoder_joint.mlmodelc",
-            onFileDownloaded: {
-            filesDownloaded += 1
-            progress?(min(Double(filesDownloaded) / 30.0, 0.95), "Downloading Nemotron 3.5 model...")
-            },
-            progressSnapshot: progressSnapshot
+            skipRelativePrefix: "decoder_joint.mlmodelc"
         )
+        guard !files.isEmpty else {
+            throw Nemotron35ModelStoreError.invalidResponse(apiURL)
+        }
+
+        let manifest = ModelDownloadManifest(
+            id: repoID,
+            version: "main:\(variantPath)",
+            files: files,
+            maximumConcurrency: 2
+        )
+        try await ModelDownloadCoordinator.shared.download(manifest, to: directory) { snapshot in
+            progress?(snapshot.fractionCompleted ?? 0, "Downloading Nemotron 3.5 model...")
+            progressSnapshot?(snapshot)
+        }
 
         if let revision = await fetchRemoteRevision() {
             recordInstalledRevision(revision)
@@ -123,14 +155,11 @@ public enum Nemotron35ModelStore {
         )
     }
 
-    private static func downloadTree(
+    private static func collectFiles(
         apiURL: String,
         remotePath: String,
-        localDirectory: URL,
-        skipRelativePrefix: String?,
-        onFileDownloaded: (() -> Void)?,
-        progressSnapshot: ModelDownloadProgressHandler?
-    ) async throws {
+        skipRelativePrefix: String?
+    ) async throws -> [ModelDownloadFile] {
         guard let url = URL(string: apiURL) else {
             throw Nemotron35ModelStoreError.invalidURL(apiURL)
         }
@@ -145,6 +174,7 @@ public enum Nemotron35ModelStore {
             throw Nemotron35ModelStoreError.invalidResponse(apiURL)
         }
 
+        var files: [ModelDownloadFile] = []
         for entry in entries {
             guard let path = entry["path"] as? String,
                   let type = entry["type"] as? String,
@@ -160,53 +190,23 @@ public enum Nemotron35ModelStore {
 
             if type == "directory" {
                 let subAPI = "https://huggingface.co/api/models/\(repoID)/tree/main/\(path)"
-                let subDirectory = localDirectory.appendingPathComponent(relativePath, isDirectory: true)
-                try FileManager.default.createDirectory(at: subDirectory, withIntermediateDirectories: true)
-                try await downloadTree(
+                files.append(contentsOf: try await collectFiles(
                     apiURL: subAPI,
                     remotePath: remotePath,
-                    localDirectory: localDirectory,
-                    skipRelativePrefix: skipRelativePrefix,
-                    onFileDownloaded: onFileDownloaded,
-                    progressSnapshot: progressSnapshot
-                )
+                    skipRelativePrefix: skipRelativePrefix
+                ))
             } else if type == "file" {
                 guard let fileURL = URL(string: "https://huggingface.co/\(repoID)/resolve/main/\(path)") else {
                     throw Nemotron35ModelStoreError.invalidURL(path)
                 }
-
-                let destination = localDirectory.appendingPathComponent(relativePath)
-                if FileManager.default.fileExists(atPath: destination.path) {
-                    continue
-                }
-
-                try FileManager.default.createDirectory(
-                    at: destination.deletingLastPathComponent(),
-                    withIntermediateDirectories: true
-                )
-                try await downloadFile(from: fileURL, to: destination, path: relativePath, progressSnapshot: progressSnapshot)
-                onFileDownloaded?()
+                let expectedByteCount = (entry["size"] as? NSNumber)?.int64Value
+                files.append(ModelDownloadFile(
+                    relativePath: relativePath,
+                    remoteURL: fileURL,
+                    expectedByteCount: expectedByteCount
+                ))
             }
         }
-    }
-
-    private static func downloadFile(
-        from url: URL,
-        to destination: URL,
-        path: String,
-        progressSnapshot: ModelDownloadProgressHandler?
-    ) async throws {
-        let root = destination.deletingLastPathComponent()
-        let manifest = ModelDownloadManifest(
-            id: "\(repoID):\(path)",
-            version: "main",
-            files: [ModelDownloadFile(relativePath: destination.lastPathComponent, remoteURL: url)],
-            maximumConcurrency: 1
-        )
-        do {
-            try await ModelDownloadCoordinator.shared.download(manifest, to: root, progress: progressSnapshot)
-        } catch {
-            throw Nemotron35ModelStoreError.retriesExhausted(path, error)
-        }
+        return files.sorted { $0.relativePath < $1.relativePath }
     }
 }

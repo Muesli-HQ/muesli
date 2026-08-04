@@ -824,14 +824,18 @@ struct ModelsView: View {
                 details.append("\(formatDownloadBytes(currentTotal - snapshot.currentFileCompletedBytes)) left in file")
             }
         }
-        if snapshot.bytesPerSecond > 0 {
-            details.append("\(formatDownloadBytes(Int64(snapshot.bytesPerSecond)))/s")
-        }
-        if let eta = snapshot.estimatedSecondsRemaining, eta.isFinite, eta >= 0 {
-            details.append("\(formatDownloadETA(eta)) left")
-        }
-        if snapshot.retryCount > 0 {
-            details.append("retry \(snapshot.retryCount)/3")
+        if snapshot.phase == .downloading {
+            if snapshot.bytesPerSecond > 0 {
+                details.append("\(formatDownloadBytes(Int64(snapshot.bytesPerSecond)))/s")
+            }
+            if let eta = snapshot.estimatedSecondsRemaining, eta.isFinite, eta >= 0 {
+                details.append("\(formatDownloadETA(eta)) left")
+            }
+            if snapshot.retryCount > 0 {
+                details.append("retry \(snapshot.retryCount)/3")
+            }
+        } else if let message = snapshot.message, !message.isEmpty {
+            details.append(message)
         }
         return details.isEmpty ? nil : details.joined(separator: " · ")
     }
@@ -1177,9 +1181,10 @@ struct ModelsView: View {
                 try fm.createDirectory(at: option.cacheDirectory, withIntermediateDirectories: true)
 
                 try await downloadPostProcModel(option, generation: generation)
+                try Task.checkCancellation()
 
                 await MainActor.run {
-                    guard downloadGenerations[option.id] == generation else { return }
+                    guard downloadGenerations[option.id] == generation, !Task.isCancelled else { return }
                     withAnimation {
                         downloadingPostProcModels.remove(option.id)
                         downloadedPostProcModels.insert(option.id)
@@ -1231,7 +1236,13 @@ struct ModelsView: View {
                 downloadSnapshots[option.id] = snapshot
             }
         }
-        try validateGGUFHeader(at: option.modelURL)
+        try Task.checkCancellation()
+        do {
+            try validateGGUFHeader(at: option.modelURL)
+        } catch {
+            try? FileManager.default.removeItem(at: option.modelURL)
+            throw error
+        }
     }
 
     private func validateGGUFHeader(at url: URL) throws {
@@ -1247,6 +1258,9 @@ struct ModelsView: View {
 
     private func cancelPostProcDownload(_ option: PostProcessorOption) {
         downloadTasksPostProc[option.id]?.cancel()
+        Task {
+            await ModelDownloadCoordinator.shared.cancel(modelID: option.id)
+        }
         withAnimation {
             downloadingPostProcModels.remove(option.id)
             downloadProgressPostProc.removeValue(forKey: option.id)
@@ -1391,6 +1405,9 @@ struct ModelsView: View {
 
     private func cancelDownload(_ option: BackendOption) {
         downloadTasks[option.model]?.cancel()
+        Task {
+            await ModelDownloadCoordinator.shared.cancel(modelID: option.model)
+        }
         withAnimation {
             downloadingModels.remove(option.model)
             downloadProgress.removeValue(forKey: option.model)

@@ -54,6 +54,7 @@ enum Gemma4LiteRTModelStore {
     static let repoID = "litert-community/gemma-4-E2B-it-litert-lm"
     static let modelFilename = "gemma-4-E2B-it.litertlm"
     static let cacheRelativePath = ".cache/muesli/models/gemma-4-e2b-litert-lm"
+    static let expectedModelByteCount: Int64 = 2_588_147_712
     static let minimumDownloadedModelSizeBytes: Int64 = 2_000_000_000
 
     static let downloadURL = URL(
@@ -192,7 +193,11 @@ enum Gemma4LiteRTModelStore {
         let manifest = ModelDownloadManifest(
             id: repoID,
             version: "main",
-            files: [ModelDownloadFile(relativePath: modelFilename, remoteURL: downloadURL)],
+            files: [ModelDownloadFile(
+                relativePath: modelFilename,
+                remoteURL: downloadURL,
+                expectedByteCount: expectedModelByteCount
+            )],
             maximumConcurrency: 1
         )
         try await ModelDownloadCoordinator.shared.download(manifest, to: directory) { snapshot in

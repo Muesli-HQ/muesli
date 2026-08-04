@@ -467,6 +467,14 @@ struct OnboardingView: View {
         if let currentFile = snapshot.currentFile?.split(separator: "/").last.map(String.init), !currentFile.isEmpty {
             details.append(currentFile)
         }
+        if snapshot.totalFileCount > 0 {
+            let completed = min(max(snapshot.completedFileCount, 0), snapshot.totalFileCount)
+            let remaining = snapshot.totalFileCount - completed
+            details.append("\(completed) of \(snapshot.totalFileCount) files")
+            if remaining > 0 {
+                details.append("\(remaining) left")
+            }
+        }
         if let total = snapshot.totalBytes, total > 0 {
             details.append("\(formatModelDownloadBytes(snapshot.completedBytes)) / \(formatModelDownloadBytes(total))")
             if snapshot.completedBytes < total {
@@ -478,12 +486,19 @@ struct OnboardingView: View {
                 details.append("\(formatModelDownloadBytes(currentTotal - snapshot.currentFileCompletedBytes)) left")
             }
         }
-        if snapshot.bytesPerSecond > 0 {
-            details.append("\(formatModelDownloadBytes(Int64(snapshot.bytesPerSecond)))/s")
-        }
-        if let eta = snapshot.estimatedSecondsRemaining, eta.isFinite, eta >= 0 {
-            let seconds = Int(eta.rounded())
-            details.append(seconds < 60 ? "\(seconds)s left" : "\(seconds / 60)m \(String(format: "%02d", seconds % 60))s left")
+        if snapshot.phase == .downloading {
+            if snapshot.bytesPerSecond > 0 {
+                details.append("\(formatModelDownloadBytes(Int64(snapshot.bytesPerSecond)))/s")
+            }
+            if let eta = snapshot.estimatedSecondsRemaining, eta.isFinite, eta >= 0 {
+                let seconds = Int(eta.rounded())
+                details.append(seconds < 60 ? "\(seconds)s left" : "\(seconds / 60)m \(String(format: "%02d", seconds % 60))s left")
+            }
+            if snapshot.retryCount > 0 {
+                details.append("retry \(snapshot.retryCount)/3")
+            }
+        } else if let message = snapshot.message, !message.isEmpty {
+            details.append(message)
         }
         return details.isEmpty ? (snapshot.message ?? "Downloading...") : details.joined(separator: " · ")
     }
@@ -1610,7 +1625,7 @@ struct OnboardingView: View {
     }
 
     private func startDictationTestMonitorIfReady() {
-        guard currentStep == Self.dictationTestStep else { return }
+        guard currentStep >= Self.dictationTestStep else { return }
         guard isSelectedModelReadyForDictationTest else {
             if isDictationTesting {
                 controller.cancelTestDictation()

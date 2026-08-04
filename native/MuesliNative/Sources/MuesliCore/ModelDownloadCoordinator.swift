@@ -142,25 +142,37 @@ public struct ModelDownloadProgress: Sendable {
 public typealias ModelDownloadProgressHandler = @Sendable (ModelDownloadProgress) -> Void
 
 public enum ModelDownloadError: Error, LocalizedError, Sendable {
+    case emptyManifest(String)
     case invalidHTTPStatus(Int, String)
     case stalled(String)
+    case invalidContentLength(String, expected: Int64, actual: Int64)
     case sizeMismatch(String, expected: Int64, actual: Int64)
     case checksumMismatch(String)
+    case etagMismatch(String)
     case insufficientDiskSpace(required: Int64, available: Int64)
+    case diskSpaceUnavailable(String)
     case retriesExhausted(String, String)
 
     public var errorDescription: String? {
         switch self {
+        case .emptyManifest(let modelID):
+            return "No files were specified for model download \(modelID)"
         case .invalidHTTPStatus(let status, let path):
             return "HTTP " + String(status) + " while downloading " + path
         case .stalled(let path):
             return "Download stalled while receiving " + path
+        case .invalidContentLength(let path, let expected, let actual):
+            return "The server reported an invalid size for " + path + " (expected " + String(expected) + " bytes, reported " + String(actual) + ")"
         case .sizeMismatch(let path, let expected, let actual):
             return "Downloaded " + path + " is incomplete (expected " + String(expected) + " bytes, received " + String(actual) + ")"
         case .checksumMismatch(let path):
             return "Downloaded " + path + " failed integrity validation"
+        case .etagMismatch(let path):
+            return "The partial download for " + path + " is from an older model revision"
         case .insufficientDiskSpace(let required, let available):
             return "Not enough disk space (need " + String(required) + " bytes, have " + String(available) + ")"
+        case .diskSpaceUnavailable(let path):
+            return "Could not determine available disk space for " + path
         case .retriesExhausted(let path, let detail):
             return "Could not download " + path + " after three attempts: " + detail
         }
@@ -178,6 +190,7 @@ public actor ModelDownloadCoordinator {
     public static let shared = ModelDownloadCoordinator()
 
     private var inFlight: [String: Task<Void, Error>] = [:]
+    private var progressHandlers: [String: [ModelDownloadProgressHandler]] = [:]
     private var fileProgress: [String: Int64] = [:]
     private var fileTotals: [String: Int64] = [:]
     // Keep one featured file stable while the bounded parallel batch advances.
@@ -186,26 +199,59 @@ public actor ModelDownloadCoordinator {
     private var startedAt: [String: Date] = [:]
     private var lastProgressEmissionAt: [String: Date] = [:]
     private var initialProgressBytes: [String: Int64] = [:]
+    private let sessionDelegate: ModelDownloadSessionDelegate
+    private let session: URLSession
 
-    public init() {}
+    public init() {
+        self.init(configuration: .modelDownload)
+    }
+
+    public init(configuration: URLSessionConfiguration) {
+        let delegate = ModelDownloadSessionDelegate()
+        sessionDelegate = delegate
+        session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+    }
+
+    /// Cancel every active transfer belonging to a model. A model may have
+    /// more specific in-flight IDs while its manifest is being assembled, so
+    /// matching the model prefix keeps cancellation reliable across callers.
+    public func cancel(modelID: String) {
+        for (id, task) in inFlight where id == modelID || id.hasPrefix(modelID + ":") {
+            task.cancel()
+        }
+    }
 
     public func download(
         _ manifest: ModelDownloadManifest,
         to directory: URL,
         progress: ModelDownloadProgressHandler? = nil
     ) async throws {
+        guard !manifest.files.isEmpty else {
+            throw ModelDownloadError.emptyManifest(manifest.id)
+        }
         if let existing = inFlight[manifest.id] {
+            if let progress {
+                progressHandlers[manifest.id, default: []].append(progress)
+            }
             try await existing.value
             return
         }
 
         try checkDiskSpace(for: manifest, at: directory)
+        progressHandlers[manifest.id] = progress.map { [$0] } ?? []
         let task = Task { [manifest, directory] in
-            try await self.performDownload(manifest, to: directory, progress: progress)
+            try await self.performDownload(manifest, to: directory)
         }
         inFlight[manifest.id] = task
-        defer { inFlight[manifest.id] = nil }
-        try await task.value
+        defer {
+            inFlight[manifest.id] = nil
+            progressHandlers[manifest.id] = nil
+        }
+        try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     public func removeDownload(_ manifest: ModelDownloadManifest, at directory: URL) throws {
@@ -220,10 +266,10 @@ public actor ModelDownloadCoordinator {
 
     private func performDownload(
         _ manifest: ModelDownloadManifest,
-        to directory: URL,
-        progress: ModelDownloadProgressHandler?
+        to directory: URL
     ) async throws {
         let fm = FileManager.default
+        defer { cleanup(manifest.id) }
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
         let state = loadState(for: directory, manifest: manifest)
         lastProgressEmissionAt[manifest.id] = nil
@@ -247,10 +293,23 @@ public actor ModelDownloadCoordinator {
             $0 + fileProgress["\(manifest.id):\($1.relativePath)", default: 0]
         }
         startedAt[manifest.id] = Date()
-        emit(manifest, phase: .downloading, progress: progress, message: "Starting download")
+        emit(manifest, phase: .downloading, message: "Starting download")
 
-        var pending = manifest.files.filter { file in
-            !fm.fileExists(atPath: directory.appendingPathComponent(file.relativePath).path)
+        var pending: [ModelDownloadFile] = []
+        for file in manifest.files {
+            let destination = directory.appendingPathComponent(file.relativePath)
+            guard fm.fileExists(atPath: destination.path) else {
+                pending.append(file)
+                continue
+            }
+            do {
+                try validate(file, at: destination)
+            } catch {
+                // A stale or corrupt final file must not block a fresh
+                // download merely because its path exists.
+                try? fm.removeItem(at: destination)
+                pending.append(file)
+            }
         }
 
         while !pending.isEmpty {
@@ -259,7 +318,7 @@ public actor ModelDownloadCoordinator {
             try await withThrowingTaskGroup(of: Void.self) { group in
                 for file in batch {
                     group.addTask {
-                        try await self.downloadFile(file, manifest: manifest, directory: directory, etag: state.etags[file.relativePath], progress: progress)
+                        try await self.downloadFile(file, manifest: manifest, directory: directory, etag: state.etags[file.relativePath])
                     }
                 }
                 try await group.waitForAll()
@@ -269,18 +328,22 @@ public actor ModelDownloadCoordinator {
         for file in manifest.files {
             let destination = directory.appendingPathComponent(file.relativePath)
             guard fm.fileExists(atPath: destination.path) else { throw ModelDownloadError.sizeMismatch(file.relativePath, expected: file.expectedByteCount ?? 1, actual: 0) }
-            try validate(file, at: destination)
+            do {
+                try validate(file, at: destination)
+            } catch {
+                try? fm.removeItem(at: destination)
+                throw error
+            }
         }
         try? fm.removeItem(at: stateURL(for: directory))
-        emit(manifest, phase: .ready, progress: progress, message: "Model ready")
+        emit(manifest, phase: .ready, message: "Model ready")
     }
 
     private func downloadFile(
         _ file: ModelDownloadFile,
         manifest: ModelDownloadManifest,
         directory: URL,
-        etag: String?,
-        progress: ModelDownloadProgressHandler?
+        etag: String?
     ) async throws {
         let fm = FileManager.default
         let destination = directory.appendingPathComponent(file.relativePath)
@@ -296,13 +359,13 @@ public actor ModelDownloadCoordinator {
             }
             do {
                 try Task.checkCancellation()
-                try await stream(file, manifest: manifest, directory: directory, partURL: partURL, etag: etag, attempt: attempt, progress: progress)
+                try await stream(file, manifest: manifest, directory: directory, partURL: partURL, etag: etag, attempt: attempt)
                 try moveAtomically(partURL, to: destination)
                 completedFiles[manifest.id, default: []].insert(file.relativePath)
                 if featuredFile[manifest.id] == file.relativePath {
                     featuredFile[manifest.id] = nextIncompleteFile(for: manifest)
                 }
-                emit(manifest, phase: .downloading, file: file.relativePath, retry: attempt, progress: progress, force: true)
+                emit(manifest, phase: .downloading, file: file.relativePath, retry: attempt, force: true)
                 return
             } catch is CancellationError {
                 throw CancellationError()
@@ -313,9 +376,20 @@ public actor ModelDownloadCoordinator {
                 lastError = error
                 switch error {
                 case .invalidHTTPStatus(let status, _)
-                    where (400..<500).contains(status) || status == 416:
+                    where (400..<500).contains(status) && status != 416:
                     throw error
-                case .sizeMismatch, .checksumMismatch, .insufficientDiskSpace:
+                case .invalidHTTPStatus(416, _):
+                    // A stale or oversized partial file cannot be resumed.
+                    // Reset it once and let the next attempt request the
+                    // complete artifact from byte zero.
+                    try? fm.removeItem(at: partURL)
+                    lastError = error
+                    if attempt == 2 { throw error }
+                case .etagMismatch:
+                    try? fm.removeItem(at: partURL)
+                    lastError = error
+                    if attempt == 2 { throw error }
+                case .invalidContentLength, .sizeMismatch, .checksumMismatch, .insufficientDiskSpace, .diskSpaceUnavailable:
                     throw error
                 default:
                     if attempt == 2 { throw error }
@@ -334,8 +408,7 @@ public actor ModelDownloadCoordinator {
         directory: URL,
         partURL: URL,
         etag: String?,
-        attempt: Int,
-        progress: ModelDownloadProgressHandler?
+        attempt: Int
     ) async throws {
         let fm = FileManager.default
         let offset = (try? fm.attributesOfItem(atPath: partURL.path)[.size] as? NSNumber)?.int64Value ?? 0
@@ -346,51 +419,91 @@ public actor ModelDownloadCoordinator {
             if let etag { request.setValue(etag, forHTTPHeaderField: "If-Range") }
         }
 
-        let (bytes, response) = try await URLSession(configuration: .modelDownload).bytes(for: request)
-        guard let http = response as? HTTPURLResponse else { throw ModelDownloadError.invalidHTTPStatus(-1, file.relativePath) }
-        guard (200..<300).contains(http.statusCode) else { throw ModelDownloadError.invalidHTTPStatus(http.statusCode, file.relativePath) }
+        let sink = ModelDownloadTaskSink()
+        let task = session.dataTask(with: request)
+        sessionDelegate.register(sink, for: task.taskIdentifier)
+        task.resume()
 
-        let append = offset > 0 && http.statusCode == 206
-        if !append {
-            try? fm.removeItem(at: partURL)
-            fm.createFile(atPath: partURL.path, contents: nil)
+        var completed = false
+        defer {
+            sessionDelegate.unregister(task.taskIdentifier)
+            if !completed { task.cancel() }
         }
-        let handle = try FileHandle(forWritingTo: partURL)
-        defer { try? handle.close() }
-        if append { try handle.seek(toOffset: UInt64(offset)) }
 
-        let expected = file.expectedByteCount ?? (http.expectedContentLength > 0 ? http.expectedContentLength + (append ? offset : 0) : nil)
-        let initial = append ? offset : 0
+        var append = false
+        var expected: Int64?
+        var handle: FileHandle?
+        defer { try? handle?.close() }
+        var initial: Int64 = 0
         let key = "\(manifest.id):\(file.relativePath)"
-        fileProgress[key] = initial
-        if let expected { fileTotals[key] = expected }
-        if let responseETag = http.value(forHTTPHeaderField: "ETag") {
-            persistETag(responseETag, for: file.relativePath, directory: directory, manifest: manifest)
-        }
+        var written: Int64 = 0
+        try await withTaskCancellationHandler(operation: {
+            for try await event in sink.events {
+                try Task.checkCancellation()
+                switch event {
+            case .response(let response):
+                guard (200..<300).contains(response.statusCode) else {
+                    throw ModelDownloadError.invalidHTTPStatus(response.statusCode, file.relativePath)
+                }
 
-        var buffer = [UInt8]()
-        buffer.reserveCapacity(64 * 1024)
-        var written = initial
-        for try await byte in bytes {
-            try Task.checkCancellation()
-            buffer.append(byte)
-            if buffer.count >= 64 * 1024 {
-                try handle.write(contentsOf: Data(buffer))
-                written += Int64(buffer.count)
-                buffer.removeAll(keepingCapacity: true)
+                append = offset > 0 && response.statusCode == 206
+                if append, let etag, let responseETag = response.etag, etag != responseETag {
+                    throw ModelDownloadError.etagMismatch(file.relativePath)
+                }
+                if let expected = file.expectedByteCount, response.expectedContentLength > 0 {
+                    let expectedResponseLength = append ? max(0, expected - offset) : expected
+                    guard response.expectedContentLength == expectedResponseLength else {
+                        throw ModelDownloadError.invalidContentLength(
+                            file.relativePath,
+                            expected: expectedResponseLength,
+                            actual: response.expectedContentLength
+                        )
+                    }
+                }
+                if !append {
+                    try? fm.removeItem(at: partURL)
+                    fm.createFile(atPath: partURL.path, contents: nil)
+                }
+                let newHandle = try FileHandle(forWritingTo: partURL)
+                if append { try newHandle.seek(toOffset: UInt64(offset)) }
+                handle = newHandle
+
+                expected = file.expectedByteCount
+                    ?? (response.expectedContentLength > 0
+                        ? response.expectedContentLength + (append ? offset : 0)
+                        : nil)
+                initial = append ? offset : 0
+                written = initial
+                fileProgress[key] = initial
+                if let expected { fileTotals[key] = expected }
+                if let responseETag = response.etag {
+                    persistETag(responseETag, for: file.relativePath, directory: directory, manifest: manifest)
+                }
+
+            case .data(let data):
+                guard let handle else { continue }
+                try handle.write(contentsOf: data)
+                written += Int64(data.count)
                 fileProgress[key] = written
-                emit(manifest, phase: .downloading, file: file.relativePath, retry: attempt, progress: progress)
+                emit(manifest, phase: .downloading, file: file.relativePath, retry: attempt)
+
+            case .finished:
+                completed = true
+                }
             }
-        }
-        if !buffer.isEmpty {
-            try handle.write(contentsOf: Data(buffer))
-            written += Int64(buffer.count)
+        }, onCancel: {
+            task.cancel()
+            sink.finish(throwing: CancellationError())
+        })
+        guard completed else {
+            if Task.isCancelled { throw CancellationError() }
+            throw URLError(.networkConnectionLost)
         }
         fileProgress[key] = written
         if let expected, written != expected {
             throw ModelDownloadError.sizeMismatch(file.relativePath, expected: expected, actual: written)
         }
-        emit(manifest, phase: .downloading, file: file.relativePath, retry: attempt, progress: progress, force: true)
+        emit(manifest, phase: .downloading, file: file.relativePath, retry: attempt, force: true)
     }
 
     private func validate(_ file: ModelDownloadFile, at url: URL) throws {
@@ -399,8 +512,13 @@ public actor ModelDownloadCoordinator {
             throw ModelDownloadError.sizeMismatch(file.relativePath, expected: expected, actual: size)
         }
         if let expectedHash = file.sha256 {
-            let data = try Data(contentsOf: url)
-            let actual = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            var hasher = SHA256()
+            while let data = try handle.read(upToCount: 1024 * 1024), !data.isEmpty {
+                hasher.update(data: data)
+            }
+            let actual = hasher.finalize().map { String(format: "%02x", $0) }.joined()
             guard actual.caseInsensitiveCompare(expectedHash) == .orderedSame else {
                 throw ModelDownloadError.checksumMismatch(file.relativePath)
             }
@@ -409,9 +527,20 @@ public actor ModelDownloadCoordinator {
 
     private func checkDiskSpace(for manifest: ModelDownloadManifest, at directory: URL) throws {
         guard let total = manifest.totalExpectedByteCount else { return }
-        let filesystemPath = directory.deletingLastPathComponent().path
-        let available = (try? FileManager.default.attributesOfFileSystem(forPath: filesystemPath)[.systemFreeSize] as? NSNumber)?.int64Value ?? Int64.max
-        let required = total + 512 * 1024 * 1024
+        let fm = FileManager.default
+        var volumeURL = directory
+        while !fm.fileExists(atPath: volumeURL.path) {
+            let parent = volumeURL.deletingLastPathComponent()
+            guard parent.path != volumeURL.path else {
+                throw ModelDownloadError.diskSpaceUnavailable(directory.path)
+            }
+            volumeURL = parent
+        }
+        guard let available = (try? fm.attributesOfFileSystem(forPath: volumeURL.path)[.systemFreeSize] as? NSNumber)?.int64Value else {
+            throw ModelDownloadError.diskSpaceUnavailable(volumeURL.path)
+        }
+        let (required, overflow) = total.addingReportingOverflow(512 * 1024 * 1024)
+        guard !overflow else { throw ModelDownloadError.diskSpaceUnavailable(volumeURL.path) }
         guard available >= required else { throw ModelDownloadError.insufficientDiskSpace(required: required, available: available) }
     }
 
@@ -420,11 +549,10 @@ public actor ModelDownloadCoordinator {
         phase: ModelDownloadPhase,
         file: String? = nil,
         retry: Int = 0,
-        progress: ModelDownloadProgressHandler?,
         message: String? = nil,
         force: Bool = false
     ) {
-        guard let progress else { return }
+        guard !progressHandlers[manifest.id, default: []].isEmpty else { return }
         let now = Date()
         if !force, phase == .downloading, message == nil,
            let previous = lastProgressEmissionAt[manifest.id], now.timeIntervalSince(previous) < 0.1 {
@@ -443,7 +571,10 @@ public actor ModelDownloadCoordinator {
             ?? currentTotal.map { max(0, $0 - current) }
         let remaining = remainingBytes.flatMap { speed > 0 ? Double($0) / speed : nil }
         let completedFileCount = completedFiles[manifest.id]?.count ?? 0
-        progress(ModelDownloadProgress(modelID: manifest.id, phase: phase, currentFile: displayFile, completedBytes: completed, totalBytes: total, currentFileCompletedBytes: current, currentFileTotalBytes: currentTotal, bytesPerSecond: speed, estimatedSecondsRemaining: remaining, retryCount: retry, completedFileCount: completedFileCount, totalFileCount: manifest.files.count, message: message))
+        let snapshot = ModelDownloadProgress(modelID: manifest.id, phase: phase, currentFile: displayFile, completedBytes: completed, totalBytes: total, currentFileCompletedBytes: current, currentFileTotalBytes: currentTotal, bytesPerSecond: speed, estimatedSecondsRemaining: remaining, retryCount: retry, completedFileCount: completedFileCount, totalFileCount: manifest.files.count, message: message)
+        for handler in progressHandlers[manifest.id, default: []] {
+            handler(snapshot)
+        }
     }
 
     private func focusedFile(for manifest: ModelDownloadManifest, eventFile: String?) -> String? {
@@ -468,8 +599,12 @@ public actor ModelDownloadCoordinator {
     }
 
     private func moveAtomically(_ source: URL, to destination: URL) throws {
-        try? FileManager.default.removeItem(at: destination)
-        try FileManager.default.moveItem(at: source, to: destination)
+        let fm = FileManager.default
+        if fm.fileExists(atPath: destination.path) {
+            _ = try fm.replaceItemAt(destination, withItemAt: source, backupItemName: nil, options: .usingNewMetadataOnly)
+        } else {
+            try fm.moveItem(at: source, to: destination)
+        }
     }
 
     private func stateURL(for directory: URL) -> URL { directory.appendingPathComponent(".muesli-download-state.json") }
@@ -487,6 +622,106 @@ public actor ModelDownloadCoordinator {
         var state = loadState(for: directory, manifest: manifest)
         state.etags[path] = etag
         if let data = try? JSONEncoder().encode(state) { try? data.write(to: stateURL(for: directory), options: .atomic) }
+    }
+
+    private func cleanup(_ modelID: String) {
+        fileProgress = fileProgress.filter { !$0.key.hasPrefix(modelID + ":") }
+        fileTotals = fileTotals.filter { !$0.key.hasPrefix(modelID + ":") }
+        featuredFile[modelID] = nil
+        completedFiles[modelID] = nil
+        startedAt[modelID] = nil
+        lastProgressEmissionAt[modelID] = nil
+        initialProgressBytes[modelID] = nil
+    }
+}
+
+private struct ModelDownloadResponse: Sendable {
+    let statusCode: Int
+    let expectedContentLength: Int64
+    let etag: String?
+}
+
+private enum ModelDownloadEvent: Sendable {
+    case response(ModelDownloadResponse)
+    case data(Data)
+    case finished
+}
+
+private final class ModelDownloadTaskSink: @unchecked Sendable {
+    let events: AsyncThrowingStream<ModelDownloadEvent, Error>
+    private let continuation: AsyncThrowingStream<ModelDownloadEvent, Error>.Continuation
+
+    init() {
+        var captured: AsyncThrowingStream<ModelDownloadEvent, Error>.Continuation?
+        events = AsyncThrowingStream { continuation in
+            captured = continuation
+        }
+        continuation = captured!
+    }
+
+    func yield(_ event: ModelDownloadEvent) {
+        continuation.yield(event)
+    }
+
+    func finish(throwing error: Error? = nil) {
+        continuation.finish(throwing: error)
+    }
+}
+
+private final class ModelDownloadSessionDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var sinks: [Int: ModelDownloadTaskSink] = [:]
+
+    func register(_ sink: ModelDownloadTaskSink, for taskIdentifier: Int) {
+        lock.lock()
+        sinks[taskIdentifier] = sink
+        lock.unlock()
+    }
+
+    func unregister(_ taskIdentifier: Int) {
+        lock.lock()
+        sinks.removeValue(forKey: taskIdentifier)
+        lock.unlock()
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+    ) {
+        guard let response = response as? HTTPURLResponse,
+              let sink = sink(for: dataTask.taskIdentifier)
+        else {
+            completionHandler(.cancel)
+            return
+        }
+        sink.yield(.response(ModelDownloadResponse(
+            statusCode: response.statusCode,
+            expectedContentLength: response.expectedContentLength,
+            etag: response.value(forHTTPHeaderField: "ETag")
+        )))
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        sink(for: dataTask.taskIdentifier)?.yield(.data(data))
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard let sink = sink(for: task.taskIdentifier) else { return }
+        if let error {
+            sink.finish(throwing: error)
+        } else {
+            sink.yield(.finished)
+            sink.finish()
+        }
+    }
+
+    private func sink(for taskIdentifier: Int) -> ModelDownloadTaskSink? {
+        lock.lock()
+        defer { lock.unlock() }
+        return sinks[taskIdentifier]
     }
 }
 

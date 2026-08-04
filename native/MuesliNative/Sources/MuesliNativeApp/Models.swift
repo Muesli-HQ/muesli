@@ -78,7 +78,7 @@ struct BackendOption: Equatable {
         model: "phequals/cohere-transcribe-coreml-mixed-precision",
         label: "Cohere Transcribe",
         sizeLabel: "~3.8 GB",
-        description: "Best accuracy for difficult audio and accents. Choose it when getting every word right matters more than speed. It is larger and slower than Parakeet, supports 14 languages, and gives you the final transcript when you stop.",
+        description: "Best accuracy for difficult audio and accents. Choose it when getting every word right matters more than speed. It is larger and slower than Parakeet, supports 14 languages, and gives you the final transcript when you stop. Works best in a quiet environment.",
         recommended: false
     )
 
