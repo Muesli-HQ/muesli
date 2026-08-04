@@ -45,6 +45,7 @@ struct OnboardingView: View {
     @State private var modelReadyBackend: BackendOption?
     @State private var modelDownloadBackend: BackendOption?
     @State private var modelDownloadTask: Task<Void, Never>?
+    @State private var modelDownloadGeneration = UUID()
     @State private var modelDownloadProgress: Double?
     @State private var modelDownloadSnapshot: ModelDownloadProgress?
     @State private var isModelPreparingAfterDownload = false
@@ -425,9 +426,6 @@ struct OnboardingView: View {
     }
 
     private var modelDownloadIndicatorTitle: String {
-        if modelDownloadError != nil {
-            return "Download paused"
-        }
         if let snapshot = modelDownloadSnapshot {
             switch snapshot.phase {
             case .downloading: return "Downloading \(selectedBackend.label)"
@@ -436,6 +434,9 @@ struct OnboardingView: View {
             case .paused: return "Download paused"
             case .failed: return "Download failed"
             }
+        }
+        if modelDownloadError != nil {
+            return "Download paused"
         }
         if isShowingModelReadyIndicator {
             return "\(selectedBackend.label) ready"
@@ -1672,6 +1673,7 @@ struct OnboardingView: View {
                 isModelStillDownloading = true
                 return
             }
+            modelDownloadGeneration = UUID()
             modelDownloadTask?.cancel()
             modelDownloadTask = nil
             modelDownloadBackend = nil
@@ -1679,7 +1681,9 @@ struct OnboardingView: View {
 
         let backend = selectedBackend
         let useCase = selectedUseCase
+        let generation = UUID()
         let alreadyDownloaded = backend.isDownloaded
+        modelDownloadGeneration = generation
         modelDownloadBackend = backend
         isModelStillDownloading = true
         modelDownloadProgress = alreadyDownloaded ? nil : (modelDownloadProgress ?? 0.02)
@@ -1699,7 +1703,7 @@ struct OnboardingView: View {
         modelDownloadTask = Task {
             defer {
                 Task { @MainActor in
-                    if modelDownloadBackend == backend {
+                    if modelDownloadGeneration == generation, modelDownloadBackend == backend {
                         modelDownloadTask = nil
                         modelDownloadBackend = nil
                     }
@@ -1708,16 +1712,23 @@ struct OnboardingView: View {
             do {
                 try await controller.downloadModelForOnboarding(backend, onboardingUseCase: useCase) { progress, status in
                     Task { @MainActor in
-                        guard selectedBackend == backend else { return }
-                        applyModelPreparationProgress(progress, status: status, backend: backend)
+                        guard modelDownloadGeneration == generation,
+                              modelDownloadBackend == backend,
+                              selectedBackend == backend else { return }
+                        applyModelPreparationProgress(progress, status: status, backend: backend, generation: generation)
                     }
                 } progressSnapshot: { snapshot in
                     Task { @MainActor in
-                        applyModelDownloadSnapshot(snapshot, backend: backend)
+                        guard modelDownloadGeneration == generation,
+                              modelDownloadBackend == backend,
+                              selectedBackend == backend else { return }
+                        applyModelDownloadSnapshot(snapshot, backend: backend, generation: generation)
                     }
                 }
                 await MainActor.run {
-                    guard selectedBackend == backend else { return }
+                    guard modelDownloadGeneration == generation,
+                          modelDownloadBackend == backend,
+                          selectedBackend == backend else { return }
                     modelReadyBackend = backend
                     modelDownloadProgress = 1.0
                     modelDownloadSnapshot = nil
@@ -1740,7 +1751,9 @@ struct OnboardingView: View {
                 // Backend changes cancel the old task; the new selection owns the download UI.
             } catch {
                 await MainActor.run {
-                    guard selectedBackend == backend else { return }
+                    guard modelDownloadGeneration == generation,
+                          modelDownloadBackend == backend,
+                          selectedBackend == backend else { return }
                     modelDownloadError = modelPreparationFailureMessage(for: backend)
                     modelDownloadStatus = backend.isDownloaded ? "Model setup paused" : "Download paused"
                     modelDownloadProgress = nil
@@ -1765,8 +1778,14 @@ struct OnboardingView: View {
         }
     }
 
-    private func applyModelDownloadSnapshot(_ snapshot: ModelDownloadProgress, backend: BackendOption) {
-        guard selectedBackend == backend else { return }
+    private func applyModelDownloadSnapshot(
+        _ snapshot: ModelDownloadProgress,
+        backend: BackendOption,
+        generation: UUID
+    ) {
+        guard modelDownloadGeneration == generation,
+              modelDownloadBackend == backend,
+              selectedBackend == backend else { return }
         modelDownloadSnapshot = snapshot
         modelDownloadError = nil
 
@@ -1805,7 +1824,15 @@ struct OnboardingView: View {
         )
     }
 
-    private func applyModelPreparationProgress(_ progress: Double, status: String?, backend: BackendOption) {
+    private func applyModelPreparationProgress(
+        _ progress: Double,
+        status: String?,
+        backend: BackendOption,
+        generation: UUID
+    ) {
+        guard modelDownloadGeneration == generation,
+              modelDownloadBackend == backend,
+              selectedBackend == backend else { return }
         let detail = status ?? "Preparing \(backend.label)..."
         let lowercasedDetail = detail.lowercased()
         let isPreparing = lowercasedDetail.contains("compiling")
@@ -1848,6 +1875,7 @@ struct OnboardingView: View {
     }
 
     private func resetModelDownloadForBackendChange() {
+        modelDownloadGeneration = UUID()
         modelDownloadTask?.cancel()
         modelDownloadTask = nil
         modelReadyIndicatorTask?.cancel()
@@ -2029,6 +2057,7 @@ struct OnboardingView: View {
         OnboardingProgress.clear()
         let shouldContinueModelPreparation = modelDownloadTask != nil && modelReadyBackend != selectedBackend
         if shouldContinueModelPreparation {
+            modelDownloadGeneration = UUID()
             modelDownloadTask?.cancel()
             modelDownloadTask = nil
             modelDownloadBackend = nil

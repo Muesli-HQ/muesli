@@ -144,6 +144,58 @@ struct ModelDownloadCoordinatorTests {
         #expect(manifest.totalExpectedByteCount == nil)
     }
 
+    @Test("manifest paths cannot escape the model directory")
+    func manifestPathsStayInsideModelDirectory() async throws {
+        let coordinator = makeCoordinator()
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        for (index, relativePath) in [
+            "../escaped.bin",
+            "/tmp/escaped.bin",
+            "nested/../escaped.bin",
+            "nested/./escaped.bin",
+            "",
+        ].enumerated() {
+            let manifest = ModelDownloadManifest(
+                id: "unsafe-path-\(index)",
+                version: "1",
+                files: [ModelDownloadFile(
+                    relativePath: relativePath,
+                    remoteURL: try #require(URL(string: "https://example.com/model"))
+                )]
+            )
+
+            await #expect(throws: ModelDownloadError.self) {
+                try await coordinator.download(manifest, to: directory)
+            }
+            await #expect(throws: ModelDownloadError.self) {
+                try await coordinator.removeDownload(manifest, at: directory)
+            }
+        }
+
+        let escapedDirectory = directory.deletingLastPathComponent().appendingPathComponent("escape-target-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: escapedDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: escapedDirectory) }
+        try FileManager.default.createSymbolicLink(
+            at: directory.appendingPathComponent("linked"),
+            withDestinationURL: escapedDirectory
+        )
+        let symlinkManifest = ModelDownloadManifest(
+            id: "unsafe-symlink",
+            version: "1",
+            files: [ModelDownloadFile(
+                relativePath: "linked/escaped.bin",
+                remoteURL: try #require(URL(string: "https://example.com/model"))
+            )]
+        )
+        await #expect(throws: ModelDownloadError.self) {
+            try await coordinator.download(symlinkManifest, to: directory)
+        }
+
+        #expect(!FileManager.default.fileExists(atPath: directory.deletingLastPathComponent().appendingPathComponent("escaped.bin").path))
+    }
+
     @Test("progress reports current-file progress when overall size is unknown")
     func progressUsesCurrentFileFallback() {
         let progress = ModelDownloadProgress(

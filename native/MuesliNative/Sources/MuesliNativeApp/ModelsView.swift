@@ -1257,14 +1257,28 @@ struct ModelsView: View {
     }
 
     private func cancelPostProcDownload(_ option: PostProcessorOption) {
-        downloadTasksPostProc[option.id]?.cancel()
+        let task = downloadTasksPostProc[option.id]
+        let cancellationGeneration = UUID()
+        task?.cancel()
         Task {
             await ModelDownloadCoordinator.shared.cancel(modelID: option.id)
+            _ = await task?.value
+            await MainActor.run {
+                guard downloadGenerations[option.id] == cancellationGeneration else { return }
+                if option.isDownloaded {
+                    downloadedPostProcModels.insert(option.id)
+                    downloadSnapshots.removeValue(forKey: option.id)
+                }
+                downloadGenerations.removeValue(forKey: option.id)
+            }
         }
         withAnimation {
             downloadingPostProcModels.remove(option.id)
             downloadProgressPostProc.removeValue(forKey: option.id)
-            downloadGenerations.removeValue(forKey: option.id)
+            // Invalidate callbacks from the cancelled task, but retain a
+            // generation until it has fully unwound so a race that finalizes
+            // the file can refresh the card immediately.
+            downloadGenerations[option.id] = cancellationGeneration
             if let snapshot = downloadSnapshots[option.id] {
                 downloadSnapshots[option.id] = snapshot.replacing(phase: .paused, message: "Paused — select Download to resume")
             }
@@ -1326,6 +1340,25 @@ struct ModelsView: View {
                         }
                     }
                 }
+                guard !Task.isCancelled else {
+                    await MainActor.run {
+                        guard downloadGenerations[option.model] == generation else { return }
+                        withAnimation {
+                            downloadingModels.remove(option.model)
+                            downloadProgress.removeValue(forKey: option.model)
+                            downloadMessages[option.model] = "Paused — select Download to resume"
+                            if let snapshot = downloadSnapshots[option.model] {
+                                downloadSnapshots[option.model] = snapshot.replacing(
+                                    phase: .paused,
+                                    message: "Paused — select Download to resume"
+                                )
+                            }
+                            downloadGenerations.removeValue(forKey: option.model)
+                            downloadTasks.removeValue(forKey: option.model)
+                        }
+                    }
+                    return
+                }
                 guard isModelDownloaded(option, fm: FileManager.default) else {
                     throw NSError(
                         domain: "MuesliModelDownload",
@@ -1358,7 +1391,7 @@ struct ModelsView: View {
                     try? await Task.sleep(nanoseconds: UInt64((1.5 - elapsed) * 1_000_000_000))
                 }
                 await MainActor.run {
-                    guard downloadGenerations[option.model] == generation else { return }
+                    guard downloadGenerations[option.model] == generation, !Task.isCancelled else { return }
                     withAnimation {
                         downloadingModels.remove(option.model)
                         downloadedModels.insert(option.model)
@@ -1370,12 +1403,13 @@ struct ModelsView: View {
                     }
                 }
             } catch {
+                let isCancelled = error is CancellationError || (error as? URLError)?.code == .cancelled
                 await MainActor.run {
                     withAnimation {
                         guard downloadGenerations[option.model] == generation else { return }
                         downloadingModels.remove(option.model)
                         downloadProgress.removeValue(forKey: option.model)
-                        if error is CancellationError {
+                        if isCancelled {
                             if let snapshot = downloadSnapshots[option.model] {
                                 downloadSnapshots[option.model] = snapshot.replacing(
                                     phase: .paused,
@@ -1395,7 +1429,7 @@ struct ModelsView: View {
                         downloadTasks.removeValue(forKey: option.model)
                     }
                 }
-                if !(error is CancellationError) {
+                if !isCancelled {
                     fputs("[muesli-native] model download failed for \(option.backend)/\(option.model): \(error)\n", stderr)
                 }
             }

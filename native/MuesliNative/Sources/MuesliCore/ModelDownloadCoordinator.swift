@@ -143,6 +143,7 @@ public typealias ModelDownloadProgressHandler = @Sendable (ModelDownloadProgress
 
 public enum ModelDownloadError: Error, LocalizedError, Sendable {
     case emptyManifest(String)
+    case invalidRelativePath(String)
     case invalidHTTPStatus(Int, String)
     case stalled(String)
     case invalidContentLength(String, expected: Int64, actual: Int64)
@@ -157,6 +158,8 @@ public enum ModelDownloadError: Error, LocalizedError, Sendable {
         switch self {
         case .emptyManifest(let modelID):
             return "No files were specified for model download \(modelID)"
+        case .invalidRelativePath(let path):
+            return "The model contains an invalid relative path: \(path)"
         case .invalidHTTPStatus(let status, let path):
             return "HTTP " + String(status) + " while downloading " + path
         case .stalled(let path):
@@ -229,6 +232,7 @@ public actor ModelDownloadCoordinator {
         guard !manifest.files.isEmpty else {
             throw ModelDownloadError.emptyManifest(manifest.id)
         }
+        try validateManifestPaths(manifest, in: directory)
         if let existing = inFlight[manifest.id] {
             if let progress {
                 progressHandlers[manifest.id, default: []].append(progress)
@@ -255,11 +259,14 @@ public actor ModelDownloadCoordinator {
     }
 
     public func removeDownload(_ manifest: ModelDownloadManifest, at directory: URL) throws {
+        let paths = try manifest.files.map { file in
+            try validatedURL(for: file.relativePath, in: directory)
+        }
         guard inFlight[manifest.id] == nil else { return }
         let fm = FileManager.default
-        for file in manifest.files {
-            try? fm.removeItem(at: directory.appendingPathComponent(file.relativePath + ".part"))
-            try? fm.removeItem(at: directory.appendingPathComponent(file.relativePath))
+        for path in paths {
+            try? fm.removeItem(at: path.appendingPathExtension("part"))
+            try? fm.removeItem(at: path)
         }
         try? fm.removeItem(at: stateURL(for: directory))
     }
@@ -271,23 +278,27 @@ public actor ModelDownloadCoordinator {
         let fm = FileManager.default
         defer { cleanup(manifest.id) }
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        try validateManifestPaths(manifest, in: directory)
         let state = loadState(for: directory, manifest: manifest)
         lastProgressEmissionAt[manifest.id] = nil
         for file in manifest.files {
-            let url = directory.appendingPathComponent(file.relativePath)
+            let url = try validatedURL(for: file.relativePath, in: directory)
             let key = manifest.id + ":" + file.relativePath
             fileProgress[key] = ((try? fm.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value ?? 0)
             if let expected = file.expectedByteCount { fileTotals[key] = expected }
         }
-        completedFiles[manifest.id] = Set(
-            manifest.files.compactMap { file in
-                let url = directory.appendingPathComponent(file.relativePath)
-                guard fm.fileExists(atPath: url.path) else { return nil }
-                guard let expected = file.expectedByteCount else { return file.relativePath }
-                let size = (try? fm.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value
-                return size == expected ? file.relativePath : nil
+        var completed = Set<String>()
+        for file in manifest.files {
+            let url = try validatedURL(for: file.relativePath, in: directory)
+            guard fm.fileExists(atPath: url.path) else { continue }
+            guard let expected = file.expectedByteCount else {
+                completed.insert(file.relativePath)
+                continue
             }
-        )
+            let size = (try? fm.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value
+            if size == expected { completed.insert(file.relativePath) }
+        }
+        completedFiles[manifest.id] = completed
         featuredFile[manifest.id] = nextIncompleteFile(for: manifest)
         initialProgressBytes[manifest.id] = manifest.files.reduce(Int64(0)) {
             $0 + fileProgress["\(manifest.id):\($1.relativePath)", default: 0]
@@ -297,7 +308,7 @@ public actor ModelDownloadCoordinator {
 
         var pending: [ModelDownloadFile] = []
         for file in manifest.files {
-            let destination = directory.appendingPathComponent(file.relativePath)
+            let destination = try validatedURL(for: file.relativePath, in: directory)
             guard fm.fileExists(atPath: destination.path) else {
                 pending.append(file)
                 continue
@@ -326,7 +337,7 @@ public actor ModelDownloadCoordinator {
         }
 
         for file in manifest.files {
-            let destination = directory.appendingPathComponent(file.relativePath)
+            let destination = try validatedURL(for: file.relativePath, in: directory)
             guard fm.fileExists(atPath: destination.path) else { throw ModelDownloadError.sizeMismatch(file.relativePath, expected: file.expectedByteCount ?? 1, actual: 0) }
             do {
                 try validate(file, at: destination)
@@ -346,8 +357,8 @@ public actor ModelDownloadCoordinator {
         etag: String?
     ) async throws {
         let fm = FileManager.default
-        let destination = directory.appendingPathComponent(file.relativePath)
-        let partURL = directory.appendingPathComponent(file.relativePath + ".part")
+        let destination = try validatedURL(for: file.relativePath, in: directory)
+        let partURL = destination.appendingPathExtension("part")
         try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         var lastError: Error?
 
@@ -596,6 +607,47 @@ public actor ModelDownloadCoordinator {
         let totals = manifest.files.compactMap { fileTotals["\(manifest.id):\($0.relativePath)"] }
         guard totals.count == manifest.files.count else { return nil }
         return totals.reduce(0, +)
+    }
+
+    private func validateManifestPaths(_ manifest: ModelDownloadManifest, in directory: URL) throws {
+        for file in manifest.files {
+            _ = try validatedURL(for: file.relativePath, in: directory)
+        }
+    }
+
+    /// Resolve a manifest path and prove that it remains inside the model
+    /// directory. Manifests are maintainer-owned today, but keeping this
+    /// boundary defensive prevents a malformed or compromised manifest from
+    /// writing or deleting arbitrary files.
+    private func validatedURL(for relativePath: String, in directory: URL) throws -> URL {
+        let components = relativePath.split(separator: "/", omittingEmptySubsequences: false)
+        guard !relativePath.isEmpty,
+              !relativePath.hasPrefix("/"),
+              !relativePath.contains("\\"),
+              components.allSatisfy({ component in
+                  let component = String(component)
+                  return !component.isEmpty && component != "." && component != ".."
+              }) else {
+            throw ModelDownloadError.invalidRelativePath(relativePath)
+        }
+
+        let base = directory.standardizedFileURL.resolvingSymlinksInPath()
+        let normalizedCandidate = directory
+            .appendingPathComponent(relativePath)
+            .standardizedFileURL
+        // Resolving only the full path is insufficient when the final file
+        // does not exist yet. Resolve its parent first so an existing
+        // symlinked directory cannot redirect a new download outside base.
+        let resolvedParent = normalizedCandidate
+            .deletingLastPathComponent()
+            .resolvingSymlinksInPath()
+        let candidate = resolvedParent
+            .appendingPathComponent(normalizedCandidate.lastPathComponent)
+            .resolvingSymlinksInPath()
+        guard candidate.path == base.path || candidate.path.hasPrefix(base.path + "/") else {
+            throw ModelDownloadError.invalidRelativePath(relativePath)
+        }
+        return candidate
     }
 
     private func moveAtomically(_ source: URL, to destination: URL) throws {
