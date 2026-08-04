@@ -421,6 +421,7 @@ public actor ModelDownloadCoordinator {
         let partURL = destination.appendingPathExtension("part")
         try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         var lastError: Error?
+        var didResetPartialForAttempt = false
 
         var attempt = 0
         while attempt < 3 {
@@ -429,7 +430,6 @@ public actor ModelDownloadCoordinator {
                 let jitter = UInt64.random(in: 0...250_000_000)
                 try await Task.sleep(nanoseconds: base + jitter)
             }
-            var resetPartialForAttempt = false
             do {
                 try Task.checkCancellation()
                 try await stream(file, manifest: manifest, directory: directory, partURL: partURL, etag: etag, attempt: attempt)
@@ -444,6 +444,7 @@ public actor ModelDownloadCoordinator {
                 throw CancellationError()
             } catch let error as URLError where error.code == .timedOut {
                 lastError = ModelDownloadError.stalled(file.relativePath)
+                didResetPartialForAttempt = false
                 attempt += 1
             } catch let error as ModelDownloadError {
                 lastError = error
@@ -458,22 +459,26 @@ public actor ModelDownloadCoordinator {
                     // normal retry. This keeps stale-part recovery distinct
                     // from ordinary transient retries.
                     try? fm.removeItem(at: partURL)
-                    guard !resetPartialForAttempt else {
+                    guard !didResetPartialForAttempt else {
+                        didResetPartialForAttempt = false
                         attempt += 1
                         continue
                     }
-                    resetPartialForAttempt = true
+                    didResetPartialForAttempt = true
                     continue
                 case .etagMismatch:
                     try? fm.removeItem(at: partURL)
+                    didResetPartialForAttempt = false
                     attempt += 1
                 case .invalidContentLength, .sizeMismatch, .checksumMismatch, .insufficientDiskSpace, .diskSpaceUnavailable:
                     throw error
                 default:
+                    didResetPartialForAttempt = false
                     attempt += 1
                 }
             } catch {
                 lastError = error
+                didResetPartialForAttempt = false
                 attempt += 1
             }
         }

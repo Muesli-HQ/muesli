@@ -35,6 +35,9 @@ enum OnboardingFlow {
         dictationTesting: Bool
     ) -> DictationTestMonitorAction {
         guard currentStep >= dictationTestStep else { return .none }
+        guard currentStep == dictationTestStep else {
+            return monitorActive ? .stop(cancelTestDictation: dictationTesting) : .none
+        }
         guard modelReady else {
             return .stop(cancelTestDictation: dictationTesting)
         }

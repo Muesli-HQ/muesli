@@ -532,6 +532,31 @@ struct ModelDownloadCoordinatorTests {
         #expect(tracker.requestCount == 4)
     }
 
+    @Test("repeated HTTP 416 responses respect the retry limit")
+    func repeated416sExhaustRetries() async throws {
+        let tracker = DownloadTestTracker()
+        ModelDownloadTestURLProtocol.install { request in
+            #expect(request.value(forHTTPHeaderField: "Range") == nil)
+            return ModelDownloadTestURLProtocol.Response(statusCode: 416, tracker: tracker)
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let coordinator = makeCoordinator()
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let manifest = ModelDownloadManifest(
+            id: "repeated-416",
+            version: "1",
+            files: [ModelDownloadFile(relativePath: "model.bin", remoteURL: try #require(URL(string: "https://example.com/model")))],
+            maximumConcurrency: 1
+        )
+
+        await #expect(throws: ModelDownloadError.self) {
+            try await coordinator.download(manifest, to: directory)
+        }
+        #expect(tracker.requestCount == 6)
+    }
+
     @Test("cancellation preserves the partial file and does not finalize it")
     func cancellationPreservesPartialFile() async throws {
         ModelDownloadTestURLProtocol.install { _ in

@@ -96,6 +96,24 @@ struct OnboardingFlowTests {
         ) == .none)
     }
 
+    @Test("dictation monitor does not start on a later meeting step")
+    func dictationMonitorDoesNotStartAfterSkippedStep() {
+        #expect(OnboardingFlow.dictationTestMonitorAction(
+            currentStep: OnboardingFlow.Step.meetingSummary.rawValue,
+            dictationTestStep: OnboardingFlow.dictationTestStep,
+            modelReady: true,
+            monitorActive: false,
+            dictationTesting: false
+        ) == .none)
+        #expect(OnboardingFlow.dictationTestMonitorAction(
+            currentStep: OnboardingFlow.Step.meetingSummary.rawValue,
+            dictationTestStep: OnboardingFlow.dictationTestStep,
+            modelReady: true,
+            monitorActive: true,
+            dictationTesting: true
+        ) == .stop(cancelTestDictation: true))
+    }
+
     @Test("extreme ETA values are omitted instead of overflowing")
     func extremeETAReturnsUnknown() {
         #expect(ModelDownloadDisplayFormatting.eta(Double.greatestFiniteMagnitude) == nil)
