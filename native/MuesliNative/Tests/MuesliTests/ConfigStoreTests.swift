@@ -79,4 +79,28 @@ struct ConfigStoreTests {
         let config = try JSONDecoder().decode(AppConfig.self, from: json)
         #expect(config.themeMode == .system)
     }
+
+    @Test("absent theme_mode and dark_mode decodes to the default")
+    func absentThemeModeDecodesToDefault() throws {
+        let json = Data("{}".utf8)
+        let config = try JSONDecoder().decode(AppConfig.self, from: json)
+        #expect(config.themeMode == AppConfig().themeMode)
+        #expect(config.themeMode == .dark)
+    }
+
+    @Test("system theme mode survives a ConfigStore save/load round-trip")
+    func systemThemeModeRoundTrips() {
+        let store = ConfigStore()
+        let original = store.load()
+
+        var config = original
+        config.themeMode = .system
+        store.save(config)
+
+        let loaded = store.load()
+        #expect(loaded.themeMode == .system)
+
+        // Restore original
+        store.save(original)
+    }
 }
