@@ -1510,47 +1510,16 @@ struct SettingsView: View {
             }
 
             settingsSection("Appearance") {
-                settingsRow("Automatically switch (sunrise/sunset)") {
-                    settingsSwitch(isOn: appState.config.autoThemeByDaylight) { newValue in
-                        controller.updateConfig { $0.autoThemeByDaylight = newValue }
+                settingsRow("Appearance") {
+                    settingsMenu(
+                        selection: appState.config.themeMode.label,
+                        options: ThemeMode.allCases.map(\.label)
+                    ) { label in
+                        guard let mode = ThemeMode.allCases.first(where: { $0.label == label }) else { return }
+                        controller.updateConfig { $0.themeMode = mode }
                     }
                 }
-                if appState.config.autoThemeByDaylight {
-                    Divider().background(MuesliTheme.surfaceBorder)
-                    settingsRow("Latitude") {
-                        settingsModelTextField(
-                            currentModel: appState.config.themeLatitude.map { String($0) } ?? "",
-                            placeholder: "e.g. 37.7749"
-                        ) { value in
-                            controller.updateConfig {
-                                $0.themeLatitude = Double(value).map { min(max($0, -90), 90) }
-                            }
-                        }
-                    }
-                    Divider().background(MuesliTheme.surfaceBorder)
-                    settingsRow("Longitude") {
-                        settingsModelTextField(
-                            currentModel: appState.config.themeLongitude.map { String($0) } ?? "",
-                            placeholder: "e.g. -122.4194"
-                        ) { value in
-                            controller.updateConfig {
-                                $0.themeLongitude = Double(value).map { min(max($0, -180), 180) }
-                            }
-                        }
-                    }
-                    settingsDescription("Muesli never requests macOS Location permission for this. Enter your coordinates once and the app switches theme locally using sunrise/sunset math.")
-                }
-                Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Dark mode") {
-                    settingsSwitch(isOn: appState.config.darkMode) { newValue in
-                        controller.updateConfig {
-                            $0.darkMode = newValue
-                            $0.autoThemeByDaylight = false
-                        }
-                    }
-                }
-                .disabled(appState.config.autoThemeByDaylight)
-                .opacity(appState.config.autoThemeByDaylight ? 0.5 : 1)
+                settingsDescription("“System” follows macOS’s own appearance setting — including its Automatic mode (System Settings → Appearance) if you’ve turned that on, which already switches with sunrise/sunset.")
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Menu bar icon") {
                     menuBarIconPicker

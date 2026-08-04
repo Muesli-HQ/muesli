@@ -17,7 +17,7 @@ struct DashboardRootView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 900, minHeight: 600)
-        .preferredColorScheme(appState.config.darkMode ? .dark : .light)
+        .preferredColorScheme(appState.config.themeMode.colorScheme)
         .onPreferenceChange(FeatureTourTargetPreferenceKey.self) { frames in
             guard FeatureTourFrameTracking.hasMeaningfulChange(
                 from: featureTourTargetFrames,

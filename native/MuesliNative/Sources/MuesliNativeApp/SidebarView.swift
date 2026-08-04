@@ -534,71 +534,56 @@ struct SidebarView: View {
 
     @ViewBuilder
     private var darkModeToggle: some View {
-        let isDark = appState.config.darkMode
+        let mode = appState.config.themeMode
         HStack(spacing: 2) {
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) {
-                    controller.updateConfig {
-                        $0.darkMode = false
-                        $0.autoThemeByDaylight = false
-                    }
+                    controller.updateConfig { $0.themeMode = .light }
                 }
             } label: {
                 Image(systemName: "sun.max.fill")
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(!isDark ? MuesliTheme.accent : MuesliTheme.textTertiary)
+                    .foregroundStyle(mode == .light ? MuesliTheme.accent : MuesliTheme.textTertiary)
                     .frame(width: 28, height: 22)
                     .background(
                         RoundedRectangle(cornerRadius: 4)
-                            .fill(!isDark ? MuesliTheme.surfaceSelected : Color.clear)
+                            .fill(mode == .light ? MuesliTheme.surfaceSelected : Color.clear)
                     )
             }
             .buttonStyle(.plain)
 
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) {
-                    controller.updateConfig {
-                        $0.darkMode = true
-                        $0.autoThemeByDaylight = false
-                    }
+                    controller.updateConfig { $0.themeMode = .dark }
                 }
             } label: {
                 Image(systemName: "moon.fill")
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(isDark ? MuesliTheme.accent : MuesliTheme.textTertiary)
+                    .foregroundStyle(mode == .dark ? MuesliTheme.accent : MuesliTheme.textTertiary)
                     .frame(width: 28, height: 22)
                     .background(
                         RoundedRectangle(cornerRadius: 4)
-                            .fill(isDark ? MuesliTheme.surfaceSelected : Color.clear)
+                            .fill(mode == .dark ? MuesliTheme.surfaceSelected : Color.clear)
                     )
             }
             .buttonStyle(.plain)
 
             Button {
-                let hasCoordinates = appState.config.themeLatitude != nil && appState.config.themeLongitude != nil
                 withAnimation(.easeInOut(duration: 0.2)) {
-                    if hasCoordinates {
-                        controller.updateConfig { $0.autoThemeByDaylight = true }
-                    } else {
-                        // Enabling auto mode without coordinates would silently do
-                        // nothing (recomputeAutoTheme no-ops until both are set) —
-                        // send the user to Settings to configure a location instead.
-                        appState.selectedSettingsPane = .appearance
-                        appState.selectedTab = .settings
-                    }
+                    controller.updateConfig { $0.themeMode = .system }
                 }
             } label: {
                 Image(systemName: "circle.lefthalf.filled")
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(appState.config.autoThemeByDaylight ? MuesliTheme.accent : MuesliTheme.textTertiary)
+                    .foregroundStyle(mode == .system ? MuesliTheme.accent : MuesliTheme.textTertiary)
                     .frame(width: 28, height: 22)
                     .background(
                         RoundedRectangle(cornerRadius: 4)
-                            .fill(appState.config.autoThemeByDaylight ? MuesliTheme.surfaceSelected : Color.clear)
+                            .fill(mode == .system ? MuesliTheme.surfaceSelected : Color.clear)
                     )
             }
             .buttonStyle(.plain)
-            .help("Automatically switch based on sunrise/sunset (set location in Settings > Appearance)")
+            .help("Follow macOS's appearance setting")
         }
         .padding(2)
         .background(

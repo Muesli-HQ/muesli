@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import MuesliCore
+import SwiftUI
 
 struct BackendOption: Equatable {
     let backend: String
@@ -879,6 +880,31 @@ enum IndicatorAnchor: String, Codable, CaseIterable {
     }
 }
 
+enum ThemeMode: String, Codable, CaseIterable {
+    case light = "light"
+    case dark = "dark"
+    case system = "system"
+
+    var label: String {
+        switch self {
+        case .light: return "Light"
+        case .dark: return "Dark"
+        case .system: return "System"
+        }
+    }
+
+    /// `nil` for `.system` tells SwiftUI to defer to the OS's current appearance
+    /// instead of forcing one — this is what lets macOS's own "Automatic" appearance
+    /// (which already switches on sunrise/sunset via Location Services) drive Muesli.
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .light: return .light
+        case .dark: return .dark
+        case .system: return nil
+        }
+    }
+}
+
 struct HotkeyConfig: Codable, Equatable {
     var keyCode: UInt16 = 61
     var label: String = "Right Option"
@@ -1049,10 +1075,7 @@ struct AppConfig: Codable {
     var meetingRecordingSavePolicy: MeetingRecordingSavePolicy = .never
     var meetingRecordingFileFormat: String = MeetingRecordingFileFormat.m4a.rawValue
     var waveformCacheOrphanCleanupMigrationApplied: Bool = false
-    var darkMode: Bool = true
-    var autoThemeByDaylight: Bool = false
-    var themeLatitude: Double? = nil
-    var themeLongitude: Double? = nil
+    var themeMode: ThemeMode = .dark
     var enableDoubleTapDictation: Bool = true
     var hotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
     var computerUseHotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
@@ -1172,10 +1195,7 @@ struct AppConfig: Codable {
         case meetingRecordingSavePolicy = "meeting_recording_save_policy"
         case meetingRecordingFileFormat = "meeting_recording_file_format"
         case waveformCacheOrphanCleanupMigrationApplied = "waveform_cache_orphan_cleanup_migration_applied"
-        case darkMode = "dark_mode"
-        case autoThemeByDaylight = "auto_theme_by_daylight"
-        case themeLatitude = "theme_latitude"
-        case themeLongitude = "theme_longitude"
+        case themeMode = "theme_mode"
         case enableDoubleTapDictation = "enable_double_tap_dictation"
         case hotkeyTriggerThresholdMS = "hotkey_trigger_threshold_ms"
         case computerUseHotkeyTriggerThresholdMS = "computer_use_hotkey_trigger_threshold_ms"
@@ -1259,6 +1279,12 @@ struct AppConfig: Codable {
         case contributionLinkedInClicked = "contribution_linkedin_clicked"
     }
 
+    /// Not part of `CodingKeys` (which drives synthesized `Encodable`) — used only to
+    /// migrate the pre-`ThemeMode` `dark_mode` boolean on decode.
+    private enum LegacyCodingKeys: String, CodingKey {
+        case darkMode = "dark_mode"
+    }
+
     init() {}
 
     init(from decoder: Decoder) throws {
@@ -1318,10 +1344,14 @@ struct AppConfig: Codable {
         waveformCacheOrphanCleanupMigrationApplied =
             (try? c.decode(Bool.self, forKey: .waveformCacheOrphanCleanupMigrationApplied))
             ?? defaults.waveformCacheOrphanCleanupMigrationApplied
-        darkMode = (try? c.decode(Bool.self, forKey: .darkMode)) ?? defaults.darkMode
-        autoThemeByDaylight = (try? c.decode(Bool.self, forKey: .autoThemeByDaylight)) ?? defaults.autoThemeByDaylight
-        themeLatitude = (try? c.decode(Double.self, forKey: .themeLatitude)) ?? defaults.themeLatitude
-        themeLongitude = (try? c.decode(Double.self, forKey: .themeLongitude)) ?? defaults.themeLongitude
+        if let decodedThemeMode = try? c.decode(ThemeMode.self, forKey: .themeMode) {
+            themeMode = decodedThemeMode
+        } else if let legacyC = try? decoder.container(keyedBy: LegacyCodingKeys.self),
+                  let legacyDarkMode = try? legacyC.decode(Bool.self, forKey: .darkMode) {
+            themeMode = legacyDarkMode ? .dark : .light
+        } else {
+            themeMode = defaults.themeMode
+        }
         iCloudSyncEnabled = (try? c.decode(Bool.self, forKey: .iCloudSyncEnabled)) ?? defaults.iCloudSyncEnabled
         showIOSCompanionPrompt = (try? c.decode(Bool.self, forKey: .showIOSCompanionPrompt)) ?? defaults.showIOSCompanionPrompt
         enableDoubleTapDictation = (try? c.decode(Bool.self, forKey: .enableDoubleTapDictation)) ?? defaults.enableDoubleTapDictation

@@ -61,4 +61,22 @@ struct ConfigStoreTests {
 
         #expect(permissions?.intValue == 0o600)
     }
+
+    @Test("legacy dark_mode boolean migrates to themeMode")
+    func legacyDarkModeMigrates() throws {
+        let darkJSON = Data(#"{"dark_mode": true}"#.utf8)
+        let darkConfig = try JSONDecoder().decode(AppConfig.self, from: darkJSON)
+        #expect(darkConfig.themeMode == .dark)
+
+        let lightJSON = Data(#"{"dark_mode": false}"#.utf8)
+        let lightConfig = try JSONDecoder().decode(AppConfig.self, from: lightJSON)
+        #expect(lightConfig.themeMode == .light)
+    }
+
+    @Test("theme_mode key takes precedence over legacy dark_mode when both are present")
+    func themeModeTakesPrecedenceOverLegacyKey() throws {
+        let json = Data(#"{"dark_mode": true, "theme_mode": "system"}"#.utf8)
+        let config = try JSONDecoder().decode(AppConfig.self, from: json)
+        #expect(config.themeMode == .system)
+    }
 }
