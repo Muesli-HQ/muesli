@@ -288,6 +288,7 @@ public actor ModelDownloadCoordinator {
         to directory: URL,
         progress: ModelDownloadProgressHandler? = nil
     ) async throws {
+        try Task.checkCancellation()
         guard !manifest.files.isEmpty else {
             throw ModelDownloadError.emptyManifest(manifest.id)
         }
@@ -297,6 +298,7 @@ public actor ModelDownloadCoordinator {
                 progressHandlers[manifest.id, default: []].append(progress)
             }
             try await existing.value
+            try Task.checkCancellation()
             return
         }
 
@@ -310,11 +312,11 @@ public actor ModelDownloadCoordinator {
             inFlight[manifest.id] = nil
             progressHandlers[manifest.id] = nil
         }
-        try await withTaskCancellationHandler {
-            try await task.value
-        } onCancel: {
-            task.cancel()
-        }
+        // A caller's cancellation only detaches that caller. The shared job
+        // may still be needed by another caller; explicit model cancellation
+        // through cancel(modelID:) is what stops the shared transfer.
+        try await task.value
+        try Task.checkCancellation()
     }
 
     /// Explicitly removes a model's completed files, partial files, and persisted state.

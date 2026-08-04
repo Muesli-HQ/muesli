@@ -355,6 +355,42 @@ struct ModelDownloadCoordinatorTests {
         #expect(secondProgress.requestCount > 0)
     }
 
+    @Test("cancelling one duplicate caller does not cancel the shared transfer")
+    func cancellingOneDuplicateCallerPreservesSharedTransfer() async throws {
+        let tracker = DownloadTestTracker()
+        ModelDownloadTestURLProtocol.install { _ in
+            ModelDownloadTestURLProtocol.Response(
+                data: Data(repeating: 0x42, count: 512 * 1024),
+                chunkSize: 4 * 1024,
+                delay: 0.002,
+                tracker: tracker
+            )
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let coordinator = makeCoordinator()
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let manifest = ModelDownloadManifest(
+            id: "duplicate-cancellation",
+            version: "1",
+            files: [ModelDownloadFile(relativePath: "model.bin", remoteURL: try #require(URL(string: "https://example.com/model")), expectedByteCount: 512 * 1024)],
+            maximumConcurrency: 1
+        )
+
+        let first = Task { try await coordinator.download(manifest, to: directory) }
+        try await Task.sleep(for: .milliseconds(20))
+        let second = Task { try await coordinator.download(manifest, to: directory) }
+        first.cancel()
+
+        try await second.value
+        await #expect(throws: CancellationError.self) {
+            try await first.value
+        }
+        #expect(tracker.requestCount == 1)
+        #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("model.bin").path))
+    }
+
     @Test("resumes a partial file with a 206 response")
     func resumesPartialFile() async throws {
         ModelDownloadTestURLProtocol.install { request in
