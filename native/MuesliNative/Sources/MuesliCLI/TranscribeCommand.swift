@@ -303,13 +303,13 @@ struct MuesliAudioTranscriptionPipeline {
             }
         )
         var transcript = transcription.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !transcript.isEmpty else {
+        guard Self.hasMeaningfulSpeech(transcript) else {
             throw CLIError.invalidInput("No speech was transcribed from the selected audio file.", fix: "Check that the file contains audible speech and try again.")
         }
         if let customWords {
             transcript = CustomWordMatcher.apply(text: transcript, customWords: customWords)
             transcript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !transcript.isEmpty else {
+            guard Self.hasMeaningfulSpeech(transcript) else {
                 throw CLIError.invalidInput("No speech remains after applying the selected dictionary.", fix: "Remove dictionary entries that replace all recognized speech with empty text.")
             }
         }
@@ -378,6 +378,10 @@ struct MuesliAudioTranscriptionPipeline {
             warnings: warnings,
             savedMeetingID: savedMeetingID
         )
+    }
+
+    private static func hasMeaningfulSpeech(_ transcript: String) -> Bool {
+        transcript.rangeOfCharacter(from: .alphanumerics) != nil
     }
 
     static func rawTranscriptNotes(transcript: String, title: String, summaryRequested: Bool, warnings: [String]) -> String {

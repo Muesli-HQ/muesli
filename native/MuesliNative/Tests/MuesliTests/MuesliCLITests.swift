@@ -250,6 +250,40 @@ struct MuesliCLITests {
         }
     }
 
+    @Test("pipeline rejects a dictionary that leaves only punctuation")
+    func pipelineRejectsDictionaryPunctuationOnlyTranscript() async throws {
+        let fixture = try TranscribeFixture()
+        let dictionaryURL = fixture.directory.appendingPathComponent("punctuation-dictionary.json")
+        try Data("""
+        [{"word": "hello", "replacement": ""}]
+        """.utf8).write(to: dictionaryURL)
+
+        let pipeline = MuesliAudioTranscriptionPipeline(
+            audioPreparer: FakeAudioPreparer(wavURL: fixture.wavURL, durationSeconds: 3),
+            transcriber: FakeTranscriber(text: "hello!"),
+            summarizer: SuccessfulSummarizer(notes: "should not run"),
+            dataChangePoster: {}
+        )
+
+        do {
+            _ = try await pipeline.run(
+                request: MuesliAudioTranscriptionRequest(
+                    sourceURL: fixture.sourceURL,
+                    model: .parakeetV3,
+                    title: "Punctuation Dictionary Demo",
+                    summarize: true,
+                    saveMeeting: true,
+                    dictionaryURL: dictionaryURL
+                ),
+                context: fixture.context
+            )
+            Issue.record("Expected a punctuation-only post-dictionary transcript to be rejected")
+        } catch let error as CLIError {
+            #expect(error.errorBody.code == "invalid_input")
+            #expect(error.errorBody.message.contains("No speech remains"))
+        }
+    }
+
     @Test("transcribe text output is transcript only")
     func transcribeTextOutputIsTranscriptOnly() throws {
         let result = MuesliAudioTranscriptionResult(
