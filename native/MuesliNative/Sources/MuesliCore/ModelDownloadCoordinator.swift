@@ -1,20 +1,32 @@
 import CryptoKit
 import Foundation
 
+/// The lifecycle phase reported for a model download.
 public enum ModelDownloadPhase: String, Codable, Sendable {
+    /// One or more model files are being transferred.
     case downloading
+    /// The downloaded files are being compiled or otherwise prepared.
     case preparing
+    /// All files passed validation and the model is ready to use.
     case ready
+    /// The transfer is not currently active and can be resumed.
     case paused
+    /// The transfer or preparation failed and can be retried.
     case failed
 }
 
+/// A single file required by a model manifest.
 public struct ModelDownloadFile: Codable, Hashable, Sendable {
+    /// The path relative to the model directory.
     public let relativePath: String
+    /// The Hugging Face or other artifact URL for this file.
     public let remoteURL: URL
+    /// The expected final size, when published by the model owner.
     public let expectedByteCount: Int64?
+    /// An optional lowercase or uppercase-insensitive SHA-256 digest.
     public let sha256: String?
 
+    /// Creates a manifest entry for one model file.
     public init(relativePath: String, remoteURL: URL, expectedByteCount: Int64? = nil, sha256: String? = nil) {
         self.relativePath = relativePath
         self.remoteURL = remoteURL
@@ -23,12 +35,18 @@ public struct ModelDownloadFile: Codable, Hashable, Sendable {
     }
 }
 
+/// The complete set of files and policies needed to install one model revision.
 public struct ModelDownloadManifest: Sendable {
+    /// A stable identifier used to deduplicate jobs and persist state.
     public let id: String
+    /// The revision represented by this manifest.
     public let version: String
+    /// Required files in the order used for progress presentation.
     public let files: [ModelDownloadFile]
+    /// Maximum number of files transferred at the same time.
     public let maximumConcurrency: Int
 
+    /// Creates a model manifest. Concurrency is clamped to at least one file.
     public init(id: String, version: String, files: [ModelDownloadFile], maximumConcurrency: Int = 2) {
         self.id = id
         self.version = version
@@ -36,6 +54,7 @@ public struct ModelDownloadManifest: Sendable {
         self.maximumConcurrency = max(1, maximumConcurrency)
     }
 
+    /// The total size when every manifest entry publishes an expected size.
     public var totalExpectedByteCount: Int64? {
         let sizes = files.compactMap(\.expectedByteCount)
         guard sizes.count == files.count else { return nil }
@@ -43,22 +62,36 @@ public struct ModelDownloadManifest: Sendable {
     }
 }
 
+/// A point-in-time progress report for a model download or preparation job.
 public struct ModelDownloadProgress: Sendable {
+    /// The stable model identifier associated with this snapshot.
     public let modelID: String
+    /// The current transfer or preparation phase.
     public let phase: ModelDownloadPhase
     /// The stable user-facing file. Other files may continue downloading in parallel.
     public let currentFile: String?
+    /// Bytes completed across all files.
     public let completedBytes: Int64
+    /// Expected bytes across all files, when known.
     public let totalBytes: Int64?
+    /// Bytes completed for the featured file.
     public let currentFileCompletedBytes: Int64
+    /// Expected bytes for the featured file, when known.
     public let currentFileTotalBytes: Int64?
+    /// Recent aggregate transfer rate in bytes per second.
     public let bytesPerSecond: Double
+    /// Estimated seconds until all known bytes are complete.
     public let estimatedSecondsRemaining: Double?
+    /// Number of retry attempts used by the currently featured file.
     public let retryCount: Int
+    /// Number of required files finalized so far.
     public let completedFileCount: Int
+    /// Number of required files in the manifest.
     public let totalFileCount: Int
+    /// A user-readable status or error detail.
     public let message: String?
 
+    /// Creates a progress snapshot.
     public init(
         modelID: String,
         phase: ModelDownloadPhase,
@@ -89,6 +122,7 @@ public struct ModelDownloadProgress: Sendable {
         self.message = message
     }
 
+    /// Overall progress as a value between zero and one when a size is known.
     public var fractionCompleted: Double? {
         if let totalBytes, totalBytes > 0 {
             return min(max(Double(completedBytes) / Double(totalBytes), 0), 1)
@@ -97,6 +131,7 @@ public struct ModelDownloadProgress: Sendable {
         return min(max(Double(currentFileCompletedBytes) / Double(currentFileTotalBytes), 0), 1)
     }
 
+    /// Creates a snapshot for a model preparation phase.
     public static func preparing(
         modelID: String,
         message: String,
@@ -120,6 +155,7 @@ public struct ModelDownloadProgress: Sendable {
         )
     }
 
+    /// Copies this snapshot while changing its phase and message.
     public func replacing(phase: ModelDownloadPhase, message: String?) -> Self {
         Self(
             modelID: modelID,
@@ -139,21 +175,35 @@ public struct ModelDownloadProgress: Sendable {
     }
 }
 
+/// Receives progress snapshots on the coordinator's actor context.
 public typealias ModelDownloadProgressHandler = @Sendable (ModelDownloadProgress) -> Void
 
+/// Errors surfaced by the model download coordinator.
 public enum ModelDownloadError: Error, LocalizedError, Sendable {
+    /// The manifest has no files to download.
     case emptyManifest(String)
+    /// A manifest path would escape the model directory.
     case invalidRelativePath(String)
+    /// The server returned an HTTP response that cannot be used for this file.
     case invalidHTTPStatus(Int, String)
+    /// No bytes arrived before the transfer watchdog or request timeout fired.
     case stalled(String)
+    /// The server's reported response length did not match the manifest.
     case invalidContentLength(String, expected: Int64, actual: Int64)
+    /// The final file size did not match the manifest.
     case sizeMismatch(String, expected: Int64, actual: Int64)
+    /// The final file failed its optional SHA-256 validation.
     case checksumMismatch(String)
+    /// The server's ETag changed while resuming a partial file.
     case etagMismatch(String)
+    /// The destination volume does not have the required safety margin.
     case insufficientDiskSpace(required: Int64, available: Int64)
+    /// The destination volume's free space could not be determined.
     case diskSpaceUnavailable(String)
+    /// All retryable attempts were exhausted.
     case retriesExhausted(String, String)
 
+    /// A user-readable description of the failure.
     public var errorDescription: String? {
         switch self {
         case .emptyManifest(let modelID):
@@ -190,6 +240,7 @@ private struct PersistedDownloadState: Codable, Sendable {
 
 /// Shared resumable downloader for Muesli-owned model artifacts.
 public actor ModelDownloadCoordinator {
+    /// The process-wide coordinator used by model backends and the UI.
     public static let shared = ModelDownloadCoordinator()
 
     private var inFlight: [String: Task<Void, Error>] = [:]
@@ -205,25 +256,33 @@ public actor ModelDownloadCoordinator {
     private let sessionDelegate: ModelDownloadSessionDelegate
     private let session: URLSession
 
+    /// Creates a coordinator using the standard model-download URL session configuration.
     public init() {
         self.init(configuration: .modelDownload)
     }
 
+    /// Creates a coordinator with a custom URL session configuration, primarily for tests.
     public init(configuration: URLSessionConfiguration) {
         let delegate = ModelDownloadSessionDelegate()
         sessionDelegate = delegate
         session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
     }
 
-    /// Cancel every active transfer belonging to a model. A model may have
-    /// more specific in-flight IDs while its manifest is being assembled, so
-    /// matching the model prefix keeps cancellation reliable across callers.
+    /// Cancels active transfers for a model while retaining completed and partial files.
+    ///
+    /// A model may have more specific in-flight IDs while its manifest is being
+    /// assembled, so matching the model prefix keeps cancellation reliable
+    /// across callers.
     public func cancel(modelID: String) {
         for (id, task) in inFlight where id == modelID || id.hasPrefix(modelID + ":") {
             task.cancel()
         }
     }
 
+    /// Downloads, validates, and atomically installs every file in a manifest.
+    ///
+    /// Requests for the same manifest ID share one in-flight job and each caller
+    /// receives its own progress callbacks.
     public func download(
         _ manifest: ModelDownloadManifest,
         to directory: URL,
@@ -258,6 +317,7 @@ public actor ModelDownloadCoordinator {
         }
     }
 
+    /// Explicitly removes a model's completed files, partial files, and persisted state.
     public func removeDownload(_ manifest: ModelDownloadManifest, at directory: URL) throws {
         let paths = try manifest.files.map { file in
             try validatedURL(for: file.relativePath, in: directory)
@@ -382,7 +442,6 @@ public actor ModelDownloadCoordinator {
                 throw CancellationError()
             } catch let error as URLError where error.code == .timedOut {
                 lastError = ModelDownloadError.stalled(file.relativePath)
-                if attempt == 2 { throw lastError! }
             } catch let error as ModelDownloadError {
                 lastError = error
                 switch error {
@@ -395,19 +454,16 @@ public actor ModelDownloadCoordinator {
                     // complete artifact from byte zero.
                     try? fm.removeItem(at: partURL)
                     lastError = error
-                    if attempt == 2 { throw error }
                 case .etagMismatch:
                     try? fm.removeItem(at: partURL)
                     lastError = error
-                    if attempt == 2 { throw error }
                 case .invalidContentLength, .sizeMismatch, .checksumMismatch, .insufficientDiskSpace, .diskSpaceUnavailable:
                     throw error
                 default:
-                    if attempt == 2 { throw error }
+                    break
                 }
             } catch {
                 lastError = error
-                if attempt == 2 { throw error }
             }
         }
         throw ModelDownloadError.retriesExhausted(file.relativePath, lastError?.localizedDescription ?? "unknown error")

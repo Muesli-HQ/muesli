@@ -61,7 +61,7 @@ struct OnboardingView: View {
     @State private var hasFinishedOnboarding = false
 
     static let permissionsStep = OnboardingFlow.Step.permissions.rawValue
-    static let dictationTestStep = OnboardingFlow.Step.dictationTest.rawValue
+    static let dictationTestStep = OnboardingFlow.dictationTestStep
 
     private var orderedSteps: [Int] {
         OnboardingFlow.orderedSteps(for: selectedUseCase)
@@ -436,7 +436,7 @@ struct OnboardingView: View {
             }
         }
         if modelDownloadError != nil {
-            return "Download paused"
+            return "Download failed"
         }
         if isShowingModelReadyIndicator {
             return "\(selectedBackend.label) ready"
@@ -477,23 +477,22 @@ struct OnboardingView: View {
             }
         }
         if let total = snapshot.totalBytes, total > 0 {
-            details.append("\(formatModelDownloadBytes(snapshot.completedBytes)) / \(formatModelDownloadBytes(total))")
+            details.append("\(ModelDownloadDisplayFormatting.bytes(snapshot.completedBytes)) / \(ModelDownloadDisplayFormatting.bytes(total))")
             if snapshot.completedBytes < total {
-                details.append("\(formatModelDownloadBytes(total - snapshot.completedBytes)) left")
+                details.append("\(ModelDownloadDisplayFormatting.bytes(total - snapshot.completedBytes)) left")
             }
         } else if let currentTotal = snapshot.currentFileTotalBytes, currentTotal > 0 {
-            details.append("\(formatModelDownloadBytes(snapshot.currentFileCompletedBytes)) / \(formatModelDownloadBytes(currentTotal))")
+            details.append("\(ModelDownloadDisplayFormatting.bytes(snapshot.currentFileCompletedBytes)) / \(ModelDownloadDisplayFormatting.bytes(currentTotal))")
             if snapshot.currentFileCompletedBytes < currentTotal {
-                details.append("\(formatModelDownloadBytes(currentTotal - snapshot.currentFileCompletedBytes)) left")
+                details.append("\(ModelDownloadDisplayFormatting.bytes(currentTotal - snapshot.currentFileCompletedBytes)) left")
             }
         }
         if snapshot.phase == .downloading {
             if snapshot.bytesPerSecond > 0 {
-                details.append("\(formatModelDownloadBytes(Int64(snapshot.bytesPerSecond)))/s")
+                details.append(ModelDownloadDisplayFormatting.rate(snapshot.bytesPerSecond))
             }
             if let eta = snapshot.estimatedSecondsRemaining, eta.isFinite, eta >= 0 {
-                let seconds = Int(eta.rounded())
-                details.append(seconds < 60 ? "\(seconds)s left" : "\(seconds / 60)m \(String(format: "%02d", seconds % 60))s left")
+                details.append("\(ModelDownloadDisplayFormatting.eta(eta)) left")
             }
             if snapshot.retryCount > 0 {
                 details.append("retry \(snapshot.retryCount)/3")
@@ -502,14 +501,6 @@ struct OnboardingView: View {
             details.append(message)
         }
         return details.isEmpty ? (snapshot.message ?? "Downloading...") : details.joined(separator: " · ")
-    }
-
-    private func formatModelDownloadBytes(_ bytes: Int64) -> String {
-        let value = Double(max(0, bytes))
-        if value >= 1_000_000_000 { return String(format: "%.1f GB", value / 1_000_000_000) }
-        if value >= 1_000_000 { return String(format: "%.1f MB", value / 1_000_000) }
-        if value >= 1_000 { return String(format: "%.1f KB", value / 1_000) }
-        return "\(bytes) B"
     }
 
     private var dictationTestSubtitle: AttributedString {
@@ -1346,6 +1337,7 @@ struct OnboardingView: View {
 
                         Button("Retry Download") {
                             self.modelDownloadError = nil
+                            self.modelDownloadSnapshot = nil
                             ensureModelDownloadStarted()
                         }
                         .buttonStyle(.plain)
@@ -1626,8 +1618,12 @@ struct OnboardingView: View {
     }
 
     private func startDictationTestMonitorIfReady() {
-        guard currentStep >= Self.dictationTestStep else { return }
-        guard isSelectedModelReadyForDictationTest else {
+        guard OnboardingFlow.shouldStartDictationTestMonitor(
+            currentStep: currentStep,
+            dictationTestStep: Self.dictationTestStep,
+            modelReady: isSelectedModelReadyForDictationTest
+        ) else {
+            guard currentStep >= Self.dictationTestStep else { return }
             if isDictationTesting {
                 controller.cancelTestDictation()
                 isDictationTesting = false
@@ -1692,6 +1688,7 @@ struct OnboardingView: View {
             ? "Warming up \(backend.label)..."
             : (modelDownloadStatus ?? initialDownloadStatus(for: backend))
         modelDownloadError = nil
+        modelDownloadSnapshot = nil
         publishModelPreparationStatus(
             title: "Preparing \(backend.label)",
             detail: modelDownloadStatus,

@@ -798,7 +798,7 @@ enum CohereTranscribeModelStore {
         try await ModelDownloadCoordinator.shared.download(manifest, to: directory) { snapshot in
             let fraction = snapshot.fractionCompleted ?? 0
             let current = snapshot.currentFile ?? "model files"
-            let speed = formatDownloadRate(snapshot.bytesPerSecond)
+            let speed = ModelDownloadDisplayFormatting.rate(snapshot.bytesPerSecond)
             let detail = speed.isEmpty ? "" : " · " + speed
             progress?(fraction, "Downloading " + current + detail)
             progressSnapshot?(snapshot)
@@ -806,11 +806,6 @@ enum CohereTranscribeModelStore {
         progress?(1.0, "Cohere Transcribe download complete")
     }
 
-    private static func formatDownloadRate(_ bytesPerSecond: Double) -> String {
-        guard bytesPerSecond > 0 else { return "" }
-        if bytesPerSecond >= 1_000_000_000 { return String(format: "%.1f GB/s", bytesPerSecond / 1_000_000_000) }
-        return String(format: "%.1f MB/s", bytesPerSecond / 1_000_000)
-    }
 }
 
 // MARK: - Model Loading

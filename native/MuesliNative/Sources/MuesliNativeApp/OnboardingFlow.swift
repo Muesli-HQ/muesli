@@ -11,6 +11,16 @@ enum OnboardingFlow {
         case googleCalendar = 6
     }
 
+    static let dictationTestStep = Step.dictationTest.rawValue
+
+    static func shouldStartDictationTestMonitor(
+        currentStep: Int,
+        dictationTestStep: Int,
+        modelReady: Bool
+    ) -> Bool {
+        modelReady && currentStep >= dictationTestStep
+    }
+
     static func orderedSteps(for useCase: OnboardingUseCase) -> [Int] {
         var steps = [Step.welcome.rawValue, Step.model.rawValue]
         if useCase.includesPushToTalk {

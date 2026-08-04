@@ -202,7 +202,8 @@ enum Gemma4LiteRTModelStore {
         )
         try await ModelDownloadCoordinator.shared.download(manifest, to: directory) { snapshot in
             let fraction = snapshot.fractionCompleted ?? 0.05
-            let speed = snapshot.bytesPerSecond > 0 ? String(format: " · %.1f MB/s", snapshot.bytesPerSecond / 1_000_000) : ""
+            let rate = ModelDownloadDisplayFormatting.rate(snapshot.bytesPerSecond)
+            let speed = rate.isEmpty ? "" : " · " + rate
             progress?(fraction, "Downloading Gemma 4 E2B" + speed)
             progressSnapshot?(snapshot)
         }

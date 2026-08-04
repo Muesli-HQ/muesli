@@ -364,7 +364,8 @@ enum IndicASRModelStore {
         try await ModelDownloadCoordinator.shared.download(manifest, to: directory) { snapshot in
             let fraction = snapshot.fractionCompleted ?? 0
             let current = snapshot.currentFile ?? "model files"
-            let speed = snapshot.bytesPerSecond > 0 ? String(format: " · %.1f MB/s", snapshot.bytesPerSecond / 1_000_000) : ""
+            let rate = ModelDownloadDisplayFormatting.rate(snapshot.bytesPerSecond)
+            let speed = rate.isEmpty ? "" : " · " + rate
             progress?(fraction, "Downloading " + current + speed)
             progressSnapshot?(snapshot)
         }

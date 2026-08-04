@@ -546,7 +546,7 @@ struct ModelsView: View {
         let isActive = appState.activePostProcessor.id == option.id && isDownloaded
         let isDownloading = downloadingPostProcModels.contains(option.id)
         let progress = downloadProgressPostProc[option.id] ?? 0
-        let showsDownloadStatus = isDownloading || downloadSnapshots[option.id]?.phase == .paused || downloadSnapshots[option.id]?.phase == .failed
+        let showsDownloadStatus = shouldShowDownloadStatus(for: option.id, isDownloading: isDownloading)
 
         return VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
             HStack(alignment: .top, spacing: MuesliTheme.spacing12) {
@@ -594,7 +594,7 @@ struct ModelsView: View {
 
             HStack(spacing: MuesliTheme.spacing8) {
                 if isDownloading {
-                    Button("Cancel") {
+                    Button("Pause") {
                         cancelPostProcDownload(option)
                     }
                     .buttonStyle(.plain)
@@ -663,7 +663,7 @@ struct ModelsView: View {
         let isDownloaded = downloadedModels.contains(selectedOption.model)
         let isDownloading = downloadingModels.contains(selectedOption.model)
         let progress = downloadProgress[selectedOption.model] ?? 0
-        let showsDownloadStatus = isDownloading || downloadSnapshots[selectedOption.model]?.phase == .paused || downloadSnapshots[selectedOption.model]?.phase == .failed
+        let showsDownloadStatus = shouldShowDownloadStatus(for: selectedOption.model, isDownloading: isDownloading)
 
         return VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
             HStack(alignment: .top, spacing: MuesliTheme.spacing12) {
@@ -814,22 +814,22 @@ struct ModelsView: View {
             }
         }
         if let total = snapshot.totalBytes, total > 0 {
-            details.append("\(formatDownloadBytes(snapshot.completedBytes)) / \(formatDownloadBytes(total))")
+            details.append("\(ModelDownloadDisplayFormatting.bytes(snapshot.completedBytes)) / \(ModelDownloadDisplayFormatting.bytes(total))")
             if snapshot.completedBytes < total {
-                details.append("\(formatDownloadBytes(total - snapshot.completedBytes)) left")
+                details.append("\(ModelDownloadDisplayFormatting.bytes(total - snapshot.completedBytes)) left")
             }
         } else if let currentTotal = snapshot.currentFileTotalBytes, currentTotal > 0 {
-            details.append("\(formatDownloadBytes(snapshot.currentFileCompletedBytes)) / \(formatDownloadBytes(currentTotal))")
+            details.append("\(ModelDownloadDisplayFormatting.bytes(snapshot.currentFileCompletedBytes)) / \(ModelDownloadDisplayFormatting.bytes(currentTotal))")
             if snapshot.currentFileCompletedBytes < currentTotal {
-                details.append("\(formatDownloadBytes(currentTotal - snapshot.currentFileCompletedBytes)) left in file")
+                details.append("\(ModelDownloadDisplayFormatting.bytes(currentTotal - snapshot.currentFileCompletedBytes)) left in file")
             }
         }
         if snapshot.phase == .downloading {
             if snapshot.bytesPerSecond > 0 {
-                details.append("\(formatDownloadBytes(Int64(snapshot.bytesPerSecond)))/s")
+                details.append("\(ModelDownloadDisplayFormatting.rate(snapshot.bytesPerSecond))")
             }
             if let eta = snapshot.estimatedSecondsRemaining, eta.isFinite, eta >= 0 {
-                details.append("\(formatDownloadETA(eta)) left")
+                details.append("\(ModelDownloadDisplayFormatting.eta(eta)) left")
             }
             if snapshot.retryCount > 0 {
                 details.append("retry \(snapshot.retryCount)/3")
@@ -844,22 +844,9 @@ struct ModelsView: View {
         count == 1 ? "file" : "files"
     }
 
-    private func formatDownloadBytes(_ bytes: Int64) -> String {
-        let value = Double(max(0, bytes))
-        if value >= 1_000_000_000 { return String(format: "%.1f GB", value / 1_000_000_000) }
-        if value >= 1_000_000 { return String(format: "%.1f MB", value / 1_000_000) }
-        if value >= 1_000 { return String(format: "%.1f KB", value / 1_000) }
-        return "\(bytes) B"
-    }
-
-    private func formatDownloadETA(_ seconds: Double) -> String {
-        let totalSeconds = Int(seconds.rounded())
-        if totalSeconds < 60 { return "\(totalSeconds)s" }
-        let minutes = totalSeconds / 60
-        let remainingSeconds = totalSeconds % 60
-        if minutes < 60 { return "\(minutes)m \(String(format: "%02d", remainingSeconds))s" }
-        let hours = minutes / 60
-        return "\(hours)h \(String(format: "%02d", minutes % 60))m"
+    private func shouldShowDownloadStatus(for modelID: String, isDownloading: Bool) -> Bool {
+        guard let phase = downloadSnapshots[modelID]?.phase else { return isDownloading }
+        return isDownloading || phase == .paused || phase == .failed
     }
 
     @ViewBuilder
@@ -972,7 +959,7 @@ struct ModelsView: View {
         let isDownloaded = downloadedModels.contains(option.model)
         let isDownloading = downloadingModels.contains(option.model)
         let progress = downloadProgress[option.model] ?? 0
-        let showsDownloadStatus = isDownloading || downloadSnapshots[option.model]?.phase == .paused || downloadSnapshots[option.model]?.phase == .failed
+        let showsDownloadStatus = shouldShowDownloadStatus(for: option.model, isDownloading: isDownloading)
 
         return VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
             HStack(alignment: .top, spacing: MuesliTheme.spacing12) {
