@@ -1050,6 +1050,9 @@ struct AppConfig: Codable {
     var meetingRecordingFileFormat: String = MeetingRecordingFileFormat.m4a.rawValue
     var waveformCacheOrphanCleanupMigrationApplied: Bool = false
     var darkMode: Bool = true
+    var autoThemeByDaylight: Bool = false
+    var themeLatitude: Double? = nil
+    var themeLongitude: Double? = nil
     var enableDoubleTapDictation: Bool = true
     var hotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
     var computerUseHotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
@@ -1170,6 +1173,9 @@ struct AppConfig: Codable {
         case meetingRecordingFileFormat = "meeting_recording_file_format"
         case waveformCacheOrphanCleanupMigrationApplied = "waveform_cache_orphan_cleanup_migration_applied"
         case darkMode = "dark_mode"
+        case autoThemeByDaylight = "auto_theme_by_daylight"
+        case themeLatitude = "theme_latitude"
+        case themeLongitude = "theme_longitude"
         case enableDoubleTapDictation = "enable_double_tap_dictation"
         case hotkeyTriggerThresholdMS = "hotkey_trigger_threshold_ms"
         case computerUseHotkeyTriggerThresholdMS = "computer_use_hotkey_trigger_threshold_ms"
@@ -1313,6 +1319,9 @@ struct AppConfig: Codable {
             (try? c.decode(Bool.self, forKey: .waveformCacheOrphanCleanupMigrationApplied))
             ?? defaults.waveformCacheOrphanCleanupMigrationApplied
         darkMode = (try? c.decode(Bool.self, forKey: .darkMode)) ?? defaults.darkMode
+        autoThemeByDaylight = (try? c.decode(Bool.self, forKey: .autoThemeByDaylight)) ?? defaults.autoThemeByDaylight
+        themeLatitude = (try? c.decode(Double.self, forKey: .themeLatitude)) ?? defaults.themeLatitude
+        themeLongitude = (try? c.decode(Double.self, forKey: .themeLongitude)) ?? defaults.themeLongitude
         iCloudSyncEnabled = (try? c.decode(Bool.self, forKey: .iCloudSyncEnabled)) ?? defaults.iCloudSyncEnabled
         showIOSCompanionPrompt = (try? c.decode(Bool.self, forKey: .showIOSCompanionPrompt)) ?? defaults.showIOSCompanionPrompt
         enableDoubleTapDictation = (try? c.decode(Bool.self, forKey: .enableDoubleTapDictation)) ?? defaults.enableDoubleTapDictation

@@ -538,7 +538,10 @@ struct SidebarView: View {
         HStack(spacing: 2) {
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) {
-                    controller.updateConfig { $0.darkMode = false }
+                    controller.updateConfig {
+                        $0.darkMode = false
+                        $0.autoThemeByDaylight = false
+                    }
                 }
             } label: {
                 Image(systemName: "sun.max.fill")
@@ -554,7 +557,10 @@ struct SidebarView: View {
 
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) {
-                    controller.updateConfig { $0.darkMode = true }
+                    controller.updateConfig {
+                        $0.darkMode = true
+                        $0.autoThemeByDaylight = false
+                    }
                 }
             } label: {
                 Image(systemName: "moon.fill")
@@ -567,6 +573,23 @@ struct SidebarView: View {
                     )
             }
             .buttonStyle(.plain)
+
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    controller.updateConfig { $0.autoThemeByDaylight = true }
+                }
+            } label: {
+                Image(systemName: "circle.lefthalf.filled")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(appState.config.autoThemeByDaylight ? MuesliTheme.accent : MuesliTheme.textTertiary)
+                    .frame(width: 28, height: 22)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(appState.config.autoThemeByDaylight ? MuesliTheme.surfaceSelected : Color.clear)
+                    )
+            }
+            .buttonStyle(.plain)
+            .help("Automatically switch based on sunrise/sunset (set location in Settings > Appearance)")
         }
         .padding(2)
         .background(

@@ -402,6 +402,9 @@ final class MuesliController: NSObject {
     private var dataDidChangeObserver: NSObjectProtocol?
     private var iCloudAppActiveObserver: NSObjectProtocol?
     private var iCloudWakeObserver: NSObjectProtocol?
+    private var autoThemeAppActiveObserver: NSObjectProtocol?
+    private var autoThemeWakeObserver: NSObjectProtocol?
+    private var autoThemeFallbackTimer: Timer?
     private var isStartingMeetingRecording = false
     private var meetingStartStatus: String?
     private var isShowingCalendarNotification = false
@@ -655,6 +658,8 @@ final class MuesliController: NSObject {
             }
         }
         installICloudPersistentSyncObservers()
+        installAutoThemeObservers()
+        recomputeAutoTheme()
 
         statusBarController = StatusBarController(controller: self, runtime: runtime)
         preferencesWindowController = PreferencesWindowController(controller: self)
@@ -805,6 +810,16 @@ final class MuesliController: NSObject {
             NSWorkspace.shared.notificationCenter.removeObserver(iCloudWakeObserver)
             self.iCloudWakeObserver = nil
         }
+        if let autoThemeAppActiveObserver {
+            NotificationCenter.default.removeObserver(autoThemeAppActiveObserver)
+            self.autoThemeAppActiveObserver = nil
+        }
+        if let autoThemeWakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(autoThemeWakeObserver)
+            self.autoThemeWakeObserver = nil
+        }
+        autoThemeFallbackTimer?.invalidate()
+        autoThemeFallbackTimer = nil
         cancelActiveICloudSyncTask()
         iCloudSyncDebounceTask?.cancel()
         iCloudSyncDebounceTask = nil
@@ -1280,6 +1295,9 @@ final class MuesliController: NSObject {
         let previousMeetingRecordingHotkeyTriggerThresholdMS = config.meetingRecordingHotkeyTriggerThresholdMS
         let previousEnableDictionaryCorrectionPrompts = config.enableDictionaryCorrectionPrompts
         let previousEnableLiveStreamingPartials = config.enableLiveStreamingPartials
+        let previousAutoThemeByDaylight = config.autoThemeByDaylight
+        let previousThemeLatitude = config.themeLatitude
+        let previousThemeLongitude = config.themeLongitude
         mutate(&config)
         if previousEnableLiveStreamingPartials, !config.enableLiveStreamingPartials {
             preparingMeetingSession?.stopStreamingPartials()
@@ -1336,6 +1354,12 @@ final class MuesliController: NSObject {
         if previousMeetingInputDeviceUID != config.meetingInputDeviceUID {
             dictationAudioRoutingController.selectedMeetingInputDeviceUID = config.meetingInputDeviceUID
             applyMeetingInputDevice(dictationAudioRoutingController.preferredInputDeviceIDForMeeting())
+        }
+        if config.autoThemeByDaylight,
+           !previousAutoThemeByDaylight
+            || config.themeLatitude != previousThemeLatitude
+            || config.themeLongitude != previousThemeLongitude {
+            recomputeAutoTheme()
         }
     }
 
@@ -1675,6 +1699,52 @@ final class MuesliController: NSObject {
                 )
             }
         }
+    }
+
+    /// Observes app-activation and wake events to recompute dark/light mode from
+    /// sunrise/sunset. A plain `Timer` alone would get suspended by App Nap in this
+    /// LSUIElement app (see CLAUDE.md), so `NotificationCenter`-driven recomputation is
+    /// the primary path; the fallback timer below is best-effort only.
+    private func installAutoThemeObservers() {
+        guard autoThemeAppActiveObserver == nil else { return }
+        autoThemeAppActiveObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.recomputeAutoTheme()
+            }
+        }
+        autoThemeWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.recomputeAutoTheme()
+            }
+        }
+        autoThemeFallbackTimer?.invalidate()
+        autoThemeFallbackTimer = Timer.scheduledTimer(withTimeInterval: 900, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.recomputeAutoTheme()
+            }
+        }
+    }
+
+    /// Recomputes `darkMode` from the configured latitude/longitude when
+    /// `autoThemeByDaylight` is enabled. No-ops until the user sets a location in
+    /// Settings — this feature never requests macOS location permission.
+    func recomputeAutoTheme() {
+        guard config.autoThemeByDaylight,
+              let latitude = config.themeLatitude,
+              let longitude = config.themeLongitude else {
+            return
+        }
+        let shouldBeDark = SolarCalculator.isNight(latitude: latitude, longitude: longitude)
+        guard shouldBeDark != config.darkMode else { return }
+        updateConfig { $0.darkMode = shouldBeDark }
     }
 
     private func enableICloudPersistentSync() {
