@@ -165,7 +165,7 @@ The CLI is designed for coding agents such as Codex and Claude Code. It exposes 
 
 - `muesli-cli spec`
 - `muesli-cli info`
-- `muesli-cli transcribe <file> [--format text|json|markdown] [--model parakeet-v3|parakeet-v2|sensevoice|qwen3-asr|nemotron35|whisper-tiny|whisper-small|whisper-medium|whisper-large-turbo] [--dictionary PATH] [--summarize] [--save-meeting] [--title TITLE] [--output PATH]`
+- `muesli-cli transcribe <file> [--format text|json|markdown] [--model parakeet-v3|parakeet-v2|parakeet-eou-320ms|sensevoice|qwen3-asr|nemotron35|whisper-tiny|whisper-small|whisper-medium|whisper-large-turbo] [--dictionary PATH] [--summarize] [--save-meeting] [--title TITLE] [--output PATH]`
 - `muesli-cli meetings list [--limit N] [--folder-id ID]`
 - `muesli-cli meetings get <id>`
 - `muesli-cli meetings update-notes <id> (--stdin | --file <path>)`
@@ -245,7 +245,7 @@ The CLI also accepts an app `config.json` directly when it contains a `custom_wo
 muesli-cli transcribe interview.wav --dictionary ~/Library/Application\ Support/Muesli/config.json
 ```
 
-`parakeet-eou-320ms` is a streaming model and is not available for batch file transcription with this command.
+`parakeet-eou-320ms` is available for batch file transcription. The CLI chunks the audio internally and returns the completed transcript; it does not expose streaming partials for file transcription.
 
 Direct app-bundle fallback path:
 
