@@ -46,6 +46,7 @@ struct OnboardingView: View {
     @State private var modelDownloadBackend: BackendOption?
     @State private var modelDownloadTask: Task<Void, Never>?
     @State private var modelDownloadProgress: Double?
+    @State private var modelDownloadSnapshot: ModelDownloadProgress?
     @State private var isModelPreparingAfterDownload = false
     @State private var modelDownloadStatus: String?
     @State private var modelDownloadError: String?
@@ -427,6 +428,15 @@ struct OnboardingView: View {
         if modelDownloadError != nil {
             return "Download paused"
         }
+        if let snapshot = modelDownloadSnapshot {
+            switch snapshot.phase {
+            case .downloading: return "Downloading \(selectedBackend.label)"
+            case .preparing: return "Preparing \(selectedBackend.label)"
+            case .ready: return "\(selectedBackend.label) ready"
+            case .paused: return "Download paused"
+            case .failed: return "Download failed"
+            }
+        }
         if isShowingModelReadyIndicator {
             return "\(selectedBackend.label) ready"
         }
@@ -440,6 +450,9 @@ struct OnboardingView: View {
         if isShowingModelReadyIndicator {
             return "Ready to test"
         }
+        if let snapshot = modelDownloadSnapshot {
+            return modelDownloadSnapshotDetail(snapshot)
+        }
         if let modelDownloadStatus {
             return modelDownloadStatus
         }
@@ -447,6 +460,40 @@ struct OnboardingView: View {
             return "\(Int((progress * 100).rounded()))% complete"
         }
         return "Downloading..."
+    }
+
+    private func modelDownloadSnapshotDetail(_ snapshot: ModelDownloadProgress) -> String {
+        var details: [String] = []
+        if let currentFile = snapshot.currentFile?.split(separator: "/").last.map(String.init), !currentFile.isEmpty {
+            details.append(currentFile)
+        }
+        if let total = snapshot.totalBytes, total > 0 {
+            details.append("\(formatModelDownloadBytes(snapshot.completedBytes)) / \(formatModelDownloadBytes(total))")
+            if snapshot.completedBytes < total {
+                details.append("\(formatModelDownloadBytes(total - snapshot.completedBytes)) left")
+            }
+        } else if let currentTotal = snapshot.currentFileTotalBytes, currentTotal > 0 {
+            details.append("\(formatModelDownloadBytes(snapshot.currentFileCompletedBytes)) / \(formatModelDownloadBytes(currentTotal))")
+            if snapshot.currentFileCompletedBytes < currentTotal {
+                details.append("\(formatModelDownloadBytes(currentTotal - snapshot.currentFileCompletedBytes)) left")
+            }
+        }
+        if snapshot.bytesPerSecond > 0 {
+            details.append("\(formatModelDownloadBytes(Int64(snapshot.bytesPerSecond)))/s")
+        }
+        if let eta = snapshot.estimatedSecondsRemaining, eta.isFinite, eta >= 0 {
+            let seconds = Int(eta.rounded())
+            details.append(seconds < 60 ? "\(seconds)s left" : "\(seconds / 60)m \(String(format: "%02d", seconds % 60))s left")
+        }
+        return details.isEmpty ? (snapshot.message ?? "Downloading...") : details.joined(separator: " · ")
+    }
+
+    private func formatModelDownloadBytes(_ bytes: Int64) -> String {
+        let value = Double(max(0, bytes))
+        if value >= 1_000_000_000 { return String(format: "%.1f GB", value / 1_000_000_000) }
+        if value >= 1_000_000 { return String(format: "%.1f MB", value / 1_000_000) }
+        if value >= 1_000 { return String(format: "%.1f KB", value / 1_000) }
+        return "\(bytes) B"
     }
 
     private var dictationTestSubtitle: AttributedString {
@@ -1649,11 +1696,16 @@ struct OnboardingView: View {
                         guard selectedBackend == backend else { return }
                         applyModelPreparationProgress(progress, status: status, backend: backend)
                     }
+                } progressSnapshot: { snapshot in
+                    Task { @MainActor in
+                        applyModelDownloadSnapshot(snapshot, backend: backend)
+                    }
                 }
                 await MainActor.run {
                     guard selectedBackend == backend else { return }
                     modelReadyBackend = backend
                     modelDownloadProgress = 1.0
+                    modelDownloadSnapshot = nil
                     isModelPreparingAfterDownload = false
                     modelDownloadStatus = "\(backend.label) ready"
                     modelDownloadError = nil
@@ -1677,6 +1729,12 @@ struct OnboardingView: View {
                     modelDownloadError = modelPreparationFailureMessage(for: backend)
                     modelDownloadStatus = backend.isDownloaded ? "Model setup paused" : "Download paused"
                     modelDownloadProgress = nil
+                    if let snapshot = modelDownloadSnapshot {
+                        modelDownloadSnapshot = snapshot.replacing(
+                            phase: .failed,
+                            message: modelDownloadError
+                        )
+                    }
                     isModelPreparingAfterDownload = false
                     isModelStillDownloading = false
                     publishModelPreparationStatus(
@@ -1690,6 +1748,46 @@ struct OnboardingView: View {
                 fputs("[muesli-native] onboarding model download failed: \(error)\n", stderr)
             }
         }
+    }
+
+    private func applyModelDownloadSnapshot(_ snapshot: ModelDownloadProgress, backend: BackendOption) {
+        guard selectedBackend == backend else { return }
+        modelDownloadSnapshot = snapshot
+        modelDownloadError = nil
+
+        switch snapshot.phase {
+        case .downloading:
+            isModelStillDownloading = true
+            isModelPreparingAfterDownload = false
+            if let fraction = snapshot.fractionCompleted {
+                modelDownloadProgress = max(modelDownloadProgress ?? 0.02, fraction)
+            }
+            modelDownloadStatus = modelDownloadSnapshotDetail(snapshot)
+        case .preparing:
+            isModelStillDownloading = true
+            isModelPreparingAfterDownload = true
+            modelDownloadProgress = nil
+            modelDownloadStatus = snapshot.message ?? "Preparing \(backend.label)..."
+        case .ready:
+            modelDownloadStatus = snapshot.message ?? "\(backend.label) ready"
+        case .paused:
+            isModelStillDownloading = false
+            isModelPreparingAfterDownload = false
+            modelDownloadStatus = snapshot.message ?? "Download paused"
+        case .failed:
+            isModelStillDownloading = false
+            isModelPreparingAfterDownload = false
+            modelDownloadError = snapshot.message
+            modelDownloadStatus = snapshot.message ?? "Download failed"
+        }
+
+        publishModelPreparationStatus(
+            title: modelDownloadIndicatorTitle,
+            detail: modelDownloadStatus,
+            progress: modelDownloadProgress,
+            isPreparing: isModelPreparingAfterDownload,
+            isComplete: snapshot.phase == .ready
+        )
     }
 
     private func applyModelPreparationProgress(_ progress: Double, status: String?, backend: BackendOption) {
@@ -1743,6 +1841,7 @@ struct OnboardingView: View {
         modelReadyIndicatorBackend = nil
         modelDownloadBackend = nil
         modelDownloadProgress = nil
+        modelDownloadSnapshot = nil
         isModelPreparingAfterDownload = false
         modelDownloadStatus = nil
         modelDownloadError = nil

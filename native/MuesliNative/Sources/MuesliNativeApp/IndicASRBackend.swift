@@ -2,6 +2,7 @@ import Accelerate
 import CoreML
 import FluidAudio
 import Foundation
+import MuesliCore
 
 enum IndicASRLanguage: String, CaseIterable, Codable, Sendable {
     case hindi = "hi"
@@ -205,7 +206,10 @@ enum IndicASRModelStore {
         return modelsExist(in: layout)
     }
 
-    fileprivate static func resolvedLayout(progress: ((Double, String?) -> Void)? = nil) async throws -> IndicASRModelLayout {
+    fileprivate static func resolvedLayout(
+        progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
+    ) async throws -> IndicASRModelLayout {
         if let overrideDir = localOverrideDirectory(), let layout = layout(at: overrideDir), modelsExist(in: layout) {
             progress?(1.0, "Using local Indic ASR model override")
             return layout
@@ -218,7 +222,7 @@ enum IndicASRModelStore {
             return layout
         }
 
-        try await downloadMissingFiles(to: target, progress: progress)
+        try await downloadMissingFiles(to: target, progress: progress, progressSnapshot: progressSnapshot)
         if let layout = layout(at: target), modelsExist(in: layout) {
             return layout
         }
@@ -292,7 +296,11 @@ enum IndicASRModelStore {
         return components.url!
     }
 
-    private static func downloadMissingFiles(to directory: URL, progress: ((Double, String?) -> Void)?) async throws {
+    private static func downloadMissingFiles(
+        to directory: URL,
+        progress: ((Double, String?) -> Void)?,
+        progressSnapshot: ModelDownloadProgressHandler?
+    ) async throws {
         let fm = FileManager.default
         let packages = IndicASRConfig.requiredSharedPackages + IndicASRConfig.requiredLanguagePackages
         let packageFiles = packages.flatMap { packageName in
@@ -314,12 +322,21 @@ enum IndicASRModelStore {
             return !fm.fileExists(atPath: directory.appendingPathComponent(relativePath).path)
         }
 
-        let total = max(missing.count, 1)
-        for (index, relativePath) in missing.enumerated() {
-            progress?(Double(index) / Double(total), "Downloading Indic ASR...")
-            let destination = directory.appendingPathComponent(relativePath)
-            try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try await downloadWithRetry(from: remoteURL(for: relativePath), to: destination)
+        let files = missing.map { relativePath in
+            ModelDownloadFile(relativePath: relativePath, remoteURL: remoteURL(for: relativePath))
+        }
+        let manifest = ModelDownloadManifest(
+            id: IndicASRConfig.repoId,
+            version: IndicASRConfig.repoRevision,
+            files: files,
+            maximumConcurrency: 2
+        )
+        try await ModelDownloadCoordinator.shared.download(manifest, to: directory) { snapshot in
+            let fraction = snapshot.fractionCompleted ?? 0
+            let current = snapshot.currentFile ?? "model files"
+            let speed = snapshot.bytesPerSecond > 0 ? String(format: " · %.1f MB/s", snapshot.bytesPerSecond / 1_000_000) : ""
+            progress?(fraction, "Downloading " + current + speed)
+            progressSnapshot?(snapshot)
         }
         for packageName in IndicASRConfig.packagesWithEmptyWeightsDirectory {
             let weightsDirectory = directory.appendingPathComponent(IndicASRConfig.emptyWeightsDirectoryRelativePath(packageName), isDirectory: true)
@@ -681,7 +698,10 @@ actor IndicASRTranscriber {
     private var warmupTask: Task<Void, Never>?
     private var hasCompletedWarmup = false
 
-    func loadModels(progress: ((Double, String?) -> Void)? = nil) async throws {
+    func loadModels(
+        progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
+    ) async throws {
         if models != nil { return }
         if let loadTask {
             let expectedGeneration = loadGeneration
@@ -693,8 +713,12 @@ actor IndicASRTranscriber {
 
         let task = Task<IndicASRModels, Error> {
             progress?(0.05, "Loading Indic ASR CoreML artifacts...")
-            let layout = try await IndicASRModelStore.resolvedLayout(progress: progress)
+            let layout = try await IndicASRModelStore.resolvedLayout(
+                progress: progress,
+                progressSnapshot: progressSnapshot
+            )
             try Task.checkCancellation()
+            progressSnapshot?(ModelDownloadProgress.preparing(modelID: IndicASRConfig.repoId, message: "Preparing Core ML models..."))
             let loaded = try await IndicASRModels.load(from: layout)
             try Task.checkCancellation()
             progress?(1.0, "Indic ASR loaded")
@@ -717,8 +741,11 @@ actor IndicASRTranscriber {
         }
     }
 
-    func prepare(progress: ((Double, String?) -> Void)? = nil) async throws {
-        try await loadModels(progress: progress)
+    func prepare(
+        progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
+    ) async throws {
+        try await loadModels(progress: progress, progressSnapshot: progressSnapshot)
         scheduleWarmupIfNeeded()
     }
 

@@ -52,7 +52,8 @@ public enum Nemotron35ModelStore {
     /// Existing files are reused, so an interrupted download can resume.
     @discardableResult
     public static func ensureDownloaded(
-        progress: ((Double, String?) -> Void)? = nil
+        progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws -> URL {
         let directory = cacheDirectory()
         if isModelDownloaded() {
@@ -68,11 +69,13 @@ public enum Nemotron35ModelStore {
             apiURL: apiURL,
             remotePath: variantPath,
             localDirectory: directory,
-            skipRelativePrefix: "decoder_joint.mlmodelc"
-        ) {
+            skipRelativePrefix: "decoder_joint.mlmodelc",
+            onFileDownloaded: {
             filesDownloaded += 1
             progress?(min(Double(filesDownloaded) / 30.0, 0.95), "Downloading Nemotron 3.5 model...")
-        }
+            },
+            progressSnapshot: progressSnapshot
+        )
 
         if let revision = await fetchRemoteRevision() {
             recordInstalledRevision(revision)
@@ -125,7 +128,8 @@ public enum Nemotron35ModelStore {
         remotePath: String,
         localDirectory: URL,
         skipRelativePrefix: String?,
-        onFileDownloaded: (() -> Void)?
+        onFileDownloaded: (() -> Void)?,
+        progressSnapshot: ModelDownloadProgressHandler?
     ) async throws {
         guard let url = URL(string: apiURL) else {
             throw Nemotron35ModelStoreError.invalidURL(apiURL)
@@ -163,7 +167,8 @@ public enum Nemotron35ModelStore {
                     remotePath: remotePath,
                     localDirectory: localDirectory,
                     skipRelativePrefix: skipRelativePrefix,
-                    onFileDownloaded: onFileDownloaded
+                    onFileDownloaded: onFileDownloaded,
+                    progressSnapshot: progressSnapshot
                 )
             } else if type == "file" {
                 guard let fileURL = URL(string: "https://huggingface.co/\(repoID)/resolve/main/\(path)") else {
@@ -179,48 +184,29 @@ public enum Nemotron35ModelStore {
                     at: destination.deletingLastPathComponent(),
                     withIntermediateDirectories: true
                 )
-                try await downloadFile(from: fileURL, to: destination, path: relativePath)
+                try await downloadFile(from: fileURL, to: destination, path: relativePath, progressSnapshot: progressSnapshot)
                 onFileDownloaded?()
             }
         }
     }
 
-    private static func downloadFile(from url: URL, to destination: URL, path: String) async throws {
-        var lastError: Error?
-
-        for attempt in 0..<3 {
-            if attempt > 0 {
-                try? await Task.sleep(nanoseconds: UInt64(1 << (attempt - 1)) * 1_000_000_000)
-            }
-
-            do {
-                try Task.checkCancellation()
-                let (temporaryURL, response) = try await URLSession.shared.download(from: url)
-                guard let httpResponse = response as? HTTPURLResponse,
-                      (200..<300).contains(httpResponse.statusCode)
-                else {
-                    let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
-                    try? FileManager.default.removeItem(at: temporaryURL)
-                    throw Nemotron35ModelStoreError.httpError(statusCode, path)
-                }
-
-                try? FileManager.default.removeItem(at: destination)
-                try FileManager.default.moveItem(at: temporaryURL, to: destination)
-                return
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                lastError = error
-            }
-        }
-
-        throw Nemotron35ModelStoreError.retriesExhausted(
-            path,
-            lastError ?? NSError(
-                domain: "Nemotron35ModelStore",
-                code: 0,
-                userInfo: [NSLocalizedDescriptionKey: "No download attempts were made"]
-            )
+    private static func downloadFile(
+        from url: URL,
+        to destination: URL,
+        path: String,
+        progressSnapshot: ModelDownloadProgressHandler?
+    ) async throws {
+        let root = destination.deletingLastPathComponent()
+        let manifest = ModelDownloadManifest(
+            id: "\(repoID):\(path)",
+            version: "main",
+            files: [ModelDownloadFile(relativePath: destination.lastPathComponent, remoteURL: url)],
+            maximumConcurrency: 1
         )
+        do {
+            try await ModelDownloadCoordinator.shared.download(manifest, to: root, progress: progressSnapshot)
+        } catch {
+            throw Nemotron35ModelStoreError.retriesExhausted(path, error)
+        }
     }
 }

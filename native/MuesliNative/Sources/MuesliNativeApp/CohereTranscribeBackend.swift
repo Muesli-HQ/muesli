@@ -2,6 +2,7 @@ import Accelerate
 @preconcurrency import CoreML
 import FluidAudio
 import Foundation
+import MuesliCore
 
 // MARK: - Testable Utilities
 
@@ -673,7 +674,10 @@ enum CohereTranscribeModelStore {
         return modelsExist(at: cacheDirectory())
     }
 
-    static func resolvedDirectory(progress: ((Double, String?) -> Void)? = nil) async throws -> URL {
+    static func resolvedDirectory(
+        progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
+    ) async throws -> URL {
         if let overrideDir = localOverrideDirectory(), modelsExist(at: overrideDir) {
             progress?(1.0, "Using local Cohere model override")
             return overrideDir
@@ -685,7 +689,7 @@ enum CohereTranscribeModelStore {
             progress?(1.0, "Cohere Transcribe already downloaded")
             return target
         }
-        try await downloadMissingFiles(to: target, progress: progress)
+        try await downloadMissingFiles(to: target, progress: progress, progressSnapshot: progressSnapshot)
         return target
     }
 
@@ -727,7 +731,11 @@ enum CohereTranscribeModelStore {
         return components.url!
     }
 
-    private static func downloadMissingFiles(to directory: URL, progress: ((Double, String?) -> Void)?) async throws {
+    private static func downloadMissingFiles(
+        to directory: URL,
+        progress: ((Double, String?) -> Void)?,
+        progressSnapshot: ModelDownloadProgressHandler?
+    ) async throws {
         let fm = FileManager.default
         let modelPackageFiles = CohereTranscribeConfig.requiredModelPackages.flatMap { packageName in
             [
@@ -750,15 +758,35 @@ enum CohereTranscribeModelStore {
             }
             return !fm.fileExists(atPath: directory.appendingPathComponent(relativePath).path)
         }
-        let total = max(missing.count, 1)
-        for (index, relativePath) in missing.enumerated() {
-            progress?(Double(index) / Double(total), "Downloading Cohere Transcribe...")
-            let destination = directory.appendingPathComponent(relativePath)
-            try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let sourceURL = remoteURL(for: relativePath)
-            try await downloadWithRetry(from: sourceURL, to: destination)
+        guard !missing.isEmpty else {
+            progress?(1.0, "Cohere Transcribe download complete")
+            return
+        }
+
+        let files = missing.map { relativePath in
+            ModelDownloadFile(relativePath: relativePath, remoteURL: remoteURL(for: relativePath))
+        }
+        let manifest = ModelDownloadManifest(
+            id: CohereTranscribeConfig.repoId,
+            version: "main",
+            files: files,
+            maximumConcurrency: 2
+        )
+        try await ModelDownloadCoordinator.shared.download(manifest, to: directory) { snapshot in
+            let fraction = snapshot.fractionCompleted ?? 0
+            let current = snapshot.currentFile ?? "model files"
+            let speed = formatDownloadRate(snapshot.bytesPerSecond)
+            let detail = speed.isEmpty ? "" : " · " + speed
+            progress?(fraction, "Downloading " + current + detail)
+            progressSnapshot?(snapshot)
         }
         progress?(1.0, "Cohere Transcribe download complete")
+    }
+
+    private static func formatDownloadRate(_ bytesPerSecond: Double) -> String {
+        guard bytesPerSecond > 0 else { return "" }
+        if bytesPerSecond >= 1_000_000_000 { return String(format: "%.1f GB/s", bytesPerSecond / 1_000_000_000) }
+        return String(format: "%.1f MB/s", bytesPerSecond / 1_000_000)
     }
 }
 
@@ -1155,7 +1183,10 @@ actor CohereTranscribeTranscriber {
         }
     }
 
-    func loadModels(progress: ((Double, String?) -> Void)? = nil) async throws {
+    func loadModels(
+        progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
+    ) async throws {
         if manager != nil { return }
         if let loadTask {
             self.manager = try await loadTask.value
@@ -1165,10 +1196,15 @@ actor CohereTranscribeTranscriber {
         let task = Task<CohereTranscribeManager, Error> {
             CohereProfilingLog.write("[cohere] downloading/loading models...")
             let dirStart = CFAbsoluteTimeGetCurrent()
-            let modelDir = try await CohereTranscribeModelStore.resolvedDirectory(progress: progress)
+            let modelDir = try await CohereTranscribeModelStore.resolvedDirectory(
+                progress: progress,
+                progressSnapshot: progressSnapshot
+            )
             let dirMs = (CFAbsoluteTimeGetCurrent() - dirStart) * 1000
             CohereProfilingLog.write("[cohere][load] resolvedDirectory in \(String(format: "%.0f", dirMs))ms path=\(modelDir.path)")
             try Task.checkCancellation()
+            progress?(1.0, "Preparing Core ML models...")
+            progressSnapshot?(ModelDownloadProgress.preparing(modelID: CohereTranscribeConfig.repoId, message: "Preparing Core ML models..."))
             let modelsStart = CFAbsoluteTimeGetCurrent()
             let models = try await CohereTranscribeModels.load(from: modelDir)
             let modelsMs = (CFAbsoluteTimeGetCurrent() - modelsStart) * 1000
@@ -1199,8 +1235,11 @@ actor CohereTranscribeTranscriber {
         }
     }
 
-    func prepare(progress: ((Double, String?) -> Void)? = nil) async throws {
-        try await loadModels(progress: progress)
+    func prepare(
+        progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
+    ) async throws {
+        try await loadModels(progress: progress, progressSnapshot: progressSnapshot)
         scheduleWarmupIfNeeded()
     }
 

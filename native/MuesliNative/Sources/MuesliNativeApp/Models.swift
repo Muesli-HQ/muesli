@@ -15,7 +15,7 @@ struct BackendOption: Equatable {
         model: "FluidInference/parakeet-tdt-0.6b-v3-coreml",
         label: "Parakeet v3",
         sizeLabel: "~450 MB",
-        description: "Multilingual, 25 languages. Runs on Apple Neural Engine.",
+        description: "Fast everyday transcription with an excellent balance of speed and accuracy. Supports 25 languages.",
         recommended: true
     )
 
@@ -24,7 +24,7 @@ struct BackendOption: Equatable {
         model: "FluidInference/parakeet-tdt-0.6b-v2-coreml",
         label: "Parakeet v2",
         sizeLabel: "~450 MB",
-        description: "English-only, highest recall. Runs on Apple Neural Engine.",
+        description: "Fast English transcription with a strong balance of speed and accuracy.",
         recommended: false
     )
 
@@ -78,7 +78,7 @@ struct BackendOption: Equatable {
         model: "phequals/cohere-transcribe-coreml-mixed-precision",
         label: "Cohere Transcribe",
         sizeLabel: "~3.8 GB",
-        description: "Mixed precision (FP16 encoder + INT8 decoder). 14 languages. High accuracy (#1 Open ASR Leaderboard). Final transcript after stop. May decode hallucinated text during silence — use in quiet environments or with VAD.",
+        description: "Best accuracy for difficult audio and accents. Choose it when getting every word right matters more than speed. It is larger and slower than Parakeet, supports 14 languages, and gives you the final transcript when you stop.",
         recommended: false
     )
 

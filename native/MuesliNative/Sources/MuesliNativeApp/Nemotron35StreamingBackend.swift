@@ -62,7 +62,10 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
 
     private static var cacheDir: URL { Nemotron35ModelStore.cacheDirectory() }
 
-    func loadModels(progress: ((Double, String?) -> Void)? = nil) async throws {
+    func loadModels(
+        progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
+    ) async throws {
         if loaded, loadedRevision == Self.installedRevision() { return }
         if isLoading {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -74,7 +77,7 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
         isLoading = true
         let generation = loadGeneration
         do {
-            try await performLoadModels(progress: progress, generation: generation)
+            try await performLoadModels(progress: progress, progressSnapshot: progressSnapshot, generation: generation)
             isLoading = false
             completeLoadWaiters()
         } catch {
@@ -86,9 +89,10 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
 
     private func performLoadModels(
         progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil,
         generation: Int
     ) async throws {
-        let modelDir = try await ensureModelsDownloaded(progress: progress)
+        let modelDir = try await ensureModelsDownloaded(progress: progress, progressSnapshot: progressSnapshot)
         let installedRevision = Self.installedRevision()
         if loaded, loadedRevision == installedRevision { return }
         if loaded {
@@ -96,6 +100,7 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
         }
 
         fputs("[nemotron35] loading CoreML models...\n", stderr)
+        progressSnapshot?(ModelDownloadProgress.preparing(modelID: Nemotron35ModelStore.repoID, message: "Preparing Nemotron 3.5 Core ML models..."))
         let mlConfig = MLModelConfiguration()
         mlConfig.computeUnits = .all
 
@@ -239,7 +244,10 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
         return local != remote
     }
 
-    private func ensureModelsDownloaded(progress: ((Double, String?) -> Void)? = nil) async throws -> URL {
+    private func ensureModelsDownloaded(
+        progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
+    ) async throws -> URL {
         let modelDir = Self.cacheDir
         if Nemotron35ModelStore.isModelDownloaded() {
             fputs("[nemotron35] models already cached\n", stderr)
@@ -247,7 +255,7 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
         }
 
         fputs("[nemotron35] downloading multilingual/2240ms variant from HuggingFace...\n", stderr)
-        _ = try await Nemotron35ModelStore.ensureDownloaded(progress: progress)
+        _ = try await Nemotron35ModelStore.ensureDownloaded(progress: progress, progressSnapshot: progressSnapshot)
 
         fputs("[nemotron35] download complete\n", stderr)
         return modelDir

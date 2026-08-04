@@ -92,11 +92,12 @@ actor TranscriptionCoordinator {
     /// reach the actor while its CoreML models are still unloaded.
     @available(macOS 15, *)
     func getLoadedNemotron35Transcriber(
-        progress: ((Double, String?) -> Void)? = nil
+        progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws -> Nemotron35StreamingTranscriber {
         let transcriber = nemotron35Transcriber
         await transcriber.setPromptId(nemotron35PromptId)
-        try await transcriber.loadModels(progress: progress)
+        try await transcriber.loadModels(progress: progress, progressSnapshot: progressSnapshot)
         return transcriber
     }
 
@@ -254,7 +255,8 @@ actor TranscriptionCoordinator {
         enablePostProcessor: Bool = false,
         includeMeetingHelpers: Bool = true,
         meetingHelperTrigger: DiarizerPreloadTrigger = .unspecified,
-        progress: ((Double, String?) -> Void)? = nil
+        progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async {
         do {
             try await preloadRequired(
@@ -262,7 +264,8 @@ actor TranscriptionCoordinator {
                 enablePostProcessor: enablePostProcessor,
                 includeMeetingHelpers: includeMeetingHelpers,
                 meetingHelperTrigger: meetingHelperTrigger,
-                progress: progress
+                progress: progress,
+                progressSnapshot: progressSnapshot
             )
         } catch {
             fputs("[muesli-native] preload failed for \(backend.backend)/\(backend.model): \(error)\n", stderr)
@@ -274,7 +277,8 @@ actor TranscriptionCoordinator {
         enablePostProcessor: Bool = false,
         includeMeetingHelpers: Bool = true,
         meetingHelperTrigger: DiarizerPreloadTrigger = .unspecified,
-        progress: ((Double, String?) -> Void)? = nil
+        progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
         activeBackend = backend.backend
 
@@ -297,7 +301,7 @@ actor TranscriptionCoordinator {
             progress?(1.0, nil)
         case "nemotron35":
             if #available(macOS 15, *) {
-                let transcriber = try await getLoadedNemotron35Transcriber(progress: progress)
+                let transcriber = try await getLoadedNemotron35Transcriber(progress: progress, progressSnapshot: progressSnapshot)
                 // Warmup ANE so first dictation starts instantly
                 fputs("[muesli-native] Nemotron 3.5 warmup: running silent chunk for ANE compilation...\n", stderr)
                 var state = try await transcriber.makeStreamState()
@@ -319,7 +323,7 @@ actor TranscriptionCoordinator {
             }
         case "cohere":
             if #available(macOS 15, *) {
-                try await cohereTranscriber.prepare(progress: progress)
+                try await cohereTranscriber.prepare(progress: progress, progressSnapshot: progressSnapshot)
             } else {
                 throw NSError(domain: "MuesliTranscriptionRuntime", code: 4, userInfo: [
                     NSLocalizedDescriptionKey: "Cohere Transcribe requires macOS 15 or later.",
@@ -327,7 +331,7 @@ actor TranscriptionCoordinator {
             }
         case "indicasr":
             if #available(macOS 15, *) {
-                try await indicASRTranscriber.prepare(progress: progress)
+                try await indicASRTranscriber.prepare(progress: progress, progressSnapshot: progressSnapshot)
             } else {
                 throw NSError(domain: "MuesliTranscriptionRuntime", code: 6, userInfo: [
                     NSLocalizedDescriptionKey: "Indic ASR requires macOS 15 or later.",
@@ -337,7 +341,7 @@ actor TranscriptionCoordinator {
             try await senseVoiceTranscriber.loadModels(progress: progress)
         case "gemma4-litert":
             if #available(macOS 15, *) {
-                try await gemma4LiteRTTranscriber.prepare(progress: progress)
+                try await gemma4LiteRTTranscriber.prepare(progress: progress, progressSnapshot: progressSnapshot)
             } else {
                 throw NSError(domain: "MuesliTranscriptionRuntime", code: 7, userInfo: [
                     NSLocalizedDescriptionKey: "Gemma 4 E2B requires macOS 15 or later.",

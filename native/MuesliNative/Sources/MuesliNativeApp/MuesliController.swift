@@ -3477,7 +3477,8 @@ final class MuesliController: NSObject {
     func downloadModelForOnboarding(
         _ backend: BackendOption,
         onboardingUseCase: OnboardingUseCase,
-        progress: @escaping (Double, String?) -> Void
+        progress: @escaping (Double, String?) -> Void,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
         let wasDownloaded = backend.isDownloaded
         progress(
@@ -3502,7 +3503,8 @@ final class MuesliController: NSObject {
                 } else {
                     progress(value, status ?? "Preparing \(backend.label)...")
                 }
-            }
+            },
+            progressSnapshot: progressSnapshot
         )
         guard backend.isDownloaded else {
             throw NSError(
