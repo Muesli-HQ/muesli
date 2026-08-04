@@ -73,4 +73,17 @@ struct CustomWordDictionaryTests {
         #expect(result.words[0].matchingThreshold == 0.9)
         #expect(result.words[1].targetWord == "Kubernetes")
     }
+
+    @Test("new imported entries receive fresh IDs")
+    func newEntriesDoNotReuseImportedIDs() {
+        let importedID = UUID()
+        let imported = [
+            CustomWord(id: importedID, word: "kubernete", replacement: "Kubernetes"),
+        ]
+
+        let result = CustomWordDictionaryCodec.merge(imported, into: [])
+
+        #expect(result.words.count == 1)
+        #expect(result.words[0].id != importedID)
+    }
 }

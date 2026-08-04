@@ -102,7 +102,16 @@ public enum CustomWordDictionaryCodec {
                 }
             } else {
                 indicesByWord[key] = words.count
-                words.append(normalizedWord)
+                // Imported app config files carry persistent IDs. A new
+                // entry must receive a fresh ID so a renamed existing word
+                // cannot collide with an older backup's identifier.
+                words.append(
+                    CustomWord(
+                        word: normalizedWord.word,
+                        replacement: normalizedWord.replacement,
+                        matchingThreshold: normalizedWord.matchingThreshold
+                    )
+                )
                 addedCount += 1
             }
         }

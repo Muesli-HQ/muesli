@@ -337,6 +337,10 @@ Important meeting fields:
 | Whisper Medium | WhisperKit | CoreML / Neural Engine | ~1.5 GB | English only | ~2-3s |
 | Whisper Large Turbo | WhisperKit | CoreML / Neural Engine | ~626 MB | Multilingual | ~2-4s |
 
+The app and `muesli-cli` share Nemotron 3.5's model cache at
+`~/.cache/muesli/models/nemotron35-multilingual-2240ms`; downloading it in one
+surface makes it available to the other without a second copy.
+
 Cohere Transcribe is a 2B parameter model (#1 on Open ASR Leaderboard) running in mixed precision — FP16 FastConformer encoder on the Neural Engine with INT8 quantized decoders. Includes VAD-gated silence detection to prevent hallucination. Best for high-accuracy multilingual dictation.
 
 Gemma 4 E2B is an experimental multimodal LiteRT-LM backend for direct transcription or on-device transcript cleanup. It is not an ASR-tuned model, so assistant-style outputs are rejected and Parakeet remains the recommended transcription backend. Gemma cannot be selected for ASR and cleanup at the same time.

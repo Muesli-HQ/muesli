@@ -818,9 +818,9 @@ actor Qwen3AsrCLITranscriber: AudioTranscribing {
     private var manager: Any?
 }
 
-/// Wraps FluidAudio's public multilingual Nemotron manager. The app and CLI use
-/// the same 2240ms model variant and FluidAudio cache; no second RNNT engine is
-/// maintained in the Muesli app target.
+/// Wraps FluidAudio's public multilingual Nemotron manager using the exact
+/// model directory maintained by the app's native Nemotron RNNT backend. The
+/// shared store prevents the app and CLI from downloading separate copies.
 actor Nemotron35CLITranscriber: AudioTranscribing {
     private var manager: StreamingNemotronMultilingualAsrManager?
 
@@ -841,14 +841,14 @@ actor Nemotron35CLITranscriber: AudioTranscribing {
     private func loadedManager(progress: @escaping (String) -> Void) async throws -> StreamingNemotronMultilingualAsrManager {
         if let manager { return manager }
         progress("loading nemotron35")
-        let shared = try await StreamingNemotronMultilingualAsrManager.downloadAndPreloadShared(
-            languageCode: "auto",
-            chunkMs: 2240,
-            progressHandler: { update in
-                let percent = Int((update.fractionCompleted * 100).rounded())
-                progress("model \(percent)%")
+        let modelDirectory = try await Nemotron35ModelStore.ensureDownloaded { fraction, message in
+            if let message {
+                progress(message)
+            } else {
+                progress("model \(Int((fraction * 100).rounded()))%")
             }
-        )
+        }
+        let shared = try await StreamingNemotronMultilingualAsrManager.preloadShared(from: modelDirectory)
         let newManager = StreamingNemotronMultilingualAsrManager()
         try await newManager.loadFromShared(shared)
         manager = newManager

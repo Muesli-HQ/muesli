@@ -211,9 +211,7 @@ struct BackendOption: Equatable {
             return fm.fileExists(atPath: supportDir.appendingPathComponent("int8/vocab.json").path)
                 || fm.fileExists(atPath: supportDir.appendingPathComponent("f32/vocab.json").path)
         case "nemotron35":
-            let path = fm.homeDirectoryForCurrentUser
-                .appendingPathComponent(".cache/muesli/models/nemotron35-multilingual-2240ms/encoder.mlmodelc/coremldata.bin")
-            return fm.fileExists(atPath: path.path)
+            return Nemotron35ModelStore.isModelDownloaded(fileManager: fm)
         case "cohere":
             return CohereTranscribeModelStore.isAvailableLocally()
         case "indicasr":
