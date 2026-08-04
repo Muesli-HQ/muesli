@@ -165,7 +165,7 @@ The CLI is designed for coding agents such as Codex and Claude Code. It exposes 
 
 - `muesli-cli spec`
 - `muesli-cli info`
-- `muesli-cli transcribe <file> [--format text|json|markdown] [--model parakeet-v3|parakeet-v2] [--summarize] [--save-meeting] [--title TITLE] [--output PATH]`
+- `muesli-cli transcribe <file> [--format text|json|markdown] [--model parakeet-v3|parakeet-v2|parakeet-eou-320ms|sensevoice|qwen3-asr|nemotron35|whisper-tiny|whisper-small|whisper-medium|whisper-large-turbo] [--dictionary PATH] [--summarize] [--save-meeting] [--title TITLE] [--output PATH]`
 - `muesli-cli meetings list [--limit N] [--folder-id ID]`
 - `muesli-cli meetings get <id>`
 - `muesli-cli meetings update-notes <id> (--stdin | --file <path>)`
@@ -224,6 +224,28 @@ Save the import into Muesli as `source = audio_import`:
 ```bash
 muesli-cli transcribe interview.wav --save-meeting --title "Customer Interview"
 ```
+
+### Dictionary import and export
+
+The app's **Dictionary** tab supports importing and exporting the personal dictionary as JSON. Import merges entries by match word, updates an existing match when the imported definition differs, and appends new words. Export produces the same portable format accepted by `muesli-cli --dictionary`:
+
+```json
+[
+  {
+    "word": "museli",
+    "replacement": "muesli",
+    "matching_threshold": 0.85
+  }
+]
+```
+
+The CLI also accepts an app `config.json` directly when it contains a `custom_words` array:
+
+```bash
+muesli-cli transcribe interview.wav --dictionary ~/Library/Application\ Support/Muesli/config.json
+```
+
+`parakeet-eou-320ms` is available for batch file transcription. The CLI chunks the audio internally and returns the completed transcript; it does not expose streaming partials for file transcription.
 
 Direct app-bundle fallback path:
 
@@ -314,6 +336,10 @@ Important meeting fields:
 | Whisper Small | WhisperKit | CoreML / Neural Engine | ~250 MB | English only | ~1-2s |
 | Whisper Medium | WhisperKit | CoreML / Neural Engine | ~1.5 GB | English only | ~2-3s |
 | Whisper Large Turbo | WhisperKit | CoreML / Neural Engine | ~626 MB | Multilingual | ~2-4s |
+
+The app and `muesli-cli` share Nemotron 3.5's model cache at
+`~/.cache/muesli/models/nemotron35-multilingual-2240ms`; downloading it in one
+surface makes it available to the other without a second copy.
 
 Cohere Transcribe is a 2B parameter model (#1 on Open ASR Leaderboard) running in mixed precision — FP16 FastConformer encoder on the Neural Engine with INT8 quantized decoders. Includes VAD-gated silence detection to prevent hallucination. Best for high-accuracy multilingual dictation.
 

@@ -1,5 +1,7 @@
+import AppKit
 import SwiftUI
 import MuesliCore
+import UniformTypeIdentifiers
 
 private enum DictionaryRowMetrics {
     static let arrowWidth: CGFloat = 14
@@ -19,6 +21,7 @@ struct DictionaryView: View {
     @State private var newThreshold = 0.85
     @State private var isShowingAccessibilityPrompt = false
     @State private var suggestionPage = 0
+    @State private var dictionaryAlertMessage: String?
 
     var body: some View {
         ScrollView {
@@ -46,6 +49,17 @@ struct DictionaryView: View {
         } message: {
             Text("Dictionary suggestions briefly read focused app text via Accessibility after dictation. Grant access, then relaunch Muesli to turn suggestions on.")
         }
+        .alert(
+            "Dictionary",
+            isPresented: Binding(
+                get: { dictionaryAlertMessage != nil },
+                set: { if !$0 { dictionaryAlertMessage = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { dictionaryAlertMessage = nil }
+        } message: {
+            Text(dictionaryAlertMessage ?? "")
+        }
     }
 
     private var header: some View {
@@ -67,6 +81,40 @@ struct DictionaryView: View {
                 .foregroundStyle(MuesliTheme.textSecondary)
                 .help("Briefly reads focused app text after dictation to detect corrections.")
                 .featureTourTarget(.dictionarySuggestions)
+                Button {
+                    importDictionary()
+                } label: {
+                    Label("Import", systemImage: "square.and.arrow.down")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                        .padding(.horizontal, MuesliTheme.spacing12)
+                        .padding(.vertical, MuesliTheme.spacing8)
+                        .background(MuesliTheme.surfacePrimary)
+                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+                .help("Import dictionary entries from a JSON file")
+                Button {
+                    exportDictionary()
+                } label: {
+                    Label("Export", systemImage: "square.and.arrow.up")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                        .padding(.horizontal, MuesliTheme.spacing12)
+                        .padding(.vertical, MuesliTheme.spacing8)
+                        .background(MuesliTheme.surfacePrimary)
+                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+                .help("Export the current dictionary as JSON")
                 Button {
                     isAdding = true
                     newWord = ""
@@ -100,6 +148,78 @@ struct DictionaryView: View {
     private func handleDictionaryCorrectionPromptsToggle(_ enabled: Bool) {
         if controller.setDictionaryCorrectionPromptsFromToggle(enabled) == .needsAccessibilityPermission {
             isShowingAccessibilityPrompt = true
+        }
+    }
+
+    private func importDictionary() {
+        let panel = NSOpenPanel()
+        panel.title = "Import Muesli Dictionary"
+        panel.message = "Choose a JSON dictionary file"
+        panel.prompt = "Import"
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canCreateDirectories = false
+
+        presentFilePanel(panel) { url in
+            do {
+                let data = try Data(contentsOf: url)
+                let imported = try CustomWordDictionaryCodec.decode(data)
+                let result = CustomWordDictionaryCodec.merge(
+                    imported,
+                    into: appState.config.customWords
+                )
+                controller.updateConfig { $0.customWords = result.words }
+
+                let totalChanged = result.addedCount + result.updatedCount
+                if totalChanged == 0 {
+                    dictionaryAlertMessage = imported.isEmpty
+                        ? "The selected dictionary did not contain any entries."
+                        : "All dictionary entries were already present."
+                } else {
+                    var details = ["Imported \(result.addedCount) new", "updated \(result.updatedCount)"]
+                    if result.skippedCount > 0 {
+                        details.append("skipped \(result.skippedCount)")
+                    }
+                    dictionaryAlertMessage = details.joined(separator: ", ") + " dictionary entries."
+                }
+            } catch {
+                dictionaryAlertMessage = "Could not import the dictionary. \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func exportDictionary() {
+        let panel = NSSavePanel()
+        panel.title = "Export Muesli Dictionary"
+        panel.prompt = "Export"
+        panel.nameFieldStringValue = "muesli-dictionary.json"
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+
+        presentFilePanel(panel) { url in
+            do {
+                let data = try CustomWordDictionaryCodec.encode(appState.config.customWords)
+                try data.write(to: url, options: .atomic)
+                dictionaryAlertMessage = "Exported \(appState.config.customWords.count) dictionary entries."
+            } catch {
+                dictionaryAlertMessage = "Could not export the dictionary. \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func presentFilePanel(_ panel: NSSavePanel, onPick: @escaping (URL) -> Void) {
+        NSApp.activate()
+        if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+            panel.beginSheetModal(for: window) { response in
+                guard response == .OK, let url = panel.url else { return }
+                onPick(url)
+            }
+        } else {
+            panel.begin { response in
+                guard response == .OK, let url = panel.url else { return }
+                onPick(url)
+            }
         }
     }
 

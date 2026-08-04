@@ -46,6 +46,17 @@ struct FluidAudioTranscriberTests {
     }
 }
 
+@Suite("Nemotron35ModelStore")
+struct Nemotron35ModelStoreTests {
+
+    @Test("app and CLI use the same Nemotron cache")
+    func sharedCachePath() {
+        #expect(Nemotron35ModelStore.cacheRelativePath == ".cache/muesli/models/nemotron35-multilingual-2240ms")
+        #expect(Nemotron35ModelStore.cacheDirectory().path.hasSuffix(Nemotron35ModelStore.cacheRelativePath))
+        #expect(Nemotron35ModelStore.requiredFileRelativePath == "encoder.mlmodelc/coremldata.bin")
+    }
+}
+
 @Suite("SenseVoiceTranscriber")
 struct SenseVoiceTranscriberTests {
 
