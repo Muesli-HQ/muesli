@@ -1341,9 +1341,7 @@ struct ModelsView: View {
         case "whisper":
             WhisperKitTranscriber.deleteModel(option.model)
         case "nemotron35":
-            let path = fm.homeDirectoryForCurrentUser
-                .appendingPathComponent(".cache/muesli/models/nemotron35-multilingual-2240ms")
-            try removeItemIfPresent(at: path, fileManager: fm)
+            try removeItemIfPresent(at: Nemotron35ModelStore.cacheDirectory(fileManager: fm), fileManager: fm)
         case "cohere":
             try removeItemIfPresent(at: CohereTranscribeModelStore.cacheDirectory(), fileManager: fm)
         case "indicasr":
@@ -1421,9 +1419,7 @@ struct ModelsView: View {
         case "whisper":
             return WhisperKitTranscriber.isModelDownloaded(option.model)
         case "nemotron35":
-            let path = fm.homeDirectoryForCurrentUser
-                .appendingPathComponent(".cache/muesli/models/nemotron35-multilingual-2240ms/encoder.mlmodelc/coremldata.bin")
-            return fm.fileExists(atPath: path.path)
+            return Nemotron35ModelStore.isModelDownloaded(fileManager: fm)
         case "fluidaudio":
             // Check FluidAudio's cache
             let supportDir = fm.homeDirectoryForCurrentUser

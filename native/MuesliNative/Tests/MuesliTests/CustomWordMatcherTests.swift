@@ -1,7 +1,6 @@
 import Testing
 import Foundation
-import MuesliCore
-@testable import MuesliNativeApp
+@testable import MuesliCore
 
 @Suite("Jaro-Winkler Similarity")
 struct JaroWinklerTests {
