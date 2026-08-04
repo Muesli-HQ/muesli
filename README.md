@@ -165,7 +165,7 @@ The CLI is designed for coding agents such as Codex and Claude Code. It exposes 
 
 - `muesli-cli spec`
 - `muesli-cli info`
-- `muesli-cli transcribe <file> [--format text|json|markdown] [--model parakeet-v3|parakeet-v2] [--summarize] [--save-meeting] [--title TITLE] [--output PATH]`
+- `muesli-cli transcribe <file> [--format text|json|markdown] [--model parakeet-v3|parakeet-v2|sensevoice|qwen3-asr|nemotron35|whisper-tiny|whisper-small|whisper-medium|whisper-large-turbo] [--dictionary PATH] [--summarize] [--save-meeting] [--title TITLE] [--output PATH]`
 - `muesli-cli meetings list [--limit N] [--folder-id ID]`
 - `muesli-cli meetings get <id>`
 - `muesli-cli meetings update-notes <id> (--stdin | --file <path>)`
@@ -224,6 +224,28 @@ Save the import into Muesli as `source = audio_import`:
 ```bash
 muesli-cli transcribe interview.wav --save-meeting --title "Customer Interview"
 ```
+
+### Dictionary import and export
+
+The app's **Dictionary** tab supports importing and exporting the personal dictionary as JSON. Import merges entries by match word, updates an existing match when the imported definition differs, and appends new words. Export produces the same portable format accepted by `muesli-cli --dictionary`:
+
+```json
+[
+  {
+    "word": "museli",
+    "replacement": "muesli",
+    "matching_threshold": 0.85
+  }
+]
+```
+
+The CLI also accepts an app `config.json` directly when it contains a `custom_words` array:
+
+```bash
+muesli-cli transcribe interview.wav --dictionary ~/Library/Application\ Support/Muesli/config.json
+```
+
+`parakeet-eou-320ms` is a streaming model and is not available for batch file transcription with this command.
 
 Direct app-bundle fallback path:
 

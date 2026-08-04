@@ -112,7 +112,7 @@ struct TranscribeCommand: AsyncParsableCommand {
     var title: String?
     @Option(name: .long, help: "Write command output to a file instead of stdout.")
     var output: String?
-    @Option(name: .long, help: "Path to a JSON array of custom dictionary entries ({word, replacement, matching_threshold}) to apply to the transcript, same as Muesli's dictionary feature.")
+    @Option(name: .long, help: "Path to a portable dictionary JSON array ({word, replacement, matching_threshold}), or an app config JSON object with custom_words, to apply to the transcript.")
     var dictionary: String?
 
     mutating func validate() throws {
@@ -418,20 +418,14 @@ struct MuesliAudioTranscriptionPipeline {
                 fix: "Check that the path is a readable file and pass a JSON array of {word, replacement, matching_threshold} entries."
             )
         }
-        let decoder = JSONDecoder()
-        if let words = try? decoder.decode([CustomWord].self, from: data) {
-            return words
+        do {
+            return try CustomWordDictionaryCodec.decode(data)
+        } catch {
+            throw CLIError.invalidInput(
+                "Could not parse \(url.path) as a dictionary.",
+                fix: "Provide a JSON array of {\"word\": ..., \"replacement\": ..., \"matching_threshold\": ...} objects, or an object with a \"custom_words\" key in that shape."
+            )
         }
-        struct ConfigShape: Decodable { let customWords: [CustomWord]
-            enum CodingKeys: String, CodingKey { case customWords = "custom_words" }
-        }
-        if let config = try? decoder.decode(ConfigShape.self, from: data) {
-            return config.customWords
-        }
-        throw CLIError.invalidInput(
-            "Could not parse \(url.path) as a dictionary.",
-            fix: "Provide a JSON array of {\"word\": ..., \"replacement\": ..., \"matching_threshold\": ...} objects, or an object with a \"custom_words\" key in that shape."
-        )
     }
 
     private func resolvedTitle(override: String?, sourceURL: URL) -> String {
