@@ -5,17 +5,32 @@ struct DashboardRootView: View {
     let appState: AppState
     let controller: MuesliController
     @State private var featureTourTargetFrames: [FeatureTourTarget: CGRect] = [:]
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             SidebarView(appState: appState, controller: controller)
                 .navigationSplitViewColumnWidth(min: 240, ideal: 260, max: 300)
+                .toolbar(removing: .sidebarToggle)
         } detail: {
             detailContent
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(MuesliTheme.backgroundBase)
         }
         .navigationSplitViewStyle(.balanced)
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    withAnimation {
+                        columnVisibility = columnVisibility == .all ? .detailOnly : .all
+                    }
+                } label: {
+                    Image(systemName: "sidebar.leading")
+                }
+                .keyboardShortcut("s", modifiers: .command)
+                .help("Toggle Sidebar (⌘S)")
+            }
+        }
         .frame(minWidth: 900, minHeight: 600)
         .preferredColorScheme(appState.config.darkMode ? .dark : .light)
         .onPreferenceChange(FeatureTourTargetPreferenceKey.self) { frames in
