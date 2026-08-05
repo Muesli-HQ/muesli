@@ -35,6 +35,23 @@ private final class DownloadResponseSequence: @unchecked Sendable {
     }
 }
 
+private final class DownloadCompletionFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var completed = false
+
+    func markCompleted() {
+        lock.lock()
+        completed = true
+        lock.unlock()
+    }
+
+    var isCompleted: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return completed
+    }
+}
+
 private final class ModelDownloadTestURLProtocol: URLProtocol {
     struct Response {
         let statusCode: Int
@@ -360,7 +377,7 @@ struct ModelDownloadCoordinatorTests {
         let tracker = DownloadTestTracker()
         ModelDownloadTestURLProtocol.install { _ in
             ModelDownloadTestURLProtocol.Response(
-                data: Data(repeating: 0x42, count: 512 * 1024),
+                data: Data(repeating: 0x42, count: 2 * 1024 * 1024),
                 chunkSize: 4 * 1024,
                 delay: 0.002,
                 tracker: tracker
@@ -374,15 +391,26 @@ struct ModelDownloadCoordinatorTests {
         let manifest = ModelDownloadManifest(
             id: "duplicate-cancellation",
             version: "1",
-            files: [ModelDownloadFile(relativePath: "model.bin", remoteURL: try #require(URL(string: "https://example.com/model")), expectedByteCount: 512 * 1024)],
+            files: [ModelDownloadFile(relativePath: "model.bin", remoteURL: try #require(URL(string: "https://example.com/model")), expectedByteCount: 2 * 1024 * 1024)],
             maximumConcurrency: 1
         )
 
-        let first = Task { try await coordinator.download(manifest, to: directory) }
+        let firstReturned = DownloadCompletionFlag()
+        let first = Task {
+            do {
+                try await coordinator.download(manifest, to: directory)
+            } catch {
+                firstReturned.markCompleted()
+                throw error
+            }
+            firstReturned.markCompleted()
+        }
         try await Task.sleep(for: .milliseconds(20))
         let second = Task { try await coordinator.download(manifest, to: directory) }
         first.cancel()
 
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(firstReturned.isCompleted)
         try await second.value
         await #expect(throws: CancellationError.self) {
             try await first.value

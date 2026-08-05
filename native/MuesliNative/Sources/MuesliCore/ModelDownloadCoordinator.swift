@@ -244,7 +244,8 @@ public actor ModelDownloadCoordinator {
     public static let shared = ModelDownloadCoordinator()
 
     private var inFlight: [String: Task<Void, Error>] = [:]
-    private var progressHandlers: [String: [ModelDownloadProgressHandler]] = [:]
+    private var progressHandlers: [String: [UUID: ModelDownloadProgressHandler]] = [:]
+    private var completionWaiters: [String: [UUID: CheckedContinuation<Void, Error>]] = [:]
     private var fileProgress: [String: Int64] = [:]
     private var fileTotals: [String: Int64] = [:]
     // Keep one featured file stable while the bounded parallel batch advances.
@@ -293,29 +294,35 @@ public actor ModelDownloadCoordinator {
             throw ModelDownloadError.emptyManifest(manifest.id)
         }
         try validateManifestPaths(manifest, in: directory)
-        if let existing = inFlight[manifest.id] {
+        let callerID = UUID()
+        if inFlight[manifest.id] != nil {
             if let progress {
-                progressHandlers[manifest.id, default: []].append(progress)
+                progressHandlers[manifest.id, default: [:]][callerID] = progress
             }
-            try await existing.value
+            defer { removeProgressHandler(callerID, for: manifest.id) }
+            try await waitForCompletion(of: manifest.id, callerID: callerID)
             try Task.checkCancellation()
             return
         }
 
         try checkDiskSpace(for: manifest, at: directory)
-        progressHandlers[manifest.id] = progress.map { [$0] } ?? []
+        progressHandlers[manifest.id] = progress.map { [callerID: $0] } ?? [:]
         let task = Task { [manifest, directory] in
-            try await self.performDownload(manifest, to: directory)
+            do {
+                try await self.performDownload(manifest, to: directory)
+                self.finish(manifestID: manifest.id, result: .success(()))
+            } catch {
+                self.finish(manifestID: manifest.id, result: .failure(error))
+                throw error
+            }
         }
         inFlight[manifest.id] = task
-        defer {
-            inFlight[manifest.id] = nil
-            progressHandlers[manifest.id] = nil
-        }
-        // A caller's cancellation only detaches that caller. The shared job
-        // may still be needed by another caller; explicit model cancellation
-        // through cancel(modelID:) is what stops the shared transfer.
-        try await task.value
+        defer { removeProgressHandler(callerID, for: manifest.id) }
+        // A caller's cancellation detaches that caller from the shared
+        // completion signal. The shared job may still be needed by another
+        // caller; explicit model cancellation through cancel(modelID:) is
+        // what stops the shared transfer.
+        try await waitForCompletion(of: manifest.id, callerID: callerID)
         try Task.checkCancellation()
     }
 
@@ -637,7 +644,7 @@ public actor ModelDownloadCoordinator {
         message: String? = nil,
         force: Bool = false
     ) {
-        guard !progressHandlers[manifest.id, default: []].isEmpty else { return }
+        guard !progressHandlers[manifest.id, default: [:]].isEmpty else { return }
         let now = Date()
         if !force, phase == .downloading, message == nil,
            let previous = lastProgressEmissionAt[manifest.id], now.timeIntervalSince(previous) < 0.1 {
@@ -657,8 +664,47 @@ public actor ModelDownloadCoordinator {
         let remaining = remainingBytes.flatMap { speed > 0 ? Double($0) / speed : nil }
         let completedFileCount = completedFiles[manifest.id]?.count ?? 0
         let snapshot = ModelDownloadProgress(modelID: manifest.id, phase: phase, currentFile: displayFile, completedBytes: completed, totalBytes: total, currentFileCompletedBytes: current, currentFileTotalBytes: currentTotal, bytesPerSecond: speed, estimatedSecondsRemaining: remaining, retryCount: retry, completedFileCount: completedFileCount, totalFileCount: manifest.files.count, message: message)
-        for handler in progressHandlers[manifest.id, default: []] {
+        for handler in progressHandlers[manifest.id, default: [:]].values {
             handler(snapshot)
+        }
+    }
+
+    private func removeProgressHandler(_ callerID: UUID, for manifestID: String) {
+        progressHandlers[manifestID]?[callerID] = nil
+        if progressHandlers[manifestID]?.isEmpty == true {
+            progressHandlers[manifestID] = nil
+        }
+    }
+
+    private func waitForCompletion(of manifestID: String, callerID: UUID) async throws {
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                } else {
+                    completionWaiters[manifestID, default: [:]][callerID] = continuation
+                }
+            }
+        }, onCancel: {
+            Task { await self.cancelWaiter(callerID, for: manifestID) }
+        })
+    }
+
+    private func cancelWaiter(_ callerID: UUID, for manifestID: String) {
+        guard let continuation = completionWaiters[manifestID]?[callerID] else { return }
+        completionWaiters[manifestID]?[callerID] = nil
+        if completionWaiters[manifestID]?.isEmpty == true {
+            completionWaiters[manifestID] = nil
+        }
+        continuation.resume(throwing: CancellationError())
+    }
+
+    private func finish(manifestID: String, result: Result<Void, Error>) {
+        inFlight[manifestID] = nil
+        progressHandlers[manifestID] = nil
+        let waiters = completionWaiters.removeValue(forKey: manifestID) ?? [:]
+        for continuation in waiters.values {
+            continuation.resume(with: result)
         }
     }
 
