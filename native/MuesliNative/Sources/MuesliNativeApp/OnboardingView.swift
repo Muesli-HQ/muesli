@@ -1680,6 +1680,7 @@ struct OnboardingView: View {
                 isModelStillDownloading = true
                 return
             }
+            cancelModelDownload(for: modelDownloadBackend)
             modelDownloadGeneration = UUID()
             modelDownloadTask?.cancel()
             modelDownloadTask = nil
@@ -1883,6 +1884,7 @@ struct OnboardingView: View {
     }
 
     private func resetModelDownloadForBackendChange() {
+        cancelModelDownload(for: modelDownloadBackend)
         modelDownloadGeneration = UUID()
         modelDownloadTask?.cancel()
         modelDownloadTask = nil
@@ -1897,6 +1899,13 @@ struct OnboardingView: View {
         modelDownloadStatus = nil
         modelDownloadError = nil
         isModelStillDownloading = false
+    }
+
+    private func cancelModelDownload(for backend: BackendOption?) {
+        guard let backend else { return }
+        Task {
+            await ModelDownloadCoordinator.shared.cancel(modelID: backend.model)
+        }
     }
 
     private func initialDownloadStatus(for backend: BackendOption) -> String {

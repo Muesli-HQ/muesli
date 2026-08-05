@@ -220,6 +220,16 @@ private struct IndicASRModelLayout {
 }
 
 enum IndicASRModelStore {
+    static func createRequiredEmptyWeightsDirectories(in directory: URL, fileManager: FileManager = .default) throws {
+        for packageName in IndicASRConfig.packagesWithEmptyWeightsDirectory {
+            let weightsDirectory = directory.appendingPathComponent(
+                IndicASRConfig.emptyWeightsDirectoryRelativePath(packageName),
+                isDirectory: true
+            )
+            try fileManager.createDirectory(at: weightsDirectory, withIntermediateDirectories: true)
+        }
+    }
+
     static func isAvailableLocally() -> Bool {
         if let overrideDir = localOverrideDirectory(), let layout = layout(at: overrideDir), modelsExist(in: layout) {
             return true
@@ -351,6 +361,7 @@ enum IndicASRModelStore {
                 expectedByteCount: IndicASRConfig.expectedByteCount(for: relativePath)
             )
         }
+        try IndicASRModelStore.createRequiredEmptyWeightsDirectories(in: directory, fileManager: fm)
         guard !files.isEmpty else {
             progress?(1.0, "Indic ASR download complete")
             return
@@ -368,10 +379,6 @@ enum IndicASRModelStore {
             let speed = rate.isEmpty ? "" : " · " + rate
             progress?(fraction, "Downloading " + current + speed)
             progressSnapshot?(snapshot)
-        }
-        for packageName in IndicASRConfig.packagesWithEmptyWeightsDirectory {
-            let weightsDirectory = directory.appendingPathComponent(IndicASRConfig.emptyWeightsDirectoryRelativePath(packageName), isDirectory: true)
-            try fm.createDirectory(at: weightsDirectory, withIntermediateDirectories: true)
         }
         progress?(1.0, "Indic ASR download complete")
     }
