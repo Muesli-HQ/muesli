@@ -39,13 +39,16 @@ struct OnboardingView: View {
 
     // Dictation test
     @State private var isDictationTesting = false
+    @State private var isDictationTestMonitorActive = false
     @State private var dictationTestResult: String?
     @State private var dictationTestError: String?
     @State private var isModelStillDownloading = false
     @State private var modelReadyBackend: BackendOption?
     @State private var modelDownloadBackend: BackendOption?
     @State private var modelDownloadTask: Task<Void, Never>?
+    @State private var modelDownloadGeneration = UUID()
     @State private var modelDownloadProgress: Double?
+    @State private var modelDownloadSnapshot: ModelDownloadProgress?
     @State private var isModelPreparingAfterDownload = false
     @State private var modelDownloadStatus: String?
     @State private var modelDownloadError: String?
@@ -59,7 +62,7 @@ struct OnboardingView: View {
     @State private var hasFinishedOnboarding = false
 
     static let permissionsStep = OnboardingFlow.Step.permissions.rawValue
-    static let dictationTestStep = OnboardingFlow.Step.dictationTest.rawValue
+    static let dictationTestStep = OnboardingFlow.dictationTestStep
 
     private var orderedSteps: [Int] {
         OnboardingFlow.orderedSteps(for: selectedUseCase)
@@ -424,8 +427,17 @@ struct OnboardingView: View {
     }
 
     private var modelDownloadIndicatorTitle: String {
+        if let snapshot = modelDownloadSnapshot {
+            switch snapshot.phase {
+            case .downloading: return "Downloading \(selectedBackend.label)"
+            case .preparing: return "Preparing \(selectedBackend.label)"
+            case .ready: return "\(selectedBackend.label) ready"
+            case .paused: return "Download paused"
+            case .failed: return "Download failed"
+            }
+        }
         if modelDownloadError != nil {
-            return "Download paused"
+            return "Download failed"
         }
         if isShowingModelReadyIndicator {
             return "\(selectedBackend.label) ready"
@@ -440,6 +452,9 @@ struct OnboardingView: View {
         if isShowingModelReadyIndicator {
             return "Ready to test"
         }
+        if let snapshot = modelDownloadSnapshot {
+            return modelDownloadSnapshotDetail(snapshot)
+        }
         if let modelDownloadStatus {
             return modelDownloadStatus
         }
@@ -447,6 +462,47 @@ struct OnboardingView: View {
             return "\(Int((progress * 100).rounded()))% complete"
         }
         return "Downloading..."
+    }
+
+    private func modelDownloadSnapshotDetail(_ snapshot: ModelDownloadProgress) -> String {
+        var details: [String] = []
+        if let currentFile = snapshot.currentFile?.split(separator: "/").last.map(String.init), !currentFile.isEmpty {
+            details.append(currentFile)
+        }
+        if snapshot.totalFileCount > 0 {
+            let completed = min(max(snapshot.completedFileCount, 0), snapshot.totalFileCount)
+            let remaining = snapshot.totalFileCount - completed
+            details.append("\(completed) of \(snapshot.totalFileCount) files")
+            if remaining > 0 {
+                details.append("\(remaining) left")
+            }
+        }
+        if let total = snapshot.totalBytes, total > 0 {
+            details.append("\(ModelDownloadDisplayFormatting.bytes(snapshot.completedBytes)) / \(ModelDownloadDisplayFormatting.bytes(total))")
+            if snapshot.completedBytes < total {
+                details.append("\(ModelDownloadDisplayFormatting.bytes(total - snapshot.completedBytes)) left")
+            }
+        } else if let currentTotal = snapshot.currentFileTotalBytes, currentTotal > 0 {
+            details.append("\(ModelDownloadDisplayFormatting.bytes(snapshot.currentFileCompletedBytes)) / \(ModelDownloadDisplayFormatting.bytes(currentTotal))")
+            if snapshot.currentFileCompletedBytes < currentTotal {
+                details.append("\(ModelDownloadDisplayFormatting.bytes(currentTotal - snapshot.currentFileCompletedBytes)) left")
+            }
+        }
+        if snapshot.phase == .downloading {
+            if snapshot.bytesPerSecond > 0 {
+                details.append(ModelDownloadDisplayFormatting.rate(snapshot.bytesPerSecond))
+            }
+            if let eta = snapshot.estimatedSecondsRemaining,
+               let formattedETA = ModelDownloadDisplayFormatting.eta(eta) {
+                details.append("\(formattedETA) left")
+            }
+            if snapshot.retryCount > 0 {
+                details.append("retry \(snapshot.retryCount)/3")
+            }
+        } else if let message = snapshot.message, !message.isEmpty {
+            details.append(message)
+        }
+        return details.isEmpty ? (snapshot.message ?? "Downloading...") : details.joined(separator: " · ")
     }
 
     private var dictationTestSubtitle: AttributedString {
@@ -1283,6 +1339,7 @@ struct OnboardingView: View {
 
                         Button("Retry Download") {
                             self.modelDownloadError = nil
+                            self.modelDownloadSnapshot = nil
                             ensureModelDownloadStarted()
                         }
                         .buttonStyle(.plain)
@@ -1382,6 +1439,7 @@ struct OnboardingView: View {
             if !hasFinishedOnboarding {
                 controller.stopHotkeyMonitor()
             }
+            isDictationTestMonitorActive = false
         }
     }
 
@@ -1563,20 +1621,32 @@ struct OnboardingView: View {
     }
 
     private func startDictationTestMonitorIfReady() {
-        guard currentStep == Self.dictationTestStep else { return }
-        guard isSelectedModelReadyForDictationTest else {
-            if isDictationTesting {
+        let action = OnboardingFlow.dictationTestMonitorAction(
+            currentStep: currentStep,
+            dictationTestStep: Self.dictationTestStep,
+            modelReady: isSelectedModelReadyForDictationTest,
+            monitorActive: isDictationTestMonitorActive,
+            dictationTesting: isDictationTesting
+        )
+
+        switch action {
+        case .none:
+            return
+        case .stop(let cancelTestDictation):
+            if cancelTestDictation {
                 controller.cancelTestDictation()
                 isDictationTesting = false
             }
             controller.stopHotkeyMonitor()
+            isDictationTestMonitorActive = false
             return
+        case .start:
+            dictationTestError = nil
+            controller.dictationTestBackend = selectedBackend
+            controller.dictationTestCohereLanguage = selectedCohereLanguage
+            controller.startHotkeyMonitor(keyCode: selectedHotkey.keyCode)
+            isDictationTestMonitorActive = true
         }
-
-        dictationTestError = nil
-        controller.dictationTestBackend = selectedBackend
-        controller.dictationTestCohereLanguage = selectedCohereLanguage
-        controller.startHotkeyMonitor(keyCode: selectedHotkey.keyCode)
     }
 
     private func advanceAfterSuccessfulDictationTest(text: String) {
@@ -1610,6 +1680,8 @@ struct OnboardingView: View {
                 isModelStillDownloading = true
                 return
             }
+            cancelModelDownload(for: modelDownloadBackend)
+            modelDownloadGeneration = UUID()
             modelDownloadTask?.cancel()
             modelDownloadTask = nil
             modelDownloadBackend = nil
@@ -1617,7 +1689,9 @@ struct OnboardingView: View {
 
         let backend = selectedBackend
         let useCase = selectedUseCase
+        let generation = UUID()
         let alreadyDownloaded = backend.isDownloaded
+        modelDownloadGeneration = generation
         modelDownloadBackend = backend
         isModelStillDownloading = true
         modelDownloadProgress = alreadyDownloaded ? nil : (modelDownloadProgress ?? 0.02)
@@ -1626,6 +1700,7 @@ struct OnboardingView: View {
             ? "Warming up \(backend.label)..."
             : (modelDownloadStatus ?? initialDownloadStatus(for: backend))
         modelDownloadError = nil
+        modelDownloadSnapshot = nil
         publishModelPreparationStatus(
             title: "Preparing \(backend.label)",
             detail: modelDownloadStatus,
@@ -1637,7 +1712,7 @@ struct OnboardingView: View {
         modelDownloadTask = Task {
             defer {
                 Task { @MainActor in
-                    if modelDownloadBackend == backend {
+                    if modelDownloadGeneration == generation, modelDownloadBackend == backend {
                         modelDownloadTask = nil
                         modelDownloadBackend = nil
                     }
@@ -1646,14 +1721,26 @@ struct OnboardingView: View {
             do {
                 try await controller.downloadModelForOnboarding(backend, onboardingUseCase: useCase) { progress, status in
                     Task { @MainActor in
-                        guard selectedBackend == backend else { return }
-                        applyModelPreparationProgress(progress, status: status, backend: backend)
+                        guard modelDownloadGeneration == generation,
+                              modelDownloadBackend == backend,
+                              selectedBackend == backend else { return }
+                        applyModelPreparationProgress(progress, status: status, backend: backend, generation: generation)
+                    }
+                } progressSnapshot: { snapshot in
+                    Task { @MainActor in
+                        guard modelDownloadGeneration == generation,
+                              modelDownloadBackend == backend,
+                              selectedBackend == backend else { return }
+                        applyModelDownloadSnapshot(snapshot, backend: backend, generation: generation)
                     }
                 }
                 await MainActor.run {
-                    guard selectedBackend == backend else { return }
+                    guard modelDownloadGeneration == generation,
+                          modelDownloadBackend == backend,
+                          selectedBackend == backend else { return }
                     modelReadyBackend = backend
                     modelDownloadProgress = 1.0
+                    modelDownloadSnapshot = nil
                     isModelPreparingAfterDownload = false
                     modelDownloadStatus = "\(backend.label) ready"
                     modelDownloadError = nil
@@ -1673,10 +1760,18 @@ struct OnboardingView: View {
                 // Backend changes cancel the old task; the new selection owns the download UI.
             } catch {
                 await MainActor.run {
-                    guard selectedBackend == backend else { return }
+                    guard modelDownloadGeneration == generation,
+                          modelDownloadBackend == backend,
+                          selectedBackend == backend else { return }
                     modelDownloadError = modelPreparationFailureMessage(for: backend)
                     modelDownloadStatus = backend.isDownloaded ? "Model setup paused" : "Download paused"
                     modelDownloadProgress = nil
+                    if let snapshot = modelDownloadSnapshot {
+                        modelDownloadSnapshot = snapshot.replacing(
+                            phase: .failed,
+                            message: modelDownloadError
+                        )
+                    }
                     isModelPreparingAfterDownload = false
                     isModelStillDownloading = false
                     publishModelPreparationStatus(
@@ -1692,7 +1787,61 @@ struct OnboardingView: View {
         }
     }
 
-    private func applyModelPreparationProgress(_ progress: Double, status: String?, backend: BackendOption) {
+    private func applyModelDownloadSnapshot(
+        _ snapshot: ModelDownloadProgress,
+        backend: BackendOption,
+        generation: UUID
+    ) {
+        guard modelDownloadGeneration == generation,
+              modelDownloadBackend == backend,
+              selectedBackend == backend else { return }
+        modelDownloadSnapshot = snapshot
+        modelDownloadError = nil
+
+        switch snapshot.phase {
+        case .downloading:
+            isModelStillDownloading = true
+            isModelPreparingAfterDownload = false
+            if let fraction = snapshot.fractionCompleted {
+                modelDownloadProgress = max(modelDownloadProgress ?? 0.02, fraction)
+            }
+            modelDownloadStatus = modelDownloadSnapshotDetail(snapshot)
+        case .preparing:
+            isModelStillDownloading = true
+            isModelPreparingAfterDownload = true
+            modelDownloadProgress = nil
+            modelDownloadStatus = snapshot.message ?? "Preparing \(backend.label)..."
+        case .ready:
+            modelDownloadStatus = snapshot.message ?? "\(backend.label) ready"
+        case .paused:
+            isModelStillDownloading = false
+            isModelPreparingAfterDownload = false
+            modelDownloadStatus = snapshot.message ?? "Download paused"
+        case .failed:
+            isModelStillDownloading = false
+            isModelPreparingAfterDownload = false
+            modelDownloadError = snapshot.message
+            modelDownloadStatus = snapshot.message ?? "Download failed"
+        }
+
+        publishModelPreparationStatus(
+            title: modelDownloadIndicatorTitle,
+            detail: modelDownloadStatus,
+            progress: modelDownloadProgress,
+            isPreparing: isModelPreparingAfterDownload,
+            isComplete: snapshot.phase == .ready
+        )
+    }
+
+    private func applyModelPreparationProgress(
+        _ progress: Double,
+        status: String?,
+        backend: BackendOption,
+        generation: UUID
+    ) {
+        guard modelDownloadGeneration == generation,
+              modelDownloadBackend == backend,
+              selectedBackend == backend else { return }
         let detail = status ?? "Preparing \(backend.label)..."
         let lowercasedDetail = detail.lowercased()
         let isPreparing = lowercasedDetail.contains("compiling")
@@ -1735,6 +1884,8 @@ struct OnboardingView: View {
     }
 
     private func resetModelDownloadForBackendChange() {
+        cancelModelDownload(for: modelDownloadBackend)
+        modelDownloadGeneration = UUID()
         modelDownloadTask?.cancel()
         modelDownloadTask = nil
         modelReadyIndicatorTask?.cancel()
@@ -1743,10 +1894,18 @@ struct OnboardingView: View {
         modelReadyIndicatorBackend = nil
         modelDownloadBackend = nil
         modelDownloadProgress = nil
+        modelDownloadSnapshot = nil
         isModelPreparingAfterDownload = false
         modelDownloadStatus = nil
         modelDownloadError = nil
         isModelStillDownloading = false
+    }
+
+    private func cancelModelDownload(for backend: BackendOption?) {
+        guard let backend else { return }
+        Task {
+            await ModelDownloadCoordinator.shared.cancel(modelID: backend.model)
+        }
     }
 
     private func initialDownloadStatus(for backend: BackendOption) -> String {
@@ -1915,6 +2074,7 @@ struct OnboardingView: View {
         OnboardingProgress.clear()
         let shouldContinueModelPreparation = modelDownloadTask != nil && modelReadyBackend != selectedBackend
         if shouldContinueModelPreparation {
+            modelDownloadGeneration = UUID()
             modelDownloadTask?.cancel()
             modelDownloadTask = nil
             modelDownloadBackend = nil

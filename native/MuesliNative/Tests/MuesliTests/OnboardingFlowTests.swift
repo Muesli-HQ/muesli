@@ -66,4 +66,58 @@ struct OnboardingFlowTests {
         #expect(OnboardingFlow.completionTab(for: .dictation) == .dictations)
         #expect(OnboardingFlow.completionTab(for: .dictationAndMeetings) == .dictations)
     }
+
+    @Test("dictation monitor stops and cancels active testing when readiness is lost")
+    func dictationMonitorStopsWhenReadinessIsLost() {
+        #expect(OnboardingFlow.dictationTestMonitorAction(
+            currentStep: OnboardingFlow.dictationTestStep,
+            dictationTestStep: OnboardingFlow.dictationTestStep,
+            modelReady: false,
+            monitorActive: true,
+            dictationTesting: true
+        ) == .stop(cancelTestDictation: true))
+    }
+
+    @Test("dictation monitor does not start twice for repeated ready updates")
+    func dictationMonitorDoesNotDuplicateStarts() {
+        #expect(OnboardingFlow.dictationTestMonitorAction(
+            currentStep: OnboardingFlow.dictationTestStep,
+            dictationTestStep: OnboardingFlow.dictationTestStep,
+            modelReady: true,
+            monitorActive: false,
+            dictationTesting: false
+        ) == .start)
+        #expect(OnboardingFlow.dictationTestMonitorAction(
+            currentStep: OnboardingFlow.dictationTestStep,
+            dictationTestStep: OnboardingFlow.dictationTestStep,
+            modelReady: true,
+            monitorActive: true,
+            dictationTesting: false
+        ) == .none)
+    }
+
+    @Test("dictation monitor does not start on a later meeting step")
+    func dictationMonitorDoesNotStartAfterSkippedStep() {
+        #expect(OnboardingFlow.dictationTestMonitorAction(
+            currentStep: OnboardingFlow.Step.meetingSummary.rawValue,
+            dictationTestStep: OnboardingFlow.dictationTestStep,
+            modelReady: true,
+            monitorActive: false,
+            dictationTesting: false
+        ) == .none)
+        #expect(OnboardingFlow.dictationTestMonitorAction(
+            currentStep: OnboardingFlow.Step.meetingSummary.rawValue,
+            dictationTestStep: OnboardingFlow.dictationTestStep,
+            modelReady: true,
+            monitorActive: true,
+            dictationTesting: true
+        ) == .stop(cancelTestDictation: true))
+    }
+
+    @Test("extreme ETA values are omitted instead of overflowing")
+    func extremeETAReturnsUnknown() {
+        #expect(ModelDownloadDisplayFormatting.eta(Double.greatestFiniteMagnitude) == nil)
+        #expect(ModelDownloadDisplayFormatting.eta(.infinity) == nil)
+        #expect(ModelDownloadDisplayFormatting.eta(3_600) == "1h 00m")
+    }
 }
