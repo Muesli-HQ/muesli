@@ -1323,6 +1323,8 @@ struct ModelsView: View {
     private func startDownload(_ option: BackendOption) {
         withAnimation { _ = downloadingModels.insert(option.model) }
         downloadProgress[option.model] = 0.05  // Show initial progress immediately
+        downloadMessages.removeValue(forKey: option.model)
+        downloadSnapshots.removeValue(forKey: option.model)
         let generation = UUID()
         downloadGenerations[option.model] = generation
 
@@ -1446,21 +1448,38 @@ struct ModelsView: View {
     }
 
     private func cancelDownload(_ option: BackendOption) {
-        downloadTasks[option.model]?.cancel()
-        Task {
-            await ModelDownloadCoordinator.shared.cancel(modelID: option.model)
-        }
+        let modelID = option.model
+        let task = downloadTasks[modelID]
+        let cancellationGeneration = UUID()
+        task?.cancel()
         withAnimation {
-            downloadingModels.remove(option.model)
-            downloadProgress.removeValue(forKey: option.model)
-            downloadMessages[option.model] = "Paused — select Download to resume"
-            downloadGenerations.removeValue(forKey: option.model)
-            downloadTasks.removeValue(forKey: option.model)
-            if let snapshot = downloadSnapshots[option.model] {
-                downloadSnapshots[option.model] = snapshot.replacing(
+            downloadingModels.remove(modelID)
+            downloadProgress.removeValue(forKey: modelID)
+            downloadMessages[modelID] = "Paused — select Download to resume"
+            // Keep a cancellation generation until the caller task has fully
+            // unwound. If a replacement starts first, this generation changes
+            // and the old cancellation must not stop the replacement transfer.
+            downloadGenerations[modelID] = cancellationGeneration
+            downloadTasks.removeValue(forKey: modelID)
+            if let snapshot = downloadSnapshots[modelID] {
+                downloadSnapshots[modelID] = snapshot.replacing(
                     phase: .paused,
                     message: "Paused — select Download to resume"
                 )
+            }
+        }
+        Task {
+            let shouldCancel = await MainActor.run {
+                downloadGenerations[modelID] == cancellationGeneration
+            }
+            guard shouldCancel else { return }
+
+            await ModelDownloadCoordinator.shared.cancel(modelID: modelID)
+            _ = await task?.value
+
+            await MainActor.run {
+                guard downloadGenerations[modelID] == cancellationGeneration else { return }
+                downloadGenerations.removeValue(forKey: modelID)
             }
         }
     }
