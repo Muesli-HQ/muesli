@@ -372,6 +372,94 @@ struct ModelDownloadCoordinatorTests {
         #expect(secondProgress.requestCount > 0)
     }
 
+    @Test("same model IDs isolate different manifests and destinations")
+    func sameModelIDDoesNotCrossInstallDestinations() async throws {
+        let tracker = DownloadTestTracker()
+        ModelDownloadTestURLProtocol.install { _ in
+            ModelDownloadTestURLProtocol.Response(
+                data: Data(repeating: 0x42, count: 512 * 1024),
+                chunkSize: 4 * 1024,
+                delay: 0.002,
+                tracker: tracker
+            )
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let coordinator = makeCoordinator()
+        let firstDirectory = try makeTemporaryDirectory()
+        let secondDirectory = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: firstDirectory)
+            try? FileManager.default.removeItem(at: secondDirectory)
+        }
+        let remoteURL = try #require(URL(string: "https://example.com/model"))
+        let firstManifest = ModelDownloadManifest(
+            id: "same-model-id",
+            version: "1",
+            files: [ModelDownloadFile(relativePath: "first.bin", remoteURL: remoteURL, expectedByteCount: 512 * 1024)],
+            maximumConcurrency: 1
+        )
+        let secondManifest = ModelDownloadManifest(
+            id: "same-model-id",
+            version: "1",
+            files: [ModelDownloadFile(relativePath: "second.bin", remoteURL: remoteURL, expectedByteCount: 512 * 1024)],
+            maximumConcurrency: 1
+        )
+
+        let first = Task { try await coordinator.download(firstManifest, to: firstDirectory) }
+        try await Task.sleep(for: .milliseconds(20))
+        let second = Task { try await coordinator.download(secondManifest, to: secondDirectory) }
+
+        try await first.value
+        try await second.value
+
+        #expect(tracker.requestCount == 2)
+        #expect(FileManager.default.fileExists(atPath: firstDirectory.appendingPathComponent("first.bin").path))
+        #expect(FileManager.default.fileExists(atPath: secondDirectory.appendingPathComponent("second.bin").path))
+    }
+
+    @Test("conflicting same-model manifests do not write one destination concurrently")
+    func conflictingSameDestinationIsRejected() async throws {
+        let tracker = DownloadTestTracker()
+        ModelDownloadTestURLProtocol.install { _ in
+            ModelDownloadTestURLProtocol.Response(
+                data: Data(repeating: 0x42, count: 512 * 1024),
+                chunkSize: 4 * 1024,
+                delay: 0.002,
+                tracker: tracker
+            )
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let coordinator = makeCoordinator()
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let remoteURL = try #require(URL(string: "https://example.com/model"))
+        let firstManifest = ModelDownloadManifest(
+            id: "same-destination-model",
+            version: "1",
+            files: [ModelDownloadFile(relativePath: "first.bin", remoteURL: remoteURL, expectedByteCount: 512 * 1024)],
+            maximumConcurrency: 1
+        )
+        let secondManifest = ModelDownloadManifest(
+            id: "same-destination-model",
+            version: "1",
+            files: [ModelDownloadFile(relativePath: "second.bin", remoteURL: remoteURL, expectedByteCount: 512 * 1024)],
+            maximumConcurrency: 1
+        )
+
+        let first = Task { try await coordinator.download(firstManifest, to: directory) }
+        try await Task.sleep(for: .milliseconds(20))
+        do {
+            try await coordinator.download(secondManifest, to: directory)
+            Issue.record("Conflicting same-destination download unexpectedly started")
+        } catch is ModelDownloadError {
+            // Expected: only one manifest may write a model destination at a time.
+        }
+        try await first.value
+        #expect(tracker.requestCount == 1)
+    }
+
     @Test("cancelling one duplicate caller does not cancel the shared transfer")
     func cancellingOneDuplicateCallerPreservesSharedTransfer() async throws {
         let tracker = DownloadTestTracker()

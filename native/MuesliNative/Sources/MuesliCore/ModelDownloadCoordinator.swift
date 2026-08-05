@@ -37,7 +37,7 @@ public struct ModelDownloadFile: Codable, Hashable, Sendable {
 
 /// The complete set of files and policies needed to install one model revision.
 public struct ModelDownloadManifest: Sendable {
-    /// A stable identifier used to deduplicate jobs and persist state.
+    /// A stable model identifier used for progress, cancellation, and persisted state.
     public let id: String
     /// The revision represented by this manifest.
     public let version: String
@@ -202,6 +202,8 @@ public enum ModelDownloadError: Error, LocalizedError, Sendable {
     case diskSpaceUnavailable(String)
     /// All retryable attempts were exhausted.
     case retriesExhausted(String, String)
+    /// A different manifest for the same model is already writing this destination.
+    case conflictingInFlightDownload(String)
 
     /// A user-readable description of the failure.
     public var errorDescription: String? {
@@ -228,6 +230,8 @@ public enum ModelDownloadError: Error, LocalizedError, Sendable {
             return "Could not determine available disk space for " + path
         case .retriesExhausted(let path, let detail):
             return "Could not download " + path + " after three attempts: " + detail
+        case .conflictingInFlightDownload(let modelID):
+            return "Another download for model " + modelID + " is already active in this location"
         }
     }
 }
@@ -235,7 +239,19 @@ public enum ModelDownloadError: Error, LocalizedError, Sendable {
 private struct PersistedDownloadState: Codable, Sendable {
     var modelID: String
     var version: String
+    var manifestFingerprint: String?
     var etags: [String: String]
+}
+
+private struct DownloadJobKey: Hashable, Sendable {
+    let modelID: String
+    let destinationPath: String
+    let manifestFingerprint: String
+}
+
+private struct DownloadFileKey: Hashable, Sendable {
+    let job: DownloadJobKey
+    let relativePath: String
 }
 
 /// Shared resumable downloader for Muesli-owned model artifacts.
@@ -243,17 +259,17 @@ public actor ModelDownloadCoordinator {
     /// The process-wide coordinator used by model backends and the UI.
     public static let shared = ModelDownloadCoordinator()
 
-    private var inFlight: [String: Task<Void, Error>] = [:]
-    private var progressHandlers: [String: [UUID: ModelDownloadProgressHandler]] = [:]
-    private var completionWaiters: [String: [UUID: CheckedContinuation<Void, Error>]] = [:]
-    private var fileProgress: [String: Int64] = [:]
-    private var fileTotals: [String: Int64] = [:]
+    private var inFlight: [DownloadJobKey: Task<Void, Error>] = [:]
+    private var progressHandlers: [DownloadJobKey: [UUID: ModelDownloadProgressHandler]] = [:]
+    private var completionWaiters: [DownloadJobKey: [UUID: CheckedContinuation<Void, Error>]] = [:]
+    private var fileProgress: [DownloadFileKey: Int64] = [:]
+    private var fileTotals: [DownloadFileKey: Int64] = [:]
     // Keep one featured file stable while the bounded parallel batch advances.
-    private var featuredFile: [String: String] = [:]
-    private var completedFiles: [String: Set<String>] = [:]
-    private var startedAt: [String: Date] = [:]
-    private var lastProgressEmissionAt: [String: Date] = [:]
-    private var initialProgressBytes: [String: Int64] = [:]
+    private var featuredFile: [DownloadJobKey: String] = [:]
+    private var completedFiles: [DownloadJobKey: Set<String>] = [:]
+    private var startedAt: [DownloadJobKey: Date] = [:]
+    private var lastProgressEmissionAt: [DownloadJobKey: Date] = [:]
+    private var initialProgressBytes: [DownloadJobKey: Int64] = [:]
     private let sessionDelegate: ModelDownloadSessionDelegate
     private let session: URLSession
 
@@ -271,19 +287,19 @@ public actor ModelDownloadCoordinator {
 
     /// Cancels active transfers for a model while retaining completed and partial files.
     ///
-    /// A model may have more specific in-flight IDs while its manifest is being
-    /// assembled, so matching the model prefix keeps cancellation reliable
-    /// across callers.
+    /// Cancellation covers every active destination or manifest variant for the
+    /// requested model ID. UI callers normally have one active variant, while
+    /// this broader match also handles abandoned work in another destination.
     public func cancel(modelID: String) {
-        for (id, task) in inFlight where id == modelID || id.hasPrefix(modelID + ":") {
+        for (key, task) in inFlight where key.modelID == modelID {
             task.cancel()
         }
     }
 
     /// Downloads, validates, and atomically installs every file in a manifest.
     ///
-    /// Requests for the same manifest ID share one in-flight job and each caller
-    /// receives its own progress callbacks.
+    /// Requests with the same model, canonical destination, and manifest contents
+    /// share one in-flight job and each caller receives its own progress callbacks.
     public func download(
         _ manifest: ModelDownloadManifest,
         to directory: URL,
@@ -295,34 +311,41 @@ public actor ModelDownloadCoordinator {
         }
         try validateManifestPaths(manifest, in: directory)
         let callerID = UUID()
-        if inFlight[manifest.id] != nil {
+        let jobKey = makeJobKey(for: manifest, directory: directory)
+        if inFlight[jobKey] != nil {
             if let progress {
-                progressHandlers[manifest.id, default: [:]][callerID] = progress
+                progressHandlers[jobKey, default: [:]][callerID] = progress
             }
-            defer { removeProgressHandler(callerID, for: manifest.id) }
-            try await waitForCompletion(of: manifest.id, callerID: callerID)
+            defer { removeProgressHandler(callerID, for: jobKey) }
+            try await waitForCompletion(of: jobKey, callerID: callerID)
             try Task.checkCancellation()
             return
         }
 
+        if inFlight.keys.contains(where: {
+            $0.modelID == jobKey.modelID && $0.destinationPath == jobKey.destinationPath
+        }) {
+            throw ModelDownloadError.conflictingInFlightDownload(manifest.id)
+        }
+
         try checkDiskSpace(for: manifest, at: directory)
-        progressHandlers[manifest.id] = progress.map { [callerID: $0] } ?? [:]
+        progressHandlers[jobKey] = progress.map { [callerID: $0] } ?? [:]
         let task = Task { [manifest, directory] in
             do {
-                try await self.performDownload(manifest, to: directory)
-                self.finish(manifestID: manifest.id, result: .success(()))
+                try await self.performDownload(manifest, to: directory, jobKey: jobKey)
+                self.finish(jobKey: jobKey, result: .success(()))
             } catch {
-                self.finish(manifestID: manifest.id, result: .failure(error))
+                self.finish(jobKey: jobKey, result: .failure(error))
                 throw error
             }
         }
-        inFlight[manifest.id] = task
-        defer { removeProgressHandler(callerID, for: manifest.id) }
+        inFlight[jobKey] = task
+        defer { removeProgressHandler(callerID, for: jobKey) }
         // A caller's cancellation detaches that caller from the shared
         // completion signal. The shared job may still be needed by another
         // caller; explicit model cancellation through cancel(modelID:) is
         // what stops the shared transfer.
-        try await waitForCompletion(of: manifest.id, callerID: callerID)
+        try await waitForCompletion(of: jobKey, callerID: callerID)
         try Task.checkCancellation()
     }
 
@@ -331,7 +354,8 @@ public actor ModelDownloadCoordinator {
         let paths = try manifest.files.map { file in
             try validatedURL(for: file.relativePath, in: directory)
         }
-        guard inFlight[manifest.id] == nil else { return }
+        let destinationPath = canonicalDirectoryPath(directory)
+        guard !inFlight.keys.contains(where: { $0.destinationPath == destinationPath }) else { return }
         let fm = FileManager.default
         for path in paths {
             try? fm.removeItem(at: path.appendingPathExtension("part"))
@@ -342,17 +366,18 @@ public actor ModelDownloadCoordinator {
 
     private func performDownload(
         _ manifest: ModelDownloadManifest,
-        to directory: URL
+        to directory: URL,
+        jobKey: DownloadJobKey
     ) async throws {
         let fm = FileManager.default
-        defer { cleanup(manifest.id) }
+        defer { cleanup(jobKey) }
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
         try validateManifestPaths(manifest, in: directory)
-        let state = loadState(for: directory, manifest: manifest)
-        lastProgressEmissionAt[manifest.id] = nil
+        let state = loadState(for: directory, manifest: manifest, jobKey: jobKey)
+        lastProgressEmissionAt[jobKey] = nil
         for file in manifest.files {
             let url = try validatedURL(for: file.relativePath, in: directory)
-            let key = manifest.id + ":" + file.relativePath
+            let key = DownloadFileKey(job: jobKey, relativePath: file.relativePath)
             fileProgress[key] = ((try? fm.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value ?? 0)
             if let expected = file.expectedByteCount { fileTotals[key] = expected }
         }
@@ -367,13 +392,13 @@ public actor ModelDownloadCoordinator {
             let size = (try? fm.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value
             if size == expected { completed.insert(file.relativePath) }
         }
-        completedFiles[manifest.id] = completed
-        featuredFile[manifest.id] = nextIncompleteFile(for: manifest)
-        initialProgressBytes[manifest.id] = manifest.files.reduce(Int64(0)) {
-            $0 + fileProgress["\(manifest.id):\($1.relativePath)", default: 0]
+        completedFiles[jobKey] = completed
+        featuredFile[jobKey] = nextIncompleteFile(for: manifest, jobKey: jobKey)
+        initialProgressBytes[jobKey] = manifest.files.reduce(Int64(0)) {
+            $0 + fileProgress[DownloadFileKey(job: jobKey, relativePath: $1.relativePath), default: 0]
         }
-        startedAt[manifest.id] = Date()
-        emit(manifest, phase: .downloading, message: "Starting download")
+        startedAt[jobKey] = Date()
+        emit(manifest, jobKey: jobKey, phase: .downloading, message: "Starting download")
 
         var pending: [ModelDownloadFile] = []
         for file in manifest.files {
@@ -398,7 +423,7 @@ public actor ModelDownloadCoordinator {
             try await withThrowingTaskGroup(of: Void.self) { group in
                 for file in batch {
                     group.addTask {
-                        try await self.downloadFile(file, manifest: manifest, directory: directory, etag: state.etags[file.relativePath])
+                        try await self.downloadFile(file, manifest: manifest, directory: directory, jobKey: jobKey, etag: state.etags[file.relativePath])
                     }
                 }
                 try await group.waitForAll()
@@ -416,13 +441,14 @@ public actor ModelDownloadCoordinator {
             }
         }
         try? fm.removeItem(at: stateURL(for: directory))
-        emit(manifest, phase: .ready, message: "Model ready")
+        emit(manifest, jobKey: jobKey, phase: .ready, message: "Model ready")
     }
 
     private func downloadFile(
         _ file: ModelDownloadFile,
         manifest: ModelDownloadManifest,
         directory: URL,
+        jobKey: DownloadJobKey,
         etag: String?
     ) async throws {
         let fm = FileManager.default
@@ -441,13 +467,13 @@ public actor ModelDownloadCoordinator {
             }
             do {
                 try Task.checkCancellation()
-                try await stream(file, manifest: manifest, directory: directory, partURL: partURL, etag: etag, attempt: attempt)
+                try await stream(file, manifest: manifest, directory: directory, jobKey: jobKey, partURL: partURL, etag: etag, attempt: attempt)
                 try moveAtomically(partURL, to: destination)
-                completedFiles[manifest.id, default: []].insert(file.relativePath)
-                if featuredFile[manifest.id] == file.relativePath {
-                    featuredFile[manifest.id] = nextIncompleteFile(for: manifest)
+                completedFiles[jobKey, default: []].insert(file.relativePath)
+                if featuredFile[jobKey] == file.relativePath {
+                    featuredFile[jobKey] = nextIncompleteFile(for: manifest, jobKey: jobKey)
                 }
-                emit(manifest, phase: .downloading, file: file.relativePath, retry: attempt, force: true)
+                emit(manifest, jobKey: jobKey, phase: .downloading, file: file.relativePath, retry: attempt, force: true)
                 return
             } catch is CancellationError {
                 throw CancellationError()
@@ -498,6 +524,7 @@ public actor ModelDownloadCoordinator {
         _ file: ModelDownloadFile,
         manifest: ModelDownloadManifest,
         directory: URL,
+        jobKey: DownloadJobKey,
         partURL: URL,
         etag: String?,
         attempt: Int
@@ -527,7 +554,7 @@ public actor ModelDownloadCoordinator {
         var handle: FileHandle?
         defer { try? handle?.close() }
         var initial: Int64 = 0
-        let key = "\(manifest.id):\(file.relativePath)"
+        let key = DownloadFileKey(job: jobKey, relativePath: file.relativePath)
         var written: Int64 = 0
         try await withTaskCancellationHandler(operation: {
             for try await event in sink.events {
@@ -569,7 +596,7 @@ public actor ModelDownloadCoordinator {
                 fileProgress[key] = initial
                 if let expected { fileTotals[key] = expected }
                 if let responseETag = response.etag {
-                    persistETag(responseETag, for: file.relativePath, directory: directory, manifest: manifest)
+                    persistETag(responseETag, for: file.relativePath, directory: directory, manifest: manifest, jobKey: jobKey)
                 }
 
             case .data(let data):
@@ -577,7 +604,7 @@ public actor ModelDownloadCoordinator {
                 try handle.write(contentsOf: data)
                 written += Int64(data.count)
                 fileProgress[key] = written
-                emit(manifest, phase: .downloading, file: file.relativePath, retry: attempt)
+                emit(manifest, jobKey: jobKey, phase: .downloading, file: file.relativePath, retry: attempt)
 
             case .finished:
                 completed = true
@@ -595,7 +622,7 @@ public actor ModelDownloadCoordinator {
         if let expected, written != expected {
             throw ModelDownloadError.sizeMismatch(file.relativePath, expected: expected, actual: written)
         }
-        emit(manifest, phase: .downloading, file: file.relativePath, retry: attempt, force: true)
+        emit(manifest, jobKey: jobKey, phase: .downloading, file: file.relativePath, retry: attempt, force: true)
     }
 
     private func validate(_ file: ModelDownloadFile, at url: URL) throws {
@@ -638,93 +665,94 @@ public actor ModelDownloadCoordinator {
 
     private func emit(
         _ manifest: ModelDownloadManifest,
+        jobKey: DownloadJobKey,
         phase: ModelDownloadPhase,
         file: String? = nil,
         retry: Int = 0,
         message: String? = nil,
         force: Bool = false
     ) {
-        guard !progressHandlers[manifest.id, default: [:]].isEmpty else { return }
+        guard !progressHandlers[jobKey, default: [:]].isEmpty else { return }
         let now = Date()
         if !force, phase == .downloading, message == nil,
-           let previous = lastProgressEmissionAt[manifest.id], now.timeIntervalSince(previous) < 0.1 {
+           let previous = lastProgressEmissionAt[jobKey], now.timeIntervalSince(previous) < 0.1 {
             return
         }
-        lastProgressEmissionAt[manifest.id] = now
-        let completed = manifest.files.reduce(Int64(0)) { $0 + fileProgress["\(manifest.id):\($1.relativePath)", default: 0] }
-        let total = manifest.totalExpectedByteCount ?? dynamicTotal(for: manifest)
-        let displayFile = focusedFile(for: manifest, eventFile: file)
-        let current = displayFile.flatMap { fileProgress["\(manifest.id):\($0)", default: 0] } ?? 0
-        let currentTotal = displayFile.flatMap { fileTotals["\(manifest.id):\($0)"] }
-        let elapsed = Date().timeIntervalSince(startedAt[manifest.id] ?? Date())
-        let transferred = max(0, completed - initialProgressBytes[manifest.id, default: 0])
+        lastProgressEmissionAt[jobKey] = now
+        let completed = manifest.files.reduce(Int64(0)) { $0 + fileProgress[DownloadFileKey(job: jobKey, relativePath: $1.relativePath), default: 0] }
+        let total = manifest.totalExpectedByteCount ?? dynamicTotal(for: manifest, jobKey: jobKey)
+        let displayFile = focusedFile(for: manifest, jobKey: jobKey, eventFile: file)
+        let current = displayFile.flatMap { fileProgress[DownloadFileKey(job: jobKey, relativePath: $0), default: 0] } ?? 0
+        let currentTotal = displayFile.flatMap { fileTotals[DownloadFileKey(job: jobKey, relativePath: $0)] }
+        let elapsed = Date().timeIntervalSince(startedAt[jobKey] ?? Date())
+        let transferred = max(0, completed - initialProgressBytes[jobKey, default: 0])
         let speed = elapsed > 0 ? Double(transferred) / elapsed : 0
         let remainingBytes = total.map { max(0, $0 - completed) }
             ?? currentTotal.map { max(0, $0 - current) }
         let remaining = remainingBytes.flatMap { speed > 0 ? Double($0) / speed : nil }
-        let completedFileCount = completedFiles[manifest.id]?.count ?? 0
+        let completedFileCount = completedFiles[jobKey]?.count ?? 0
         let snapshot = ModelDownloadProgress(modelID: manifest.id, phase: phase, currentFile: displayFile, completedBytes: completed, totalBytes: total, currentFileCompletedBytes: current, currentFileTotalBytes: currentTotal, bytesPerSecond: speed, estimatedSecondsRemaining: remaining, retryCount: retry, completedFileCount: completedFileCount, totalFileCount: manifest.files.count, message: message)
-        for handler in progressHandlers[manifest.id, default: [:]].values {
+        for handler in progressHandlers[jobKey, default: [:]].values {
             handler(snapshot)
         }
     }
 
-    private func removeProgressHandler(_ callerID: UUID, for manifestID: String) {
-        progressHandlers[manifestID]?[callerID] = nil
-        if progressHandlers[manifestID]?.isEmpty == true {
-            progressHandlers[manifestID] = nil
+    private func removeProgressHandler(_ callerID: UUID, for jobKey: DownloadJobKey) {
+        progressHandlers[jobKey]?[callerID] = nil
+        if progressHandlers[jobKey]?.isEmpty == true {
+            progressHandlers[jobKey] = nil
         }
     }
 
-    private func waitForCompletion(of manifestID: String, callerID: UUID) async throws {
+    private func waitForCompletion(of jobKey: DownloadJobKey, callerID: UUID) async throws {
         try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 if Task.isCancelled {
                     continuation.resume(throwing: CancellationError())
                 } else {
-                    completionWaiters[manifestID, default: [:]][callerID] = continuation
+                    completionWaiters[jobKey, default: [:]][callerID] = continuation
                 }
             }
         }, onCancel: {
-            Task { await self.cancelWaiter(callerID, for: manifestID) }
+            Task { await self.cancelWaiter(callerID, for: jobKey) }
         })
     }
 
-    private func cancelWaiter(_ callerID: UUID, for manifestID: String) {
-        guard let continuation = completionWaiters[manifestID]?[callerID] else { return }
-        completionWaiters[manifestID]?[callerID] = nil
-        if completionWaiters[manifestID]?.isEmpty == true {
-            completionWaiters[manifestID] = nil
+    private func cancelWaiter(_ callerID: UUID, for jobKey: DownloadJobKey) {
+        guard let continuation = completionWaiters[jobKey]?[callerID] else { return }
+        completionWaiters[jobKey]?[callerID] = nil
+        if completionWaiters[jobKey]?.isEmpty == true {
+            completionWaiters[jobKey] = nil
         }
         continuation.resume(throwing: CancellationError())
     }
 
-    private func finish(manifestID: String, result: Result<Void, Error>) {
-        inFlight[manifestID] = nil
-        progressHandlers[manifestID] = nil
-        let waiters = completionWaiters.removeValue(forKey: manifestID) ?? [:]
+    private func finish(jobKey: DownloadJobKey, result: Result<Void, Error>) {
+        inFlight[jobKey] = nil
+        progressHandlers[jobKey] = nil
+        let waiters = completionWaiters.removeValue(forKey: jobKey) ?? [:]
         for continuation in waiters.values {
             continuation.resume(with: result)
         }
     }
 
-    private func focusedFile(for manifest: ModelDownloadManifest, eventFile: String?) -> String? {
-        let completed = completedFiles[manifest.id, default: []]
-        if let current = featuredFile[manifest.id], !completed.contains(current) {
+    private func focusedFile(for manifest: ModelDownloadManifest, jobKey: DownloadJobKey, eventFile: String?) -> String? {
+        let completed = completedFiles[jobKey, default: []]
+        if let current = featuredFile[jobKey], !completed.contains(current) {
             return current
         }
-        let next = nextIncompleteFile(for: manifest)
-        featuredFile[manifest.id] = next
+        let next = nextIncompleteFile(for: manifest, jobKey: jobKey)
+        featuredFile[jobKey] = next
         return next ?? eventFile.flatMap { completed.contains($0) ? nil : $0 }
     }
 
-    private func nextIncompleteFile(for manifest: ModelDownloadManifest) -> String? {
-        let completed = completedFiles[manifest.id, default: []]
+    private func nextIncompleteFile(for manifest: ModelDownloadManifest, jobKey: DownloadJobKey) -> String? {
+        let completed = completedFiles[jobKey, default: []]
         return manifest.files.first { !completed.contains($0.relativePath) }?.relativePath
     }
 
-    private func dynamicTotal(for manifest: ModelDownloadManifest) -> Int64? {
-        let totals = manifest.files.compactMap { fileTotals["\(manifest.id):\($0.relativePath)"] }
+    private func dynamicTotal(for manifest: ModelDownloadManifest, jobKey: DownloadJobKey) -> Int64? {
+        let totals = manifest.files.compactMap { fileTotals[DownloadFileKey(job: jobKey, relativePath: $0.relativePath)] }
         guard totals.count == manifest.files.count else { return nil }
         return totals.reduce(0, +)
     }
@@ -781,29 +809,63 @@ public actor ModelDownloadCoordinator {
 
     private func stateURL(for directory: URL) -> URL { directory.appendingPathComponent(".muesli-download-state.json") }
 
-    private func loadState(for directory: URL, manifest: ModelDownloadManifest) -> PersistedDownloadState {
+    private func loadState(for directory: URL, manifest: ModelDownloadManifest, jobKey: DownloadJobKey) -> PersistedDownloadState {
         guard let data = try? Data(contentsOf: stateURL(for: directory)),
               let state = try? JSONDecoder().decode(PersistedDownloadState.self, from: data),
-              state.modelID == manifest.id, state.version == manifest.version else {
-            return PersistedDownloadState(modelID: manifest.id, version: manifest.version, etags: [:])
+              state.modelID == manifest.id,
+              state.version == manifest.version,
+              state.manifestFingerprint == nil || state.manifestFingerprint == jobKey.manifestFingerprint else {
+            return PersistedDownloadState(modelID: manifest.id, version: manifest.version, manifestFingerprint: jobKey.manifestFingerprint, etags: [:])
         }
         return state
     }
 
-    private func persistETag(_ etag: String, for path: String, directory: URL, manifest: ModelDownloadManifest) {
-        var state = loadState(for: directory, manifest: manifest)
+    private func persistETag(_ etag: String, for path: String, directory: URL, manifest: ModelDownloadManifest, jobKey: DownloadJobKey) {
+        var state = loadState(for: directory, manifest: manifest, jobKey: jobKey)
+        state.manifestFingerprint = jobKey.manifestFingerprint
         state.etags[path] = etag
         if let data = try? JSONEncoder().encode(state) { try? data.write(to: stateURL(for: directory), options: .atomic) }
     }
 
-    private func cleanup(_ modelID: String) {
-        fileProgress = fileProgress.filter { !$0.key.hasPrefix(modelID + ":") }
-        fileTotals = fileTotals.filter { !$0.key.hasPrefix(modelID + ":") }
-        featuredFile[modelID] = nil
-        completedFiles[modelID] = nil
-        startedAt[modelID] = nil
-        lastProgressEmissionAt[modelID] = nil
-        initialProgressBytes[modelID] = nil
+    private func cleanup(_ jobKey: DownloadJobKey) {
+        fileProgress = fileProgress.filter { $0.key.job != jobKey }
+        fileTotals = fileTotals.filter { $0.key.job != jobKey }
+        featuredFile[jobKey] = nil
+        completedFiles[jobKey] = nil
+        startedAt[jobKey] = nil
+        lastProgressEmissionAt[jobKey] = nil
+        initialProgressBytes[jobKey] = nil
+    }
+
+    private func makeJobKey(for manifest: ModelDownloadManifest, directory: URL) -> DownloadJobKey {
+        DownloadJobKey(
+            modelID: manifest.id,
+            destinationPath: canonicalDirectoryPath(directory),
+            manifestFingerprint: manifestFingerprint(manifest)
+        )
+    }
+
+    private func canonicalDirectoryPath(_ directory: URL) -> String {
+        directory.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    private func manifestFingerprint(_ manifest: ModelDownloadManifest) -> String {
+        var hasher = SHA256()
+        func append(_ value: String) {
+            hasher.update(data: Data(value.utf8))
+            hasher.update(data: Data([0]))
+        }
+
+        append(manifest.id)
+        append(manifest.version)
+        append(String(manifest.maximumConcurrency))
+        for file in manifest.files {
+            append(file.relativePath)
+            append(file.remoteURL.absoluteString)
+            append(file.expectedByteCount.map(String.init) ?? "")
+            append(file.sha256 ?? "")
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 }
 
