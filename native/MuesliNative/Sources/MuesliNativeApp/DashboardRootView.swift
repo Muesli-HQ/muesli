@@ -21,9 +21,7 @@ struct DashboardRootView: View {
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 Button {
-                    withAnimation {
-                        columnVisibility = columnVisibility == .all ? .detailOnly : .all
-                    }
+                    columnVisibility = columnVisibility == .all ? .detailOnly : .all
                 } label: {
                     Image(systemName: "sidebar.leading")
                 }
@@ -31,7 +29,7 @@ struct DashboardRootView: View {
                 .help("Toggle Sidebar (⌘S)")
             }
         }
-        .frame(minWidth: 900, minHeight: 600)
+        .frame(minWidth: 640, minHeight: 480)
         .preferredColorScheme(appState.config.darkMode ? .dark : .light)
         .onPreferenceChange(FeatureTourTargetPreferenceKey.self) { frames in
             guard FeatureTourFrameTracking.hasMeaningfulChange(

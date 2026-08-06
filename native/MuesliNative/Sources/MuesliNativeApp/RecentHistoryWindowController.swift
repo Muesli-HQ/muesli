@@ -61,6 +61,7 @@ final class RecentHistoryWindowController: NSObject, NSWindowDelegate {
             defer: false
         )
         window.title = AppIdentity.displayName
+        window.contentMinSize = NSSize(width: 640, height: 480)
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.titlebarAppearsTransparent = true
@@ -71,7 +72,9 @@ final class RecentHistoryWindowController: NSObject, NSWindowDelegate {
             appState: controller.appState,
             controller: controller
         )
-        window.contentView = NSHostingView(rootView: rootView)
+        let hostingView = NSHostingView(rootView: rootView)
+        hostingView.sizingOptions = []
+        window.contentView = hostingView
 
         self.window = window
 
