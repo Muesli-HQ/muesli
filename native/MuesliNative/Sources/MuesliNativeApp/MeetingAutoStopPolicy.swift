@@ -17,7 +17,19 @@ enum MeetingRecordingStartOrigin: Equatable {
     }
 
     var signalLossResponse: MeetingSignalLossResponse {
-        enablesMeetingAutoStop ? .autoStopAfterWarning : .none
+        switch self {
+        case .manual:
+            return .none
+        case .detectedPrompt:
+            // The user saw a prompt and clicked Start, so this recording is wanted. Losing the
+            // signal usually means the incidental thing holding the mic went away, not that the
+            // meeting ended — and silently killing it produced ~60s recordings. Warn instead and
+            // let them decide.
+            return .warnOnly
+        case .calendarAutoRecord, .scheduledMeetingPrompt, .joinAndRecord:
+            // Started without the user asking, so ending it unattended is the safer default.
+            return .autoStopAfterWarning
+        }
     }
 
     func signalLossSource(

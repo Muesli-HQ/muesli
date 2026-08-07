@@ -426,8 +426,10 @@ final class MeetingCandidateResolver {
             let app = bestCalendarApp(from: snapshot.runningApps)
             // Sole-evidence guard: with no meeting app running, the only thing left is "a
             // calendar event exists and something is using the mic or camera". That is how a
-            // diary block became a meeting prompt. Require the event to actually look joinable.
-            guard app != nil || calendarEvent.isJoinable else { return nil }
+            // diary block became a meeting prompt. Require the event to actually look joinable,
+            // and require the mic specifically — camera alone is not a meeting, which is the
+            // documented rule everywhere else but was not enforced on this branch.
+            guard app != nil || (calendarEvent.isJoinable && hasMicActivity(snapshot)) else { return nil }
             return candidate(
                 id: "cal:\(calendarEvent.id)",
                 platform: app?.platform ?? .unknown,
@@ -631,6 +633,15 @@ final class MeetingCandidateResolver {
 
     private func hasMediaActivity(_ snapshot: MeetingSignalSnapshot) -> Bool {
         snapshot.micActive || snapshot.cameraActive || snapshot.audioInputProcesses.contains { $0.isRunningInput }
+    }
+
+    /// Mic activity from either the device-level flag or per-process attribution.
+    ///
+    /// `micActive` alone is not enough: a call can be visible only as an attributed input
+    /// process. Camera activity is deliberately excluded — "camera alone won't trigger" is the
+    /// documented rule, but the calendar branch was not enforcing it.
+    private func hasMicActivity(_ snapshot: MeetingSignalSnapshot) -> Bool {
+        snapshot.micActive || snapshot.audioInputProcesses.contains { $0.isRunningInput }
     }
 
     private func activeInputProcess(

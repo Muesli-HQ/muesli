@@ -1091,6 +1091,19 @@ struct MeetingCandidateResolverTests {
         #expect(candidate?.meetingTitle == "Team sync")
     }
 
+    @Test("camera alone plus a calendar event is not a meeting")
+    func cameraAloneWithCalendarEventIsNotAMeeting() {
+        // "camera alone won't trigger" is the documented rule, but the calendar branch only
+        // required mic OR camera.
+        let candidate = resolver().resolve(snapshot(
+            micActive: false,
+            cameraActive: true,
+            calendarEvent: CalendarEventContext(id: "evt", title: "Client call", isJoinable: true)
+        ))
+
+        #expect(candidate == nil)
+    }
+
     @Test("joinable calendar event is still sole evidence without an app")
     func joinableCalendarEventIsSoleEvidence() {
         let candidate = resolver().resolve(snapshot(
