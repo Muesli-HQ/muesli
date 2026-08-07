@@ -1022,4 +1022,84 @@ struct MeetingCandidateResolverTests {
         #expect(MeetingURLNormalizer.normalize("https://meet.google.com/landing") == nil)
         #expect(MeetingURLNormalizer.normalize("https://meet.google.com/") == nil)
     }
+
+    @Test("URL normalizer rejects non-room pages on meeting hosts")
+    func urlNormalizerRejectsNonRoomPages() {
+        // A parked tab on any of these used to resolve as a meeting and prompt repeatedly,
+        // because only Google Meet checked the path shape.
+        for parked in [
+            "https://zoom.us/download",
+            "https://zoom.us/pricing",
+            "https://zoom.us/en-us/download.html",     // locale-prefixed, non-first segment
+            "https://us02web.zoom.us/meeting",
+            "https://zoom.us/",                        // bare host
+            "https://teams.microsoft.com/",
+            "https://teams.microsoft.com/v2/",
+            "https://teams.live.com/",
+            "https://acme.webex.com/webappng/sites/acme/dashboard",
+            "https://acme.webex.com/",
+        ] {
+            #expect(MeetingURLNormalizer.normalize(parked) == nil, "expected nil for \(parked)")
+        }
+    }
+
+    @Test("URL normalizer still accepts real rooms on those hosts")
+    func urlNormalizerAcceptsRealRooms() {
+        #expect(MeetingURLNormalizer.normalize("https://us02web.zoom.us/j/123456789")?.platform == .zoom)
+        #expect(MeetingURLNormalizer.normalize("https://zoom.us/my/clinton")?.platform == .zoom)
+        #expect(MeetingURLNormalizer.normalize("https://teams.microsoft.com/l/meetup-join/abc")?.platform == .teams)
+        #expect(MeetingURLNormalizer.normalize("https://acme.webex.com/meet/clinton")?.platform == .webex)
+    }
+
+    @Test("URL normalizer rejects lookalike hosts")
+    func urlNormalizerRejectsLookalikeHosts() {
+        // hasSuffix("zoom.us") also matched evilzoom.us, so any focused page on a lookalike
+        // domain resolved as a meeting.
+        #expect(MeetingURLNormalizer.normalize("https://evilzoom.us/j/123456789") == nil)
+        #expect(MeetingURLNormalizer.normalize("https://notwebex.com/meet/clinton") == nil)
+        #expect(MeetingURLNormalizer.normalize("https://fatteams.microsoft.com/l/meetup-join/abc") == nil)
+        // ...but genuine subdomains still work.
+        #expect(MeetingURLNormalizer.normalize("https://us02web.zoom.us/j/123456789")?.platform == .zoom)
+    }
+
+    @Test("link-less calendar block is not sole evidence for a candidate")
+    func linklessCalendarBlockIsNotSoleEvidence() {
+        // The reported bug: a diary block plus any mic activity, with no meeting app running,
+        // produced a candidate titled after the block.
+        let candidate = resolver().resolve(snapshot(
+            micActive: true,
+            cameraActive: false,
+            calendarEvent: CalendarEventContext(id: "gym", title: "Gym - Pull Calisthenics", isJoinable: false)
+        ))
+
+        #expect(candidate == nil)
+    }
+
+    @Test("link-less calendar block still titles an app-backed candidate")
+    func linklessCalendarBlockStillTitlesAppBackedCandidate() {
+        // Enrichment must survive: a real meeting whose calendar entry has no parsed link
+        // should still be detected and still borrow the event title.
+        let candidate = resolver().resolve(snapshot(
+            micActive: true,
+            cameraActive: false,
+            calendarEvent: CalendarEventContext(id: "evt", title: "Team sync", isJoinable: false),
+            runningApps: [RunningAppInfo(bundleID: "us.zoom.xos", isActive: true)],
+            foregroundBundleID: "us.zoom.xos"
+        ))
+
+        #expect(candidate?.id == "cal:evt")
+        #expect(candidate?.meetingTitle == "Team sync")
+    }
+
+    @Test("joinable calendar event is still sole evidence without an app")
+    func joinableCalendarEventIsSoleEvidence() {
+        let candidate = resolver().resolve(snapshot(
+            micActive: true,
+            cameraActive: false,
+            calendarEvent: CalendarEventContext(id: "evt", title: "Client call", isJoinable: true)
+        ))
+
+        #expect(candidate?.id == "cal:evt")
+        #expect(candidate?.meetingTitle == "Client call")
+    }
 }

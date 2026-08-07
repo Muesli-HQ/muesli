@@ -2685,7 +2685,10 @@ final class MuesliController: NSObject {
     }
 
     private func currentOrNearbyCachedCalendarEvent() -> CalendarEventContext? {
-        selectCurrentOrNearbyCachedCalendarEvent(from: appState.upcomingCalendarEvents)
+        selectCurrentOrNearbyCachedCalendarEvent(
+            from: appState.upcomingCalendarEvents,
+            hiddenEventIDs: appState.hiddenCalendarEventIDs
+        )
     }
 
     private func startMeetingFeatureMonitors(includeMaraudersMap: Bool) {
@@ -8608,21 +8611,44 @@ final class MuesliController: NSObject {
     }
 }
 
+/// Calendar context handed to the live meeting detector.
+///
+/// Hidden events are excluded outright — detection used to ignore the user's hide list.
+/// Everything else is still passed through, because a calendar event is useful *enrichment*
+/// (it supplies the meeting title) even when it carries no link. What it must not do is be
+/// sole evidence: the resolver's terminal calendar fallback builds a candidate from an event
+/// plus any mic/camera activity with no meeting app and no URL, which turned diary blocks like
+/// "Gym - Pull Calisthenics" into recording prompts titled after the block. `isJoinable` marks
+/// which events are allowed to carry that fallback on their own, using the same rule the
+/// scheduled-notification path already applies.
 func selectCurrentOrNearbyCachedCalendarEvent(
     from events: [UnifiedCalendarEvent],
+    hiddenEventIDs: Set<String>,
     now: Date = Date()
 ) -> CalendarEventContext? {
     let searchEnd = now.addingTimeInterval(5 * 60)
     let candidates = events
         .filter { event in
-            !event.isAllDay && event.endDate > now && event.startDate < searchEnd
+            !event.isAllDay
+                && !hiddenEventIDs.contains(event.id)
+                && event.endDate > now && event.startDate < searchEnd
         }
         .sorted { $0.startDate < $1.startDate }
 
-    if let active = candidates.first(where: { $0.startDate <= now && $0.endDate > now }) {
-        return CalendarEventContext(id: active.id, title: active.title)
+    func context(_ event: UnifiedCalendarEvent) -> CalendarEventContext {
+        CalendarEventContext(
+            id: event.id,
+            title: event.title,
+            isJoinable: ScheduledMeetingNotificationPolicy.isJoinableMeeting(
+                event,
+                hiddenEventIDs: hiddenEventIDs
+            )
+        )
     }
 
-    return candidates.first(where: { $0.startDate > now })
-        .map { CalendarEventContext(id: $0.id, title: $0.title) }
+    if let active = candidates.first(where: { $0.startDate <= now && $0.endDate > now }) {
+        return context(active)
+    }
+
+    return candidates.first(where: { $0.startDate > now }).map(context)
 }

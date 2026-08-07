@@ -43,12 +43,21 @@ final class MeetingPromptStateMachine {
     private var lastCandidateID: String?
     private let candidateStabilityDelay: TimeInterval
     private let browserAutoDismissCooldown: TimeInterval
+    /// How long a calendar-only candidate stays suppressed after the user starts recording it.
+    /// Long enough to outlast a stop then re-detect cycle, short enough that a later occurrence
+    /// of a recurring event still prompts. See markRecordingStarted.
+    private let calendarRestartCooldown: TimeInterval
     private var pendingCandidateID: String?
     private var pendingCandidateFirstSeenAt: Date?
 
-    init(candidateStabilityDelay: TimeInterval = 3, browserAutoDismissCooldown: TimeInterval = 120) {
+    init(
+        candidateStabilityDelay: TimeInterval = 3,
+        browserAutoDismissCooldown: TimeInterval = 120,
+        calendarRestartCooldown: TimeInterval = 15 * 60
+    ) {
         self.candidateStabilityDelay = candidateStabilityDelay
         self.browserAutoDismissCooldown = browserAutoDismissCooldown
+        self.calendarRestartCooldown = calendarRestartCooldown
     }
 
     func evaluate(
@@ -143,9 +152,26 @@ final class MeetingPromptStateMachine {
     }
 
     @discardableResult
-    func markRecordingStarted(_ candidate: MeetingCandidate) -> Bool {
+    func markRecordingStarted(_ candidate: MeetingCandidate, now: Date = Date()) -> Bool {
         if visiblePromptID == candidate.id { visiblePromptID = nil }
         lastCandidateID = candidate.id
+        // Calendar-only candidates keep their raw "cal:<eventID>" id and used to record no
+        // suppression at all, so accepting the prompt suppressed nothing and the identical
+        // event re-prompted as soon as the recording stopped.
+        //
+        // They get an EXPIRING suppression rather than joining the permanent set: unlike a
+        // media-session id, a calendar id is not guaranteed unique per occurrence, so
+        // suppressing it for the life of the process could silently skip tomorrow's instance
+        // of a recurring meeting. The cooldown only has to outlast the stop/re-detect loop.
+        if candidate.suppressionID.hasPrefix("cal:") {
+            let inserted = autoDismissedSuppressionIDs
+                .updateValue(now.addingTimeInterval(calendarRestartCooldown),
+                             forKey: candidate.suppressionID) == nil
+            userDismissedSuppressionIDs.remove(candidate.suppressionID)
+            resetPendingCandidate()
+            return inserted
+        }
+
         guard candidate.suppressionID.hasPrefix("meeting-session:") else {
             resetPendingCandidate()
             return false
