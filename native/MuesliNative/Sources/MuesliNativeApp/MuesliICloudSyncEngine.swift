@@ -25,7 +25,6 @@ struct ICloudSyncResult: Equatable {
     let uploaded: ICloudSyncKindCounts
     let downloaded: ICloudSyncKindCounts
     let hasPendingUploads: Bool
-    let syncZoneWasRecreated: Bool
     let syncedAt: Date
 }
 
@@ -480,7 +479,7 @@ final class MuesliICloudSyncEngine {
         forceBridgeDeviceRefresh: Bool = false
     ) async throws -> ICloudSyncResult {
         try await verifyAccountAvailable()
-        let syncZoneWasRecreated = try await ensureSyncZone()
+        _ = try await ensureSyncZone()
         await refreshBridgeDeviceLink(forceRefresh: forceBridgeDeviceRefresh)
         try await migrateDefaultZoneIfNeeded(store: store)
 
@@ -500,7 +499,6 @@ final class MuesliICloudSyncEngine {
             uploaded: uploadResult.uploaded,
             downloaded: downloaded,
             hasPendingUploads: uploadResult.hasPendingUploads,
-            syncZoneWasRecreated: syncZoneWasRecreated,
             syncedAt: Date()
         )
     }

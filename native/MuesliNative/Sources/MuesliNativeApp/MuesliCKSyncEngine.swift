@@ -80,11 +80,9 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
         uploaded = ICloudSyncKindCounts()
         downloaded = ICloudSyncKindCounts()
 
-        let syncZoneWasRecreated = try await prepare(
+        let (_, syncEngine) = try await prepareEngine(
             forceBridgeDeviceRefresh: forceBridgeDeviceRefresh
         )
-
-        let syncEngine = try makeEngineIfNeeded()
         try await MuesliCKSyncCycle.run(
             maximumUploadBatches: Self.maximumUploadBatchesPerSync,
             fetch: {
@@ -109,13 +107,21 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
             uploaded: uploaded,
             downloaded: downloaded,
             hasPendingUploads: try store.hasTextRecordsNeedingSync(),
-            syncZoneWasRecreated: syncZoneWasRecreated,
             syncedAt: Date()
         )
     }
 
     @discardableResult
     func prepare(forceBridgeDeviceRefresh: Bool = false) async throws -> Bool {
+        let (syncZoneWasRecreated, _) = try await prepareEngine(
+            forceBridgeDeviceRefresh: forceBridgeDeviceRefresh
+        )
+        return syncZoneWasRecreated
+    }
+
+    private func prepareEngine(
+        forceBridgeDeviceRefresh: Bool
+    ) async throws -> (syncZoneWasRecreated: Bool, engine: CKSyncEngine) {
         let preflight: MuesliICloudSyncEngine
         if let existing = self.preflight {
             preflight = existing
@@ -133,8 +139,8 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
             engine = nil
         }
 
-        _ = try makeEngineIfNeeded()
-        return syncZoneWasRecreated
+        let syncEngine = try makeEngineIfNeeded()
+        return (syncZoneWasRecreated, syncEngine)
     }
 
     func cancel() async {
