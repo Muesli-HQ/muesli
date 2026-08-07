@@ -1,5 +1,24 @@
 # AGENTS.md
 
+## Cloud Agents (Linux)
+
+Muesli is a native macOS app. Cloud Agents run on Linux and cannot build the Swift app, run `swift test`, or exercise `muesli-cli` without a macOS host.
+
+Use the Linux CI checks that mirror `.github/workflows/ci.yml` on `ubuntu-latest`:
+
+```bash
+./scripts/test_classify_changed_files.sh
+./scripts/test_ci_test_shards.sh
+./scripts/verify_update_flow.sh --skip-dmg
+```
+
+Native builds and the full test suite require macOS 14.2+ with Xcode 16+:
+
+```bash
+./scripts/dev-test.sh
+swift test --package-path native/MuesliNative
+```
+
 ## Build Artifacts and Worktrees
 
 SwiftPM can write build artifacts to `native/MuesliNative/.build` inside the active worktree. That can consume several GB per worktree when multiple feature worktrees are used.
