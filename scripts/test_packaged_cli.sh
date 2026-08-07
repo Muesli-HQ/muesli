@@ -19,7 +19,7 @@ trap cleanup EXIT
 LOCALVQE_LIB_DIR="${MUESLI_LOCALVQE_LIB_DIR:-$ROOT/native/MuesliNative/LocalVQE/lib}"
 localvqe_runtime_ready() {
   local dir="$1"
-  [[ -e "$dir/liblocalvqe.dylib" || -e "$dir/liblocalvqe.0.1.0.dylib" || -e "$dir/liblocalvqe.0.dylib" ]] || return 1
+  [[ -e "$dir/liblocalvqe.dylib" || -e "$dir/liblocalvqe.0.1.0.dylib" || -e "$dir/liblocalvqe.0.dylib" || -e "$dir/liblocalvqe_shared.dylib" ]] || return 1
   find "$dir" -maxdepth 1 -name 'libggml-base*.dylib' \( -type f -o -type l \) 2>/dev/null | grep -q .
 }
 

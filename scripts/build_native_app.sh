@@ -178,24 +178,34 @@ localvqe_runtime_is_complete() {
     return 1
   fi
 
-  if command -v otool >/dev/null 2>&1; then
-    local dep base
-    while IFS= read -r dep; do
-      [[ -n "$dep" ]] || continue
-      base="$(basename "$dep")"
-      case "$base" in
-        liblocalvqe*|libggml*)
-          if [[ ! -e "$dir/$base" ]]; then
-            echo "LocalVQE runtime incomplete: $base missing (required by $(basename "$primary"))" >&2
-            return 1
-          fi
-          ;;
-      esac
-    done < <(otool -L "$primary" 2>/dev/null | awk '/^\t/ {print $1}')
-  elif ! find "$dir" -maxdepth 1 -name 'libggml-base*.dylib' \( -type f -o -type l \) 2>/dev/null | grep -q .; then
-    # Fallback when otool is unavailable (non-macOS harnesses).
+  # libggml-base is a transitive dependency of the libggml umbrella shared
+  # library. Require it unconditionally so a one-level otool walk of only
+  # liblocalvqe cannot accept liblocalvqe+libggml without libggml-base.
+  if ! find "$dir" -maxdepth 1 -name 'libggml-base*.dylib' \( -type f -o -type l \) 2>/dev/null | grep -q .; then
     echo "LocalVQE runtime incomplete: libggml-base*.dylib missing in $dir" >&2
     return 1
+  fi
+
+  if command -v otool >/dev/null 2>&1; then
+    local lib dep base
+    # Walk every present LocalVQE/ggml dylib so transitive deps of libggml
+    # (libggml-base, libggml-cpu, …) are validated, not just direct deps of
+    # the primary liblocalvqe dylib.
+    while IFS= read -r lib; do
+      [[ -n "$lib" ]] || continue
+      while IFS= read -r dep; do
+        [[ -n "$dep" ]] || continue
+        base="$(basename "$dep")"
+        case "$base" in
+          liblocalvqe*|libggml*)
+            if [[ ! -e "$dir/$base" ]]; then
+              echo "LocalVQE runtime incomplete: $base missing (required by $(basename "$lib"))" >&2
+              return 1
+            fi
+            ;;
+        esac
+      done < <(otool -L "$lib" 2>/dev/null | awk '/^\t/ {print $1}')
+    done < <(find "$dir" -maxdepth 1 \( -name 'liblocalvqe*.dylib' -o -name 'libggml*.dylib' \) \( -type f -o -type l \) | sort)
   fi
   return 0
 }
@@ -234,13 +244,16 @@ WARNING: Complete LocalVQE runtime not found in $LOCALVQE_LIB_DIR
   Or re-run this build with:
     MUESLI_BUILD_LOCALVQE=1 $0 $*
 EOF
-  if [[ "$ALLOW_MISSING_LOCALVQE" == "1" ]]; then
-    echo "Continuing without LocalVQE (MUESLI_ALLOW_MISSING_LOCALVQE=1)." >&2
+  if [[ "$ALLOW_MISSING_LOCALVQE" == "1" && "$SKIP_SIGN" == "1" && "$REQUIRE_LOCALVQE" != "1" ]]; then
+    echo "Continuing without LocalVQE (MUESLI_ALLOW_MISSING_LOCALVQE=1, unsigned packaging)." >&2
+  elif [[ "$ALLOW_MISSING_LOCALVQE" == "1" ]]; then
+    echo "ERROR: MUESLI_ALLOW_MISSING_LOCALVQE=1 cannot override signed packaging or MUESLI_REQUIRE_LOCALVQE=1." >&2
+    exit 1
   elif [[ "$REQUIRE_LOCALVQE" == "1" || "$SKIP_SIGN" != "1" ]]; then
     # Intentionally keyed on signing, not BUILD_CONFIG: signed packaging
     # (release scripts and maintainer ./scripts/dev-test.sh without
     # MUESLI_SKIP_SIGN=1) must not silently ship a DTLN-only bundle.
-    echo "ERROR: refusing to package without a complete LocalVQE runtime. Set MUESLI_ALLOW_MISSING_LOCALVQE=1 to override." >&2
+    echo "ERROR: refusing to package without a complete LocalVQE runtime. Set MUESLI_ALLOW_MISSING_LOCALVQE=1 with MUESLI_SKIP_SIGN=1 to override for unsigned builds." >&2
     exit 1
   else
     echo "Continuing without LocalVQE for unsigned packaging (MUESLI_SKIP_SIGN=1). Set MUESLI_REQUIRE_LOCALVQE=1 to fail instead." >&2

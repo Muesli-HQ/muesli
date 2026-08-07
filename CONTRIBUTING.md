@@ -35,18 +35,22 @@ MUESLI_SKIP_SIGN=1 ./scripts/dev-test.sh
 
 `scripts/build_native_app.sh` refuses signed packaging without a *complete*
 LocalVQE runtime (`liblocalvqe` plus its `libggml*` companions, especially
-`libggml-base`). That includes maintainer `./scripts/dev-test.sh` runs that
-do not set `MUESLI_SKIP_SIGN=1` — the gate is keyed on signing, not
-debug/release. Unsigned packaging (`MUESLI_SKIP_SIGN=1`) prints a loud warning
-and continues; override with `MUESLI_REQUIRE_LOCALVQE=1` (fail) or
-`MUESLI_ALLOW_MISSING_LOCALVQE=1` (silence and continue). To build the runtime
+`libggml-base`, including transitive `otool` deps). That includes maintainer
+`./scripts/dev-test.sh` runs that do not set `MUESLI_SKIP_SIGN=1` — the gate
+is keyed on signing, not debug/release. Unsigned packaging
+(`MUESLI_SKIP_SIGN=1`) prints a loud warning and continues; override with
+`MUESLI_REQUIRE_LOCALVQE=1` (fail) or
+`MUESLI_ALLOW_MISSING_LOCALVQE=1` (unsigned only). To build the runtime
 inline during packaging, set `MUESLI_BUILD_LOCALVQE=1`.
 
-With meeting diagnostics enabled
-(`~/Library/Application Support/MuesliDev/MeetingDiagnostics.enabled`),
-`diagnostics.json` reports `aec.processor` (`localvqe` or `dtln`, or null when
-unloaded) and `aec.frameSize` (`256` for LocalVQE, `512` for DTLN, `0` when
-unloaded).
+To force a specific runtime AEC processor while testing:
+
+```bash
+MUESLI_AEC_PROCESSOR=dtln MUESLI_SKIP_SIGN=1 ./scripts/dev-test.sh
+MUESLI_AEC_PROCESSOR=localvqe-strict MUESLI_SKIP_SIGN=1 ./scripts/dev-test.sh
+```
+
+`localvqe-strict` does not fall back to DTLN when LocalVQE fails to load.
 
 That installs `/Applications/MuesliDev.app` with bundle ID `com.muesli.dev`
 and stores data under `~/Library/Application Support/MuesliDev/`, so it does

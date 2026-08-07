@@ -155,10 +155,11 @@ final class MeetingNeuralAec {
                 Self.logger.info("LocalVQE preloaded (frameSize=\(localVQE.frameSize, privacy: .public), library=\(localVQE.libraryPath, privacy: .public), model=\(localVQE.modelPath, privacy: .public))")
                 return
             } catch {
-                Self.logger.error("LocalVQE preload failed; falling back to DTLN: \(String(describing: error), privacy: .public)")
                 if selection == .localVQEStrict {
+                    Self.logger.error("LocalVQE preload failed in strict mode (no DTLN fallback): \(String(describing: error), privacy: .public)")
                     return
                 }
+                Self.logger.error("LocalVQE preload failed; falling back to DTLN: \(String(describing: error), privacy: .public)")
             }
         }
 
