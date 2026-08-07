@@ -71,6 +71,10 @@ protocol SystemAudioDiagnosticsProviding {
 
 struct MeetingAecDiagnosticsSnapshot: Codable {
     let ready: Bool
+    /// Active AEC backend name (`localvqe`, `dtln`, or nil when unloaded).
+    let processor: String?
+    /// Model hop/frame size in samples (LocalVQE=256, DTLN=512, 0=unloaded).
+    let frameSize: Int
     let processedFrames: Int
     let fullReferenceFrames: Int
     let partialReferenceFrames: Int

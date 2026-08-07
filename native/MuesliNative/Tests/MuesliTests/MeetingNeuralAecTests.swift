@@ -210,6 +210,23 @@ struct MeetingNeuralAecTests {
         #expect(processor.processedFrameCount == 2)
     }
 
+    @Test("diagnostics report active processor and frame size")
+    func diagnosticsReportActiveProcessorAndFrameSize() {
+        let localVQE = MeetingNeuralAec(preloadedProcessor: PassthroughAecProcessor(name: "localvqe", frameSize: 256))
+        #expect(localVQE.diagnosticsSnapshot.processor == "localvqe")
+        #expect(localVQE.diagnosticsSnapshot.frameSize == 256)
+        #expect(localVQE.diagnosticsSnapshot.ready)
+
+        let dtln = MeetingNeuralAec(preloadedProcessor: PassthroughAecProcessor(name: "dtln", frameSize: 512))
+        #expect(dtln.diagnosticsSnapshot.processor == "dtln")
+        #expect(dtln.diagnosticsSnapshot.frameSize == 512)
+
+        let unloaded = MeetingNeuralAec()
+        #expect(unloaded.diagnosticsSnapshot.processor == nil)
+        #expect(unloaded.diagnosticsSnapshot.frameSize == 0)
+        #expect(unloaded.diagnosticsSnapshot.ready == false)
+    }
+
     @Test("delay estimator reports missing mic candidate windows")
     func delayEstimatorReportsMissingMicCandidateWindows() throws {
         let estimator = MeetingAecDelayEstimator()
