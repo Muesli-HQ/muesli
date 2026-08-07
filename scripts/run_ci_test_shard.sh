@@ -31,6 +31,8 @@ case "${shard}" in
       UpdateFailureGuidanceTests
       WordCountTests
       CustomWordDictionaryTests
+      ModelDownloadCoordinatorTests
+      IndicASRBackendTests
     )
     ;;
   dictation-transcription)
