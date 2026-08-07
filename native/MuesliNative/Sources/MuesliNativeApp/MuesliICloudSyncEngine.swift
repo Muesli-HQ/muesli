@@ -408,7 +408,7 @@ enum ICloudSyncCallbackDeadline {
 }
 
 final class MuesliICloudSyncEngine {
-    private enum Schema {
+    enum Schema {
         static let containerIdentifier = "iCloud.com.mueslihq.muesli"
         static let syncZoneName = "MuesliSyncZone"
         static let textRecordType = "MuesliTextRecord"
@@ -447,6 +447,21 @@ final class MuesliICloudSyncEngine {
             return container == Schema.containerIdentifier
         }
         return false
+    }
+
+    static var cloudKitEnvironmentKeyComponent: String {
+        guard
+            let task = SecTaskCreateFromSelf(nil),
+            let value = SecTaskCopyValueForEntitlement(
+                task,
+                "com.apple.developer.icloud-container-environment" as CFString,
+                nil
+            ) as? String
+        else {
+            return "unspecified"
+        }
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized.isEmpty ? "unspecified" : normalized
     }
 
     init(
@@ -488,6 +503,21 @@ final class MuesliICloudSyncEngine {
             syncZoneWasRecreated: syncZoneWasRecreated,
             syncedAt: Date()
         )
+    }
+
+    /// Transitional preflight retained while text-record orchestration moves to
+    /// CKSyncEngine. Bridge discovery and the one-time legacy default-zone import
+    /// still use their existing CloudKit operations, but no token-based custom-zone
+    /// fetch or dirty-record upload is performed here.
+    func prepareForCKSyncEngine(
+        store: DictationStore,
+        forceBridgeDeviceRefresh: Bool = false
+    ) async throws -> Bool {
+        try await verifyAccountAvailable()
+        let syncZoneWasRecreated = try await ensureSyncZone()
+        await refreshBridgeDeviceLink(forceRefresh: forceBridgeDeviceRefresh)
+        try await migrateDefaultZoneIfNeeded(store: store)
+        return syncZoneWasRecreated
     }
 
     func ensureTextRecordSubscription() async throws {
@@ -562,7 +592,10 @@ final class MuesliICloudSyncEngine {
             MuesliBridgeDeviceIdentity.updateRemoteDevices(from: records, defaults: defaults)
             MuesliBridgeDeviceIdentity.markRefreshed(defaults: defaults)
         } catch {
-            fputs("Failed to refresh iCloud bridge device identity: \(error)\n", stderr)
+            fputs(
+                "Failed to refresh iCloud bridge device identity: \(String(describing: type(of: error)))\n",
+                stderr
+            )
             MuesliBridgeDeviceIdentity.markRefreshFailed(defaults: defaults)
         }
     }
@@ -745,6 +778,7 @@ final class MuesliICloudSyncEngine {
                     kind: kind,
                     recordName: recordName,
                     changeTag: savedRecord.recordChangeTag,
+                    systemFields: Self.encodedSystemFields(for: savedRecord),
                     recordUpdatedAt: dirtyRecord.updatedAt
                 ) {
                     markedRecordCount += 1
@@ -1119,7 +1153,8 @@ final class MuesliICloudSyncEngine {
 
     static func syncZoneCloudRecord(from record: SyncTextRecord, baseRecord: CKRecord? = nil) -> CKRecord {
         let recordID = CKRecord.ID(recordName: record.id, zoneID: Schema.syncZoneID)
-        let cloud = baseRecord ?? CKRecord(recordType: Schema.textRecordType, recordID: recordID)
+        let persistedRecord = record.cloudSystemFields.flatMap(Self.record(fromSystemFields:))
+        let cloud = baseRecord ?? persistedRecord ?? CKRecord(recordType: Schema.textRecordType, recordID: recordID)
         cloud["kind"] = record.kind.rawValue as NSString
         cloud["source"] = record.source as NSString?
         cloud["localSource"] = record.localSource as NSString?
@@ -1159,7 +1194,7 @@ final class MuesliICloudSyncEngine {
         fetchedChangeTag != local.cloudChangeTag && remote.updatedAt > local.updatedAt
     }
 
-    private static func syncTextRecord(from record: CKRecord) -> SyncTextRecord? {
+    static func syncTextRecord(from record: CKRecord) -> SyncTextRecord? {
         guard let kind = kind(from: record),
               let createdAt = record["createdAt"] as? Date,
               let updatedAt = record["updatedAt"] as? Date else {
@@ -1189,8 +1224,27 @@ final class MuesliICloudSyncEngine {
             wordCount: (record["wordCount"] as? NSNumber)?.intValue ?? 0,
             isDeleted: isDeleted,
             cloudChangeTag: record.recordChangeTag,
+            cloudSystemFields: encodedSystemFields(for: record),
             followUpToRecordName: record["followUpToRecordName"] as? String
         )
+    }
+
+    static func encodedSystemFields(for record: CKRecord) -> Data? {
+        let archiver = NSKeyedArchiver(requiringSecureCoding: true)
+        record.encodeSystemFields(with: archiver)
+        archiver.finishEncoding()
+        return archiver.encodedData
+    }
+
+    static func record(fromSystemFields data: Data) -> CKRecord? {
+        do {
+            let unarchiver = try NSKeyedUnarchiver(forReadingFrom: data)
+            unarchiver.requiresSecureCoding = true
+            defer { unarchiver.finishDecoding() }
+            return CKRecord(coder: unarchiver)
+        } catch {
+            return nil
+        }
     }
 
     private static func kind(from record: CKRecord) -> SyncTextRecordKind? {

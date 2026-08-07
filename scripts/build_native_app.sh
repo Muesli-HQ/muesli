@@ -363,10 +363,14 @@ if [[ "$SKIP_SIGN" != "1" ]]; then
       [[ -n "$ICLOUD_CONTAINER_ENVIRONMENT" ]] || return 0
       /usr/libexec/PlistBuddy -c "Print :Entitlements:$key" "$PROFILE_PLIST" >/dev/null 2>&1 || return 0
       value="$(printf '%s' "$ICLOUD_CONTAINER_ENVIRONMENT" | tr '[:upper:]' '[:lower:]')"
-      if [[ "$value" != "development" && "$value" != "production" ]]; then
-        echo "ERROR: unsupported iCloud container environment '$value'. Expected development or production." >&2
-        exit 1
-      fi
+      case "$value" in
+        development) value="Development" ;;
+        production) value="Production" ;;
+        *)
+          echo "ERROR: unsupported iCloud container environment '$value'. Expected development or production." >&2
+          exit 1
+          ;;
+      esac
       /usr/libexec/PlistBuddy -c "Delete :$key" "$TEMP_ENTITLEMENTS" >/dev/null 2>&1 || true
       /usr/libexec/PlistBuddy -c "Add :$key string $value" "$TEMP_ENTITLEMENTS"
       echo "Using iCloud entitlement: $key=$value"
@@ -375,7 +379,7 @@ if [[ "$SKIP_SIGN" != "1" ]]; then
     copy_profile_string_entitlement "application-identifier"
     copy_profile_string_entitlement "com.apple.developer.team-identifier"
     # Do not copy this profile entitlement by default: Apple profiles may store
-    # it as an array, while CloudKit expects a single lowercase runtime value.
+    # it as an array, while the signed app requires one case-sensitive value.
     copy_explicit_icloud_container_environment_entitlement "com.apple.developer.icloud-container-environment"
     if [[ -n "$APS_ENVIRONMENT" ]]; then
       if ! /usr/libexec/PlistBuddy -c "Set :com.apple.developer.aps-environment $APS_ENVIRONMENT" "$TEMP_ENTITLEMENTS" 2>/dev/null; then
