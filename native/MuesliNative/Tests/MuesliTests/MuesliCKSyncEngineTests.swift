@@ -150,6 +150,26 @@ struct MuesliCKSyncEngineTests {
         #expect(batch.staleChanges == [pending])
     }
 
+    @Test("local batch read failure preserves pending saves for retry")
+    func localBatchReadFailurePreservesPendingSave() async throws {
+        struct TestReadError: Error {}
+
+        let store = try makeStore()
+        let pending = CKSyncEngine.PendingRecordZoneChange.saveRecord(CKRecord.ID(
+            recordName: "pending-local-row",
+            zoneID: MuesliICloudSyncEngine.Schema.syncZoneID
+        ))
+        let coordinator = MuesliCKSyncEngine(store: store)
+
+        let batch = await coordinator.makeRecordBatch(
+            pendingChanges: [pending],
+            loadRecords: { _ in throw TestReadError() }
+        )
+
+        #expect(batch.recordsToSave.isEmpty)
+        #expect(batch.staleChanges.isEmpty)
+    }
+
     @Test("newer fetched server record replaces local row and pending save")
     func newerFetchedRecordWins() async throws {
         let store = try makeStore()

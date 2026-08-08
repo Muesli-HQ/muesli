@@ -228,6 +228,16 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
     func makeRecordBatch(
         pendingChanges: [CKSyncEngine.PendingRecordZoneChange]
     ) -> MuesliCKSyncRecordBatch {
+        makeRecordBatch(
+            pendingChanges: pendingChanges,
+            loadRecords: { try store.textRecordsForSync(recordNames: $0) }
+        )
+    }
+
+    func makeRecordBatch(
+        pendingChanges: [CKSyncEngine.PendingRecordZoneChange],
+        loadRecords: ([String]) throws -> [String: SyncTextRecord]
+    ) -> MuesliCKSyncRecordBatch {
         var recordsToSave: [CKRecord] = []
         var staleChanges: [CKSyncEngine.PendingRecordZoneChange] = []
         let relevantChanges: [(CKSyncEngine.PendingRecordZoneChange, CKRecord.ID)] =
@@ -238,9 +248,18 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
                 }
                 return (change, recordID)
             }
-        let localRecords = (try? store.textRecordsForSync(
-            recordNames: relevantChanges.map { $0.1.recordName }
-        )) ?? [:]
+        let localRecords: [String: SyncTextRecord]
+        do {
+            localRecords = try loadRecords(relevantChanges.map { $0.1.recordName })
+        } catch {
+            // A transient SQLite read failure must not turn durable pending saves into
+            // stale changes. Keep the outbox intact so CKSyncEngine can retry later.
+            fputs(
+                "[muesli-native] CKSyncEngine local batch read failed: \(String(describing: type(of: error)))\n",
+                stderr
+            )
+            return MuesliCKSyncRecordBatch(recordsToSave: [], staleChanges: [])
+        }
 
         for (change, recordID) in relevantChanges {
             guard let localRecord = localRecords[recordID.recordName] else {
