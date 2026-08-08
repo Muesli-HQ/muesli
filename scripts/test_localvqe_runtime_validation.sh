@@ -8,7 +8,8 @@ TEST_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 RUNTIME_DIR="$TEST_ROOT/runtime"
 FAKE_BIN="$TEST_ROOT/bin"
-mkdir -p "$RUNTIME_DIR" "$FAKE_BIN"
+NO_OTOOL_BIN="$TEST_ROOT/no-otool-bin"
+mkdir -p "$RUNTIME_DIR" "$FAKE_BIN" "$NO_OTOOL_BIN"
 
 cat > "$FAKE_BIN/otool" <<'FAKE_OTOOL'
 #!/usr/bin/env bash
@@ -40,6 +41,9 @@ printf '\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current versi
 FAKE_OTOOL
 chmod +x "$FAKE_BIN/otool"
 export PATH="$FAKE_BIN:$PATH"
+for tool in basename find grep sort; do
+  ln -s "$(command -v "$tool")" "$NO_OTOOL_BIN/$tool"
+done
 
 touch \
   "$RUNTIME_DIR/liblocalvqe.dylib" \
@@ -64,6 +68,10 @@ expect_incomplete() {
 }
 
 expect_complete "complete dependency closure"
+
+rm "$RUNTIME_DIR/libggml.dylib"
+PATH="$NO_OTOOL_BIN" expect_incomplete "missing libggml umbrella without otool"
+touch "$RUNTIME_DIR/libggml.dylib"
 
 export FAKE_OTOOL_FAIL_BASENAME="libggml.dylib"
 expect_incomplete "unreadable dylib"

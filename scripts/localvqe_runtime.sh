@@ -25,6 +25,7 @@ muesli_collect_localvqe_runtime() {
 
 muesli_localvqe_runtime_is_complete() {
   local dir="$1"
+  local ggml_umbrella=""
   local primary=""
   local name
   local runtime_listing=""
@@ -51,6 +52,20 @@ muesli_localvqe_runtime_is_complete() {
   done
   if [[ -z "$primary" ]]; then
     echo "LocalVQE primary library missing in $dir" >&2
+    return 1
+  fi
+
+  for library in "${runtime_files[@]}"; do
+    name="$(basename "$library")"
+    case "$name" in
+      libggml.dylib|libggml.[0-9]*.dylib)
+        ggml_umbrella="$library"
+        break
+        ;;
+    esac
+  done
+  if [[ -z "$ggml_umbrella" ]]; then
+    echo "LocalVQE runtime incomplete: libggml umbrella dylib missing in $dir" >&2
     return 1
   fi
 
