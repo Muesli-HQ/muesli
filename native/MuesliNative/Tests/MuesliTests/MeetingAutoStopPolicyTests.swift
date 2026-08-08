@@ -372,6 +372,136 @@ struct MeetingAutoStopPolicyTests {
         #expect(shouldStopAfterGrace)
     }
 
+    @Test("keeps matching a calendar meeting after every observed identity changes")
+    func matchesCalendarMeetingAfterObservedIdentityChanges() throws {
+        let armed = try #require(joinAndRecordSource())
+        let focusedTab = focusedTabCandidate()
+
+        #expect(MeetingAutoStopPolicy.matches(candidate: focusedTab, source: armed))
+
+        // Leaving the call's tab drops the room URL, and a browser audio
+        // session that lapses past its idle timeout mints a fresh id. Neither
+        // the candidate id, the suppression id nor the URL survives that, so
+        // the calendar event is the only identity left to match on.
+        let refined = armed.refined(with: focusedTab)
+        #expect(MeetingAutoStopPolicy.matches(
+            candidate: backgroundedTabCandidate(),
+            source: refined
+        ))
+    }
+
+    @Test("does not auto-stop a calendar meeting whose observed identity changed")
+    func doesNotAutoStopCalendarMeetingAfterObservedIdentityChanges() throws {
+        let startedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        var tracker = MeetingAutoStopTracker()
+        tracker.arm(source: try #require(joinAndRecordSource()))
+        tracker.observeBeforeRecordingStarted(candidate: focusedTabCandidate())
+        tracker.markRecordingStarted(now: startedAt)
+
+        let shouldStop = tracker.observe(
+            candidate: backgroundedTabCandidate(),
+            now: startedAt.addingTimeInterval(120),
+            gracePeriod: 20
+        )
+
+        #expect(!shouldStop)
+    }
+
+    @Test("still auto-stops once the calendar meeting's audio is gone")
+    func autoStopsWhenCalendarMeetingCandidateDisappears() throws {
+        let startedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        var tracker = MeetingAutoStopTracker()
+        tracker.arm(source: try #require(joinAndRecordSource()))
+        tracker.observeBeforeRecordingStarted(candidate: focusedTabCandidate())
+        tracker.markRecordingStarted(now: startedAt)
+
+        let shouldStop = tracker.observe(
+            candidate: nil,
+            now: startedAt.addingTimeInterval(120),
+            gracePeriod: 20
+        )
+
+        #expect(shouldStop)
+    }
+
+    @Test("ignores a candidate for a different calendar event")
+    func ignoresDifferentCalendarEvent() throws {
+        let refined = try #require(joinAndRecordSource()).refined(with: focusedTabCandidate())
+        let otherMeeting = MeetingCandidate(
+            id: "cal:event-2",
+            platform: .unknown,
+            appName: "Chrome",
+            url: nil,
+            evidence: [.audioInputProcess, .calendarEvent],
+            startedAt: Date(timeIntervalSince1970: 1_800_000_120),
+            meetingTitle: "Something else",
+            sourceBundleID: "com.google.Chrome",
+            sourcePID: 4242,
+            suppressionID: "browser:com.google.Chrome:session:1800000120",
+            calendarEventID: "event-2"
+        )
+
+        #expect(!MeetingAutoStopPolicy.matches(candidate: otherMeeting, source: refined))
+    }
+
+    @Test("ignores an uncorrelated candidate when the source has a calendar event")
+    func ignoresCandidateWithoutCalendarEvent() throws {
+        let refined = try #require(joinAndRecordSource()).refined(with: focusedTabCandidate())
+        let unrelated = MeetingCandidate(
+            id: "browser:com.google.Chrome:session:1800000120",
+            platform: .unknown,
+            appName: "Chrome",
+            url: nil,
+            evidence: [.audioInputProcess],
+            startedAt: Date(timeIntervalSince1970: 1_800_000_120),
+            meetingTitle: nil,
+            sourceBundleID: "com.google.Chrome",
+            sourcePID: 4242,
+            suppressionID: "browser:com.google.Chrome:session:1800000120"
+        )
+
+        #expect(!MeetingAutoStopPolicy.matches(candidate: unrelated, source: refined))
+    }
+
+    /// "Join & Record" arms auto-stop from the calendar event's join URL alone,
+    /// so the source starts with no bundle id and no calendar id of its own.
+    private func joinAndRecordSource() -> MeetingAutoStopSource? {
+        URL(string: "https://meet.google.com/aaa-bbbb-ccc")
+            .flatMap(MeetingAutoStopSource.init(meetingURL:))
+    }
+
+    private func focusedTabCandidate() -> MeetingCandidate {
+        MeetingCandidate(
+            id: "googleMeet:meet.google.com/aaa-bbbb-ccc",
+            platform: .googleMeet,
+            appName: "Chrome",
+            url: "meet.google.com/aaa-bbbb-ccc",
+            evidence: [.browserURL, .audioInputProcess, .calendarEvent],
+            startedAt: Date(timeIntervalSince1970: 1_800_000_000),
+            meetingTitle: "Team sync",
+            sourceBundleID: "com.google.Chrome",
+            sourcePID: 1234,
+            suppressionID: "browser:com.google.Chrome:session:1800000000",
+            calendarEventID: "event-1"
+        )
+    }
+
+    private func backgroundedTabCandidate() -> MeetingCandidate {
+        MeetingCandidate(
+            id: "cal:event-1",
+            platform: .unknown,
+            appName: "Chrome",
+            url: nil,
+            evidence: [.audioInputProcess, .calendarEvent],
+            startedAt: Date(timeIntervalSince1970: 1_800_000_120),
+            meetingTitle: "Team sync",
+            sourceBundleID: "com.google.Chrome",
+            sourcePID: 1234,
+            suppressionID: "browser:com.google.Chrome:session:1800000120",
+            calendarEventID: "event-1"
+        )
+    }
+
     private func googleMeetCandidate() -> MeetingCandidate {
         MeetingCandidate(
             id: "googleMeet:meet.google.com/aaa-bbbb-ccc",
