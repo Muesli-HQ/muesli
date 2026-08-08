@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import AVFoundation
 import CloudKit
 import CoreAudio
@@ -6008,6 +6009,7 @@ final class MuesliController: NSObject {
             updateMeetingStatusAndScheduleSync(id: liveMeetingID, status: .processing)
             syncAppState()
         }
+        indicator.setDictationOrbPresentation(.inactive)
         indicator.setMeetingRecording(false, config: config)
         indicator.setTranscribingTitle("Transcribing", config: config)
         setState(.transcribing)
@@ -6657,6 +6659,14 @@ final class MuesliController: NSObject {
         }
     }
 
+    private func setStandardDictationOrbState(
+        _ state: DictationState,
+        presentation: DictationOrbPresentation
+    ) {
+        indicator.setDictationOrbPresentation(presentation)
+        setState(state)
+    }
+
     private var isDictationActivityInProgress: Bool {
         dictationState != .idle || dictationStartedAt != nil || computerUseCommandStartedAt != nil || isNemotron35Streaming
     }
@@ -7064,6 +7074,7 @@ final class MuesliController: NSObject {
         fputs("[cua] prepare\n", stderr)
         meetingMonitor.suppressWhileActive()
         meetingMonitor.refreshState()
+        indicator.setDictationOrbPresentation(.inactive)
         setState(.preparing)
         computerUseAudioSessionManager.arm(source: "computer_use_hotkey_prepare")
         activeComputerUseAudioSessionID = computerUseAudioSessionManager.currentSessionID
@@ -7077,6 +7088,7 @@ final class MuesliController: NSObject {
         indicator.powerProvider = { [weak self] in
             self?.computerUseAudioSessionManager.currentPower() ?? -160
         }
+        indicator.setDictationOrbPresentation(.inactive)
         setState(.preparing)
         computerUseAudioSessionManager.beginRecording(
             mode: "computer_use",
@@ -7580,7 +7592,7 @@ final class MuesliController: NSObject {
         if !dictationAudioSessionManager.hasActiveSession {
             meetingMonitor.suppressWhileActive()
             meetingMonitor.refreshState()
-            setState(.preparing)
+            setStandardDictationOrbState(.preparing, presentation: .preparing)
             dictationAudioSessionManager.arm(source: "hotkey_prepare")
         }
     }
@@ -7594,7 +7606,7 @@ final class MuesliController: NSObject {
             beginDictationLatencyTrace(reason: "hotkey")
         }
         if !isStreamingDictationBackend {
-            setState(.preparing)
+            setStandardDictationOrbState(.preparing, presentation: .preparing)
             meetingMonitor.suppressWhileActive()
             meetingMonitor.refreshState()
             if !dictationAudioSessionManager.hasActiveSession {
@@ -7820,7 +7832,7 @@ final class MuesliController: NSObject {
     }
 
     private func activateDictationPreparingIndicator() {
-        setState(.preparing)
+        setStandardDictationOrbState(.preparing, presentation: .preparing)
         if !isDictationTestMode {
             indicator.powerProvider = { [weak self] in
                 self?.dictationAudioSessionManager.currentPower() ?? -160
@@ -7829,6 +7841,12 @@ final class MuesliController: NSObject {
     }
 
     private func activateDictationRecordingIndicator() {
+        if !isDictationTestMode {
+            indicator.powerProvider = { [weak self] in
+                self?.dictationAudioSessionManager.currentPower() ?? -160
+            }
+        }
+        indicator.setDictationOrbPresentation(.listening)
         if hotkeyMonitor.isToggleRecording {
             setState(.recording)
             indicator.setToggleDictation(true, config: config)
@@ -7836,11 +7854,6 @@ final class MuesliController: NSObject {
         } else {
             setState(.recording)
             indicator.setRecordingWaveformLevel(config: config)
-        }
-        if !isDictationTestMode {
-            indicator.powerProvider = { [weak self] in
-                self?.dictationAudioSessionManager.currentPower() ?? -160
-            }
         }
     }
 
@@ -7949,7 +7962,7 @@ final class MuesliController: NSObject {
         dictationStartedAt = nil
         clearCapturedDictationSessionContext()
         captureDictationCorrectionTargetApp()
-        setState(.preparing)
+        setStandardDictationOrbState(.preparing, presentation: .preparing)
         dictationAudioSessionManager.beginRecording(
             mode: "hold-start",
             duckingEnabled: config.muteSystemAudioDuringDictation,
@@ -8122,7 +8135,7 @@ final class MuesliController: NSObject {
         dictationStartedAt = nil
         clearCapturedDictationSessionContext()
         captureDictationCorrectionTargetApp()
-        setState(.preparing)
+        setStandardDictationOrbState(.preparing, presentation: .preparing)
 
         // Nemotron streaming: live text at cursor in handsfree mode too
         if isStreamingDictationBackend {
@@ -8201,7 +8214,7 @@ final class MuesliController: NSObject {
                 )
             }
             dictationAudioSessionManager.endExternalSession(reason: "nemotron-stop")
-            setState(.transcribing)
+            setStandardDictationOrbState(.transcribing, presentation: .transcribing)
             return
         }
 
@@ -8326,7 +8339,7 @@ final class MuesliController: NSObject {
             return
         }
 
-        setState(.transcribing)
+        setStandardDictationOrbState(.transcribing, presentation: .transcribing)
         finishDictationLatencyTrace("ready_for_transcription")
         syncDictationRecorderWarmup(intent: .postDictation(.dictationStop))
         let isTestMode = isDictationTestMode
@@ -8456,7 +8469,8 @@ final class MuesliController: NSObject {
                     self.statusBarController?.refresh()
                     self.historyWindowController?.reload()
                     self.syncAppState()
-                    if outputMode != .voiceNote {
+                    let canPaste = AXIsProcessTrusted()
+                    if outputMode != .voiceNote, canPaste {
                         PasteController.paste(text: text)
                         if self.config.enableDictionaryCorrectionPrompts {
                             // Dictionary correction prompts are an explicit opt-in
@@ -8474,6 +8488,10 @@ final class MuesliController: NSObject {
                     }
                     self.resetDictationOutputMode()
                     self.setState(.idle)
+                    if outputMode != .voiceNote, !canPaste {
+                        self.statusBarController?.setStatus("Dictation saved — grant Accessibility to paste")
+                        self.indicator.showWarning("Grant Accessibility to paste", icon: "!", duration: 3.0)
+                    }
                     self.meetingMonitor.resumeAfterCooldown()
                     self.syncDictationRecorderWarmup(intent: .postDictation(.transcriptionComplete))
                     TelemetryDeck.signal("dictation.completed", parameters: [

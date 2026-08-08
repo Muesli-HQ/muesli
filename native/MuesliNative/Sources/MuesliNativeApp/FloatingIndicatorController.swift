@@ -11,6 +11,31 @@ enum FloatingIndicatorPointerIntent {
     }
 }
 
+enum VoiceOrbMotion {
+    static func normalizedLevel(fromDecibels decibels: CGFloat) -> CGFloat {
+        max(0, min(1, (decibels + 62) / 40))
+    }
+
+    static func smoothedLevel(current: CGFloat, target: CGFloat) -> CGFloat {
+        let response: CGFloat = target > current ? 0.36 : 0.14
+        return current + (target - current) * response
+    }
+
+    static func scales(for level: CGFloat) -> (core: CGFloat, corona: CGFloat) {
+        let clamped = max(0, min(1, level))
+        let shaped = CGFloat(pow(Double(clamped), 0.72))
+        return (core: 1 + shaped * 0.12, corona: 0.96 + shaped * 0.18)
+    }
+}
+
+enum DictationOrbPresentation: Equatable {
+    case normal
+    case preparing
+    case listening
+    case transcribing
+    case inactive
+}
+
 final class InteractiveFloatingPanel: NSPanel {
     var leftMouseDownHandler: ((NSPoint) -> Bool)?
 
@@ -145,6 +170,13 @@ final class FloatingIndicatorController: NSObject {
     private var waveformAnimationStartedAt = Date()
     fileprivate var isDragging = false
     var powerProvider: (() -> Float)?
+
+    // MARK: - Voice Orb (standard dictation)
+    private var orbCoronaLayer: CALayer?
+    private var orbCoreLayer: CAGradientLayer?
+    private var orbBaseColor: NSColor = .white
+    private var orbBrightColor: NSColor = .white
+    private var dictationOrbPresentation: DictationOrbPresentation = .normal
     var onStopMeeting: (() -> Void)?
     var onDiscardMeeting: (() -> Void)?
     var onToggleMeetingPause: (() -> Void)?
@@ -176,6 +208,26 @@ final class FloatingIndicatorController: NSObject {
         indicatorScreenFrame
     }
 
+    func setDictationOrbPresentation(_ presentation: DictationOrbPresentation) {
+        dictationOrbPresentation = presentation
+    }
+
+    private var displaysVoiceOrb: Bool {
+        guard !isMeetingRecording else { return false }
+        switch dictationOrbPresentation {
+        case .normal:
+            return state == .idle
+        case .preparing:
+            return state == .preparing
+        case .listening:
+            return state == .recording
+        case .transcribing:
+            return state == .transcribing
+        case .inactive:
+            return false
+        }
+    }
+
     func pointerDragBegan() {
         hideMeetingTranscript()
     }
@@ -185,19 +237,13 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func handleClick(atX x: CGFloat? = nil) {
-        if state == .recording, let x {
+        if state == .recording, !isMeetingRecording {
+            onStopToggleDictation?()
+        } else if state == .recording, let x {
             if x < 30 {
-                if isMeetingRecording {
-                    onToggleMeetingPause?()
-                } else {
-                    onCancelToggleDictation?()
-                }
+                onToggleMeetingPause?()
             } else {
-                if isMeetingRecording {
-                    onStopMeeting?()
-                } else {
-                    onStopToggleDictation?()
-                }
+                onStopMeeting?()
             }
         } else if state == .recording {
             if isMeetingRecording {
@@ -220,6 +266,7 @@ final class FloatingIndicatorController: NSObject {
         isDragging = true
         hoverExitWorkItem?.cancel()
         hideMeetingTranscript()
+        guard !displaysVoiceOrb else { return }
         guard state == .idle,
               !isShowingLoading,
               let panel,
@@ -282,6 +329,7 @@ final class FloatingIndicatorController: NSObject {
     func setRecordingWaveformWaiting(config: AppConfig) {
         recordingWaveformMode = .waiting
         guard state == .recording else { return }
+        guard !displaysVoiceOrb else { return }
         let targetSize = frameForState(.recording, config: config).size
         ensureWaveformAnimation(in: targetSize, mode: .waiting)
     }
@@ -292,6 +340,7 @@ final class FloatingIndicatorController: NSObject {
             setState(.recording, config: config)
             return
         }
+        guard !displaysVoiceOrb else { return }
         let targetSize = frameForState(.recording, config: config).size
         ensureWaveformAnimation(in: targetSize, mode: .level)
     }
@@ -302,6 +351,7 @@ final class FloatingIndicatorController: NSObject {
             setState(.preparing, config: config)
             return
         }
+        guard !displaysVoiceOrb else { return }
         if let contentView {
             ensureWaveformAnimation(in: contentView.frame.size, mode: .waiting)
         }
@@ -420,6 +470,9 @@ final class FloatingIndicatorController: NSObject {
             exitComputerUseCursorMode(restoreFrame: false)
         }
         self.state = state
+        if state == .idle {
+            dictationOrbPresentation = .normal
+        }
         if state != .transcribing {
             transcribingTitle = "Transcribing"
             computerUseTranscriptText = nil
@@ -445,6 +498,10 @@ final class FloatingIndicatorController: NSObject {
             && !preservesWaveformAcrossTransition {
             stopWaveformAnimation()
         }
+        if displaysVoiceOrb {
+            barLayers.forEach { $0.removeFromSuperlayer() }
+            barLayers.removeAll()
+        }
 
         // Immediately snap glass elements off when leaving idle so the SF Symbol
         // mic doesn't linger/fade during the recording/transcribing transition.
@@ -457,6 +514,7 @@ final class FloatingIndicatorController: NSObject {
 
         let style = styleForState(state, config: config)
         let targetFrame = frameForState(state, config: config)
+        panel.hasShadow = !displaysVoiceOrb
 
         let duration = transitionDuration(
             from: previousState,
@@ -480,19 +538,25 @@ final class FloatingIndicatorController: NSObject {
             contentView.layer?.borderColor = style.border.cgColor
 
             if state == .recording {
-                // Dictation uses cancel on the left. Meeting recordings use pause/resume.
-                iconLabel.isHidden = false
-                iconLabel.animator().alphaValue = 1
-                iconLabel.stringValue = recordingControlSymbol()
-                iconLabel.textColor = .white.withAlphaComponent(isMeetingRecording ? 0.86 : 0.45)
-                iconLabel.font = NSFont.systemFont(ofSize: isMeetingRecording ? 8 : 7, weight: .semibold)
-                let xSize: CGFloat = 10
-                iconLabel.frame = NSRect(
-                    x: 7,
-                    y: floor((targetFrame.height - xSize) / 2),
-                    width: xSize,
-                    height: xSize
-                )
+                if isMeetingRecording {
+                    // Meeting recording: compact pill with pause/stop symbols.
+                    iconLabel.isHidden = false
+                    iconLabel.animator().alphaValue = 1
+                    iconLabel.stringValue = recordingControlSymbol()
+                    iconLabel.textColor = .white.withAlphaComponent(0.86)
+                    iconLabel.font = NSFont.systemFont(ofSize: 8, weight: .semibold)
+                    let xSize: CGFloat = 10
+                    iconLabel.frame = NSRect(
+                        x: 7,
+                        y: floor((targetFrame.height - xSize) / 2),
+                        width: xSize,
+                        height: xSize
+                    )
+                } else {
+                    // Dictation recording: the voice orb is the visual — no icon/stop.
+                    iconLabel.isHidden = true
+                    iconLabel.animator().alphaValue = 0
+                }
 
                 textLabel.animator().alphaValue = 0
                 textLabel.isHidden = true
@@ -530,19 +594,31 @@ final class FloatingIndicatorController: NSObject {
 
         switch state {
         case .recording:
-            ensureWaveformAnimation(in: targetFrame.size, mode: recordingWaveformMode)
-            addStopLayer(in: targetFrame.size)
+            if !displaysVoiceOrb {
+                ensureWaveformAnimation(in: targetFrame.size, mode: recordingWaveformMode)
+                addStopLayer(in: targetFrame.size)
+            } else {
+                ensureOrbAnimation(in: targetFrame.size, presentation: .listening)
+            }
         case .transcribing:
-            if #available(macOS 15, *) {
+            if displaysVoiceOrb {
+                ensureOrbAnimation(in: targetFrame.size, presentation: .transcribing)
+            } else if #available(macOS 15, *) {
                 wandIconView?.addSymbolEffect(
                     .wiggle.backward.byLayer,
                     options: .repeating, animated: true
                 )
             }
         case .preparing:
-            ensureWaveformAnimation(in: targetFrame.size, mode: .waiting)
-        default:
-            break
+            if displaysVoiceOrb {
+                ensureOrbAnimation(in: targetFrame.size, presentation: .preparing)
+            } else {
+                ensureWaveformAnimation(in: targetFrame.size, mode: .waiting)
+            }
+        case .idle:
+            if displaysVoiceOrb {
+                ensureOrbAnimation(in: targetFrame.size, presentation: .normal)
+            }
         }
 
         panel.orderFrontRegardless()
@@ -945,6 +1021,7 @@ final class FloatingIndicatorController: NSObject {
         amplitudeTimer = nil
         barLayers.forEach { $0.removeFromSuperlayer() }
         barLayers.removeAll()
+        removeOrbLayers()
         smoothedAmplitude = 0
         waveformAnimationMode = .level
         powerProvider = nil
@@ -1037,8 +1114,11 @@ final class FloatingIndicatorController: NSObject {
         let levelAmplitude: CGFloat
         if waveformAnimationMode == .level {
             let dB = CGFloat(powerProvider?() ?? -160)
-            let raw = max(0, min(1, (dB + 68) / 38))
-            smoothedAmplitude = 0.48 * raw + 0.52 * smoothedAmplitude
+            let raw = VoiceOrbMotion.normalizedLevel(fromDecibels: dB)
+            smoothedAmplitude = VoiceOrbMotion.smoothedLevel(
+                current: smoothedAmplitude,
+                target: raw
+            )
             levelAmplitude = smoothedAmplitude
         } else {
             levelAmplitude = 0
@@ -1063,6 +1143,204 @@ final class FloatingIndicatorController: NSObject {
             bar.frame.origin.y = (pillHeight - h) / 2
         }
         CATransaction.commit()
+
+        if orbCoreLayer != nil, dictationOrbPresentation == .listening {
+            updateOrbAmplitude(level: levelAmplitude)
+        } else if orbCoreLayer != nil, dictationOrbPresentation == .transcribing {
+            updateOrbTranscribing(elapsed: elapsed)
+        }
+    }
+
+    // MARK: - Voice Orb
+
+    /// A fixed blue gradient gives every standard-dictation phase one continuous,
+    /// OpenAI-inspired visual identity without inheriting a recording accent.
+    private func orbColorPair() -> (baseHex: String, brightHex: String) {
+        (baseHex: "6679D4", brightHex: "D7DFFF")
+    }
+
+    private func ensureOrbAnimation(
+        in frameSize: NSSize,
+        presentation: DictationOrbPresentation
+    ) {
+        if orbCoreLayer == nil {
+            setupOrb(in: frameSize)
+        } else {
+            layoutOrb(in: frameSize)
+        }
+
+        switch presentation {
+        case .listening:
+            if amplitudeTimer == nil || waveformAnimationMode != .level {
+                startWaveformAnimation(mode: .level)
+            }
+        case .transcribing:
+            if amplitudeTimer == nil || waveformAnimationMode != .waiting {
+                startWaveformAnimation(mode: .waiting)
+            }
+        case .normal, .preparing, .inactive:
+            amplitudeTimer?.invalidate()
+            amplitudeTimer = nil
+            smoothedAmplitude = 0
+            updateOrbRestingAppearance(for: presentation)
+        }
+    }
+
+    private func updateOrbRestingAppearance(for presentation: DictationOrbPresentation) {
+        let highlightAmount: CGFloat = presentation == .preparing ? 0.68 : 0.52
+        let shadowOpacity: Float = presentation == .preparing ? 0.24 : 0.16
+        let coreScale: CGFloat = presentation == .preparing ? 1.03 : 1.0
+        let coronaScale: CGFloat = presentation == .preparing ? 1.0 : 0.96
+        let highlight = blend(orbBaseColor, orbBrightColor, t: highlightAmount)
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        orbCoronaLayer?.transform = CATransform3DMakeScale(coronaScale, coronaScale, 1)
+        orbCoronaLayer?.shadowOpacity = shadowOpacity
+        orbCoreLayer?.transform = CATransform3DMakeScale(coreScale, coreScale, 1)
+        orbCoreLayer?.colors = [
+            highlight.cgColor,
+            orbBaseColor.cgColor,
+            orbBaseColor.withAlphaComponent(0.9).cgColor
+        ]
+        CATransaction.commit()
+    }
+
+    private func updateOrbTranscribing(elapsed: CGFloat) {
+        let bob = sin(elapsed * 2 * CGFloat.pi / 1.35) * 2.5
+        let coreTransform = CATransform3DTranslate(CATransform3DMakeScale(1.02, 1.02, 1), 0, bob, 0)
+        let coronaTransform = CATransform3DTranslate(CATransform3DMakeScale(1.0, 1.0, 1), 0, bob, 0)
+        let highlight = blend(orbBaseColor, orbBrightColor, t: 0.6)
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        orbCoronaLayer?.transform = coronaTransform
+        orbCoronaLayer?.shadowOpacity = 0.22
+        orbCoreLayer?.transform = coreTransform
+        orbCoreLayer?.colors = [
+            highlight.cgColor,
+            orbBaseColor.cgColor,
+            orbBaseColor.withAlphaComponent(0.9).cgColor
+        ]
+        CATransaction.commit()
+    }
+
+    private func setupOrb(in frameSize: NSSize) {
+        removeOrbLayers()
+        guard let layer = contentView?.layer else { return }
+        let center = CGPoint(x: frameSize.width / 2, y: frameSize.height / 2)
+        let (baseHex, brightHex) = orbColorPair()
+        let baseColor = NSColor.colorWith(hexString: baseHex, alpha: 1)
+        let brightColor = NSColor.colorWith(hexString: brightHex, alpha: 1)
+        orbBaseColor = baseColor
+        orbBrightColor = brightColor
+
+        let coreDiameter: CGFloat = 32
+        let coronaDiameter: CGFloat = 46
+        let corona = CALayer()
+        corona.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
+        corona.cornerRadius = coronaDiameter / 2
+        corona.backgroundColor = baseColor.withAlphaComponent(0.14).cgColor
+        corona.shadowColor = brightColor.cgColor
+        corona.shadowRadius = 8
+        corona.shadowOpacity = 0.16
+        corona.shadowOffset = .zero
+        corona.frame = CGRect(
+            x: center.x - coronaDiameter / 2,
+            y: center.y - coronaDiameter / 2,
+            width: coronaDiameter,
+            height: coronaDiameter
+        )
+        corona.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        corona.position = center
+        corona.transform = CATransform3DMakeScale(0.96, 0.96, 1)
+        layer.addSublayer(corona)
+        orbCoronaLayer = corona
+
+        let core = CAGradientLayer()
+        core.type = .radial
+        core.startPoint = CGPoint(x: 0.5, y: 0.5)
+        core.endPoint = CGPoint(x: 1.0, y: 0.0)
+        core.colors = [
+            brightColor.withAlphaComponent(0.9).cgColor,
+            baseColor.cgColor,
+            baseColor.withAlphaComponent(0.9).cgColor
+        ]
+        core.locations = [0, 0.58, 1]
+        core.frame = CGRect(
+            x: center.x - coreDiameter / 2,
+            y: center.y - coreDiameter / 2,
+            width: coreDiameter,
+            height: coreDiameter
+        )
+        core.cornerRadius = coreDiameter / 2
+        core.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        core.position = center
+        core.masksToBounds = true
+        layer.addSublayer(core)
+        orbCoreLayer = core
+    }
+
+    private func layoutOrb(in frameSize: NSSize) {
+        let center = CGPoint(x: frameSize.width / 2, y: frameSize.height / 2)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let coreDiameter: CGFloat = 32
+        let coronaDiameter: CGFloat = 46
+        orbCoronaLayer?.frame = CGRect(
+            x: center.x - coronaDiameter / 2,
+            y: center.y - coronaDiameter / 2,
+            width: coronaDiameter,
+            height: coronaDiameter
+        )
+        orbCoronaLayer?.cornerRadius = coronaDiameter / 2
+        orbCoronaLayer?.position = center
+        orbCoreLayer?.frame = CGRect(
+            x: center.x - coreDiameter / 2,
+            y: center.y - coreDiameter / 2,
+            width: coreDiameter,
+            height: coreDiameter
+        )
+        orbCoreLayer?.cornerRadius = coreDiameter / 2
+        orbCoreLayer?.position = center
+        CATransaction.commit()
+    }
+
+    private func updateOrbAmplitude(level: CGFloat) {
+        let motion = VoiceOrbMotion.scales(for: level)
+        let shaped = max(0, min(1, level))
+
+        let baseColor = orbBaseColor
+        let brightColor = orbBrightColor
+        let highlight = blend(baseColor, brightColor, t: 0.5 + shaped * 0.1)
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        orbCoronaLayer?.transform = CATransform3DMakeScale(motion.corona, motion.corona, 1)
+        orbCoronaLayer?.shadowOpacity = Float(0.16 + shaped * 0.16)
+        orbCoreLayer?.transform = CATransform3DMakeScale(motion.core, motion.core, 1)
+        orbCoreLayer?.colors = [
+            highlight.cgColor,
+            baseColor.cgColor,
+            baseColor.withAlphaComponent(0.9).cgColor
+        ]
+        CATransaction.commit()
+    }
+
+    private func removeOrbLayers() {
+        orbCoronaLayer?.removeFromSuperlayer()
+        orbCoreLayer?.removeFromSuperlayer()
+        orbCoronaLayer = nil
+        orbCoreLayer = nil
+    }
+
+    private func blend(_ a: NSColor, _ b: NSColor, t: CGFloat) -> NSColor {
+        NSColor(
+            red: a.redComponent + (b.redComponent - a.redComponent) * t,
+            green: a.greenComponent + (b.greenComponent - a.greenComponent) * t,
+            blue: a.blueComponent + (b.blueComponent - a.blueComponent) * t,
+            alpha: a.alphaComponent + (b.alphaComponent - a.alphaComponent) * t
+        )
     }
 
     private func applyGlassState(_ state: DictationState, frameSize: NSSize) {
@@ -1070,9 +1348,8 @@ final class FloatingIndicatorController: NSObject {
         let radius = frameSize.height / 2
         let themeHex = config.recordingColorHex
 
-        // During recording, hide frost and show solid accent. Otherwise frosted glass.
-        let isRecording = (state == .recording)
-        glassView?.isHidden = isRecording
+        // The orb owns its visual surface; other workflows retain their frosted pill.
+        glassView?.isHidden = state == .recording || displaysVoiceOrb
         glassView?.frame = NSRect(origin: .zero, size: frameSize)
         glassView?.layer?.cornerRadius = radius
         glassView?.layer?.masksToBounds = true
@@ -1087,17 +1364,40 @@ final class FloatingIndicatorController: NSObject {
             tintAlpha = 0.62
             tintHex = "1e1e2e"
         case .recording:
-            tintAlpha = 0.85
-            tintHex = themeHex
+            if isMeetingRecording {
+                tintAlpha = 0.85
+                tintHex = themeHex
+            } else {
+                // Voice orb renders its own core; no pill tint behind it.
+                tintAlpha = 0
+                tintHex = "1e1e2e"
+            }
         case .transcribing:
             tintAlpha = 0.62
             tintHex = "1e1e2e"
         }
-        tintLayer?.isHidden = false
-        tintLayer?.backgroundColor = NSColor.colorWith(hexString: tintHex, alpha: tintAlpha).cgColor
-        applyTintLayerGeometry(size: frameSize, radius: radius)
+        if displaysVoiceOrb {
+            tintLayer?.isHidden = true
+            // Clear the pill border so the orb is the only visible edge.
+            contentView?.layer?.borderWidth = 0
+            contentView?.layer?.backgroundColor = NSColor.clear.cgColor
+            // Let the corona's glow extend beyond the panel bounds.
+            contentView?.layer?.masksToBounds = false
+        } else {
+            tintLayer?.isHidden = false
+            tintLayer?.backgroundColor = NSColor.colorWith(hexString: tintHex, alpha: tintAlpha).cgColor
+            applyTintLayerGeometry(size: frameSize, radius: radius)
+            contentView?.layer?.masksToBounds = true
+        }
 
         let iconSize = NSSize(width: 18, height: 18)
+
+        if displaysVoiceOrb {
+            wandIconView?.isHidden = true
+            iconLabel?.isHidden = true
+            micIconView?.isHidden = true
+            return
+        }
 
         switch state {
         case .idle:
@@ -1118,9 +1418,10 @@ final class FloatingIndicatorController: NSObject {
             }
 
         case .recording:
-            // Waveform bars replace mic icon during recording.
+            // Waveform bars replace mic icon during meeting recording; the voice
+            // orb (dictation) owns its own visual.
             wandIconView?.isHidden = true
-            iconLabel?.isHidden = false   // keeps the ✕ cancel label
+            iconLabel?.isHidden = isMeetingRecording ? false : true
             micIconView?.isHidden = true
 
         case .transcribing:
@@ -1459,16 +1760,31 @@ final class FloatingIndicatorController: NSObject {
             return NSRect(x: 0, y: 0, width: 64, height: 28)
         }
         let size: NSSize
-        switch state {
+        if displaysVoiceOrb {
+            size = NSSize(width: 56, height: 56)
+        } else {
+            switch state {
         case .idle:
             size = isHovered ? NSSize(width: 220, height: 36) : NSSize(width: 44, height: 28)
         case .preparing: size = NSSize(width: 76, height: 22)
-        case .recording: size = NSSize(width: 76, height: 22)
+        case .recording:
+            // Dictation recording renders as a circular voice orb; meeting
+            // recording keeps the compact pill so its pause/stop symbols and
+            // transcript-panel geometry are unchanged.
+            if isMeetingRecording {
+                size = NSSize(width: 76, height: 22)
+            } else {
+                // A small transparent hit area gives the muted halo room to render
+                // while preserving easy drag access.
+                let orbDiameter: CGFloat = 56
+                size = NSSize(width: orbDiameter, height: orbDiameter)
+            }
         case .transcribing:
             if let transcript = computerUseTranscriptText {
                 size = Self.computerUseTranscriptPillSize(transcript: transcript, screen: screen)
             } else {
                 size = Self.transcribingPillSize(title: transcribingTitle, screenWidth: screen.width)
+            }
             }
         }
 
