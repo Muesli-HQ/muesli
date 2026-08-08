@@ -349,6 +349,10 @@ struct MuesliCKSyncEngineTests {
             recordUpdatedAt: local.updatedAt
         ))
         let coordinator = MuesliCKSyncEngine(store: store)
+        try store.saveCloudSyncStateData(
+            Data("account-one-state".utf8),
+            forKey: MuesliCKSyncEngine.stateKey
+        )
 
         try await coordinator.handleAccountChange(requiresMetadataReset: true)
 
@@ -356,5 +360,6 @@ struct MuesliCKSyncEngineTests {
         #expect(reset.text == "Keep this local text")
         #expect(reset.cloudChangeTag == nil)
         #expect(reset.cloudSystemFields == nil)
+        #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.stateKey) == nil)
     }
 }

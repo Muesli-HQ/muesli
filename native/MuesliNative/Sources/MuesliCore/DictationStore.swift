@@ -2784,29 +2784,48 @@ public final class DictationStore {
     /// CKSyncEngine may restore pending changes from its serialized state after an
     /// app restart, so the record provider cannot rely on an in-memory upload cache.
     public func textRecordForSync(recordName: String) throws -> SyncTextRecord? {
+        try textRecordsForSync(recordNames: [recordName])[recordName]
+    }
+
+    /// Returns local snapshots for a batch of CloudKit record names using one
+    /// database connection and one record-name migration pass.
+    public func textRecordsForSync(recordNames: [String]) throws -> [String: SyncTextRecord] {
+        let recordNames = Array(Set(recordNames.filter { !$0.isEmpty }))
+        guard !recordNames.isEmpty else { return [:] }
+
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         try ensureCloudRecordNames(db: db)
+
+        let placeholders = Array(repeating: "?", count: recordNames.count).joined(separator: ", ")
+        var records: [String: SyncTextRecord] = [:]
 
         let dictationSQL = """
         SELECT cloud_record_name, raw_text, app_context, timestamp, started_at, ended_at,
                duration_seconds, word_count, source, updated_at, deleted_at, cloud_change_tag,
                cloud_system_fields
         FROM dictations
-        WHERE cloud_record_name = ?
-        LIMIT 1
+        WHERE cloud_record_name IN (\(placeholders))
         """
         var dictationStatement: OpaquePointer?
         guard sqlite3_prepare_v2(db, dictationSQL, -1, &dictationStatement, nil) == SQLITE_OK else {
             throw lastError(db)
         }
-        sqlite3_bind_text(dictationStatement, 1, (recordName as NSString).utf8String, -1, nil)
-        if sqlite3_step(dictationStatement) == SQLITE_ROW {
-            let record = makeSyncDictationRecord(dictationStatement)
-            sqlite3_finalize(dictationStatement)
-            return record
+        defer { sqlite3_finalize(dictationStatement) }
+        for (index, recordName) in recordNames.enumerated() {
+            sqlite3_bind_text(
+                dictationStatement,
+                Int32(index + 1),
+                (recordName as NSString).utf8String,
+                -1,
+                nil
+            )
         }
-        sqlite3_finalize(dictationStatement)
+        while sqlite3_step(dictationStatement) == SQLITE_ROW {
+            if let record = makeSyncDictationRecord(dictationStatement) {
+                records[record.id] = record
+            }
+        }
 
         let meetingSQL = """
         SELECT m.cloud_record_name, m.title, m.raw_transcript, m.formatted_notes, m.manual_notes,
@@ -2816,17 +2835,28 @@ public final class DictationStore {
                m.cloud_system_fields
         FROM meetings AS m
         LEFT JOIN meetings AS predecessor ON predecessor.id = m.follow_up_to_id
-        WHERE m.cloud_record_name = ?
-        LIMIT 1
+        WHERE m.cloud_record_name IN (\(placeholders))
         """
         var meetingStatement: OpaquePointer?
         guard sqlite3_prepare_v2(db, meetingSQL, -1, &meetingStatement, nil) == SQLITE_OK else {
             throw lastError(db)
         }
         defer { sqlite3_finalize(meetingStatement) }
-        sqlite3_bind_text(meetingStatement, 1, (recordName as NSString).utf8String, -1, nil)
-        guard sqlite3_step(meetingStatement) == SQLITE_ROW else { return nil }
-        return makeSyncMeetingRecord(meetingStatement)
+        for (index, recordName) in recordNames.enumerated() {
+            sqlite3_bind_text(
+                meetingStatement,
+                Int32(index + 1),
+                (recordName as NSString).utf8String,
+                -1,
+                nil
+            )
+        }
+        while sqlite3_step(meetingStatement) == SQLITE_ROW {
+            if let record = makeSyncMeetingRecord(meetingStatement) {
+                records[record.id] = record
+            }
+        }
+        return records
     }
 
     public func cloudSyncStateData(forKey key: String) throws -> Data? {

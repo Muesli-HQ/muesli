@@ -195,8 +195,8 @@ run_ios_to_mac() {
   deadline=$(( started_epoch + TIMEOUT_SECONDS ))
   printf 'WAIT iOS -> macOS | create one new TestFlight voice note within %ss.\n' "$TIMEOUT_SECONDS"
 
+  reactivate_muesli_dev
   while (( $(date +%s) <= deadline )); do
-    reactivate_muesli_dev
     count="$(sqlite3 -readonly "$DATABASE_PATH" "SELECT COUNT(*) FROM dictations WHERE id>$baseline AND lower(trim(COALESCE(source, '')))='ios' AND deleted_at IS NULL;")"
     if [[ "$count" =~ ^[0-9]+$ ]] && (( count > 0 )); then
       finished_epoch="$(date +%s)"

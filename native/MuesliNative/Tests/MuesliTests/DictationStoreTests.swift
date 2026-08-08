@@ -207,6 +207,40 @@ struct DictationStoreTests {
         #expect(reset.cloudSystemFields == nil)
     }
 
+    @Test("CloudKit batch lookup returns dictations and meetings")
+    func cloudTextRecordBatchLookup() throws {
+        let store = try makeStore()
+        let endedAt = Date(timeIntervalSince1970: 1_770_000_000)
+        _ = try store.insertDictation(
+            text: "Batch dictation",
+            durationSeconds: 2,
+            startedAt: endedAt.addingTimeInterval(-2),
+            endedAt: endedAt
+        )
+        try store.insertMeeting(
+            title: "Batch meeting",
+            calendarEventID: nil,
+            startTime: endedAt.addingTimeInterval(-60),
+            endTime: endedAt,
+            rawTranscript: "Meeting transcript",
+            formattedNotes: "Meeting notes",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+
+        let dirtyRecords = try store.textRecordsNeedingSync(limit: 10)
+        let dictation = try #require(dirtyRecords.first { $0.kind == .dictation })
+        let meeting = try #require(dirtyRecords.first { $0.kind == .meeting })
+        let records = try store.textRecordsForSync(
+            recordNames: [dictation.id, meeting.id, "missing-record", dictation.id]
+        )
+
+        #expect(records.count == 2)
+        #expect(records[dictation.id]?.text == "Batch dictation")
+        #expect(records[meeting.id]?.text == "Meeting transcript")
+        #expect(records["missing-record"] == nil)
+    }
+
     @Test("migration replaces calendar event uniqueness with occurrence lookup")
     func migrationReplacesCalendarEventUniqueness() throws {
         let store = try makeLegacyStore()

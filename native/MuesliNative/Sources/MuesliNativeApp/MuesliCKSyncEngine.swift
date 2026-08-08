@@ -46,7 +46,7 @@ struct MuesliCKSyncRecordBatch: Sendable {
 /// rediscover dirty rows and add their stable record IDs to CKSyncEngine state,
 /// so a crash between a local edit and state serialization cannot lose work.
 actor MuesliCKSyncEngine: CKSyncEngineDelegate {
-    private static var stateKey: String {
+    static var stateKey: String {
         "cksyncengine.private.MuesliSyncZone.\(MuesliICloudSyncEngine.cloudKitEnvironmentKeyComponent).v1"
     }
     private static let subscriptionID = "muesli-cksyncengine-private-v1"
@@ -135,8 +135,10 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
             forceBridgeDeviceRefresh: forceBridgeDeviceRefresh
         )
         if syncZoneWasRecreated {
-            try store.clearCloudSyncStateData(forKey: Self.stateKey)
+            let engineToCancel = engine
             engine = nil
+            await engineToCancel?.cancelOperations()
+            try store.clearCloudSyncStateData(forKey: Self.stateKey)
         }
 
         let syncEngine = try makeEngineIfNeeded()
@@ -144,7 +146,9 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
     }
 
     func cancel() async {
-        await engine?.cancelOperations()
+        let engineToCancel = engine
+        engine = nil
+        await engineToCancel?.cancelOperations()
     }
 
     private func makeEngineIfNeeded() throws -> CKSyncEngine {
@@ -226,13 +230,20 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
     ) -> MuesliCKSyncRecordBatch {
         var recordsToSave: [CKRecord] = []
         var staleChanges: [CKSyncEngine.PendingRecordZoneChange] = []
-
-        for change in pendingChanges {
-            guard case .saveRecord(let recordID) = change,
-                  recordID.zoneID == MuesliICloudSyncEngine.Schema.syncZoneID else {
-                continue
+        let relevantChanges: [(CKSyncEngine.PendingRecordZoneChange, CKRecord.ID)] =
+            pendingChanges.compactMap { change in
+                guard case .saveRecord(let recordID) = change,
+                      recordID.zoneID == MuesliICloudSyncEngine.Schema.syncZoneID else {
+                    return nil
+                }
+                return (change, recordID)
             }
-            guard let localRecord = try? store.textRecordForSync(recordName: recordID.recordName) else {
+        let localRecords = (try? store.textRecordsForSync(
+            recordNames: relevantChanges.map { $0.1.recordName }
+        )) ?? [:]
+
+        for (change, recordID) in relevantChanges {
+            guard let localRecord = localRecords[recordID.recordName] else {
                 staleChanges.append(change)
                 continue
             }
@@ -276,9 +287,9 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
                 conflictBaseRecords.removeAll()
                 switch change.changeType {
                 case .signIn, .switchAccounts:
-                    try handleAccountChange(requiresMetadataReset: true)
+                    try await handleAccountChange(requiresMetadataReset: true)
                 case .signOut:
-                    try handleAccountChange(requiresMetadataReset: false)
+                    try await handleAccountChange(requiresMetadataReset: false)
                 @unknown default:
                     break
                 }
@@ -380,7 +391,11 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
         }
     }
 
-    func handleAccountChange(requiresMetadataReset: Bool) throws {
+    func handleAccountChange(requiresMetadataReset: Bool) async throws {
+        let engineToCancel = engine
+        engine = nil
+        await engineToCancel?.cancelOperations()
+        try store.clearCloudSyncStateData(forKey: Self.stateKey)
         conflictBaseRecords.removeAll()
         if requiresMetadataReset {
             try store.resetTextRecordCloudMetadataForAccountChange()

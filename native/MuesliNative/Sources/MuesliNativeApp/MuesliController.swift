@@ -811,6 +811,9 @@ final class MuesliController: NSObject {
         iCloudSyncDebounceTask = nil
         iCloudSubscriptionTask?.cancel()
         iCloudSubscriptionTask = nil
+        Task { [ckSyncEngine] in
+            await ckSyncEngine.cancel()
+        }
         hotkeyMonitor.stop()
         computerUseHotkeyMonitor.stop()
         meetingRecordingHotkeyMonitor.stop()
@@ -1899,6 +1902,9 @@ final class MuesliController: NSObject {
         iCloudSyncDebounceTask = nil
         iCloudSubscriptionTask?.cancel()
         iCloudSubscriptionTask = nil
+        Task { [ckSyncEngine] in
+            await ckSyncEngine.cancel()
+        }
         resetICloudSubscriptionState()
         resetBridgeDiscoveryRuntimeState()
         appState.iCloudSyncStatus = "iCloud sync is off."
@@ -1912,6 +1918,9 @@ final class MuesliController: NSObject {
         iCloudSyncDebounceTask = nil
         iCloudSubscriptionTask?.cancel()
         iCloudSubscriptionTask = nil
+        Task { [ckSyncEngine] in
+            await ckSyncEngine.cancel()
+        }
         resetICloudSubscriptionState()
         resetBridgeDiscoveryRuntimeState()
         appState.iCloudSyncStatus = "iCloud sync is unavailable in this local-only build."
