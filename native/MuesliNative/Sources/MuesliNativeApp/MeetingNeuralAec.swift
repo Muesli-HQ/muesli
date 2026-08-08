@@ -152,14 +152,16 @@ final class MeetingNeuralAec {
                 processor = localVQE
                 frameSize = localVQE.frameSize
                 isLoaded = true
-                Self.logger.info("LocalVQE preloaded (frameSize=\(localVQE.frameSize, privacy: .public), library=\(localVQE.libraryPath, privacy: .public), model=\(localVQE.modelPath, privacy: .public))")
+                let libraryName = URL(fileURLWithPath: localVQE.libraryPath).lastPathComponent
+                let modelName = URL(fileURLWithPath: localVQE.modelPath).lastPathComponent
+                Self.logger.info("LocalVQE preloaded (frameSize=\(localVQE.frameSize, privacy: .public), library=\(libraryName, privacy: .public), model=\(modelName, privacy: .public))")
                 return
             } catch {
                 if selection == .localVQEStrict {
-                    Self.logger.error("LocalVQE preload failed in strict mode (no DTLN fallback): \(String(describing: error), privacy: .public)")
+                    Self.logger.error("LocalVQE preload failed in strict mode (no DTLN fallback): \(String(describing: error), privacy: .private)")
                     return
                 }
-                Self.logger.error("LocalVQE preload failed; falling back to DTLN: \(String(describing: error), privacy: .public)")
+                Self.logger.error("LocalVQE preload failed; falling back to DTLN: \(String(describing: error), privacy: .private)")
             }
         }
 
@@ -170,7 +172,7 @@ final class MeetingNeuralAec {
             isLoaded = true
             Self.logger.info("DTLN-aec model preloaded (frameSize=\(dtln.frameSize, privacy: .public))")
         } catch {
-            Self.logger.error("DTLN-aec preload failed: \(String(describing: error), privacy: .public)")
+            Self.logger.error("DTLN-aec preload failed: \(String(describing: error), privacy: .private)")
         }
     }
 

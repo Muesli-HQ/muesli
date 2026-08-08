@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/scripts/muesli_spm_cache.sh"
+source "$ROOT/scripts/localvqe_runtime.sh"
 PACKAGE_DIR="$ROOT/native/MuesliNative"
 DIST_DIR="$ROOT/dist-native"
 INSTALL_DIR="${MUESLI_INSTALL_DIR:-/Applications}"
@@ -149,75 +150,22 @@ ALLOW_MISSING_LOCALVQE="${MUESLI_ALLOW_MISSING_LOCALVQE:-0}"
 REQUIRE_LOCALVQE="${MUESLI_REQUIRE_LOCALVQE:-0}"
 BUILD_LOCALVQE="${MUESLI_BUILD_LOCALVQE:-0}"
 
-collect_localvqe_runtime() {
-  local dir="$1"
-  local -a found=()
-  if [[ -d "$dir" ]]; then
-    while IFS= read -r dylib; do
-      found+=("$dylib")
-    done < <(find "$dir" -maxdepth 1 \( -name "liblocalvqe*.dylib" -o -name "libggml*.dylib" -o -name "libggml*.so" \) \( -type f -o -type l \) | sort)
-  fi
-  printf '%s\n' "${found[@]+"${found[@]}"}"
-}
-
 # Reject partial LocalVQE installs (e.g. liblocalvqe present but libggml-base
 # missing). Otherwise packaging would "succeed" and the app would still fall
 # back to DTLN at runtime when dlopen fails.
-localvqe_runtime_is_complete() {
-  local dir="$1"
-  local primary=""
-  local name
-  for name in liblocalvqe.dylib liblocalvqe.0.1.0.dylib liblocalvqe.0.dylib liblocalvqe_shared.dylib; do
-    if [[ -e "$dir/$name" ]]; then
-      primary="$dir/$name"
-      break
-    fi
-  done
-  if [[ -z "$primary" ]]; then
-    echo "LocalVQE primary library missing in $dir" >&2
-    return 1
-  fi
-
-  # libggml-base is a transitive dependency of the libggml umbrella shared
-  # library. Require it unconditionally so a one-level otool walk of only
-  # liblocalvqe cannot accept liblocalvqe+libggml without libggml-base.
-  if ! find "$dir" -maxdepth 1 -name 'libggml-base*.dylib' \( -type f -o -type l \) 2>/dev/null | grep -q .; then
-    echo "LocalVQE runtime incomplete: libggml-base*.dylib missing in $dir" >&2
-    return 1
-  fi
-
-  if command -v otool >/dev/null 2>&1; then
-    local lib dep base
-    # Walk every present LocalVQE/ggml dylib so transitive deps of libggml
-    # (libggml-base, libggml-cpu, …) are validated, not just direct deps of
-    # the primary liblocalvqe dylib.
-    while IFS= read -r lib; do
-      [[ -n "$lib" ]] || continue
-      while IFS= read -r dep; do
-        [[ -n "$dep" ]] || continue
-        base="$(basename "$dep")"
-        case "$base" in
-          liblocalvqe*|libggml*)
-            if [[ ! -e "$dir/$base" ]]; then
-              echo "LocalVQE runtime incomplete: $base missing (required by $(basename "$lib"))" >&2
-              return 1
-            fi
-            ;;
-        esac
-      done < <(otool -L "$lib" 2>/dev/null | awk '/^\t/ {print $1}')
-    done < <(find "$dir" -maxdepth 1 \( -name 'liblocalvqe*.dylib' -o -name 'libggml*.dylib' \) \( -type f -o -type l \) | sort)
-  fi
-  return 0
-}
-
 refresh_localvqe_runtime_files() {
+  local collected=""
   LOCALVQE_RUNTIME_FILES=()
+  if ! collected="$(muesli_collect_localvqe_runtime "$LOCALVQE_LIB_DIR")"; then
+    echo "Unable to inspect LocalVQE runtime in $LOCALVQE_LIB_DIR" >&2
+    return 1
+  fi
   while IFS= read -r dylib; do
     [[ -n "$dylib" ]] || continue
     LOCALVQE_RUNTIME_FILES+=("$dylib")
-  done < <(collect_localvqe_runtime "$LOCALVQE_LIB_DIR")
+  done <<< "$collected"
 
-  if [[ ${#LOCALVQE_RUNTIME_FILES[@]} -gt 0 ]] && ! localvqe_runtime_is_complete "$LOCALVQE_LIB_DIR"; then
+  if [[ ${#LOCALVQE_RUNTIME_FILES[@]} -gt 0 ]] && ! muesli_localvqe_runtime_is_complete "$LOCALVQE_LIB_DIR"; then
     echo "Ignoring incomplete LocalVQE runtime in $LOCALVQE_LIB_DIR" >&2
     LOCALVQE_RUNTIME_FILES=()
   fi

@@ -76,6 +76,9 @@ jobs:
       - name: Test CI test shard assignments
         run: ./scripts/test_ci_test_shards.sh
 
+      - name: Test LocalVQE runtime validation
+        run: ./scripts/test_localvqe_runtime_validation.sh
+
   # Release build — validate the app product compiles in release mode
   build_release:
     needs: changes

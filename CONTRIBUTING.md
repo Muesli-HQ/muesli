@@ -130,8 +130,9 @@ release scripts for normal PR validation.
 
 Before packaging a signed release, ensure a *complete* LocalVQE runtime is
 present (`./scripts/build_localvqe.sh`). `build_native_app.sh` fails closed when
-those dylibs are missing or incomplete unless `MUESLI_ALLOW_MISSING_LOCALVQE=1`
-is set.
+those dylibs are missing or incomplete. `MUESLI_ALLOW_MISSING_LOCALVQE=1` is
+an unsigned-development override only and cannot bypass signed release
+packaging.
 
 ## SwiftPM Build Cache
 

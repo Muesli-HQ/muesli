@@ -88,6 +88,43 @@ struct MeetingAecDiagnosticsSnapshot: Codable {
     let delaySkipHistory: [MeetingAecDelaySkip]
 }
 
+extension MeetingAecDiagnosticsSnapshot {
+    private enum CodingKeys: String, CodingKey {
+        case ready
+        case processor
+        case frameSize
+        case processedFrames
+        case fullReferenceFrames
+        case partialReferenceFrames
+        case missingReferenceFrames
+        case systemSamplesReceived
+        case micSamplesReceived
+        case bufferedSystemSamples
+        case bufferedMicSamples
+        case currentDelayMs
+        case delayHistory
+        case delaySkipHistory
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        ready = try container.decode(Bool.self, forKey: .ready)
+        processor = try container.decodeIfPresent(String.self, forKey: .processor)
+        frameSize = try container.decodeIfPresent(Int.self, forKey: .frameSize) ?? 0
+        processedFrames = try container.decode(Int.self, forKey: .processedFrames)
+        fullReferenceFrames = try container.decode(Int.self, forKey: .fullReferenceFrames)
+        partialReferenceFrames = try container.decode(Int.self, forKey: .partialReferenceFrames)
+        missingReferenceFrames = try container.decode(Int.self, forKey: .missingReferenceFrames)
+        systemSamplesReceived = try container.decode(Int.self, forKey: .systemSamplesReceived)
+        micSamplesReceived = try container.decode(Int.self, forKey: .micSamplesReceived)
+        bufferedSystemSamples = try container.decode(Int.self, forKey: .bufferedSystemSamples)
+        bufferedMicSamples = try container.decode(Int.self, forKey: .bufferedMicSamples)
+        currentDelayMs = try container.decode(Int.self, forKey: .currentDelayMs)
+        delayHistory = try container.decode([MeetingAecDelayObservation].self, forKey: .delayHistory)
+        delaySkipHistory = try container.decode([MeetingAecDelaySkip].self, forKey: .delaySkipHistory)
+    }
+}
+
 struct MeetingAecDelayObservation: Codable {
     let delayMs: Int
     let appliedDelayMs: Int
