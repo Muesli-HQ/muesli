@@ -65,6 +65,9 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
     public var wordCount: Int
     public var isDeleted: Bool
     public var cloudChangeTag: String?
+    /// Opaque CKRecord identity and version metadata. MuesliCore stores the bytes
+    /// without importing CloudKit; platform sync clients encode and decode them.
+    public var cloudSystemFields: Data?
     public var followUpToRecordName: String?
 
     public init(
@@ -87,6 +90,7 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
         wordCount: Int,
         isDeleted: Bool = false,
         cloudChangeTag: String? = nil,
+        cloudSystemFields: Data? = nil,
         followUpToRecordName: String? = nil
     ) {
         self.id = id
@@ -108,6 +112,7 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
         self.wordCount = wordCount
         self.isDeleted = isDeleted
         self.cloudChangeTag = cloudChangeTag
+        self.cloudSystemFields = cloudSystemFields
         self.followUpToRecordName = followUpToRecordName
     }
 }
