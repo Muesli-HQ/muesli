@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/scripts/muesli_spm_cache.sh"
+source "$ROOT/scripts/localvqe_runtime.sh"
 PACKAGE_DIR="$ROOT/native/MuesliNative"
 DIST_DIR="$ROOT/dist-native"
 INSTALL_DIR="${MUESLI_INSTALL_DIR:-/Applications}"
@@ -141,14 +142,77 @@ for bundle in "$BIN_DIR"/*.bundle; do
   ditto "$bundle" "$STAGED_APP_DIR/Contents/Resources/$(basename "$bundle")"
 done
 
-# Bundle optional LocalVQE runtime if it has been built for local AEC testing.
+# Bundle LocalVQE runtime (default meeting AEC). The .gguf model is committed;
+# the shared libraries under LocalVQE/lib/ are gitignored and produced by
+# scripts/build_localvqe.sh. Without them the app silently falls back to DTLN.
 LOCALVQE_LIB_DIR="${MUESLI_LOCALVQE_LIB_DIR:-$ROOT/native/MuesliNative/LocalVQE/lib}"
-if [[ -d "$LOCALVQE_LIB_DIR" ]]; then
-  find "$LOCALVQE_LIB_DIR" -maxdepth 1 \( -name "liblocalvqe*.dylib" -o -name "libggml*.dylib" -o -name "libggml*.so" \) \( -type f -o -type l \) | while read -r dylib; do
+ALLOW_MISSING_LOCALVQE="${MUESLI_ALLOW_MISSING_LOCALVQE:-0}"
+REQUIRE_LOCALVQE="${MUESLI_REQUIRE_LOCALVQE:-0}"
+BUILD_LOCALVQE="${MUESLI_BUILD_LOCALVQE:-0}"
+
+# Reject partial LocalVQE installs (e.g. liblocalvqe present but libggml-base
+# missing). Otherwise packaging would "succeed" and the app would still fall
+# back to DTLN at runtime when dlopen fails.
+refresh_localvqe_runtime_files() {
+  local collected=""
+  LOCALVQE_RUNTIME_FILES=()
+  if ! collected="$(muesli_collect_localvqe_runtime "$LOCALVQE_LIB_DIR")"; then
+    echo "Unable to inspect LocalVQE runtime in $LOCALVQE_LIB_DIR" >&2
+    return 1
+  fi
+  while IFS= read -r dylib; do
+    [[ -n "$dylib" ]] || continue
+    LOCALVQE_RUNTIME_FILES+=("$dylib")
+  done <<< "$collected"
+
+  if [[ ${#LOCALVQE_RUNTIME_FILES[@]} -gt 0 ]] && ! muesli_localvqe_runtime_is_complete "$LOCALVQE_LIB_DIR"; then
+    echo "Ignoring incomplete LocalVQE runtime in $LOCALVQE_LIB_DIR" >&2
+    LOCALVQE_RUNTIME_FILES=()
+  fi
+}
+
+refresh_localvqe_runtime_files
+
+if [[ ${#LOCALVQE_RUNTIME_FILES[@]} -eq 0 && "$BUILD_LOCALVQE" == "1" ]]; then
+  echo "LocalVQE runtime missing/incomplete; building via scripts/build_localvqe.sh (MUESLI_BUILD_LOCALVQE=1)..."
+  "$ROOT/scripts/build_localvqe.sh"
+  refresh_localvqe_runtime_files
+fi
+
+if [[ ${#LOCALVQE_RUNTIME_FILES[@]} -eq 0 ]]; then
+  cat >&2 <<EOF
+WARNING: Complete LocalVQE runtime not found in $LOCALVQE_LIB_DIR
+         Meeting echo cancellation will fall back to DTLN instead of the
+         documented LocalVQE default. A usable runtime needs liblocalvqe
+         plus its libggml* companions (especially libggml-base).
+
+  Build the runtime once with:
+    ./scripts/build_localvqe.sh
+
+  Or re-run this build with:
+    MUESLI_BUILD_LOCALVQE=1 $0 $*
+EOF
+  if [[ "$ALLOW_MISSING_LOCALVQE" == "1" && "$SKIP_SIGN" == "1" && "$REQUIRE_LOCALVQE" != "1" ]]; then
+    echo "Continuing without LocalVQE (MUESLI_ALLOW_MISSING_LOCALVQE=1, unsigned packaging)." >&2
+  elif [[ "$ALLOW_MISSING_LOCALVQE" == "1" ]]; then
+    echo "ERROR: MUESLI_ALLOW_MISSING_LOCALVQE=1 cannot override signed packaging or MUESLI_REQUIRE_LOCALVQE=1." >&2
+    exit 1
+  elif [[ "$REQUIRE_LOCALVQE" == "1" || "$SKIP_SIGN" != "1" ]]; then
+    # Intentionally keyed on signing, not BUILD_CONFIG: signed packaging
+    # (release scripts and maintainer ./scripts/dev-test.sh without
+    # MUESLI_SKIP_SIGN=1) must not silently ship a DTLN-only bundle.
+    echo "ERROR: refusing to package without a complete LocalVQE runtime. Set MUESLI_ALLOW_MISSING_LOCALVQE=1 with MUESLI_SKIP_SIGN=1 to override for unsigned builds." >&2
+    exit 1
+  else
+    echo "Continuing without LocalVQE for unsigned packaging (MUESLI_SKIP_SIGN=1). Set MUESLI_REQUIRE_LOCALVQE=1 to fail instead." >&2
+  fi
+else
+  for dylib in "${LOCALVQE_RUNTIME_FILES[@]}"; do
     target="$STAGED_APP_DIR/Contents/MacOS/$(basename "$dylib")"
     cp -RL "$dylib" "$target"
     thin_macho_to_bundle_arch "$target"
   done
+  echo "Bundled LocalVQE runtime (${#LOCALVQE_RUNTIME_FILES[@]} files) from $LOCALVQE_LIB_DIR"
 fi
 LOCALVQE_MODEL_PATH="${MUESLI_LOCALVQE_MODEL_PATH:-$ROOT/native/MuesliNative/LocalVQE/models/localvqe-v1.2-1.3M-f32.gguf}"
 if [[ -f "$LOCALVQE_MODEL_PATH" ]]; then
