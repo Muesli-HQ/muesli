@@ -345,7 +345,16 @@ Cohere Transcribe is a 2B parameter model (#1 on Open ASR Leaderboard) running i
 
 Gemma 4 E2B is an experimental multimodal LiteRT-LM backend for direct transcription or on-device transcript cleanup. It is not an ASR-tuned model, so assistant-style outputs are rejected and Parakeet remains the recommended transcription backend. Gemma cannot be selected for ASR and cleanup at the same time.
 
-Meeting echo cancellation uses the bundled LocalVQE `localvqe-v1.2-1.3M-f32.gguf` model by default, so users do not need to download an AEC model before their first meeting transcription. DTLN remains available as the fallback AEC path.
+Meeting echo cancellation uses LocalVQE by default. Release builds ship the
+bundled `localvqe-v1.2-1.3M-f32.gguf` model plus the LocalVQE shared libraries,
+so users do not need to download an AEC model before their first meeting
+transcription. DTLN remains available as the fallback AEC path when LocalVQE
+cannot load.
+
+Source/dev builds need the LocalVQE runtime built once with
+`./scripts/build_localvqe.sh` (the model is committed; the dylibs under
+`native/MuesliNative/LocalVQE/lib/` are not). Without that step, packaging
+warns and the app falls back to DTLN. See `CONTRIBUTING.md`.
 
 Models download on demand from HuggingFace. Manage them from the **Models** tab in the dashboard.
 
