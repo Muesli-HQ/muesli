@@ -36,6 +36,7 @@ struct OnboardingView: View {
 
     // Model selection
     @State private var showMoreModels = false
+    @State private var showRemoteModels = false
 
     // Dictation test
     @State private var isDictationTesting = false
@@ -653,6 +654,34 @@ struct OnboardingView: View {
                             .padding(.top, MuesliTheme.spacing4)
                     }
 
+                    // Remote Models Section
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showRemoteModels.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("Remote models")
+                                .font(MuesliTheme.caption())
+                            Image(systemName: showRemoteModels ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 9, weight: .semibold))
+                        }
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, MuesliTheme.spacing8)
+
+                    if showRemoteModels {
+                        remoteModelCard()
+
+                        Text("Add your API key in Settings → Speech Recognition to use remote models.")
+                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, MuesliTheme.spacing4)
+                    }
+
                     if selectedBackend.backend == BackendOption.cohereTranscribe.backend {
                         cohereLanguageCard
                     }
@@ -742,6 +771,42 @@ struct OnboardingView: View {
             )
         }
         .buttonStyle(.plain)
+    }
+
+    private func remoteModelCard() -> some View {
+        HStack(spacing: MuesliTheme.spacing12) {
+            Image(systemName: "cloud")
+                .font(.system(size: 14))
+                .foregroundStyle(MuesliTheme.textTertiary)
+                .frame(width: 16, height: 16)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text("OpenAI Speech-to-Text")
+                        .font(MuesliTheme.headline())
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                    Text("Cloud")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(MuesliTheme.accent.opacity(0.7))
+                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                }
+                Text("Cloud-based transcription. Requires API key (add in Settings after setup).")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+            }
+
+            Spacer()
+        }
+        .padding(MuesliTheme.spacing12)
+        .background(MuesliTheme.backgroundRaised)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+        .overlay(
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
+                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+        )
     }
 
     // MARK: - Step 3: Permissions (sequential, one at a time)
