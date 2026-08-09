@@ -720,10 +720,11 @@ final class FloatingIndicatorController: NSObject {
         orbBaseColor = .white
         orbBrightColor = .white
 
-        // If orb is currently visible, recreate it immediately with new colors
+        // If orb is currently visible, recreate it immediately with new colors and re-apply current state
         if let contentView, orbCoreLayer != nil {
+            let currentPresentation = dictationOrbPresentation
             removeOrbLayers()
-            setupOrb(in: contentView.frame.size)
+            ensureOrbAnimation(in: contentView.frame.size, presentation: currentPresentation)
         }
         // If not visible, colors will be loaded fresh when orb appears next time via orbColorPair()
     }
