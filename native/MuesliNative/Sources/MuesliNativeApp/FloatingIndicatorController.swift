@@ -716,12 +716,16 @@ final class FloatingIndicatorController: NSObject {
 
     /// Refresh the orb theme colors when mood changes in settings.
     func refreshOrbTheme() {
-        guard let contentView, let layer = contentView.layer else { return }
-        // If orb is currently visible, recreate it with new colors
-        if orbCoreLayer != nil {
+        // Clear cached colors so fresh colors are loaded next time
+        orbBaseColor = .white
+        orbBrightColor = .white
+
+        // If orb is currently visible, recreate it immediately with new colors
+        if let contentView, orbCoreLayer != nil {
             removeOrbLayers()
             setupOrb(in: contentView.frame.size)
         }
+        // If not visible, colors will be loaded fresh when orb appears next time via orbColorPair()
     }
 
     /// Flash a brief warning message on the indicator pill, then snap back to idle.
