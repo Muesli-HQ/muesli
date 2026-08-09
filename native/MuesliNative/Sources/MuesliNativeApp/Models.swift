@@ -1037,6 +1037,110 @@ enum OnboardingUseCase: String, Codable, CaseIterable {
     }
 }
 
+enum OrbMood: String, CaseIterable, Codable {
+    case feelingLow = "feeling_low"
+    case tiredSleepy = "tired_sleepy"
+    case feelingHot = "feeling_hot"
+    case feelingCold = "feeling_cold"
+    case stressed = "stressed"
+    case angryIrritated = "angry_irritated"
+    case lonely = "lonely"
+    case feelingGood = "feeling_good"
+    case cheeky = "cheeky"
+    case excited = "excited"
+    case relax = "relax"
+    case needToFocus = "need_to_focus"
+    case feelingLucky = "feeling_lucky"
+
+    var displayName: String {
+        switch self {
+        case .feelingLow: return "Feeling Low"
+        case .tiredSleepy: return "Tired/Sleepy"
+        case .feelingHot: return "Feeling Hot"
+        case .feelingCold: return "Feeling Cold"
+        case .stressed: return "Stressed"
+        case .angryIrritated: return "Angry/Irritated"
+        case .lonely: return "Lonely"
+        case .feelingGood: return "Feeling Good"
+        case .cheeky: return "Cheeky"
+        case .excited: return "Excited"
+        case .relax: return "Relax"
+        case .needToFocus: return "Need to Focus"
+        case .feelingLucky: return "I'm Feeling Lucky"
+        }
+    }
+
+    var tagline: String {
+        switch self {
+        case .feelingLow: return "Energize me"
+        case .tiredSleepy: return "Wake me up"
+        case .feelingHot: return "Cool me down"
+        case .feelingCold: return "Warm me up"
+        case .stressed: return "Calm me"
+        case .angryIrritated: return "Ground me"
+        case .lonely: return "Comfort me"
+        case .feelingGood: return "Maintain vibe"
+        case .cheeky: return "Surprise me"
+        case .excited: return "Amplify it"
+        case .relax: return "Wind down"
+        case .needToFocus: return "Help me focus"
+        case .feelingLucky: return "Random mood"
+        }
+    }
+
+    var theme: OrbTheme {
+        switch self {
+        case .feelingLow:
+            return OrbTheme(baseColor: "F8B4B4", brightColor: "FDE8E8")
+        case .tiredSleepy:
+            return OrbTheme(baseColor: "FDBA74", brightColor: "FED7AA")
+        case .feelingHot:
+            return OrbTheme(baseColor: "7DD3FC", brightColor: "E0F2FE")
+        case .feelingCold:
+            return OrbTheme(baseColor: "FED7AA", brightColor: "FEF3C7")
+        case .stressed:
+            return OrbTheme(baseColor: "60A5FA", brightColor: "DBEAFE")
+        case .angryIrritated:
+            return OrbTheme(baseColor: "6EE7B7", brightColor: "D1FAE5")
+        case .lonely:
+            return OrbTheme(baseColor: "FECACA", brightColor: "FEE2E2")
+        case .feelingGood:
+            return OrbTheme(baseColor: "C4B5FD", brightColor: "EDE9FE")
+        case .cheeky:
+            return OrbTheme(baseColor: "22D3EE", brightColor: "ECFEFF", accentColor: "F0ABFC")
+        case .excited:
+            return OrbTheme(baseColor: "FCD34D", brightColor: "FEF3C7")
+        case .relax:
+            return OrbTheme(baseColor: "A5B4FC", brightColor: "E0E7FF")
+        case .needToFocus:
+            return OrbTheme(baseColor: "94A3B8", brightColor: "E2E8F0")
+        case .feelingLucky:
+            // Random mood - theme will be resolved at runtime
+            return OrbTheme(baseColor: "60A5FA", brightColor: "DBEAFE")
+        }
+    }
+
+    static var allMoodsExceptLucky: [OrbMood] {
+        allCases.filter { $0 != .feelingLucky }
+    }
+
+    static var defaultMood: OrbMood {
+        .stressed
+    }
+}
+
+struct OrbTheme {
+    let baseColor: String  // Hex without #
+    let brightColor: String  // Hex without #
+    let accentColor: String?  // Optional for gradient moods like "cheeky"
+
+    init(baseColor: String, brightColor: String, accentColor: String? = nil) {
+        self.baseColor = baseColor
+        self.brightColor = brightColor
+        self.accentColor = accentColor
+    }
+}
+
 struct AppConfig: Codable {
     var dictationHotkey: HotkeyConfig = .default
     var computerUseHotkey: HotkeyConfig = .computerUseDefault
@@ -1115,6 +1219,7 @@ struct AppConfig: Codable {
     var pauseMediaDuringDictation: Bool = false
     var muteSystemAudioDuringDictation: Bool = false
     var recordingColorHex: String = "1e1e2e"   // Catppuccin Mocha base, without #
+    var orbMood: String = OrbMood.defaultMood.rawValue
     var menuBarIcon: String = "muesli"
     var showNextMeetingInMenuBar: Bool = true
     var maraudersMapUnlocked: Bool = false

@@ -1156,7 +1156,17 @@ final class FloatingIndicatorController: NSObject {
     /// A fixed blue gradient gives every standard-dictation phase one continuous,
     /// OpenAI-inspired visual identity without inheriting a recording accent.
     private func orbColorPair() -> (baseHex: String, brightHex: String) {
-        (baseHex: "6679D4", brightHex: "D7DFFF")
+        let config = configStore.load()
+        let moodRawValue = config.orbMood
+        var mood = OrbMood(rawValue: moodRawValue) ?? OrbMood.defaultMood
+
+        // Resolve "I'm Feeling Lucky" to a random mood
+        if mood == .feelingLucky {
+            mood = OrbMood.allMoodsExceptLucky.randomElement() ?? OrbMood.defaultMood
+        }
+
+        let theme = mood.theme
+        return (baseHex: theme.baseColor, brightHex: theme.brightColor)
     }
 
     private func ensureOrbAnimation(

@@ -1646,6 +1646,10 @@ struct SettingsView: View {
                     glassTintPicker
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Orb mood") {
+                    orbMoodPicker
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Play sound effects") {
                     settingsSwitch(isOn: appState.config.soundEnabled) { newValue in
                         controller.updateConfig { $0.soundEnabled = newValue }
@@ -1703,6 +1707,84 @@ struct SettingsView: View {
                 .help(preset.name)
             }
         }
+    }
+
+    private var orbMoodPicker: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 12) {
+                ForEach(OrbMood.allCases, id: \.rawValue) { mood in
+                    let isSelected = appState.config.orbMood == mood.rawValue
+                    Button {
+                        controller.updateConfig { $0.orbMood = mood.rawValue }
+                    } label: {
+                        VStack(spacing: 6) {
+                            // Orb preview
+                            ZStack {
+                                // Corona (outer glow)
+                                Circle()
+                                    .fill(
+                                        Color(hex: mood.theme.baseColor)
+                                            .opacity(0.14)
+                                    )
+                                    .frame(width: 40, height: 40)
+                                    .shadow(
+                                        color: Color(hex: mood.theme.brightColor).opacity(0.4),
+                                        radius: 6,
+                                        x: 0,
+                                        y: 0
+                                    )
+
+                                // Core (radial gradient)
+                                Circle()
+                                    .fill(
+                                        RadialGradient(
+                                            colors: [
+                                                Color(hex: mood.theme.brightColor).opacity(0.9),
+                                                Color(hex: mood.theme.baseColor),
+                                                Color(hex: mood.theme.baseColor).opacity(0.9)
+                                            ],
+                                            center: .center,
+                                            startRadius: 0,
+                                            endRadius: 14
+                                        )
+                                    )
+                                    .frame(width: 28, height: 28)
+                            }
+                            .frame(width: 44, height: 44)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 22)
+                                    .strokeBorder(Color.white.opacity(isSelected ? 0.6 : 0), lineWidth: 2)
+                            )
+
+                            // Mood name
+                            Text(mood.displayName)
+                                .font(.system(size: 10, weight: isSelected ? .semibold : .regular))
+                                .foregroundColor(isSelected ? MuesliTheme.textPrimary : MuesliTheme.textSecondary)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.center)
+                                .frame(width: 70)
+
+                            // Tagline
+                            Text(mood.tagline)
+                                .font(.system(size: 9))
+                                .foregroundColor(MuesliTheme.textTertiary)
+                                .lineLimit(1)
+                                .frame(width: 70)
+                        }
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(isSelected ? MuesliTheme.surfaceSelected.opacity(0.5) : Color.clear)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .help("\(mood.displayName): \(mood.tagline)")
+                }
+            }
+            .padding(.horizontal, 4)
+        }
+        .frame(height: 120)
     }
 
     private var menuBarIconPicker: some View {
