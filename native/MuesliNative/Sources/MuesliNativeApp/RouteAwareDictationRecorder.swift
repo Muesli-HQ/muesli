@@ -213,25 +213,12 @@ final class RouteAwareDictationRecorder: DictationAudioRecording {
         recorder(for: activeRecorderKindStorage)
     }
 
-    private func inactiveRecorderLocked() -> DictationAudioRecording {
-        inactiveRecorder(for: activeRecorderKindStorage)
-    }
-
     private func recorder(for kind: ActiveRecorderKind) -> DictationAudioRecording {
         switch kind {
         case .systemDefault:
             return systemDefaultRecorder
         case .appScoped:
             return appScopedRecorder
-        }
-    }
-
-    private func inactiveRecorder(for kind: ActiveRecorderKind) -> DictationAudioRecording {
-        switch kind {
-        case .systemDefault:
-            return appScopedRecorder
-        case .appScoped:
-            return systemDefaultRecorder
         }
     }
 }

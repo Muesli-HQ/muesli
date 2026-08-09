@@ -260,7 +260,8 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         emitLatency("audio_queue_prepare_end")
     }
 
-    private func applyPreferredInputDeviceID(_ deviceID: AudioObjectID, to queue: AudioQueueRef) throws {        emitLatency("audio_queue_device_uid_lookup_begin")
+    private func applyPreferredInputDeviceID(_ deviceID: AudioObjectID, to queue: AudioQueueRef) throws {
+        emitLatency("audio_queue_device_uid_lookup_begin")
         guard var deviceUID = Self.deviceUID(for: deviceID) as CFString? else {
             throw Self.runtimeError(code: 6, message: "Could not resolve device UID for \(deviceID)")
         }
