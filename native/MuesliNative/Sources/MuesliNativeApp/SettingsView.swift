@@ -1711,62 +1711,90 @@ struct SettingsView: View {
 
     private var orbMoodPicker: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 ForEach(OrbMood.allCases, id: \.rawValue) { mood in
-                    let isSelected = appState.config.orbMood == mood.rawValue
-                    Button {
+                    OrbMoodButton(mood: mood, isSelected: appState.config.orbMood == mood.rawValue) {
                         controller.updateConfig { $0.orbMood = mood.rawValue }
                         controller.refreshOrbTheme()
-                    } label: {
-                        VStack(spacing: 4) {
-                            // Orb preview
-                            ZStack {
-                                // Corona (outer glow)
-                                Circle()
-                                    .fill(
-                                        Color(hex: mood.theme.baseColor)
-                                            .opacity(0.14)
-                                    )
-                                    .frame(width: 30, height: 30)
-                                    .shadow(
-                                        color: Color(hex: mood.theme.brightColor).opacity(0.4),
-                                        radius: 4,
-                                        x: 0,
-                                        y: 0
-                                    )
-
-                                // Core (radial gradient)
-                                Circle()
-                                    .fill(
-                                        RadialGradient(
-                                            colors: [
-                                                Color(hex: mood.theme.brightColor).opacity(0.9),
-                                                Color(hex: mood.theme.baseColor),
-                                                Color(hex: mood.theme.baseColor).opacity(0.9)
-                                            ],
-                                            center: .center,
-                                            startRadius: 0,
-                                            endRadius: 10
-                                        )
-                                    )
-                                    .frame(width: 20, height: 20)
-                            }
-                            .frame(width: 32, height: 32)
-                            .overlay(
-                                Circle()
-                                    .strokeBorder(Color.white.opacity(isSelected ? 0.6 : 0), lineWidth: 2)
-                            )
-                        }
-                        .frame(width: 32, height: 32)
-                        .background(
-                            RoundedRectangle(cornerRadius: 16)
-                                .fill(isSelected ? MuesliTheme.surfaceSelected.opacity(0.5) : Color.clear)
-                        )
                     }
-                    .buttonStyle(.plain)
-                    .help("\(mood.displayName): \(mood.tagline)")
                 }
             }
+            .padding(.horizontal, 4)
+        }
+    }
+
+    private struct OrbMoodButton: View {
+        let mood: OrbMood
+        let isSelected: Bool
+        let action: () -> Void
+        @State private var isHovering = false
+
+        var body: some View {
+            Button(action: action) {
+                VStack(spacing: 4) {
+                    // Orb preview
+                    ZStack {
+                        // Corona (outer glow)
+                        Circle()
+                            .fill(
+                                Color(hex: mood.theme.baseColor)
+                                    .opacity(0.14)
+                            )
+                            .frame(width: 30, height: 30)
+                            .shadow(
+                                color: Color(hex: mood.theme.brightColor).opacity(0.4),
+                                radius: 4,
+                                x: 0,
+                                y: 0
+                            )
+
+                        // Core (radial gradient)
+                        Circle()
+                            .fill(
+                                RadialGradient(
+                                    colors: [
+                                        Color(hex: mood.theme.brightColor).opacity(0.9),
+                                        Color(hex: mood.theme.baseColor),
+                                        Color(hex: mood.theme.baseColor).opacity(0.9)
+                                    ],
+                                    center: .center,
+                                    startRadius: 0,
+                                    endRadius: 10
+                                )
+                            )
+                            .frame(width: 20, height: 20)
+                    }
+                    .frame(width: 32, height: 32)
+                    .overlay(
+                        Circle()
+                            .strokeBorder(Color.white.opacity(isSelected ? 0.6 : 0), lineWidth: 2)
+                    )
+
+                    // Mood name (shown on hover or when selected)
+                    if isHovering || isSelected {
+                        Text(mood.displayName)
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundColor(MuesliTheme.textPrimary)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.center)
+                            .frame(width: 60)
+                            .transition(.opacity)
+                    }
+                }
+                .frame(width: 64)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(isSelected ? MuesliTheme.surfaceSelected.opacity(0.3) : Color.clear)
+                )
+            }
+            .buttonStyle(.plain)
+            .onHover { hovering in
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    isHovering = hovering
+                }
+            }
+            .help(mood.tagline)
         }
     }
 
