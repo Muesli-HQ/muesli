@@ -714,6 +714,16 @@ final class FloatingIndicatorController: NSObject {
         micIconView?.image = newImage
     }
 
+    /// Refresh the orb theme colors when mood changes in settings.
+    func refreshOrbTheme() {
+        guard let contentView, let layer = contentView.layer else { return }
+        // If orb is currently visible, recreate it with new colors
+        if orbCoreLayer != nil {
+            removeOrbLayers()
+            setupOrb(in: contentView.frame.size)
+        }
+    }
+
     /// Flash a brief warning message on the indicator pill, then snap back to idle.
     func showWarning(_ message: String, icon: String = "⚡", duration: TimeInterval = 2.5) {
         guard state == .idle else { return }

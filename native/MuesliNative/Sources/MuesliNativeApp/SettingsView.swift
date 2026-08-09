@@ -1711,13 +1711,14 @@ struct SettingsView: View {
 
     private var orbMoodPicker: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 12) {
+            HStack(spacing: 6) {
                 ForEach(OrbMood.allCases, id: \.rawValue) { mood in
                     let isSelected = appState.config.orbMood == mood.rawValue
                     Button {
                         controller.updateConfig { $0.orbMood = mood.rawValue }
+                        controller.refreshOrbTheme()
                     } label: {
-                        VStack(spacing: 6) {
+                        VStack(spacing: 4) {
                             // Orb preview
                             ZStack {
                                 // Corona (outer glow)
@@ -1726,10 +1727,10 @@ struct SettingsView: View {
                                         Color(hex: mood.theme.baseColor)
                                             .opacity(0.14)
                                     )
-                                    .frame(width: 40, height: 40)
+                                    .frame(width: 30, height: 30)
                                     .shadow(
                                         color: Color(hex: mood.theme.brightColor).opacity(0.4),
-                                        radius: 6,
+                                        radius: 4,
                                         x: 0,
                                         y: 0
                                     )
@@ -1745,36 +1746,20 @@ struct SettingsView: View {
                                             ],
                                             center: .center,
                                             startRadius: 0,
-                                            endRadius: 14
+                                            endRadius: 10
                                         )
                                     )
-                                    .frame(width: 28, height: 28)
+                                    .frame(width: 20, height: 20)
                             }
-                            .frame(width: 44, height: 44)
+                            .frame(width: 32, height: 32)
                             .overlay(
-                                RoundedRectangle(cornerRadius: 22)
+                                Circle()
                                     .strokeBorder(Color.white.opacity(isSelected ? 0.6 : 0), lineWidth: 2)
                             )
-
-                            // Mood name
-                            Text(mood.displayName)
-                                .font(.system(size: 10, weight: isSelected ? .semibold : .regular))
-                                .foregroundColor(isSelected ? MuesliTheme.textPrimary : MuesliTheme.textSecondary)
-                                .lineLimit(2)
-                                .multilineTextAlignment(.center)
-                                .frame(width: 70)
-
-                            // Tagline
-                            Text(mood.tagline)
-                                .font(.system(size: 9))
-                                .foregroundColor(MuesliTheme.textTertiary)
-                                .lineLimit(1)
-                                .frame(width: 70)
                         }
-                        .padding(.vertical, 8)
-                        .padding(.horizontal, 4)
+                        .frame(width: 32, height: 32)
                         .background(
-                            RoundedRectangle(cornerRadius: 8)
+                            RoundedRectangle(cornerRadius: 16)
                                 .fill(isSelected ? MuesliTheme.surfaceSelected.opacity(0.5) : Color.clear)
                         )
                     }
@@ -1782,9 +1767,7 @@ struct SettingsView: View {
                     .help("\(mood.displayName): \(mood.tagline)")
                 }
             }
-            .padding(.horizontal, 4)
         }
-        .frame(height: 120)
     }
 
     private var menuBarIconPicker: some View {
