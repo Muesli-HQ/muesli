@@ -28,6 +28,8 @@ struct OnboardingView: View {
     @State private var grantingPermissionName: String?
     @State private var nativePermissionPromptName: String?
     @State private var recentlyGrantedPermissionName: String?
+    @State private var showMissingPermissionsAlert = false
+    @State private var missingPermissionsList: [String] = []
 
     // Hotkey recorder
     @State private var selectedHotkey: HotkeyConfig
@@ -232,6 +234,17 @@ struct OnboardingView: View {
                     .padding(.trailing, MuesliTheme.spacing16)
             }
         }
+        .alert("Missing Permissions", isPresented: $showMissingPermissionsAlert) {
+            Button("OK", role: .cancel) {
+                showMissingPermissionsAlert = false
+            }
+        } message: {
+            if missingPermissionsList.isEmpty {
+                Text("Please grant all required permissions to continue.")
+            } else {
+                Text("Please grant the following permissions:\n\n" + missingPermissionsList.joined(separator: "\n"))
+            }
+        }
     }
 
     // MARK: - Primary Button
@@ -252,13 +265,27 @@ struct OnboardingView: View {
                 goToNextStep()
             }
         case 3:
-            onboardingButton(currentStepIndex == orderedSteps.count - 1 ? "Finish" : "Continue", enabled: requiredPermissionsGranted) {
-                if selectedUseCase.includesPushToTalk {
-                    saveProgressAndRestart()
-                } else if currentStepIndex == orderedSteps.count - 1 {
-                    finishOnboarding(withKey: false)
+            onboardingButton(
+                currentStepIndex == orderedSteps.count - 1 ? "Check & Finish" : "Check & Continue",
+                enabled: true
+            ) {
+                // Force refresh permissions before checking
+                refreshPermissions()
+
+                let missing = getMissingPermissions()
+                if missing.isEmpty {
+                    // All permissions granted, proceed
+                    if selectedUseCase.includesPushToTalk {
+                        saveProgressAndRestart()
+                    } else if currentStepIndex == orderedSteps.count - 1 {
+                        finishOnboarding(withKey: false)
+                    } else {
+                        goToNextStep()
+                    }
                 } else {
-                    goToNextStep()
+                    // Show alert with missing permissions
+                    missingPermissionsList = missing
+                    showMissingPermissionsAlert = true
                 }
             }
         case 4:
@@ -1096,6 +1123,39 @@ struct OnboardingView: View {
             ),
             for: selectedUseCase
         )
+    }
+
+    private func getMissingPermissions() -> [String] {
+        var missing: [String] = []
+
+        // Check based on use case requirements
+        if selectedUseCase.includesDictation {
+            // Dictation requires: microphone + accessibility + inputMonitoring
+            if !micGranted {
+                missing.append("Microphone")
+            }
+            if !accessibilityGranted {
+                missing.append("Accessibility")
+            }
+            if !inputMonitoringGranted {
+                missing.append("Input Monitoring")
+            }
+        } else if selectedUseCase.includesVoiceNotes {
+            // Voice notes requires: microphone + inputMonitoring
+            if !micGranted {
+                missing.append("Microphone")
+            }
+            if !inputMonitoringGranted {
+                missing.append("Input Monitoring")
+            }
+        } else {
+            // Default fallback: just microphone
+            if !micGranted {
+                missing.append("Microphone")
+            }
+        }
+
+        return missing
     }
 
     private func startPermissionPolling() {
