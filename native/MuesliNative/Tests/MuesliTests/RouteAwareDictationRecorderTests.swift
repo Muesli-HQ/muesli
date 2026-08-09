@@ -140,8 +140,8 @@ struct RouteAwareDictationRecorderTests {
         ])
     }
 
-    @Test("switching recorder cancels inactive warmed graph")
-    func switchingRecorderCancelsInactiveWarmedGraph() throws {
+    @Test("switching recorder keeps the inactive graph warm")
+    func switchingRecorderKeepsInactiveGraphWarm() throws {
         let system = FakeRouteAwareChildRecorder()
         let appScoped = FakeRouteAwareChildRecorder()
         let recorder = RouteAwareDictationRecorder(systemDefaultRecorder: system, appScopedRecorder: appScoped)
@@ -151,7 +151,7 @@ struct RouteAwareDictationRecorderTests {
 
         #expect(recorder.activeRecorderKindForDebug() == .appScoped)
         #expect(system.warmUpCalls == 1)
-        #expect(system.cancelCalls == 1)
+        #expect(system.cancelCalls == 0)
         #expect(appScoped.activateCalls == 1)
     }
 
@@ -167,8 +167,8 @@ struct RouteAwareDictationRecorderTests {
         #expect(appScoped.coolDownCalls == 1)
     }
 
-    @Test("route switch waits for in-flight app scoped explicit warmup teardown")
-    func routeSwitchWaitsForInFlightAppScopedExplicitWarmupTeardown() throws {
+    @Test("route switch does not tear down in-flight app scoped explicit warmup")
+    func routeSwitchDoesNotTearDownInFlightAppScopedExplicitWarmup() throws {
         let system = FakeRouteAwareChildRecorder()
         let appScopedStreaming = FakeRouteAwareStreamingRecorder()
         let prepareStarted = DispatchSemaphore(value: 0)
@@ -192,14 +192,15 @@ struct RouteAwareDictationRecorderTests {
             routeSwitchReturned.signal()
         }
 
-        #expect(routeSwitchReturned.wait(timeout: .now() + 0.1) == .timedOut)
+        // The switch no longer cancels the outgoing slot's in-flight prepare,
+        // so it returns promptly instead of waiting for teardown.
+        #expect(routeSwitchReturned.wait(timeout: .now() + 0.5) == .success)
         finishPrepare.signal()
-        #expect(routeSwitchReturned.wait(timeout: .now() + 1) == .success)
 
         #expect(recorder.activeRecorderKindForDebug() == .systemDefault)
         #expect(system.warmUpCalls == 1)
         #expect(appScopedStreaming.prepareCalls == 1)
-        #expect(appScopedStreaming.cancelCalls >= 1)
+        #expect(appScopedStreaming.cancelCalls == 0)
     }
 }
 
