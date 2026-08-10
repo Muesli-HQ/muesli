@@ -1070,7 +1070,10 @@ public final class DictationStore {
         SELECT
             COUNT(*) AS total_sessions,
             COALESCE(SUM(word_count), 0) AS total_words,
-            COALESCE(SUM(duration_seconds), 0) AS total_duration_seconds
+            COALESCE(SUM(CASE WHEN duration_seconds > 0 THEN word_count ELSE 0 END), 0)
+                AS timed_words,
+            COALESCE(SUM(CASE WHEN duration_seconds > 0 THEN duration_seconds ELSE 0 END), 0)
+                AS timed_duration_seconds
         FROM dictations
         WHERE deleted_at IS NULL
         """
@@ -1085,13 +1088,14 @@ public final class DictationStore {
 
         let totalSessions = Int(sqlite3_column_int(statement, 0))
         let totalWords = Int(sqlite3_column_int(statement, 1))
-        let totalDuration = sqlite3_column_double(statement, 2)
+        let timedWords = Int(sqlite3_column_int(statement, 2))
+        let timedDuration = sqlite3_column_double(statement, 3)
         let streaks = try dictationStreaks(db: db)
         return DictationStats(
             totalWords: totalWords,
             totalSessions: totalSessions,
             averageWordsPerSession: totalSessions > 0 ? Double(totalWords) / Double(totalSessions) : 0,
-            averageWPM: totalDuration > 0 ? Double(totalWords) / (totalDuration / 60.0) : 0,
+            averageWPM: timedDuration > 0 ? Double(timedWords) / (timedDuration / 60.0) : 0,
             currentStreakDays: streaks.current,
             longestStreakDays: streaks.longest
         )
@@ -1105,7 +1109,10 @@ public final class DictationStore {
         SELECT
             COUNT(*) AS total_meetings,
             COALESCE(SUM(word_count), 0) AS total_words,
-            COALESCE(SUM(duration_seconds), 0) AS total_duration_seconds
+            COALESCE(SUM(CASE WHEN duration_seconds > 0 THEN word_count ELSE 0 END), 0)
+                AS timed_words,
+            COALESCE(SUM(CASE WHEN duration_seconds > 0 THEN duration_seconds ELSE 0 END), 0)
+                AS timed_duration_seconds
         FROM meetings
         WHERE deleted_at IS NULL AND meeting_status IN (?, ?)
         """
@@ -1122,11 +1129,12 @@ public final class DictationStore {
 
         let totalMeetings = Int(sqlite3_column_int(statement, 0))
         let totalWords = Int(sqlite3_column_int(statement, 1))
-        let totalDuration = sqlite3_column_double(statement, 2)
+        let timedWords = Int(sqlite3_column_int(statement, 2))
+        let timedDuration = sqlite3_column_double(statement, 3)
         return MeetingStats(
             totalWords: totalWords,
             totalMeetings: totalMeetings,
-            averageWPM: totalDuration > 0 ? Double(totalWords) / (totalDuration / 60.0) : 0
+            averageWPM: timedDuration > 0 ? Double(timedWords) / (timedDuration / 60.0) : 0
         )
     }
 
@@ -1507,7 +1515,7 @@ public final class DictationStore {
     private func cachedInsightsTotals(db: OpaquePointer?, sinceDay: String?) throws -> InsightsTotals {
         let sql = """
         SELECT COALESCE(SUM(dictation_words),0), COALESCE(SUM(dictation_sessions),0),
-          COALESCE(SUM(meeting_words),0), COALESCE(SUM(meetings),0), COALESCE(SUM(duration_seconds),0)
+          COALESCE(SUM(meeting_words),0), COALESCE(SUM(meetings),0)
         FROM insights_daily_cache WHERE (? IS NULL OR day >= ?)
         """
         var statement: OpaquePointer?
@@ -1521,14 +1529,46 @@ public final class DictationStore {
         let dictationSessions = Int(sqlite3_column_int64(statement, 1))
         let meetingWords = Int(sqlite3_column_int64(statement, 2))
         let meetings = Int(sqlite3_column_int64(statement, 3))
-        let duration = sqlite3_column_double(statement, 4)
-        let totalWords = dictationWords + meetingWords
+        let (timedWords, timedDuration) = try timedWPMTotals(db: db, sinceDay: sinceDay)
         return InsightsTotals(
             dictationWords: dictationWords,
             dictationSessions: dictationSessions,
             meetingWords: meetingWords,
             meetings: meetings,
-            averageWPM: duration > 0 ? Double(totalWords) / (duration / 60) : 0
+            averageWPM: timedDuration > 0 ? Double(timedWords) / (timedDuration / 60) : 0
+        )
+    }
+
+    private func timedWPMTotals(
+        db: OpaquePointer?,
+        sinceDay: String?
+    ) throws -> (words: Int, duration: Double) {
+        let sql = """
+        SELECT COALESCE(SUM(word_count), 0), COALESCE(SUM(duration_seconds), 0)
+        FROM (
+            SELECT word_count, duration_seconds, timestamp AS activity_date
+            FROM dictations
+            WHERE deleted_at IS NULL AND duration_seconds > 0
+            UNION ALL
+            SELECT word_count, duration_seconds, start_time AS activity_date
+            FROM meetings
+            WHERE deleted_at IS NULL
+              AND meeting_status IN ('completed', 'note_only')
+              AND duration_seconds > 0
+        )
+        WHERE (? IS NULL OR activity_date >= ?)
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        bindOptionalText(sinceDay, at: 1, statement: statement)
+        bindOptionalText(sinceDay, at: 2, statement: statement)
+        guard sqlite3_step(statement) == SQLITE_ROW else { return (0, 0) }
+        return (
+            words: Int(sqlite3_column_int64(statement, 0)),
+            duration: sqlite3_column_double(statement, 1)
         )
     }
 

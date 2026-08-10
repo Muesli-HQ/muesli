@@ -57,6 +57,30 @@ struct InsightsTests {
         #expect(snapshot.meetingWords.first?.word == "rhythm")
     }
 
+    @Test("average pace excludes words without a measured duration")
+    func averagePaceExcludesUntimedWords() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_784_092_800)
+        try store.insertDictation(
+            text: "one two",
+            durationSeconds: 60,
+            startedAt: now.addingTimeInterval(-60),
+            endedAt: now
+        )
+        try store.insertDictation(
+            text: "three four five",
+            durationSeconds: 0,
+            startedAt: now,
+            endedAt: now
+        )
+
+        let snapshot = try store.insightsSnapshot(range: .allTime, now: now)
+
+        #expect(snapshot.lifetime.totalWords == 5)
+        #expect(snapshot.lifetime.averageWPM == 2)
+        #expect(snapshot.selected.averageWPM == 2)
+    }
+
     @Test("deleted history is absent from totals, activity, and vocabulary")
     func deletedHistory() throws {
         let store = try makeStore()

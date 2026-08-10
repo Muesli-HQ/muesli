@@ -2133,6 +2133,30 @@ struct DictationStoreTests {
         #expect(stats.averageWPM > 0)
     }
 
+    @Test("dictation WPM excludes words without a measured duration")
+    func dictationWPMExcludesUntimedWords() throws {
+        let store = try makeStore()
+        let now = Date()
+        try store.insertDictation(
+            text: "one two",
+            durationSeconds: 60,
+            startedAt: now.addingTimeInterval(-60),
+            endedAt: now
+        )
+        try store.insertDictation(
+            text: "three four five",
+            durationSeconds: 0,
+            startedAt: now,
+            endedAt: now
+        )
+
+        let stats = try store.dictationStats()
+
+        #expect(stats.totalWords == 5)
+        #expect(stats.totalSessions == 2)
+        #expect(stats.averageWPM == 2)
+    }
+
     @Test("dictation streaks ignore deleted records")
     func dictationStreaksIgnoreDeletedRecords() throws {
         let store = try makeStore()
