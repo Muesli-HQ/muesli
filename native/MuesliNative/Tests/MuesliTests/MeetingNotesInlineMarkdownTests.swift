@@ -1,5 +1,7 @@
-import Testing
 import Foundation
+import AppKit
+import SwiftUI
+import Testing
 @testable import MuesliNativeApp
 
 @Suite("MeetingNotesView inline markdown")
@@ -66,5 +68,95 @@ struct MeetingNotesInlineMarkdownTests {
     func whitespaceIsPreserved() {
         // inlineOnlyPreservingWhitespace keeps indentation the caller relies on.
         #expect(rendered("  indented note  ") == "  indented note  ")
+    }
+
+    @Test("the rich editor renders and round-trips inline Markdown")
+    @MainActor
+    func richEditorRendersAndRoundTripsInlineMarkdown() {
+        let source = "Owner: **Priya**, *urgent*, `swift test`, [spec](https://example.com)"
+        var boundMarkdown = ""
+        var command: MarkdownEditorCommand?
+        let coordinator = MarkdownRichTextEditor.Coordinator(
+            text: Binding(
+                get: { boundMarkdown },
+                set: { boundMarkdown = $0 }
+            ),
+            command: Binding(
+                get: { command },
+                set: { command = $0 }
+            ),
+            onTextChange: nil
+        )
+        let textView = NSTextView(frame: .zero)
+
+        coordinator.apply(markdown: source, to: textView)
+
+        #expect(textView.string == "Owner: Priya, urgent, swift test, spec")
+        #expect(coordinator.serializedMarkdown(from: textView) == source)
+    }
+
+    @Test("completed inline markers render during typing")
+    @MainActor
+    func completedInlineMarkersRenderDuringTyping() {
+        var boundMarkdown = ""
+        var command: MarkdownEditorCommand?
+        let coordinator = MarkdownRichTextEditor.Coordinator(
+            text: Binding(
+                get: { boundMarkdown },
+                set: { boundMarkdown = $0 }
+            ),
+            command: Binding(
+                get: { command },
+                set: { command = $0 }
+            ),
+            onTextChange: nil
+        )
+        let textView = NSTextView(frame: .zero)
+        coordinator.apply(markdown: "Owner: ", to: textView)
+        textView.textStorage?.append(NSAttributedString(string: "**Priya**", attributes: coordinator.bodyAttributes()))
+        textView.setSelectedRange(NSRange(location: textView.string.utf16.count, length: 0))
+
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: textView))
+
+        #expect(textView.string == "Owner: Priya")
+        #expect(coordinator.serializedMarkdown(from: textView) == "Owner: **Priya**")
+    }
+
+    @Test("the bullet command transforms every selected line")
+    @MainActor
+    func bulletCommandTransformsSelectedLines() async {
+        let source = "Still Not showing up\nWhy\nIs this\nHappening"
+        var boundMarkdown = source
+        var command: MarkdownEditorCommand?
+        var changeCount = 0
+        let coordinator = MarkdownRichTextEditor.Coordinator(
+            text: Binding(
+                get: { boundMarkdown },
+                set: { boundMarkdown = $0 }
+            ),
+            command: Binding(
+                get: { command },
+                set: { command = $0 }
+            ),
+            onTextChange: { _ in changeCount += 1 }
+        )
+        let textView = NSTextView(frame: .zero)
+        coordinator.apply(markdown: source, to: textView)
+        textView.setSelectedRange(NSRange(location: 0, length: source.utf16.count))
+        let bulletCommand = MarkdownEditorCommand(kind: .bullet)
+        command = bulletCommand
+
+        // SwiftUI can call updateNSView repeatedly before the queued command
+        // runs; the same command ID must still be delivered exactly once.
+        coordinator.schedule(bulletCommand, in: textView)
+        coordinator.schedule(bulletCommand, in: textView)
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+
+        #expect(textView.string == "• Still Not showing up\n• Why\n• Is this\n• Happening")
+        #expect(boundMarkdown == "- Still Not showing up\n- Why\n- Is this\n- Happening")
+        #expect(changeCount == 1)
+        #expect(command == nil)
     }
 }

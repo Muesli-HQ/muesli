@@ -112,10 +112,7 @@ struct MeetingNotesView: View {
     /// text stays literal instead of being re-read as a block marker. Text that
     /// fails to parse falls back to itself, so notes always render.
     static func inline(_ text: String) -> AttributedString {
-        (try? AttributedString(
-            markdown: text,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        )) ?? AttributedString(text)
+        MarkdownInlineParser.parse(text)
     }
 
     private static func indentLevel(for line: String) -> Int {
