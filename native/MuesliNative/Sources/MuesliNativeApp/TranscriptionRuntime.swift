@@ -1013,7 +1013,10 @@ actor TranscriptionCoordinator {
     ) async throws -> SpeechTranscriptionResult {
         switch backend.backend {
         case "whisper":
-            return try await transcribeWithWhisperKit(url: url, language: whisperLanguage)
+            let language = backend.supportsWhisperLanguageSelection
+                ? whisperLanguage
+                : WhisperKitLanguage.defaultLanguage
+            return try await transcribeWithWhisperKit(url: url, language: language)
         case "nemotron35":
             return try await transcribeWithNemotron35(url: url)
         case "qwen":

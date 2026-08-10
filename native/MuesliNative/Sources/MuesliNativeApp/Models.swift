@@ -176,7 +176,7 @@ struct BackendOption: Equatable {
     /// Multilingual WhisperKit models expose language selection (auto-detect or pinned code).
     /// English-only `.en` variants do not.
     var supportsWhisperLanguageSelection: Bool {
-        backend == "whisper" && !model.hasSuffix(".en")
+        backend == "whisper" && !WhisperKitLanguage.isEnglishOnlyModel(model)
     }
 
     static func resolveDownloaded(
@@ -349,6 +349,20 @@ enum WhisperKitLanguage: String, CaseIterable, Codable, Sendable {
 
     static func resolvedCode(_ rawValue: String?) -> String {
         resolved(rawValue).rawValue
+    }
+
+    /// English-only WhisperKit checkpoints (e.g. `tiny.en`) have no multilingual language tokens.
+    static func isEnglishOnlyModel(_ modelName: String) -> Bool {
+        modelName.hasSuffix(".en")
+    }
+
+    /// Preference to apply for a loaded WhisperKit model.
+    /// Returns `nil` for English-only variants so callers use default `DecodingOptions`.
+    static func preferenceForLoadedModel(
+        _ preference: WhisperKitLanguage,
+        modelName: String
+    ) -> WhisperKitLanguage? {
+        isEnglishOnlyModel(modelName) ? nil : preference
     }
 }
 

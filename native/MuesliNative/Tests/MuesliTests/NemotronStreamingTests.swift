@@ -967,4 +967,17 @@ struct WhisperKitLanguageTests {
         #expect(decoded.resolvedWhisperLanguage == .auto)
         #expect(decoded.whisperLanguage == WhisperKitLanguage.auto.rawValue)
     }
+
+    @Test("english-only models ignore pinned and auto language preferences")
+    func englishOnlyModelsIgnoreLanguagePreference() {
+        #expect(WhisperKitLanguage.isEnglishOnlyModel("tiny.en"))
+        #expect(WhisperKitLanguage.isEnglishOnlyModel("small.en"))
+        #expect(WhisperKitLanguage.isEnglishOnlyModel("medium.en"))
+        #expect(!WhisperKitLanguage.isEnglishOnlyModel("large-v3-v20240930_626MB"))
+
+        #expect(WhisperKitLanguage.preferenceForLoadedModel(.german, modelName: "tiny.en") == nil)
+        #expect(WhisperKitLanguage.preferenceForLoadedModel(.auto, modelName: "small.en") == nil)
+        #expect(WhisperKitLanguage.preferenceForLoadedModel(.german, modelName: "large-v3-v20240930_626MB") == .german)
+        #expect(WhisperKitLanguage.preferenceForLoadedModel(.auto, modelName: "large-v3-v20240930_626MB") == .auto)
+    }
 }

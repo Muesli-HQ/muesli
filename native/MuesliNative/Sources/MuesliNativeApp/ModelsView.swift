@@ -728,6 +728,24 @@ struct ModelsView: View {
                 .font(MuesliTheme.caption())
                 .foregroundStyle(MuesliTheme.textSecondary)
 
+            if selectedOption.supportsWhisperLanguageSelection {
+                HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
+                    Text("Language")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .frame(width: 64, alignment: .leading)
+
+                    Picker("", selection: whisperLanguageSelection) {
+                        ForEach(WhisperKitLanguage.allCases, id: \.self) { language in
+                            Text(language.label).tag(language)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 220, alignment: .leading)
+                }
+            }
+
             if showsDownloadStatus {
                 downloadProgressView(
                     for: selectedOption.model,
