@@ -224,11 +224,25 @@ enum MeetingAutoStopPolicy {
     /// join URL then stops matching the very meeting it was started for, and
     /// gets torn down mid-call. The calendar event is the one identity that
     /// stays fixed, so match on it when both sides agree on the event.
+    ///
+    /// The candidate must also show that a meeting is actually being observed.
+    /// `MeetingCandidateResolver.resolve` attributes *any* media activity to the
+    /// current calendar event once one exists, and its last fallback returns a
+    /// bare `cal:<id>` candidate with no meeting app at all. A calendar entry
+    /// that is only a reminder or a placeholder would then hold a recording open
+    /// for its whole duration on the strength of unrelated microphone use — a
+    /// dictation tool, say. Requiring attributed meeting audio or a room URL
+    /// keeps that fallback from standing in for a live call, while every calendar
+    /// branch backed by real meeting media still matches.
     private static func matchesCalendarEventIdentity(
         candidate: MeetingCandidate,
         source: MeetingAutoStopSource
     ) -> Bool {
         guard let sourceCalendarEventID = source.calendarEventID else { return false }
+        guard candidate.evidence.contains(.audioInputProcess)
+            || candidate.evidence.contains(.browserURL) else {
+            return false
+        }
         return candidate.calendarEventID == sourceCalendarEventID
     }
 

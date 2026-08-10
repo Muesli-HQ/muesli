@@ -444,6 +444,52 @@ struct MeetingAutoStopPolicyTests {
         #expect(!MeetingAutoStopPolicy.matches(candidate: otherMeeting, source: refined))
     }
 
+    @Test("a calendar placeholder with no meeting media does not hold a recording open")
+    func ignoresCalendarCandidateWithoutMeetingMedia() throws {
+        let refined = try #require(joinAndRecordSource()).refined(with: focusedTabCandidate())
+        // `resolve` attributes any media activity to the current calendar event,
+        // and its last fallback returns a bare `cal:<id>` with no meeting app.
+        // A reminder or placeholder plus unrelated mic use — a dictation tool —
+        // would otherwise keep the recording alive for the event's whole duration.
+        let placeholder = MeetingCandidate(
+            id: "cal:event-1",
+            platform: .unknown,
+            appName: "Meeting",
+            url: nil,
+            evidence: [.micActive, .calendarEvent],
+            startedAt: Date(timeIntervalSince1970: 1_800_000_120),
+            meetingTitle: "Hold: write review",
+            sourceBundleID: nil,
+            sourcePID: nil,
+            suppressionID: "cal:event-1",
+            calendarEventID: "event-1"
+        )
+
+        #expect(!MeetingAutoStopPolicy.matches(candidate: placeholder, source: refined))
+    }
+
+    @Test("the same calendar event still matches once meeting audio is attributed")
+    func matchesCalendarCandidateWithAttributedAudio() throws {
+        let refined = try #require(joinAndRecordSource()).refined(with: focusedTabCandidate())
+        // Negative control for the guard above: identical event, but now the
+        // meeting app actually holds audio, so this is a real call.
+        let realCall = MeetingCandidate(
+            id: "cal:event-1",
+            platform: .zoom,
+            appName: "Zoom",
+            url: nil,
+            evidence: [.micActive, .calendarEvent, .audioInputProcess],
+            startedAt: Date(timeIntervalSince1970: 1_800_000_120),
+            meetingTitle: "Weekly sync",
+            sourceBundleID: "us.zoom.xos",
+            sourcePID: 4321,
+            suppressionID: "app:us.zoom.xos:session:1800000120",
+            calendarEventID: "event-1"
+        )
+
+        #expect(MeetingAutoStopPolicy.matches(candidate: realCall, source: refined))
+    }
+
     @Test("ignores an uncorrelated candidate when the source has a calendar event")
     func ignoresCandidateWithoutCalendarEvent() throws {
         let refined = try #require(joinAndRecordSource()).refined(with: focusedTabCandidate())
