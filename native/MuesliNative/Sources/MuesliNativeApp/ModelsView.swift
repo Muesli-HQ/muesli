@@ -1536,7 +1536,7 @@ struct ModelsView: View {
         let fm = FileManager.default
         switch option.backend {
         case "whisper":
-            WhisperKitTranscriber.deleteModel(option.model)
+            WhisperKitTranscriber.deleteModel(option.model, repo: option.repo)
         case "nemotron35":
             try removeItemIfPresent(at: Nemotron35ModelStore.cacheDirectory(fileManager: fm), fileManager: fm)
         case "cohere":
@@ -1614,7 +1614,7 @@ struct ModelsView: View {
     private func isModelDownloaded(_ option: BackendOption, fm: FileManager) -> Bool {
         switch option.backend {
         case "whisper":
-            return WhisperKitTranscriber.isModelDownloaded(option.model)
+            return WhisperKitTranscriber.isModelDownloaded(option.model, repo: option.repo)
         case "nemotron35":
             return Nemotron35ModelStore.isModelDownloaded(fileManager: fm)
         case "fluidaudio":

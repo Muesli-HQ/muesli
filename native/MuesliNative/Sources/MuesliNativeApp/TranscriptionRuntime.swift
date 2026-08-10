@@ -292,7 +292,12 @@ actor TranscriptionCoordinator {
             let version: AsrModelVersion = backend.model.contains("v2") ? .v2 : .v3
             try await fluidTranscriber.loadModels(version: version, progress: progress)
         case "whisper":
-            try await whisperTranscriber.loadModel(modelName: backend.model, progress: progress)
+            try await whisperTranscriber.loadModel(
+                modelName: backend.model,
+                repo: backend.repo,
+                language: backend.forcedLanguage,
+                progress: progress
+            )
             // Warmup ANE/GPU so first dictation doesn't pay CoreML compilation cost
             fputs("[muesli-native] WhisperKit warmup: running silent audio for CoreML compilation...\n", stderr)
             progress?(0.9, "Warming up model...")
