@@ -88,6 +88,7 @@ case "${shard}" in
       TranscriptFormatterTests
       MeetingSummaryBackendTests
       MeetingAutoStopPolicyTests
+      MeetingMediaSessionTrackerTests
       MeetingResummarizationPolicyTests
       MeetingTemplateResolutionTests
       MeetingTemplatesDefaultFallbackTests

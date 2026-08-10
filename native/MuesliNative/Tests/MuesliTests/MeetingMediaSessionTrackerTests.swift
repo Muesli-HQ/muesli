@@ -149,4 +149,47 @@ struct MeetingMediaSessionTrackerTests {
         #expect(result?.id == candidate.id)
         #expect(result?.suppressionID == candidate.id)
     }
+
+    @Test("stabilizing a candidate preserves its calendar event attribution")
+    func stabilizePreservesCalendarEventID() async {
+        // The stabilized candidate is what reaches MeetingAutoStopPolicy.matches.
+        // Dropping calendarEventID here makes matchesCalendarEventIdentity
+        // unreachable for every media-backed candidate, which is all of them on
+        // the calendar path.
+        let tracker = MeetingMediaSessionTracker()
+        let candidate = MeetingCandidate(
+            id: "cal:event-123",
+            platform: .zoom,
+            appName: "Zoom",
+            url: nil,
+            evidence: [.audioInputProcess, .calendarEvent],
+            startedAt: now,
+            meetingTitle: "Weekly sync",
+            sourceBundleID: "us.zoom.xos",
+            sourcePID: 4321,
+            suppressionID: "app:us.zoom.xos:session:1",
+            calendarEventID: "event-123"
+        )
+
+        let result = await tracker.stabilize(
+            candidate: candidate,
+            snapshot: snapshot(
+                audioInputProcesses: [
+                    AudioProcessActivity(
+                        pid: 4321,
+                        bundleID: "us.zoom.xos",
+                        appName: "Zoom",
+                        isRunningInput: true,
+                        isRunningOutput: true
+                    ),
+                ],
+                now: now
+            )
+        )
+
+        // The session identity is expected to be rewritten…
+        #expect(result?.id != candidate.id)
+        // …but the calendar event is meeting identity, not observation identity.
+        #expect(result?.calendarEventID == "event-123")
+    }
 }
