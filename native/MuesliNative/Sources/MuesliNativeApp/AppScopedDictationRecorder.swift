@@ -280,9 +280,12 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
         lifecycleGeneration &+= 1
         lock.unlock()
         return recorderQueue.sync {
-            let url = recorder.stop()
-            recorder.cancel()
-            return url
+            // Stop IO and finalize the WAV, but keep the prepared capture
+            // graph alive: AudioQueueInputRecorder.stop() retains the queue,
+            // so the next start() is AudioQueueStart on the existing graph
+            // instead of a full rebuild. The graph is only torn down on
+            // cancel() (proven failure / explicit invalidation).
+            recorder.stop()
         }
     }
 

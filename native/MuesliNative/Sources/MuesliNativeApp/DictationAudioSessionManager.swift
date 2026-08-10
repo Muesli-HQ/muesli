@@ -449,17 +449,29 @@ final class DictationAudioSessionManager: @unchecked Sendable {
         }
         routeSnapshot = makeRouteSnapshot(refreshInput: false)
         emitLatency("route_refresh:\(intent.debugName) \(routeSnapshot.debugDescription)")
+        if intent == .idlePrewarm(.routeChange) {
+            // Persistent-graph policy: route changes are telemetry-only. The
+            // warm capture graph is bound to a fixed input device and is
+            // indifferent to output-route churn, so there is nothing to
+            // rebuild here. Rebuilds happen only at start() after a proven
+            // failure or a device-selection change.
+            emitLatency("route_refresh_ignored:\(intent.debugName)")
+            return
+        }
         guard stateStorage == .idle, !externalSessionActive else { return }
-        if let skipReason = idleWarmupSkipReason(route: routeSnapshot, canWarmUp: canWarmUp) {
-            recorder.keepsAudioGraphWarm = false
-            recorder.coolDown()
+        if let skipReason = idleWarmupSkipReason(
+            route: routeSnapshot,
+            canWarmUp: canWarmUp
+        ) {
             emitLatency("warmup_skipped:\(intent.debugName):\(skipReason)")
             fputs("[dictation-session] warmup skipped intent=\(intent.debugName) reason=\(skipReason) \(routeSnapshot.debugDescription)\n", stderr)
             return
         }
         recorder.keepsAudioGraphWarm = true
-        recorder.coolDown()
         do {
+            // No coolDown before warming: warmUp() is idempotent per bound
+            // device, so an already-warm graph is reused. Disposal stays
+            // reserved for proven failure / explicit cancellation paths.
             emitLatency("engine_prepare_begin:warmup:\(intent.debugName)")
             try recorder.warmUp(preferredInputDeviceID: routeSnapshot.preferredInputDeviceID)
             emitLatency("engine_prepare_end:warmup:\(intent.debugName)")
@@ -470,7 +482,10 @@ final class DictationAudioSessionManager: @unchecked Sendable {
         }
     }
 
-    private func idleWarmupSkipReason(route: RouteSnapshot, canWarmUp: Bool) -> String? {
+    private func idleWarmupSkipReason(
+        route: RouteSnapshot,
+        canWarmUp: Bool
+    ) -> String? {
         guard canWarmUp else { return "not_allowed" }
         switch route.routeKind {
         case .speakerLike:
