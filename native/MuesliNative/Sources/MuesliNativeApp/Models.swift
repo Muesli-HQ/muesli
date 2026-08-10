@@ -999,6 +999,11 @@ struct AppConfig: Codable {
     var showScheduledMeetingNotifications: Bool = true
     var scheduledMeetingNotificationLeadTime: ScheduledMeetingNotificationLeadTime = .atStart
     var showMeetingDetectionNotification: Bool = true
+    /// Only treat a calendar entry as a meeting when it carries a join link.
+    /// Off by default: link-less entries are still real meetings for people who
+    /// dial in or meet in person. On, it stops reminders and placeholders from
+    /// being detected as meetings at all.
+    var requireCalendarMeetingLink: Bool = false
     var mutedMeetingDetectionAppBundleIDs: [String] = []
     var meetingRecordingSavePolicy: MeetingRecordingSavePolicy = .never
     var meetingRecordingFileFormat: String = MeetingRecordingFileFormat.m4a.rawValue
@@ -1119,6 +1124,7 @@ struct AppConfig: Codable {
         case showScheduledMeetingNotifications = "show_scheduled_meeting_notifications"
         case scheduledMeetingNotificationLeadTime = "scheduled_meeting_notification_lead_time"
         case showMeetingDetectionNotification = "show_meeting_detection_notification"
+        case requireCalendarMeetingLink = "require_calendar_meeting_link"
         case mutedMeetingDetectionAppBundleIDs = "muted_meeting_detection_app_bundle_ids"
         case meetingRecordingSavePolicy = "meeting_recording_save_policy"
         case meetingRecordingFileFormat = "meeting_recording_file_format"
@@ -1257,6 +1263,7 @@ struct AppConfig: Codable {
             (try? c.decode(ScheduledMeetingNotificationLeadTime.self, forKey: .scheduledMeetingNotificationLeadTime))
             ?? defaults.scheduledMeetingNotificationLeadTime
         showMeetingDetectionNotification = decodedShowMeetingDetectionNotification ?? defaults.showMeetingDetectionNotification
+        requireCalendarMeetingLink = (try? c.decode(Bool.self, forKey: .requireCalendarMeetingLink)) ?? defaults.requireCalendarMeetingLink
         mutedMeetingDetectionAppBundleIDs = (try? c.decode([String].self, forKey: .mutedMeetingDetectionAppBundleIDs)) ?? defaults.mutedMeetingDetectionAppBundleIDs
         meetingRecordingSavePolicy = (try? c.decode(MeetingRecordingSavePolicy.self, forKey: .meetingRecordingSavePolicy)) ?? defaults.meetingRecordingSavePolicy
         let decodedMeetingRecordingFileFormat = (try? c.decode(String.self, forKey: .meetingRecordingFileFormat))

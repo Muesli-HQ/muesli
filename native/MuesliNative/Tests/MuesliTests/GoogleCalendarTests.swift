@@ -319,6 +319,61 @@ struct GoogleCalendarTests {
         #expect(selected?.title == "Soon call")
     }
 
+    @Test("link-less events are selected by default")
+    func cachedDetectionSelectsLinklessEventByDefault() {
+        // Dial-in and in-person meetings are real meetings; the default must not
+        // stop recognising them.
+        let now = date("2026-04-10T10:02:00Z")
+        let events = [
+            UnifiedCalendarEvent(id: "dial-in", title: "Board call", startDate: date("2026-04-10T09:55:00Z"), endDate: date("2026-04-10T10:20:00Z"), isAllDay: false, source: .eventKit),
+        ]
+
+        let selected = selectCurrentOrNearbyCachedCalendarEvent(from: events, now: now)
+        #expect(selected?.id == "dial-in")
+    }
+
+    @Test("requiring a join link skips events without one")
+    func cachedDetectionSkipsLinklessEventWhenLinkRequired() {
+        // A reminder or placeholder is otherwise indistinguishable from a
+        // meeting, and any media activity gets attributed to it.
+        let now = date("2026-04-10T10:02:00Z")
+        let events = [
+            UnifiedCalendarEvent(id: "placeholder", title: "Hold: write review", startDate: date("2026-04-10T09:55:00Z"), endDate: date("2026-04-10T10:20:00Z"), isAllDay: false, source: .eventKit),
+        ]
+
+        let selected = selectCurrentOrNearbyCachedCalendarEvent(
+            from: events,
+            requireMeetingLink: true,
+            now: now
+        )
+        #expect(selected == nil)
+    }
+
+    @Test("requiring a join link still selects a linked event behind a placeholder")
+    func cachedDetectionPrefersLinkedEventWhenLinkRequired() {
+        let now = date("2026-04-10T10:02:00Z")
+        let events = [
+            UnifiedCalendarEvent(id: "placeholder", title: "Hold: focus time", startDate: date("2026-04-10T09:50:00Z"), endDate: date("2026-04-10T10:30:00Z"), isAllDay: false, source: .eventKit),
+            UnifiedCalendarEvent(
+                id: "real",
+                title: "Weekly sync",
+                startDate: date("2026-04-10T09:58:00Z"),
+                endDate: date("2026-04-10T10:25:00Z"),
+                isAllDay: false,
+                source: .googleCalendar,
+                meetingURL: URL(string: "https://zoom.us/j/1234567890")
+            ),
+        ]
+
+        let selected = selectCurrentOrNearbyCachedCalendarEvent(
+            from: events,
+            requireMeetingLink: true,
+            now: now
+        )
+        // The placeholder starts earlier and would otherwise win the sort.
+        #expect(selected?.id == "real")
+    }
+
     // MARK: - parseCalendarListEntry
 
     @Test("parses a calendarList entry with summary, primary flag, and color")
