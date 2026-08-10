@@ -186,6 +186,12 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
     }
 
     private func prepareLocked() throws {
+        // Reuse is safe for the default route too: a queue prepared without an
+        // explicit device reports kAudioQueueProperty_CurrentDevice =
+        // "AQDefaultDevice", i.e. it follows the system default input at start
+        // time. Explicit-device queues are bound to a fixed UID; if that device
+        // disappears, AudioQueueStart fails and the caller's failure path
+        // disposes + rebuilds. Neither case needs eager rebuild here.
         if isPrepared, preparedInputDeviceID == preferredInputDeviceID {
             emitLatency("audio_queue_prepare_reused")
             return
