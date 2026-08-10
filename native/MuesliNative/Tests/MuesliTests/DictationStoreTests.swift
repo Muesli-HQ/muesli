@@ -136,6 +136,111 @@ struct DictationStoreTests {
         try store.migrateIfNeeded() // idempotent
     }
 
+    @Test("CloudKit engine state persists independently by key")
+    func cloudSyncEngineStatePersistence() throws {
+        let store = try makeStore()
+        let first = Data([0x00, 0x01, 0xFE, 0xFF])
+        let second = Data("replacement-state".utf8)
+
+        #expect(try store.cloudSyncStateData(forKey: "production-private") == nil)
+        try store.saveCloudSyncStateData(first, forKey: "production-private")
+        try store.saveCloudSyncStateData(Data("other".utf8), forKey: "development-private")
+        #expect(try store.cloudSyncStateData(forKey: "production-private") == first)
+
+        try store.saveCloudSyncStateData(second, forKey: "production-private")
+        #expect(try store.cloudSyncStateData(forKey: "production-private") == second)
+        #expect(try store.cloudSyncStateData(forKey: "development-private") == Data("other".utf8))
+
+        try store.clearCloudSyncStateData(forKey: "production-private")
+        #expect(try store.cloudSyncStateData(forKey: "production-private") == nil)
+        #expect(try store.cloudSyncStateData(forKey: "development-private") == Data("other".utf8))
+    }
+
+    @Test("CloudKit system fields survive local edits and account reset")
+    func cloudSystemFieldsLifecycle() throws {
+        let store = try makeStore()
+        let endedAt = Date(timeIntervalSince1970: 1_770_000_000)
+        _ = try store.insertDictation(
+            text: "Original local text",
+            durationSeconds: 2,
+            startedAt: endedAt.addingTimeInterval(-2),
+            endedAt: endedAt
+        )
+        let outbound = try #require(try store.textRecordsNeedingSync().first)
+        let firstSystemFields = Data([0x01, 0x02, 0x03])
+        #expect(try store.markTextRecordSynced(
+            kind: outbound.kind,
+            recordName: outbound.id,
+            changeTag: "server-v1",
+            systemFields: firstSystemFields,
+            recordUpdatedAt: outbound.updatedAt
+        ))
+
+        let synced = try #require(try store.textRecordForSync(recordName: outbound.id))
+        #expect(synced.cloudChangeTag == "server-v1")
+        #expect(synced.cloudSystemFields == firstSystemFields)
+
+        let localEditAt = endedAt.addingTimeInterval(60)
+        try setDictationDirtyText(
+            recordName: outbound.id,
+            text: "Newer local text",
+            updatedAt: localEditAt,
+            store: store
+        )
+        let newerSystemFields = Data([0x04, 0x05])
+        try store.updateTextRecordCloudMetadata(
+            kind: .dictation,
+            recordName: outbound.id,
+            changeTag: "server-v2",
+            systemFields: newerSystemFields
+        )
+        let dirty = try #require(try store.textRecordsNeedingSync().first { $0.id == outbound.id })
+        #expect(dirty.text == "Newer local text")
+        #expect(dirty.updatedAt == localEditAt)
+        #expect(dirty.cloudChangeTag == "server-v2")
+        #expect(dirty.cloudSystemFields == newerSystemFields)
+
+        try store.resetTextRecordCloudMetadataForAccountChange()
+        let reset = try #require(try store.textRecordsNeedingSync().first { $0.id == outbound.id })
+        #expect(reset.text == "Newer local text")
+        #expect(reset.cloudChangeTag == nil)
+        #expect(reset.cloudSystemFields == nil)
+    }
+
+    @Test("CloudKit batch lookup returns dictations and meetings")
+    func cloudTextRecordBatchLookup() throws {
+        let store = try makeStore()
+        let endedAt = Date(timeIntervalSince1970: 1_770_000_000)
+        _ = try store.insertDictation(
+            text: "Batch dictation",
+            durationSeconds: 2,
+            startedAt: endedAt.addingTimeInterval(-2),
+            endedAt: endedAt
+        )
+        try store.insertMeeting(
+            title: "Batch meeting",
+            calendarEventID: nil,
+            startTime: endedAt.addingTimeInterval(-60),
+            endTime: endedAt,
+            rawTranscript: "Meeting transcript",
+            formattedNotes: "Meeting notes",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+
+        let dirtyRecords = try store.textRecordsNeedingSync(limit: 10)
+        let dictation = try #require(dirtyRecords.first { $0.kind == .dictation })
+        let meeting = try #require(dirtyRecords.first { $0.kind == .meeting })
+        let records = try store.textRecordsForSync(
+            recordNames: [dictation.id, meeting.id, "missing-record", dictation.id]
+        )
+
+        #expect(records.count == 2)
+        #expect(records[dictation.id]?.text == "Batch dictation")
+        #expect(records[meeting.id]?.text == "Meeting transcript")
+        #expect(records["missing-record"] == nil)
+    }
+
     @Test("migration replaces calendar event uniqueness with occurrence lookup")
     func migrationReplacesCalendarEventUniqueness() throws {
         let store = try makeLegacyStore()
@@ -1171,6 +1276,38 @@ struct DictationStoreTests {
         #expect(cloud.recordID == recordID)
         #expect(cloud["text"] as? String == "Local dirty text")
         #expect(cloud["updatedAt"] as? Date == updatedAt)
+    }
+
+    @Test("sync cloud record restores persisted CKRecord system fields")
+    func syncCloudRecordRestoresPersistedSystemFields() throws {
+        let updatedAt = Date(timeIntervalSince1970: 1_770_000_000)
+        let recordID = CKRecord.ID(
+            recordName: "dictation-persisted-system-fields",
+            zoneID: MuesliICloudSyncEngine.Schema.syncZoneID
+        )
+        let original = CKRecord(
+            recordType: MuesliICloudSyncEngine.Schema.textRecordType,
+            recordID: recordID
+        )
+        let systemFields = try #require(MuesliICloudSyncEngine.encodedSystemFields(for: original))
+
+        let cloud = MuesliICloudSyncEngine.syncZoneCloudRecord(
+            from: SyncTextRecord(
+                id: recordID.recordName,
+                kind: .dictation,
+                text: "Updated local text",
+                source: "macos",
+                createdAt: updatedAt.addingTimeInterval(-60),
+                updatedAt: updatedAt,
+                durationSeconds: 2,
+                wordCount: 3,
+                cloudSystemFields: systemFields
+            )
+        )
+
+        #expect(cloud.recordID == recordID)
+        #expect(cloud.recordType == MuesliICloudSyncEngine.Schema.textRecordType)
+        #expect(cloud["text"] as? String == "Updated local text")
     }
 
     @Test("dirty upload resolution applies newer fetched remote")

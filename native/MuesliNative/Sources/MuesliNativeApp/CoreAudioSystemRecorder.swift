@@ -196,10 +196,33 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
         // The tap list must contain dictionaries with UID strings — NOT
         // CATapDescription objects (passing objects crashes CoreAudio).
         let tapUIDString = tapDesc.uuid.uuidString
-        let aggUID = "com.muesli.system-audio-tap-\(UUID().uuidString)"
-        let aggDesc = Self.makeAggregateDeviceDescription(tapUID: tapUIDString, aggregateUID: aggUID)
+        // Stable aggregate UID: one identity across all sessions, so an
+        // unclean stop can never accumulate fresh HAL settings entries.
+        // The daemon enforces UID uniqueness globally, so if a phantom from a
+        // crashed session still holds the stable UID (or another Muesli
+        // instance is recording), creation fails with 'nope' — in that case we
+        // retry once with a single deterministic fallback UID. The fallback is
+        // deliberately NOT a fresh UUID: private aggregate devices are
+        // invisible to every enumeration/lookup API, so no cleanup sweep can
+        // ever find them, and a per-attempt UUID would let repeated crashes in
+        // the collision state accumulate permanent HAL settings entries — the
+        // exact failure this change exists to remove. Bounding identity count
+        // to two caps worst-case permanent leakage at two keys. A refusal on
+        // either UID is a phantom signal, so log it loudly.
+        var aggUID = "com.muesli.system-audio-tap"
+        var aggDesc = Self.makeAggregateDeviceDescription(tapUID: tapUIDString, aggregateUID: aggUID)
 
         status = AudioHardwareCreateAggregateDevice(aggDesc as CFDictionary, &aggregateDeviceID)
+        if status != noErr || aggregateDeviceID == kAudioObjectUnknown {
+            fputs("[system-audio] aggregate creation with stable UID failed (status=\(status)); a phantom or concurrent session may hold it — retrying with fallback UID\n", stderr)
+            aggUID = "com.muesli.system-audio-tap-fallback"
+            aggDesc = Self.makeAggregateDeviceDescription(tapUID: tapUIDString, aggregateUID: aggUID)
+            aggregateDeviceID = kAudioObjectUnknown
+            status = AudioHardwareCreateAggregateDevice(aggDesc as CFDictionary, &aggregateDeviceID)
+            if status != noErr || aggregateDeviceID == kAudioObjectUnknown {
+                fputs("[system-audio] aggregate creation failed with fallback UID too (status=\(status)); stable+fallback UIDs both held by phantoms or concurrent sessions — restart coreaudiod (sudo killall coreaudiod) or reboot to clear\n", stderr)
+            }
+        }
         guard status == noErr, aggregateDeviceID != kAudioObjectUnknown else {
             AudioHardwareDestroyProcessTap(tapID)
             tapID = kAudioObjectUnknown
@@ -793,19 +816,31 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
         resamplerOutputFormat = nil
 
         if let procID = deviceIOProcID, aggregateDeviceID != kAudioObjectUnknown {
-            AudioDeviceStop(aggregateDeviceID, procID)
-            AudioDeviceDestroyIOProcID(aggregateDeviceID, procID)
+            let stopStatus = AudioDeviceStop(aggregateDeviceID, procID)
+            let destroyProcStatus = AudioDeviceDestroyIOProcID(aggregateDeviceID, procID)
+            if stopStatus != noErr || destroyProcStatus != noErr {
+                fputs("[system-audio] teardown: IO stop/destroy failed on device \(aggregateDeviceID) (stop=\(stopStatus), destroyProc=\(destroyProcStatus))\n", stderr)
+            }
         }
         deviceIOProcID = nil
         deviceIOBlock = nil
 
         if aggregateDeviceID != kAudioObjectUnknown {
-            AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
+            // A failure here previously went silent: we would drop the ID and
+            // lose any chance to retry, leaving the object for the daemon to
+            // reclaim (or not). Log loudly so field diagnostics can see it.
+            let destroyStatus = AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
+            if destroyStatus != noErr {
+                fputs("[system-audio] teardown: FAILED to destroy aggregate device \(aggregateDeviceID) (status=\(destroyStatus))\n", stderr)
+            }
             aggregateDeviceID = kAudioObjectUnknown
         }
 
         if tapID != kAudioObjectUnknown {
-            AudioHardwareDestroyProcessTap(tapID)
+            let destroyTapStatus = AudioHardwareDestroyProcessTap(tapID)
+            if destroyTapStatus != noErr {
+                fputs("[system-audio] teardown: FAILED to destroy process tap \(tapID) (status=\(destroyTapStatus))\n", stderr)
+            }
             tapID = kAudioObjectUnknown
         }
     }

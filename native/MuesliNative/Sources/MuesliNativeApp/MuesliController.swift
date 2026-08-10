@@ -432,6 +432,9 @@ final class MuesliController: NSObject {
     /// transcript, and cleared on success or restored-on-failure.
     private var pendingResumePriorTranscript: [Int64: String] = [:]
     private var iCloudSyncTask: Task<Void, Never>?
+    private var ckSyncEngine: MuesliCKSyncEngine?
+    private var ckSyncEngineCancellationTask: Task<Void, Never>?
+    private var ckSyncEngineCancellationGeneration = 0
     private var iCloudSyncGeneration = 0
     private var iCloudSyncDebounceTask: Task<Void, Never>?
     private var iCloudSubscriptionTask: Task<Void, Never>?
@@ -788,7 +791,7 @@ final class MuesliController: NSObject {
         }
     }
 
-    func shutdown() {
+    func shutdown() async {
         if let workspaceObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver)
             self.workspaceObserver = nil
@@ -810,6 +813,7 @@ final class MuesliController: NSObject {
         iCloudSyncDebounceTask = nil
         iCloudSubscriptionTask?.cancel()
         iCloudSubscriptionTask = nil
+        let syncEngineCancellationTask = retireCKSyncEngine()
         hotkeyMonitor.stop()
         computerUseHotkeyMonitor.stop()
         meetingRecordingHotkeyMonitor.stop()
@@ -844,9 +848,8 @@ final class MuesliController: NSObject {
         endMeetingActivity()
         dictationAudioSessionManager.cancel(reason: "shutdown")
         computerUseAudioSessionManager.cancel(reason: "shutdown")
-        Task {
-            await transcriptionCoordinator.shutdown()
-        }
+        await syncEngineCancellationTask?.value
+        await transcriptionCoordinator.shutdown()
         indicator.close()
         CoreAudioSystemRecorder.cleanupStaleDevices()
     }
@@ -1595,10 +1598,11 @@ final class MuesliController: NSObject {
 
         iCloudSyncGeneration += 1
         let generation = iCloudSyncGeneration
+        let syncEngine = resolvedCKSyncEngine()
         iCloudSubscriptionTask?.cancel()
         iCloudSubscriptionTask = Task { [weak self] in
             do {
-                try await MuesliICloudSyncEngine().ensureTextRecordSubscription()
+                try await syncEngine.prepare()
                 await MainActor.run {
                     guard let self, self.iCloudSyncGeneration == generation else { return }
                     self.iCloudSubscriptionTask = nil
@@ -1641,7 +1645,8 @@ final class MuesliController: NSObject {
 
     func handleICloudRemoteNotification(userInfo: [AnyHashable: Any]) {
         guard config.iCloudSyncEnabled,
-              MuesliICloudSyncEngine.isTextRecordSubscriptionNotification(userInfo) else {
+              (MuesliICloudSyncEngine.isTextRecordSubscriptionNotification(userInfo)
+                  || MuesliCKSyncEngine.isSyncNotification(userInfo)) else {
             return
         }
         scheduleICloudSync(delay: 0.2, userInitiated: false)
@@ -1687,15 +1692,19 @@ final class MuesliController: NSObject {
               iCloudSubscriptionTask == nil else {
             return
         }
+        let syncEngine = resolvedCKSyncEngine()
         iCloudSubscriptionTask = Task { [weak self] in
             do {
-                try await MuesliICloudSyncEngine().ensureTextRecordSubscription()
+                try await syncEngine.prepare()
                 await MainActor.run {
                     self?.hasEnsuredICloudSubscription = true
                     self?.iCloudSubscriptionTask = nil
                 }
             } catch {
-                fputs("[muesli-native] failed to ensure iCloud sync subscription: \(error)\n", stderr)
+                fputs(
+                    "[muesli-native] failed to prepare CKSyncEngine: \(String(describing: type(of: error)))\n",
+                    stderr
+                )
                 await MainActor.run {
                     self?.iCloudSubscriptionTask = nil
                 }
@@ -1778,6 +1787,7 @@ final class MuesliController: NSObject {
         let store = dictationStore
         iCloudSyncGeneration += 1
         let generation = iCloudSyncGeneration
+        let syncEngine = resolvedCKSyncEngine()
         let bridgeActivationPendingAtStart = bridgeActivationPending
         let bridgeDiscoveryTriggeredAtStart = bridgeDiscoveryPending
         bridgeDiscoveryPending = false
@@ -1790,14 +1800,16 @@ final class MuesliController: NSObject {
                     bridgeDiscoveryTriggered: bridgeDiscoveryTriggeredAtStart,
                     hasKnownCompanionDevice: hasKnownCompanionDeviceAtStart
                 )
-                let result = try await MuesliICloudSyncEngine().sync(
-                    store: store,
+                let result = try await syncEngine.sync(
                     forceBridgeDeviceRefresh: forceBridgeDeviceRefresh
                 )
                 do {
                     _ = try store.purgeSoftDeletedTextRecords()
                 } catch {
-                    fputs("[muesli-native] failed to purge old iCloud tombstones: \(error)\n", stderr)
+                    fputs(
+                        "[muesli-native] failed to purge old iCloud tombstones: \(String(describing: type(of: error)))\n",
+                        stderr
+                    )
                 }
                 await MainActor.run {
                     guard let self, self.iCloudSyncGeneration == generation else { return }
@@ -1823,10 +1835,6 @@ final class MuesliController: NSObject {
                         self.bridgeActivationPending = false
                         self.appState.isICloudBridgeActivationPending = false
                         TelemetryDeck.signal("bridge_enable_completed", parameters: ["platform": "macos"])
-                    }
-                    if result.syncZoneWasRecreated {
-                        self.resetICloudSubscriptionState()
-                        self.ensureICloudSubscription()
                     }
                     self.refreshUI()
                     let shouldRunBridgeDiscoveryFollowUp = self.bridgeDiscoveryFollowUpPending
@@ -1887,17 +1895,53 @@ final class MuesliController: NSObject {
         refreshICloudBridgeStateForConfig()
     }
 
+    private func resolvedCKSyncEngine() -> MuesliCKSyncEngine {
+        if let ckSyncEngine { return ckSyncEngine }
+        let created = MuesliCKSyncEngine(store: dictationStore)
+        ckSyncEngine = created
+        return created
+    }
+
+    private func retireCKSyncEngine() -> Task<Void, Never>? {
+        guard let retiredEngine = ckSyncEngine else {
+            return ckSyncEngineCancellationTask
+        }
+        ckSyncEngine = nil
+        let previousCancellationTask = ckSyncEngineCancellationTask
+        ckSyncEngineCancellationGeneration += 1
+        let cancellationGeneration = ckSyncEngineCancellationGeneration
+        let cancellationTask = Task { [weak self] in
+            await previousCancellationTask?.value
+            await retiredEngine.cancel()
+            guard let self,
+                  self.ckSyncEngineCancellationGeneration == cancellationGeneration else { return }
+            self.ckSyncEngineCancellationTask = nil
+        }
+        ckSyncEngineCancellationTask = cancellationTask
+        return cancellationTask
+    }
+
     private func disableICloudSyncRuntimeState() {
         cancelActiveICloudSyncTask()
         iCloudSyncDebounceTask?.cancel()
         iCloudSyncDebounceTask = nil
         iCloudSubscriptionTask?.cancel()
         iCloudSubscriptionTask = nil
+        let generation = iCloudSyncGeneration
+        let cancellationTask = retireCKSyncEngine()
         resetICloudSubscriptionState()
         resetBridgeDiscoveryRuntimeState()
-        appState.iCloudSyncStatus = "iCloud sync is off."
-        appState.iCloudBridgeState = .notConfigured
+        appState.iCloudSyncStatus = "Turning off iCloud sync..."
+        appState.iCloudBridgeState = .syncing
         appState.iCloudBridgeMessage = nil
+        Task { [weak self] in
+            await cancellationTask?.value
+            guard let self,
+                  self.iCloudSyncGeneration == generation,
+                  self.ckSyncEngine == nil else { return }
+            self.appState.iCloudSyncStatus = "iCloud sync is off."
+            self.appState.iCloudBridgeState = .notConfigured
+        }
     }
 
     private func disableICloudSyncForUnavailableEntitlement() {
@@ -1906,11 +1950,21 @@ final class MuesliController: NSObject {
         iCloudSyncDebounceTask = nil
         iCloudSubscriptionTask?.cancel()
         iCloudSubscriptionTask = nil
+        let generation = iCloudSyncGeneration
+        let cancellationTask = retireCKSyncEngine()
         resetICloudSubscriptionState()
         resetBridgeDiscoveryRuntimeState()
-        appState.iCloudSyncStatus = "iCloud sync is unavailable in this local-only build."
-        appState.iCloudBridgeState = .notConfigured
+        appState.iCloudSyncStatus = "Stopping unavailable iCloud sync..."
+        appState.iCloudBridgeState = .syncing
         appState.iCloudBridgeMessage = nil
+        Task { [weak self] in
+            await cancellationTask?.value
+            guard let self,
+                  self.iCloudSyncGeneration == generation,
+                  self.ckSyncEngine == nil else { return }
+            self.appState.iCloudSyncStatus = "iCloud sync is unavailable in this local-only build."
+            self.appState.iCloudBridgeState = .notConfigured
+        }
     }
 
     private func resetBridgeDiscoveryRuntimeState() {
