@@ -75,6 +75,36 @@ struct BackendOptionTests {
         #expect(BackendOption.all.contains(.gemma4E2BLiteRT))
     }
 
+    @Test("Qwen ASR cache names match FluidAudio folderName strip of -coreml")
+    func qwenAsrCacheDirectoryNamesMatchFluidAudio() {
+        // FluidAudio Repo.folderName default strips "-coreml" from the repo slug,
+        // so downloads land in qwen3-asr-0.6b/{int8,f32} (issue #380).
+        #expect(Qwen3AsrModelStore.cacheDirectoryNames.first == "qwen3-asr-0.6b")
+        #expect(Qwen3AsrModelStore.cacheDirectoryNames.contains("qwen3-asr-0.6b-coreml"))
+    }
+
+    @Test("Qwen ASR vocab marker recognizes FluidAudio stripped cache path")
+    func qwenAsrVocabMarkerRecognizesStrippedCachePath() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory
+            .appendingPathComponent("muesli-qwen-asr-path-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: root) }
+
+        #expect(!Qwen3AsrModelStore.hasVocabMarker(in: root, fileManager: fm))
+
+        let vocab = root
+            .appendingPathComponent("qwen3-asr-0.6b/int8", isDirectory: true)
+            .appendingPathComponent("vocab.json")
+        try fm.createDirectory(at: vocab.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: vocab)
+
+        #expect(Qwen3AsrModelStore.hasVocabMarker(in: root, fileManager: fm))
+
+        try Qwen3AsrModelStore.deleteModelFiles(from: root, fileManager: fm)
+        #expect(!fm.fileExists(atPath: root.appendingPathComponent("qwen3-asr-0.6b").path))
+        #expect(!Qwen3AsrModelStore.hasVocabMarker(in: root, fileManager: fm))
+    }
+
     @Test("Cohere uses cohere backend")
     func cohereBackend() {
         #expect(BackendOption.cohereTranscribe.backend == "cohere")

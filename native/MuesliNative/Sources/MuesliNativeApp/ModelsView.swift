@@ -1563,9 +1563,7 @@ struct ModelsView: View {
                 }
             }
         case "qwen":
-            let path = fm.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/Application Support/FluidAudio/Models/qwen3-asr-0.6b-coreml")
-            try removeItemIfPresent(at: path, fileManager: fm)
+            try Qwen3AsrModelStore.deleteModelFiles(fileManager: fm)
         default:
             break
         }
@@ -1629,10 +1627,7 @@ struct ModelsView: View {
             }
             return false
         case "qwen":
-            let supportDir = fm.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/Application Support/FluidAudio/Models/qwen3-asr-0.6b-coreml")
-            return fm.fileExists(atPath: supportDir.appendingPathComponent("int8/vocab.json").path)
-                || fm.fileExists(atPath: supportDir.appendingPathComponent("f32/vocab.json").path)
+            return Qwen3AsrModelStore.isModelDownloaded(fileManager: fm)
         case "cohere":
             return CohereTranscribeModelStore.isAvailableLocally()
         case "indicasr":
