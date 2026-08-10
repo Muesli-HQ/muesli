@@ -492,6 +492,13 @@ struct ModelsView: View {
         )
     }
 
+    private var whisperLanguageSelection: Binding<WhisperKitLanguage> {
+        Binding(
+            get: { appState.config.resolvedWhisperLanguage },
+            set: { controller.selectWhisperLanguage($0) }
+        )
+    }
+
     private var postProcessorSection: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
@@ -1046,6 +1053,24 @@ struct ModelsView: View {
 
                     Picker("", selection: indicASRLanguageSelection) {
                         ForEach(IndicASRLanguage.allCases, id: \.self) { language in
+                            Text(language.label).tag(language)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 220, alignment: .leading)
+                }
+            }
+
+            if option.supportsWhisperLanguageSelection {
+                HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
+                    Text("Language")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .frame(width: 64, alignment: .leading)
+
+                    Picker("", selection: whisperLanguageSelection) {
+                        ForEach(WhisperKitLanguage.allCases, id: \.self) { language in
                             Text(language.label).tag(language)
                         }
                     }

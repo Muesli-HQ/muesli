@@ -874,7 +874,10 @@ actor WhisperCLITranscriber: AudioTranscribing {
             throw CLIError.invalidInput("WhisperKit model was not loaded.", fix: "Run the command again after the model finishes downloading.")
         }
         let start = CFAbsoluteTimeGetCurrent()
-        let results = try await whisperKit.transcribe(audioPath: wavURL.path)
+        // Default DecodingOptions silently force English when usePrefillPrompt is true.
+        // Enable detection so multilingual Whisper models match spoken language.
+        let decodeOptions = DecodingOptions(detectLanguage: true)
+        let results = try await whisperKit.transcribe(audioPath: wavURL.path, decodeOptions: decodeOptions)
         let text = results.map(\.text).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
         progress("transcription complete in \(String(format: "%.2f", CFAbsoluteTimeGetCurrent() - start))s")
         return HeadlessTranscription(text: text, durationSeconds: nil)

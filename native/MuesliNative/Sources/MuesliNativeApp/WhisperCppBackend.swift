@@ -88,11 +88,24 @@ actor WhisperKitTranscriber {
     }
 
     /// Transcribe a 16kHz mono WAV file.
-    func transcribe(wavURL: URL) async throws -> (text: String, processingTime: Double) {
+    /// - Parameter language: `.auto` enables WhisperKit language detection; otherwise pins that ISO code.
+    func transcribe(
+        wavURL: URL,
+        language: WhisperKitLanguage = .defaultLanguage
+    ) async throws -> (text: String, processingTime: Double) {
         guard let whisperKit else { throw TranscriberError.notLoaded }
 
         let start = CFAbsoluteTimeGetCurrent()
-        let results = try await whisperKit.transcribe(audioPath: wavURL.path)
+        let decodeOptions: DecodingOptions
+        switch language {
+        case .auto:
+            // Default DecodingOptions leaves detectLanguage false when usePrefillPrompt is true,
+            // which silently forces English. Request detection explicitly for multilingual models.
+            decodeOptions = DecodingOptions(detectLanguage: true)
+        default:
+            decodeOptions = DecodingOptions(language: language.rawValue)
+        }
+        let results = try await whisperKit.transcribe(audioPath: wavURL.path, decodeOptions: decodeOptions)
         let elapsed = CFAbsoluteTimeGetCurrent() - start
 
         let text = results.map(\.text).joined(separator: " ")

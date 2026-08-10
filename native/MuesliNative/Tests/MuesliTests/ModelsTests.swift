@@ -191,6 +191,15 @@ struct BackendOptionTests {
         #expect(!BackendOption.downloadedMeetingTranscription.contains(.nemotron35Multilingual))
     }
 
+    @Test("only multilingual Whisper models expose language selection")
+    func whisperLanguageSelectionAvailability() {
+        #expect(BackendOption.whisperLargeTurbo.supportsWhisperLanguageSelection)
+        #expect(!BackendOption.whisperTinyEnglish.supportsWhisperLanguageSelection)
+        #expect(!BackendOption.whisperSmall.supportsWhisperLanguageSelection)
+        #expect(!BackendOption.whisperMedium.supportsWhisperLanguageSelection)
+        #expect(!BackendOption.parakeetMultilingual.supportsWhisperLanguageSelection)
+    }
+
     @Test("Whisper models use WhisperKit CoreML identifiers")
     func whisperKitModels() {
         // WhisperKit models use short variant names, not ggml- prefixed binaries
@@ -602,6 +611,7 @@ struct AppConfigTests {
         #expect(config.meetingInputDeviceUID == nil)
         #expect(config.cohereLanguage == CohereTranscribeLanguage.defaultLanguage.rawValue)
         #expect(config.indicASRLanguage == IndicASRLanguage.defaultLanguage.rawValue)
+        #expect(config.whisperLanguage == WhisperKitLanguage.defaultLanguage.rawValue)
         #expect(config.meetingTranscriptionBackend == BackendOption.whisper.backend)
         #expect(config.meetingTranscriptionModel == BackendOption.whisper.model)
         #expect(config.meetingSummaryBackend == "chatgpt")
@@ -970,6 +980,7 @@ struct AppConfigTests {
         #expect(json["meeting_recording_hotkey_trigger_threshold_ms"] != nil)
         #expect(json["cohere_language"] != nil)
         #expect(json["indic_asr_language"] != nil)
+        #expect(json["whisper_language"] != nil)
         #expect(json["meeting_transcription_backend"] != nil)
         #expect(json["meeting_transcription_model"] != nil)
         #expect(json["indicator_anchor"] != nil)
@@ -1043,6 +1054,7 @@ struct AppConfigTests {
         #expect(config.showFloatingIndicator == true)
         #expect(config.resolvedCohereLanguage == .english)
         #expect(config.resolvedIndicASRLanguage == .defaultLanguage)
+        #expect(config.resolvedWhisperLanguage == .auto)
         #expect(config.hasCompletedOnboarding == false)
         #expect(config.resolvedOnboardingUseCase == .dictation)
         #expect(config.defaultMeetingTemplateID == MeetingTemplates.autoID)
