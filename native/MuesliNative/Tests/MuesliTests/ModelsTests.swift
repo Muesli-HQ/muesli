@@ -817,6 +817,7 @@ struct AppConfigTests {
         config.showScheduledMeetingNotifications = false
         config.scheduledMeetingNotificationLeadTime = .threeMinutes
         config.showMeetingDetectionNotification = false
+        config.requireCalendarMeetingLink = true
         config.mutedMeetingDetectionAppBundleIDs = ["com.google.Chrome", "com.tinyspeck.slackmacgap"]
         config.computerUseHotkey = HotkeyConfig(keyCode: 62, label: "Right Ctrl")
         config.enableComputerUseHotkey = false
@@ -896,6 +897,7 @@ struct AppConfigTests {
         #expect(decoded.showScheduledMeetingNotifications == false)
         #expect(decoded.scheduledMeetingNotificationLeadTime == .threeMinutes)
         #expect(decoded.showMeetingDetectionNotification == false)
+        #expect(decoded.requireCalendarMeetingLink == true)
         #expect(decoded.mutedMeetingDetectionAppBundleIDs == ["com.google.Chrome", "com.tinyspeck.slackmacgap"])
         #expect(decoded.meetingTranscriptionBackend == config.meetingTranscriptionBackend)
         #expect(decoded.indicatorAnchor == config.indicatorAnchor)
@@ -949,6 +951,25 @@ struct AppConfigTests {
         #expect(decoded.enableAutomaticDiagnosticIssuePrompts == false)
     }
 
+    @Test("Requiring a calendar meeting link defaults off when absent")
+    func requireCalendarMeetingLinkDefaultsOffWhenAbsent() throws {
+        // Every existing config on disk predates this key. Defaulting it on
+        // would silently stop detecting dial-in and in-person meetings.
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+
+        #expect(decoded.requireCalendarMeetingLink == false)
+    }
+
+    @Test("Requiring a calendar meeting link falls back to the default on an invalid value")
+    func requireCalendarMeetingLinkFallsBackOnInvalidValue() throws {
+        // config.json is hand-editable, so a wrong-typed value must not fail the
+        // whole decode and reset every other setting.
+        let json = Data(#"{"require_calendar_meeting_link": "yes"}"#.utf8)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: json)
+
+        #expect(decoded.requireCalendarMeetingLink == false)
+    }
+
     @Test("JSON coding keys use snake_case")
     func snakeCaseKeys() throws {
         var config = AppConfig()
@@ -981,6 +1002,7 @@ struct AppConfigTests {
         #expect(json["meeting_recording_file_format"] != nil)
         #expect(json["show_scheduled_meeting_notifications"] != nil)
         #expect(json["show_meeting_detection_notification"] != nil)
+        #expect(json["require_calendar_meeting_link"] != nil)
         #expect(json["muted_meeting_detection_app_bundle_ids"] != nil)
         #expect(json["custom_meeting_templates"] != nil)
         #expect(json["meeting_hook_enabled"] != nil)
