@@ -79,24 +79,23 @@ struct SenseVoiceTranscriberTests {
         #expect(SenseVoiceTranscriber.cacheDirectory().path.hasSuffix(SenseVoiceTranscriber.cacheRelativePath))
     }
 
-    @Test("sensevoice metadata reflects INT8 download footprint")
-    func senseVoiceInt8DownloadMetadata() {
+    @Test("sensevoice metadata reflects its download footprint")
+    func senseVoiceDownloadMetadata() {
         #expect(SenseVoiceTranscriber.downloadedModelSizeLabel == "~240 MB")
         #expect(BackendOption.senseVoiceSmall.sizeLabel == SenseVoiceTranscriber.downloadedModelSizeLabel)
-        #expect(BackendOption.senseVoiceSmall.description.contains("INT8"))
+        #expect(BackendOption.senseVoiceSmall.description.contains("50 languages"))
     }
 }
 
 @Suite("Gemma4LiteRTTranscriber")
 struct Gemma4LiteRTTranscriberTests {
 
-    @Test("gemma4 model uses managed LiteRT-LM metadata")
+    @Test("gemma4 model uses managed download metadata")
     func gemma4Model() {
         #expect(BackendOption.gemma4E2BLiteRT.backend == "gemma4-litert")
         #expect(BackendOption.gemma4E2BLiteRT.model == Gemma4LiteRTModelStore.repoID)
-        #expect(BackendOption.gemma4E2BLiteRT.description.contains("managed local weights"))
-        #expect(BackendOption.gemma4E2BLiteRT.description.contains("ASR-tuned Gemma artifact"))
-        #expect(BackendOption.gemma4E2BLiteRT.description.contains("chat-style outputs fail closed"))
+        #expect(BackendOption.gemma4E2BLiteRT.description.contains("research preview"))
+        #expect(BackendOption.gemma4E2BLiteRT.description.contains("faithful transcript"))
         #expect(Gemma4LiteRTModelStore.downloadURL.absoluteString.contains(Gemma4LiteRTModelStore.repoID))
         #expect(Gemma4LiteRTModelStore.downloadURL.absoluteString.contains(Gemma4LiteRTModelStore.modelFilename))
     }

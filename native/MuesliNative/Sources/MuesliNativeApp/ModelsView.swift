@@ -48,7 +48,7 @@ struct ModelsView: View {
                         .font(MuesliTheme.title1())
                         .foregroundStyle(MuesliTheme.textPrimary)
 
-                    Text("Download and manage models for dictation, streaming, and post-processing.")
+                    Text("Choose the transcription and cleanup models that fit how you speak and work.")
                         .font(MuesliTheme.body())
                         .foregroundStyle(MuesliTheme.textSecondary)
 
@@ -129,7 +129,7 @@ struct ModelsView: View {
                 deleteLiveCaptionModel()
             }
         } message: {
-            Text("Live meetings will fall back to committed VAD-chunk captions until this model is downloaded again.")
+            Text("Live meetings will fall back to standard chunk-by-chunk captions until this model is downloaded again.")
         }
     }
 
@@ -146,16 +146,18 @@ struct ModelsView: View {
         case .dictation:
             familyCard(
                 title: "Parakeet Family",
-                subtitle: "Fast, responsive transcription with an excellent balance of speed and accuracy.",
+                subtitle: "The most responsive choices for everyday dictation, with multilingual and English-only options.",
                 defaultBadge: "Default: v3",
                 logo: "nvidia-logo",
                 selection: $selectedParakeetModel,
                 options: BackendOption.parakeetFamily
             )
 
+            modelCard(option: .qwen3Asr, logo: "qwen-logo")
+
             familyCard(
                 title: "Whisper",
-                subtitle: "OpenAI Whisper variants. Runs on Apple Neural Engine via CoreML.",
+                subtitle: "Dependable alternatives when you prefer Whisper's transcription style or need broader multilingual coverage.",
                 defaultBadge: "Default: Small",
                 logo: "openai-logo",
                 selection: $selectedWhisperModel,
@@ -218,11 +220,11 @@ struct ModelsView: View {
     private var streamingSection: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                Text("STREAMING")
+                Text("LIVE MEETINGS")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(MuesliTheme.textTertiary)
 
-                Text("Choose one live meeting transcript model. Nemotron is live + final; Parakeet is live preview only.")
+                Text("Choose how words appear while a meeting is in progress. Nemotron also creates the saved transcript; Parakeet prioritizes a faster English preview.")
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textSecondary)
             }
@@ -271,7 +273,7 @@ struct ModelsView: View {
                             .foregroundStyle(MuesliTheme.textTertiary)
                     }
 
-                    Text("Low-latency English preview while a meeting is in progress. A separate meeting model creates the final transcript.")
+                    Text("Fast English captions while a meeting is in progress. They are a provisional preview; your regular meeting model creates the transcript you keep.")
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
@@ -298,22 +300,30 @@ struct ModelsView: View {
             }
 
             if isDownloadingLiveCaptionModel {
-                VStack(alignment: .leading, spacing: 4) {
-                    ProgressView(value: liveCaptionDownloadProgress)
-                        .tint(MuesliTheme.accent)
-                    Text("\(Int(liveCaptionDownloadProgress * 100))% downloading...")
-                        .font(.system(size: 11))
-                        .foregroundStyle(MuesliTheme.textTertiary)
-                }
+                downloadProgressView(
+                    for: MeetingLiveCaptionModelStore.modelID,
+                    fallbackProgress: liveCaptionDownloadProgress
+                )
             }
 
             HStack(spacing: MuesliTheme.spacing8) {
                 if isDownloadingLiveCaptionModel {
                     Button("Cancel") {
                         liveCaptionDownloadTask?.cancel()
+                        Task {
+                            await ModelDownloadCoordinator.shared.cancel(
+                                modelID: MeetingLiveCaptionModelStore.modelID
+                            )
+                        }
                         liveCaptionDownloadTask = nil
                         isDownloadingLiveCaptionModel = false
                         liveCaptionDownloadProgress = 0
+                        if let snapshot = downloadSnapshots[MeetingLiveCaptionModelStore.modelID] {
+                            downloadSnapshots[MeetingLiveCaptionModelStore.modelID] = snapshot.replacing(
+                                phase: .paused,
+                                message: "Paused — select Download to resume"
+                            )
+                        }
                     }
                     .buttonStyle(.plain)
                     .font(.system(size: 12, weight: .medium))
@@ -372,11 +382,19 @@ struct ModelsView: View {
         guard !isDownloadingLiveCaptionModel else { return }
         isDownloadingLiveCaptionModel = true
         liveCaptionDownloadProgress = 0
+        downloadSnapshots.removeValue(forKey: MeetingLiveCaptionModelStore.modelID)
         liveCaptionDownloadTask = Task {
             do {
                 try await MeetingLiveCaptionModelStore.download { progress in
                     Task { @MainActor in
                         liveCaptionDownloadProgress = progress
+                    }
+                } progressSnapshot: { snapshot in
+                    Task { @MainActor in
+                        downloadSnapshots[MeetingLiveCaptionModelStore.modelID] = snapshot
+                        if let fraction = snapshot.fractionCompleted {
+                            liveCaptionDownloadProgress = fraction
+                        }
                     }
                 }
                 guard !Task.isCancelled else { return }
@@ -389,6 +407,9 @@ struct ModelsView: View {
             isDownloadingLiveCaptionModel = false
             liveCaptionDownloadProgress = 0
             liveCaptionDownloadTask = nil
+            if isLiveCaptionModelDownloaded {
+                downloadSnapshots.removeValue(forKey: MeetingLiveCaptionModelStore.modelID)
+            }
         }
     }
 
@@ -421,7 +442,7 @@ struct ModelsView: View {
                                 .foregroundStyle(MuesliTheme.textSecondary)
                         }
 
-                        Text("SenseVoice, Qwen, Indic ASR, and Gemma 4 evaluation backends. Hidden by default because these are still slower and less polished.")
+                        Text("Early models for specific languages and evaluation. Expect less consistent transcripts, and try them with your own voice before relying on them.")
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(MuesliTheme.textPrimary)
                             .opacity(0.8)
@@ -429,7 +450,7 @@ struct ModelsView: View {
 
                     Spacer()
 
-                    Text("IYKYK")
+                    Text("Early access")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .padding(.horizontal, 8)
@@ -495,13 +516,13 @@ struct ModelsView: View {
     private var postProcessorSection: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                Text("POST-PROCESSING")
+                Text("CLEANUP")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(MuesliTheme.textTertiary)
                     .textCase(.uppercase)
                     .padding(.leading, 2)
 
-                Text("Optional LLM cleanup layer applied after transcription. Removes filler words, formats spoken lists, and corrects common dictation errors.")
+                Text("Optional cleanup after transcription. Use it to remove filler words, follow spoken corrections, format lists, and fix obvious dictation errors.")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(MuesliTheme.textSecondary)
                     .padding(.leading, 2)
@@ -531,7 +552,7 @@ struct ModelsView: View {
             onSetActive: {
                 controller.selectPostProcessorBackend(.gemma4LiteRT)
             },
-            description: "On-device Gemma cleanup for filler removal, formatting, and transcript correction. Shares one download with the experimental Gemma dictation backend.",
+            description: "An experimental local option for filler removal, formatting, and obvious transcript errors. It uses the same download as Gemma 4 dictation.",
             activeLabel: "Cleanup Active",
             downloadedLabel: isCompatible ? "Downloaded" : "Used for Dictation",
             actionTitle: "Use for Cleanup",
@@ -1131,7 +1152,7 @@ struct ModelsView: View {
                             .font(MuesliTheme.headline())
                             .foregroundStyle(MuesliTheme.textTertiary)
 
-                        Text("Experimental")
+                        Text("Coming soon")
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(MuesliTheme.textTertiary)
                             .padding(.horizontal, 6)
@@ -1551,17 +1572,10 @@ struct ModelsView: View {
             await controller.transcriptionCoordinator.unloadGemma4LiteRTTranscriber()
             try Gemma4LiteRTModelStore.deleteModelFiles(fileManager: fm)
         case "fluidaudio":
-            // FluidAudio models are in ~/Library/Application Support/FluidAudio/Models/
-            let supportDir = fm.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/Application Support/FluidAudio/Models")
-            if option.model.contains("parakeet") {
-                let version = option.model.contains("v2") ? "v2" : "v3"
-                if let contents = try? fm.contentsOfDirectory(at: supportDir, includingPropertiesForKeys: nil) {
-                    for dir in contents where dir.lastPathComponent.contains("parakeet") && dir.lastPathComponent.contains(version) {
-                        try removeItemIfPresent(at: dir, fileManager: fm)
-                    }
-                }
-            }
+            let plan = option.model.contains("v2")
+                ? ManagedASRModelPlans.parakeetV2()
+                : ManagedASRModelPlans.parakeetV3()
+            try plan.delete(fileManager: fm)
         case "qwen":
             try Qwen3AsrModelStore.deleteModelFiles(fileManager: fm)
         default:
@@ -1616,16 +1630,10 @@ struct ModelsView: View {
         case "nemotron35":
             return Nemotron35ModelStore.isModelDownloaded(fileManager: fm)
         case "fluidaudio":
-            // Check FluidAudio's cache
-            let supportDir = fm.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/Application Support/FluidAudio/Models")
-            if option.model.contains("parakeet") {
-                let version = option.model.contains("v2") ? "v2" : "v3"
-                if let contents = try? fm.contentsOfDirectory(at: supportDir, includingPropertiesForKeys: nil) {
-                    return contents.contains { $0.lastPathComponent.contains("parakeet") && $0.lastPathComponent.contains(version) }
-                }
-            }
-            return false
+            let plan = option.model.contains("v2")
+                ? ManagedASRModelPlans.parakeetV2()
+                : ManagedASRModelPlans.parakeetV3()
+            return plan.isComplete(fileManager: fm)
         case "qwen":
             return Qwen3AsrModelStore.isModelDownloaded(fileManager: fm)
         case "cohere":

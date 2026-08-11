@@ -19,6 +19,7 @@ struct MeetingStreamingPartialSessionTests {
             let url = directory.appendingPathComponent(artifact)
             if artifact.hasSuffix(".mlmodelc") {
                 try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+                try Data([0x01]).write(to: url.appendingPathComponent("coremldata.bin"))
             } else {
                 try Data("{}".utf8).write(to: url)
             }

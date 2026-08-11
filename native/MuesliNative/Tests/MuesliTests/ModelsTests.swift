@@ -75,6 +75,29 @@ struct BackendOptionTests {
         #expect(BackendOption.all.contains(.gemma4E2BLiteRT))
     }
 
+    @Test("Qwen ASR is a standard dictation model")
+    func qwenAsrIsNotExperimental() {
+        #expect(BackendOption.all.contains(.qwen3Asr))
+        #expect(!BackendOption.experimental.contains(.qwen3Asr))
+        #expect(BackendOption.qwen3Asr.description.contains("52 languages"))
+        #expect(BackendOption.qwen3Asr.description.contains("2–3 second"))
+    }
+
+    @Test("model descriptions explain usage without implementation jargon")
+    func modelDescriptionsAreProductFacing() {
+        let implementationTerms = ["INT8", "CoreML", "ANE", "RNNT", "FluidAudio", "LiteRT-LM", "quantized", "GGUF"]
+        for option in BackendOption.all {
+            for term in implementationTerms {
+                #expect(!option.description.contains(term), "\(option.label) description exposes \(term)")
+            }
+        }
+        for option in PostProcessorOption.all {
+            for term in implementationTerms {
+                #expect(!option.description.contains(term), "\(option.label) description exposes \(term)")
+            }
+        }
+    }
+
     @Test("Qwen ASR cache names match FluidAudio folderName strip of -coreml")
     func qwenAsrCacheDirectoryNamesMatchFluidAudio() {
         // FluidAudio Repo.folderName default strips "-coreml" from the repo slug,
@@ -172,23 +195,20 @@ struct BackendOptionTests {
         #expect(swapped != expectedColumnMajorTranspose)
     }
 
-    @Test("SenseVoice uses native FluidAudio CoreML model")
+    @Test("SenseVoice uses the native speech model")
     func senseVoiceBackend() {
         #expect(BackendOption.senseVoiceSmall.backend == "sensevoice")
         #expect(BackendOption.senseVoiceSmall.model == "FluidInference/sensevoice-small-coreml")
-        #expect(BackendOption.senseVoiceSmall.description.contains("FluidAudio"))
     }
 
-    @Test("Gemma 4 E2B uses LiteRT-LM as an experimental managed model")
+    @Test("Gemma 4 E2B remains an experimental managed model")
     func gemma4LiteRTBackend() {
         #expect(BackendOption.gemma4E2BLiteRT.backend == "gemma4-litert")
         #expect(BackendOption.gemma4E2BLiteRT.model == Gemma4LiteRTModelStore.repoID)
         #expect(BackendOption.gemma4E2BLiteRT.label == "Gemma 4 E2B")
         #expect(BackendOption.gemma4E2BLiteRT.sizeLabel == "~2.6 GB")
-        #expect(BackendOption.gemma4E2BLiteRT.description.contains("LiteRT-LM"))
-        #expect(BackendOption.gemma4E2BLiteRT.description.contains("Downloads managed local weights"))
-        #expect(BackendOption.gemma4E2BLiteRT.description.contains("ASR-tuned Gemma artifact"))
-        #expect(BackendOption.gemma4E2BLiteRT.description.contains("chat-style outputs fail closed"))
+        #expect(BackendOption.gemma4E2BLiteRT.description.contains("research preview"))
+        #expect(BackendOption.gemma4E2BLiteRT.description.contains("macOS 15"))
         #expect(BackendOption.experimental.contains(.gemma4E2BLiteRT))
         #expect(!BackendOption.onboarding.contains(.gemma4E2BLiteRT))
     }

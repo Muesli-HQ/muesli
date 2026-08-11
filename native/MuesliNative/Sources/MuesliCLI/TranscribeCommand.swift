@@ -657,10 +657,14 @@ actor FluidAudioCLITranscriber: AudioTranscribing {
             )
         }
         progress("loading \(model.rawValue)")
-        let models = try await AsrModels.downloadAndLoad(version: asrModelVersion) { downloadProgress in
-            let percent = Int((downloadProgress.fractionCompleted * 100).rounded())
-            progress("model \(percent)%")
+        let plan = asrModelVersion == .v2
+            ? ManagedASRModelPlans.parakeetV2()
+            : ManagedASRModelPlans.parakeetV3()
+        let modelDirectory = try await ManagedASRModelDownloader.downloadIfNeeded(plan) { fraction, message in
+            progress(message ?? "model \(Int((fraction * 100).rounded()))%")
         }
+        progress("preparing model")
+        let models = try await AsrModels.load(from: modelDirectory, version: asrModelVersion)
         let manager = AsrManager(config: .default)
         try await manager.loadModels(models)
         asrManager = manager
@@ -674,19 +678,17 @@ actor FluidAudioCLITranscriber: AudioTranscribing {
 /// default model cache. `int8` matches the precision the app selects by default.
 actor SenseVoiceCLITranscriber: AudioTranscribing {
     private var manager: SenseVoiceManager?
-    static let cacheRelativePath = "Library/Application Support/FluidAudio/Models/sensevoice-small-coreml"
     private static let precision: SenseVoiceEncoderPrecision = .int8
 
     func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
         if manager == nil {
             progress("loading sensevoice")
-            let modelDirectory = try await Self.downloadRequiredModels { fraction, message in
-                if let message {
-                    progress(message)
-                } else {
-                    progress("model \(Int((fraction * 100).rounded()))%")
-                }
+            let modelDirectory = try await ManagedASRModelDownloader.downloadIfNeeded(
+                ManagedASRModelPlans.senseVoice()
+            ) { fraction, message in
+                progress(message ?? "model \(Int((fraction * 100).rounded()))%")
             }
+            progress("preparing model")
             let models = try SenseVoiceModels.load(from: modelDirectory, precision: Self.precision)
             manager = SenseVoiceManager(models: models)
             progress("model ready")
@@ -698,81 +700,6 @@ actor SenseVoiceCLITranscriber: AudioTranscribing {
         let text = try await manager.transcribe(audioURL: wavURL)
         progress("transcription complete in \(String(format: "%.2f", CFAbsoluteTimeGetCurrent() - start))s")
         return HeadlessTranscription(text: text, durationSeconds: nil)
-    }
-
-    private static func cacheDirectory(fileManager: FileManager = .default) -> URL {
-        fileManager.homeDirectoryForCurrentUser.appendingPathComponent(cacheRelativePath)
-    }
-
-    private static func downloadRequiredModels(progress: ((Double, String?) -> Void)? = nil) async throws -> URL {
-        let directory = cacheDirectory()
-        if requiredModelsExist(at: directory) {
-            return directory
-        }
-
-        let fileManager = FileManager.default
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        try await downloadSubdirectory(
-            ModelNames.SenseVoice.preprocessorFile,
-            to: directory,
-            progressRange: 0.0...0.2,
-            message: "Downloading SenseVoice preprocessor...",
-            progress: progress
-        )
-        try await downloadSubdirectory(
-            ModelNames.SenseVoice.encoderInt8File,
-            to: directory,
-            progressRange: 0.2...0.9,
-            message: "Downloading SenseVoice INT8 encoder...",
-            progress: progress
-        )
-        try await downloadVocabulary(to: directory, progress: progress)
-        return directory
-    }
-
-    private static func downloadSubdirectory(
-        _ subdirectory: String,
-        to directory: URL,
-        progressRange: ClosedRange<Double>,
-        message: String,
-        progress: ((Double, String?) -> Void)?
-    ) async throws {
-        try await DownloadUtils.downloadSubdirectory(
-            .senseVoiceSmall,
-            subdirectory: subdirectory,
-            to: directory,
-            progressHandler: { downloadProgress in
-                let span = progressRange.upperBound - progressRange.lowerBound
-                let fraction = progressRange.lowerBound + span * downloadProgress.fractionCompleted
-                progress?(min(max(fraction, 0.0), 1.0), message)
-            }
-        )
-    }
-
-    private static func downloadVocabulary(to directory: URL, progress: ((Double, String?) -> Void)?) async throws {
-        let vocabularyURL = directory.appendingPathComponent(ModelNames.SenseVoice.vocabularyFile)
-        if FileManager.default.fileExists(atPath: vocabularyURL.path) {
-            progress?(0.95, "SenseVoice vocabulary ready...")
-            return
-        }
-
-        progress?(0.9, "Downloading SenseVoice vocabulary...")
-        let remoteURL = try ModelRegistry.resolveModel(
-            Repo.senseVoiceSmall.remotePath,
-            ModelNames.SenseVoice.vocabularyFile
-        )
-        let data = try await DownloadUtils.fetchHuggingFaceFile(
-            from: remoteURL,
-            description: "SenseVoice vocabulary"
-        )
-        try data.write(to: vocabularyURL, options: .atomic)
-        progress?(0.95, "SenseVoice vocabulary ready...")
-    }
-
-    private static func requiredModelsExist(at directory: URL, fileManager: FileManager = .default) -> Bool {
-        let vocabularyURL = directory.appendingPathComponent(ModelNames.SenseVoice.vocabularyFile)
-        return SenseVoiceModels.modelsExist(at: directory, precision: precision)
-            && fileManager.fileExists(atPath: vocabularyURL.path)
     }
 }
 
@@ -792,10 +719,12 @@ actor Qwen3AsrCLITranscriber: AudioTranscribing {
     private func transcribeOnSupportedOS(wavURL: URL, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
         if manager == nil {
             progress("loading qwen3-asr")
-            let modelDir = try await Qwen3AsrModels.download(variant: .int8) { downloadProgress in
-                let percent = Int((downloadProgress.fractionCompleted * 100).rounded())
-                progress("model \(percent)%")
+            let modelDir = try await ManagedASRModelDownloader.downloadIfNeeded(
+                ManagedASRModelPlans.qwen3ASRInt8()
+            ) { fraction, message in
+                progress(message ?? "model \(Int((fraction * 100).rounded()))%")
             }
+            progress("preparing model")
             let mgr = Qwen3AsrManager()
             try await mgr.loadModels(from: modelDir)
             manager = mgr
@@ -884,19 +813,15 @@ actor WhisperCLITranscriber: AudioTranscribing {
         if loadedModel == modelName, whisperKit != nil { return }
         progress("loading \(modelName)")
 
-        let modelFolder: URL?
-        if Self.isModelDownloaded(modelName) {
-            modelFolder = nil
-        } else {
-            modelFolder = try await WhisperKit.download(variant: modelName) { update in
-                let percent = Int((update.fractionCompleted * 100).rounded())
-                progress("model \(percent)%")
-            }
+        let modelFolder = try await ManagedASRModelDownloader.downloadIfNeeded(
+            ManagedASRModelPlans.whisperKit(modelName: modelName)
+        ) { fraction, message in
+            progress(message ?? "model \(Int((fraction * 100).rounded()))%")
         }
+        progress("preparing model")
 
         whisperKit = try await WhisperKit(WhisperKitConfig(
-            model: modelFolder == nil ? modelName : nil,
-            modelFolder: modelFolder?.path,
+            modelFolder: modelFolder.path,
             computeOptions: ModelComputeOptions(
                 audioEncoderCompute: .cpuAndNeuralEngine,
                 textDecoderCompute: .cpuAndNeuralEngine
@@ -904,13 +829,6 @@ actor WhisperCLITranscriber: AudioTranscribing {
         ))
         loadedModel = modelName
         progress("model ready")
-    }
-
-    private static func isModelDownloaded(_ modelName: String) -> Bool {
-        let fullName = modelName.hasPrefix("openai_whisper-") ? modelName : "openai_whisper-\(modelName)"
-        let directory = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Documents/huggingface/models/argmaxinc/whisperkit-coreml/\(fullName)")
-        return FileManager.default.fileExists(atPath: directory.path)
     }
 }
 
@@ -925,7 +843,6 @@ actor WhisperCLITranscriber: AudioTranscribing {
 /// does not need. If a user already downloaded the model via the app's live
 /// captions setting, this reuses that same download.
 actor StreamingEouCLITranscriber: AudioTranscribing {
-    private static let repo = Repo.parakeetEou320
     private static let chunkSize = StreamingChunkSize.ms320
 
     private var manager: StreamingEouAsrManager?
@@ -965,11 +882,11 @@ actor StreamingEouCLITranscriber: AudioTranscribing {
 
     private func loadedManager(progress: @escaping (String) -> Void) async throws -> StreamingEouAsrManager {
         if let manager { return manager }
-        if !Self.isDownloaded() {
+        let plan = ManagedASRModelPlans.parakeetRealtimeEOU320()
+        if !plan.isComplete() {
             progress("downloading parakeet-eou-320ms (~430 MB)")
-            try await DownloadUtils.downloadRepo(Self.repo, to: Self.cacheRoot()) { update in
-                let percent = Int((update.fractionCompleted * 100).rounded())
-                progress("model \(percent)%")
+            _ = try await ManagedASRModelDownloader.downloadIfNeeded(plan) { fraction, message in
+                progress(message ?? "model \(Int((fraction * 100).rounded()))%")
             }
         }
         progress("loading parakeet-eou-320ms")
@@ -980,20 +897,8 @@ actor StreamingEouCLITranscriber: AudioTranscribing {
         return newManager
     }
 
-    private static func cacheRoot() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/FluidAudio/Models", isDirectory: true)
-    }
-
     private static func modelDirectory() -> URL {
-        cacheRoot().appendingPathComponent(repo.folderName, isDirectory: true)
-    }
-
-    private static func isDownloaded() -> Bool {
-        let directory = modelDirectory()
-        return ModelNames.ParakeetEOU.requiredModels.allSatisfy {
-            FileManager.default.fileExists(atPath: directory.appendingPathComponent($0).path)
-        }
+        ManagedASRModelPlans.parakeetRealtimeEOU320().cacheDirectory
     }
 
     private static func makeBuffer(samples: [Float]) -> AVAudioPCMBuffer? {

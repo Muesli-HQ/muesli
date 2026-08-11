@@ -299,6 +299,113 @@ struct ModelDownloadCoordinatorTests {
         #expect(error.localizedDescription.contains("stalled"))
     }
 
+    @Test("Hugging Face trees become size-aware filtered manifests")
+    func huggingFaceTreeResolution() async throws {
+        let tracker = DownloadTestTracker()
+        let firstPage = try JSONSerialization.data(withJSONObject: [
+            [
+                "type": "file",
+                "path": "int8/Encoder.mlmodelc/coremldata.bin",
+                "size": 7,
+                "oid": "encoder-oid",
+            ],
+            [
+                "type": "file",
+                "path": "int8/ignored.txt",
+                "size": 100,
+                "oid": "ignored-oid",
+            ],
+        ])
+        let secondPage = try JSONSerialization.data(withJSONObject: [[
+            "type": "file",
+            "path": "int8/Decoder.mlmodelc/coremldata.bin",
+            "size": 9,
+            "oid": "decoder-oid",
+        ]])
+        ModelDownloadTestURLProtocol.install { request in
+            let isSecondPage = request.url.flatMap {
+                URLComponents(url: $0, resolvingAgainstBaseURL: false)
+            }?.queryItems?.contains(URLQueryItem(name: "cursor", value: "next")) == true
+            let data: Data
+            let headers: [String: String]
+            if isSecondPage {
+                data = secondPage
+                headers = [:]
+            } else {
+                #expect(request.url?.path.hasSuffix("/tree/main/int8") == true)
+                #expect(request.url?.query?.contains("recursive=true") == true)
+                data = firstPage
+                headers = [
+                    "Link": "<https://huggingface.co/api/models/acme/asr/tree/main/int8?cursor=next>; rel=\"next\""
+                ]
+            }
+            return ModelDownloadTestURLProtocol.Response(
+                data: data,
+                headers: headers,
+                tracker: tracker
+            )
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let resolver = HuggingFaceModelManifestResolver(configuration: makeSessionConfiguration())
+        let manifest = try await resolver.resolve(
+            modelID: "acme/asr",
+            repository: "acme/asr",
+            selections: [HuggingFaceModelSelection(
+                remoteDirectory: "int8",
+                includedPaths: ["Encoder.mlmodelc", "Decoder.mlmodelc"]
+            )]
+        )
+
+        #expect(tracker.requestCount == 2)
+        #expect(manifest.files.map(\.relativePath) == [
+            "Decoder.mlmodelc/coremldata.bin",
+            "Encoder.mlmodelc/coremldata.bin",
+        ])
+        #expect(manifest.totalExpectedByteCount == 16)
+        #expect(manifest.files[0].remoteURL.absoluteString.contains("/acme/asr/resolve/main/int8/Decoder.mlmodelc/coremldata.bin"))
+        #expect(manifest.version.hasPrefix("main-"))
+    }
+
+    @Test("managed ASR plans require complete compiled artifacts")
+    func managedASRPlanCompleteness() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let plan = ManagedASRModelPlans.qwen3ASRInt8(modelsRoot: root)
+
+        try FileManager.default.createDirectory(
+            at: plan.cacheDirectory.appendingPathComponent("qwen3_asr_audio_encoder_v2.mlmodelc"),
+            withIntermediateDirectories: true
+        )
+        #expect(!plan.isComplete())
+
+        for relativePath in [
+            "qwen3_asr_audio_encoder_v2.mlmodelc/coremldata.bin",
+            "qwen3_asr_decoder_stateful.mlmodelc/coremldata.bin",
+            "qwen3_asr_embeddings.bin",
+            "vocab.json",
+        ] {
+            let url = plan.cacheDirectory.appendingPathComponent(relativePath)
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data([0x01]).write(to: url)
+        }
+
+        #expect(plan.isComplete())
+        #expect(plan.modelID == "FluidInference/qwen3-asr-0.6b-coreml")
+        #expect(plan.cacheDirectory.path.hasSuffix("qwen3-asr-0.6b/int8"))
+        #expect(plan.selections.count == 1)
+        #expect(plan.selections[0].remoteDirectory == "int8")
+        #expect(plan.selections[0].includedPaths.contains("vocab.json"))
+
+        let whisper = ManagedASRModelPlans.whisperKit(modelName: "tiny.en", downloadRoot: root)
+        #expect(whisper.selections[0].includedPaths.contains("AudioEncoder.mlmodelc"))
+        #expect(whisper.selections[0].includedPaths.contains("config.json"))
+        #expect(!whisper.selections[0].includedPaths.contains("AudioEncoder.mlpackage"))
+    }
+
     @Test("downloads multiple files with bounded concurrency")
     func downloadsMultipleFilesWithBoundedConcurrency() async throws {
         let tracker = DownloadTestTracker()
@@ -745,12 +852,16 @@ struct ModelDownloadCoordinatorTests {
     }
 
     private func makeCoordinator() -> ModelDownloadCoordinator {
+        ModelDownloadCoordinator(configuration: makeSessionConfiguration())
+    }
+
+    private func makeSessionConfiguration() -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [ModelDownloadTestURLProtocol.self]
         configuration.waitsForConnectivity = false
         configuration.timeoutIntervalForRequest = 5
         configuration.timeoutIntervalForResource = 30
-        return ModelDownloadCoordinator(configuration: configuration)
+        return configuration
     }
 
     private func makeTemporaryDirectory() throws -> URL {

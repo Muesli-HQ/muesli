@@ -1,5 +1,6 @@
 import FluidAudio
 import Foundation
+import MuesliCore
 
 /// Resolves Qwen3 ASR cache paths used by FluidAudio.
 ///
@@ -21,6 +22,11 @@ enum Qwen3AsrModelStore {
     }
 
     static func isModelDownloaded(fileManager: FileManager = .default) -> Bool {
+        if ManagedASRModelPlans.qwen3ASRInt8(
+            modelsRoot: modelsRoot(fileManager: fileManager)
+        ).isComplete(fileManager: fileManager) {
+            return true
+        }
         if #available(macOS 15, *) {
             if Qwen3AsrModels.modelsExist(at: Qwen3AsrModels.defaultCacheDirectory(variant: .int8))
                 || Qwen3AsrModels.modelsExist(at: Qwen3AsrModels.defaultCacheDirectory(variant: .f32)) {
@@ -76,16 +82,25 @@ actor Qwen3AsrTranscriber {
     }
 
     /// Downloads models (if needed) and initializes the Qwen3 ASR manager.
-    func loadModels(progress: ((Double, String?) -> Void)? = nil) async throws {
+    func loadModels(
+        progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
+    ) async throws {
         if manager != nil { return }
 
         fputs("[qwen3-asr] downloading/loading models...\n", stderr)
-        let modelDir = try await Qwen3AsrModels.download(variant: .int8) { downloadProgress in
-            let fraction = downloadProgress.fractionCompleted
-            DispatchQueue.main.async {
-                progress?(fraction, "Downloading Qwen3 ASR...")
-            }
-        }
+        let plan = ManagedASRModelPlans.qwen3ASRInt8()
+        let modelDir = try await ManagedASRModelDownloader.downloadIfNeeded(
+            plan,
+            progress: progress,
+            progressSnapshot: progressSnapshot
+        )
+        let preparing = ModelDownloadProgress.preparing(
+            modelID: plan.modelID,
+            message: "Loading Qwen3 ASR into Core ML..."
+        )
+        progress?(0.95, preparing.message)
+        progressSnapshot?(preparing)
         let mgr = Qwen3AsrManager()
         try await mgr.loadModels(from: modelDir)
         self.manager = mgr
@@ -95,6 +110,8 @@ actor Qwen3AsrTranscriber {
         // This moves the ~30s compilation cost from first dictation to preload time.
         let warmupSamples = [Float](repeating: 0, count: 16000) // 1 second of silence
         _ = try? await mgr.transcribe(audioSamples: warmupSamples)
+        progress?(1, nil)
+        progressSnapshot?(preparing.replacing(phase: .ready, message: "Model ready"))
         fputs("[qwen3-asr] warmup complete, ready\n", stderr)
     }
 
