@@ -108,6 +108,10 @@ struct MeetingHookIntegrationTests {
         let spy = MeetingHookDispatcherSpy()
         let controller = makeController(store: store, dispatcher: spy)
         let endTime = Date(timeIntervalSince1970: 1_713_961_500)
+        var meetingExistedAtDispatch = false
+        spy.onDispatch = { invocation in
+            meetingExistedAtDispatch = (try? store.meeting(id: invocation.meetingID)) != nil
+        }
 
         let meetingID = try controller.persistImportedAudioMeeting(
             title: "Imported Call Recording",
@@ -128,7 +132,15 @@ struct MeetingHookIntegrationTests {
         #expect(spy.invocations.count == 1)
         #expect(spy.invocations.first?.meetingID == meetingID)
         #expect(spy.invocations.first?.completedAt == endTime)
-        #expect(try store.meeting(id: meetingID) != nil)
+        #expect(meetingExistedAtDispatch)
+
+        let record = try #require(try store.meeting(id: meetingID))
+        #expect(record.title == "Imported Call Recording")
+        #expect(record.startTime == "2024-04-24T12:20:00Z")
+        #expect(record.durationSeconds == 300)
+        #expect(record.rawTranscript == "Speaker 1: Discussed the imported call.")
+        #expect(record.formattedNotes == "## Summary\nImported recording.")
+        #expect(record.source == .audioImport)
     }
 
     private func makeController(store: DictationStore, dispatcher: MeetingHookDispatching) -> MuesliController {
@@ -187,8 +199,11 @@ private final class MeetingHookDispatcherSpy: MeetingHookDispatching {
     }
 
     private(set) var invocations: [Invocation] = []
+    var onDispatch: ((Invocation) -> Void)?
 
     func dispatchCompletedMeetingHook(meetingID: Int64, completedAt: Date, config: AppConfig) {
-        invocations.append(Invocation(meetingID: meetingID, completedAt: completedAt, config: config))
+        let invocation = Invocation(meetingID: meetingID, completedAt: completedAt, config: config)
+        invocations.append(invocation)
+        onDispatch?(invocation)
     }
 }
