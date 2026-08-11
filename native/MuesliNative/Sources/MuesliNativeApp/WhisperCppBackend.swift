@@ -114,7 +114,7 @@ actor WhisperKitTranscriber {
     // MARK: - Model Storage
 
     /// WhisperKit stores models under ~/Documents/huggingface/models/argmaxinc/whisperkit-coreml/.
-    /// Each model variant is a direct subdirectory (e.g. openai_whisper-small.en/).
+    /// Each model variant is a direct subdirectory (e.g. openai_whisper-small/).
     static func isModelDownloaded(_ modelName: String) -> Bool {
         ManagedASRModelPlans.whisperKit(modelName: modelName).isAvailableLocally()
     }

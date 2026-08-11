@@ -165,7 +165,7 @@ The CLI is designed for coding agents such as Codex and Claude Code. It exposes 
 
 - `muesli-cli spec`
 - `muesli-cli info`
-- `muesli-cli transcribe <file> [--format text|json|markdown] [--model parakeet-v3|parakeet-v2|parakeet-eou-320ms|sensevoice|qwen3-asr|nemotron35|whisper-tiny|whisper-small|whisper-medium|whisper-large-turbo] [--dictionary PATH] [--summarize] [--save-meeting] [--title TITLE] [--output PATH]`
+- `muesli-cli transcribe <file> [--format text|json|markdown] [--model parakeet-v3|parakeet-v2|parakeet-eou-320ms|sensevoice|qwen3-asr|nemotron35|whisper-tiny|whisper-small|whisper-large-turbo] [--dictionary PATH] [--summarize] [--save-meeting] [--title TITLE] [--output PATH]`
 - `muesli-cli meetings list [--limit N] [--folder-id ID]`
 - `muesli-cli meetings get <id>`
 - `muesli-cli meetings update-notes <id> (--stdin | --file <path>)`

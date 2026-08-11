@@ -30,28 +30,19 @@ struct BackendOption: Equatable {
 
     static let whisperSmall = BackendOption(
         backend: "whisper",
-        model: "small.en",
+        model: "small",
         label: "Whisper Small",
         sizeLabel: "~250 MB",
-        description: "A dependable English Whisper option for everyday notes. It is more forgiving than Tiny while keeping the download modest.",
+        description: "A balanced multilingual Whisper option for everyday notes. It handles accents and background noise better than Tiny while keeping the download modest. Auto-detect language by default, or choose one yourself.",
         recommended: false
     )
 
-    static let whisperTinyEnglish = BackendOption(
+    static let whisperTiny = BackendOption(
         backend: "whisper",
-        model: "tiny.en",
-        label: "Whisper Tiny English",
+        model: "tiny",
+        label: "Whisper Tiny",
         sizeLabel: "~153 MB",
-        description: "The quickest Whisper download and lightest option for occasional English notes. It gives up some accuracy on accents, noise, and longer speech.",
-        recommended: false
-    )
-
-    static let whisperMedium = BackendOption(
-        backend: "whisper",
-        model: "medium.en",
-        label: "Whisper Medium",
-        sizeLabel: "~1.5 GB",
-        description: "More careful English transcription for accents or difficult audio, at the cost of a much larger download and slower results.",
+        description: "The quickest Whisper download and lightest multilingual option for occasional notes. It gives up some accuracy on accents, noise, and longer speech. Auto-detect language by default, or choose one yourself.",
         recommended: false
     )
 
@@ -117,7 +108,7 @@ struct BackendOption: Equatable {
     ]
 
     static let whisperFamily: [BackendOption] = [
-        .whisperTinyEnglish, .whisperSmall, .whisperMedium, .whisperLargeTurbo,
+        .whisperTiny, .whisperSmall, .whisperLargeTurbo,
     ]
 
     static let qwen3Asr = BackendOption(
@@ -146,7 +137,7 @@ struct BackendOption: Equatable {
     /// Curated first-run choices shown in onboarding's "Other models" section.
     /// This is a deliberate hand-picked list, not a derived rule. Experimental models
     /// are excluded by default.
-    static let onboarding: [BackendOption] = [.parakeetMultilingual, .whisperTinyEnglish, .whisperSmall, .cohereTranscribe, .nemotron35Multilingual]
+    static let onboarding: [BackendOption] = [.parakeetMultilingual, .whisperTiny, .whisperSmall, .cohereTranscribe, .nemotron35Multilingual]
 
     /// Models coming soon — shown greyed out in the Models tab.
     static let comingSoon: [BackendOption] = []
@@ -162,7 +153,20 @@ struct BackendOption: Equatable {
     }
 
     static func resolve(backend: String, model: String) -> BackendOption? {
-        all.first { $0.backend == backend && $0.model == model }
+        let normalizedModel = normalizedModel(backend: backend, model: model)
+        return all.first { $0.backend == backend && $0.model == normalizedModel }
+    }
+
+    /// Maps removed English-only Whisper choices to the multilingual catalog.
+    /// Exact matching keeps unrelated legacy names such as `ggml-medium.en` intact.
+    static func normalizedModel(backend: String, model: String) -> String {
+        guard backend == "whisper" else { return model }
+        switch model {
+        case "tiny.en": return whisperTiny.model
+        case "small.en": return whisperSmall.model
+        case "medium.en": return whisperLargeTurbo.model
+        default: return model
+        }
     }
 
     var isStreamingDictationBackend: Bool {
@@ -185,7 +189,8 @@ struct BackendOption: Equatable {
         fallback: BackendOption?,
         downloadedOptions: [BackendOption]
     ) -> BackendOption? {
-        if let selected = downloadedOptions.first(where: { $0.backend == backend && $0.model == model }) {
+        let normalizedModel = normalizedModel(backend: backend, model: model)
+        if let selected = downloadedOptions.first(where: { $0.backend == backend && $0.model == normalizedModel }) {
             return selected
         }
         if let fallback,
@@ -1292,7 +1297,10 @@ struct AppConfig: Codable {
         )
         computerUseTimeoutSeconds = (try? c.decode(Int.self, forKey: .computerUseTimeoutSeconds)) ?? defaults.computerUseTimeoutSeconds
         sttBackend = (try? c.decode(String.self, forKey: .sttBackend)) ?? defaults.sttBackend
-        sttModel = (try? c.decode(String.self, forKey: .sttModel)) ?? defaults.sttModel
+        sttModel = BackendOption.normalizedModel(
+            backend: sttBackend,
+            model: (try? c.decode(String.self, forKey: .sttModel)) ?? defaults.sttModel
+        )
         dictationInputDeviceUID = try? c.decode(String.self, forKey: .dictationInputDeviceUID)
         meetingInputDeviceUID = try? c.decode(String.self, forKey: .meetingInputDeviceUID)
         cohereLanguage = CohereTranscribeLanguage.resolvedCode(try? c.decode(String.self, forKey: .cohereLanguage))
@@ -1300,10 +1308,16 @@ struct AppConfig: Codable {
         nemotron35Language = Nemotron35Language.resolvedCode(try? c.decode(String.self, forKey: .nemotron35Language))
         whisperLanguage = WhisperKitLanguage.resolvedCode(try? c.decode(String.self, forKey: .whisperLanguage))
         meetingTranscriptionBackend = (try? c.decode(String.self, forKey: .meetingTranscriptionBackend)) ?? sttBackend
-        meetingTranscriptionModel = (try? c.decode(String.self, forKey: .meetingTranscriptionModel)) ?? sttModel
+        meetingTranscriptionModel = BackendOption.normalizedModel(
+            backend: meetingTranscriptionBackend,
+            model: (try? c.decode(String.self, forKey: .meetingTranscriptionModel)) ?? sttModel
+        )
         meetingSummaryBackend = (try? c.decode(String.self, forKey: .meetingSummaryBackend)) ?? defaults.meetingSummaryBackend
         defaultMeetingTemplateID = (try? c.decode(String.self, forKey: .defaultMeetingTemplateID)) ?? defaults.defaultMeetingTemplateID
-        whisperModel = (try? c.decode(String.self, forKey: .whisperModel)) ?? defaults.whisperModel
+        whisperModel = BackendOption.normalizedModel(
+            backend: "whisper",
+            model: (try? c.decode(String.self, forKey: .whisperModel)) ?? defaults.whisperModel
+        )
         idleTimeout = (try? c.decode(Double.self, forKey: .idleTimeout)) ?? defaults.idleTimeout
         autoRecordMeetings = (try? c.decode(Bool.self, forKey: .autoRecordMeetings)) ?? defaults.autoRecordMeetings
         if c.contains(.upcomingMeetingsDayCount) {

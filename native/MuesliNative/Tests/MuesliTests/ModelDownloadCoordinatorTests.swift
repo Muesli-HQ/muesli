@@ -469,7 +469,7 @@ struct ModelDownloadCoordinatorTests {
         #expect(plan.selections[0].remoteDirectory == "int8")
         #expect(plan.selections[0].includedPaths.contains("vocab.json"))
 
-        let whisper = ManagedASRModelPlans.whisperKit(modelName: "tiny.en", downloadRoot: root)
+        let whisper = ManagedASRModelPlans.whisperKit(modelName: "tiny", downloadRoot: root)
         #expect(whisper.selections[0].includedPaths.contains("AudioEncoder.mlmodelc"))
         #expect(whisper.selections[0].includedPaths.contains("config.json"))
         #expect(whisper.selections[0].includedPaths.contains("generation_config.json"))

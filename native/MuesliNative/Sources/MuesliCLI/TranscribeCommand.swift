@@ -20,7 +20,6 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
     case nemotron35 = "nemotron35"
     case whisperTiny = "whisper-tiny"
     case whisperSmall = "whisper-small"
-    case whisperMedium = "whisper-medium"
     case whisperLargeTurbo = "whisper-large-turbo"
 
     /// `nil` for models that don't go through `FluidAudioCLITranscriber`'s
@@ -30,7 +29,7 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
         case .parakeetV3: return .v3
         case .parakeetV2: return .v2
         case .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35,
-             .whisperTiny, .whisperSmall, .whisperMedium, .whisperLargeTurbo:
+             .whisperTiny, .whisperSmall, .whisperLargeTurbo:
             return nil
         }
     }
@@ -38,9 +37,8 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
     /// WhisperKit's model identifiers, shared with the app's Whisper backend.
     var whisperKitModelName: String? {
         switch self {
-        case .whisperTiny: return "tiny.en"
-        case .whisperSmall: return "small.en"
-        case .whisperMedium: return "medium.en"
+        case .whisperTiny: return "tiny"
+        case .whisperSmall: return "small"
         case .whisperLargeTurbo: return "large-v3-v20240930_626MB"
         case .parakeetV3, .parakeetV2, .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35:
             return nil
@@ -102,7 +100,7 @@ struct TranscribeCommand: AsyncParsableCommand {
     var file: String
     @Option(name: .long, help: "Output format: text, json, or markdown.")
     var format: TranscribeOutputFormat = .text
-    @Option(name: .long, help: "Transcription model: parakeet-v3, parakeet-v2, parakeet-eou-320ms (streaming), sensevoice, qwen3-asr, nemotron35, whisper-tiny, whisper-small, whisper-medium, or whisper-large-turbo.")
+    @Option(name: .long, help: "Transcription model: parakeet-v3, parakeet-v2, parakeet-eou-320ms (streaming), sensevoice, qwen3-asr, nemotron35, whisper-tiny, whisper-small, or whisper-large-turbo.")
     var model: TranscribeModel = .parakeetV3
     @Flag(name: .long, help: "Generate meeting notes using the configured Muesli summary backend when available.")
     var summarize = false
@@ -624,7 +622,7 @@ struct RoutingAudioTranscriber: AudioTranscribing {
         case .senseVoice: transcriber = senseVoice
         case .qwen3Asr: transcriber = qwen3Asr
         case .nemotron35: transcriber = nemotron35
-        case .whisperTiny, .whisperSmall, .whisperMedium, .whisperLargeTurbo: transcriber = whisper
+        case .whisperTiny, .whisperSmall, .whisperLargeTurbo: transcriber = whisper
         }
         return try await transcriber.transcribe(wavURL: wavURL, model: model, progress: progress)
     }

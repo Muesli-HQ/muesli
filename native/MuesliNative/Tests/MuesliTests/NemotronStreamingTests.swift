@@ -973,10 +973,14 @@ struct WhisperKitLanguageTests {
         #expect(WhisperKitLanguage.isEnglishOnlyModel("tiny.en"))
         #expect(WhisperKitLanguage.isEnglishOnlyModel("small.en"))
         #expect(WhisperKitLanguage.isEnglishOnlyModel("medium.en"))
+        #expect(!WhisperKitLanguage.isEnglishOnlyModel("tiny"))
+        #expect(!WhisperKitLanguage.isEnglishOnlyModel("small"))
         #expect(!WhisperKitLanguage.isEnglishOnlyModel("large-v3-v20240930_626MB"))
 
         #expect(WhisperKitLanguage.preferenceForLoadedModel(.german, modelName: "tiny.en") == nil)
         #expect(WhisperKitLanguage.preferenceForLoadedModel(.auto, modelName: "small.en") == nil)
+        #expect(WhisperKitLanguage.preferenceForLoadedModel(.german, modelName: "tiny") == .german)
+        #expect(WhisperKitLanguage.preferenceForLoadedModel(.auto, modelName: "small") == .auto)
         #expect(WhisperKitLanguage.preferenceForLoadedModel(.german, modelName: "large-v3-v20240930_626MB") == .german)
         #expect(WhisperKitLanguage.preferenceForLoadedModel(.auto, modelName: "large-v3-v20240930_626MB") == .auto)
     }
