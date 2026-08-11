@@ -143,7 +143,7 @@ struct BackendOptionTests {
             "qwen3_asr_embeddings.bin",
             "vocab.json",
         ]
-        try managedPlan.recordSuccessfulInstallation(ModelDownloadManifest(
+        let installedManifest = ModelDownloadManifest(
             id: managedPlan.modelID,
             version: "test-install",
             files: installedPaths.map { relativePath in
@@ -153,9 +153,16 @@ struct BackendOptionTests {
                     expectedByteCount: 1
                 )
             }
-        ))
+        )
+        try managedPlan.recordSuccessfulInstallation(installedManifest)
         #expect(Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
 
+        let completionMarker = managedDirectory
+            .appendingPathComponent(".muesli-managed-model-complete.json")
+        try Data("not-json".utf8).write(to: completionMarker)
+        #expect(!Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
+
+        try managedPlan.recordSuccessfulInstallation(installedManifest)
         try fm.removeItem(at: managedDirectory.appendingPathComponent("vocab.json"))
         #expect(!Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
 
