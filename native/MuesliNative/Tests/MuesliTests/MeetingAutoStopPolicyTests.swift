@@ -509,11 +509,108 @@ struct MeetingAutoStopPolicyTests {
         #expect(!MeetingAutoStopPolicy.matches(candidate: unrelated, source: refined))
     }
 
+    @Test("a join-link source armed with its calendar event matches the desktop app it opened")
+    func joinLinkSourceMatchesDesktopAppByCalendarEvent() throws {
+        // "Join & Record" on a Zoom or Teams link opens a dedicated app, whose
+        // candidates carry no URL. The armed source cannot learn the app's
+        // bundle id either, because it only refines after a match and the only
+        // things that match a URL are browser candidates. The calendar event is
+        // the one identity both sides can agree on, and the source has it at
+        // arm time — so it must carry it rather than starting nil.
+        let source = try #require(zoomJoinAndRecordSource(calendarEventID: "event-1"))
+
+        #expect(MeetingAutoStopPolicy.matches(
+            candidate: zoomDesktopCandidate(calendarEventID: "event-1"),
+            source: source
+        ))
+    }
+
+    @Test("a join-link source ignores a different calendar event")
+    func joinLinkSourceIgnoresDifferentCalendarEvent() throws {
+        // Negative control: carrying the event id must not turn the source into
+        // a wildcard for any dedicated app that happens to be running.
+        let source = try #require(zoomJoinAndRecordSource(calendarEventID: "event-1"))
+
+        #expect(!MeetingAutoStopPolicy.matches(
+            candidate: zoomDesktopCandidate(calendarEventID: "event-2"),
+            source: source
+        ))
+    }
+
+    @Test("a source that learned a dedicated app still matches after rotation despite holding a join URL")
+    func dedicatedAppMatchesEvenWhenSourceHoldsJoinURL() throws {
+        // `refined` never clears normalizedURL, so a source armed from a join
+        // link holds one for the life of the recording. Keying the dedicated-app
+        // arm off the *source* having no URL therefore disabled it permanently
+        // for every Join & Record recording. The URL-less side that matters is
+        // the candidate's.
+        let source = try #require(zoomJoinAndRecordSource(calendarEventID: nil))
+            .refined(with: zoomDesktopCandidate(calendarEventID: nil))
+
+        #expect(MeetingAutoStopPolicy.matches(
+            candidate: zoomDesktopCandidate(
+                sessionSuffix: "1800000200",
+                calendarEventID: nil
+            ),
+            source: source
+        ))
+    }
+
+    @Test("a source holding a join URL still ignores a browser it learned")
+    func browserSourceStillIgnoredWhenSourceHoldsJoinURL() throws {
+        // The browser exclusion is what keeps the arm honest once the source's
+        // own URL no longer gates it: one browser hosts many unrelated calls.
+        let source = try #require(zoomJoinAndRecordSource(calendarEventID: nil))
+            .refined(with: focusedTabCandidate())
+        let unrelatedBrowserAudio = MeetingCandidate(
+            id: "browser:com.google.Chrome:session:1800000200",
+            platform: .unknown,
+            appName: "Chrome",
+            url: nil,
+            evidence: [.audioInputProcess],
+            startedAt: Date(timeIntervalSince1970: 1_800_000_200),
+            meetingTitle: nil,
+            sourceBundleID: "com.google.Chrome",
+            sourcePID: 4242,
+            suppressionID: "browser:com.google.Chrome:session:1800000200"
+        )
+
+        #expect(!MeetingAutoStopPolicy.matches(
+            candidate: unrelatedBrowserAudio,
+            source: source
+        ))
+    }
+
     /// "Join & Record" arms auto-stop from the calendar event's join URL alone,
     /// so the source starts with no bundle id and no calendar id of its own.
     private func joinAndRecordSource() -> MeetingAutoStopSource? {
         URL(string: "https://meet.google.com/aaa-bbbb-ccc")
-            .flatMap(MeetingAutoStopSource.init(meetingURL:))
+            .flatMap { MeetingAutoStopSource(meetingURL: $0) }
+    }
+
+    private func zoomJoinAndRecordSource(calendarEventID: String?) -> MeetingAutoStopSource? {
+        URL(string: "https://zoom.us/j/1234567890").flatMap {
+            MeetingAutoStopSource(meetingURL: $0, calendarEventID: calendarEventID)
+        }
+    }
+
+    private func zoomDesktopCandidate(
+        sessionSuffix: String = "1800000120",
+        calendarEventID: String?
+    ) -> MeetingCandidate {
+        MeetingCandidate(
+            id: calendarEventID.map { "cal:\($0)" } ?? "app:us.zoom.xos:session:\(sessionSuffix)",
+            platform: .zoom,
+            appName: "Zoom",
+            url: nil,
+            evidence: [.audioInputProcess, .dedicatedApp],
+            startedAt: Date(timeIntervalSince1970: 1_800_000_120),
+            meetingTitle: "Weekly sync",
+            sourceBundleID: "us.zoom.xos",
+            sourcePID: 4321,
+            suppressionID: "app:us.zoom.xos:session:\(sessionSuffix)",
+            calendarEventID: calendarEventID
+        )
     }
 
     private func focusedTabCandidate() -> MeetingCandidate {

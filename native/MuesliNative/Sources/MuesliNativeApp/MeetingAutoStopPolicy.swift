@@ -103,7 +103,13 @@ struct MeetingAutoStopSource: Equatable {
         self.hasObservedCandidate = true
     }
 
-    init?(meetingURL: URL) {
+    /// Arming from a join link alone leaves the source with only URL-derived
+    /// identity, and a dedicated meeting app's candidates carry no URL. The
+    /// source cannot learn the app's bundle id either: it only refines after a
+    /// match, and the only candidates that match a URL are browser ones. Pass
+    /// the calendar event the link came from so the two sides have an identity
+    /// in common from the first candidate.
+    init?(meetingURL: URL, calendarEventID: String? = nil) {
         guard let normalized = MeetingURLNormalizer.normalize(meetingURL.absoluteString) else {
             return nil
         }
@@ -111,7 +117,7 @@ struct MeetingAutoStopSource: Equatable {
         self.suppressionID = normalized.id
         self.normalizedURL = normalized.url
         self.sourceBundleID = nil
-        self.calendarEventID = nil
+        self.calendarEventID = calendarEventID
         self.hasObservedCandidate = false
     }
 
@@ -255,12 +261,16 @@ enum MeetingAutoStopPolicy {
     ///
     /// Browsers are excluded: a single browser hosts many unrelated sessions, so
     /// its bundle ID is not a meeting identity.
+    ///
+    /// The URL-less side that matters is the *candidate's*. Requiring the source
+    /// to have no URL disabled this arm permanently for every recording started
+    /// from a "Join & Record" notification, since those arm from the join link
+    /// and `refined` never clears it.
     private static func matchesDedicatedAppIdentity(
         candidate: MeetingCandidate,
         source: MeetingAutoStopSource
     ) -> Bool {
-        guard source.normalizedURL == nil,
-              candidate.url == nil,
+        guard candidate.url == nil,
               let sourceBundleID = source.sourceBundleID,
               MeetingCandidateResolver.browserApps[sourceBundleID] == nil else {
             return false
