@@ -39,6 +39,20 @@ protocol MeetingMicRecording: AnyObject {
     func cancel()
     func currentPower() -> Float
     func diagnosticsSnapshot() -> MeetingMicRecorderDiagnosticsSnapshot
+
+    /// Request a serialized same-route recovery: prepare a replacement capture
+    /// graph for the current input while the active graph keeps running, and
+    /// promote it only after it produces a non-empty buffer. Used when the
+    /// health tracker confirms a semantically dead graph (missing/zero
+    /// callbacks) that never raises an explicit CoreAudio error. Returns true
+    /// when a recovery handoff was actually initiated. Recorders without a
+    /// recovery primitive keep the default no-op (returns false).
+    @discardableResult
+    func requestSameRouteRecovery(reason: String) -> Bool
+}
+
+extension MeetingMicRecording {
+    func requestSameRouteRecovery(reason: String) -> Bool { false }
 }
 
 final class StreamingMeetingMicRecorderAdapter: MeetingMicRecording {
@@ -339,6 +353,21 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         return snapshot
     }
 
+    /// Health-driven recovery entry point: the current graph is confirmed
+    /// degraded (missing/zero mic callbacks while system audio is active) but
+    /// never threw, so force a same-route candidate through the existing
+    /// serialized handoff. beginHandoffIfNeeded already guards against
+    /// concurrent pendings and non-recoverable lifecycle states; the candidate
+    /// promotes only after producing a non-empty buffer, otherwise the current
+    /// route keeps running.
+    @discardableResult
+    func requestSameRouteRecovery(reason: String) -> Bool {
+        fputs("[meeting-mic] health-triggered same-route recovery requested: \(reason)\n", stderr)
+        return lifecycleQueue.sync { [weak self] in
+            self?.beginHandoffIfNeeded(force: true) ?? false
+        }
+    }
+
     private func ensureCurrentChild() throws -> Child {
         let desired = preferredInputDeviceID
         if let active = lock.withLock({ $0.active }), active.deviceID == desired { return active }
@@ -363,14 +392,16 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         beginHandoffIfNeeded(force: force)
     }
 
-    private func beginHandoffIfNeeded(force: Bool = false) {
+    /// Returns true when a candidate handoff was actually started.
+    @discardableResult
+    private func beginHandoffIfNeeded(force: Bool = false) -> Bool {
         let request = lock.withLock { state -> (AudioObjectID, UInt64)? in
             guard state.lifecycleState == .running || state.lifecycleState == .failed,
                   state.pending == nil,
                   force || state.active?.deviceID != state.preferredInputDeviceIDStorage else { return nil }
             return (state.preferredInputDeviceIDStorage ?? kAudioObjectUnknown, state.generation)
         }
-        guard let (encodedDeviceID, generation) = request else { return }
+        guard let (encodedDeviceID, generation) = request else { return false }
         let deviceID = encodedDeviceID == kAudioObjectUnknown ? nil : encodedDeviceID
         let candidate = makeChild(deviceID: deviceID, generation: generation)
         lock.withLock { $0.pending = candidate }
@@ -404,6 +435,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
                 }
             }
         }
+        return true
     }
 
     private func makeChild(deviceID: AudioObjectID?, generation: UInt64) -> Child {

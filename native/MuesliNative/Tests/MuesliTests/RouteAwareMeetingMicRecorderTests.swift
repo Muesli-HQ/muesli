@@ -561,6 +561,78 @@ struct RouteAwareMeetingMicRecorderTests {
         #expect(!state.isRunning)
     }
 
+    @Test("health-triggered recovery hands off the same route and promotes on first buffer")
+    func healthTriggeredRecoveryPromotesOnFirstBuffer() async throws {
+        let degraded = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let replacement = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        var factoryCalls = 0
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: degraded,
+            appScopedRecorder: FakeMeetingMicRecorder(kind: .appScopedAudioQueue),
+            systemDefaultRecorderFactory: {
+                factoryCalls += 1
+                return replacement
+            },
+            handoffTimeout: 1,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+        var samples: [[Int16]] = []
+        recorder.onRawPCMSamples = { samples.append($0) }
+
+        try recorder.start()
+        #expect(recorder.requestSameRouteRecovery(reason: "system_audio_active_with_zero_mic"))
+        try await waitUntil { replacement.startCalls == 1 }
+        #expect(factoryCalls == 1)
+
+        // No samples yet: the degraded graph remains active and un-retired.
+        #expect(degraded.stopCalls == 0)
+
+        replacement.onRawPCMSamples?([4, 5, 6])
+        try await waitUntil { samples == [[4, 5, 6]] }
+        #expect(degraded.stopCalls == 1)
+    }
+
+    @Test("health-triggered recovery is a no-op when not recording")
+    func healthRecoveryIgnoredWhenNotRunning() {
+        var factoryCalls = 0
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: FakeMeetingMicRecorder(kind: .systemDefaultStreaming),
+            appScopedRecorder: FakeMeetingMicRecorder(kind: .appScopedAudioQueue),
+            systemDefaultRecorderFactory: {
+                factoryCalls += 1
+                return FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+            },
+            handoffTimeout: 1,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+
+        #expect(!recorder.requestSameRouteRecovery(reason: "system_audio_active_without_mic_callbacks"))
+        #expect(factoryCalls == 0)
+    }
+
+    @Test("a second health recovery request does not stack behind a pending handoff")
+    func healthRecoveryDoesNotStackPendingHandoffs() async throws {
+        let degraded = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        var factoryCalls = 0
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: degraded,
+            appScopedRecorder: FakeMeetingMicRecorder(kind: .appScopedAudioQueue),
+            systemDefaultRecorderFactory: {
+                factoryCalls += 1
+                return FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+            },
+            handoffTimeout: 1,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+
+        try recorder.start()
+        #expect(recorder.requestSameRouteRecovery(reason: "first"))
+        #expect(!recorder.requestSameRouteRecovery(reason: "second"))
+        try await waitUntil { factoryCalls == 1 }
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(factoryCalls == 1)
+    }
+
     private func waitUntil(
         timeout: Duration = .seconds(5),
         condition: @escaping () -> Bool

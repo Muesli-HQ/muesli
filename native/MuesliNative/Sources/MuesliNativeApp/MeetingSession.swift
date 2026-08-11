@@ -174,6 +174,7 @@ final class MeetingSession {
     private let micChunkHealthTracker = MeetingTranscriptChunkHealthTracker()
     private let systemChunkHealthTracker = MeetingTranscriptChunkHealthTracker()
     private let micHealthTracker = MeetingMicHealthTracker()
+    private let micRecoveryCoordinator = MeetingMicRecoveryCoordinator()
     private let chunkRotationQueue = DispatchQueue(label: "MuesliNative.MeetingSession.chunkRotation")
     private let pausedDisplayLock = OSAllocatedUnfairLock(initialState: false)
     private var chunkTimingTracker = MeetingChunkTimingTracker()
@@ -181,6 +182,11 @@ final class MeetingSession {
     private var systemChunkRecorder: PCMChunkRecorder?
     var onProgress: ((MeetingProcessingStage) -> Void)?
     var onMicHealthChanged: ((MeetingMicHealthSnapshot) -> Void)?
+    /// Episode-level mic-health events: one degraded/recovered pair per actual
+    /// degradation episode, or a single unrecovered event if the meeting ends
+    /// while degraded. Feed telemetry here; keep per-snapshot UI updates on
+    /// onMicHealthChanged.
+    var onMicHealthEpisode: ((MeetingMicHealthEpisodeEvent) -> Void)?
     var manualNotesProvider: (() async -> String?)?
     var liveTitleProvider: (() async -> String?)?
     /// Formatted notes of the predecessor meeting when this session records a
@@ -241,6 +247,13 @@ final class MeetingSession {
             self.systemAudioRecorder = CoreAudioSystemRecorder()
         } else {
             self.systemAudioRecorder = SystemAudioRecorder()
+        }
+        micRecoveryCoordinator.recoveryRequest = { [weak meetingMicRecorder] reason in
+            guard let meetingMicRecorder else { return false }
+            return meetingMicRecorder.requestSameRouteRecovery(reason: reason)
+        }
+        micRecoveryCoordinator.onEpisodeEvent = { [weak self] event in
+            self?.onMicHealthEpisode?(event)
         }
     }
 
@@ -517,6 +530,9 @@ final class MeetingSession {
     func stop() async throws -> MeetingSessionResult {
         onProgress?(.transcribingAudio)
         let endTime = Date()
+        // Close any open degradation episode before teardown: an episode still
+        // open at meeting end is the terminal (error-level) condition.
+        micRecoveryCoordinator.finishMeeting()
         var micSegments: [SpeechSegment] = []
         var systemSegments: [SpeechSegment] = []
         let usesUnifiedNemotronTranscript = config.enableLiveStreamingPartials
@@ -1013,6 +1029,7 @@ final class MeetingSession {
 
             let healthSnapshot = self.micHealthTracker.noteRawMicSamples(rawSamples)
             self.onMicHealthChanged?(healthSnapshot)
+            self.micRecoveryCoordinator.process(healthSnapshot)
             self.retainedRecordingWriter?.appendMic(rawSamples)
 
             let floatSamples = rawSamples.map { Float($0) / 32767.0 }
@@ -1038,6 +1055,7 @@ final class MeetingSession {
 
             let healthSnapshot = self.micHealthTracker.noteSystemSamples(samples)
             self.onMicHealthChanged?(healthSnapshot)
+            self.micRecoveryCoordinator.process(healthSnapshot)
             self.retainedRecordingWriter?.appendSystem(samples)
             self.systemChunkRecorder?.append(samples)
             self.systemChunkTimingTracker.append(sampleCount: samples.count)

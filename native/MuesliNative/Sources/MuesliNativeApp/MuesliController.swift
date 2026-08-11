@@ -5484,10 +5484,31 @@ final class MuesliController: NSObject {
                         guard let self,
                               self.activeMeetingID == meetingID || self.meetingStartMeetingID == meetingID else { return }
                         self.updateActiveMeetingAudioWarning(meetingID: meetingID, health: snapshot)
-                        if warningMessage != nil {
+                    }
+                }
+                // Episode-level telemetry replaces per-flap error events:
+                // exactly one degraded/recovered signal pair per degradation
+                // episode, and an error only when the meeting ends unrecovered.
+                meetingSession.onMicHealthEpisode = { [weak self] event in
+                    Task { @MainActor in
+                        guard let self,
+                              self.activeMeetingID == meetingID || self.meetingStartMeetingID == meetingID else { return }
+                        let parameters: [String: String] = [
+                            "reason": event.reason,
+                            "state": event.state,
+                            "duration_ms": String(Int(event.durationSeconds * 1000)),
+                            "flap_count": String(event.flapCount),
+                            "recovery_attempts": String(event.recoveryAttempts),
+                        ]
+                        switch event.kind {
+                        case .degraded:
+                            TelemetryDeck.signal(MeetingMicHealthEpisodeKind.degraded.rawValue, parameters: parameters)
+                        case .recovered:
+                            TelemetryDeck.signal(MeetingMicHealthEpisodeKind.recovered.rawValue, parameters: parameters)
+                        case .unrecovered:
                             self.recordDiagnosticIncident(
                                 kind: .meetingMicrophoneCaptureFailed,
-                                severity: .warning,
+                                severity: .error,
                                 stage: .meetingMicrophoneCapture,
                                 promptUser: false
                             )
