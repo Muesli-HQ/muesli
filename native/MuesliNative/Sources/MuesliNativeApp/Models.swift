@@ -15,7 +15,7 @@ struct BackendOption: Equatable {
         model: "FluidInference/parakeet-tdt-0.6b-v3-coreml",
         label: "Parakeet v3",
         sizeLabel: "~450 MB",
-        description: "Fast everyday transcription with an excellent balance of speed and accuracy. Supports 25 languages.",
+        description: "The best default for everyday dictation: quick enough to feel responsive, reliable in normal rooms, and able to follow 25 languages.",
         recommended: true
     )
 
@@ -24,7 +24,7 @@ struct BackendOption: Equatable {
         model: "FluidInference/parakeet-tdt-0.6b-v2-coreml",
         label: "Parakeet v2",
         sizeLabel: "~450 MB",
-        description: "Fast English transcription with a strong balance of speed and accuracy.",
+        description: "A quick, dependable English-only option. Choose it if you mainly dictate in English and prefer the older Parakeet model.",
         recommended: false
     )
 
@@ -33,7 +33,7 @@ struct BackendOption: Equatable {
         model: "small.en",
         label: "Whisper Small",
         sizeLabel: "~250 MB",
-        description: "Fast, English-optimized. Runs on Apple Neural Engine via CoreML.",
+        description: "A dependable English Whisper option for everyday notes. It is more forgiving than Tiny while keeping the download modest.",
         recommended: false
     )
 
@@ -42,7 +42,7 @@ struct BackendOption: Equatable {
         model: "tiny.en",
         label: "Whisper Tiny English",
         sizeLabel: "~153 MB",
-        description: "Smallest English WhisperKit CoreML model. Quickest local setup.",
+        description: "The quickest Whisper download and lightest option for occasional English notes. It gives up some accuracy on accents, noise, and longer speech.",
         recommended: false
     )
 
@@ -51,7 +51,7 @@ struct BackendOption: Equatable {
         model: "medium.en",
         label: "Whisper Medium",
         sizeLabel: "~1.5 GB",
-        description: "Better accuracy, English-only. Runs on Apple Neural Engine via CoreML.",
+        description: "More careful English transcription for accents or difficult audio, at the cost of a much larger download and slower results.",
         recommended: false
     )
 
@@ -60,7 +60,7 @@ struct BackendOption: Equatable {
         model: "large-v3-v20240930_626MB",
         label: "Whisper Large Turbo",
         sizeLabel: "~626 MB",
-        description: "Highest accuracy, multilingual. Quantized CoreML for faster inference.",
+        description: "Whisper's strongest multilingual option. Better for mixed languages and difficult audio, with a larger download and more processing time than Small.",
         recommended: false
     )
 
@@ -69,7 +69,7 @@ struct BackendOption: Equatable {
         model: "FluidInference/Nemotron-3.5-ASR-Streaming-Multilingual-0.6b-CoreML",
         label: "Nemotron 3.5 Multilingual",
         sizeLabel: "~665 MB",
-        description: "NVIDIA Nemotron 3.5 streaming RNNT via FluidInference. Multilingual incl. Hindi, Chinese, Japanese + 100+ locales (auto-detect). Native punctuation. Hold-to-talk or double-tap handsfree (live text). For meetings, one continuous transcript is used live and as the final raw transcript. Append-only with no corrections.",
+        description: "Live text appears as you speak in more than 100 locales, including Hindi, Chinese, and Japanese, with language auto-detection and punctuation. It works for hold-to-talk, hands-free dictation, and meetings, but it only appends words—it does not go back to correct earlier text.",
         recommended: false
     )
 
@@ -78,7 +78,7 @@ struct BackendOption: Equatable {
         model: "phequals/cohere-transcribe-coreml-mixed-precision",
         label: "Cohere Transcribe",
         sizeLabel: "~3.8 GB",
-        description: "Best accuracy for difficult audio and accents. Choose it when getting every word right matters more than speed. It is larger and slower than Parakeet, supports 14 languages, and gives you the final transcript when you stop. Works best in a quiet environment.",
+        description: "The most deliberate option for difficult accents and tricky audio. It supports 14 languages and can be more accurate than faster models, but the download is large and you only see the result after you stop speaking.",
         recommended: false
     )
 
@@ -87,7 +87,7 @@ struct BackendOption: Equatable {
         model: "phequals/indic-conformer-600m-multilingual-coreml-rnnt",
         label: "Indic ASR",
         sizeLabel: "~618 MB",
-        description: "Experimental AI4Bharat IndicConformer RNNT CoreML backend for seven Indian languages. Requires explicit language selection.",
+        description: "Built specifically for seven Indian languages. Choose your language before recording; it can help where general multilingual models struggle, but results still vary enough to keep it experimental.",
         recommended: false
     )
 
@@ -96,7 +96,7 @@ struct BackendOption: Equatable {
         model: "FluidInference/sensevoice-small-coreml",
         label: "SenseVoice Small",
         sizeLabel: SenseVoiceTranscriber.downloadedModelSizeLabel,
-        description: "FunASR SenseVoiceSmall via FluidAudio. INT8 CoreML/ANE on macOS 14+, 50+ languages. Non-autoregressive with built-in punctuation.",
+        description: "A compact option covering more than 50 languages, with punctuation included in the result. Quality varies by language and accent, so try it with your own voice before relying on it.",
         recommended: false
     )
 
@@ -105,7 +105,7 @@ struct BackendOption: Equatable {
         model: Gemma4LiteRTModelStore.repoID,
         label: "Gemma 4 E2B",
         sizeLabel: "~2.6 GB",
-        description: "Experimental Gemma 4 LiteRT-LM evaluation backend. Downloads managed local weights, requires macOS 15+, and is not production ASR until an ASR-tuned Gemma artifact is available; chat-style outputs fail closed.",
+        description: "A research preview, not a dependable dictation model yet. It is large, slow to get ready, requires macOS 15 or later, and may produce an answer instead of a faithful transcript.",
         recommended: false
     )
 
@@ -125,12 +125,12 @@ struct BackendOption: Equatable {
         model: "FluidInference/qwen3-asr-0.6b-coreml",
         label: "Qwen3 ASR",
         sizeLabel: "~1.3 GB",
-        description: "Multilingual, 52 languages. Slower than Parakeet (~2-3s). First use takes ~30s to warm up.",
+        description: "Strong multilingual transcription across 52 languages when accuracy matters more than instant results. Expect a short 2–3 second wait compared with Parakeet, and about 30 seconds of one-time preparation the first time it runs.",
         recommended: false
     )
 
     static let experimental: [BackendOption] = [
-        .senseVoiceSmall, .qwen3Asr, .indicASR, .gemma4E2BLiteRT,
+        .senseVoiceSmall, .indicASR, .gemma4E2BLiteRT,
     ]
 
     /// Native streaming backends used by low-latency product surfaces.
@@ -141,7 +141,7 @@ struct BackendOption: Equatable {
     ]
 
     /// Models available for download and use.
-    static let all: [BackendOption] = parakeetFamily + whisperFamily + [.cohereTranscribe] + streaming + experimental
+    static let all: [BackendOption] = parakeetFamily + [.qwen3Asr] + whisperFamily + [.cohereTranscribe] + streaming + experimental
 
     /// Curated first-run choices shown in onboarding's "Other models" section.
     /// This is a deliberate hand-picked list, not a derived rule. Experimental models
@@ -196,20 +196,12 @@ struct BackendOption: Equatable {
         case "whisper":
             return WhisperKitTranscriber.isModelDownloaded(model)
         case "fluidaudio":
-            let supportDir = fm.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/Application Support/FluidAudio/Models")
-            if model.contains("parakeet") {
-                let version = model.contains("v2") ? "v2" : "v3"
-                if let contents = try? fm.contentsOfDirectory(at: supportDir, includingPropertiesForKeys: nil) {
-                    return contents.contains { $0.lastPathComponent.contains("parakeet") && $0.lastPathComponent.contains(version) }
-                }
-            }
-            return false
+            let plan = model.contains("v2")
+                ? ManagedASRModelPlans.parakeetV2()
+                : ManagedASRModelPlans.parakeetV3()
+            return plan.isAvailableLocally(fileManager: fm)
         case "qwen":
-            let supportDir = fm.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/Application Support/FluidAudio/Models/qwen3-asr-0.6b-coreml")
-            return fm.fileExists(atPath: supportDir.appendingPathComponent("int8/vocab.json").path)
-                || fm.fileExists(atPath: supportDir.appendingPathComponent("f32/vocab.json").path)
+            return Qwen3AsrModelStore.isModelDownloaded(fileManager: fm)
         case "nemotron35":
             return Nemotron35ModelStore.isModelDownloaded(fileManager: fm)
         case "cohere":
@@ -217,7 +209,7 @@ struct BackendOption: Equatable {
         case "indicasr":
             return IndicASRModelStore.isAvailableLocally()
         case "sensevoice":
-            return SenseVoiceTranscriber.isModelDownloaded()
+            return SenseVoiceTranscriber.isModelDownloaded(fileManager: fm)
         case "gemma4-litert":
             return Gemma4LiteRTModelStore.isAvailableLocally()
         default:
@@ -589,9 +581,9 @@ struct PostProcessorOption: Identifiable, Equatable {
     // HF repo must be public (or token-gated) before distributing alpha builds.
     static let finetunedV2 = PostProcessorOption(
         id: "qwen3-postproc-v2",
-        label: "Post-Proc v2 (Finetuned)",
+        label: "Muesli Cleanup (Legacy)",
         sizeLabel: "~390 MB",
-        description: "Fine-tuned on Muesli dictation data. Best for filler removal, deletion cues, and spoken list formatting.",
+        description: "An earlier cleanup model for Muesli dictation. It handles filler words, corrections, and spoken lists, but is less consistent than the current model.",
         downloadURL: URL(string: "https://huggingface.co/phequals/qwen3-postproc-v2/resolve/main/qwen3-postproc-v2-q4_k_m.gguf")!,
         filename: "qwen3-postproc-v2-q4_k_m.gguf"
     )
@@ -599,9 +591,9 @@ struct PostProcessorOption: Identifiable, Equatable {
     // Vanilla Qwen3.5-0.8B. Stable for basic cleanup; does not reliably convert spoken list cues.
     static let qwen35_0_8b = PostProcessorOption(
         id: "qwen35-0.8b",
-        label: "Qwen3.5 0.8B",
+        label: "Qwen Basic Cleanup",
         sizeLabel: "~533 MB",
-        description: "Vanilla Qwen3.5-0.8B. Good for typo correction and filler removal. Spoken list formatting is unreliable.",
+        description: "A general-purpose option for typos and filler words. It may miss “scratch that” edits and spoken list formatting.",
         downloadURL: URL(string: "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_K_M.gguf")!,
         filename: "Qwen3.5-0.8B-Q4_K_M.gguf"
     )
@@ -609,9 +601,9 @@ struct PostProcessorOption: Identifiable, Equatable {
     // Fine-tuned Qwen3.5-0.8B v3 trained on Muesli dictation correction data.
     static let finetunedV3 = PostProcessorOption(
         id: "qwen35-postproc-v3",
-        label: "Post-Proc v3 (Finetuned)",
+        label: "Muesli Cleanup",
         sizeLabel: "~505 MB",
-        description: "Fine-tuned Qwen3.5-0.8B on Muesli dictation data. Improved over v2 on filler removal, deletion cues, and spoken list formatting.",
+        description: "The best overall choice for everyday dictation. It removes filler words, follows “scratch that,” and turns spoken list cues into clean formatting.",
         downloadURL: URL(string: "https://huggingface.co/phequals/qwen35-postproc-v3-gguf/resolve/main/qwen35-postproc-v3-Q4_K_M.gguf")!,
         filename: "qwen35-postproc-v3-Q4_K_M.gguf"
     )

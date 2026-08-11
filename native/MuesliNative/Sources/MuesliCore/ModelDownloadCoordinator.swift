@@ -296,6 +296,20 @@ public actor ModelDownloadCoordinator {
         }
     }
 
+    /// Cancels active transfers for a model and waits until their file writes
+    /// have fully unwound. Use this before deleting a model destination.
+    public func cancelAndWait(modelID: String) async {
+        let tasks = inFlight.compactMap { key, task in
+            key.modelID == modelID ? task : nil
+        }
+        for task in tasks {
+            task.cancel()
+        }
+        for task in tasks {
+            _ = try? await task.value
+        }
+    }
+
     /// Downloads, validates, and atomically installs every file in a manifest.
     ///
     /// Requests with the same model, canonical destination, and manifest contents

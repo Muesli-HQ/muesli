@@ -1904,7 +1904,7 @@ struct OnboardingView: View {
     private func cancelModelDownload(for backend: BackendOption?) {
         guard let backend else { return }
         Task {
-            await ModelDownloadCoordinator.shared.cancel(modelID: backend.model)
+            await ManagedASRModelDownloader.cancel(modelID: backend.model)
         }
     }
 
