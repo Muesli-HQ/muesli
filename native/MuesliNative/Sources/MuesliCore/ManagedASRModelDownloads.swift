@@ -71,6 +71,12 @@ public struct ManagedASRModelPlan: Sendable {
         isComplete(fileManager: fileManager) || isLegacyInstallation(fileManager: fileManager)
     }
 
+    /// Whether this cache predates managed completion markers and still needs
+    /// one successful runtime load before it can be trusted as complete.
+    public func requiresRuntimeValidation(fileManager: FileManager = .default) -> Bool {
+        isLegacyInstallation(fileManager: fileManager)
+    }
+
     /// Records a successful, fully validated coordinator install. The marker
     /// carries every manifest file so readiness cannot be inferred from an
     /// early sentinel while sibling weights are still partial or missing.
@@ -363,6 +369,61 @@ public enum ManagedASRModelDownloader {
                 resolver: resolver,
                 coordinator: coordinator
             )
+        }
+    }
+
+    /// Loads a managed model and validates markerless legacy caches through the
+    /// real runtime. A legacy cache that cannot load is removed and downloaded
+    /// once from scratch; a successful legacy load is promoted to a strict,
+    /// size-aware managed installation without requiring network access.
+    public static func loadValidated<T>(
+        _ plan: ManagedASRModelPlan,
+        progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil,
+        resolver: HuggingFaceModelManifestResolver = .shared,
+        coordinator: ModelDownloadCoordinator = .shared,
+        load: (URL) async throws -> T
+    ) async throws -> T {
+        let requiresRuntimeValidation = plan.requiresRuntimeValidation()
+        let directory = try await downloadIfNeeded(
+            plan,
+            progress: progress,
+            progressSnapshot: progressSnapshot,
+            resolver: resolver,
+            coordinator: coordinator
+        )
+
+        do {
+            let value = try await load(directory)
+            try? plan.recordValidatedLegacyInstallationIfNeeded()
+            return value
+        } catch {
+            let validationError = error
+            guard requiresRuntimeValidation, !(error is CancellationError) else { throw error }
+            try Task.checkCancellation()
+
+            let deletionToken = await beginDeletion(
+                modelID: plan.modelID,
+                coordinator: coordinator
+            )
+            let shouldRepair = plan.requiresRuntimeValidation()
+            do {
+                if shouldRepair { try plan.delete() }
+            } catch {
+                await endDeletion(deletionToken)
+                throw error
+            }
+            await endDeletion(deletionToken)
+            guard shouldRepair else { throw validationError }
+
+            let repairedDirectory = try await downloadIfNeeded(
+                plan,
+                progress: progress,
+                progressSnapshot: progressSnapshot,
+                resolver: resolver,
+                coordinator: coordinator
+            )
+            return try await load(repairedDirectory)
         }
     }
 

@@ -30,23 +30,28 @@ actor FluidAudioTranscriber {
 
         fputs("[fluidaudio] downloading/loading models (version: \(version))...\n", stderr)
         let plan = version == .v2 ? ManagedASRModelPlans.parakeetV2() : ManagedASRModelPlans.parakeetV3()
-        let modelDirectory = try await ManagedASRModelDownloader.downloadIfNeeded(
+        let manager = try await ManagedASRModelDownloader.loadValidated(
             plan,
             progress: progress,
             progressSnapshot: progressSnapshot
-        )
+        ) { modelDirectory in
+            let preparing = ModelDownloadProgress.preparing(
+                modelID: plan.modelID,
+                message: "Loading Parakeet into Core ML..."
+            )
+            progress?(0.95, preparing.message)
+            progressSnapshot?(preparing)
+            let models = try await AsrModels.load(from: modelDirectory, version: version)
+            let manager = AsrManager(config: .default)
+            try await manager.loadModels(models)
+            return manager
+        }
+        self.asrManager = manager
+        self.loadedVersion = version
         let preparing = ModelDownloadProgress.preparing(
             modelID: plan.modelID,
             message: "Loading Parakeet into Core ML..."
         )
-        progress?(0.95, preparing.message)
-        progressSnapshot?(preparing)
-        let models = try await AsrModels.load(from: modelDirectory, version: version)
-        let manager = AsrManager(config: .default)
-        try await manager.loadModels(models)
-        self.asrManager = manager
-        self.loadedVersion = version
-        try? plan.recordValidatedLegacyInstallationIfNeeded()
         progress?(1, nil)
         progressSnapshot?(preparing.replacing(phase: .ready, message: "Model ready"))
         fputs("[fluidaudio] models ready\n", stderr)

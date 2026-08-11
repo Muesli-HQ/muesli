@@ -50,11 +50,12 @@ enum MeetingLiveCaptionModelStore {
     }
 
     static func makeEngine(label: String) async throws -> MeetingStreamingPartialEngine {
-        let engine = ParakeetEOUMeetingPartialEngine(label: label)
-        try await engine.loadModels(from: modelDirectory())
-        try? ManagedASRModelPlans.parakeetRealtimeEOU320()
-            .recordValidatedLegacyInstallationIfNeeded()
-        return engine
+        let plan = ManagedASRModelPlans.parakeetRealtimeEOU320()
+        return try await ManagedASRModelDownloader.loadValidated(plan) { directory in
+            let engine = ParakeetEOUMeetingPartialEngine(label: label)
+            try await engine.loadModels(from: directory)
+            return engine
+        }
     }
 
     static func makeEngines(

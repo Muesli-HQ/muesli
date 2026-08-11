@@ -81,33 +81,39 @@ actor Qwen3AsrTranscriber {
 
         fputs("[qwen3-asr] downloading/loading models...\n", stderr)
         let plan = ManagedASRModelPlans.qwen3ASRInt8()
-        let modelDir = try await ManagedASRModelDownloader.downloadIfNeeded(
+        let mgr = try await ManagedASRModelDownloader.loadValidated(
             plan,
             progress: progress,
             progressSnapshot: progressSnapshot
-        )
+        ) { modelDir in
+            let preparing = ModelDownloadProgress.preparing(
+                modelID: plan.modelID,
+                message: "Loading Qwen3 ASR into Core ML..."
+            )
+            progress?(0.95, preparing.message)
+            progressSnapshot?(preparing)
+            let candidate = Qwen3AsrManager()
+            try await candidate.loadModels(from: modelDir)
+            self.manager = candidate
+            fputs("[qwen3-asr] models loaded, running warmup inference...\n", stderr)
+
+            // Warmup: run a tiny dummy audio through the pipeline to trigger CoreML compilation.
+            // This moves the ~30s compilation cost from first dictation to preload time.
+            let warmupSamples = [Float](repeating: 0, count: 16000) // 1 second of silence
+            do {
+                _ = try await candidate.transcribe(audioSamples: warmupSamples)
+                try Qwen3AsrWarmupReadiness.validate(isCurrent: manager === candidate)
+                return candidate
+            } catch {
+                if manager === candidate { manager = nil }
+                throw error
+            }
+        }
+        self.manager = mgr
         let preparing = ModelDownloadProgress.preparing(
             modelID: plan.modelID,
             message: "Loading Qwen3 ASR into Core ML..."
         )
-        progress?(0.95, preparing.message)
-        progressSnapshot?(preparing)
-        let mgr = Qwen3AsrManager()
-        try await mgr.loadModels(from: modelDir)
-        self.manager = mgr
-        fputs("[qwen3-asr] models loaded, running warmup inference...\n", stderr)
-
-        // Warmup: run a tiny dummy audio through the pipeline to trigger CoreML compilation.
-        // This moves the ~30s compilation cost from first dictation to preload time.
-        let warmupSamples = [Float](repeating: 0, count: 16000) // 1 second of silence
-        do {
-            _ = try await mgr.transcribe(audioSamples: warmupSamples)
-            try Qwen3AsrWarmupReadiness.validate(isCurrent: manager === mgr)
-            try? plan.recordValidatedLegacyInstallationIfNeeded()
-        } catch {
-            if manager === mgr { manager = nil }
-            throw error
-        }
         progress?(1, nil)
         progressSnapshot?(preparing.replacing(phase: .ready, message: "Model ready"))
         fputs("[qwen3-asr] warmup complete, ready\n", stderr)

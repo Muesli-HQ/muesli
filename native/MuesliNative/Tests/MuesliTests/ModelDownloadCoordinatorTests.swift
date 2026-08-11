@@ -44,6 +44,12 @@ private final class DownloadResponseSequence: @unchecked Sendable {
         value += 1
         return value
     }
+
+    var current: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
 }
 
 private final class DownloadCompletionFlag: @unchecked Sendable {
@@ -508,6 +514,82 @@ struct ModelDownloadCoordinatorTests {
         #expect(tracker.requestCount == 0)
         #expect(!plan.isComplete())
         #expect(plan.isAvailableLocally())
+    }
+
+    @Test("invalid legacy ASR installs are replaced after runtime validation fails")
+    func invalidLegacyASRInstallIsRepaired() async throws {
+        let tracker = DownloadTestTracker()
+        let tree = try JSONSerialization.data(withJSONObject: [[
+            "type": "file",
+            "path": "model.bin",
+            "size": 4,
+            "oid": "model-oid",
+        ]])
+        ModelDownloadTestURLProtocol.install { request in
+            let data = request.url?.path.contains("/resolve/") == true
+                ? Data("good".utf8)
+                : tree
+            return ModelDownloadTestURLProtocol.Response(data: data, tracker: tracker)
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let plan = ManagedASRModelPlan(
+            modelID: "legacy-repair",
+            repository: "acme/asr",
+            cacheDirectory: root.appendingPathComponent("model", isDirectory: true),
+            selections: [HuggingFaceModelSelection(includedPaths: ["model.bin"])],
+            requiredArtifactAlternatives: [["model.bin"]]
+        )
+        try FileManager.default.createDirectory(at: plan.cacheDirectory, withIntermediateDirectories: true)
+        try Data("bad".utf8).write(to: plan.cacheDirectory.appendingPathComponent("model.bin"))
+        #expect(plan.requiresRuntimeValidation())
+
+        let attempts = DownloadResponseSequence()
+        let value = try await ManagedASRModelDownloader.loadValidated(
+            plan,
+            resolver: HuggingFaceModelManifestResolver(configuration: makeSessionConfiguration()),
+            coordinator: makeCoordinator()
+        ) { directory in
+            let data = try Data(contentsOf: directory.appendingPathComponent("model.bin"))
+            guard data == Data("good".utf8) else {
+                _ = attempts.next()
+                throw NSError(domain: "LegacyRuntimeValidation", code: 1)
+            }
+            _ = attempts.next()
+            return String(decoding: data, as: UTF8.self)
+        }
+
+        #expect(value == "good")
+        #expect(attempts.current == 2)
+        #expect(tracker.requestCount == 2)
+        #expect(plan.isComplete())
+    }
+
+    @Test("cancelled legacy validation preserves the offline cache")
+    func cancelledLegacyValidationPreservesCache() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let plan = ManagedASRModelPlan(
+            modelID: "legacy-validation-cancel",
+            repository: "acme/asr",
+            cacheDirectory: root.appendingPathComponent("model", isDirectory: true),
+            selections: [HuggingFaceModelSelection(includedPaths: ["model.bin"])],
+            requiredArtifactAlternatives: [["model.bin"]]
+        )
+        try FileManager.default.createDirectory(at: plan.cacheDirectory, withIntermediateDirectories: true)
+        let modelURL = plan.cacheDirectory.appendingPathComponent("model.bin")
+        try Data("legacy".utf8).write(to: modelURL)
+
+        await #expect(throws: CancellationError.self) {
+            try await ManagedASRModelDownloader.loadValidated(plan) { _ in
+                throw CancellationError()
+            }
+        }
+
+        #expect(FileManager.default.fileExists(atPath: modelURL.path))
+        #expect(plan.requiresRuntimeValidation())
     }
 
     @Test("managed ASR deletion cancels manifest discovery and blocks replacement work")

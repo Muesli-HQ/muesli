@@ -29,29 +29,30 @@ actor WhisperKitTranscriber {
 
         fputs("[whisperkit] loading model: \(modelName)...\n", stderr)
         let plan = ManagedASRModelPlans.whisperKit(modelName: modelName)
-        let modelFolder = try await ManagedASRModelDownloader.downloadIfNeeded(
+        let loadedWhisperKit = try await ManagedASRModelDownloader.loadValidated(
             plan,
             progress: progress,
             progressSnapshot: progressSnapshot
-        )
-        let preparing = ModelDownloadProgress.preparing(
-            modelID: plan.modelID,
-            message: "Loading WhisperKit into Core ML..."
-        )
-        progress?(0.95, preparing.message)
-        progressSnapshot?(preparing)
-
-        let config = WhisperKitConfig(
-            modelFolder: modelFolder.path,
-            computeOptions: ModelComputeOptions(
-                audioEncoderCompute: .cpuAndNeuralEngine,
-                textDecoderCompute: .cpuAndNeuralEngine
+        ) { modelFolder in
+            let preparing = ModelDownloadProgress.preparing(
+                modelID: plan.modelID,
+                message: "Loading WhisperKit into Core ML..."
             )
-        )
+            progress?(0.95, preparing.message)
+            progressSnapshot?(preparing)
 
-        whisperKit = try await WhisperKit(config)
+            let config = WhisperKitConfig(
+                modelFolder: modelFolder.path,
+                computeOptions: ModelComputeOptions(
+                    audioEncoderCompute: .cpuAndNeuralEngine,
+                    textDecoderCompute: .cpuAndNeuralEngine
+                )
+            )
+            return try await WhisperKit(config)
+        }
+
+        whisperKit = loadedWhisperKit
         loadedModel = modelName
-        try? plan.recordValidatedLegacyInstallationIfNeeded()
         fputs("[whisperkit] model loaded: \(modelName)\n", stderr)
     }
 

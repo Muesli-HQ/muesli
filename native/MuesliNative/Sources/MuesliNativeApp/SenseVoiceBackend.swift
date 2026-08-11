@@ -38,21 +38,26 @@ actor SenseVoiceTranscriber {
 
         fputs("[sensevoice] downloading/loading models...\n", stderr)
         let plan = ManagedASRModelPlans.senseVoice()
-        let modelDirectory = try await ManagedASRModelDownloader.downloadIfNeeded(
+        let loadedManager = try await ManagedASRModelDownloader.loadValidated(
             plan,
             progress: progress,
             progressSnapshot: progressSnapshot
-        )
+        ) { modelDirectory in
+            let preparing = ModelDownloadProgress.preparing(
+                modelID: plan.modelID,
+                message: "Loading SenseVoice into Core ML..."
+            )
+            progressSnapshot?(preparing)
+            progress?(0.95, "Loading SenseVoice...")
+            let models = try SenseVoiceModels.load(from: modelDirectory, precision: Self.precision)
+            return SenseVoiceManager(models: models)
+        }
         let preparing = ModelDownloadProgress.preparing(
             modelID: plan.modelID,
             message: "Loading SenseVoice into Core ML..."
         )
-        progressSnapshot?(preparing)
-        progress?(0.95, "Loading SenseVoice...")
-        let models = try SenseVoiceModels.load(from: modelDirectory, precision: Self.precision)
-        self.manager = SenseVoiceManager(models: models)
+        self.manager = loadedManager
         await warmupIfNeeded(progress: progress)
-        try? plan.recordValidatedLegacyInstallationIfNeeded()
         progress?(1.0, nil)
         progressSnapshot?(preparing.replacing(phase: .ready, message: "Model ready"))
         fputs("[sensevoice] models ready\n", stderr)
