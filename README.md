@@ -45,7 +45,7 @@ Live transcription is off by default. Download Parakeet Realtime EOU or Nemotron
 ## Features
 
 - **Native macOS architecture** — Swift, AppKit, and SwiftUI app code with in-process CoreML/ANE, Metal, and LiteRT-LM inference.
-- **Multiple ASR models** — Parakeet TDT and Nemotron 3.5 (Neural Engine), Cohere Transcribe 2B (mixed precision CoreML), Whisper Tiny/Small/Medium/Large Turbo (CoreML/ANE via WhisperKit), Qwen3 ASR, SenseVoice Small, Indic ASR, and experimental Gemma 4 E2B.
+- **Multiple ASR models** — Parakeet TDT and Nemotron 3.5 (Neural Engine), Cohere Transcribe 2B (mixed precision CoreML), multilingual Whisper Tiny/Small/Large Turbo (CoreML/ANE via WhisperKit), Qwen3 ASR, SenseVoice Small, Indic ASR, and experimental Gemma 4 E2B.
 - **Hold-to-talk & hands-free** — Hold hotkey for quick dictation, or double-tap for sustained recording.
 - **Meeting recording** — Captures mic + system audio (including Bluetooth/AirPods) with a CoreAudio process tap by default and ScreenCaptureKit fallback. System audio from Zoom, Teams, and other call clients stays on the Others side of the transcript.
 - **Live meeting transcript** — Choose Nemotron 3.5 for one multilingual live-and-final transcript, or Parakeet Realtime EOU for an English live preview paired with a separate final meeting model.
@@ -332,10 +332,18 @@ Important meeting fields:
 | Qwen3 ASR | FluidAudio | CoreML / Neural Engine | ~1.3 GB | 52 languages | ~2-3s |
 | Indic ASR | CoreML | RNNT | ~618 MB | 7 Indian languages | Experimental |
 | Gemma 4 E2B | LiteRT-LM | Metal GPU decoder + CPU audio encoder | ~2.6 GB | Multilingual | Experimental |
-| Whisper Tiny English | WhisperKit | CoreML / Neural Engine | ~153 MB | English only | Fastest setup |
-| Whisper Small | WhisperKit | CoreML / Neural Engine | ~250 MB | English only | ~1-2s |
-| Whisper Medium | WhisperKit | CoreML / Neural Engine | ~1.5 GB | English only | ~2-3s |
+| Whisper Tiny | WhisperKit | CoreML / Neural Engine | ~153 MB | Multilingual | Fastest Whisper option |
+| Whisper Small | WhisperKit | CoreML / Neural Engine | ~250 MB | Multilingual | ~1-2s |
 | Whisper Large Turbo | WhisperKit | CoreML / Neural Engine | ~626 MB | Multilingual | ~2-4s |
+
+All three Whisper models auto-detect the spoken language by default, or you can
+choose a language to keep recognition focused. Tiny is the lightest option,
+Small balances speed and accuracy, and Large Turbo is the strongest choice for
+accents, background noise, and mixed-language audio. Saved Tiny and Small
+English-model selections move to their multilingual replacements, while saved
+Medium selections move to Large Turbo. These are different checkpoints, so an
+existing English-only download is not reused and the replacement downloads once
+before first use.
 
 The app and `muesli-cli` share Nemotron 3.5's model cache at
 `~/.cache/muesli/models/nemotron35-multilingual-2240ms`; downloading it in one
