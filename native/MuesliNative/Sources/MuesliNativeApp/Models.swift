@@ -199,7 +199,7 @@ struct BackendOption: Equatable {
             let plan = model.contains("v2")
                 ? ManagedASRModelPlans.parakeetV2()
                 : ManagedASRModelPlans.parakeetV3()
-            return plan.isComplete(fileManager: fm)
+            return plan.isAvailableLocally(fileManager: fm)
         case "qwen":
             return Qwen3AsrModelStore.isModelDownloaded(fileManager: fm)
         case "nemotron35":
@@ -209,7 +209,7 @@ struct BackendOption: Equatable {
         case "indicasr":
             return IndicASRModelStore.isAvailableLocally()
         case "sensevoice":
-            return SenseVoiceTranscriber.isModelDownloaded()
+            return SenseVoiceTranscriber.isModelDownloaded(fileManager: fm)
         case "gemma4-litert":
             return Gemma4LiteRTModelStore.isAvailableLocally()
         default:

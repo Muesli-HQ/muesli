@@ -32,7 +32,7 @@ enum Qwen3AsrModelStore {
         fileManager: FileManager = .default
     ) -> Bool {
         ManagedASRModelPlans.qwen3ASRInt8(modelsRoot: modelsRoot)
-            .isComplete(fileManager: fileManager)
+            .isAvailableLocally(fileManager: fileManager)
     }
 
     static func deleteModelFiles(fileManager: FileManager = .default) throws {
@@ -103,6 +103,7 @@ actor Qwen3AsrTranscriber {
         do {
             _ = try await mgr.transcribe(audioSamples: warmupSamples)
             try Qwen3AsrWarmupReadiness.validate(isCurrent: manager === mgr)
+            try? plan.recordValidatedLegacyInstallationIfNeeded()
         } catch {
             if manager === mgr { manager = nil }
             throw error

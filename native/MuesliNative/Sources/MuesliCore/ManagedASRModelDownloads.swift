@@ -15,6 +15,8 @@ public struct ManagedASRModelPlan: Sendable {
     }
 
     private static let completionMarkerName = ".muesli-managed-model-complete.json"
+    private static let downloadStateName = ".muesli-download-state.json"
+    private static let legacyManifestVersion = "legacy-local-v1"
 
     public let modelID: String
     public let repository: String
@@ -44,12 +46,7 @@ public struct ManagedASRModelPlan: Sendable {
     }
 
     public func isComplete(fileManager: FileManager = .default) -> Bool {
-        guard !requiredArtifactAlternatives.isEmpty,
-              requiredArtifactAlternatives.allSatisfy({ alternatives in
-            alternatives.contains { relativePath in
-                fileManager.fileExists(atPath: cacheDirectory.appendingPathComponent(relativePath).path)
-            }
-        }),
+        guard requiredArtifactsExist(fileManager: fileManager),
               let data = try? Data(contentsOf: completionMarkerURL),
               let marker = try? JSONDecoder().decode(CompletionMarker.self, from: data),
               marker.modelID == modelID,
@@ -64,6 +61,14 @@ public struct ManagedASRModelPlan: Sendable {
             let size = (try? fileManager.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value
             return size == expectedByteCount
         }
+    }
+
+    /// True for either a marker-validated managed download or a complete cache
+    /// created by a Muesli version that predates managed completion markers.
+    /// Legacy recognition is refused when resumable state or partial files are
+    /// present, so interrupted managed downloads cannot masquerade as installs.
+    public func isAvailableLocally(fileManager: FileManager = .default) -> Bool {
+        isComplete(fileManager: fileManager) || isLegacyInstallation(fileManager: fileManager)
     }
 
     /// Records a successful, fully validated coordinator install. The marker
@@ -88,6 +93,27 @@ public struct ManagedASRModelPlan: Sendable {
         try JSONEncoder().encode(marker).write(to: completionMarkerURL, options: .atomic)
     }
 
+    /// Backfills a completion marker after a legacy cache has successfully
+    /// loaded through its runtime. This deliberately runs after validation: a
+    /// file-presence check alone must never certify a partially installed model.
+    public func recordValidatedLegacyInstallationIfNeeded(
+        fileManager: FileManager = .default
+    ) throws {
+        guard !isComplete(fileManager: fileManager),
+              isLegacyInstallation(fileManager: fileManager)
+        else { return }
+
+        let files = try selectedLocalFiles(fileManager: fileManager)
+        guard !files.isEmpty else { return }
+        let marker = CompletionMarker(
+            modelID: modelID,
+            revision: revision,
+            manifestVersion: Self.legacyManifestVersion,
+            files: files
+        )
+        try JSONEncoder().encode(marker).write(to: completionMarkerURL, options: .atomic)
+    }
+
     public func delete(fileManager: FileManager = .default) throws {
         guard fileManager.fileExists(atPath: cacheDirectory.path) else { return }
         try fileManager.removeItem(at: cacheDirectory)
@@ -95,6 +121,73 @@ public struct ManagedASRModelPlan: Sendable {
 
     private var completionMarkerURL: URL {
         cacheDirectory.appendingPathComponent(Self.completionMarkerName)
+    }
+
+    private func requiredArtifactsExist(fileManager: FileManager) -> Bool {
+        !requiredArtifactAlternatives.isEmpty
+            && requiredArtifactAlternatives.allSatisfy { alternatives in
+                alternatives.contains { relativePath in
+                    fileManager.fileExists(
+                        atPath: cacheDirectory.appendingPathComponent(relativePath).path
+                    )
+                }
+            }
+    }
+
+    private func isLegacyInstallation(fileManager: FileManager) -> Bool {
+        guard requiredArtifactsExist(fileManager: fileManager),
+              !fileManager.fileExists(atPath: completionMarkerURL.path),
+              !fileManager.fileExists(
+                atPath: cacheDirectory.appendingPathComponent(Self.downloadStateName).path
+              )
+        else { return false }
+
+        guard let enumerator = fileManager.enumerator(
+            at: cacheDirectory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return false }
+        for case let url as URL in enumerator where url.pathExtension == "part" {
+            return false
+        }
+        return true
+    }
+
+    private func selectedLocalFiles(fileManager: FileManager) throws -> [CompletionMarker.File] {
+        guard let enumerator = fileManager.enumerator(
+            at: cacheDirectory,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        let rootPath = cacheDirectory.standardizedFileURL.path
+        var files: [CompletionMarker.File] = []
+        for case let url as URL in enumerator {
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values.isRegularFile == true else { continue }
+            let path = url.standardizedFileURL.path
+            guard path.hasPrefix(rootPath + "/") else { continue }
+            let relativePath = String(path.dropFirst(rootPath.count + 1))
+            guard isSelected(relativePath: relativePath) else { continue }
+            files.append(CompletionMarker.File(
+                relativePath: relativePath,
+                expectedByteCount: values.fileSize.map(Int64.init)
+            ))
+        }
+        return files.sorted { $0.relativePath < $1.relativePath }
+    }
+
+    private func isSelected(relativePath: String) -> Bool {
+        selections.contains { selection in
+            let destination = selection.destinationDirectory.map { $0 + "/" } ?? ""
+            if selection.includedPaths.isEmpty {
+                return destination.isEmpty || relativePath.hasPrefix(destination)
+            }
+            return selection.includedPaths.contains { includedPath in
+                let selectedPath = destination + includedPath
+                return relativePath == selectedPath || relativePath.hasPrefix(selectedPath + "/")
+            }
+        }
     }
 }
 
@@ -204,15 +297,16 @@ public enum ManagedASRModelPlans {
         let requiredModels = [
             "MelSpectrogram.mlmodelc", "AudioEncoder.mlmodelc", "TextDecoder.mlmodelc",
         ]
+        let requiredFiles = requiredModels + ["config.json", "generation_config.json"]
         return ManagedASRModelPlan(
             modelID: modelName,
             repository: "argmaxinc/whisperkit-coreml",
             cacheDirectory: directory,
             selections: [HuggingFaceModelSelection(
                 remoteDirectory: fullName,
-                includedPaths: Set(requiredModels + ["config.json", "generation_config.json"])
+                includedPaths: Set(requiredFiles)
             )],
-            requiredArtifactAlternatives: completenessRequirements(for: requiredModels)
+            requiredArtifactAlternatives: completenessRequirements(for: requiredFiles)
         )
     }
 
@@ -235,17 +329,22 @@ public enum ManagedASRModelPlans {
     }
 
     private static func completenessRequirements(for paths: [String]) -> [[String]] {
-        paths.map { path in
+        paths.flatMap { path in
             if path.hasSuffix(".mlmodelc") {
-                return [path + "/coremldata.bin"]
+                return [
+                    [path + "/coremldata.bin"],
+                    [path + "/weights/weight.bin"],
+                ]
             }
-            return [path]
+            return [[path]]
         }
     }
 }
 
 /// Bridges Hugging Face discovery to the resumable coordinator and legacy scalar UI callbacks.
 public enum ManagedASRModelDownloader {
+    private static let operations = ManagedASRModelOperations()
+
     @discardableResult
     public static func downloadIfNeeded(
         _ plan: ManagedASRModelPlan,
@@ -254,21 +353,65 @@ public enum ManagedASRModelDownloader {
         resolver: HuggingFaceModelManifestResolver = .shared,
         coordinator: ModelDownloadCoordinator = .shared
     ) async throws -> URL {
-        if plan.isComplete() { return plan.cacheDirectory }
+        try await operations.run(modelID: plan.modelID) {
+            if plan.isAvailableLocally() { return plan.cacheDirectory }
+
+            return try await performDownload(
+                plan,
+                progress: progress,
+                progressSnapshot: progressSnapshot,
+                resolver: resolver,
+                coordinator: coordinator
+            )
+        }
+    }
+
+    /// Cancels manifest discovery and transfer for a model without blocking a
+    /// later resume.
+    public static func cancel(
+        modelID: String,
+        coordinator: ModelDownloadCoordinator = .shared
+    ) async {
+        await operations.cancel(modelID: modelID)
+        await coordinator.cancel(modelID: modelID)
+    }
+
+    /// Cancels and awaits manifest discovery plus any registered transfer.
+    public static func cancelAndWait(
+        modelID: String,
+        coordinator: ModelDownloadCoordinator = .shared
+    ) async {
+        await operations.cancelAndWait(modelID: modelID)
+        await coordinator.cancelAndWait(modelID: modelID)
+    }
+
+    /// Blocks new operations for a model while callers remove its cache.
+    public static func beginDeletion(
+        modelID: String,
+        coordinator: ModelDownloadCoordinator = .shared
+    ) async -> ManagedASRModelDeletionToken {
+        let token = await operations.beginDeletion(modelID: modelID)
+        await coordinator.cancelAndWait(modelID: modelID)
+        return token
+    }
+
+    public static func endDeletion(_ token: ManagedASRModelDeletionToken) async {
+        await operations.endDeletion(token)
+    }
+
+    private static func performDownload(
+        _ plan: ManagedASRModelPlan,
+        progress: ((Double, String?) -> Void)?,
+        progressSnapshot: ModelDownloadProgressHandler?,
+        resolver: HuggingFaceModelManifestResolver,
+        coordinator: ModelDownloadCoordinator
+    ) async throws -> URL {
+        try Task.checkCancellation()
 
         let scalarProgress = ManagedASRScalarProgressRelay(progress)
         scalarProgress.call(0.01, "Finding model files...")
-        progressSnapshot?(ModelDownloadProgress(
+        progressSnapshot?(ModelDownloadProgress.preparing(
             modelID: plan.modelID,
-            phase: .downloading,
-            currentFile: nil,
-            completedBytes: 0,
-            totalBytes: nil,
-            currentFileCompletedBytes: 0,
-            currentFileTotalBytes: nil,
-            bytesPerSecond: 0,
-            estimatedSecondsRemaining: nil,
-            retryCount: 0,
             message: "Finding model files..."
         ))
         let manifest = try await resolver.resolve(
@@ -289,6 +432,62 @@ public enum ManagedASRModelDownloader {
             throw HuggingFaceModelManifestError.emptySelection(plan.repository)
         }
         return plan.cacheDirectory
+    }
+}
+
+public struct ManagedASRModelDeletionToken: Sendable {
+    fileprivate let modelID: String
+    fileprivate let id: UUID
+}
+
+private actor ManagedASRModelOperations {
+    private struct Operation {
+        let id: UUID
+        let task: Task<URL, Error>
+    }
+
+    private var operations: [String: [UUID: Operation]] = [:]
+    private var deletionTokens: [String: UUID] = [:]
+
+    func run(
+        modelID: String,
+        operation: @escaping @Sendable () async throws -> URL
+    ) async throws -> URL {
+        guard deletionTokens[modelID] == nil else { throw CancellationError() }
+        let id = UUID()
+        let task = Task { try await operation() }
+        operations[modelID, default: [:]][id] = Operation(id: id, task: task)
+        defer { operations[modelID]?[id] = nil }
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    func cancel(modelID: String) {
+        guard let active = operations[modelID]?.values else { return }
+        for operation in active {
+            operation.task.cancel()
+        }
+    }
+
+    func cancelAndWait(modelID: String) async {
+        let active = operations[modelID].map { Array($0.values) } ?? []
+        for operation in active { operation.task.cancel() }
+        for operation in active { _ = try? await operation.task.value }
+    }
+
+    func beginDeletion(modelID: String) async -> ManagedASRModelDeletionToken {
+        let token = ManagedASRModelDeletionToken(modelID: modelID, id: UUID())
+        deletionTokens[modelID] = token.id
+        await cancelAndWait(modelID: modelID)
+        return token
+    }
+
+    func endDeletion(_ token: ManagedASRModelDeletionToken) {
+        guard deletionTokens[token.modelID] == token.id else { return }
+        deletionTokens[token.modelID] = nil
     }
 }
 

@@ -669,6 +669,7 @@ actor FluidAudioCLITranscriber: AudioTranscribing {
         try await manager.loadModels(models)
         asrManager = manager
         loadedModel = model
+        try? plan.recordValidatedLegacyInstallationIfNeeded()
         progress("model ready")
     }
 }
@@ -683,14 +684,16 @@ actor SenseVoiceCLITranscriber: AudioTranscribing {
     func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
         if manager == nil {
             progress("loading sensevoice")
+            let plan = ManagedASRModelPlans.senseVoice()
             let modelDirectory = try await ManagedASRModelDownloader.downloadIfNeeded(
-                ManagedASRModelPlans.senseVoice()
+                plan
             ) { fraction, message in
                 progress(message ?? "model \(Int((fraction * 100).rounded()))%")
             }
             progress("preparing model")
             let models = try SenseVoiceModels.load(from: modelDirectory, precision: Self.precision)
             manager = SenseVoiceManager(models: models)
+            try? plan.recordValidatedLegacyInstallationIfNeeded()
             progress("model ready")
         }
         guard let manager else {
@@ -719,8 +722,9 @@ actor Qwen3AsrCLITranscriber: AudioTranscribing {
     private func transcribeOnSupportedOS(wavURL: URL, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
         if manager == nil {
             progress("loading qwen3-asr")
+            let plan = ManagedASRModelPlans.qwen3ASRInt8()
             let modelDir = try await ManagedASRModelDownloader.downloadIfNeeded(
-                ManagedASRModelPlans.qwen3ASRInt8()
+                plan
             ) { fraction, message in
                 progress(message ?? "model \(Int((fraction * 100).rounded()))%")
             }
@@ -728,6 +732,7 @@ actor Qwen3AsrCLITranscriber: AudioTranscribing {
             let mgr = Qwen3AsrManager()
             try await mgr.loadModels(from: modelDir)
             manager = mgr
+            try? plan.recordValidatedLegacyInstallationIfNeeded()
             progress("model ready")
         }
         guard let manager else {
@@ -813,8 +818,9 @@ actor WhisperCLITranscriber: AudioTranscribing {
         if loadedModel == modelName, whisperKit != nil { return }
         progress("loading \(modelName)")
 
+        let plan = ManagedASRModelPlans.whisperKit(modelName: modelName)
         let modelFolder = try await ManagedASRModelDownloader.downloadIfNeeded(
-            ManagedASRModelPlans.whisperKit(modelName: modelName)
+            plan
         ) { fraction, message in
             progress(message ?? "model \(Int((fraction * 100).rounded()))%")
         }
@@ -828,6 +834,7 @@ actor WhisperCLITranscriber: AudioTranscribing {
             )
         ))
         loadedModel = modelName
+        try? plan.recordValidatedLegacyInstallationIfNeeded()
         progress("model ready")
     }
 }
@@ -883,7 +890,7 @@ actor StreamingEouCLITranscriber: AudioTranscribing {
     private func loadedManager(progress: @escaping (String) -> Void) async throws -> StreamingEouAsrManager {
         if let manager { return manager }
         let plan = ManagedASRModelPlans.parakeetRealtimeEOU320()
-        if !plan.isComplete() {
+        if !plan.isAvailableLocally() {
             progress("downloading parakeet-eou-320ms (~430 MB)")
             _ = try await ManagedASRModelDownloader.downloadIfNeeded(plan) { fraction, message in
                 progress(message ?? "model \(Int((fraction * 100).rounded()))%")
@@ -893,6 +900,7 @@ actor StreamingEouCLITranscriber: AudioTranscribing {
         let newManager = StreamingEouAsrManager(chunkSize: Self.chunkSize)
         try await newManager.loadModels(from: Self.modelDirectory())
         manager = newManager
+        try? plan.recordValidatedLegacyInstallationIfNeeded()
         progress("model ready")
         return newManager
     }

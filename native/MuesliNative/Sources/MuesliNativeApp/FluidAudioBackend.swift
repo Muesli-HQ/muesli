@@ -46,6 +46,7 @@ actor FluidAudioTranscriber {
         try await manager.loadModels(models)
         self.asrManager = manager
         self.loadedVersion = version
+        try? plan.recordValidatedLegacyInstallationIfNeeded()
         progress?(1, nil)
         progressSnapshot?(preparing.replacing(phase: .ready, message: "Model ready"))
         fputs("[fluidaudio] models ready\n", stderr)
@@ -61,5 +62,22 @@ actor FluidAudioTranscriber {
     func shutdown() {
         asrManager = nil
         loadedVersion = nil
+    }
+
+    func shutdown(ifLoadedVersion version: AsrModelVersion) {
+        guard FluidAudioUnloadPolicy.shouldUnload(
+            loadedVersion: loadedVersion,
+            deletingVersion: version
+        ) else { return }
+        shutdown()
+    }
+}
+
+enum FluidAudioUnloadPolicy {
+    static func shouldUnload(
+        loadedVersion: AsrModelVersion?,
+        deletingVersion: AsrModelVersion
+    ) -> Bool {
+        loadedVersion == deletingVersion
     }
 }

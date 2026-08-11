@@ -2,6 +2,7 @@ import Testing
 import Accelerate
 import AppKit
 import Foundation
+import FluidAudio
 import MuesliCore
 @testable import MuesliNativeApp
 
@@ -116,7 +117,9 @@ struct BackendOptionTests {
         func installRequiredArtifacts(in directory: URL) throws {
             for relativePath in [
                 "qwen3_asr_audio_encoder_v2.mlmodelc/coremldata.bin",
+                "qwen3_asr_audio_encoder_v2.mlmodelc/weights/weight.bin",
                 "qwen3_asr_decoder_stateful.mlmodelc/coremldata.bin",
+                "qwen3_asr_decoder_stateful.mlmodelc/weights/weight.bin",
                 "qwen3_asr_embeddings.bin",
                 "vocab.json",
             ] {
@@ -136,10 +139,12 @@ struct BackendOptionTests {
         let managedDirectory = ManagedASRModelPlans.qwen3ASRInt8(modelsRoot: root).cacheDirectory
         try installRequiredArtifacts(in: managedDirectory)
         let managedPlan = ManagedASRModelPlans.qwen3ASRInt8(modelsRoot: root)
-        #expect(!Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
+        #expect(Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
         let installedPaths = [
             "qwen3_asr_audio_encoder_v2.mlmodelc/coremldata.bin",
+            "qwen3_asr_audio_encoder_v2.mlmodelc/weights/weight.bin",
             "qwen3_asr_decoder_stateful.mlmodelc/coremldata.bin",
+            "qwen3_asr_decoder_stateful.mlmodelc/weights/weight.bin",
             "qwen3_asr_embeddings.bin",
             "vocab.json",
         ]
@@ -180,6 +185,22 @@ struct BackendOptionTests {
         #expect(throws: CancellationError.self) {
             try Qwen3AsrWarmupReadiness.validate(isCancelled: false, isCurrent: false)
         }
+    }
+
+    @Test("Parakeet deletion unloads only the matching runtime variant")
+    func parakeetDeletionUnloadPolicy() {
+        #expect(FluidAudioUnloadPolicy.shouldUnload(
+            loadedVersion: .v2,
+            deletingVersion: .v2
+        ))
+        #expect(!FluidAudioUnloadPolicy.shouldUnload(
+            loadedVersion: .v3,
+            deletingVersion: .v2
+        ))
+        #expect(!FluidAudioUnloadPolicy.shouldUnload(
+            loadedVersion: nil,
+            deletingVersion: .v3
+        ))
     }
 
     @Test("Cohere uses cohere backend")

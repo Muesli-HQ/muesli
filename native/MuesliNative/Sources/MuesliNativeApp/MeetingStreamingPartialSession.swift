@@ -29,7 +29,7 @@ enum MeetingLiveCaptionModelStore {
 
     static func isDownloaded(in cacheRoot: URL, fileManager: FileManager = .default) -> Bool {
         ManagedASRModelPlans.parakeetRealtimeEOU320(modelsRoot: cacheRoot)
-            .isComplete(fileManager: fileManager)
+            .isAvailableLocally(fileManager: fileManager)
     }
 
     static func download(
@@ -52,6 +52,8 @@ enum MeetingLiveCaptionModelStore {
     static func makeEngine(label: String) async throws -> MeetingStreamingPartialEngine {
         let engine = ParakeetEOUMeetingPartialEngine(label: label)
         try await engine.loadModels(from: modelDirectory())
+        try? ManagedASRModelPlans.parakeetRealtimeEOU320()
+            .recordValidatedLegacyInstallationIfNeeded()
         return engine
     }
 

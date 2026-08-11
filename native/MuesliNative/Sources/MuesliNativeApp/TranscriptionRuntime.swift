@@ -123,8 +123,8 @@ actor TranscriptionCoordinator {
         }
     }
 
-    func unloadFluidAudioTranscriber() async {
-        await fluidTranscriber.shutdown()
+    func unloadFluidAudioTranscriber(ifLoadedVersion version: AsrModelVersion) async {
+        await fluidTranscriber.shutdown(ifLoadedVersion: version)
     }
 
     func unloadQwen3Transcriber() async {

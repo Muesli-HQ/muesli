@@ -51,6 +51,7 @@ actor WhisperKitTranscriber {
 
         whisperKit = try await WhisperKit(config)
         loadedModel = modelName
+        try? plan.recordValidatedLegacyInstallationIfNeeded()
         fputs("[whisperkit] model loaded: \(modelName)\n", stderr)
     }
 
@@ -88,7 +89,7 @@ actor WhisperKitTranscriber {
     /// WhisperKit stores models under ~/Documents/huggingface/models/argmaxinc/whisperkit-coreml/.
     /// Each model variant is a direct subdirectory (e.g. openai_whisper-small.en/).
     static func isModelDownloaded(_ modelName: String) -> Bool {
-        ManagedASRModelPlans.whisperKit(modelName: modelName).isComplete()
+        ManagedASRModelPlans.whisperKit(modelName: modelName).isAvailableLocally()
     }
 
     /// Delete cached model files for a WhisperKit model variant.

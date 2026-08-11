@@ -52,6 +52,7 @@ actor SenseVoiceTranscriber {
         let models = try SenseVoiceModels.load(from: modelDirectory, precision: Self.precision)
         self.manager = SenseVoiceManager(models: models)
         await warmupIfNeeded(progress: progress)
+        try? plan.recordValidatedLegacyInstallationIfNeeded()
         progress?(1.0, nil)
         progressSnapshot?(preparing.replacing(phase: .ready, message: "Model ready"))
         fputs("[sensevoice] models ready\n", stderr)
@@ -79,20 +80,16 @@ actor SenseVoiceTranscriber {
         ).cacheDirectory
     }
 
-    static func isModelDownloaded() -> Bool {
-        requiredModelsExist(at: cacheDirectory())
+    static func isModelDownloaded(fileManager: FileManager = .default) -> Bool {
+        ManagedASRModelPlans.senseVoice(
+            modelsRoot: ManagedASRModelPlans.fluidAudioModelsRoot(fileManager: fileManager)
+        ).isAvailableLocally(fileManager: fileManager)
     }
 
     static func deleteModelFiles(fileManager: FileManager = .default) {
         try? ManagedASRModelPlans.senseVoice(
             modelsRoot: ManagedASRModelPlans.fluidAudioModelsRoot(fileManager: fileManager)
         ).delete(fileManager: fileManager)
-    }
-
-    private static func requiredModelsExist(at directory: URL, fileManager: FileManager = .default) -> Bool {
-        let vocabularyURL = directory.appendingPathComponent(ModelNames.SenseVoice.vocabularyFile)
-        return SenseVoiceModels.modelsExist(at: directory, precision: precision)
-            && fileManager.fileExists(atPath: vocabularyURL.path)
     }
 
     private func warmupIfNeeded(progress: ((Double, String?) -> Void)?) async {

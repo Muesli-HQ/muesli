@@ -1,5 +1,6 @@
-import SwiftUI
+import FluidAudio
 import MuesliCore
+import SwiftUI
 
 struct ModelDownloadGenerationState: Equatable {
     private(set) var current: UUID?
@@ -342,7 +343,7 @@ struct ModelsView: View {
                                 liveCaptionDownloadGeneration.contains(cancellationGeneration)
                             }
                             guard shouldCancel else { return }
-                            await ModelDownloadCoordinator.shared.cancelAndWait(
+                            await ManagedASRModelDownloader.cancelAndWait(
                                 modelID: MeetingLiveCaptionModelStore.modelID
                             )
                             _ = await task?.value
@@ -1541,7 +1542,7 @@ struct ModelsView: View {
             }
             guard shouldCancel else { return }
 
-            await ModelDownloadCoordinator.shared.cancel(modelID: modelID)
+            await ManagedASRModelDownloader.cancel(modelID: modelID)
             _ = await task?.value
 
             await MainActor.run {
@@ -1592,13 +1593,18 @@ struct ModelsView: View {
         // Stop any transfer before removing files so a late write cannot recreate
         // part of the model after the deletion has completed.
         Task {
+            let deletionToken = await ManagedASRModelDownloader.beginDeletion(
+                modelID: option.model
+            )
             do {
-                await ModelDownloadCoordinator.shared.cancelAndWait(modelID: option.model)
                 _ = await task?.value
                 let shouldDelete = await MainActor.run {
                     downloadGenerations[option.model] == deletionGeneration
                 }
-                guard shouldDelete else { return }
+                guard shouldDelete else {
+                    await ManagedASRModelDownloader.endDeletion(deletionToken)
+                    return
+                }
                 try await deleteModelFiles(option)
                 await MainActor.run {
                     _ = downloadedModels.remove(option.model)
@@ -1609,6 +1615,7 @@ struct ModelsView: View {
             } catch {
                 fputs("[muesli-native] model delete failed for \(option.backend)/\(option.model): \(error)\n", stderr)
             }
+            await ManagedASRModelDownloader.endDeletion(deletionToken)
         }
     }
 
@@ -1631,8 +1638,11 @@ struct ModelsView: View {
             await controller.transcriptionCoordinator.unloadGemma4LiteRTTranscriber()
             try Gemma4LiteRTModelStore.deleteModelFiles(fileManager: fm)
         case "fluidaudio":
-            await controller.transcriptionCoordinator.unloadFluidAudioTranscriber()
-            let plan = option.model.contains("v2")
+            let version: AsrModelVersion = option.model.contains("v2") ? .v2 : .v3
+            await controller.transcriptionCoordinator.unloadFluidAudioTranscriber(
+                ifLoadedVersion: version
+            )
+            let plan = version == .v2
                 ? ManagedASRModelPlans.parakeetV2()
                 : ManagedASRModelPlans.parakeetV3()
             try plan.delete(fileManager: fm)
@@ -1694,7 +1704,7 @@ struct ModelsView: View {
             let plan = option.model.contains("v2")
                 ? ManagedASRModelPlans.parakeetV2()
                 : ManagedASRModelPlans.parakeetV3()
-            return plan.isComplete(fileManager: fm)
+            return plan.isAvailableLocally(fileManager: fm)
         case "qwen":
             return Qwen3AsrModelStore.isModelDownloaded(fileManager: fm)
         case "cohere":
@@ -1702,7 +1712,7 @@ struct ModelsView: View {
         case "indicasr":
             return IndicASRModelStore.isAvailableLocally()
         case "sensevoice":
-            return SenseVoiceTranscriber.isModelDownloaded()
+            return SenseVoiceTranscriber.isModelDownloaded(fileManager: fm)
         case "gemma4-litert":
             return Gemma4LiteRTModelStore.isAvailableLocally(fileManager: fm)
         default:
