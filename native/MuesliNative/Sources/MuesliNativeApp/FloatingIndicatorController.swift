@@ -634,7 +634,8 @@ final class FloatingIndicatorController: NSObject {
         let fallback = NSImage(systemSymbolName: "waveform.badge.microphone", accessibilityDescription: nil)?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)) ?? NSImage()
         let newImage = MenuBarIconRenderer.make(choice: config.menuBarIcon) ?? fallback
-        newImage.isTemplate = false
+        // contentTintColor only recolors template images; keep SF Symbols tintable on the dark pill.
+        newImage.isTemplate = true
         micIconView?.image = newImage
     }
 
@@ -1380,7 +1381,8 @@ final class FloatingIndicatorController: NSObject {
         let fallbackImage = NSImage(systemSymbolName: "waveform.badge.microphone", accessibilityDescription: nil)?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)) ?? NSImage()
         let idleImage = MenuBarIconRenderer.make(choice: config.menuBarIcon) ?? fallbackImage
-        idleImage.isTemplate = false // we tint manually via contentTintColor
+        // contentTintColor only recolors template images; keep SF Symbols tintable on the dark pill.
+        idleImage.isTemplate = true
         let micView = NSImageView(image: idleImage)
         micView.contentTintColor = .white
         micView.imageScaling = .scaleProportionallyDown
