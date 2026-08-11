@@ -102,6 +102,35 @@ struct MeetingHookIntegrationTests {
         #expect(spy.invocations.count == 1)
     }
 
+    @Test("imported audio meeting dispatches one hook event after persistence succeeds")
+    func importedMeetingDispatchesHook() throws {
+        let store = try makeStore()
+        let spy = MeetingHookDispatcherSpy()
+        let controller = makeController(store: store, dispatcher: spy)
+        let endTime = Date(timeIntervalSince1970: 1_713_961_500)
+
+        let meetingID = try controller.persistImportedAudioMeeting(
+            title: "Imported Call Recording",
+            calendarEventID: nil,
+            startTime: endTime.addingTimeInterval(-300),
+            endTime: endTime,
+            rawTranscript: "Speaker 1: Discussed the imported call.",
+            formattedNotes: "## Summary\nImported recording.",
+            micAudioPath: nil,
+            systemAudioPath: nil,
+            savedRecordingPath: nil,
+            selectedTemplateID: nil,
+            selectedTemplateName: nil,
+            selectedTemplateKind: nil,
+            selectedTemplatePrompt: nil
+        )
+
+        #expect(spy.invocations.count == 1)
+        #expect(spy.invocations.first?.meetingID == meetingID)
+        #expect(spy.invocations.first?.completedAt == endTime)
+        #expect(try store.meeting(id: meetingID) != nil)
+    }
+
     private func makeController(store: DictationStore, dispatcher: MeetingHookDispatching) -> MuesliController {
         MuesliController(
             runtime: RuntimePaths(
