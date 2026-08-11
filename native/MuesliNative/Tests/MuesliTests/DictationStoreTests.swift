@@ -579,6 +579,88 @@ struct DictationStoreTests {
         #expect(inserted.source == .audioImport)
     }
 
+    @Test("visual context round-trips through insert and fetch")
+    func visualContextPersists() throws {
+        let store = try makeStore()
+        let start = Date()
+
+        let id = try store.insertMeeting(
+            title: "Context Meeting",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(60),
+            rawTranscript: "Transcript",
+            formattedNotes: "Notes",
+            micAudioPath: nil,
+            systemAudioPath: nil,
+            visualContext: "[10:00:00] Safari:\nApp context:\nSlide deck"
+        )
+
+        let fetched = try #require(try store.meeting(id: id))
+        #expect(fetched.visualContext == "[10:00:00] Safari:\nApp context:\nSlide deck")
+
+        let plainID = try store.insertMeeting(
+            title: "No Context",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(60),
+            rawTranscript: "Transcript",
+            formattedNotes: "Notes",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+        #expect(try #require(try store.meeting(id: plainID)).visualContext == nil)
+    }
+
+    @Test("completeLiveMeeting stores visual context")
+    func completeLiveMeetingStoresVisualContext() throws {
+        let store = try makeStore()
+        let start = Date()
+        let id = try store.createLiveMeeting(
+            title: "Live",
+            calendarEventID: nil,
+            startTime: start
+        )
+
+        try store.completeLiveMeeting(
+            id: id,
+            title: "Live",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(120),
+            rawTranscript: "Transcript",
+            formattedNotes: "Notes",
+            micAudioPath: nil,
+            systemAudioPath: nil,
+            visualContext: "[10:05:00] Zoom:\nOCR visual text:\nQ3 roadmap"
+        )
+
+        let fetched = try #require(try store.meeting(id: id))
+        #expect(fetched.visualContext == "[10:05:00] Zoom:\nOCR visual text:\nQ3 roadmap")
+    }
+
+    @Test("migration adds visual context column to legacy meeting schema")
+    func migrationAddsVisualContextColumn() throws {
+        let store = try makeLegacyStore()
+
+        try store.migrateIfNeeded()
+
+        let start = Date()
+        let id = try store.insertMeeting(
+            title: "Migrated Meeting",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(60),
+            rawTranscript: "Transcript",
+            formattedNotes: "Notes",
+            micAudioPath: nil,
+            systemAudioPath: nil,
+            visualContext: "context after migration"
+        )
+
+        #expect(try #require(try store.meeting(id: id)).visualContext == "context after migration")
+    }
+
     @Test("meetingRawTranscript returns the stored transcript")
     func meetingRawTranscriptReturnsStoredTranscript() throws {
         let store = try makeStore()

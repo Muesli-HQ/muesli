@@ -6747,7 +6747,8 @@ public final class MuesliController: NSObject {
                 selectedTemplateID: result.templateSnapshot.id,
                 selectedTemplateName: result.templateSnapshot.name,
                 selectedTemplateKind: result.templateSnapshot.kind,
-                selectedTemplatePrompt: result.templateSnapshot.prompt
+                selectedTemplatePrompt: result.templateSnapshot.prompt,
+                visualContext: result.visualContext
             )
             meetingID = existingMeetingID
             clearCachedMeetingManualNotes(id: existingMeetingID)
@@ -6766,7 +6767,8 @@ public final class MuesliController: NSObject {
                 selectedTemplateID: result.templateSnapshot.id,
                 selectedTemplateName: result.templateSnapshot.name,
                 selectedTemplateKind: result.templateSnapshot.kind,
-                selectedTemplatePrompt: result.templateSnapshot.prompt
+                selectedTemplatePrompt: result.templateSnapshot.prompt,
+                visualContext: result.visualContext
             )
         }
         scheduleICloudSyncAfterLocalChange()

@@ -104,6 +104,7 @@ struct MeetingSessionResult {
     let retainedRecordingError: Error?
     let systemRecordingURL: URL?
     let templateSnapshot: MeetingTemplateSnapshot
+    var visualContext: String? = nil
 }
 
 extension MeetingSessionResult {
@@ -130,7 +131,8 @@ extension MeetingSessionResult {
             retainedRecordingURL: retainedRecordingURL,
             retainedRecordingError: retainedRecordingError,
             systemRecordingURL: systemRecordingURL,
-            templateSnapshot: templateSnapshot
+            templateSnapshot: templateSnapshot,
+            visualContext: visualContext
         )
     }
 }
@@ -950,7 +952,8 @@ final class MeetingSession {
             retainedRecordingURL: retainedRecordingURL,
             retainedRecordingError: retainedRecordingWriterError,
             systemRecordingURL: systemAudioURL,
-            templateSnapshot: templateSnapshot
+            templateSnapshot: templateSnapshot,
+            visualContext: visualContext.isEmpty ? nil : visualContext
         )
     }
 

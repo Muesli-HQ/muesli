@@ -38,7 +38,7 @@ public final class DictationStore {
     t.id, t.final_status, t.final_message, t.trace_json, t.created_at
     """
     private static let meetingColumns = """
-    id, title, start_time, duration_seconds, raw_transcript, formatted_notes, word_count, folder_id, calendar_event_id, mic_audio_path, system_audio_path, saved_recording_path, meeting_status, manual_notes, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, follow_up_to_id, follow_up_to_record_name, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start
+    id, title, start_time, duration_seconds, raw_transcript, formatted_notes, word_count, folder_id, calendar_event_id, mic_audio_path, system_audio_path, saved_recording_path, meeting_status, manual_notes, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, follow_up_to_id, follow_up_to_record_name, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start, visual_context
     """
 
     public init() {
@@ -130,6 +130,7 @@ public final class DictationStore {
             sync_dirty INTEGER NOT NULL DEFAULT 1,
             follow_up_to_id INTEGER REFERENCES meetings(id) ON DELETE SET NULL,
             follow_up_to_record_name TEXT,
+            visual_context TEXT,
             created_at TEXT DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_meetings_start_time ON meetings(start_time DESC);
@@ -253,7 +254,8 @@ public final class DictationStore {
             "ALTER TABLE meetings ADD COLUMN calendar_series_id TEXT",
             "ALTER TABLE meetings ADD COLUMN calendar_occurrence_start REAL",
             "ALTER TABLE meeting_participants ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'",
-            "ALTER TABLE meeting_participants ADD COLUMN is_suppressed INTEGER NOT NULL DEFAULT 0"
+            "ALTER TABLE meeting_participants ADD COLUMN is_suppressed INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE meetings ADD COLUMN visual_context TEXT"
         ] {
             _ = sqlite3_exec(db, sql, nil, nil, nil)
         }
@@ -987,15 +989,16 @@ public final class DictationStore {
         selectedTemplateKind: MeetingTemplateKind? = nil,
         selectedTemplatePrompt: String? = nil,
         source: MeetingSource = .meeting,
-        calendarOccurrence: CalendarOccurrenceReference? = nil
+        calendarOccurrence: CalendarOccurrenceReference? = nil,
+        visualContext: String? = nil
     ) throws -> Int64 {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
 
         let sql = """
         INSERT INTO meetings
-        (title, calendar_event_id, start_time, end_time, duration_seconds, raw_transcript, formatted_notes, mic_audio_path, system_audio_path, saved_recording_path, word_count, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, updated_at, sync_dirty, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+        (title, calendar_event_id, start_time, end_time, duration_seconds, raw_transcript, formatted_notes, mic_audio_path, system_audio_path, saved_recording_path, word_count, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, updated_at, sync_dirty, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start, visual_context)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -1034,6 +1037,7 @@ public final class DictationStore {
         } else {
             sqlite3_bind_null(statement, 22)
         }
+        bindOptionalText(visualContext, at: 23, statement: statement)
 
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
@@ -2659,13 +2663,14 @@ public final class DictationStore {
         selectedTemplateID: String? = nil,
         selectedTemplateName: String? = nil,
         selectedTemplateKind: MeetingTemplateKind? = nil,
-        selectedTemplatePrompt: String? = nil
+        selectedTemplatePrompt: String? = nil,
+        visualContext: String? = nil
     ) throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         let sql = """
         UPDATE meetings
-        SET title = ?, calendar_event_id = ?, start_time = ?, end_time = ?, duration_seconds = ?, raw_transcript = ?, formatted_notes = ?, mic_audio_path = ?, system_audio_path = ?, saved_recording_path = ?, meeting_status = ?, word_count = ?, selected_template_id = ?, selected_template_name = ?, selected_template_kind = ?, selected_template_prompt = ?, updated_at = ?, sync_dirty = 1
+        SET title = ?, calendar_event_id = ?, start_time = ?, end_time = ?, duration_seconds = ?, raw_transcript = ?, formatted_notes = ?, mic_audio_path = ?, system_audio_path = ?, saved_recording_path = ?, meeting_status = ?, word_count = ?, selected_template_id = ?, selected_template_name = ?, selected_template_kind = ?, selected_template_prompt = ?, visual_context = ?, updated_at = ?, sync_dirty = 1
         WHERE id = ?
         """
         var statement: OpaquePointer?
@@ -2697,8 +2702,9 @@ public final class DictationStore {
         bindOptionalText(selectedTemplateName, at: 14, statement: statement)
         bindOptionalText(selectedTemplateKind?.rawValue, at: 15, statement: statement)
         bindOptionalText(selectedTemplatePrompt, at: 16, statement: statement)
-        sqlite3_bind_double(statement, 17, Date().timeIntervalSince1970)
-        sqlite3_bind_int64(statement, 18, id)
+        bindOptionalText(visualContext, at: 17, statement: statement)
+        sqlite3_bind_double(statement, 18, Date().timeIntervalSince1970)
+        sqlite3_bind_int64(statement, 19, id)
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
@@ -4772,7 +4778,8 @@ public final class DictationStore {
             selectedTemplatePrompt: selectedTemplatePrompt,
             source: source,
             followUpToID: followUpToID,
-            followUpToRecordName: followUpToRecordName
+            followUpToRecordName: followUpToRecordName,
+            visualContext: optionalStringColumn(statement, index: 26)
         )
     }
 

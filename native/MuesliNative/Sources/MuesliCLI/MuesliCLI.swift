@@ -212,6 +212,7 @@ struct MeetingDetailPayload: Encodable {
     let selectedTemplateName: String
     let selectedTemplateKind: String
     let selectedTemplatePrompt: String?
+    let visualContext: String?
 
     init(_ record: MeetingRecord) {
         id = record.id
@@ -233,6 +234,7 @@ struct MeetingDetailPayload: Encodable {
         selectedTemplateName = record.appliedTemplateName
         selectedTemplateKind = record.appliedTemplateKind.rawValue
         selectedTemplatePrompt = record.selectedTemplatePrompt
+        visualContext = record.visualContext
     }
 }
 
