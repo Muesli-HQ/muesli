@@ -170,4 +170,33 @@ struct MeetingMicRecoveryCoordinatorTests {
         #expect(harness.events.count == 1)
         #expect(harness.events.first?.recoveryAttempts == 0)
     }
+
+    @Test("episode event callbacks may re-enter process without deadlock")
+    func episodeCallbackReentryDoesNotDeadlock() {
+        let harness = Harness()
+        var reentered = false
+        harness.coordinator.onEpisodeEvent = { [weak harness] event in
+            harness?.events.append(event)
+            guard let harness, !reentered else { return }
+            reentered = true
+            // Re-enter synchronously, as if a consumer fed a health snapshot back.
+            harness.micSignal()
+        }
+        harness.systemActive(seconds: 4) // must complete without deadlock
+        #expect(harness.events.contains { $0.kind == .degraded })
+    }
+
+    @Test("recovery request callback may re-enter process without deadlock")
+    func recoveryCallbackReentryDoesNotDeadlock() {
+        let harness = Harness()
+        harness.coordinator.recoveryRequest = { [weak harness] reason in
+            harness?.recoveryRequests.append(reason)
+            // Synchronous re-entry, as if a recovery drove an audio callback
+            // straight back into the coordinator.
+            harness?.micSignal()
+            return true
+        }
+        harness.systemActive(seconds: 4)
+        #expect(!harness.recoveryRequests.isEmpty)
+    }
 }
