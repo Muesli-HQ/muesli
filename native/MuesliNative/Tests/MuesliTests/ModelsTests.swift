@@ -98,7 +98,7 @@ struct BackendOptionTests {
         }
     }
 
-    @Test("Qwen ASR cache names match FluidAudio folderName strip of -coreml")
+    @Test("Qwen ASR cache names preserve current runtime and legacy cleanup paths")
     func qwenAsrCacheDirectoryNamesMatchFluidAudio() {
         // FluidAudio Repo.folderName default strips "-coreml" from the repo slug,
         // so downloads land in qwen3-asr-0.6b/{int8,f32} (issue #380).
@@ -106,43 +106,43 @@ struct BackendOptionTests {
         #expect(Qwen3AsrModelStore.cacheDirectoryNames.contains("qwen3-asr-0.6b-coreml"))
     }
 
-    @Test("Qwen ASR recognizes only the INT8 runtime cache layouts")
-    func qwenAsrVocabMarkerRecognizesInt8CacheLayouts() throws {
+    @Test("Qwen ASR readiness matches the complete managed INT8 runtime directory")
+    func qwenAsrReadinessMatchesManagedRuntimeDirectory() throws {
         let fm = FileManager.default
         let root = fm.temporaryDirectory
             .appendingPathComponent("muesli-qwen-asr-path-\(UUID().uuidString)", isDirectory: true)
         defer { try? fm.removeItem(at: root) }
 
-        #expect(!Qwen3AsrModelStore.hasInt8VocabMarker(in: root, fileManager: fm))
-
-        for cacheName in Qwen3AsrModelStore.cacheDirectoryNames {
-            let vocab = root
-                .appendingPathComponent(cacheName, isDirectory: true)
-                .appendingPathComponent("int8/vocab.json")
-            try fm.createDirectory(at: vocab.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try Data("{}".utf8).write(to: vocab)
-            #expect(Qwen3AsrModelStore.hasInt8VocabMarker(in: root, fileManager: fm))
-            try fm.removeItem(at: root.appendingPathComponent(cacheName))
-            #expect(!Qwen3AsrModelStore.hasInt8VocabMarker(in: root, fileManager: fm))
+        func installRequiredArtifacts(in directory: URL) throws {
+            for relativePath in [
+                "qwen3_asr_audio_encoder_v2.mlmodelc/coremldata.bin",
+                "qwen3_asr_decoder_stateful.mlmodelc/coremldata.bin",
+                "qwen3_asr_embeddings.bin",
+                "vocab.json",
+            ] {
+                let url = directory.appendingPathComponent(relativePath)
+                try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data([0x01]).write(to: url)
+            }
         }
 
-        let f32Vocab = root
-            .appendingPathComponent("qwen3-asr-0.6b/f32", isDirectory: true)
-            .appendingPathComponent("vocab.json")
-        try fm.createDirectory(at: f32Vocab.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try Data("{}".utf8).write(to: f32Vocab)
-        #expect(!Qwen3AsrModelStore.hasInt8VocabMarker(in: root, fileManager: fm))
+        #expect(!Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
 
-        let unsupportedVocab = root
-            .appendingPathComponent("qwen3-asr-unsupported/int8", isDirectory: true)
-            .appendingPathComponent("vocab.json")
-        try fm.createDirectory(at: unsupportedVocab.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try Data("{}".utf8).write(to: unsupportedVocab)
-        #expect(!Qwen3AsrModelStore.hasInt8VocabMarker(in: root, fileManager: fm))
+        let legacyDirectory = root
+            .appendingPathComponent("qwen3-asr-0.6b-coreml/int8", isDirectory: true)
+        try installRequiredArtifacts(in: legacyDirectory)
+        #expect(!Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
+
+        let managedDirectory = ManagedASRModelPlans.qwen3ASRInt8(modelsRoot: root).cacheDirectory
+        try installRequiredArtifacts(in: managedDirectory)
+        #expect(Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
+
+        try fm.removeItem(at: managedDirectory.appendingPathComponent("vocab.json"))
+        #expect(!Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
 
         try Qwen3AsrModelStore.deleteModelFiles(from: root, fileManager: fm)
         #expect(!fm.fileExists(atPath: root.appendingPathComponent("qwen3-asr-0.6b").path))
-        #expect(!Qwen3AsrModelStore.hasInt8VocabMarker(in: root, fileManager: fm))
+        #expect(!fm.fileExists(atPath: root.appendingPathComponent("qwen3-asr-0.6b-coreml").path))
     }
 
     @Test("Cohere uses cohere backend")

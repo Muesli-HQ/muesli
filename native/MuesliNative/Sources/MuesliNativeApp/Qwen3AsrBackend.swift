@@ -6,11 +6,11 @@ import MuesliCore
 ///
 /// FluidAudio's `Repo.folderName` strips the `-coreml` suffix for Qwen, so the
 /// on-disk cache is `qwen3-asr-0.6b/{int8,f32}` rather than
-/// `qwen3-asr-0.6b-coreml/...` (see GitHub issue #380). Prefer FluidAudio's own
-/// cache helpers when available so this stays aligned with upstream.
+/// `qwen3-asr-0.6b-coreml/...` (see GitHub issue #380). Readiness follows the
+/// managed runtime plan; the legacy name is retained only for cleanup.
 enum Qwen3AsrModelStore {
-    /// Current FluidAudio cache directory name, plus the older `-coreml` name in
-    /// case a manual install or older tooling used the HuggingFace repo slug.
+    /// Current FluidAudio cache directory name, plus the older `-coreml` name
+    /// retained so model deletion also cleans up manual or legacy installs.
     static let cacheDirectoryNames = [
         "qwen3-asr-0.6b",
         "qwen3-asr-0.6b-coreml",
@@ -22,30 +22,17 @@ enum Qwen3AsrModelStore {
     }
 
     static func isModelDownloaded(fileManager: FileManager = .default) -> Bool {
-        if ManagedASRModelPlans.qwen3ASRInt8(
-            modelsRoot: modelsRoot(fileManager: fileManager)
-        ).isComplete(fileManager: fileManager) {
-            return true
-        }
-        if #available(macOS 15, *) {
-            if Qwen3AsrModels.modelsExist(at: Qwen3AsrModels.defaultCacheDirectory(variant: .int8)) {
-                return true
-            }
-        }
-
-        return hasInt8VocabMarker(in: modelsRoot(fileManager: fileManager), fileManager: fileManager)
+        isModelDownloaded(in: modelsRoot(fileManager: fileManager), fileManager: fileManager)
     }
 
-    /// Marker used by Models-tab recognition when FluidAudio's macOS 15 helpers
-    /// are unavailable or point at a different layout.
-    static func hasInt8VocabMarker(in modelsRoot: URL, fileManager: FileManager = .default) -> Bool {
-        for name in cacheDirectoryNames {
-            let directory = modelsRoot.appendingPathComponent(name, isDirectory: true)
-            if fileManager.fileExists(atPath: directory.appendingPathComponent("int8/vocab.json").path) {
-                return true
-            }
-        }
-        return false
+    /// Readiness deliberately uses the same managed directory and completeness
+    /// contract as runtime loading so the Models tab cannot hide a required download.
+    static func isModelDownloaded(
+        in modelsRoot: URL,
+        fileManager: FileManager = .default
+    ) -> Bool {
+        ManagedASRModelPlans.qwen3ASRInt8(modelsRoot: modelsRoot)
+            .isComplete(fileManager: fileManager)
     }
 
     static func deleteModelFiles(fileManager: FileManager = .default) throws {
