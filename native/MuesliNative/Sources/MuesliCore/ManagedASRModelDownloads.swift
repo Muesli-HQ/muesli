@@ -2,6 +2,20 @@ import Foundation
 
 /// A third-party ASR model whose transport is owned by Muesli.
 public struct ManagedASRModelPlan: Sendable {
+    private struct CompletionMarker: Codable {
+        struct File: Codable {
+            let relativePath: String
+            let expectedByteCount: Int64?
+        }
+
+        let modelID: String
+        let revision: String
+        let manifestVersion: String
+        let files: [File]
+    }
+
+    private static let completionMarkerName = ".muesli-managed-model-complete.json"
+
     public let modelID: String
     public let repository: String
     public let revision: String
@@ -30,16 +44,57 @@ public struct ManagedASRModelPlan: Sendable {
     }
 
     public func isComplete(fileManager: FileManager = .default) -> Bool {
-        !requiredArtifactAlternatives.isEmpty && requiredArtifactAlternatives.allSatisfy { alternatives in
+        guard !requiredArtifactAlternatives.isEmpty,
+              requiredArtifactAlternatives.allSatisfy({ alternatives in
             alternatives.contains { relativePath in
                 fileManager.fileExists(atPath: cacheDirectory.appendingPathComponent(relativePath).path)
             }
+        }),
+              let data = try? Data(contentsOf: completionMarkerURL),
+              let marker = try? JSONDecoder().decode(CompletionMarker.self, from: data),
+              marker.modelID == modelID,
+              marker.revision == revision,
+              !marker.files.isEmpty
+        else { return false }
+
+        return marker.files.allSatisfy { file in
+            let url = cacheDirectory.appendingPathComponent(file.relativePath)
+            guard fileManager.fileExists(atPath: url.path) else { return false }
+            guard let expectedByteCount = file.expectedByteCount else { return true }
+            let size = (try? fileManager.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value
+            return size == expectedByteCount
         }
+    }
+
+    /// Records a successful, fully validated coordinator install. The marker
+    /// carries every manifest file so readiness cannot be inferred from an
+    /// early sentinel while sibling weights are still partial or missing.
+    public func recordSuccessfulInstallation(
+        _ manifest: ModelDownloadManifest,
+        fileManager: FileManager = .default
+    ) throws {
+        try fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+        let marker = CompletionMarker(
+            modelID: modelID,
+            revision: revision,
+            manifestVersion: manifest.version,
+            files: manifest.files.map {
+                CompletionMarker.File(
+                    relativePath: $0.relativePath,
+                    expectedByteCount: $0.expectedByteCount
+                )
+            }
+        )
+        try JSONEncoder().encode(marker).write(to: completionMarkerURL, options: .atomic)
     }
 
     public func delete(fileManager: FileManager = .default) throws {
         guard fileManager.fileExists(atPath: cacheDirectory.path) else { return }
         try fileManager.removeItem(at: cacheDirectory)
+    }
+
+    private var completionMarkerURL: URL {
+        cacheDirectory.appendingPathComponent(Self.completionMarkerName)
     }
 }
 
@@ -229,6 +284,7 @@ public enum ManagedASRModelDownloader {
             }
             progressSnapshot?(snapshot)
         }
+        try plan.recordSuccessfulInstallation(manifest)
         guard plan.isComplete() else {
             throw HuggingFaceModelManifestError.emptySelection(plan.repository)
         }

@@ -411,6 +411,7 @@ struct ModelDownloadCoordinatorTests {
 
         for relativePath in [
             "qwen3_asr_audio_encoder_v2.mlmodelc/coremldata.bin",
+            "qwen3_asr_audio_encoder_v2.mlmodelc/weights/weight.bin",
             "qwen3_asr_decoder_stateful.mlmodelc/coremldata.bin",
             "qwen3_asr_embeddings.bin",
             "vocab.json",
@@ -423,7 +424,34 @@ struct ModelDownloadCoordinatorTests {
             try Data([0x01]).write(to: url)
         }
 
+        #expect(!plan.isComplete())
+        let installedPaths = [
+            "qwen3_asr_audio_encoder_v2.mlmodelc/coremldata.bin",
+            "qwen3_asr_audio_encoder_v2.mlmodelc/weights/weight.bin",
+            "qwen3_asr_decoder_stateful.mlmodelc/coremldata.bin",
+            "qwen3_asr_embeddings.bin",
+            "vocab.json",
+        ]
+        let manifest = ModelDownloadManifest(
+            id: plan.modelID,
+            version: "test-install",
+            files: installedPaths.map { relativePath in
+                ModelDownloadFile(
+                    relativePath: relativePath,
+                    remoteURL: URL(string: "https://example.com/model")!,
+                    expectedByteCount: 1
+                )
+            }
+        )
+        try plan.recordSuccessfulInstallation(manifest)
         #expect(plan.isComplete())
+
+        try FileManager.default.removeItem(
+            at: plan.cacheDirectory.appendingPathComponent(
+                "qwen3_asr_audio_encoder_v2.mlmodelc/weights/weight.bin"
+            )
+        )
+        #expect(!plan.isComplete())
         #expect(plan.modelID == "FluidInference/qwen3-asr-0.6b-coreml")
         #expect(plan.cacheDirectory.path.hasSuffix("qwen3-asr-0.6b/int8"))
         #expect(plan.selections.count == 1)

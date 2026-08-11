@@ -135,6 +135,25 @@ struct BackendOptionTests {
 
         let managedDirectory = ManagedASRModelPlans.qwen3ASRInt8(modelsRoot: root).cacheDirectory
         try installRequiredArtifacts(in: managedDirectory)
+        let managedPlan = ManagedASRModelPlans.qwen3ASRInt8(modelsRoot: root)
+        #expect(!Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
+        let installedPaths = [
+            "qwen3_asr_audio_encoder_v2.mlmodelc/coremldata.bin",
+            "qwen3_asr_decoder_stateful.mlmodelc/coremldata.bin",
+            "qwen3_asr_embeddings.bin",
+            "vocab.json",
+        ]
+        try managedPlan.recordSuccessfulInstallation(ModelDownloadManifest(
+            id: managedPlan.modelID,
+            version: "test-install",
+            files: installedPaths.map { relativePath in
+                ModelDownloadFile(
+                    relativePath: relativePath,
+                    remoteURL: URL(string: "https://example.com/model")!,
+                    expectedByteCount: 1
+                )
+            }
+        ))
         #expect(Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
 
         try fm.removeItem(at: managedDirectory.appendingPathComponent("vocab.json"))
@@ -143,6 +162,17 @@ struct BackendOptionTests {
         try Qwen3AsrModelStore.deleteModelFiles(from: root, fileManager: fm)
         #expect(!fm.fileExists(atPath: root.appendingPathComponent("qwen3-asr-0.6b").path))
         #expect(!fm.fileExists(atPath: root.appendingPathComponent("qwen3-asr-0.6b-coreml").path))
+    }
+
+    @Test("Qwen ASR warmup publishes readiness only for the current uncancelled load")
+    func qwenAsrWarmupReadinessGate() throws {
+        try Qwen3AsrWarmupReadiness.validate(isCancelled: false, isCurrent: true)
+        #expect(throws: CancellationError.self) {
+            try Qwen3AsrWarmupReadiness.validate(isCancelled: true, isCurrent: true)
+        }
+        #expect(throws: CancellationError.self) {
+            try Qwen3AsrWarmupReadiness.validate(isCancelled: false, isCurrent: false)
+        }
     }
 
     @Test("Cohere uses cohere backend")

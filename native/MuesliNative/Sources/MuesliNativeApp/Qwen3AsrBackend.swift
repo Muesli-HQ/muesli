@@ -48,6 +48,12 @@ enum Qwen3AsrModelStore {
     }
 }
 
+enum Qwen3AsrWarmupReadiness {
+    static func validate(isCancelled: Bool = Task.isCancelled, isCurrent: Bool) throws {
+        guard !isCancelled, isCurrent else { throw CancellationError() }
+    }
+}
+
 /// Native Swift transcription backend using FluidAudio's Qwen3 ASR model
 /// running on Apple's Neural Engine (ANE) via CoreML.
 /// Requires macOS 15+ due to CoreML stateful decoder support.
@@ -94,7 +100,13 @@ actor Qwen3AsrTranscriber {
         // Warmup: run a tiny dummy audio through the pipeline to trigger CoreML compilation.
         // This moves the ~30s compilation cost from first dictation to preload time.
         let warmupSamples = [Float](repeating: 0, count: 16000) // 1 second of silence
-        _ = try? await mgr.transcribe(audioSamples: warmupSamples)
+        do {
+            _ = try await mgr.transcribe(audioSamples: warmupSamples)
+            try Qwen3AsrWarmupReadiness.validate(isCurrent: manager === mgr)
+        } catch {
+            if manager === mgr { manager = nil }
+            throw error
+        }
         progress?(1, nil)
         progressSnapshot?(preparing.replacing(phase: .ready, message: "Model ready"))
         fputs("[qwen3-asr] warmup complete, ready\n", stderr)
