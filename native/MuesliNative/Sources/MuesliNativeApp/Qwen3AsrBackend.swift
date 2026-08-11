@@ -28,22 +28,20 @@ enum Qwen3AsrModelStore {
             return true
         }
         if #available(macOS 15, *) {
-            if Qwen3AsrModels.modelsExist(at: Qwen3AsrModels.defaultCacheDirectory(variant: .int8))
-                || Qwen3AsrModels.modelsExist(at: Qwen3AsrModels.defaultCacheDirectory(variant: .f32)) {
+            if Qwen3AsrModels.modelsExist(at: Qwen3AsrModels.defaultCacheDirectory(variant: .int8)) {
                 return true
             }
         }
 
-        return hasVocabMarker(in: modelsRoot(fileManager: fileManager), fileManager: fileManager)
+        return hasInt8VocabMarker(in: modelsRoot(fileManager: fileManager), fileManager: fileManager)
     }
 
     /// Marker used by Models-tab recognition when FluidAudio's macOS 15 helpers
     /// are unavailable or point at a different layout.
-    static func hasVocabMarker(in modelsRoot: URL, fileManager: FileManager = .default) -> Bool {
+    static func hasInt8VocabMarker(in modelsRoot: URL, fileManager: FileManager = .default) -> Bool {
         for name in cacheDirectoryNames {
             let directory = modelsRoot.appendingPathComponent(name, isDirectory: true)
-            if fileManager.fileExists(atPath: directory.appendingPathComponent("int8/vocab.json").path)
-                || fileManager.fileExists(atPath: directory.appendingPathComponent("f32/vocab.json").path) {
+            if fileManager.fileExists(atPath: directory.appendingPathComponent("int8/vocab.json").path) {
                 return true
             }
         }

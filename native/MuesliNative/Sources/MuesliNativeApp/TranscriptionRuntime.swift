@@ -123,6 +123,17 @@ actor TranscriptionCoordinator {
         }
     }
 
+    func unloadFluidAudioTranscriber() async {
+        await fluidTranscriber.shutdown()
+    }
+
+    func unloadQwen3Transcriber() async {
+        if #available(macOS 15, *), let transcriber = _qwen3Transcriber as? Qwen3AsrTranscriber {
+            await transcriber.shutdown()
+            _qwen3Transcriber = nil
+        }
+    }
+
     @available(macOS 15, *)
     private var qwen3Transcriber: Qwen3AsrTranscriber {
         if _qwen3Transcriber == nil {
@@ -303,10 +314,16 @@ actor TranscriptionCoordinator {
             )
             // Warmup ANE/GPU so first dictation doesn't pay CoreML compilation cost
             fputs("[muesli-native] WhisperKit warmup: running silent audio for CoreML compilation...\n", stderr)
-            progress?(0.9, "Warming up model...")
+            let warming = ModelDownloadProgress.preparing(
+                modelID: backend.model,
+                message: "Warming up model..."
+            )
+            progress?(0.9, warming.message)
+            progressSnapshot?(warming)
             try await whisperTranscriber.warmup()
             fputs("[muesli-native] WhisperKit warmup complete\n", stderr)
             progress?(1.0, nil)
+            progressSnapshot?(warming.replacing(phase: .ready, message: "Model ready"))
         case "nemotron35":
             if #available(macOS 15, *) {
                 let transcriber = try await getLoadedNemotron35Transcriber(progress: progress, progressSnapshot: progressSnapshot)

@@ -159,9 +159,13 @@ public final class HuggingFaceModelManifestResolver: @unchecked Sendable {
             }
             let page = try JSONDecoder().decode([TreeEntry].self, from: data)
             entries.append(contentsOf: page.filter { $0.type == "file" })
-            guard let link = http.value(forHTTPHeaderField: "Link"),
-                  let pageURL = Self.nextLink(in: link)
-            else { break }
+            guard let link = http.value(forHTTPHeaderField: "Link") else { break }
+            guard link.contains("rel=\"next\"") else { break }
+            guard let pageURL = Self.nextLink(in: link, relativeTo: nextURL),
+                  Self.isTrustedPaginationURL(pageURL, relativeTo: nextURL)
+            else {
+                throw HuggingFaceModelManifestError.invalidResponse(nextURL.absoluteString)
+            }
             nextURL = pageURL
         }
         return entries
@@ -174,7 +178,8 @@ public final class HuggingFaceModelManifestResolver: @unchecked Sendable {
             do {
                 var request = URLRequest(url: url)
                 request.timeoutInterval = 60
-                if let token = Self.huggingFaceToken {
+                if let token = Self.huggingFaceToken,
+                   Self.isTrustedHuggingFaceURL(url) {
                     request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
                 }
                 let result = try await session.data(for: request)
@@ -235,14 +240,27 @@ public final class HuggingFaceModelManifestResolver: @unchecked Sendable {
         return components.url
     }
 
-    private static func nextLink(in header: String) -> URL? {
+    private static func nextLink(in header: String, relativeTo baseURL: URL) -> URL? {
         for component in header.split(separator: ",") where component.contains("rel=\"next\"") {
             guard let opening = component.firstIndex(of: "<"),
                   let closing = component[component.index(after: opening)...].firstIndex(of: ">")
             else { continue }
-            return URL(string: String(component[component.index(after: opening)..<closing]))
+            return URL(
+                string: String(component[component.index(after: opening)..<closing]),
+                relativeTo: baseURL
+            )?.absoluteURL
         }
         return nil
+    }
+
+    private static func isTrustedPaginationURL(_ candidate: URL, relativeTo current: URL) -> Bool {
+        candidate.scheme?.lowercased() == "https"
+            && candidate.host?.caseInsensitiveCompare(current.host ?? "") == .orderedSame
+    }
+
+    private static func isTrustedHuggingFaceURL(_ url: URL) -> Bool {
+        url.scheme?.lowercased() == "https"
+            && url.host?.caseInsensitiveCompare("huggingface.co") == .orderedSame
     }
 }
 

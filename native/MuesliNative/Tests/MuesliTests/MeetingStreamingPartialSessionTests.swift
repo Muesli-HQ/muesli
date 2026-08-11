@@ -6,6 +6,26 @@ import Testing
 
 @Suite("Meeting streaming partial session")
 struct MeetingStreamingPartialSessionTests {
+    @Test("stale live caption downloads cannot finish after an immediate restart")
+    func liveCaptionDownloadGenerationRejectsStaleCompletion() {
+        var state = ModelDownloadGenerationState()
+        let firstDownload = state.begin()
+        let cancellation = state.begin()
+        let replacementDownload = state.begin()
+
+        #expect(!state.contains(firstDownload))
+        #expect(!state.contains(cancellation))
+        #expect(state.contains(replacementDownload))
+        let clearedFirstDownload = state.clear(firstDownload)
+        let clearedCancellation = state.clear(cancellation)
+        #expect(!clearedFirstDownload)
+        #expect(!clearedCancellation)
+        #expect(state.contains(replacementDownload))
+        let clearedReplacement = state.clear(replacementDownload)
+        #expect(clearedReplacement)
+        #expect(state.current == nil)
+    }
+
     @Test("live caption model is ready only when every EOU artifact exists")
     func modelAvailabilityRequiresEveryArtifact() throws {
         let root = FileManager.default.temporaryDirectory

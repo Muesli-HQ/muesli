@@ -336,7 +336,7 @@ struct ModelDownloadCoordinatorTests {
                 #expect(request.url?.query?.contains("recursive=true") == true)
                 data = firstPage
                 headers = [
-                    "Link": "<https://huggingface.co/api/models/acme/asr/tree/main/int8?cursor=next>; rel=\"next\""
+                    "Link": "</api/models/acme/asr/tree/main/int8?cursor=next>; rel=\"next\""
                 ]
             }
             return ModelDownloadTestURLProtocol.Response(
@@ -367,11 +367,41 @@ struct ModelDownloadCoordinatorTests {
         #expect(manifest.version.hasPrefix("main-"))
     }
 
+    @Test("Hugging Face pagination rejects cross-host next links")
+    func huggingFacePaginationRejectsCrossHostLinks() async throws {
+        let tracker = DownloadTestTracker()
+        let page = try JSONSerialization.data(withJSONObject: [[
+            "type": "file",
+            "path": "int8/Encoder.mlmodelc/coremldata.bin",
+            "size": 7,
+            "oid": "encoder-oid",
+        ]])
+        ModelDownloadTestURLProtocol.install { _ in
+            ModelDownloadTestURLProtocol.Response(
+                data: page,
+                headers: ["Link": "<https://example.com/steal-token>; rel=\"next\""],
+                tracker: tracker
+            )
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let resolver = HuggingFaceModelManifestResolver(configuration: makeSessionConfiguration())
+        await #expect(throws: HuggingFaceModelManifestError.self) {
+            try await resolver.resolve(
+                modelID: "acme/asr",
+                repository: "acme/asr",
+                selections: [HuggingFaceModelSelection(remoteDirectory: "int8")]
+            )
+        }
+        #expect(tracker.requestCount == 1)
+    }
+
     @Test("managed ASR plans require complete compiled artifacts")
     func managedASRPlanCompleteness() throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let plan = ManagedASRModelPlans.qwen3ASRInt8(modelsRoot: root)
+        #expect(plan.cacheDirectory.standardizedFileURL.path.hasPrefix(root.standardizedFileURL.path + "/"))
 
         try FileManager.default.createDirectory(
             at: plan.cacheDirectory.appendingPathComponent("qwen3_asr_audio_encoder_v2.mlmodelc"),
@@ -816,7 +846,7 @@ struct ModelDownloadCoordinatorTests {
         #expect(tracker.requestCount == 6)
     }
 
-    @Test("cancellation preserves the partial file and does not finalize it")
+    @Test("cancel and wait preserves the partial file and finishes before deletion")
     func cancellationPreservesPartialFile() async throws {
         ModelDownloadTestURLProtocol.install { _ in
             ModelDownloadTestURLProtocol.Response(
@@ -838,7 +868,7 @@ struct ModelDownloadCoordinatorTests {
         )
         let task = Task { try await coordinator.download(manifest, to: directory) }
         try await Task.sleep(for: .milliseconds(60))
-        await coordinator.cancel(modelID: manifest.id)
+        await coordinator.cancelAndWait(modelID: manifest.id)
         do {
             try await task.value
             Issue.record("Cancellation unexpectedly completed")
@@ -849,6 +879,9 @@ struct ModelDownloadCoordinatorTests {
         let partURL = directory.appendingPathComponent("model.bin.part")
         #expect(FileManager.default.fileExists(atPath: partURL.path))
         #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("model.bin").path))
+        try FileManager.default.removeItem(at: partURL)
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(!FileManager.default.fileExists(atPath: partURL.path))
     }
 
     private func makeCoordinator() -> ModelDownloadCoordinator {

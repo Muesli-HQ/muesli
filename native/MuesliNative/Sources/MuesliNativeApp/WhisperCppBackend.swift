@@ -51,9 +51,7 @@ actor WhisperKitTranscriber {
 
         whisperKit = try await WhisperKit(config)
         loadedModel = modelName
-        progress?(1, nil)
-        progressSnapshot?(preparing.replacing(phase: .ready, message: "Model ready"))
-        fputs("[whisperkit] model ready: \(modelName)\n", stderr)
+        fputs("[whisperkit] model loaded: \(modelName)\n", stderr)
     }
 
     /// Transcribe a 16kHz mono WAV file.

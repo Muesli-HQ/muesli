@@ -1,6 +1,27 @@
 import SwiftUI
 import MuesliCore
 
+struct ModelDownloadGenerationState: Equatable {
+    private(set) var current: UUID?
+
+    mutating func begin() -> UUID {
+        let generation = UUID()
+        current = generation
+        return generation
+    }
+
+    func contains(_ generation: UUID) -> Bool {
+        current == generation
+    }
+
+    @discardableResult
+    mutating func clear(_ generation: UUID) -> Bool {
+        guard current == generation else { return false }
+        current = nil
+        return true
+    }
+}
+
 struct ModelsView: View {
     let appState: AppState
     let controller: MuesliController
@@ -19,8 +40,10 @@ struct ModelsView: View {
     @State private var showExperimental: Bool
     @State private var isLiveCaptionModelDownloaded = false
     @State private var isDownloadingLiveCaptionModel = false
+    @State private var isCancellingLiveCaptionModelDownload = false
     @State private var liveCaptionDownloadProgress = 0.0
     @State private var liveCaptionDownloadTask: Task<Void, Never>?
+    @State private var liveCaptionDownloadGeneration = ModelDownloadGenerationState()
     @State private var showDeleteLiveCaptionModelConfirmation = false
 
     // Post-processor state
@@ -308,15 +331,29 @@ struct ModelsView: View {
 
             HStack(spacing: MuesliTheme.spacing8) {
                 if isDownloadingLiveCaptionModel {
-                    Button("Cancel") {
-                        liveCaptionDownloadTask?.cancel()
+                    Button(isCancellingLiveCaptionModelDownload ? "Pausing…" : "Cancel") {
+                        guard !isCancellingLiveCaptionModelDownload else { return }
+                        let task = liveCaptionDownloadTask
+                        task?.cancel()
+                        let cancellationGeneration = liveCaptionDownloadGeneration.begin()
+                        isCancellingLiveCaptionModelDownload = true
                         Task {
-                            await ModelDownloadCoordinator.shared.cancel(
+                            let shouldCancel = await MainActor.run {
+                                liveCaptionDownloadGeneration.contains(cancellationGeneration)
+                            }
+                            guard shouldCancel else { return }
+                            await ModelDownloadCoordinator.shared.cancelAndWait(
                                 modelID: MeetingLiveCaptionModelStore.modelID
                             )
+                            _ = await task?.value
+                            await MainActor.run {
+                                guard liveCaptionDownloadGeneration.clear(cancellationGeneration) else { return }
+                                liveCaptionDownloadTask = nil
+                                isDownloadingLiveCaptionModel = false
+                                isCancellingLiveCaptionModelDownload = false
+                                liveCaptionDownloadProgress = 0
+                            }
                         }
-                        liveCaptionDownloadTask = nil
-                        isDownloadingLiveCaptionModel = false
                         liveCaptionDownloadProgress = 0
                         if let snapshot = downloadSnapshots[MeetingLiveCaptionModelStore.modelID] {
                             downloadSnapshots[MeetingLiveCaptionModelStore.modelID] = snapshot.replacing(
@@ -325,6 +362,7 @@ struct ModelsView: View {
                             )
                         }
                     }
+                    .disabled(isCancellingLiveCaptionModelDownload)
                     .buttonStyle(.plain)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(MuesliTheme.textSecondary)
@@ -380,31 +418,39 @@ struct ModelsView: View {
 
     private func startLiveCaptionModelDownload() {
         guard !isDownloadingLiveCaptionModel else { return }
+        isCancellingLiveCaptionModelDownload = false
         isDownloadingLiveCaptionModel = true
         liveCaptionDownloadProgress = 0
         downloadSnapshots.removeValue(forKey: MeetingLiveCaptionModelStore.modelID)
+        let generation = liveCaptionDownloadGeneration.begin()
         liveCaptionDownloadTask = Task {
             do {
                 try await MeetingLiveCaptionModelStore.download { progress in
                     Task { @MainActor in
+                        guard liveCaptionDownloadGeneration.contains(generation) else { return }
                         liveCaptionDownloadProgress = progress
                     }
                 } progressSnapshot: { snapshot in
                     Task { @MainActor in
+                        guard liveCaptionDownloadGeneration.contains(generation) else { return }
                         downloadSnapshots[MeetingLiveCaptionModelStore.modelID] = snapshot
                         if let fraction = snapshot.fractionCompleted {
                             liveCaptionDownloadProgress = fraction
                         }
                     }
                 }
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled,
+                      liveCaptionDownloadGeneration.contains(generation)
+                else { return }
                 isLiveCaptionModelDownloaded = true
             } catch is CancellationError {
                 // Cancellation is an expected user action.
             } catch {
                 fputs("[muesli-native] live caption model download failed: \(error)\n", stderr)
             }
+            guard liveCaptionDownloadGeneration.clear(generation) else { return }
             isDownloadingLiveCaptionModel = false
+            isCancellingLiveCaptionModelDownload = false
             liveCaptionDownloadProgress = 0
             liveCaptionDownloadTask = nil
             if isLiveCaptionModelDownloaded {
@@ -1537,9 +1583,22 @@ struct ModelsView: View {
                 .first ?? .parakeetMultilingual
             controller.selectBackend(fallback)
         }
-        // Remove cached model files
+        let task = downloadTasks[option.model]
+        task?.cancel()
+        let deletionGeneration = UUID()
+        downloadGenerations[option.model] = deletionGeneration
+        downloadTasks.removeValue(forKey: option.model)
+
+        // Stop any transfer before removing files so a late write cannot recreate
+        // part of the model after the deletion has completed.
         Task {
             do {
+                await ModelDownloadCoordinator.shared.cancelAndWait(modelID: option.model)
+                _ = await task?.value
+                let shouldDelete = await MainActor.run {
+                    downloadGenerations[option.model] == deletionGeneration
+                }
+                guard shouldDelete else { return }
                 try await deleteModelFiles(option)
                 await MainActor.run {
                     _ = downloadedModels.remove(option.model)
@@ -1572,11 +1631,13 @@ struct ModelsView: View {
             await controller.transcriptionCoordinator.unloadGemma4LiteRTTranscriber()
             try Gemma4LiteRTModelStore.deleteModelFiles(fileManager: fm)
         case "fluidaudio":
+            await controller.transcriptionCoordinator.unloadFluidAudioTranscriber()
             let plan = option.model.contains("v2")
                 ? ManagedASRModelPlans.parakeetV2()
                 : ManagedASRModelPlans.parakeetV3()
             try plan.delete(fileManager: fm)
         case "qwen":
+            await controller.transcriptionCoordinator.unloadQwen3Transcriber()
             try Qwen3AsrModelStore.deleteModelFiles(fileManager: fm)
         default:
             break

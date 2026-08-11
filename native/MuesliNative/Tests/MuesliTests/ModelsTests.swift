@@ -106,26 +106,43 @@ struct BackendOptionTests {
         #expect(Qwen3AsrModelStore.cacheDirectoryNames.contains("qwen3-asr-0.6b-coreml"))
     }
 
-    @Test("Qwen ASR vocab marker recognizes FluidAudio stripped cache path")
-    func qwenAsrVocabMarkerRecognizesStrippedCachePath() throws {
+    @Test("Qwen ASR recognizes only the INT8 runtime cache layouts")
+    func qwenAsrVocabMarkerRecognizesInt8CacheLayouts() throws {
         let fm = FileManager.default
         let root = fm.temporaryDirectory
             .appendingPathComponent("muesli-qwen-asr-path-\(UUID().uuidString)", isDirectory: true)
         defer { try? fm.removeItem(at: root) }
 
-        #expect(!Qwen3AsrModelStore.hasVocabMarker(in: root, fileManager: fm))
+        #expect(!Qwen3AsrModelStore.hasInt8VocabMarker(in: root, fileManager: fm))
 
-        let vocab = root
-            .appendingPathComponent("qwen3-asr-0.6b/int8", isDirectory: true)
+        for cacheName in Qwen3AsrModelStore.cacheDirectoryNames {
+            let vocab = root
+                .appendingPathComponent(cacheName, isDirectory: true)
+                .appendingPathComponent("int8/vocab.json")
+            try fm.createDirectory(at: vocab.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("{}".utf8).write(to: vocab)
+            #expect(Qwen3AsrModelStore.hasInt8VocabMarker(in: root, fileManager: fm))
+            try fm.removeItem(at: root.appendingPathComponent(cacheName))
+            #expect(!Qwen3AsrModelStore.hasInt8VocabMarker(in: root, fileManager: fm))
+        }
+
+        let f32Vocab = root
+            .appendingPathComponent("qwen3-asr-0.6b/f32", isDirectory: true)
             .appendingPathComponent("vocab.json")
-        try fm.createDirectory(at: vocab.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try Data("{}".utf8).write(to: vocab)
+        try fm.createDirectory(at: f32Vocab.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: f32Vocab)
+        #expect(!Qwen3AsrModelStore.hasInt8VocabMarker(in: root, fileManager: fm))
 
-        #expect(Qwen3AsrModelStore.hasVocabMarker(in: root, fileManager: fm))
+        let unsupportedVocab = root
+            .appendingPathComponent("qwen3-asr-unsupported/int8", isDirectory: true)
+            .appendingPathComponent("vocab.json")
+        try fm.createDirectory(at: unsupportedVocab.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: unsupportedVocab)
+        #expect(!Qwen3AsrModelStore.hasInt8VocabMarker(in: root, fileManager: fm))
 
         try Qwen3AsrModelStore.deleteModelFiles(from: root, fileManager: fm)
         #expect(!fm.fileExists(atPath: root.appendingPathComponent("qwen3-asr-0.6b").path))
-        #expect(!Qwen3AsrModelStore.hasVocabMarker(in: root, fileManager: fm))
+        #expect(!Qwen3AsrModelStore.hasInt8VocabMarker(in: root, fileManager: fm))
     }
 
     @Test("Cohere uses cohere backend")
