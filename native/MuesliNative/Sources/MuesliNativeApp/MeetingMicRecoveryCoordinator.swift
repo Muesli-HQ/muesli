@@ -53,6 +53,10 @@ final class MeetingMicRecoveryCoordinator {
     private let lock = NSLock()
     private var episode: Episode?
     private var previousState: MeetingMicHealthState?
+    /// Set by finishMeeting(). Late health snapshots (e.g. sample callbacks
+    /// enqueued before meeting teardown but processed after it) must not open
+    /// a fresh episode that would never see a terminal event.
+    private var finished = false
 
     init(policy: Policy = .default, now: @escaping () -> Date = Date.init) {
         self.policy = policy
@@ -62,6 +66,7 @@ final class MeetingMicRecoveryCoordinator {
     func process(_ snapshot: MeetingMicHealthSnapshot) {
         lock.lock()
         defer { lock.unlock() }
+        guard !finished else { return }
         let currentState = snapshot.state
         let previous = previousState
         previousState = currentState
@@ -122,10 +127,12 @@ final class MeetingMicRecoveryCoordinator {
     }
 
     /// Call when the meeting stops. An open episode at meeting end is the
-    /// terminal condition that warrants an error-level signal.
+    /// terminal condition that warrants an error-level signal. After this,
+    /// further snapshots are ignored.
     func finishMeeting() {
         lock.lock()
         defer { lock.unlock() }
+        finished = true
         guard let active = episode else { return }
         episode = nil
         emitLocked(.init(

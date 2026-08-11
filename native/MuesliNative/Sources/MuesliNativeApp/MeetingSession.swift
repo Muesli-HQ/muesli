@@ -530,9 +530,6 @@ final class MeetingSession {
     func stop() async throws -> MeetingSessionResult {
         onProgress?(.transcribingAudio)
         let endTime = Date()
-        // Close any open degradation episode before teardown: an episode still
-        // open at meeting end is the terminal (error-level) condition.
-        micRecoveryCoordinator.finishMeeting()
         var micSegments: [SpeechSegment] = []
         var systemSegments: [SpeechSegment] = []
         let usesUnifiedNemotronTranscript = config.enableLiveStreamingPartials
@@ -564,6 +561,11 @@ final class MeetingSession {
             let lastSystemChunkTiming = systemChunkTimingTracker.finish()
             return (meetingStart, lastChunkTiming, lastRawMicURL, lastSystemChunkTiming, lastSystemChunkURL)
         }
+        // The chunkRotationQueue barrier above guarantees every sample callback
+        // enqueued before teardown has been processed and that later callbacks
+        // bail on isRecording == false. Only now is the coordinator's episode
+        // state final; close any open degradation episode as unrecovered.
+        micRecoveryCoordinator.finishMeeting()
         let rawStreamingMicURL = meetingMicRecorder.stop()
         let retainedRecordingURL = retainedRecordingWriter?.stop()
         retainedRecordingWriter = nil

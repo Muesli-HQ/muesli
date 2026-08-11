@@ -136,6 +136,22 @@ struct MeetingMicRecoveryCoordinatorTests {
         #expect(harness.events.isEmpty)
     }
 
+    @Test("snapshots processed after finishMeeting cannot open a dangling episode")
+    func lateSnapshotsAfterFinishMeetingAreIgnored() {
+        // Regression test for the stop()-ordering race: a sample callback
+        // enqueued before teardown can run after finishMeeting(); it must not
+        // open an episode that never sees a terminal event.
+        let harness = Harness()
+        harness.systemActive(seconds: 4)
+        harness.coordinator.finishMeeting()
+        #expect(harness.events.map(\.kind) == [.degraded, .unrecovered])
+
+        harness.systemActive(seconds: 4)
+        #expect(harness.events.map(\.kind) == [.degraded, .unrecovered])
+        #expect(harness.recoveryRequests.count == 1)
+        #expect(!harness.coordinator.hasActiveEpisode)
+    }
+
     @Test("ordinary mic signal without system audio never starts an episode")
     func quietRoomIsNotDegraded() {
         let harness = Harness()
