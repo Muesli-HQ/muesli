@@ -1,5 +1,6 @@
 import Foundation
 import FluidAudio
+import MuesliCore
 import os
 import Testing
 @testable import MuesliNativeApp
@@ -44,6 +45,25 @@ struct MeetingStreamingPartialSessionTests {
                 try Data("{}".utf8).write(to: url)
             }
         }
+
+        // Presence alone is not proof that a multi-file download finished.
+        #expect(!MeetingLiveCaptionModelStore.isDownloaded(in: root))
+        let plan = ManagedASRModelPlans.parakeetRealtimeEOU320(modelsRoot: root)
+        let installedFiles = ModelNames.ParakeetEOU.requiredModels.map { artifact in
+            let relativePath = artifact.hasSuffix(".mlmodelc")
+                ? "\(artifact)/coremldata.bin"
+                : artifact
+            return ModelDownloadFile(
+                relativePath: relativePath,
+                remoteURL: URL(string: "https://example.com/model")!,
+                expectedByteCount: artifact.hasSuffix(".mlmodelc") ? 1 : 2
+            )
+        }
+        try plan.recordSuccessfulInstallation(ModelDownloadManifest(
+            id: plan.modelID,
+            version: "test-install",
+            files: installedFiles
+        ))
         #expect(MeetingLiveCaptionModelStore.isDownloaded(in: root))
     }
 
