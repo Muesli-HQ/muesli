@@ -2,6 +2,7 @@ import Testing
 import Accelerate
 import AppKit
 import Foundation
+import FluidAudio
 import MuesliCore
 @testable import MuesliNativeApp
 
@@ -75,6 +76,133 @@ struct BackendOptionTests {
         #expect(BackendOption.all.contains(.gemma4E2BLiteRT))
     }
 
+    @Test("Qwen ASR is a standard dictation model")
+    func qwenAsrIsNotExperimental() {
+        #expect(BackendOption.all.contains(.qwen3Asr))
+        #expect(!BackendOption.experimental.contains(.qwen3Asr))
+        #expect(BackendOption.qwen3Asr.description.contains("52 languages"))
+        #expect(BackendOption.qwen3Asr.description.contains("2–3 second"))
+    }
+
+    @Test("model descriptions explain usage without implementation jargon")
+    func modelDescriptionsAreProductFacing() {
+        let implementationTerms = ["INT8", "CoreML", "ANE", "RNNT", "FluidAudio", "LiteRT-LM", "quantized", "GGUF"]
+        for option in BackendOption.all {
+            for term in implementationTerms {
+                #expect(!option.description.contains(term), "\(option.label) description exposes \(term)")
+            }
+        }
+        for option in PostProcessorOption.all {
+            for term in implementationTerms {
+                #expect(!option.description.contains(term), "\(option.label) description exposes \(term)")
+            }
+        }
+    }
+
+    @Test("Qwen ASR cache names preserve current runtime and legacy cleanup paths")
+    func qwenAsrCacheDirectoryNamesMatchFluidAudio() {
+        // FluidAudio Repo.folderName default strips "-coreml" from the repo slug,
+        // so downloads land in qwen3-asr-0.6b/{int8,f32} (issue #380).
+        #expect(Qwen3AsrModelStore.cacheDirectoryNames.first == "qwen3-asr-0.6b")
+        #expect(Qwen3AsrModelStore.cacheDirectoryNames.contains("qwen3-asr-0.6b-coreml"))
+    }
+
+    @Test("Qwen ASR readiness matches the complete managed INT8 runtime directory")
+    func qwenAsrReadinessMatchesManagedRuntimeDirectory() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory
+            .appendingPathComponent("muesli-qwen-asr-path-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: root) }
+
+        func installRequiredArtifacts(in directory: URL) throws {
+            for relativePath in [
+                "qwen3_asr_audio_encoder_v2.mlmodelc/coremldata.bin",
+                "qwen3_asr_audio_encoder_v2.mlmodelc/weights/weight.bin",
+                "qwen3_asr_decoder_stateful.mlmodelc/coremldata.bin",
+                "qwen3_asr_decoder_stateful.mlmodelc/weights/weight.bin",
+                "qwen3_asr_embeddings.bin",
+                "vocab.json",
+            ] {
+                let url = directory.appendingPathComponent(relativePath)
+                try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data([0x01]).write(to: url)
+            }
+        }
+
+        #expect(!Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
+
+        let legacyDirectory = root
+            .appendingPathComponent("qwen3-asr-0.6b-coreml/int8", isDirectory: true)
+        try installRequiredArtifacts(in: legacyDirectory)
+        #expect(!Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
+
+        let managedDirectory = ManagedASRModelPlans.qwen3ASRInt8(modelsRoot: root).cacheDirectory
+        try installRequiredArtifacts(in: managedDirectory)
+        let managedPlan = ManagedASRModelPlans.qwen3ASRInt8(modelsRoot: root)
+        #expect(Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
+        let installedPaths = [
+            "qwen3_asr_audio_encoder_v2.mlmodelc/coremldata.bin",
+            "qwen3_asr_audio_encoder_v2.mlmodelc/weights/weight.bin",
+            "qwen3_asr_decoder_stateful.mlmodelc/coremldata.bin",
+            "qwen3_asr_decoder_stateful.mlmodelc/weights/weight.bin",
+            "qwen3_asr_embeddings.bin",
+            "vocab.json",
+        ]
+        let installedManifest = ModelDownloadManifest(
+            id: managedPlan.modelID,
+            version: "test-install",
+            files: installedPaths.map { relativePath in
+                ModelDownloadFile(
+                    relativePath: relativePath,
+                    remoteURL: URL(string: "https://example.com/model")!,
+                    expectedByteCount: 1
+                )
+            }
+        )
+        try managedPlan.recordSuccessfulInstallation(installedManifest)
+        #expect(Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
+
+        let completionMarker = managedDirectory
+            .appendingPathComponent(".muesli-managed-model-complete.json")
+        try Data("not-json".utf8).write(to: completionMarker)
+        #expect(!Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
+
+        try managedPlan.recordSuccessfulInstallation(installedManifest)
+        try fm.removeItem(at: managedDirectory.appendingPathComponent("vocab.json"))
+        #expect(!Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
+
+        try Qwen3AsrModelStore.deleteModelFiles(from: root, fileManager: fm)
+        #expect(!fm.fileExists(atPath: root.appendingPathComponent("qwen3-asr-0.6b").path))
+        #expect(!fm.fileExists(atPath: root.appendingPathComponent("qwen3-asr-0.6b-coreml").path))
+    }
+
+    @Test("Qwen ASR warmup publishes readiness only for the current uncancelled load")
+    func qwenAsrWarmupReadinessGate() throws {
+        try Qwen3AsrWarmupReadiness.validate(isCancelled: false, isCurrent: true)
+        #expect(throws: CancellationError.self) {
+            try Qwen3AsrWarmupReadiness.validate(isCancelled: true, isCurrent: true)
+        }
+        #expect(throws: CancellationError.self) {
+            try Qwen3AsrWarmupReadiness.validate(isCancelled: false, isCurrent: false)
+        }
+    }
+
+    @Test("Parakeet deletion unloads only the matching runtime variant")
+    func parakeetDeletionUnloadPolicy() {
+        #expect(FluidAudioUnloadPolicy.shouldUnload(
+            loadedVersion: .v2,
+            deletingVersion: .v2
+        ))
+        #expect(!FluidAudioUnloadPolicy.shouldUnload(
+            loadedVersion: .v3,
+            deletingVersion: .v2
+        ))
+        #expect(!FluidAudioUnloadPolicy.shouldUnload(
+            loadedVersion: nil,
+            deletingVersion: .v3
+        ))
+    }
+
     @Test("Cohere uses cohere backend")
     func cohereBackend() {
         #expect(BackendOption.cohereTranscribe.backend == "cohere")
@@ -142,23 +270,20 @@ struct BackendOptionTests {
         #expect(swapped != expectedColumnMajorTranspose)
     }
 
-    @Test("SenseVoice uses native FluidAudio CoreML model")
+    @Test("SenseVoice uses the native speech model")
     func senseVoiceBackend() {
         #expect(BackendOption.senseVoiceSmall.backend == "sensevoice")
         #expect(BackendOption.senseVoiceSmall.model == "FluidInference/sensevoice-small-coreml")
-        #expect(BackendOption.senseVoiceSmall.description.contains("FluidAudio"))
     }
 
-    @Test("Gemma 4 E2B uses LiteRT-LM as an experimental managed model")
+    @Test("Gemma 4 E2B remains an experimental managed model")
     func gemma4LiteRTBackend() {
         #expect(BackendOption.gemma4E2BLiteRT.backend == "gemma4-litert")
         #expect(BackendOption.gemma4E2BLiteRT.model == Gemma4LiteRTModelStore.repoID)
         #expect(BackendOption.gemma4E2BLiteRT.label == "Gemma 4 E2B")
         #expect(BackendOption.gemma4E2BLiteRT.sizeLabel == "~2.6 GB")
-        #expect(BackendOption.gemma4E2BLiteRT.description.contains("LiteRT-LM"))
-        #expect(BackendOption.gemma4E2BLiteRT.description.contains("Downloads managed local weights"))
-        #expect(BackendOption.gemma4E2BLiteRT.description.contains("ASR-tuned Gemma artifact"))
-        #expect(BackendOption.gemma4E2BLiteRT.description.contains("chat-style outputs fail closed"))
+        #expect(BackendOption.gemma4E2BLiteRT.description.contains("research preview"))
+        #expect(BackendOption.gemma4E2BLiteRT.description.contains("macOS 15"))
         #expect(BackendOption.experimental.contains(.gemma4E2BLiteRT))
         #expect(!BackendOption.onboarding.contains(.gemma4E2BLiteRT))
     }

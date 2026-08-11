@@ -123,6 +123,17 @@ actor TranscriptionCoordinator {
         }
     }
 
+    func unloadFluidAudioTranscriber(ifLoadedVersion version: AsrModelVersion) async {
+        await fluidTranscriber.shutdown(ifLoadedVersion: version)
+    }
+
+    func unloadQwen3Transcriber() async {
+        if #available(macOS 15, *), let transcriber = _qwen3Transcriber as? Qwen3AsrTranscriber {
+            await transcriber.shutdown()
+            _qwen3Transcriber = nil
+        }
+    }
+
     @available(macOS 15, *)
     private var qwen3Transcriber: Qwen3AsrTranscriber {
         if _qwen3Transcriber == nil {
@@ -290,15 +301,29 @@ actor TranscriptionCoordinator {
         switch backend.backend {
         case "fluidaudio":
             let version: AsrModelVersion = backend.model.contains("v2") ? .v2 : .v3
-            try await fluidTranscriber.loadModels(version: version, progress: progress)
+            try await fluidTranscriber.loadModels(
+                version: version,
+                progress: progress,
+                progressSnapshot: progressSnapshot
+            )
         case "whisper":
-            try await whisperTranscriber.loadModel(modelName: backend.model, progress: progress)
+            try await whisperTranscriber.loadModel(
+                modelName: backend.model,
+                progress: progress,
+                progressSnapshot: progressSnapshot
+            )
             // Warmup ANE/GPU so first dictation doesn't pay CoreML compilation cost
             fputs("[muesli-native] WhisperKit warmup: running silent audio for CoreML compilation...\n", stderr)
-            progress?(0.9, "Warming up model...")
+            let warming = ModelDownloadProgress.preparing(
+                modelID: backend.model,
+                message: "Warming up model..."
+            )
+            progress?(0.9, warming.message)
+            progressSnapshot?(warming)
             try await whisperTranscriber.warmup()
             fputs("[muesli-native] WhisperKit warmup complete\n", stderr)
             progress?(1.0, nil)
+            progressSnapshot?(warming.replacing(phase: .ready, message: "Model ready"))
         case "nemotron35":
             if #available(macOS 15, *) {
                 let transcriber = try await getLoadedNemotron35Transcriber(progress: progress, progressSnapshot: progressSnapshot)
@@ -315,7 +340,10 @@ actor TranscriptionCoordinator {
             }
         case "qwen":
             if #available(macOS 15, *) {
-                try await qwen3Transcriber.loadModels(progress: progress)
+                try await qwen3Transcriber.loadModels(
+                    progress: progress,
+                    progressSnapshot: progressSnapshot
+                )
             } else {
                 throw NSError(domain: "MuesliTranscriptionRuntime", code: 2, userInfo: [
                     NSLocalizedDescriptionKey: "Qwen3 ASR requires macOS 15 or later.",
@@ -338,7 +366,10 @@ actor TranscriptionCoordinator {
                 ])
             }
         case "sensevoice":
-            try await senseVoiceTranscriber.loadModels(progress: progress)
+            try await senseVoiceTranscriber.loadModels(
+                progress: progress,
+                progressSnapshot: progressSnapshot
+            )
         case "gemma4-litert":
             if #available(macOS 15, *) {
                 try await gemma4LiteRTTranscriber.prepare(progress: progress, progressSnapshot: progressSnapshot)

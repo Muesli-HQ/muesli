@@ -20,71 +20,40 @@ actor WhisperKitTranscriber {
     }
 
     /// Load a WhisperKit CoreML model. Downloads from HuggingFace if not cached.
-    func loadModel(modelName: String, progress: ((Double, String?) -> Void)? = nil) async throws {
+    func loadModel(
+        modelName: String,
+        progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
+    ) async throws {
         if loadedModel == modelName, whisperKit != nil { return }
 
         fputs("[whisperkit] loading model: \(modelName)...\n", stderr)
-        let modelFolder: URL?
-
-        if Self.isModelDownloaded(modelName) {
-            modelFolder = nil
-        } else {
-            let estimatedTotalBytes = Self.estimatedDownloadBytes(for: modelName)
-            let totalText = Self.formatMegabytes(estimatedTotalBytes)
-            progress?(0.02, "0 MB of \(totalText)")
-            modelFolder = try await WhisperKit.download(variant: modelName) { downloadProgress in
-                let fraction = min(max(downloadProgress.fractionCompleted, 0), 1)
-                let estimatedBytes = Int64(Double(estimatedTotalBytes) * fraction)
-                let completedText = Self.formatMegabytes(estimatedBytes)
-                let throughput = downloadProgress.userInfo[.throughputKey] as? Double ?? 0
-                let status: String
-                if throughput > 0 {
-                    status = "\(completedText) of \(totalText) • \(Self.formatMegabytes(Int64(throughput)))/s"
-                } else {
-                    status = "\(completedText) of \(totalText)"
-                }
-                progress?(max(fraction, 0.02), status)
-            }
-        }
-
-        let config = WhisperKitConfig(
-            model: modelFolder == nil ? modelName : nil,
-            modelFolder: modelFolder?.path,
-            computeOptions: ModelComputeOptions(
-                audioEncoderCompute: .cpuAndNeuralEngine,
-                textDecoderCompute: .cpuAndNeuralEngine
+        let plan = ManagedASRModelPlans.whisperKit(modelName: modelName)
+        let loadedWhisperKit = try await ManagedASRModelDownloader.loadValidated(
+            plan,
+            progress: progress,
+            progressSnapshot: progressSnapshot
+        ) { modelFolder in
+            let preparing = ModelDownloadProgress.preparing(
+                modelID: plan.modelID,
+                message: "Loading WhisperKit into Core ML..."
             )
-        )
+            progress?(0.95, preparing.message)
+            progressSnapshot?(preparing)
 
-        whisperKit = try await WhisperKit(config)
+            let config = WhisperKitConfig(
+                modelFolder: modelFolder.path,
+                computeOptions: ModelComputeOptions(
+                    audioEncoderCompute: .cpuAndNeuralEngine,
+                    textDecoderCompute: .cpuAndNeuralEngine
+                )
+            )
+            return try await WhisperKit(config)
+        }
+
+        whisperKit = loadedWhisperKit
         loadedModel = modelName
-        fputs("[whisperkit] model ready: \(modelName)\n", stderr)
-    }
-
-    private static func estimatedDownloadBytes(for modelName: String) -> Int64 {
-        switch modelName {
-        case "tiny.en":
-            return 153 * 1_000_000
-        case "small.en":
-            return 250 * 1_000_000
-        case "medium.en":
-            return 1_500 * 1_000_000
-        case "large-v3-v20240930_626MB":
-            return 626 * 1_000_000
-        default:
-            return 250 * 1_000_000
-        }
-    }
-
-    private static func formatMegabytes(_ bytes: Int64) -> String {
-        let megabytes = Double(bytes) / 1_000_000
-        if megabytes >= 1_000 {
-            return String(format: "%.1f GB", megabytes / 1_000)
-        }
-        if megabytes >= 100 {
-            return "\(Int(megabytes.rounded())) MB"
-        }
-        return String(format: "%.1f MB", megabytes)
+        fputs("[whisperkit] model loaded: \(modelName)\n", stderr)
     }
 
     /// Transcribe a 16kHz mono WAV file.
@@ -147,19 +116,11 @@ actor WhisperKitTranscriber {
     /// WhisperKit stores models under ~/Documents/huggingface/models/argmaxinc/whisperkit-coreml/.
     /// Each model variant is a direct subdirectory (e.g. openai_whisper-small.en/).
     static func isModelDownloaded(_ modelName: String) -> Bool {
-        let fm = FileManager.default
-        let fullName = modelName.hasPrefix("openai_whisper-") ? modelName : "openai_whisper-\(modelName)"
-        let modelDir = fm.homeDirectoryForCurrentUser
-            .appendingPathComponent("Documents/huggingface/models/argmaxinc/whisperkit-coreml/\(fullName)")
-        return fm.fileExists(atPath: modelDir.path)
+        ManagedASRModelPlans.whisperKit(modelName: modelName).isAvailableLocally()
     }
 
     /// Delete cached model files for a WhisperKit model variant.
     static func deleteModel(_ modelName: String) {
-        let fm = FileManager.default
-        let fullName = modelName.hasPrefix("openai_whisper-") ? modelName : "openai_whisper-\(modelName)"
-        let modelDir = fm.homeDirectoryForCurrentUser
-            .appendingPathComponent("Documents/huggingface/models/argmaxinc/whisperkit-coreml/\(fullName)")
-        try? fm.removeItem(at: modelDir)
+        try? ManagedASRModelPlans.whisperKit(modelName: modelName).delete()
     }
 }

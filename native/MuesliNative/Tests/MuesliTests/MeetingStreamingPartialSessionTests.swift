@@ -1,11 +1,32 @@
 import Foundation
 import FluidAudio
+import MuesliCore
 import os
 import Testing
 @testable import MuesliNativeApp
 
 @Suite("Meeting streaming partial session")
 struct MeetingStreamingPartialSessionTests {
+    @Test("stale live caption downloads cannot finish after an immediate restart")
+    func liveCaptionDownloadGenerationRejectsStaleCompletion() {
+        var state = ModelDownloadGenerationState()
+        let firstDownload = state.begin()
+        let cancellation = state.begin()
+        let replacementDownload = state.begin()
+
+        #expect(!state.contains(firstDownload))
+        #expect(!state.contains(cancellation))
+        #expect(state.contains(replacementDownload))
+        let clearedFirstDownload = state.clear(firstDownload)
+        let clearedCancellation = state.clear(cancellation)
+        #expect(!clearedFirstDownload)
+        #expect(!clearedCancellation)
+        #expect(state.contains(replacementDownload))
+        let clearedReplacement = state.clear(replacementDownload)
+        #expect(clearedReplacement)
+        #expect(state.current == nil)
+    }
+
     @Test("live caption model is ready only when every EOU artifact exists")
     func modelAvailabilityRequiresEveryArtifact() throws {
         let root = FileManager.default.temporaryDirectory
@@ -19,11 +40,52 @@ struct MeetingStreamingPartialSessionTests {
             let url = directory.appendingPathComponent(artifact)
             if artifact.hasSuffix(".mlmodelc") {
                 try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+                try Data([0x01]).write(to: url.appendingPathComponent("coremldata.bin"))
+                let weight = url.appendingPathComponent("weights/weight.bin")
+                try FileManager.default.createDirectory(
+                    at: weight.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try Data([0x01]).write(to: weight)
             } else {
                 try Data("{}".utf8).write(to: url)
             }
         }
+
+        let partialState = directory.appendingPathComponent(".muesli-download-state.json")
+        try Data("{}".utf8).write(to: partialState)
+        #expect(!MeetingLiveCaptionModelStore.isDownloaded(in: root))
+        try FileManager.default.removeItem(at: partialState)
         #expect(MeetingLiveCaptionModelStore.isDownloaded(in: root))
+
+        let plan = ManagedASRModelPlans.parakeetRealtimeEOU320(modelsRoot: root)
+        let installedFiles = ModelNames.ParakeetEOU.requiredModels.flatMap { artifact in
+            let relativePaths = artifact.hasSuffix(".mlmodelc")
+                ? ["\(artifact)/coremldata.bin", "\(artifact)/weights/weight.bin"]
+                : [artifact]
+            return relativePaths.map { relativePath in
+                ModelDownloadFile(
+                    relativePath: relativePath,
+                    remoteURL: URL(string: "https://example.com/model")!,
+                    expectedByteCount: artifact.hasSuffix(".mlmodelc") ? 1 : 2
+                )
+            }
+        }
+        try plan.recordSuccessfulInstallation(ModelDownloadManifest(
+            id: plan.modelID,
+            version: "test-install",
+            files: installedFiles
+        ))
+        #expect(MeetingLiveCaptionModelStore.isDownloaded(in: root))
+
+        let firstCompiledModel = try #require(
+            ModelNames.ParakeetEOU.requiredModels.first { $0.hasSuffix(".mlmodelc") }
+        )
+        let missingWeight = directory.appendingPathComponent(
+            "\(firstCompiledModel)/weights/weight.bin"
+        )
+        try FileManager.default.removeItem(at: missingWeight)
+        #expect(!MeetingLiveCaptionModelStore.isDownloaded(in: root))
     }
 
     @Test("publishes cumulative Parakeet partials")

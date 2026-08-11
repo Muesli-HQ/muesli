@@ -844,16 +844,16 @@ struct Nemotron35StreamStateTests {
 @Suite("Nemotron35 backend metadata")
 struct Nemotron35BackendMetadataTests {
 
-    @Test("nemotron35 description warns about limitations and lists languages")
+    @Test("nemotron35 description explains live usage and limitations")
     func descriptionWarnings() {
         let desc = BackendOption.nemotron35Multilingual.description
         #expect(!BackendOption.nemotron35Multilingual.label.contains("Experimental"))
         #expect(!desc.contains("Experimental"))
-        #expect(desc.contains("Hold-to-talk"))
-        #expect(desc.contains("handsfree"))
-        #expect(desc.contains("Multilingual"))
+        #expect(desc.contains("hold-to-talk"))
+        #expect(desc.contains("hands-free"))
         #expect(desc.contains("Hindi"))
         #expect(desc.contains("punctuation"))
+        #expect(desc.contains("does not go back to correct"))
     }
 
     @Test("nemotron35 backend identifier is nemotron35")
