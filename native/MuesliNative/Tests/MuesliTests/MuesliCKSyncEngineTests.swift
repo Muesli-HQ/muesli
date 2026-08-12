@@ -286,6 +286,38 @@ struct MuesliCKSyncEngineTests {
         #expect(!MuesliICloudSyncEngine.isMissingProvenanceRecord(mixed))
     }
 
+    @Test("provenance classification returns only requested correctly typed stable IDs")
+    func provenanceClassificationIsExactAndContentFree() throws {
+        let zoneID = MuesliICloudSyncEngine.Schema.syncZoneID
+        let firstID = CKRecord.ID(recordName: "stable-first", zoneID: zoneID)
+        let secondID = CKRecord.ID(recordName: "stable-second", zoneID: zoneID)
+        let missingID = CKRecord.ID(recordName: "stable-missing", zoneID: zoneID)
+        let unexpectedID = CKRecord.ID(recordName: "stable-unexpected", zoneID: zoneID)
+        let first = CKRecord(
+            recordType: MuesliICloudSyncEngine.Schema.textRecordType,
+            recordID: firstID
+        )
+        let wrongType = CKRecord(recordType: "MuesliBridgeDevice", recordID: secondID)
+        let unexpected = CKRecord(
+            recordType: MuesliICloudSyncEngine.Schema.textRecordType,
+            recordID: unexpectedID
+        )
+
+        let matches = try MuesliICloudSyncEngine.matchingProvenanceRecordNames(
+            expectedRecordIDs: [firstID, secondID, missingID],
+            results: [
+                firstID: .success(first),
+                secondID: .success(wrongType),
+                missingID: .failure(CKError(.unknownItem)),
+                unexpectedID: .success(unexpected),
+            ]
+        )
+
+        #expect(matches == Set([firstID.recordName]))
+        #expect(first.allKeys().isEmpty)
+        #expect(wrongType.allKeys().isEmpty)
+    }
+
     @Test("restored pending save rebuilds its CKRecord from SQLite")
     func restoredPendingChangeUsesDurableOutbox() async throws {
         let store = try makeStore()
@@ -581,6 +613,28 @@ struct MuesliCKSyncEngineTests {
         #expect(firstScope.hasPrefix("sha256:"))
     }
 
+    @Test("legacy provenance requires the exact complete stable-ID set")
+    func accountProvenanceRequiresEveryRecord() {
+        let required = Set(["stable-a", "stable-b"])
+
+        #expect(MuesliCKSyncEngine.hasExactAccountProvenance(
+            requiredRecordNames: required,
+            matchingRecordNames: required
+        ))
+        #expect(!MuesliCKSyncEngine.hasExactAccountProvenance(
+            requiredRecordNames: required,
+            matchingRecordNames: Set(["stable-a"])
+        ))
+        #expect(!MuesliCKSyncEngine.hasExactAccountProvenance(
+            requiredRecordNames: required,
+            matchingRecordNames: required.union(["unrequested"])
+        ))
+        #expect(!MuesliCKSyncEngine.hasExactAccountProvenance(
+            requiredRecordNames: [],
+            matchingRecordNames: []
+        ))
+    }
+
     @Test("first local-only library claims the current account and registers dirty text")
     func firstLocalOnlyLibraryClaimsCurrentAccount() async throws {
         let store = try makeStore()
@@ -597,7 +651,7 @@ struct MuesliCKSyncEngineTests {
             store: store,
             legacyAccountRecordVerifier: { _ in
                 Issue.record("Local-only rows must not require legacy CloudKit proof")
-                return false
+                return []
             }
         )
 
@@ -616,30 +670,112 @@ struct MuesliCKSyncEngineTests {
     func verifiedLegacyLibraryClaimsCurrentAccount() async throws {
         let store = try makeStore()
         _ = try store.insertDictation(
-            text: "Legacy synced text",
+            text: "First legacy synced text",
             durationSeconds: 2,
             startedAt: Date().addingTimeInterval(-2),
             endedAt: Date()
         )
-        let local = try #require(try store.textRecordsNeedingSync().first)
+        let first = try #require(try store.textRecordsNeedingSync().first)
         #expect(try store.markTextRecordSynced(
-            kind: local.kind,
-            recordName: local.id,
-            changeTag: "legacy-tag",
+            kind: first.kind,
+            recordName: first.id,
+            changeTag: "first-legacy-tag",
             systemFields: Data([0x01]),
-            recordUpdatedAt: local.updatedAt
+            recordUpdatedAt: first.updatedAt
+        ))
+        _ = try store.insertDictation(
+            text: "Second legacy synced text",
+            durationSeconds: 2,
+            startedAt: Date().addingTimeInterval(-2),
+            endedAt: Date()
+        )
+        let second = try #require(try store.textRecordsNeedingSync().first)
+        #expect(try store.markTextRecordSynced(
+            kind: second.kind,
+            recordName: second.id,
+            changeTag: "second-legacy-tag",
+            systemFields: Data([0x02]),
+            recordUpdatedAt: second.updatedAt
         ))
         let owner = CKRecord.ID(recordName: "verified-owner")
         let state = TestCKSyncPendingState()
+        let expectedNames = Set([first.id, second.id])
         let coordinator = MuesliCKSyncEngine(
             store: store,
-            legacyAccountRecordVerifier: { names in names == Set([local.id]) }
+            legacyAccountRecordVerifier: { names in
+                #expect(names == expectedNames)
+                return names
+            }
         )
 
         #expect(try await coordinator.handleAccountChange(currentUser: owner, state: state))
         #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.accountScopeKey)
             == Data(MuesliCKSyncEngine.accountScope(for: owner).utf8))
         #expect(state.pendingRecordZoneChanges.isEmpty)
+    }
+
+    @Test("partial legacy overlap cannot claim or upload the unscoped library")
+    func partialLegacyOverlapStaysBlocked() async throws {
+        let store = try makeStore()
+        _ = try store.insertDictation(
+            text: "First private legacy note",
+            durationSeconds: 2,
+            startedAt: Date().addingTimeInterval(-2),
+            endedAt: Date()
+        )
+        let first = try #require(try store.textRecordsNeedingSync().first)
+        #expect(try store.markTextRecordSynced(
+            kind: first.kind,
+            recordName: first.id,
+            changeTag: "first-account-tag",
+            systemFields: Data([0x01]),
+            recordUpdatedAt: first.updatedAt
+        ))
+        _ = try store.insertDictation(
+            text: "Second private legacy note",
+            durationSeconds: 2,
+            startedAt: Date().addingTimeInterval(-2),
+            endedAt: Date()
+        )
+        let second = try #require(try store.textRecordsNeedingSync().first)
+        #expect(try store.markTextRecordSynced(
+            kind: second.kind,
+            recordName: second.id,
+            changeTag: "second-account-tag",
+            systemFields: Data([0x02]),
+            recordUpdatedAt: second.updatedAt
+        ))
+        let expectedNames = Set([first.id, second.id])
+        let state = TestCKSyncPendingState([
+            .saveRecord(CKRecord.ID(
+                recordName: first.id,
+                zoneID: MuesliICloudSyncEngine.Schema.syncZoneID
+            )),
+        ])
+        let coordinator = MuesliCKSyncEngine(
+            store: store,
+            legacyAccountRecordVerifier: { names in
+                #expect(names == expectedNames)
+                #expect(!names.contains("First private legacy note"))
+                #expect(!names.contains("Second private legacy note"))
+                return Set([first.id])
+            }
+        )
+
+        #expect(try await coordinator.handleAccountChange(
+            currentUser: CKRecord.ID(recordName: "partially-overlapping-owner"),
+            state: state
+        ) == false)
+        #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.accountScopeKey) == nil)
+        #expect(state.pendingRecordZoneChanges.isEmpty)
+        #expect(try !store.hasTextRecordsNeedingSync())
+        #expect(try await coordinator.registerNextDirtyBatch(state: state) == 0)
+        let preservedFirst = try #require(try store.textRecordForSync(recordName: first.id))
+        let preservedSecond = try #require(try store.textRecordForSync(recordName: second.id))
+        #expect(preservedFirst.text == "First private legacy note")
+        #expect(preservedFirst.cloudChangeTag == "first-account-tag")
+        #expect(preservedSecond.text == "Second private legacy note")
+        #expect(preservedSecond.cloudChangeTag == "second-account-tag")
     }
 
     @Test("unverified legacy account is blocked without requeue or metadata loss")
@@ -668,7 +804,7 @@ struct MuesliCKSyncEngineTests {
             store: store,
             legacyAccountRecordVerifier: { names in
                 #expect(names == Set([local.id]))
-                return false
+                return []
             }
         )
 

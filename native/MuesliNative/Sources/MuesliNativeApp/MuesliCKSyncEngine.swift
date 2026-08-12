@@ -125,7 +125,7 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
     private static let maximumUploadBatchesPerSync = 50
 
     private let store: DictationStore
-    private let legacyAccountRecordVerifier: (@Sendable (Set<String>) async throws -> Bool)?
+    private let legacyAccountRecordVerifier: (@Sendable (Set<String>) async throws -> Set<String>)?
     private var container: CKContainer?
     private var preflight: MuesliICloudSyncEngine?
     private var engine: CKSyncEngine?
@@ -152,7 +152,7 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
     init(
         store: DictationStore,
         container: CKContainer? = nil,
-        legacyAccountRecordVerifier: (@Sendable (Set<String>) async throws -> Bool)? = nil,
+        legacyAccountRecordVerifier: (@Sendable (Set<String>) async throws -> Set<String>)? = nil,
         bridgeRefreshDidFinish: (@MainActor @Sendable () -> Void)? = nil,
         engineCancellationObserver: @escaping @Sendable () async -> Void = {}
     ) {
@@ -727,6 +727,13 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
         return "sha256:" + digest.map { String(format: "%02x", $0) }.joined()
     }
 
+    static func hasExactAccountProvenance(
+        requiredRecordNames: Set<String>,
+        matchingRecordNames: Set<String>
+    ) -> Bool {
+        !requiredRecordNames.isEmpty && matchingRecordNames == requiredRecordNames
+    }
+
     private func authorizeAccount(
         _ userRecordID: CKRecord.ID,
         preflight: MuesliICloudSyncEngine? = nil
@@ -745,18 +752,29 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
 
         let legacyRecordNames = try store.textRecordNamesRequiringAccountVerification()
         if !legacyRecordNames.isEmpty {
-            let verified: Bool
+            let matchingRecordNames: Set<String>
             if let legacyAccountRecordVerifier {
-                verified = try await legacyAccountRecordVerifier(legacyRecordNames)
+                matchingRecordNames = try await legacyAccountRecordVerifier(legacyRecordNames)
             } else if let preflight {
-                verified = try await preflight.syncZoneContainsAnyTextRecord(named: legacyRecordNames)
+                matchingRecordNames = try await preflight.matchingSyncZoneTextRecordNames(
+                    named: legacyRecordNames
+                )
             } else {
                 let resolved = self.preflight
                     ?? MuesliICloudSyncEngine(container: resolvedContainer())
                 self.preflight = resolved
-                verified = try await resolved.syncZoneContainsAnyTextRecord(named: legacyRecordNames)
+                matchingRecordNames = try await resolved.matchingSyncZoneTextRecordNames(
+                    named: legacyRecordNames
+                )
             }
-            guard verified else {
+            // One shared stable ID does not prove that the rest of an unscoped
+            // library belongs to this account. Every row carrying prior CloudKit
+            // evidence must be present as a text record in the current private
+            // zone before this process may claim or upload the library.
+            guard Self.hasExactAccountProvenance(
+                requiredRecordNames: legacyRecordNames,
+                matchingRecordNames: matchingRecordNames
+            ) else {
                 fputs("[muesli-native] CKSyncEngine account provenance unverified\n", stderr)
                 return false
             }

@@ -172,3 +172,27 @@ it does not call the store reset seam directly.
 After this correction, 150 focused CKSyncEngine/DictationStore tests and 194 broader
 sync/bridge/store/Insights tests passed, the `MuesliNativeApp` product rebuilt
 successfully, and `git diff --check` remained clean.
+
+## 2026-08-12 follow-up: exact legacy-account provenance
+
+Final cross-platform review found that the original unscoped-library proof accepted
+the current account after finding any one matching stable record ID. That was not a
+sufficient ownership boundary: two private libraries can partially overlap, and one
+shared ID must never authorize uploading every other cloud-backed local record.
+
+The macOS and iOS contracts are now standardized around an exact matched-ID set:
+
+- the privacy-preserving CloudKit lookup still requests only stable record IDs with
+  `desiredKeys: []` and never reads authored fields;
+- missing records, wrong record types, and omitted response entries are safe
+  non-matches, while transient/non-missing CloudKit failures still propagate;
+- an unscoped cloud-backed library is claimable only when every locally required ID
+  is returned as a text record in the current private zone;
+- fresh local-only libraries still claim the current account without CloudKit proof;
+- diagnostics remain content-free and never log raw record or account identifiers.
+
+Regression coverage proves exact/full proof succeeds and partial overlap preserves
+both records locally without claiming scope, registering records, or altering their
+CloudKit metadata. Validation reused the existing scratch path: all 30 focused
+CKSyncEngine tests and 197 broader sync/bridge/store/Insights tests passed, the
+`MuesliNativeApp` product rebuilt successfully, and `git diff --check` was clean.
