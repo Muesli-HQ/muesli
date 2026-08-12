@@ -479,12 +479,12 @@ final class MuesliICloudSyncEngine {
         forceBridgeDeviceRefresh: Bool = false
     ) async throws -> ICloudSyncResult {
         try await verifyAccountAvailable()
-        let syncZoneWasRecreated = try await ensureSyncZone()
-        await refreshBridgeDeviceLink(forceRefresh: forceBridgeDeviceRefresh)
-        try await migrateDefaultZoneIfNeeded(
+        _ = try await Self.prepareForCKSyncEngine(
             store: store,
-            resetCloudMetadataBeforeUpload: syncZoneWasRecreated
+            ensureZone: { try await self.ensureSyncZone() },
+            migrate: { try await self.migrateDefaultZoneIfNeeded(store: store) }
         )
+        await refreshBridgeDeviceLink(forceRefresh: forceBridgeDeviceRefresh)
 
         let remoteChanges = try await fetchChangedTextRecords()
         var downloaded = ICloudSyncKindCounts()
@@ -512,11 +512,26 @@ final class MuesliICloudSyncEngine {
     /// or companion-device discovery is performed on the text-sync critical path.
     func prepareForCKSyncEngine(store: DictationStore) async throws -> Bool {
         try await verifyAccountAvailable()
-        let syncZoneWasRecreated = try await ensureSyncZone()
-        try await migrateDefaultZoneIfNeeded(
+        return try await Self.prepareForCKSyncEngine(
             store: store,
-            resetCloudMetadataBeforeUpload: syncZoneWasRecreated
+            ensureZone: { try await self.ensureSyncZone() },
+            migrate: { try await self.migrateDefaultZoneIfNeeded(store: store) }
         )
+    }
+
+    /// Keeps same-account zone repair independent from the one-time legacy
+    /// migration flag. A previously migrated library must still discard record
+    /// versions from a deleted zone before any fresh CKRecords are constructed.
+    static func prepareForCKSyncEngine(
+        store: DictationStore,
+        ensureZone: () async throws -> Bool,
+        migrate: () async throws -> Void
+    ) async throws -> Bool {
+        let syncZoneWasRecreated = try await ensureZone()
+        if syncZoneWasRecreated {
+            try store.resetTextRecordCloudMetadataForZoneRecreation()
+        }
+        try await migrate()
         return syncZoneWasRecreated
     }
 
@@ -725,10 +740,7 @@ final class MuesliICloudSyncEngine {
         return ICloudChangedRecords(records: records, finalToken: finalToken)
     }
 
-    private func migrateDefaultZoneIfNeeded(
-        store: DictationStore,
-        resetCloudMetadataBeforeUpload: Bool = false
-    ) async throws {
+    private func migrateDefaultZoneIfNeeded(store: DictationStore) async throws {
         guard !defaults.bool(forKey: Schema.migratedDefaultZoneKey) else { return }
 
         let legacyDefaultZoneRecords = try await fetchAllDefaultZoneTextRecords()
@@ -739,12 +751,6 @@ final class MuesliICloudSyncEngine {
         _ = try store.upsertSyncedTextRecords(existingSyncZoneChanges.records.compactMap(Self.syncTextRecord(from:)))
         if let finalToken = existingSyncZoneChanges.finalToken {
             changeTokenStore.saveToken(finalToken)
-        }
-
-        if resetCloudMetadataBeforeUpload {
-            // Default-zone records and deleted-zone system fields cannot be used
-            // to construct records for the recreated custom zone.
-            try store.resetTextRecordCloudMetadataForZoneRecreation()
         }
 
         try await uploadLocalMigrationRecords(store: store)

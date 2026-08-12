@@ -804,4 +804,47 @@ struct MuesliCKSyncEngineTests {
         #expect(requeued.cloudSystemFields == nil)
         #expect(try store.hasTextRecordsNeedingSync())
     }
+
+    @Test("zone recreation repairs metadata even after legacy migration completed")
+    func migratedLibraryStillRepairsZoneRecreationDuringPreparation() async throws {
+        let store = try makeStore()
+        _ = try store.insertDictation(
+            text: "Preserve migrated local text",
+            durationSeconds: 2,
+            startedAt: Date().addingTimeInterval(-2),
+            endedAt: Date()
+        )
+        let local = try #require(try store.textRecordsNeedingSync().first)
+        #expect(try store.markTextRecordSynced(
+            kind: local.kind,
+            recordName: local.id,
+            changeTag: "deleted-zone-tag",
+            systemFields: Data([0x03, 0x04]),
+            recordUpdatedAt: local.updatedAt
+        ))
+        let suiteName = "MuesliCKSyncEngineTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(true, forKey: MuesliICloudSyncEngine.Schema.migratedDefaultZoneKey)
+        var migrationRuns = 0
+
+        let recreated = try await MuesliICloudSyncEngine.prepareForCKSyncEngine(
+            store: store,
+            ensureZone: { true },
+            migrate: {
+                guard !defaults.bool(
+                    forKey: MuesliICloudSyncEngine.Schema.migratedDefaultZoneKey
+                ) else { return }
+                migrationRuns += 1
+            }
+        )
+
+        #expect(recreated)
+        #expect(migrationRuns == 0)
+        let repaired = try #require(try store.textRecordForSync(recordName: local.id))
+        #expect(repaired.text == "Preserve migrated local text")
+        #expect(repaired.cloudChangeTag == nil)
+        #expect(repaired.cloudSystemFields == nil)
+        #expect(try store.hasTextRecordsNeedingSync())
+    }
 }

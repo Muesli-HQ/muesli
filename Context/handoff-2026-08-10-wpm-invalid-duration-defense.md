@@ -158,3 +158,17 @@ Final validation reused the existing SwiftPM scratch path above: 149 focused
 CKSyncEngine/DictationStore tests passed, 193 broader sync/bridge/store/Insights tests
 passed across six suites, the `MuesliNativeApp` product rebuilt successfully, and
 `git diff --check` was clean.
+
+Final zone-recreation review found that the same-account metadata reset still lived
+behind the one-time default-zone migration guard. That meant a user whose migration
+flag was already set could recreate the custom zone while retaining change tags and
+system fields from the deleted zone. Preparation now handles zone recreation before,
+and independently from, the migration guard: it clears only obsolete CloudKit record
+metadata, preserves authored text, and requeues eligible local rows in the durable
+outbox before any fresh CKRecords are built. An integration regression invokes the
+preparation path with migration already complete and proves the repair still occurs;
+it does not call the store reset seam directly.
+
+After this correction, 150 focused CKSyncEngine/DictationStore tests and 194 broader
+sync/bridge/store/Insights tests passed, the `MuesliNativeApp` product rebuilt
+successfully, and `git diff --check` remained clean.
