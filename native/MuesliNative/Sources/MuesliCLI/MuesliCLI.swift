@@ -176,6 +176,20 @@ func migrationWarnings(_ context: CLIContext) -> [String] {
     }
 }
 
+/// Migrates, then runs a schema-dependent store operation, returning it with any
+/// migration warnings for the response envelope. When the operation fails after
+/// a failed migration, the migration error is attached as the fix so the caller
+/// learns the schema is stale instead of seeing only SQLite's "no such column".
+func withMigration<T>(_ context: CLIContext, _ body: () throws -> T) throws -> (T, [String]) {
+    let warnings = migrationWarnings(context)
+    do {
+        return (try body(), warnings)
+    } catch {
+        guard let migrationFailure = warnings.first else { throw error }
+        throw CLIError.databaseError(error.localizedDescription, fix: migrationFailure)
+    }
+}
+
 struct GlobalOptions: ParsableArguments {
     @Option(name: .long, help: "Override the absolute path to muesli.db.")
     var dbPath: String?
@@ -418,8 +432,9 @@ struct MeetingsListCommand: ParsableCommand {
             emitSuccess(command: "muesli-cli meetings list", data: [MeetingListRow](), dbPath: context.databaseURL, warnings: ["No Muesli database exists at the resolved path."])
             return
         }
-        let warnings = migrationWarnings(context)
-        let rows = try context.store.recentMeetings(limit: limit, folderID: folderID).map(MeetingListRow.init)
+        let (rows, warnings) = try withMigration(context) {
+            try context.store.recentMeetings(limit: limit, folderID: folderID).map(MeetingListRow.init)
+        }
         emitSuccess(command: "muesli-cli meetings list", data: rows, dbPath: context.databaseURL, warnings: warnings)
     }
 }
@@ -432,8 +447,8 @@ struct MeetingsGetCommand: ParsableCommand {
     func run() throws {
         let context = CLIContext(options: global)
         try ensureDatabaseAvailable(context, command: "muesli-cli meetings get")
-        let warnings = migrationWarnings(context)
-        guard let meeting = try context.store.meeting(id: id) else {
+        let (found, warnings) = try withMigration(context) { try context.store.meeting(id: id) }
+        guard let meeting = found else {
             throw CLIError.notFound("No meeting exists with id \(id).", fix: "Run `muesli-cli meetings list` to find a valid ID.")
         }
         emitSuccess(command: "muesli-cli meetings get", data: MeetingDetailPayload(meeting), dbPath: context.databaseURL, warnings: warnings)
@@ -456,8 +471,8 @@ struct MeetingsUpdateNotesCommand: ParsableCommand {
     func run() throws {
         let context = CLIContext(options: global)
         try ensureDatabaseAvailable(context, command: "muesli-cli meetings update-notes")
-        let warnings = migrationWarnings(context)
-        guard try context.store.meeting(id: id) != nil else {
+        let (existing, warnings) = try withMigration(context) { try context.store.meeting(id: id) }
+        guard existing != nil else {
             throw CLIError.notFound("No meeting exists with id \(id).", fix: "Run `muesli-cli meetings list` to find a valid ID.")
         }
 
@@ -504,8 +519,9 @@ struct DictationsListCommand: ParsableCommand {
             emitSuccess(command: "muesli-cli dictations list", data: [DictationListRow](), dbPath: context.databaseURL, warnings: ["No Muesli database exists at the resolved path."])
             return
         }
-        let warnings = migrationWarnings(context)
-        let rows = try context.store.recentDictations(limit: limit).map(DictationListRow.init)
+        let (rows, warnings) = try withMigration(context) {
+            try context.store.recentDictations(limit: limit).map(DictationListRow.init)
+        }
         emitSuccess(command: "muesli-cli dictations list", data: rows, dbPath: context.databaseURL, warnings: warnings)
     }
 }
@@ -518,8 +534,8 @@ struct DictationsGetCommand: ParsableCommand {
     func run() throws {
         let context = CLIContext(options: global)
         try ensureDatabaseAvailable(context, command: "muesli-cli dictations get")
-        let warnings = migrationWarnings(context)
-        guard let dictation = try context.store.dictation(id: id) else {
+        let (found, warnings) = try withMigration(context) { try context.store.dictation(id: id) }
+        guard let dictation = found else {
             throw CLIError.notFound("No dictation exists with id \(id).", fix: "Run `muesli-cli dictations list` to find a valid ID.")
         }
         emitSuccess(command: "muesli-cli dictations get", data: DictationDetailPayload(dictation), dbPath: context.databaseURL, warnings: warnings)

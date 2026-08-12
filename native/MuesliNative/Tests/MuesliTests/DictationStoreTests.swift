@@ -661,6 +661,30 @@ struct DictationStoreTests {
         #expect(fetched.visualContext == "[10:05:00] Zoom:\nOCR visual text:\nQ3 roadmap")
     }
 
+    @Test("migrating a legacy database twice tolerates the duplicate columns")
+    func legacyMigrationIsIdempotent() throws {
+        let store = try makeLegacyStore()
+
+        try store.migrateIfNeeded()
+        // The second pass re-runs every ADD COLUMN against columns that now
+        // exist; those duplicates must stay tolerated while real failures throw.
+        try store.migrateIfNeeded()
+
+        let start = Date()
+        let id = try store.insertMeeting(
+            title: "Twice Migrated",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(60),
+            rawTranscript: "Transcript",
+            formattedNotes: "Notes",
+            micAudioPath: nil,
+            systemAudioPath: nil,
+            visualContext: "context survives a second migration"
+        )
+        #expect(try #require(try store.meeting(id: id)).visualContext == "context survives a second migration")
+    }
+
     @Test("migration adds visual context column to legacy meeting schema")
     func migrationAddsVisualContextColumn() throws {
         let store = try makeLegacyStore()

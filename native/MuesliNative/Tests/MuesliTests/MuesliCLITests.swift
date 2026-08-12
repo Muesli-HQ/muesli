@@ -106,6 +106,41 @@ struct MuesliCLITests {
         #expect(warnings.first?.contains("Schema migration failed") == true)
     }
 
+    @Test("a read that fails after a failed migration explains the stale schema")
+    func withMigrationAttachesMigrationFailureToReadError() {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("muesli-cli-enrich-\(UUID().uuidString)")
+        let dbURL = dir.appendingPathComponent("muesli.db")
+        try? FileManager.default.createDirectory(at: dbURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let context = CLIContext(dbPath: dbURL.path, supportDir: nil)
+        #expect(throws: CLIError.self) {
+            try withMigration(context) { try context.store.recentMeetings(limit: 1) }
+        }
+        do {
+            _ = try withMigration(context) { try context.store.recentMeetings(limit: 1) }
+        } catch let error as CLIError {
+            #expect(error.errorBody.code == "database_error")
+            #expect(error.errorBody.fix?.contains("Schema migration failed") == true)
+        } catch {
+            Issue.record("expected a CLIError, got \(error)")
+        }
+    }
+
+    @Test("a read that succeeds keeps the store result and the migration warning")
+    func withMigrationPassesThroughSuccessfulReads() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("muesli-cli-passthrough-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let context = CLIContext(dbPath: dir.appendingPathComponent("muesli.db").path, supportDir: nil)
+        let (rows, warnings) = try withMigration(context) { try context.store.recentMeetings(limit: 5) }
+        #expect(rows.isEmpty)
+        #expect(warnings.isEmpty)
+    }
+
     @Test("meeting payloads expose applied template metadata")
     func meetingPayloadIncludesTemplateMetadata() {
         let record = MeetingRecord(

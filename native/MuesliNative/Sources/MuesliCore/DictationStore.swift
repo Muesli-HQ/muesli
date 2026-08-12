@@ -257,7 +257,14 @@ public final class DictationStore {
             "ALTER TABLE meeting_participants ADD COLUMN is_suppressed INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE meetings ADD COLUMN visual_context TEXT"
         ] {
-            _ = sqlite3_exec(db, sql, nil, nil, nil)
+            guard sqlite3_exec(db, sql, nil, nil, nil) != SQLITE_OK else { continue }
+            // ADD COLUMN has no IF NOT EXISTS, so a duplicate column is the
+            // normal result on an up-to-date database. Anything else means the
+            // column is genuinely missing, and callers need to hear about it
+            // rather than fail later on a "no such column" query.
+            guard String(cString: sqlite3_errmsg(db)).contains("duplicate column name") else {
+                throw lastError(db)
+            }
         }
         // Migrate local development databases created by the superseded PR.
         _ = sqlite3_exec(
