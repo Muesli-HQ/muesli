@@ -476,8 +476,8 @@ struct ModelDownloadCoordinatorTests {
         #expect(!whisper.selections[0].includedPaths.contains("AudioEncoder.mlpackage"))
     }
 
-    @Test("complete legacy Whisper checkpoints retain their exact cache identities")
-    func legacyWhisperCheckpointAvailability() throws {
+    @Test("English-only Whisper checkpoints use their exact downloadable cache identities")
+    func englishWhisperCheckpointAvailability() throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
 

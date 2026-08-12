@@ -332,19 +332,21 @@ Important meeting fields:
 | Qwen3 ASR | FluidAudio | CoreML / Neural Engine | ~1.3 GB | 52 languages | ~2-3s |
 | Indic ASR | CoreML | RNNT | ~618 MB | 7 Indian languages | Experimental |
 | Gemma 4 E2B | LiteRT-LM | Metal GPU decoder + CPU audio encoder | ~2.6 GB | Multilingual | Experimental |
-| Whisper Tiny | WhisperKit | CoreML / Neural Engine | ~153 MB | Multilingual | Fastest Whisper option |
-| Whisper Small | WhisperKit | CoreML / Neural Engine | ~250 MB | Multilingual | ~1-2s |
-| Whisper Large Turbo | WhisperKit | CoreML / Neural Engine | ~626 MB | Multilingual | ~2-4s |
+| Whisper Tiny Multilingual | WhisperKit | CoreML / Neural Engine | ~153 MB | Multilingual | Fastest Whisper option |
+| Whisper Tiny English | WhisperKit | CoreML / Neural Engine | ~153 MB | English only | Fastest English Whisper option |
+| Whisper Small Multilingual | WhisperKit | CoreML / Neural Engine | ~250 MB | Multilingual | ~1-2s |
+| Whisper Small English | WhisperKit | CoreML / Neural Engine | ~250 MB | English only | ~1-2s |
+| Whisper Medium English | WhisperKit | CoreML / Neural Engine | ~1.5 GB | English only | Slower, more accurate English option |
+| Whisper Large Turbo Multilingual | WhisperKit | CoreML / Neural Engine | ~626 MB | Multilingual | ~2-4s |
 
-All three Whisper models auto-detect the spoken language by default, or you can
-choose a language to keep recognition focused. Tiny is the lightest option,
-Small balances speed and accuracy, and Large Turbo is the strongest choice for
-accents, background noise, and mixed-language audio. Saved Tiny and Small
-English-only downloads remain available under clearly marked Legacy options on
-that Mac, and continue using their exact English checkpoints. They are not
-offered on fresh installations. A saved English-only selection whose checkpoint
-is no longer present moves to its multilingual replacement instead (Medium moves
-to Large Turbo).
+Whisper's Tiny and Small sizes are available as either multilingual or
+English-only downloads. The multilingual variants auto-detect the spoken
+language by default and also let you pin a language; the English variants stay
+focused on English and therefore do not show a language control. Medium English
+is available when English accuracy matters more than download size and speed,
+while Large Turbo is the strongest multilingual choice for accents, background
+noise, and mixed-language audio. Every variant can be downloaded, deleted, and
+downloaded again from the Models tab.
 
 The app and `muesli-cli` share Nemotron 3.5's model cache at
 `~/.cache/muesli/models/nemotron35-multilingual-2240ms`; downloading it in one

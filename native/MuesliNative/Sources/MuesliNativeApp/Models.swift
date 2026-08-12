@@ -31,7 +31,7 @@ struct BackendOption: Equatable {
     static let whisperSmall = BackendOption(
         backend: "whisper",
         model: "small",
-        label: "Whisper Small",
+        label: "Whisper Small Multilingual",
         sizeLabel: "~250 MB",
         description: "A balanced multilingual Whisper option for everyday notes. It handles accents and background noise better than Tiny while keeping the download modest. Auto-detect language by default, or choose one yourself.",
         recommended: false
@@ -40,7 +40,7 @@ struct BackendOption: Equatable {
     static let whisperTiny = BackendOption(
         backend: "whisper",
         model: "tiny",
-        label: "Whisper Tiny",
+        label: "Whisper Tiny Multilingual",
         sizeLabel: "~153 MB",
         description: "The quickest Whisper download and lightest multilingual option for occasional notes. It gives up some accuracy on accents, noise, and longer speech. Auto-detect language by default, or choose one yourself.",
         recommended: false
@@ -49,39 +49,36 @@ struct BackendOption: Equatable {
     static let whisperLargeTurbo = BackendOption(
         backend: "whisper",
         model: "large-v3-v20240930_626MB",
-        label: "Whisper Large Turbo",
+        label: "Whisper Large Turbo Multilingual",
         sizeLabel: "~626 MB",
         description: "Whisper's strongest multilingual option. Better for mixed languages and difficult audio, with a larger download and more processing time than Small. Auto-detect language by default, or pin a language.",
         recommended: false
     )
 
-    /// English-only WhisperKit checkpoints offered by earlier Muesli versions.
-    /// They remain visible only while their exact, complete local download exists;
-    /// new installations offer the multilingual family below instead.
-    static let legacyWhisperTinyEnglish = BackendOption(
+    static let whisperTinyEnglish = BackendOption(
         backend: "whisper",
         model: "tiny.en",
-        label: "Whisper Tiny English (Legacy)",
+        label: "Whisper Tiny English",
         sizeLabel: "~153 MB",
-        description: "Your previously downloaded English-only Tiny model. It stays available on this Mac for the quickest Whisper results, but new installations use the multilingual Tiny model.",
+        description: "The quickest English-only Whisper option for lightweight notes. Choose it when you always speak English and do not need automatic language detection.",
         recommended: false
     )
 
-    static let legacyWhisperSmallEnglish = BackendOption(
+    static let whisperSmallEnglish = BackendOption(
         backend: "whisper",
         model: "small.en",
-        label: "Whisper Small English (Legacy)",
+        label: "Whisper Small English",
         sizeLabel: "~250 MB",
-        description: "Your previously downloaded English-only Small model. It stays available on this Mac as a balanced Whisper option, but new installations use the multilingual Small model.",
+        description: "A balanced English-only Whisper option for everyday dictation. It handles accents and background noise better than Tiny when you do not need other languages.",
         recommended: false
     )
 
-    static let legacyWhisperMediumEnglish = BackendOption(
+    static let whisperMediumEnglish = BackendOption(
         backend: "whisper",
         model: "medium.en",
-        label: "Whisper Medium English (Legacy)",
+        label: "Whisper Medium English",
         sizeLabel: "~1.5 GB",
-        description: "Your previously downloaded English-only Medium model. It stays available on this Mac when you prefer its accuracy, but new installations use the current multilingual Whisper choices.",
+        description: "A larger English-only Whisper option for difficult accents and noisier recordings. It favors accuracy over download size and speed.",
         recommended: false
     )
 
@@ -137,28 +134,11 @@ struct BackendOption: Equatable {
         .parakeetMultilingual, .parakeetEnglish,
     ]
 
-    static let multilingualWhisperFamily: [BackendOption] = [
-        .whisperTiny, .whisperSmall, .whisperLargeTurbo,
+    static let whisperFamily: [BackendOption] = [
+        .whisperTiny, .whisperTinyEnglish,
+        .whisperSmall, .whisperSmallEnglish,
+        .whisperMediumEnglish, .whisperLargeTurbo,
     ]
-
-    static let legacyWhisperFamily: [BackendOption] = [
-        .legacyWhisperTinyEnglish, .legacyWhisperSmallEnglish, .legacyWhisperMediumEnglish,
-    ]
-
-    /// The normal catalog contains only multilingual Whisper choices. Previously
-    /// downloaded English-only checkpoints are grandfathered in under their exact
-    /// model identities so they remain usable without being offered to new users.
-    static var whisperFamily: [BackendOption] {
-        whisperFamily(legacyModelIsAvailable: { isLegacyWhisperModelAvailable($0) })
-    }
-
-    static func whisperFamily(
-        legacyModelIsAvailable: (String) -> Bool
-    ) -> [BackendOption] {
-        multilingualWhisperFamily + legacyWhisperFamily.filter {
-            legacyModelIsAvailable($0.model)
-        }
-    }
 
     static let qwen3Asr = BackendOption(
         backend: "qwen",
@@ -181,20 +161,14 @@ struct BackendOption: Equatable {
     ]
 
     /// Models available for download and use.
-    static var all: [BackendOption] {
-        catalog(legacyModelIsAvailable: { isLegacyWhisperModelAvailable($0) })
-    }
-
-    static func catalog(
-        legacyModelIsAvailable: (String) -> Bool
-    ) -> [BackendOption] {
+    static let all: [BackendOption] = {
         parakeetFamily
             + [.qwen3Asr]
-            + whisperFamily(legacyModelIsAvailable: legacyModelIsAvailable)
+            + whisperFamily
             + [.cohereTranscribe]
             + streaming
             + experimental
-    }
+    }()
 
     /// Curated first-run choices shown in onboarding's "Other models" section.
     /// This is a deliberate hand-picked list, not a derived rule. Experimental models
@@ -203,12 +177,6 @@ struct BackendOption: Equatable {
 
     /// Models coming soon — shown greyed out in the Models tab.
     static let comingSoon: [BackendOption] = []
-
-    /// Tests and importers can supply an explicit snapshot of locally available
-    /// legacy models while normal app decoding falls back to the real model cache.
-    static let availableLegacyWhisperModelsUserInfoKey = CodingUserInfoKey(
-        rawValue: "com.muesli.availableLegacyWhisperModels"
-    )!
 
     /// Only models that have been downloaded and are ready for inference.
     static var downloaded: [BackendOption] {
@@ -221,59 +189,9 @@ struct BackendOption: Equatable {
     }
 
     static func resolve(backend: String, model: String) -> BackendOption? {
-        resolve(
-            backend: backend,
-            model: model,
-            legacyModelIsAvailable: { isLegacyWhisperModelAvailable($0) }
-        )
-    }
-
-    static func resolve(
-        backend: String,
-        model: String,
-        legacyModelIsAvailable: (String) -> Bool
-    ) -> BackendOption? {
-        let normalizedModel = normalizedModel(
-            backend: backend,
-            model: model,
-            legacyModelIsAvailable: legacyModelIsAvailable
-        )
-        return catalog(legacyModelIsAvailable: legacyModelIsAvailable).first {
-            $0.backend == backend && $0.model == normalizedModel
+        all.first {
+            $0.backend == backend && $0.model == model
         }
-    }
-
-    /// Preserves a grandfathered English-only Whisper selection only while its
-    /// exact checkpoint is installed. Otherwise it migrates to the multilingual
-    /// catalog. Exact matching keeps unrelated names such as `ggml-medium.en` intact.
-    static func normalizedModel(backend: String, model: String) -> String {
-        normalizedModel(
-            backend: backend,
-            model: model,
-            legacyModelIsAvailable: { isLegacyWhisperModelAvailable($0) }
-        )
-    }
-
-    static func normalizedModel(
-        backend: String,
-        model: String,
-        legacyModelIsAvailable: (String) -> Bool
-    ) -> String {
-        guard backend == "whisper" else { return model }
-        switch model {
-        case legacyWhisperTinyEnglish.model:
-            return legacyModelIsAvailable(model) ? model : whisperTiny.model
-        case legacyWhisperSmallEnglish.model:
-            return legacyModelIsAvailable(model) ? model : whisperSmall.model
-        case legacyWhisperMediumEnglish.model:
-            return legacyModelIsAvailable(model) ? model : whisperLargeTurbo.model
-        default: return model
-        }
-    }
-
-    static func isLegacyWhisperModelAvailable(_ model: String) -> Bool {
-        guard legacyWhisperFamily.contains(where: { $0.model == model }) else { return false }
-        return WhisperKitTranscriber.isModelDownloaded(model)
     }
 
     var isStreamingDictationBackend: Bool {
@@ -282,10 +200,6 @@ struct BackendOption: Equatable {
 
     var supportsMeetingTranscription: Bool {
         !isStreamingDictationBackend
-    }
-
-    var isLegacyWhisperModel: Bool {
-        Self.legacyWhisperFamily.contains(self)
     }
 
     /// Multilingual WhisperKit models expose language selection (auto-detect or pinned code).
@@ -300,16 +214,7 @@ struct BackendOption: Equatable {
         fallback: BackendOption?,
         downloadedOptions: [BackendOption]
     ) -> BackendOption? {
-        let normalizedModel = normalizedModel(
-            backend: backend,
-            model: model,
-            legacyModelIsAvailable: { legacyModel in
-                downloadedOptions.contains {
-                    $0.backend == "whisper" && $0.model == legacyModel
-                }
-            }
-        )
-        if let selected = downloadedOptions.first(where: { $0.backend == backend && $0.model == normalizedModel }) {
+        if let selected = downloadedOptions.first(where: { $0.backend == backend && $0.model == model }) {
             return selected
         }
         if let fallback,
@@ -1400,15 +1305,6 @@ struct AppConfig: Codable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let defaults = AppConfig()
-        let explicitLegacyWhisperModels = decoder.userInfo[
-            BackendOption.availableLegacyWhisperModelsUserInfoKey
-        ] as? Set<String>
-        let legacyWhisperModelIsAvailable: (String) -> Bool = { model in
-            if let explicitLegacyWhisperModels {
-                return explicitLegacyWhisperModels.contains(model)
-            }
-            return BackendOption.isLegacyWhisperModelAvailable(model)
-        }
         dictationHotkey = (try? c.decode(HotkeyConfig.self, forKey: .dictationHotkey)) ?? defaults.dictationHotkey
         computerUseHotkey = (try? c.decode(HotkeyConfig.self, forKey: .computerUseHotkey))
             ?? HotkeyConfig.computerUseDefault(avoiding: dictationHotkey)
@@ -1425,11 +1321,7 @@ struct AppConfig: Codable {
         )
         computerUseTimeoutSeconds = (try? c.decode(Int.self, forKey: .computerUseTimeoutSeconds)) ?? defaults.computerUseTimeoutSeconds
         sttBackend = (try? c.decode(String.self, forKey: .sttBackend)) ?? defaults.sttBackend
-        sttModel = BackendOption.normalizedModel(
-            backend: sttBackend,
-            model: (try? c.decode(String.self, forKey: .sttModel)) ?? defaults.sttModel,
-            legacyModelIsAvailable: legacyWhisperModelIsAvailable
-        )
+        sttModel = (try? c.decode(String.self, forKey: .sttModel)) ?? defaults.sttModel
         dictationInputDeviceUID = try? c.decode(String.self, forKey: .dictationInputDeviceUID)
         meetingInputDeviceUID = try? c.decode(String.self, forKey: .meetingInputDeviceUID)
         cohereLanguage = CohereTranscribeLanguage.resolvedCode(try? c.decode(String.self, forKey: .cohereLanguage))
@@ -1437,18 +1329,10 @@ struct AppConfig: Codable {
         nemotron35Language = Nemotron35Language.resolvedCode(try? c.decode(String.self, forKey: .nemotron35Language))
         whisperLanguage = WhisperKitLanguage.resolvedCode(try? c.decode(String.self, forKey: .whisperLanguage))
         meetingTranscriptionBackend = (try? c.decode(String.self, forKey: .meetingTranscriptionBackend)) ?? sttBackend
-        meetingTranscriptionModel = BackendOption.normalizedModel(
-            backend: meetingTranscriptionBackend,
-            model: (try? c.decode(String.self, forKey: .meetingTranscriptionModel)) ?? sttModel,
-            legacyModelIsAvailable: legacyWhisperModelIsAvailable
-        )
+        meetingTranscriptionModel = (try? c.decode(String.self, forKey: .meetingTranscriptionModel)) ?? sttModel
         meetingSummaryBackend = (try? c.decode(String.self, forKey: .meetingSummaryBackend)) ?? defaults.meetingSummaryBackend
         defaultMeetingTemplateID = (try? c.decode(String.self, forKey: .defaultMeetingTemplateID)) ?? defaults.defaultMeetingTemplateID
-        whisperModel = BackendOption.normalizedModel(
-            backend: "whisper",
-            model: (try? c.decode(String.self, forKey: .whisperModel)) ?? defaults.whisperModel,
-            legacyModelIsAvailable: legacyWhisperModelIsAvailable
-        )
+        whisperModel = (try? c.decode(String.self, forKey: .whisperModel)) ?? defaults.whisperModel
         idleTimeout = (try? c.decode(Double.self, forKey: .idleTimeout)) ?? defaults.idleTimeout
         autoRecordMeetings = (try? c.decode(Bool.self, forKey: .autoRecordMeetings)) ?? defaults.autoRecordMeetings
         if c.contains(.upcomingMeetingsDayCount) {
