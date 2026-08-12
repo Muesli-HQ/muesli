@@ -203,11 +203,15 @@ struct MeetingMicRecoveryCoordinatorTests {
         #expect(!harness.coordinator.hasActiveEpisode)
     }
 
-    @Test("ordinary mic signal without system audio never starts an episode")
+    @Test("ordinary mic silence without system audio never starts an episode, even past the confirmation window")
     func quietRoomIsNotDegraded() {
         let harness = Harness()
-        harness.micSilence()
-        harness.micSilence()
+        // Feed zero mic samples for longer than the detector's 3s confirmation
+        // threshold, with no system audio present.
+        for _ in 0..<40 {
+            harness.micSilence()
+            harness.advance(seconds: 0.1)
+        }
         #expect(harness.events.isEmpty)
         #expect(harness.recoveryRequests.isEmpty)
     }
