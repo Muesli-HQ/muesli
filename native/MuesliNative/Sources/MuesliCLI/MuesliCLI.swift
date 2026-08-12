@@ -180,8 +180,12 @@ func migrationWarnings(_ context: CLIContext) -> [String] {
 /// migration warnings for the response envelope. When the operation fails after
 /// a failed migration, the migration error is attached as the fix so the caller
 /// learns the schema is stale instead of seeing only SQLite's "no such column".
-func withMigration<T>(_ context: CLIContext, _ body: () throws -> T) throws -> (T, [String]) {
-    let warnings = migrationWarnings(context)
+func withMigration<T>(
+    _ context: CLIContext,
+    migrate: (CLIContext) -> [String] = migrationWarnings,
+    _ body: () throws -> T
+) throws -> (T, [String]) {
+    let warnings = migrate(context)
     do {
         return (try body(), warnings)
     } catch {

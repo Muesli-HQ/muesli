@@ -128,10 +128,29 @@ struct MuesliCLITests {
         }
     }
 
-    @Test("a read that succeeds keeps the store result and the migration warning")
-    func withMigrationPassesThroughSuccessfulReads() throws {
+    @Test("a successful read still reports a migration warning")
+    func withMigrationKeepsWarningOnSuccessfulRead() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("muesli-cli-passthrough-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let context = CLIContext(dbPath: dir.appendingPathComponent("muesli.db").path, supportDir: nil)
+        // A migration can fail against a schema that is already current (a busy
+        // database while the app writes), where the read still succeeds. The
+        // warning is the only signal the caller gets, so it must survive.
+        try context.store.migrateIfNeeded()
+        let (rows, warnings) = try withMigration(context, migrate: { _ in ["Schema migration failed: database is locked."] }) {
+            try context.store.recentMeetings(limit: 5)
+        }
+        #expect(rows.isEmpty)
+        #expect(warnings == ["Schema migration failed: database is locked."])
+    }
+
+    @Test("a read with no migration trouble reports no warnings")
+    func withMigrationReportsNoWarningsOnCleanMigration() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("muesli-cli-clean-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
 
