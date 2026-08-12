@@ -22,6 +22,12 @@ struct MuesliCLITests {
         let transcribeSpec = payload.commands.first { $0.name == "transcribe" }
         #expect(transcribeSpec?.usage.contains("nemotron35") == true)
         #expect(transcribeSpec?.usage.contains("--dictionary") == true)
+        for model in TranscribeModel.allCases {
+            #expect(
+                transcribeSpec?.usage.contains(model.rawValue) == true,
+                "CLI spec does not advertise \(model.rawValue)"
+            )
+        }
     }
 
     @Test("explicit db path overrides support directory resolution")
