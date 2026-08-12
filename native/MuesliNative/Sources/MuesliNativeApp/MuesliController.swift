@@ -5771,6 +5771,7 @@ final class MuesliController: NSObject {
             disarmMeetingAutoStop()
             indicator.setMeetingRecording(false, config: config)
             if let meetingID = activeMeetingID {
+                lastStoppedMeetingID = meetingID
                 activeMeetingID = nil
                 if activeMeetingAudioWarning?.meetingID == meetingID {
                     activeMeetingAudioWarning = nil
@@ -5786,6 +5787,9 @@ final class MuesliController: NSObject {
         self.activeMeetingSession = nil
         indicator.setMeetingRecording(false, config: config)
         if let meetingID = activeMeetingID {
+            // Preserve identity for episode terminal telemetry emitted by the
+            // discarding session (it hops to the main actor asynchronously).
+            lastStoppedMeetingID = meetingID
             activeMeetingID = nil
             if activeMeetingAudioWarning?.meetingID == meetingID {
                 activeMeetingAudioWarning = nil
