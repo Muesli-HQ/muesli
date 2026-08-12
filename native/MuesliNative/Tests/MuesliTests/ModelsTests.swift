@@ -40,8 +40,11 @@ struct BackendOptionTests {
 
     @Test("Whisper models use whisper backend")
     func whisperBackend() {
+        #expect(BackendOption.whisperTiny.backend == "whisper")
+        #expect(BackendOption.whisperTinyEnglish.backend == "whisper")
         #expect(BackendOption.whisperSmall.backend == "whisper")
-        #expect(BackendOption.whisperMedium.backend == "whisper")
+        #expect(BackendOption.whisperSmallEnglish.backend == "whisper")
+        #expect(BackendOption.whisperMediumEnglish.backend == "whisper")
         #expect(BackendOption.whisperLargeTurbo.backend == "whisper")
     }
 
@@ -65,8 +68,11 @@ struct BackendOptionTests {
     func allContainsAll() {
         #expect(BackendOption.all.contains(.parakeetMultilingual))
         #expect(BackendOption.all.contains(.parakeetEnglish))
+        #expect(BackendOption.all.contains(.whisperTiny))
+        #expect(BackendOption.all.contains(.whisperTinyEnglish))
         #expect(BackendOption.all.contains(.whisperSmall))
-        #expect(BackendOption.all.contains(.whisperMedium))
+        #expect(BackendOption.all.contains(.whisperSmallEnglish))
+        #expect(BackendOption.all.contains(.whisperMediumEnglish))
         #expect(BackendOption.all.contains(.whisperLargeTurbo))
         #expect(BackendOption.all.contains(.qwen3Asr))
         #expect(BackendOption.all.contains(.cohereTranscribe))
@@ -295,7 +301,7 @@ struct BackendOptionTests {
 
     @Test("onboarding offers the conservative models plus Nemotron 3.5")
     func onboardingModelChoices() {
-        #expect(BackendOption.onboarding == [.parakeetMultilingual, .whisperTinyEnglish, .whisperSmall, .cohereTranscribe, .nemotron35Multilingual])
+        #expect(BackendOption.onboarding == [.parakeetMultilingual, .whisperTiny, .whisperSmall, .cohereTranscribe, .nemotron35Multilingual])
         for option in BackendOption.experimental {
             #expect(!BackendOption.onboarding.contains(option))
         }
@@ -316,13 +322,62 @@ struct BackendOptionTests {
         #expect(!BackendOption.downloadedMeetingTranscription.contains(.nemotron35Multilingual))
     }
 
+    @Test("only multilingual Whisper models expose language selection")
+    func whisperLanguageSelectionAvailability() {
+        #expect(BackendOption.whisperTiny.supportsWhisperLanguageSelection)
+        #expect(BackendOption.whisperSmall.supportsWhisperLanguageSelection)
+        #expect(BackendOption.whisperLargeTurbo.supportsWhisperLanguageSelection)
+        #expect(!BackendOption.whisperTinyEnglish.supportsWhisperLanguageSelection)
+        #expect(!BackendOption.whisperSmallEnglish.supportsWhisperLanguageSelection)
+        #expect(!BackendOption.whisperMediumEnglish.supportsWhisperLanguageSelection)
+        #expect(!BackendOption.parakeetMultilingual.supportsWhisperLanguageSelection)
+    }
+
     @Test("Whisper models use WhisperKit CoreML identifiers")
     func whisperKitModels() {
         // WhisperKit models use short variant names, not ggml- prefixed binaries
+        #expect(BackendOption.whisperTiny.model == "tiny")
         #expect(BackendOption.whisperTinyEnglish.model == "tiny.en")
-        #expect(BackendOption.whisperSmall.model == "small.en")
-        #expect(BackendOption.whisperMedium.model == "medium.en")
+        #expect(BackendOption.whisperSmall.model == "small")
+        #expect(BackendOption.whisperSmallEnglish.model == "small.en")
+        #expect(BackendOption.whisperMediumEnglish.model == "medium.en")
         #expect(BackendOption.whisperLargeTurbo.model.contains("large"))
+    }
+
+    @Test("English-only and multilingual Whisper checkpoints are always in the catalog")
+    func whisperCatalogIncludesEveryVariant() {
+        #expect(BackendOption.whisperFamily == [
+            .whisperTiny, .whisperTinyEnglish,
+            .whisperSmall, .whisperSmallEnglish,
+            .whisperMediumEnglish, .whisperLargeTurbo,
+        ])
+        #expect(BackendOption.resolve(backend: "whisper", model: "tiny.en") == .whisperTinyEnglish)
+        #expect(BackendOption.resolve(backend: "whisper", model: "small.en") == .whisperSmallEnglish)
+        #expect(BackendOption.resolve(backend: "whisper", model: "medium.en") == .whisperMediumEnglish)
+    }
+
+    @Test("resolveDownloaded falls back when an English-only selection is not downloaded")
+    func resolveDownloadedFallsBackForMissingEnglishWhisperSelection() {
+        let resolved = BackendOption.resolveDownloaded(
+            backend: "whisper",
+            model: "small.en",
+            fallback: .parakeetMultilingual,
+            downloadedOptions: [.parakeetMultilingual, .whisperSmall]
+        )
+
+        #expect(resolved == .parakeetMultilingual)
+    }
+
+    @Test("resolveDownloaded keeps an installed English-only Whisper selection")
+    func resolveDownloadedKeepsEnglishWhisperSelection() {
+        let resolved = BackendOption.resolveDownloaded(
+            backend: "whisper",
+            model: "small.en",
+            fallback: .parakeetMultilingual,
+            downloadedOptions: [.parakeetMultilingual, .whisperSmallEnglish]
+        )
+
+        #expect(resolved == .whisperSmallEnglish)
     }
 
     @Test("resolveDownloaded keeps selected downloaded meeting model")
@@ -727,6 +782,7 @@ struct AppConfigTests {
         #expect(config.meetingInputDeviceUID == nil)
         #expect(config.cohereLanguage == CohereTranscribeLanguage.defaultLanguage.rawValue)
         #expect(config.indicASRLanguage == IndicASRLanguage.defaultLanguage.rawValue)
+        #expect(config.whisperLanguage == WhisperKitLanguage.defaultLanguage.rawValue)
         #expect(config.meetingTranscriptionBackend == BackendOption.whisper.backend)
         #expect(config.meetingTranscriptionModel == BackendOption.whisper.model)
         #expect(config.meetingSummaryBackend == "chatgpt")
@@ -1095,6 +1151,7 @@ struct AppConfigTests {
         #expect(json["meeting_recording_hotkey_trigger_threshold_ms"] != nil)
         #expect(json["cohere_language"] != nil)
         #expect(json["indic_asr_language"] != nil)
+        #expect(json["whisper_language"] != nil)
         #expect(json["meeting_transcription_backend"] != nil)
         #expect(json["meeting_transcription_model"] != nil)
         #expect(json["indicator_anchor"] != nil)
@@ -1168,6 +1225,7 @@ struct AppConfigTests {
         #expect(config.showFloatingIndicator == true)
         #expect(config.resolvedCohereLanguage == .english)
         #expect(config.resolvedIndicASRLanguage == .defaultLanguage)
+        #expect(config.resolvedWhisperLanguage == .auto)
         #expect(config.hasCompletedOnboarding == false)
         #expect(config.resolvedOnboardingUseCase == .dictation)
         #expect(config.defaultMeetingTemplateID == MeetingTemplates.autoID)
@@ -1615,6 +1673,24 @@ struct AppConfigTests {
 
         #expect(config.meetingTranscriptionBackend == "whisper")
         #expect(config.meetingTranscriptionModel == "ggml-medium.en")
+    }
+
+    @Test("English-only Whisper selections keep their exact model identities")
+    func englishOnlyWhisperSelectionsKeepExactModels() throws {
+        let json = """
+        {
+          "stt_backend": "whisper",
+          "stt_model": "tiny.en",
+          "meeting_transcription_backend": "whisper",
+          "meeting_transcription_model": "small.en",
+          "whisper_model": "medium.en"
+        }
+        """
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.sttModel == BackendOption.whisperTinyEnglish.model)
+        #expect(config.meetingTranscriptionModel == BackendOption.whisperSmallEnglish.model)
+        #expect(config.whisperModel == BackendOption.whisperMediumEnglish.model)
     }
 
     @Test("indicator anchor falls back to custom when legacy origin exists")

@@ -57,16 +57,42 @@ actor WhisperKitTranscriber {
     }
 
     /// Transcribe a 16kHz mono WAV file.
-    func transcribe(wavURL: URL) async throws -> (text: String, processingTime: Double) {
+    /// - Parameter language: `.auto` enables WhisperKit language detection; otherwise pins that ISO code.
+    ///   Ignored for English-only `.en` models, which keep default English decoding.
+    func transcribe(
+        wavURL: URL,
+        language: WhisperKitLanguage = .defaultLanguage
+    ) async throws -> (text: String, processingTime: Double) {
         guard let whisperKit else { throw TranscriberError.notLoaded }
+        guard let loadedModel else { throw TranscriberError.notLoaded }
 
         let start = CFAbsoluteTimeGetCurrent()
-        let results = try await whisperKit.transcribe(audioPath: wavURL.path)
+        let decodeOptions = Self.makeDecodeOptions(language: language, modelName: loadedModel)
+        let results = try await whisperKit.transcribe(audioPath: wavURL.path, decodeOptions: decodeOptions)
         let elapsed = CFAbsoluteTimeGetCurrent() - start
 
         let text = results.map(\.text).joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return (text: text, processingTime: elapsed)
+    }
+
+    /// Build WhisperKit decode options for the loaded model.
+    /// English-only checkpoints ignore language preference and keep default English decoding.
+    static func makeDecodeOptions(
+        language: WhisperKitLanguage,
+        modelName: String
+    ) -> DecodingOptions {
+        guard let effective = WhisperKitLanguage.preferenceForLoadedModel(language, modelName: modelName) else {
+            return DecodingOptions()
+        }
+        switch effective {
+        case .auto:
+            // Default DecodingOptions leaves detectLanguage false when usePrefillPrompt is true,
+            // which silently forces English. Request detection explicitly for multilingual models.
+            return DecodingOptions(detectLanguage: true)
+        default:
+            return DecodingOptions(language: effective.rawValue)
+        }
     }
 
     /// Run a short silent transcription to trigger CoreML compilation.
@@ -88,7 +114,7 @@ actor WhisperKitTranscriber {
     // MARK: - Model Storage
 
     /// WhisperKit stores models under ~/Documents/huggingface/models/argmaxinc/whisperkit-coreml/.
-    /// Each model variant is a direct subdirectory (e.g. openai_whisper-small.en/).
+    /// Each model variant is a direct subdirectory (e.g. openai_whisper-small/).
     static func isModelDownloaded(_ modelName: String) -> Bool {
         ManagedASRModelPlans.whisperKit(modelName: modelName).isAvailableLocally()
     }

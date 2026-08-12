@@ -560,6 +560,13 @@ struct ModelsView: View {
         )
     }
 
+    private var whisperLanguageSelection: Binding<WhisperKitLanguage> {
+        Binding(
+            get: { appState.config.resolvedWhisperLanguage },
+            set: { controller.selectWhisperLanguage($0) }
+        )
+    }
+
     private var postProcessorSection: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
@@ -788,6 +795,24 @@ struct ModelsView: View {
             Text(selectedOption.description)
                 .font(MuesliTheme.caption())
                 .foregroundStyle(MuesliTheme.textSecondary)
+
+            if selectedOption.supportsWhisperLanguageSelection {
+                HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
+                    Text("Language")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .frame(width: 64, alignment: .leading)
+
+                    Picker("", selection: whisperLanguageSelection) {
+                        ForEach(WhisperKitLanguage.allCases, id: \.self) { language in
+                            Text(language.label).tag(language)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 220, alignment: .leading)
+                }
+            }
 
             if showsDownloadStatus {
                 downloadProgressView(
@@ -1114,6 +1139,24 @@ struct ModelsView: View {
 
                     Picker("", selection: indicASRLanguageSelection) {
                         ForEach(IndicASRLanguage.allCases, id: \.self) { language in
+                            Text(language.label).tag(language)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 220, alignment: .leading)
+                }
+            }
+
+            if option.supportsWhisperLanguageSelection {
+                HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
+                    Text("Language")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .frame(width: 64, alignment: .leading)
+
+                    Picker("", selection: whisperLanguageSelection) {
+                        ForEach(WhisperKitLanguage.allCases, id: \.self) { language in
                             Text(language.label).tag(language)
                         }
                     }
@@ -1608,6 +1651,9 @@ struct ModelsView: View {
                 try await deleteModelFiles(option)
                 await MainActor.run {
                     _ = downloadedModels.remove(option.model)
+                    if appState.selectedMeetingTranscriptionBackend == option {
+                        controller.refreshMeetingTranscriptionSelectionForAvailability()
+                    }
                     downloadSnapshots.removeValue(forKey: option.model)
                     downloadMessages.removeValue(forKey: option.model)
                     downloadGenerations.removeValue(forKey: option.model)

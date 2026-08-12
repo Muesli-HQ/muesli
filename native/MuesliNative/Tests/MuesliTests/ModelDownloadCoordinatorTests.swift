@@ -469,11 +469,55 @@ struct ModelDownloadCoordinatorTests {
         #expect(plan.selections[0].remoteDirectory == "int8")
         #expect(plan.selections[0].includedPaths.contains("vocab.json"))
 
-        let whisper = ManagedASRModelPlans.whisperKit(modelName: "tiny.en", downloadRoot: root)
+        let whisper = ManagedASRModelPlans.whisperKit(modelName: "tiny", downloadRoot: root)
         #expect(whisper.selections[0].includedPaths.contains("AudioEncoder.mlmodelc"))
         #expect(whisper.selections[0].includedPaths.contains("config.json"))
         #expect(whisper.selections[0].includedPaths.contains("generation_config.json"))
         #expect(!whisper.selections[0].includedPaths.contains("AudioEncoder.mlpackage"))
+    }
+
+    @Test("English-only Whisper checkpoints use their exact downloadable cache identities")
+    func englishWhisperCheckpointAvailability() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        for modelName in ["tiny.en", "small.en", "medium.en"] {
+            let plan = ManagedASRModelPlans.whisperKit(modelName: modelName, downloadRoot: root)
+            #expect(plan.modelID == modelName)
+            #expect(plan.cacheDirectory.lastPathComponent == "openai_whisper-\(modelName)")
+            #expect(plan.selections[0].remoteDirectory == "openai_whisper-\(modelName)")
+
+            for model in ["MelSpectrogram.mlmodelc", "AudioEncoder.mlmodelc", "TextDecoder.mlmodelc"] {
+                for artifact in ["coremldata.bin", "weights/weight.bin"] {
+                    let url = plan.cacheDirectory
+                        .appendingPathComponent(model, isDirectory: true)
+                        .appendingPathComponent(artifact)
+                    try FileManager.default.createDirectory(
+                        at: url.deletingLastPathComponent(),
+                        withIntermediateDirectories: true
+                    )
+                    try Data([0x01]).write(to: url)
+                }
+            }
+            try Data("{}".utf8).write(
+                to: plan.cacheDirectory.appendingPathComponent("config.json")
+            )
+            try Data("{}".utf8).write(
+                to: plan.cacheDirectory.appendingPathComponent("generation_config.json")
+            )
+
+            #expect(plan.isAvailableLocally())
+        }
+
+        let incompleteSmall = ManagedASRModelPlans.whisperKit(
+            modelName: "small.en",
+            downloadRoot: root
+        )
+        try FileManager.default.removeItem(
+            at: incompleteSmall.cacheDirectory
+                .appendingPathComponent("AudioEncoder.mlmodelc/weights/weight.bin")
+        )
+        #expect(!incompleteSmall.isAvailableLocally())
     }
 
     @Test("legacy ASR installs stay available without manifest discovery")

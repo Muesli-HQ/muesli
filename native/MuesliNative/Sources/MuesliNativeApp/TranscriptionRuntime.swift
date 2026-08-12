@@ -626,6 +626,7 @@ actor TranscriptionCoordinator {
         backend: BackendOption,
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
         indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage,
+        whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
         enablePostProcessor: Bool = false,
         customWords: [[String: Any]] = [],
         appContext: String? = nil
@@ -645,7 +646,13 @@ actor TranscriptionCoordinator {
                 fputs("[muesli-native] VAD check failed, transcribing anyway: \(error)\n", stderr)
             }
         }
-        var result = try await route(url: url, backend: backend, cohereLanguage: cohereLanguage, indicASRLanguage: indicASRLanguage)
+        var result = try await route(
+            url: url,
+            backend: backend,
+            cohereLanguage: cohereLanguage,
+            indicASRLanguage: indicASRLanguage,
+            whisperLanguage: whisperLanguage
+        )
         result = removeArtifacts(result)
         if !result.text.isEmpty {
             Qwen3PostProcessorLogging.logVerbose("Dictation raw transcript after artifact cleanup: \(result.text)")
@@ -668,17 +675,25 @@ actor TranscriptionCoordinator {
         at url: URL,
         backend: BackendOption,
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
-        indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage
+        indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage,
+        whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage
     ) async throws -> SpeechTranscriptionResult {
         // Meetings intentionally skip Qwen/custom-word post-processing. Keep deterministic artifact/filler cleanup only.
-        cleanMeetingTranscript(try await route(url: url, backend: backend, cohereLanguage: cohereLanguage, indicASRLanguage: indicASRLanguage))
+        cleanMeetingTranscript(try await route(
+            url: url,
+            backend: backend,
+            cohereLanguage: cohereLanguage,
+            indicASRLanguage: indicASRLanguage,
+            whisperLanguage: whisperLanguage
+        ))
     }
 
     func transcribeMeetingChunk(
         at url: URL,
         backend: BackendOption,
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
-        indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage
+        indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage,
+        whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage
     ) async throws -> SpeechTranscriptionResult {
         // Meeting chunks intentionally skip Qwen/custom-word post-processing for reconciliation.
         // Run VAD to skip silent chunks (prevents hallucinations)
@@ -694,7 +709,13 @@ actor TranscriptionCoordinator {
                 fputs("[muesli-native] VAD check failed, transcribing anyway: \(error)\n", stderr)
             }
         }
-        return cleanMeetingTranscript(try await route(url: url, backend: backend, cohereLanguage: cohereLanguage, indicASRLanguage: indicASRLanguage))
+        return cleanMeetingTranscript(try await route(
+            url: url,
+            backend: backend,
+            cohereLanguage: cohereLanguage,
+            indicASRLanguage: indicASRLanguage,
+            whisperLanguage: whisperLanguage
+        ))
     }
 
     func diarizeSystemAudio(at url: URL) async throws -> DiarizationResult? {
@@ -1018,11 +1039,15 @@ actor TranscriptionCoordinator {
         url: URL,
         backend: BackendOption,
         cohereLanguage: CohereTranscribeLanguage,
-        indicASRLanguage: IndicASRLanguage
+        indicASRLanguage: IndicASRLanguage,
+        whisperLanguage: WhisperKitLanguage
     ) async throws -> SpeechTranscriptionResult {
         switch backend.backend {
         case "whisper":
-            return try await transcribeWithWhisperKit(url: url)
+            let language = backend.supportsWhisperLanguageSelection
+                ? whisperLanguage
+                : WhisperKitLanguage.defaultLanguage
+            return try await transcribeWithWhisperKit(url: url, language: language)
         case "nemotron35":
             return try await transcribeWithNemotron35(url: url)
         case "qwen":
@@ -1058,9 +1083,12 @@ actor TranscriptionCoordinator {
 
     // MARK: - WhisperKit (Whisper on ANE/GPU via CoreML)
 
-    private func transcribeWithWhisperKit(url: URL) async throws -> SpeechTranscriptionResult {
+    private func transcribeWithWhisperKit(
+        url: URL,
+        language: WhisperKitLanguage
+    ) async throws -> SpeechTranscriptionResult {
         fputs("[muesli-native] transcribing with WhisperKit: \(url.lastPathComponent)\n", stderr)
-        let result = try await whisperTranscriber.transcribe(wavURL: url)
+        let result = try await whisperTranscriber.transcribe(wavURL: url, language: language)
         fputs("[muesli-native] WhisperKit result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         return SpeechTranscriptionResult(

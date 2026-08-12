@@ -30,10 +30,28 @@ struct BackendOption: Equatable {
 
     static let whisperSmall = BackendOption(
         backend: "whisper",
-        model: "small.en",
-        label: "Whisper Small",
+        model: "small",
+        label: "Whisper Small Multilingual",
         sizeLabel: "~250 MB",
-        description: "A dependable English Whisper option for everyday notes. It is more forgiving than Tiny while keeping the download modest.",
+        description: "A balanced multilingual Whisper option for everyday notes. It handles accents and background noise better than Tiny while keeping the download modest. Auto-detect language by default, or choose one yourself.",
+        recommended: false
+    )
+
+    static let whisperTiny = BackendOption(
+        backend: "whisper",
+        model: "tiny",
+        label: "Whisper Tiny Multilingual",
+        sizeLabel: "~153 MB",
+        description: "The quickest Whisper download and lightest multilingual option for occasional notes. It gives up some accuracy on accents, noise, and longer speech. Auto-detect language by default, or choose one yourself.",
+        recommended: false
+    )
+
+    static let whisperLargeTurbo = BackendOption(
+        backend: "whisper",
+        model: "large-v3-v20240930_626MB",
+        label: "Whisper Large Turbo Multilingual",
+        sizeLabel: "~626 MB",
+        description: "Whisper's strongest multilingual option. Better for mixed languages and difficult audio, with a larger download and more processing time than Small. Auto-detect language by default, or pin a language.",
         recommended: false
     )
 
@@ -42,25 +60,25 @@ struct BackendOption: Equatable {
         model: "tiny.en",
         label: "Whisper Tiny English",
         sizeLabel: "~153 MB",
-        description: "The quickest Whisper download and lightest option for occasional English notes. It gives up some accuracy on accents, noise, and longer speech.",
+        description: "The quickest English-only Whisper option for lightweight notes. Choose it when you always speak English and do not need automatic language detection.",
         recommended: false
     )
 
-    static let whisperMedium = BackendOption(
+    static let whisperSmallEnglish = BackendOption(
+        backend: "whisper",
+        model: "small.en",
+        label: "Whisper Small English",
+        sizeLabel: "~250 MB",
+        description: "A balanced English-only Whisper option for everyday dictation. It handles accents and background noise better than Tiny when you do not need other languages.",
+        recommended: false
+    )
+
+    static let whisperMediumEnglish = BackendOption(
         backend: "whisper",
         model: "medium.en",
-        label: "Whisper Medium",
+        label: "Whisper Medium English",
         sizeLabel: "~1.5 GB",
-        description: "More careful English transcription for accents or difficult audio, at the cost of a much larger download and slower results.",
-        recommended: false
-    )
-
-    static let whisperLargeTurbo = BackendOption(
-        backend: "whisper",
-        model: "large-v3-v20240930_626MB",
-        label: "Whisper Large Turbo",
-        sizeLabel: "~626 MB",
-        description: "Whisper's strongest multilingual option. Better for mixed languages and difficult audio, with a larger download and more processing time than Small.",
+        description: "A larger English-only Whisper option for difficult accents and noisier recordings. It favors accuracy over download size and speed.",
         recommended: false
     )
 
@@ -117,7 +135,9 @@ struct BackendOption: Equatable {
     ]
 
     static let whisperFamily: [BackendOption] = [
-        .whisperTinyEnglish, .whisperSmall, .whisperMedium, .whisperLargeTurbo,
+        .whisperTiny, .whisperTinyEnglish,
+        .whisperSmall, .whisperSmallEnglish,
+        .whisperMediumEnglish, .whisperLargeTurbo,
     ]
 
     static let qwen3Asr = BackendOption(
@@ -141,12 +161,19 @@ struct BackendOption: Equatable {
     ]
 
     /// Models available for download and use.
-    static let all: [BackendOption] = parakeetFamily + [.qwen3Asr] + whisperFamily + [.cohereTranscribe] + streaming + experimental
+    static let all: [BackendOption] = {
+        parakeetFamily
+            + [.qwen3Asr]
+            + whisperFamily
+            + [.cohereTranscribe]
+            + streaming
+            + experimental
+    }()
 
     /// Curated first-run choices shown in onboarding's "Other models" section.
     /// This is a deliberate hand-picked list, not a derived rule. Experimental models
     /// are excluded by default.
-    static let onboarding: [BackendOption] = [.parakeetMultilingual, .whisperTinyEnglish, .whisperSmall, .cohereTranscribe, .nemotron35Multilingual]
+    static let onboarding: [BackendOption] = [.parakeetMultilingual, .whisperTiny, .whisperSmall, .cohereTranscribe, .nemotron35Multilingual]
 
     /// Models coming soon — shown greyed out in the Models tab.
     static let comingSoon: [BackendOption] = []
@@ -162,7 +189,9 @@ struct BackendOption: Equatable {
     }
 
     static func resolve(backend: String, model: String) -> BackendOption? {
-        all.first { $0.backend == backend && $0.model == model }
+        all.first {
+            $0.backend == backend && $0.model == model
+        }
     }
 
     var isStreamingDictationBackend: Bool {
@@ -171,6 +200,12 @@ struct BackendOption: Equatable {
 
     var supportsMeetingTranscription: Bool {
         !isStreamingDictationBackend
+    }
+
+    /// Multilingual WhisperKit models expose language selection (auto-detect or pinned code).
+    /// English-only `.en` variants do not.
+    var supportsWhisperLanguageSelection: Bool {
+        backend == "whisper" && !WhisperKitLanguage.isEnglishOnlyModel(model)
     }
 
     static func resolveDownloaded(
@@ -285,6 +320,70 @@ enum Nemotron35Language: String, CaseIterable, Codable, Sendable {
 
     static func resolvedCode(_ rawValue: String?) -> String {
         resolved(rawValue).rawValue
+    }
+}
+
+/// Language selection for multilingual WhisperKit models.
+/// `auto` enables WhisperKit `detectLanguage`; explicit codes pin decoding language.
+enum WhisperKitLanguage: String, CaseIterable, Codable, Sendable {
+    case auto
+    case english = "en"
+    case hindi = "hi"
+    case spanish = "es"
+    case french = "fr"
+    case german = "de"
+    case italian = "it"
+    case portuguese = "pt"
+    case chinese = "zh"
+    case japanese = "ja"
+    case korean = "ko"
+    case russian = "ru"
+    case arabic = "ar"
+
+    static let defaultLanguage: Self = .auto
+
+    var label: String {
+        switch self {
+        case .auto: return "Auto-detect"
+        case .english: return "English"
+        case .hindi: return "Hindi"
+        case .spanish: return "Spanish"
+        case .french: return "French"
+        case .german: return "German"
+        case .italian: return "Italian"
+        case .portuguese: return "Portuguese"
+        case .chinese: return "Chinese"
+        case .japanese: return "Japanese"
+        case .korean: return "Korean"
+        case .russian: return "Russian"
+        case .arabic: return "Arabic"
+        }
+    }
+
+    static func resolved(_ rawValue: String?) -> Self {
+        guard let rawValue,
+              let language = Self(rawValue: rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) else {
+            return defaultLanguage
+        }
+        return language
+    }
+
+    static func resolvedCode(_ rawValue: String?) -> String {
+        resolved(rawValue).rawValue
+    }
+
+    /// English-only WhisperKit checkpoints (e.g. `tiny.en`) have no multilingual language tokens.
+    static func isEnglishOnlyModel(_ modelName: String) -> Bool {
+        modelName.hasSuffix(".en")
+    }
+
+    /// Preference to apply for a loaded WhisperKit model.
+    /// Returns `nil` for English-only variants so callers use default `DecodingOptions`.
+    static func preferenceForLoadedModel(
+        _ preference: WhisperKitLanguage,
+        modelName: String
+    ) -> WhisperKitLanguage? {
+        isEnglishOnlyModel(modelName) ? nil : preference
     }
 }
 
@@ -980,6 +1079,7 @@ struct AppConfig: Codable {
     var cohereLanguage: String = CohereTranscribeLanguage.defaultLanguage.rawValue
     var indicASRLanguage: String = IndicASRLanguage.defaultLanguage.rawValue
     var nemotron35Language: String = Nemotron35Language.defaultLanguage.rawValue
+    var whisperLanguage: String = WhisperKitLanguage.defaultLanguage.rawValue
     var meetingTranscriptionBackend: String = BackendOption.whisper.backend
     var meetingTranscriptionModel: String = BackendOption.whisper.model
     var meetingSummaryBackend: String = MeetingSummaryBackendOption.chatGPT.backend
@@ -1100,6 +1200,7 @@ struct AppConfig: Codable {
         case cohereLanguage = "cohere_language"
         case indicASRLanguage = "indic_asr_language"
         case nemotron35Language = "nemotron35_language"
+        case whisperLanguage = "whisper_language"
         case meetingTranscriptionBackend = "meeting_transcription_backend"
         case meetingTranscriptionModel = "meeting_transcription_model"
         case meetingSummaryBackend = "meeting_summary_backend"
@@ -1226,6 +1327,7 @@ struct AppConfig: Codable {
         cohereLanguage = CohereTranscribeLanguage.resolvedCode(try? c.decode(String.self, forKey: .cohereLanguage))
         indicASRLanguage = IndicASRLanguage.resolvedCode(try? c.decode(String.self, forKey: .indicASRLanguage))
         nemotron35Language = Nemotron35Language.resolvedCode(try? c.decode(String.self, forKey: .nemotron35Language))
+        whisperLanguage = WhisperKitLanguage.resolvedCode(try? c.decode(String.self, forKey: .whisperLanguage))
         meetingTranscriptionBackend = (try? c.decode(String.self, forKey: .meetingTranscriptionBackend)) ?? sttBackend
         meetingTranscriptionModel = (try? c.decode(String.self, forKey: .meetingTranscriptionModel)) ?? sttModel
         meetingSummaryBackend = (try? c.decode(String.self, forKey: .meetingSummaryBackend)) ?? defaults.meetingSummaryBackend
@@ -1396,6 +1498,10 @@ struct AppConfig: Codable {
 
     var resolvedNemotron35Language: Nemotron35Language {
         Nemotron35Language.resolved(nemotron35Language)
+    }
+
+    var resolvedWhisperLanguage: WhisperKitLanguage {
+        WhisperKitLanguage.resolved(whisperLanguage)
     }
 
     var resolvedMeetingLiveCaptionBackend: MeetingLiveCaptionBackend {

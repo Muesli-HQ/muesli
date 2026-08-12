@@ -919,3 +919,69 @@ struct Nemotron35LanguageTests {
         #expect(decoded.nemotron35Language == Nemotron35Language.auto.rawValue)
     }
 }
+
+@Suite("WhisperKitLanguage")
+struct WhisperKitLanguageTests {
+
+    @Test("default is auto-detect")
+    func defaultIsAuto() {
+        #expect(WhisperKitLanguage.defaultLanguage == .auto)
+        #expect(WhisperKitLanguage.defaultLanguage.rawValue == "auto")
+    }
+
+    @Test("resolved falls back to auto for unknown/nil")
+    func resolvedFallback() {
+        #expect(WhisperKitLanguage.resolved("de") == .german)
+        #expect(WhisperKitLanguage.resolved(nil) == .auto)
+        #expect(WhisperKitLanguage.resolved("not-a-language") == .auto)
+        #expect(WhisperKitLanguage.resolvedCode("de") == "de")
+        #expect(WhisperKitLanguage.resolvedCode(nil) == "auto")
+        #expect(WhisperKitLanguage.resolved(" DE ") == .german)
+    }
+
+    @Test("every language has a non-empty unique label")
+    func labelsAndCoverage() {
+        var labels: Set<String> = []
+        for lang in WhisperKitLanguage.allCases {
+            #expect(!lang.label.isEmpty)
+            #expect(labels.insert(lang.label).inserted, "Duplicate label \(lang.label) for \(lang)")
+        }
+        #expect(WhisperKitLanguage.allCases.contains(.auto))
+        #expect(WhisperKitLanguage.allCases.contains(.german))
+    }
+
+    @Test("config persists the selected language via snake_case key")
+    func configRoundTrip() throws {
+        var cfg = AppConfig()
+        cfg.whisperLanguage = WhisperKitLanguage.german.rawValue
+        let data = try JSONEncoder().encode(cfg)
+        let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(json["whisper_language"] as? String == "de")
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+        #expect(decoded.resolvedWhisperLanguage == .german)
+    }
+
+    @Test("missing language config falls back to auto-detect")
+    func configMissingLanguageDefaultsToAuto() throws {
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+        #expect(decoded.resolvedWhisperLanguage == .auto)
+        #expect(decoded.whisperLanguage == WhisperKitLanguage.auto.rawValue)
+    }
+
+    @Test("english-only models ignore pinned and auto language preferences")
+    func englishOnlyModelsIgnoreLanguagePreference() {
+        #expect(WhisperKitLanguage.isEnglishOnlyModel("tiny.en"))
+        #expect(WhisperKitLanguage.isEnglishOnlyModel("small.en"))
+        #expect(WhisperKitLanguage.isEnglishOnlyModel("medium.en"))
+        #expect(!WhisperKitLanguage.isEnglishOnlyModel("tiny"))
+        #expect(!WhisperKitLanguage.isEnglishOnlyModel("small"))
+        #expect(!WhisperKitLanguage.isEnglishOnlyModel("large-v3-v20240930_626MB"))
+
+        #expect(WhisperKitLanguage.preferenceForLoadedModel(.german, modelName: "tiny.en") == nil)
+        #expect(WhisperKitLanguage.preferenceForLoadedModel(.auto, modelName: "small.en") == nil)
+        #expect(WhisperKitLanguage.preferenceForLoadedModel(.german, modelName: "tiny") == .german)
+        #expect(WhisperKitLanguage.preferenceForLoadedModel(.auto, modelName: "small") == .auto)
+        #expect(WhisperKitLanguage.preferenceForLoadedModel(.german, modelName: "large-v3-v20240930_626MB") == .german)
+        #expect(WhisperKitLanguage.preferenceForLoadedModel(.auto, modelName: "large-v3-v20240930_626MB") == .auto)
+    }
+}
