@@ -579,10 +579,10 @@ struct MeetingsView: View {
         for event: UnifiedCalendarEvent,
         meetingURL: URL
     ) {
-        // Both recording actions must carry the event ID: it is what keeps the
-        // calendar title (MeetingSession.calendarTitleCandidate) and what
-        // createMeetingFromCalendarEvent dedupes against. Without it the same
-        // event can end up as two meetings.
+        // Both recording actions must carry calendar occurrence identity: it is
+        // what keeps the calendar title (MeetingSession.calendarTitleCandidate)
+        // and what createMeetingFromCalendarEvent dedupes against. Without it
+        // the same event can end up as two meetings.
         switch action {
         case .joinAndRecord:
             controller.joinAndRecord(
@@ -598,7 +598,7 @@ struct MeetingsView: View {
                 title: event.title,
                 meetingURL: meetingURL,
                 endDate: event.endDate,
-                calendarEventID: event.id
+                calendarOccurrence: event.resolvedCalendarOccurrence
             )
         }
     }

@@ -1455,11 +1455,7 @@ struct SettingsView: View {
                         controller.updateConfig { $0.meetingJoinDefaultAction = action }
                     }
                 }
-                settingsDescription(
-                    "Which action the main button runs in meeting notifications and Coming Up. "
-                    + "Pick \u{201C}Record Only\u{201D} if you join calls in another browser or app. "
-                    + "The other two stay available in the dropdown."
-                )
+                settingsDescription("Primary button for notifications and Coming Up.")
 
                 Divider().background(MuesliTheme.surfaceBorder)
 
