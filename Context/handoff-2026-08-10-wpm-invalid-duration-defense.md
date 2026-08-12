@@ -38,3 +38,24 @@ The iOS branch `codex/ios-cksyncengine-migration` now uploads recoverable start/
 1. Let the updated Production-entitled MuesliDev iOS build run its repair.
 2. Confirm the Mac dashboard immediately shows a plausible WPM.
 3. Sync a new timed iPhone note and confirm WPM remains plausible after receipt.
+
+## 2026-08-12 follow-up: sync completion spinner
+
+A physical Production-entitled MuesliDev round trip exposed a second presentation bug:
+the Mac-to-iPhone text record arrived successfully, but the Mac stayed in “Syncing” while
+legacy `MuesliBridgeDevice` discovery waited on a separate CloudKit operation.
+
+Historical rationale and current behavior were re-verified before changing the path:
+
+- bridge records were introduced by `dc620237` as private-CloudKit onboarding and
+  companion-presence hints, not as text-transport authority;
+- the CKSyncEngine migration in `45591b9a` retained bridge discovery only as
+  transitional preflight compatibility;
+- both commits are reachable from current `origin/main`;
+- privacy-safe runtime diagnostics showed completed text modification followed by
+  repeated bridge-record fetch deadlines.
+
+The follow-up therefore removes bridge discovery from blocking CKSyncEngine preflight.
+After a successful text cycle, bridge refresh now runs as coalesced ancillary work,
+is cancelled with engine teardown, and updates linked-device UI state when it finishes.
+The visible sync spinner is now scoped to actual text upload/download completion.

@@ -504,16 +504,12 @@ final class MuesliICloudSyncEngine {
     }
 
     /// Transitional preflight retained while text-record orchestration moves to
-    /// CKSyncEngine. Bridge discovery and the one-time legacy default-zone import
-    /// still use their existing CloudKit operations, but no token-based custom-zone
-    /// fetch or dirty-record upload is performed here.
-    func prepareForCKSyncEngine(
-        store: DictationStore,
-        forceBridgeDeviceRefresh: Bool = false
-    ) async throws -> Bool {
+    /// CKSyncEngine. The one-time legacy default-zone import still uses its existing
+    /// CloudKit operations, but no token-based custom-zone fetch, dirty-record upload,
+    /// or companion-device discovery is performed on the text-sync critical path.
+    func prepareForCKSyncEngine(store: DictationStore) async throws -> Bool {
         try await verifyAccountAvailable()
         let syncZoneWasRecreated = try await ensureSyncZone()
-        await refreshBridgeDeviceLink(forceRefresh: forceBridgeDeviceRefresh)
         try await migrateDefaultZoneIfNeeded(store: store)
         return syncZoneWasRecreated
     }
@@ -579,7 +575,7 @@ final class MuesliICloudSyncEngine {
         }
     }
 
-    private func refreshBridgeDeviceLink(forceRefresh: Bool = false) async {
+    func refreshBridgeDeviceLink(forceRefresh: Bool = false) async {
         guard MuesliBridgeDeviceIdentity.shouldRefresh(
             defaults: defaults,
             forceRefresh: forceRefresh

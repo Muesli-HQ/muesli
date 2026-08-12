@@ -60,6 +60,9 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
     private var conflictBaseRecords: [CKRecord.ID: CKRecord] = [:]
     private var uploaded = ICloudSyncKindCounts()
     private var downloaded = ICloudSyncKindCounts()
+    private var bridgeRefreshTask: Task<Void, Never>?
+    private var bridgeRefreshForceRequested = false
+    private let bridgeRefreshDidFinish: (@MainActor @Sendable () -> Void)?
 
     nonisolated static func isSyncNotification(_ userInfo: [AnyHashable: Any]) -> Bool {
         guard let notification = CKNotification(fromRemoteNotificationDictionary: userInfo) else {
@@ -70,19 +73,19 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
 
     init(
         store: DictationStore,
-        container: CKContainer? = nil
+        container: CKContainer? = nil,
+        bridgeRefreshDidFinish: (@MainActor @Sendable () -> Void)? = nil
     ) {
         self.store = store
         self.container = container
+        self.bridgeRefreshDidFinish = bridgeRefreshDidFinish
     }
 
     func sync(forceBridgeDeviceRefresh: Bool = false) async throws -> ICloudSyncResult {
         uploaded = ICloudSyncKindCounts()
         downloaded = ICloudSyncKindCounts()
 
-        let (_, syncEngine) = try await prepareEngine(
-            forceBridgeDeviceRefresh: forceBridgeDeviceRefresh
-        )
+        let (_, syncEngine) = try await prepareEngine()
         try await MuesliCKSyncCycle.run(
             maximumUploadBatches: Self.maximumUploadBatchesPerSync,
             fetch: {
@@ -102,26 +105,23 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
                 try await syncEngine.sendChanges(options)
             }
         )
-
-        return ICloudSyncResult(
+        let result = ICloudSyncResult(
             uploaded: uploaded,
             downloaded: downloaded,
             hasPendingUploads: try store.hasTextRecordsNeedingSync(),
             syncedAt: Date()
         )
+        scheduleBridgeDeviceRefresh(forceRefresh: forceBridgeDeviceRefresh)
+        return result
     }
 
     @discardableResult
-    func prepare(forceBridgeDeviceRefresh: Bool = false) async throws -> Bool {
-        let (syncZoneWasRecreated, _) = try await prepareEngine(
-            forceBridgeDeviceRefresh: forceBridgeDeviceRefresh
-        )
+    func prepare() async throws -> Bool {
+        let (syncZoneWasRecreated, _) = try await prepareEngine()
         return syncZoneWasRecreated
     }
 
-    private func prepareEngine(
-        forceBridgeDeviceRefresh: Bool
-    ) async throws -> (syncZoneWasRecreated: Bool, engine: CKSyncEngine) {
+    private func prepareEngine() async throws -> (syncZoneWasRecreated: Bool, engine: CKSyncEngine) {
         let preflight: MuesliICloudSyncEngine
         if let existing = self.preflight {
             preflight = existing
@@ -130,10 +130,7 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
             self.preflight = created
             preflight = created
         }
-        let syncZoneWasRecreated = try await preflight.prepareForCKSyncEngine(
-            store: store,
-            forceBridgeDeviceRefresh: forceBridgeDeviceRefresh
-        )
+        let syncZoneWasRecreated = try await preflight.prepareForCKSyncEngine(store: store)
         if syncZoneWasRecreated {
             let engineToCancel = engine
             engine = nil
@@ -146,9 +143,40 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
     }
 
     func cancel() async {
+        let bridgeTaskToCancel = bridgeRefreshTask
+        bridgeRefreshTask = nil
+        bridgeRefreshForceRequested = false
+        bridgeTaskToCancel?.cancel()
         let engineToCancel = engine
         engine = nil
         await engineToCancel?.cancelOperations()
+        await bridgeTaskToCancel?.value
+    }
+
+    /// Companion-device identity powers onboarding and linked-device labels, but it
+    /// is not part of text delivery. Keep its legacy CloudKit operations coalesced
+    /// and cancellable without making a successful CKSyncEngine cycle wait for them.
+    private func scheduleBridgeDeviceRefresh(forceRefresh: Bool) {
+        bridgeRefreshForceRequested = bridgeRefreshForceRequested || forceRefresh
+        guard bridgeRefreshTask == nil else { return }
+
+        bridgeRefreshTask = Task { [weak self] in
+            await self?.runBridgeDeviceRefreshes()
+        }
+    }
+
+    private func runBridgeDeviceRefreshes() async {
+        while !Task.isCancelled {
+            let forceRefresh = bridgeRefreshForceRequested
+            bridgeRefreshForceRequested = false
+            guard let preflight else { break }
+
+            await preflight.refreshBridgeDeviceLink(forceRefresh: forceRefresh)
+            guard !Task.isCancelled else { break }
+            await bridgeRefreshDidFinish?()
+            guard bridgeRefreshForceRequested else { break }
+        }
+        bridgeRefreshTask = nil
     }
 
     private func makeEngineIfNeeded() throws -> CKSyncEngine {

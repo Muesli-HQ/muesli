@@ -1897,7 +1897,13 @@ final class MuesliController: NSObject {
 
     private func resolvedCKSyncEngine() -> MuesliCKSyncEngine {
         if let ckSyncEngine { return ckSyncEngine }
-        let created = MuesliCKSyncEngine(store: dictationStore)
+        let created = MuesliCKSyncEngine(
+            store: dictationStore,
+            bridgeRefreshDidFinish: { [weak self] in
+                self?.refreshICloudBridgeDeviceState()
+                self?.refreshICloudBridgeStateForConfig()
+            }
+        )
         ckSyncEngine = created
         return created
     }
