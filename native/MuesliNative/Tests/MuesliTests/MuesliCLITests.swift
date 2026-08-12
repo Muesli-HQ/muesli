@@ -22,6 +22,12 @@ struct MuesliCLITests {
         let transcribeSpec = payload.commands.first { $0.name == "transcribe" }
         #expect(transcribeSpec?.usage.contains("nemotron35") == true)
         #expect(transcribeSpec?.usage.contains("--dictionary") == true)
+        for model in TranscribeModel.allCases {
+            #expect(
+                transcribeSpec?.usage.contains(model.rawValue) == true,
+                "CLI spec does not advertise \(model.rawValue)"
+            )
+        }
     }
 
     @Test("explicit db path overrides support directory resolution")
@@ -88,12 +94,19 @@ struct MuesliCLITests {
         #expect(TranscribeModel(argument: "qwen3-asr") == .qwen3Asr)
         #expect(TranscribeModel(argument: "nemotron35") == .nemotron35)
         #expect(TranscribeModel(argument: "whisper-tiny") == .whisperTiny)
+        #expect(TranscribeModel(argument: "whisper-tiny-english") == .whisperTinyEnglish)
         #expect(TranscribeModel(argument: "whisper-small") == .whisperSmall)
-        #expect(TranscribeModel(argument: "whisper-medium") == .whisperMedium)
+        #expect(TranscribeModel(argument: "whisper-small-english") == .whisperSmallEnglish)
+        #expect(TranscribeModel(argument: "whisper-medium-english") == .whisperMediumEnglish)
         #expect(TranscribeModel(argument: "whisper-large-turbo") == .whisperLargeTurbo)
         #expect(TranscribeModel.nemotron35.asrModelVersion == nil)
-        #expect(TranscribeModel.whisperTiny.whisperKitModelName == "tiny.en")
+        #expect(TranscribeModel.whisperTiny.whisperKitModelName == "tiny")
+        #expect(TranscribeModel.whisperTinyEnglish.whisperKitModelName == "tiny.en")
+        #expect(TranscribeModel.whisperSmall.whisperKitModelName == "small")
+        #expect(TranscribeModel.whisperSmallEnglish.whisperKitModelName == "small.en")
+        #expect(TranscribeModel.whisperMediumEnglish.whisperKitModelName == "medium.en")
         #expect(TranscribeModel.whisperLargeTurbo.whisperKitModelName == "large-v3-v20240930_626MB")
+        #expect(TranscribeModel(argument: "whisper-medium") == nil)
         #expect(TranscribeModel(argument: "canary-qwen") == nil)
         #expect(TranscribeOutputFormat(argument: "text") == .text)
         #expect(TranscribeOutputFormat(argument: "json") == .json)

@@ -19,8 +19,10 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
     case qwen3Asr = "qwen3-asr"
     case nemotron35 = "nemotron35"
     case whisperTiny = "whisper-tiny"
+    case whisperTinyEnglish = "whisper-tiny-english"
     case whisperSmall = "whisper-small"
-    case whisperMedium = "whisper-medium"
+    case whisperSmallEnglish = "whisper-small-english"
+    case whisperMediumEnglish = "whisper-medium-english"
     case whisperLargeTurbo = "whisper-large-turbo"
 
     /// `nil` for models that don't go through `FluidAudioCLITranscriber`'s
@@ -30,7 +32,9 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
         case .parakeetV3: return .v3
         case .parakeetV2: return .v2
         case .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35,
-             .whisperTiny, .whisperSmall, .whisperMedium, .whisperLargeTurbo:
+             .whisperTiny, .whisperTinyEnglish,
+             .whisperSmall, .whisperSmallEnglish, .whisperMediumEnglish,
+             .whisperLargeTurbo:
             return nil
         }
     }
@@ -38,9 +42,11 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
     /// WhisperKit's model identifiers, shared with the app's Whisper backend.
     var whisperKitModelName: String? {
         switch self {
-        case .whisperTiny: return "tiny.en"
-        case .whisperSmall: return "small.en"
-        case .whisperMedium: return "medium.en"
+        case .whisperTiny: return "tiny"
+        case .whisperTinyEnglish: return "tiny.en"
+        case .whisperSmall: return "small"
+        case .whisperSmallEnglish: return "small.en"
+        case .whisperMediumEnglish: return "medium.en"
         case .whisperLargeTurbo: return "large-v3-v20240930_626MB"
         case .parakeetV3, .parakeetV2, .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35:
             return nil
@@ -102,7 +108,7 @@ struct TranscribeCommand: AsyncParsableCommand {
     var file: String
     @Option(name: .long, help: "Output format: text, json, or markdown.")
     var format: TranscribeOutputFormat = .text
-    @Option(name: .long, help: "Transcription model: parakeet-v3, parakeet-v2, parakeet-eou-320ms (streaming), sensevoice, qwen3-asr, nemotron35, whisper-tiny, whisper-small, whisper-medium, or whisper-large-turbo.")
+    @Option(name: .long, help: "Transcription model: parakeet-v3, parakeet-v2, parakeet-eou-320ms (streaming), sensevoice, qwen3-asr, nemotron35, whisper-tiny, whisper-tiny-english, whisper-small, whisper-small-english, whisper-medium-english, or whisper-large-turbo.")
     var model: TranscribeModel = .parakeetV3
     @Flag(name: .long, help: "Generate meeting notes using the configured Muesli summary backend when available.")
     var summarize = false
@@ -624,7 +630,10 @@ struct RoutingAudioTranscriber: AudioTranscribing {
         case .senseVoice: transcriber = senseVoice
         case .qwen3Asr: transcriber = qwen3Asr
         case .nemotron35: transcriber = nemotron35
-        case .whisperTiny, .whisperSmall, .whisperMedium, .whisperLargeTurbo: transcriber = whisper
+        case .whisperTiny, .whisperTinyEnglish,
+             .whisperSmall, .whisperSmallEnglish, .whisperMediumEnglish,
+             .whisperLargeTurbo:
+            transcriber = whisper
         }
         return try await transcriber.transcribe(wavURL: wavURL, model: model, progress: progress)
     }
@@ -657,12 +666,21 @@ actor FluidAudioCLITranscriber: AudioTranscribing {
             )
         }
         progress("loading \(model.rawValue)")
-        let models = try await AsrModels.downloadAndLoad(version: asrModelVersion) { downloadProgress in
-            let percent = Int((downloadProgress.fractionCompleted * 100).rounded())
-            progress("model \(percent)%")
+        let plan = asrModelVersion == .v2
+            ? ManagedASRModelPlans.parakeetV2()
+            : ManagedASRModelPlans.parakeetV3()
+        let manager = try await ManagedASRModelDownloader.loadValidated(
+            plan,
+            progress: { fraction, message in
+                progress(message ?? "model \(Int((fraction * 100).rounded()))%")
+            }
+        ) { modelDirectory in
+            progress("preparing model")
+            let models = try await AsrModels.load(from: modelDirectory, version: asrModelVersion)
+            let manager = AsrManager(config: .default)
+            try await manager.loadModels(models)
+            return manager
         }
-        let manager = AsrManager(config: .default)
-        try await manager.loadModels(models)
         asrManager = manager
         loadedModel = model
         progress("model ready")
@@ -674,21 +692,22 @@ actor FluidAudioCLITranscriber: AudioTranscribing {
 /// default model cache. `int8` matches the precision the app selects by default.
 actor SenseVoiceCLITranscriber: AudioTranscribing {
     private var manager: SenseVoiceManager?
-    static let cacheRelativePath = "Library/Application Support/FluidAudio/Models/sensevoice-small-coreml"
     private static let precision: SenseVoiceEncoderPrecision = .int8
 
     func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
         if manager == nil {
             progress("loading sensevoice")
-            let modelDirectory = try await Self.downloadRequiredModels { fraction, message in
-                if let message {
-                    progress(message)
-                } else {
-                    progress("model \(Int((fraction * 100).rounded()))%")
+            let plan = ManagedASRModelPlans.senseVoice()
+            manager = try await ManagedASRModelDownloader.loadValidated(
+                plan,
+                progress: { fraction, message in
+                    progress(message ?? "model \(Int((fraction * 100).rounded()))%")
                 }
+            ) { modelDirectory in
+                progress("preparing model")
+                let models = try SenseVoiceModels.load(from: modelDirectory, precision: Self.precision)
+                return SenseVoiceManager(models: models)
             }
-            let models = try SenseVoiceModels.load(from: modelDirectory, precision: Self.precision)
-            manager = SenseVoiceManager(models: models)
             progress("model ready")
         }
         guard let manager else {
@@ -698,81 +717,6 @@ actor SenseVoiceCLITranscriber: AudioTranscribing {
         let text = try await manager.transcribe(audioURL: wavURL)
         progress("transcription complete in \(String(format: "%.2f", CFAbsoluteTimeGetCurrent() - start))s")
         return HeadlessTranscription(text: text, durationSeconds: nil)
-    }
-
-    private static func cacheDirectory(fileManager: FileManager = .default) -> URL {
-        fileManager.homeDirectoryForCurrentUser.appendingPathComponent(cacheRelativePath)
-    }
-
-    private static func downloadRequiredModels(progress: ((Double, String?) -> Void)? = nil) async throws -> URL {
-        let directory = cacheDirectory()
-        if requiredModelsExist(at: directory) {
-            return directory
-        }
-
-        let fileManager = FileManager.default
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        try await downloadSubdirectory(
-            ModelNames.SenseVoice.preprocessorFile,
-            to: directory,
-            progressRange: 0.0...0.2,
-            message: "Downloading SenseVoice preprocessor...",
-            progress: progress
-        )
-        try await downloadSubdirectory(
-            ModelNames.SenseVoice.encoderInt8File,
-            to: directory,
-            progressRange: 0.2...0.9,
-            message: "Downloading SenseVoice INT8 encoder...",
-            progress: progress
-        )
-        try await downloadVocabulary(to: directory, progress: progress)
-        return directory
-    }
-
-    private static func downloadSubdirectory(
-        _ subdirectory: String,
-        to directory: URL,
-        progressRange: ClosedRange<Double>,
-        message: String,
-        progress: ((Double, String?) -> Void)?
-    ) async throws {
-        try await DownloadUtils.downloadSubdirectory(
-            .senseVoiceSmall,
-            subdirectory: subdirectory,
-            to: directory,
-            progressHandler: { downloadProgress in
-                let span = progressRange.upperBound - progressRange.lowerBound
-                let fraction = progressRange.lowerBound + span * downloadProgress.fractionCompleted
-                progress?(min(max(fraction, 0.0), 1.0), message)
-            }
-        )
-    }
-
-    private static func downloadVocabulary(to directory: URL, progress: ((Double, String?) -> Void)?) async throws {
-        let vocabularyURL = directory.appendingPathComponent(ModelNames.SenseVoice.vocabularyFile)
-        if FileManager.default.fileExists(atPath: vocabularyURL.path) {
-            progress?(0.95, "SenseVoice vocabulary ready...")
-            return
-        }
-
-        progress?(0.9, "Downloading SenseVoice vocabulary...")
-        let remoteURL = try ModelRegistry.resolveModel(
-            Repo.senseVoiceSmall.remotePath,
-            ModelNames.SenseVoice.vocabularyFile
-        )
-        let data = try await DownloadUtils.fetchHuggingFaceFile(
-            from: remoteURL,
-            description: "SenseVoice vocabulary"
-        )
-        try data.write(to: vocabularyURL, options: .atomic)
-        progress?(0.95, "SenseVoice vocabulary ready...")
-    }
-
-    private static func requiredModelsExist(at directory: URL, fileManager: FileManager = .default) -> Bool {
-        let vocabularyURL = directory.appendingPathComponent(ModelNames.SenseVoice.vocabularyFile)
-        return SenseVoiceModels.modelsExist(at: directory, precision: precision)
-            && fileManager.fileExists(atPath: vocabularyURL.path)
     }
 }
 
@@ -792,13 +736,18 @@ actor Qwen3AsrCLITranscriber: AudioTranscribing {
     private func transcribeOnSupportedOS(wavURL: URL, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
         if manager == nil {
             progress("loading qwen3-asr")
-            let modelDir = try await Qwen3AsrModels.download(variant: .int8) { downloadProgress in
-                let percent = Int((downloadProgress.fractionCompleted * 100).rounded())
-                progress("model \(percent)%")
+            let plan = ManagedASRModelPlans.qwen3ASRInt8()
+            manager = try await ManagedASRModelDownloader.loadValidated(
+                plan,
+                progress: { fraction, message in
+                    progress(message ?? "model \(Int((fraction * 100).rounded()))%")
+                }
+            ) { modelDir in
+                progress("preparing model")
+                let mgr = Qwen3AsrManager()
+                try await mgr.loadModels(from: modelDir)
+                return mgr
             }
-            let mgr = Qwen3AsrManager()
-            try await mgr.loadModels(from: modelDir)
-            manager = mgr
             progress("model ready")
         }
         guard let manager else {
@@ -874,7 +823,15 @@ actor WhisperCLITranscriber: AudioTranscribing {
             throw CLIError.invalidInput("WhisperKit model was not loaded.", fix: "Run the command again after the model finishes downloading.")
         }
         let start = CFAbsoluteTimeGetCurrent()
-        let results = try await whisperKit.transcribe(audioPath: wavURL.path)
+        // English-only `.en` checkpoints have no multilingual tokens — keep default DecodingOptions.
+        // Multilingual variants need detectLanguage; WhisperKit defaults otherwise force English.
+        let decodeOptions: DecodingOptions
+        if modelName.hasSuffix(".en") {
+            decodeOptions = DecodingOptions()
+        } else {
+            decodeOptions = DecodingOptions(detectLanguage: true)
+        }
+        let results = try await whisperKit.transcribe(audioPath: wavURL.path, decodeOptions: decodeOptions)
         let text = results.map(\.text).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
         progress("transcription complete in \(String(format: "%.2f", CFAbsoluteTimeGetCurrent() - start))s")
         return HeadlessTranscription(text: text, durationSeconds: nil)
@@ -884,33 +841,24 @@ actor WhisperCLITranscriber: AudioTranscribing {
         if loadedModel == modelName, whisperKit != nil { return }
         progress("loading \(modelName)")
 
-        let modelFolder: URL?
-        if Self.isModelDownloaded(modelName) {
-            modelFolder = nil
-        } else {
-            modelFolder = try await WhisperKit.download(variant: modelName) { update in
-                let percent = Int((update.fractionCompleted * 100).rounded())
-                progress("model \(percent)%")
+        let plan = ManagedASRModelPlans.whisperKit(modelName: modelName)
+        whisperKit = try await ManagedASRModelDownloader.loadValidated(
+            plan,
+            progress: { fraction, message in
+                progress(message ?? "model \(Int((fraction * 100).rounded()))%")
             }
+        ) { modelFolder in
+            progress("preparing model")
+            return try await WhisperKit(WhisperKitConfig(
+                modelFolder: modelFolder.path,
+                computeOptions: ModelComputeOptions(
+                    audioEncoderCompute: .cpuAndNeuralEngine,
+                    textDecoderCompute: .cpuAndNeuralEngine
+                )
+            ))
         }
-
-        whisperKit = try await WhisperKit(WhisperKitConfig(
-            model: modelFolder == nil ? modelName : nil,
-            modelFolder: modelFolder?.path,
-            computeOptions: ModelComputeOptions(
-                audioEncoderCompute: .cpuAndNeuralEngine,
-                textDecoderCompute: .cpuAndNeuralEngine
-            )
-        ))
         loadedModel = modelName
         progress("model ready")
-    }
-
-    private static func isModelDownloaded(_ modelName: String) -> Bool {
-        let fullName = modelName.hasPrefix("openai_whisper-") ? modelName : "openai_whisper-\(modelName)"
-        let directory = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Documents/huggingface/models/argmaxinc/whisperkit-coreml/\(fullName)")
-        return FileManager.default.fileExists(atPath: directory.path)
     }
 }
 
@@ -925,7 +873,6 @@ actor WhisperCLITranscriber: AudioTranscribing {
 /// does not need. If a user already downloaded the model via the app's live
 /// captions setting, this reuses that same download.
 actor StreamingEouCLITranscriber: AudioTranscribing {
-    private static let repo = Repo.parakeetEou320
     private static let chunkSize = StreamingChunkSize.ms320
 
     private var manager: StreamingEouAsrManager?
@@ -965,35 +912,22 @@ actor StreamingEouCLITranscriber: AudioTranscribing {
 
     private func loadedManager(progress: @escaping (String) -> Void) async throws -> StreamingEouAsrManager {
         if let manager { return manager }
-        if !Self.isDownloaded() {
-            progress("downloading parakeet-eou-320ms (~430 MB)")
-            try await DownloadUtils.downloadRepo(Self.repo, to: Self.cacheRoot()) { update in
-                let percent = Int((update.fractionCompleted * 100).rounded())
-                progress("model \(percent)%")
-            }
-        }
+        let plan = ManagedASRModelPlans.parakeetRealtimeEOU320()
+        if !plan.isAvailableLocally() { progress("downloading parakeet-eou-320ms (~430 MB)") }
         progress("loading parakeet-eou-320ms")
-        let newManager = StreamingEouAsrManager(chunkSize: Self.chunkSize)
-        try await newManager.loadModels(from: Self.modelDirectory())
+        let newManager = try await ManagedASRModelDownloader.loadValidated(
+            plan,
+            progress: { fraction, message in
+                progress(message ?? "model \(Int((fraction * 100).rounded()))%")
+            }
+        ) { directory in
+            let candidate = StreamingEouAsrManager(chunkSize: Self.chunkSize)
+            try await candidate.loadModels(from: directory)
+            return candidate
+        }
         manager = newManager
         progress("model ready")
         return newManager
-    }
-
-    private static func cacheRoot() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/FluidAudio/Models", isDirectory: true)
-    }
-
-    private static func modelDirectory() -> URL {
-        cacheRoot().appendingPathComponent(repo.folderName, isDirectory: true)
-    }
-
-    private static func isDownloaded() -> Bool {
-        let directory = modelDirectory()
-        return ModelNames.ParakeetEOU.requiredModels.allSatisfy {
-            FileManager.default.fileExists(atPath: directory.appendingPathComponent($0).path)
-        }
     }
 
     private static func makeBuffer(samples: [Float]) -> AVAudioPCMBuffer? {

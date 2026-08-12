@@ -1,12 +1,14 @@
 import AVFoundation
 import FluidAudio
 import Foundation
+import MuesliCore
 import os
 
 enum MeetingLiveCaptionModelStore {
     static let repo = Repo.parakeetEou320
+    static let modelID = "FluidInference/parakeet-realtime-eou-120m-coreml/320ms"
     static let sizeLabel = "~430 MB"
-    static let label = "Parakeet Realtime EOU"
+    static let label = "Parakeet Live Captions"
 
     static func cacheRoot(fileManager: FileManager = .default) -> URL {
         fileManager.homeDirectoryForCurrentUser
@@ -26,30 +28,34 @@ enum MeetingLiveCaptionModelStore {
     }
 
     static func isDownloaded(in cacheRoot: URL, fileManager: FileManager = .default) -> Bool {
-        let directory = modelDirectory(in: cacheRoot)
-        return ModelNames.ParakeetEOU.requiredModels.allSatisfy {
-            fileManager.fileExists(atPath: directory.appendingPathComponent($0).path)
-        }
+        ManagedASRModelPlans.parakeetRealtimeEOU320(modelsRoot: cacheRoot)
+            .isAvailableLocally(fileManager: fileManager)
     }
 
     static func download(
-        progress: (@Sendable (Double) -> Void)? = nil
+        progress: (@Sendable (Double) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
-        try await DownloadUtils.downloadRepo(repo, to: cacheRoot()) { update in
-            progress?(update.fractionCompleted)
-        }
+        _ = try await ManagedASRModelDownloader.downloadIfNeeded(
+            ManagedASRModelPlans.parakeetRealtimeEOU320(),
+            progress: { fraction, _ in progress?(fraction) },
+            progressSnapshot: progressSnapshot
+        )
     }
 
     static func delete(fileManager: FileManager = .default) throws {
-        let directory = modelDirectory(fileManager: fileManager)
-        guard fileManager.fileExists(atPath: directory.path) else { return }
-        try fileManager.removeItem(at: directory)
+        try ManagedASRModelPlans.parakeetRealtimeEOU320(
+            modelsRoot: cacheRoot(fileManager: fileManager)
+        ).delete(fileManager: fileManager)
     }
 
     static func makeEngine(label: String) async throws -> MeetingStreamingPartialEngine {
-        let engine = ParakeetEOUMeetingPartialEngine(label: label)
-        try await engine.loadModels(from: modelDirectory())
-        return engine
+        let plan = ManagedASRModelPlans.parakeetRealtimeEOU320()
+        return try await ManagedASRModelDownloader.loadValidated(plan) { directory in
+            let engine = ParakeetEOUMeetingPartialEngine(label: label)
+            try await engine.loadModels(from: directory)
+            return engine
+        }
     }
 
     static func makeEngines(

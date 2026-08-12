@@ -52,8 +52,8 @@ enum ModelsCategory: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .dictation: return "Dictation"
-        case .streaming: return "Streaming"
-        case .postProcessing: return "Post-processing"
+        case .streaming: return "Live Meetings"
+        case .postProcessing: return "Cleanup"
         }
     }
 }
