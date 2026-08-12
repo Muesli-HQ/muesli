@@ -479,9 +479,12 @@ final class MuesliICloudSyncEngine {
         forceBridgeDeviceRefresh: Bool = false
     ) async throws -> ICloudSyncResult {
         try await verifyAccountAvailable()
-        _ = try await ensureSyncZone()
+        let syncZoneWasRecreated = try await ensureSyncZone()
         await refreshBridgeDeviceLink(forceRefresh: forceBridgeDeviceRefresh)
-        try await migrateDefaultZoneIfNeeded(store: store)
+        try await migrateDefaultZoneIfNeeded(
+            store: store,
+            resetCloudMetadataBeforeUpload: syncZoneWasRecreated
+        )
 
         let remoteChanges = try await fetchChangedTextRecords()
         var downloaded = ICloudSyncKindCounts()
@@ -510,8 +513,43 @@ final class MuesliICloudSyncEngine {
     func prepareForCKSyncEngine(store: DictationStore) async throws -> Bool {
         try await verifyAccountAvailable()
         let syncZoneWasRecreated = try await ensureSyncZone()
-        try await migrateDefaultZoneIfNeeded(store: store)
+        try await migrateDefaultZoneIfNeeded(
+            store: store,
+            resetCloudMetadataBeforeUpload: syncZoneWasRecreated
+        )
         return syncZoneWasRecreated
+    }
+
+    /// Proves an unscoped legacy library belongs to the current private account.
+    /// Only stable record IDs are requested and no authored fields are returned.
+    func syncZoneContainsAnyTextRecord(named recordNames: Set<String>) async throws -> Bool {
+        let names = recordNames.filter { !$0.isEmpty }.sorted()
+        guard !names.isEmpty else { return false }
+
+        let batchSize = 200
+        var start = names.startIndex
+        while start < names.endIndex {
+            let end = names.index(start, offsetBy: batchSize, limitedBy: names.endIndex)
+                ?? names.endIndex
+            let recordIDs = names[start..<end].map {
+                CKRecord.ID(recordName: $0, zoneID: Schema.syncZoneID)
+            }
+            do {
+                let results = try await database.records(for: recordIDs, desiredKeys: [])
+                for result in results.values {
+                    switch result {
+                    case .success(let record):
+                        if record.recordType == Schema.textRecordType { return true }
+                    case .failure(let error):
+                        guard Self.isMissingProvenanceRecord(error) else { throw error }
+                    }
+                }
+            } catch {
+                guard Self.isMissingProvenanceRecord(error) else { throw error }
+            }
+            start = end
+        }
+        return false
     }
 
     func ensureTextRecordSubscription() async throws {
@@ -544,35 +582,12 @@ final class MuesliICloudSyncEngine {
     }
 
     static func isICloudAccountContextError(_ error: Error) -> Bool {
-        if isICloudAccountAvailabilityError(error) {
-            return true
-        }
-        if let ckError = error as? CKError {
-            if ckError.code == .notAuthenticated {
-                return true
-            }
-            if ckError.code == .partialFailure,
-               ckError.partialErrorsByItemID?.values.contains(where: isICloudAccountContextError) == true {
-                return true
-            }
-        }
-        return false
+        isICloudAccountAvailabilityError(error)
+            || containsCloudKitError(error, codes: [.notAuthenticated, .permissionFailure])
     }
 
     static func isSyncZoneRecoveryError(_ error: Error) -> Bool {
-        if isSyncZoneMissing(error) {
-            return true
-        }
-        if let ckError = error as? CKError {
-            if ckError.code == .zoneNotFound || ckError.code == .userDeletedZone {
-                return true
-            }
-            if ckError.code == .partialFailure,
-               ckError.partialErrorsByItemID?.values.contains(where: isSyncZoneRecoveryError) == true {
-                return true
-            }
-        }
-        return false
+        isSyncZoneMissing(error)
     }
 
     @discardableResult
@@ -710,7 +725,10 @@ final class MuesliICloudSyncEngine {
         return ICloudChangedRecords(records: records, finalToken: finalToken)
     }
 
-    private func migrateDefaultZoneIfNeeded(store: DictationStore) async throws {
+    private func migrateDefaultZoneIfNeeded(
+        store: DictationStore,
+        resetCloudMetadataBeforeUpload: Bool = false
+    ) async throws {
         guard !defaults.bool(forKey: Schema.migratedDefaultZoneKey) else { return }
 
         let legacyDefaultZoneRecords = try await fetchAllDefaultZoneTextRecords()
@@ -721,6 +739,12 @@ final class MuesliICloudSyncEngine {
         _ = try store.upsertSyncedTextRecords(existingSyncZoneChanges.records.compactMap(Self.syncTextRecord(from:)))
         if let finalToken = existingSyncZoneChanges.finalToken {
             changeTokenStore.saveToken(finalToken)
+        }
+
+        if resetCloudMetadataBeforeUpload {
+            // Default-zone records and deleted-zone system fields cannot be used
+            // to construct records for the recreated custom zone.
+            try store.resetTextRecordCloudMetadataForZoneRecreation()
         }
 
         try await uploadLocalMigrationRecords(store: store)
@@ -1179,7 +1203,13 @@ final class MuesliICloudSyncEngine {
 
     static func syncZoneCloudRecord(from record: SyncTextRecord, baseRecord: CKRecord? = nil) -> CKRecord {
         let recordID = CKRecord.ID(recordName: record.id, zoneID: Schema.syncZoneID)
-        let persistedRecord = record.cloudSystemFields.flatMap(Self.record(fromSystemFields:))
+        let persistedRecord: CKRecord? = record.cloudSystemFields
+            .flatMap(Self.record(fromSystemFields:))
+            .flatMap { persisted -> CKRecord? in
+                guard persisted.recordID == recordID,
+                      persisted.recordType == Schema.textRecordType else { return nil }
+                return persisted
+            }
         let cloud = baseRecord ?? persistedRecord ?? CKRecord(recordType: Schema.textRecordType, recordID: recordID)
         cloud["kind"] = record.kind.rawValue as NSString
         cloud["source"] = record.source as NSString?
@@ -1278,17 +1308,12 @@ final class MuesliICloudSyncEngine {
         return SyncTextRecordKind(rawValue: raw)
     }
 
-    private static func isSyncZoneMissing(_ error: Error) -> Bool {
-        if let ckError = error as? CKError {
-            if ckError.code == .unknownItem {
-                return true
-            }
-            if ckError.code == .partialFailure,
-               ckError.partialErrorsByItemID?.values.contains(where: { partialError in
-                   (partialError as? CKError)?.code == .unknownItem
-               }) == true {
-                return true
-            }
+    static func isSyncZoneMissing(_ error: Error) -> Bool {
+        if containsCloudKitError(
+            error,
+            codes: [.unknownItem, .zoneNotFound, .userDeletedZone]
+        ) {
+            return true
         }
 
         let nsError = error as NSError
@@ -1296,11 +1321,75 @@ final class MuesliICloudSyncEngine {
             nsError.localizedDescription,
             nsError.localizedFailureReason,
             nsError.localizedRecoverySuggestion,
+            String(describing: nsError),
         ]
             .compactMap { $0?.lowercased() }
             .joined(separator: " ")
         return message.contains(Schema.syncZoneName.lowercased())
             && (message.contains("zone not found") || message.contains("zone does not exist"))
+    }
+
+    /// Traverses partial and underlying CKError graphs with a defensive bound.
+    static func containsCloudKitError(
+        _ error: Error,
+        codes: [CKError.Code],
+        depth: Int = 0
+    ) -> Bool {
+        guard depth < 8 else { return false }
+        if let ckError = error as? CKError {
+            if codes.contains(ckError.code) { return true }
+            if ckError.code == .partialFailure,
+               ckError.partialErrorsByItemID?.values.contains(where: {
+                   containsCloudKitError($0, codes: codes, depth: depth + 1)
+               }) == true {
+                return true
+            }
+        }
+
+        let nsError = error as NSError
+        if nsError.domain == CKError.errorDomain,
+           let code = CKError.Code(rawValue: nsError.code),
+           codes.contains(code) {
+            return true
+        }
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? Error {
+            return containsCloudKitError(underlying, codes: codes, depth: depth + 1)
+        }
+        return false
+    }
+
+    /// Missing IDs/zones are a safe provenance non-match, but mixed partial
+    /// failures are not. Traversal is bounded because NSError graphs can cycle.
+    static func isMissingProvenanceRecord(_ error: Error, depth: Int = 0) -> Bool {
+        guard depth < 8 else { return false }
+        if let ckError = error as? CKError {
+            switch ckError.code {
+            case .unknownItem, .zoneNotFound, .userDeletedZone:
+                return true
+            case .partialFailure:
+                guard let errors = ckError.partialErrorsByItemID?.values,
+                      !errors.isEmpty else { return false }
+                return errors.allSatisfy {
+                    isMissingProvenanceRecord($0, depth: depth + 1)
+                }
+            default:
+                break
+            }
+        }
+
+        let nsError = error as NSError
+        if nsError.domain == CKError.errorDomain {
+            switch CKError.Code(rawValue: nsError.code) {
+            case .unknownItem, .zoneNotFound, .userDeletedZone:
+                return true
+            default:
+                break
+            }
+        }
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? Error {
+            return isMissingProvenanceRecord(underlying, depth: depth + 1)
+        }
+        return false
     }
 
     private static func isUnknownItemError(_ error: Error) -> Bool {

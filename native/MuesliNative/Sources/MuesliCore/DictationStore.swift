@@ -2937,6 +2937,101 @@ public final class DictationStore {
         guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
     }
 
+    /// Atomically claims an environment-scoped CloudKit account boundary.
+    /// The first claimant wins; subsequent callers may only confirm the same scope.
+    public func claimCloudSyncAccountScope(_ scope: String, forKey key: String) throws -> Bool {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE TRANSACTION", db: db)
+        do {
+            let selectSQL = "SELECT value FROM cloud_sync_state WHERE key = ? LIMIT 1"
+            var selectStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, selectSQL, -1, &selectStatement, nil) == SQLITE_OK else {
+                throw lastError(db)
+            }
+            sqlite3_bind_text(selectStatement, 1, (key as NSString).utf8String, -1, nil)
+            let existing: Data?
+            switch sqlite3_step(selectStatement) {
+            case SQLITE_ROW:
+                if let bytes = sqlite3_column_blob(selectStatement, 0) {
+                    existing = Data(bytes: bytes, count: Int(sqlite3_column_bytes(selectStatement, 0)))
+                } else {
+                    existing = Data()
+                }
+            case SQLITE_DONE:
+                existing = nil
+            default:
+                sqlite3_finalize(selectStatement)
+                throw lastError(db)
+            }
+            sqlite3_finalize(selectStatement)
+
+            let scopeData = Data(scope.utf8)
+            if let existing {
+                try exec("COMMIT", db: db)
+                return existing == scopeData
+            }
+
+            let insertSQL = "INSERT INTO cloud_sync_state (key, value, updated_at) VALUES (?, ?, ?)"
+            var insertStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, insertSQL, -1, &insertStatement, nil) == SQLITE_OK else {
+                throw lastError(db)
+            }
+            defer { sqlite3_finalize(insertStatement) }
+            sqlite3_bind_text(insertStatement, 1, (key as NSString).utf8String, -1, nil)
+            bindOptionalBlob(scopeData, at: 2, statement: insertStatement)
+            sqlite3_bind_double(insertStatement, 3, Date().timeIntervalSince1970)
+            guard sqlite3_step(insertStatement) == SQLITE_DONE else { throw lastError(db) }
+            try exec("COMMIT", db: db)
+            return true
+        } catch {
+            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
+    }
+
+    /// Returns stable IDs only for rows that have evidence of prior CloudKit sync.
+    /// Fresh local-only rows intentionally do not participate in account proof.
+    public func textRecordNamesRequiringAccountVerification() throws -> Set<String> {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try ensureCloudRecordNames(db: db)
+        let sql = """
+        SELECT cloud_record_name
+        FROM dictations
+        WHERE cloud_record_name IS NOT NULL
+          AND (
+              cloud_change_tag IS NOT NULL
+              OR cloud_system_fields IS NOT NULL
+              OR last_synced_at IS NOT NULL
+              OR sync_dirty = 0
+          )
+        UNION
+        SELECT cloud_record_name
+        FROM meetings
+        WHERE cloud_record_name IS NOT NULL
+          AND meeting_status NOT IN ('recording', 'processing')
+          AND (
+              cloud_change_tag IS NOT NULL
+              OR cloud_system_fields IS NOT NULL
+              OR last_synced_at IS NOT NULL
+              OR sync_dirty = 0
+          )
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        var names = Set<String>()
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let value = sqlite3_column_text(statement, 0) else { continue }
+            let name = String(cString: value)
+            if !name.isEmpty { names.insert(name) }
+        }
+        return names
+    }
+
     private func dirtyDictationTextRecords(
         limit: Int,
         offset: Int,
@@ -3242,9 +3337,10 @@ public final class DictationStore {
         guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
     }
 
-    /// Drops account-scoped CKRecord metadata while preserving every local row.
-    /// Stable record names and dirty flags let the new account safely reconcile.
-    public func resetTextRecordCloudMetadataForAccountChange() throws {
+    /// Drops obsolete CKRecord versions after this same account's zone was recreated.
+    /// Stable names and local text remain intact while eligible rows return to the
+    /// durable dirty outbox for the newly-created zone.
+    public func resetTextRecordCloudMetadataForZoneRecreation() throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         try exec("BEGIN IMMEDIATE TRANSACTION", db: db)
@@ -3277,6 +3373,12 @@ public final class DictationStore {
             _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
             throw error
         }
+    }
+
+    /// Retained for source compatibility. Account switches must not invoke this:
+    /// requeueing would copy the previous account's library into the new account.
+    public func resetTextRecordCloudMetadataForAccountChange() throws {
+        try resetTextRecordCloudMetadataForZoneRecreation()
     }
 
     public func databasePath() -> URL {

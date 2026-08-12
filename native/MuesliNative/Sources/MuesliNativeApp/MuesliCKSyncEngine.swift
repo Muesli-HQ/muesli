@@ -1,4 +1,5 @@
 import CloudKit
+import CryptoKit
 import Foundation
 import MuesliCore
 
@@ -103,6 +104,10 @@ struct MuesliCKSyncRecordBatch: Sendable {
     let staleChanges: [CKSyncEngine.PendingRecordZoneChange]
 }
 
+enum MuesliCKSyncError: Error {
+    case accountChanged
+}
+
 /// Owns the single CKSyncEngine instance for Muesli's private text-record zone.
 ///
 /// SQLite's `sync_dirty` flags remain the durable outbox. Before every send we
@@ -112,11 +117,15 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
     static var stateKey: String {
         "cksyncengine.private.MuesliSyncZone.\(MuesliICloudSyncEngine.cloudKitEnvironmentKeyComponent).v1"
     }
+    static var accountScopeKey: String {
+        "cksyncengine.private.MuesliSyncZone.\(MuesliICloudSyncEngine.cloudKitEnvironmentKeyComponent).account-owner.v1"
+    }
     private static let subscriptionID = "muesli-cksyncengine-private-v1"
     private static let uploadBatchSize = 200
     private static let maximumUploadBatchesPerSync = 50
 
     private let store: DictationStore
+    private let legacyAccountRecordVerifier: (@Sendable (Set<String>) async throws -> Bool)?
     private var container: CKContainer?
     private var preflight: MuesliICloudSyncEngine?
     private var engine: CKSyncEngine?
@@ -124,6 +133,7 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
     private var preparationTask: Task<Bool, Error>?
     private var preparationTaskID: UUID?
     private var preparationGeneration = 0
+    private var accountBoundaryBlocked = true
     private var conflictBaseRecords: [CKRecord.ID: CKRecord] = [:]
     private var uploaded = ICloudSyncKindCounts()
     private var downloaded = ICloudSyncKindCounts()
@@ -142,11 +152,13 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
     init(
         store: DictationStore,
         container: CKContainer? = nil,
+        legacyAccountRecordVerifier: (@Sendable (Set<String>) async throws -> Bool)? = nil,
         bridgeRefreshDidFinish: (@MainActor @Sendable () -> Void)? = nil,
         engineCancellationObserver: @escaping @Sendable () async -> Void = {}
     ) {
         self.store = store
         self.container = container
+        self.legacyAccountRecordVerifier = legacyAccountRecordVerifier
         self.bridgeRefreshDidFinish = bridgeRefreshDidFinish
         self.engineCancellationObserver = engineCancellationObserver
     }
@@ -284,7 +296,7 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
             }
             let createdTaskID = UUID()
             let createdTask = Task {
-                try await preflight.prepareForCKSyncEngine(store: store)
+                try await self.performPreparation(preflight: preflight)
             }
             preparationTask = createdTask
             preparationTaskID = createdTaskID
@@ -325,6 +337,18 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
             }
             throw error
         }
+    }
+
+    private func performPreparation(preflight: MuesliICloudSyncEngine) async throws -> Bool {
+        let currentUser = try await resolvedContainer().userRecordID()
+        guard try await authorizeAccount(currentUser, preflight: preflight) else {
+            if let engine {
+                engine.state.remove(pendingRecordZoneChanges: engine.state.pendingRecordZoneChanges)
+            }
+            try store.clearCloudSyncStateData(forKey: Self.stateKey)
+            throw MuesliCKSyncError.accountChanged
+        }
+        return try await preflight.prepareForCKSyncEngine(store: store)
     }
 
     private func invalidatePreparation(cancelEngine: Bool) async {
@@ -377,6 +401,7 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
 
     private func makeEngineIfNeeded() throws -> CKSyncEngine {
         if let engine { return engine }
+        guard !accountBoundaryBlocked else { throw MuesliCKSyncError.accountChanged }
 
         let serialization: CKSyncEngine.State.Serialization?
         if let data = try store.cloudSyncStateData(forKey: Self.stateKey) {
@@ -415,6 +440,7 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
     }
 
     func registerNextDirtyBatch(state: any MuesliCKSyncPendingState) throws -> Int {
+        guard !accountBoundaryBlocked else { return 0 }
         let dirtyRecords = try store.textRecordsNeedingSync(limit: Self.uploadBatchSize)
         guard !dirtyRecords.isEmpty else { return 0 }
 
@@ -438,15 +464,25 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
         _ context: CKSyncEngine.SendChangesContext,
         syncEngine: CKSyncEngine
     ) async -> CKSyncEngine.RecordZoneChangeBatch? {
-        let pending = syncEngine.state.pendingRecordZoneChanges.filter {
+        guard !accountBoundaryBlocked else { return nil }
+        let pending = Array(syncEngine.state.pendingRecordZoneChanges.lazy.filter {
             context.options.scope.contains($0)
-        }
+        }.prefix(Self.uploadBatchSize))
         let batch = makeRecordBatch(pendingChanges: pending)
         if !batch.staleChanges.isEmpty {
             syncEngine.state.remove(pendingRecordZoneChanges: batch.staleChanges)
         }
         guard !batch.recordsToSave.isEmpty else { return nil }
-        return CKSyncEngine.RecordZoneChangeBatch(recordsToSave: batch.recordsToSave)
+        let recordsByID = Dictionary(
+            uniqueKeysWithValues: batch.recordsToSave.map { ($0.recordID, $0) }
+        )
+        let saveChanges = batch.recordsToSave.map {
+            CKSyncEngine.PendingRecordZoneChange.saveRecord($0.recordID)
+        }
+        return await CKSyncEngine.RecordZoneChangeBatch(
+            pendingChanges: saveChanges,
+            recordProvider: { recordsByID[$0] }
+        )
     }
 
     func makeRecordBatch(
@@ -506,10 +542,15 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
         do {
             switch event {
             case .stateUpdate(let update):
+                guard !accountBoundaryBlocked else {
+                    try store.clearCloudSyncStateData(forKey: Self.stateKey)
+                    break
+                }
                 let data = try PropertyListEncoder().encode(update.stateSerialization)
                 try store.saveCloudSyncStateData(data, forKey: Self.stateKey)
 
             case .fetchedRecordZoneChanges(let changes):
+                guard !accountBoundaryBlocked else { break }
                 try handleFetchedRecords(
                     changes.modifications.map(\.record),
                     state: syncEngine.state
@@ -518,6 +559,7 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
                 // notifications are intentionally ignored for this record contract.
 
             case .sentRecordZoneChanges(let changes):
+                guard !accountBoundaryBlocked else { break }
                 try handleSentRecordChanges(
                     savedRecords: changes.savedRecords,
                     failedRecordSaves: changes.failedRecordSaves.map {
@@ -530,13 +572,14 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
                 conflictBaseRecords.removeAll()
                 switch change.changeType {
                 case .signIn, .switchAccounts:
-                    try await handleAccountChange(
-                        requiresMetadataReset: true,
+                    let currentUser = try await resolvedContainer().userRecordID()
+                    _ = try await handleAccountChange(
+                        currentUser: currentUser,
                         state: syncEngine.state
                     )
                 case .signOut:
-                    try await handleAccountChange(
-                        requiresMetadataReset: false,
+                    _ = try await handleAccountChange(
+                        currentUser: nil,
                         state: syncEngine.state
                     )
                 @unknown default:
@@ -654,10 +697,11 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
         }
     }
 
+    @discardableResult
     func handleAccountChange(
-        requiresMetadataReset: Bool,
+        currentUser: CKRecord.ID?,
         state: any MuesliCKSyncPendingState
-    ) async throws {
+    ) async throws -> Bool {
         // CKSyncEngine forbids invoking its sync/cancellation methods recursively
         // from a delegate callback. Invalidate preflight only and let this engine
         // finish its account transition; SQLite remains the durable source of work.
@@ -668,8 +712,64 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
         }
         try store.clearCloudSyncStateData(forKey: Self.stateKey)
         conflictBaseRecords.removeAll()
-        if requiresMetadataReset {
-            try store.resetTextRecordCloudMetadataForAccountChange()
+        guard let currentUser else {
+            accountBoundaryBlocked = true
+            return false
         }
+        guard try await authorizeAccount(currentUser) else { return false }
+        _ = try registerNextDirtyBatch(state: state)
+        return true
+    }
+
+    /// Hashes the account identifier before it reaches local persistence or logs.
+    static func accountScope(for userRecordID: CKRecord.ID) -> String {
+        let digest = SHA256.hash(data: Data(userRecordID.recordName.utf8))
+        return "sha256:" + digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func authorizeAccount(
+        _ userRecordID: CKRecord.ID,
+        preflight: MuesliICloudSyncEngine? = nil
+    ) async throws -> Bool {
+        accountBoundaryBlocked = true
+        let requestedScope = Self.accountScope(for: userRecordID)
+
+        if let persistedScope = try store.cloudSyncStateData(forKey: Self.accountScopeKey) {
+            let matches = persistedScope == Data(requestedScope.utf8)
+            accountBoundaryBlocked = !matches
+            if !matches {
+                fputs("[muesli-native] CKSyncEngine account boundary blocked\n", stderr)
+            }
+            return matches
+        }
+
+        let legacyRecordNames = try store.textRecordNamesRequiringAccountVerification()
+        if !legacyRecordNames.isEmpty {
+            let verified: Bool
+            if let legacyAccountRecordVerifier {
+                verified = try await legacyAccountRecordVerifier(legacyRecordNames)
+            } else if let preflight {
+                verified = try await preflight.syncZoneContainsAnyTextRecord(named: legacyRecordNames)
+            } else {
+                let resolved = self.preflight
+                    ?? MuesliICloudSyncEngine(container: resolvedContainer())
+                self.preflight = resolved
+                verified = try await resolved.syncZoneContainsAnyTextRecord(named: legacyRecordNames)
+            }
+            guard verified else {
+                fputs("[muesli-native] CKSyncEngine account provenance unverified\n", stderr)
+                return false
+            }
+        }
+
+        let matches = try store.claimCloudSyncAccountScope(
+            requestedScope,
+            forKey: Self.accountScopeKey
+        )
+        accountBoundaryBlocked = !matches
+        if !matches {
+            fputs("[muesli-native] CKSyncEngine account boundary blocked\n", stderr)
+        }
+        return matches
     }
 }

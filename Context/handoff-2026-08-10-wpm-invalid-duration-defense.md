@@ -103,7 +103,7 @@ launch recursive sync operations.
 Cross-review tightened that delegate boundary: account-change handling now invalidates
 preparation and discards stale pending engine changes through the supplied state, but
 does not call `cancelOperations()` from inside `handleEvent`. It still clears serialized
-CloudKit state and resets account-scoped record metadata while preserving local text.
+CloudKit state while preserving local text and account-scoped record metadata.
 If another trigger arrives during a cycle that subsequently fails, only that newly
 queued unioned request is scheduled once; the failed request itself is not re-enqueued,
 preventing both lost wakeups and hot retry loops.
@@ -123,3 +123,38 @@ Validation used the existing SwiftPM scratch path
 - the combined CKSyncEngine, bridge identity/policy, DictationStore, and Insights run
   passed 182 tests across 6 suites after the final request-coalescing and recovery
   assertions were added.
+
+## 2026-08-12 follow-up: private-account provenance boundary
+
+Reciprocal review with the iOS migration identified a higher-severity account-switch
+risk: clearing old CKRecord metadata and marking the whole local library dirty would
+make the next signed-in account eligible to receive the previous account's authored
+text. The macOS engine now establishes an environment-scoped ownership boundary before
+creating a zone, running migration, registering dirty records, or building CKRecords.
+
+- The current CloudKit user record name is SHA-256 hashed before persistence; neither
+  the raw identifier nor authored fields enter diagnostics.
+- A fresh local-only library can claim the current account immediately.
+- An existing unscoped, cloud-backed library must prove ownership by finding at least
+  one matching stable text-record ID in the current private zone. The lookup requests
+  `desiredKeys: []`, so it does not fetch authored content.
+- Failed, unavailable, or mismatched provenance leaves the library and its CloudKit
+  metadata intact, clears pending engine state, and blocks registration/provisioning.
+  Account switch and sign-out therefore cannot requeue or upload the old library.
+- Same-account zone recreation is distinct: obsolete change tags/system fields are
+  cleared, eligible text is preserved and requeued, and only then may fresh CKRecords
+  be constructed.
+- Account-context classification now recognizes nested `permissionFailure` and
+  `notAuthenticated` errors through bounded partial/underlying error traversal.
+- Record supply uses CKSyncEngine's size-aware `pendingChanges`/`recordProvider`
+  initializer, backed by one current SQLite materialization of at most 200 records;
+  stale pending IDs are removed without weakening the durable outbox.
+
+The account event delegate path remains non-reentrant: it changes only supplied engine
+state, local preparation/account flags, and SQLite metadata; it never invokes a
+CKSyncEngine sync or cancellation API.
+
+Final validation reused the existing SwiftPM scratch path above: 149 focused
+CKSyncEngine/DictationStore tests passed, 193 broader sync/bridge/store/Insights tests
+passed across six suites, the `MuesliNativeApp` product rebuilt successfully, and
+`git diff --check` was clean.

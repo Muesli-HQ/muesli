@@ -245,9 +245,45 @@ struct MuesliCKSyncEngineTests {
     @Test("account and zone failures invalidate the matching preparation context")
     func preparationRecoveryErrorsAreClassified() {
         #expect(MuesliICloudSyncEngine.isICloudAccountContextError(CKError(.notAuthenticated)))
+        #expect(MuesliICloudSyncEngine.isICloudAccountContextError(CKError(.permissionFailure)))
+        let nestedPermission = CKError(.partialFailure, userInfo: [
+            CKPartialErrorsByItemIDKey: [
+                CKRecord.ID(recordName: "opaque-test-id"): CKError(.permissionFailure),
+            ],
+        ])
+        #expect(MuesliICloudSyncEngine.isICloudAccountContextError(nestedPermission))
+        let underlyingAuthentication = NSError(
+            domain: NSCocoaErrorDomain,
+            code: 1,
+            userInfo: [NSUnderlyingErrorKey: CKError(.notAuthenticated)]
+        )
+        #expect(MuesliICloudSyncEngine.isICloudAccountContextError(underlyingAuthentication))
+        var overDepthLimit: Error = CKError(.permissionFailure)
+        for _ in 0..<9 {
+            overDepthLimit = NSError(
+                domain: NSCocoaErrorDomain,
+                code: 1,
+                userInfo: [NSUnderlyingErrorKey: overDepthLimit]
+            )
+        }
+        #expect(!MuesliICloudSyncEngine.isICloudAccountContextError(overDepthLimit))
         #expect(MuesliICloudSyncEngine.isSyncZoneRecoveryError(CKError(.zoneNotFound)))
         #expect(MuesliICloudSyncEngine.isSyncZoneRecoveryError(CKError(.userDeletedZone)))
         #expect(!MuesliICloudSyncEngine.isSyncZoneRecoveryError(CKError(.networkUnavailable)))
+    }
+
+    @Test("provenance treats only uniformly missing nested records as a safe non-match")
+    func provenanceMissingErrorsAreBoundedAndStrict() {
+        let recordID = CKRecord.ID(recordName: "opaque-test-id")
+        let allMissing = CKError(.partialFailure, userInfo: [
+            CKPartialErrorsByItemIDKey: [recordID: CKError(.unknownItem)],
+        ])
+        let mixed = CKError(.partialFailure, userInfo: [
+            CKPartialErrorsByItemIDKey: [recordID: CKError(.networkUnavailable)],
+        ])
+
+        #expect(MuesliICloudSyncEngine.isMissingProvenanceRecord(allMissing))
+        #expect(!MuesliICloudSyncEngine.isMissingProvenanceRecord(mixed))
     }
 
     @Test("restored pending save rebuilds its CKRecord from SQLite")
@@ -264,10 +300,13 @@ struct MuesliCKSyncEngineTests {
             recordName: dirty.id,
             zoneID: MuesliICloudSyncEngine.Schema.syncZoneID
         ))
-        let state = TestCKSyncPendingState([pending])
+        let state = TestCKSyncPendingState()
         let coordinator = MuesliCKSyncEngine(store: store)
 
-        #expect(try await coordinator.registerNextDirtyBatch(state: state) == 1)
+        #expect(try await coordinator.handleAccountChange(
+            currentUser: CKRecord.ID(recordName: "local-only-owner"),
+            state: state
+        ))
         #expect(state.pendingRecordZoneChanges == [pending])
 
         let batch = await coordinator.makeRecordBatch(pendingChanges: state.pendingRecordZoneChanges)
@@ -308,6 +347,45 @@ struct MuesliCKSyncEngineTests {
 
         #expect(batch.recordsToSave.isEmpty)
         #expect(batch.staleChanges.isEmpty)
+    }
+
+    @Test("record provider materializes one bounded SQLite page")
+    func recordProviderMaterializesOneBoundedPage() async throws {
+        let store = try makeStore()
+        for index in 0..<205 {
+            _ = try store.insertDictation(
+                text: "Batch \(index)",
+                durationSeconds: 1,
+                startedAt: Date().addingTimeInterval(-1),
+                endedAt: Date()
+            )
+        }
+        let page = try store.textRecordsNeedingSync(limit: 200)
+        #expect(page.count == 200)
+        let pending = page.map {
+            CKSyncEngine.PendingRecordZoneChange.saveRecord(CKRecord.ID(
+                recordName: $0.id,
+                zoneID: MuesliICloudSyncEngine.Schema.syncZoneID
+            ))
+        }
+        let coordinator = MuesliCKSyncEngine(store: store)
+        var readCount = 0
+        var requestedNames = Set<String>()
+
+        let batch = await coordinator.makeRecordBatch(
+            pendingChanges: pending,
+            loadRecords: { names in
+                readCount += 1
+                requestedNames = Set(names)
+                return try store.textRecordsForSync(recordNames: names)
+            }
+        )
+
+        #expect(readCount == 1)
+        #expect(requestedNames.count == 200)
+        #expect(batch.recordsToSave.count == 200)
+        #expect(batch.staleChanges.isEmpty)
+        #expect(try store.textRecordsNeedingSync(limit: 201).count == 201)
     }
 
     @Test("newer fetched server record replaces local row and pending save")
@@ -491,7 +569,124 @@ struct MuesliCKSyncEngineTests {
         #expect(try store.hasTextRecordsNeedingSync())
     }
 
-    @Test("account switch clears only CloudKit metadata and preserves local text")
+    @Test("account scope diagnostics are stable hashes without CloudKit user IDs")
+    func accountScopeIsContentFree() {
+        let first = CKRecord.ID(recordName: "private-user-a")
+        let second = CKRecord.ID(recordName: "private-user-b")
+        let firstScope = MuesliCKSyncEngine.accountScope(for: first)
+
+        #expect(firstScope == MuesliCKSyncEngine.accountScope(for: first))
+        #expect(firstScope != MuesliCKSyncEngine.accountScope(for: second))
+        #expect(!firstScope.contains(first.recordName))
+        #expect(firstScope.hasPrefix("sha256:"))
+    }
+
+    @Test("first local-only library claims the current account and registers dirty text")
+    func firstLocalOnlyLibraryClaimsCurrentAccount() async throws {
+        let store = try makeStore()
+        _ = try store.insertDictation(
+            text: "Private local-only text",
+            durationSeconds: 2,
+            startedAt: Date().addingTimeInterval(-2),
+            endedAt: Date()
+        )
+        let local = try #require(try store.textRecordsNeedingSync().first)
+        let state = TestCKSyncPendingState()
+        let owner = CKRecord.ID(recordName: "first-owner")
+        let coordinator = MuesliCKSyncEngine(
+            store: store,
+            legacyAccountRecordVerifier: { _ in
+                Issue.record("Local-only rows must not require legacy CloudKit proof")
+                return false
+            }
+        )
+
+        #expect(try await coordinator.handleAccountChange(currentUser: owner, state: state))
+        #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.accountScopeKey)
+            == Data(MuesliCKSyncEngine.accountScope(for: owner).utf8))
+        #expect(state.pendingRecordZoneChanges == [
+            .saveRecord(CKRecord.ID(
+                recordName: local.id,
+                zoneID: MuesliICloudSyncEngine.Schema.syncZoneID
+            )),
+        ])
+    }
+
+    @Test("unscoped legacy library claims only a verified current account")
+    func verifiedLegacyLibraryClaimsCurrentAccount() async throws {
+        let store = try makeStore()
+        _ = try store.insertDictation(
+            text: "Legacy synced text",
+            durationSeconds: 2,
+            startedAt: Date().addingTimeInterval(-2),
+            endedAt: Date()
+        )
+        let local = try #require(try store.textRecordsNeedingSync().first)
+        #expect(try store.markTextRecordSynced(
+            kind: local.kind,
+            recordName: local.id,
+            changeTag: "legacy-tag",
+            systemFields: Data([0x01]),
+            recordUpdatedAt: local.updatedAt
+        ))
+        let owner = CKRecord.ID(recordName: "verified-owner")
+        let state = TestCKSyncPendingState()
+        let coordinator = MuesliCKSyncEngine(
+            store: store,
+            legacyAccountRecordVerifier: { names in names == Set([local.id]) }
+        )
+
+        #expect(try await coordinator.handleAccountChange(currentUser: owner, state: state))
+        #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.accountScopeKey)
+            == Data(MuesliCKSyncEngine.accountScope(for: owner).utf8))
+        #expect(state.pendingRecordZoneChanges.isEmpty)
+    }
+
+    @Test("unverified legacy account is blocked without requeue or metadata loss")
+    func unverifiedLegacyLibraryStaysLocal() async throws {
+        let store = try makeStore()
+        _ = try store.insertDictation(
+            text: "Legacy authored text stays local",
+            durationSeconds: 2,
+            startedAt: Date().addingTimeInterval(-2),
+            endedAt: Date()
+        )
+        let local = try #require(try store.textRecordsNeedingSync().first)
+        #expect(try store.markTextRecordSynced(
+            kind: local.kind,
+            recordName: local.id,
+            changeTag: "legacy-account-tag",
+            systemFields: Data([0x01, 0x02]),
+            recordUpdatedAt: local.updatedAt
+        ))
+        let pending: CKSyncEngine.PendingRecordZoneChange = .saveRecord(CKRecord.ID(
+            recordName: local.id,
+            zoneID: MuesliICloudSyncEngine.Schema.syncZoneID
+        ))
+        let state = TestCKSyncPendingState([pending])
+        let coordinator = MuesliCKSyncEngine(
+            store: store,
+            legacyAccountRecordVerifier: { names in
+                #expect(names == Set([local.id]))
+                return false
+            }
+        )
+
+        #expect(try await coordinator.handleAccountChange(
+            currentUser: CKRecord.ID(recordName: "unverified-owner"),
+            state: state
+        ) == false)
+        #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.accountScopeKey) == nil)
+        #expect(state.pendingRecordZoneChanges.isEmpty)
+        #expect(try !store.hasTextRecordsNeedingSync())
+        #expect(try await coordinator.registerNextDirtyBatch(state: state) == 0)
+        let preserved = try #require(try store.textRecordForSync(recordName: local.id))
+        #expect(preserved.text == "Legacy authored text stays local")
+        #expect(preserved.cloudChangeTag == "legacy-account-tag")
+        #expect(preserved.cloudSystemFields == Data([0x01, 0x02]))
+    }
+
+    @Test("account switch clears pending engine state but never uploads the old library")
     func accountSwitchPreservesLocalData() async throws {
         let store = try makeStore()
         _ = try store.insertDictation(
@@ -509,6 +704,11 @@ struct MuesliCKSyncEngineTests {
             recordUpdatedAt: local.updatedAt
         ))
         let cancellationProbe = TestCKSyncCancellationProbe()
+        let originalOwner = CKRecord.ID(recordName: "account-one")
+        #expect(try store.claimCloudSyncAccountScope(
+            MuesliCKSyncEngine.accountScope(for: originalOwner),
+            forKey: MuesliCKSyncEngine.accountScopeKey
+        ))
         let coordinator = MuesliCKSyncEngine(
             store: store,
             engineCancellationObserver: { await cancellationProbe.record() }
@@ -523,17 +723,85 @@ struct MuesliCKSyncEngineTests {
             forKey: MuesliCKSyncEngine.stateKey
         )
 
-        try await coordinator.handleAccountChange(
-            requiresMetadataReset: true,
+        #expect(try await coordinator.handleAccountChange(
+            currentUser: CKRecord.ID(recordName: "account-two"),
             state: state
-        )
+        ) == false)
 
-        let reset = try #require(try store.textRecordsNeedingSync().first { $0.id == local.id })
-        #expect(reset.text == "Keep this local text")
-        #expect(reset.cloudChangeTag == nil)
-        #expect(reset.cloudSystemFields == nil)
+        let preserved = try #require(try store.textRecordForSync(recordName: local.id))
+        #expect(preserved.text == "Keep this local text")
+        #expect(preserved.cloudChangeTag == "account-one-tag")
+        #expect(preserved.cloudSystemFields == Data([0x01, 0x02]))
+        #expect(try !store.hasTextRecordsNeedingSync())
+        #expect(try await coordinator.registerNextDirtyBatch(state: state) == 0)
         #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.stateKey) == nil)
         #expect(state.pendingRecordZoneChanges.isEmpty)
         #expect(await cancellationProbe.count == 0)
+    }
+
+    @Test("sign-out leaves dirty local text durable but impossible to register")
+    func signOutBlocksDirtyOutbox() async throws {
+        let store = try makeStore()
+        _ = try store.insertDictation(
+            text: "Never upload while signed out",
+            durationSeconds: 2,
+            startedAt: Date().addingTimeInterval(-2),
+            endedAt: Date()
+        )
+        let local = try #require(try store.textRecordsNeedingSync().first)
+        let owner = CKRecord.ID(recordName: "signed-in-owner")
+        #expect(try store.claimCloudSyncAccountScope(
+            MuesliCKSyncEngine.accountScope(for: owner),
+            forKey: MuesliCKSyncEngine.accountScopeKey
+        ))
+        let pending: CKSyncEngine.PendingRecordZoneChange = .saveRecord(CKRecord.ID(
+            recordName: local.id,
+            zoneID: MuesliICloudSyncEngine.Schema.syncZoneID
+        ))
+        let state = TestCKSyncPendingState([pending])
+        let coordinator = MuesliCKSyncEngine(store: store)
+
+        #expect(try await coordinator.handleAccountChange(currentUser: nil, state: state) == false)
+        #expect(state.pendingRecordZoneChanges.isEmpty)
+        #expect(try store.hasTextRecordsNeedingSync())
+        #expect(try await coordinator.registerNextDirtyBatch(state: state) == 0)
+    }
+
+    @Test("same-account zone recreation builds fresh records from requeued local text")
+    func sameAccountZoneRecreationRequeuesFreshRecords() async throws {
+        let store = try makeStore()
+        _ = try store.insertDictation(
+            text: "Preserve me across zone recreation",
+            durationSeconds: 2,
+            startedAt: Date().addingTimeInterval(-2),
+            endedAt: Date()
+        )
+        let local = try #require(try store.textRecordsNeedingSync().first)
+        #expect(try store.markTextRecordSynced(
+            kind: local.kind,
+            recordName: local.id,
+            changeTag: "deleted-zone-tag",
+            systemFields: Data([0x01, 0x02]),
+            recordUpdatedAt: local.updatedAt
+        ))
+        let owner = CKRecord.ID(recordName: "same-owner")
+        #expect(try store.claimCloudSyncAccountScope(
+            MuesliCKSyncEngine.accountScope(for: owner),
+            forKey: MuesliCKSyncEngine.accountScopeKey
+        ))
+        try store.resetTextRecordCloudMetadataForZoneRecreation()
+
+        let state = TestCKSyncPendingState()
+        let coordinator = MuesliCKSyncEngine(store: store)
+        #expect(try await coordinator.handleAccountChange(currentUser: owner, state: state))
+        let batch = await coordinator.makeRecordBatch(pendingChanges: state.pendingRecordZoneChanges)
+
+        let rebuilt = try #require(batch.recordsToSave.first)
+        #expect(rebuilt.recordID.recordName == local.id)
+        #expect(rebuilt["text"] as? String == "Preserve me across zone recreation")
+        let requeued = try #require(try store.textRecordForSync(recordName: local.id))
+        #expect(requeued.cloudChangeTag == nil)
+        #expect(requeued.cloudSystemFields == nil)
+        #expect(try store.hasTextRecordsNeedingSync())
     }
 }
