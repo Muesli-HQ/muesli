@@ -15,7 +15,10 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
 
     private let directoryName: String
     private let queueLock = NSRecursiveLock()
-    private var permanentlyInvalidated = false
+    /// Published independently of queueLock: invalidateForTeardown() must land
+    /// even while a worker is blocked inside AudioQueueStart holding queueLock,
+    /// so the post-start self-check observes it before start() returns.
+    private let teardownInvalidation = OSAllocatedUnfairLock(initialState: false)
     private let stateLock = OSAllocatedUnfairLock(initialState: FileState())
     private let processingQueue = DispatchQueue(label: "com.muesli.audio-queue-input-recorder-processing")
     private let failureCallbackQueue = DispatchQueue(label: "com.muesli.audio-queue-input-recorder-failures")
@@ -47,7 +50,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
     func prepare() throws {
         queueLock.lock()
         defer { queueLock.unlock() }
-        guard !permanentlyInvalidated else {
+        guard !isPermanentlyInvalidated else {
             throw Self.runtimeError(code: 9, message: "Recorder was invalidated by teardown")
         }
 
@@ -57,7 +60,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
     func start() throws {
         queueLock.lock()
         defer { queueLock.unlock() }
-        guard !permanentlyInvalidated else {
+        guard !isPermanentlyInvalidated else {
             throw Self.runtimeError(code: 9, message: "Recorder was invalidated by teardown")
         }
 
@@ -90,7 +93,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         // teardown may land during that window. If this instance was invalidated
         // while the call was in flight, synchronously stop what just started
         // before returning — capture must not outlive teardown.
-        if permanentlyInvalidated {
+        if isPermanentlyInvalidated {
             AudioQueueStop(audioQueue, true)
             isRunning = false
             captureGeneration &+= 1
@@ -186,9 +189,11 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
     /// never start capture again, regardless of which queue a stale worker is
     /// on. Distinct from cancel(), which disposes but permits re-prepare.
     func invalidateForTeardown() {
-        queueLock.lock()
-        permanentlyInvalidated = true
-        queueLock.unlock()
+        teardownInvalidation.withLock { $0 = true }
+    }
+
+    private var isPermanentlyInvalidated: Bool {
+        teardownInvalidation.withLock { $0 }
     }
 
     func pause() {

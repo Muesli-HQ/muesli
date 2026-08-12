@@ -67,7 +67,10 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
     private let directoryName: String
     private let recoversFromInputConfigurationChanges: Bool
     private let graphLock = NSRecursiveLock()
-    private var permanentlyInvalidated = false
+    /// Published independently of graphLock: invalidateForTeardown() must land
+    /// even while a worker is blocked in engine startup holding graphLock, so
+    /// the post-start self-check observes it before start() returns.
+    private let teardownInvalidation = OSAllocatedUnfairLock(initialState: false)
     private let lock = OSAllocatedUnfairLock(initialState: FileState())
     private let failureLock = OSAllocatedUnfairLock(initialState: FailureState())
     private let failureCallbackQueue = DispatchQueue(label: "com.muesli.streaming-mic-recorder-failures")
@@ -112,7 +115,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
     func prepare() throws {
         graphLock.lock()
         defer { graphLock.unlock() }
-        guard !permanentlyInvalidated else {
+        guard !isPermanentlyInvalidated else {
             throw NSError(domain: "StreamingMicRecorder", code: 9, userInfo: [
                 NSLocalizedDescriptionKey: "Recorder was invalidated by teardown",
             ])
@@ -165,7 +168,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         graphLock.lock()
         defer { graphLock.unlock() }
 
-        guard !permanentlyInvalidated else {
+        guard !isPermanentlyInvalidated else {
             throw NSError(domain: "StreamingMicRecorder", code: 9, userInfo: [
                 NSLocalizedDescriptionKey: "Recorder was invalidated by teardown",
             ])
@@ -187,7 +190,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
             // Engine start can block while the daemon negotiates the route;
             // teardown may have landed during that window. Synchronously stop
             // what just started rather than letting capture outlive teardown.
-            if permanentlyInvalidated {
+            if isPermanentlyInvalidated {
                 removeTapIfNeeded()
                 stopEngineSafely()
                 removeConfigurationChangeObserverIfNeeded()
@@ -486,9 +489,11 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
     /// Terminal and synchronous: this instance must never start capture again
     /// after meeting teardown. Distinct from cancel(), which permits reuse.
     func invalidateForTeardown() {
-        graphLock.lock()
-        permanentlyInvalidated = true
-        graphLock.unlock()
+        teardownInvalidation.withLock { $0 = true }
+    }
+
+    private var isPermanentlyInvalidated: Bool {
+        teardownInvalidation.withLock { $0 }
     }
 
     func cancel() {
