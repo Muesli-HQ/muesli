@@ -330,7 +330,16 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
             return (children.0, children.1, takeUnusedSeedRecorders())
         }
         resources.unused.forEach { $0.invalidateForTeardown() }
-        cancelAsync(resources.pending)
+        // Stop the pending candidate's capture synchronously — teardown must
+        // not return while a replacement recorder is still capturing. Disposal
+        // (cancel) stays async: it can block on wedged CoreAudio cleanup and
+        // must not stall meeting teardown.
+        if let pending = resources.pending {
+            if let url = pending.recorder.stop() {
+                try? FileManager.default.removeItem(at: url)
+            }
+            cancelAsync(pending)
+        }
         cancelAsync(resources.unused)
         let url = resources.active?.recorder.stop()
         resources.active?.recorder.cancel()
@@ -354,8 +363,15 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
             return (children.0, children.1, takeUnusedSeedRecorders())
         }
         resources.2.forEach { $0.invalidateForTeardown() }
+        // Same guarantee as stop(): a pending candidate's capture ceases
+        // synchronously; only disposal is deferred.
+        if let pending = resources.1 {
+            if let url = pending.recorder.stop() {
+                try? FileManager.default.removeItem(at: url)
+            }
+            cancelAsync(pending)
+        }
         cancelAsync(resources.0)
-        cancelAsync(resources.1)
         cancelAsync(resources.2)
     }
 
