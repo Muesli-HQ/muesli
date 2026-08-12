@@ -589,7 +589,7 @@ struct MeetingsView: View {
                 title: event.title,
                 meetingURL: meetingURL,
                 endDate: event.endDate,
-                calendarEventID: event.id
+                calendarOccurrence: event.resolvedCalendarOccurrence
             )
         case .joinOnly:
             controller.joinOnly(meetingURL: meetingURL, endDate: event.endDate)
