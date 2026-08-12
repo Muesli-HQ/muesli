@@ -15,6 +15,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
 
     private let directoryName: String
     private let queueLock = NSRecursiveLock()
+    private var permanentlyInvalidated = false
     private let stateLock = OSAllocatedUnfairLock(initialState: FileState())
     private let processingQueue = DispatchQueue(label: "com.muesli.audio-queue-input-recorder-processing")
     private let failureCallbackQueue = DispatchQueue(label: "com.muesli.audio-queue-input-recorder-failures")
@@ -46,6 +47,9 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
     func prepare() throws {
         queueLock.lock()
         defer { queueLock.unlock() }
+        guard !permanentlyInvalidated else {
+            throw Self.runtimeError(code: 9, message: "Recorder was invalidated by teardown")
+        }
 
         try prepareLocked()
     }
@@ -53,6 +57,9 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
     func start() throws {
         queueLock.lock()
         defer { queueLock.unlock() }
+        guard !permanentlyInvalidated else {
+            throw Self.runtimeError(code: 9, message: "Recorder was invalidated by teardown")
+        }
 
         guard !isRunning else { return }
         try prepareLocked()
@@ -162,6 +169,15 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
 
     func currentPower() -> Float {
         stateLock.withLock { $0.latestPowerDB }
+    }
+
+    /// Terminal and synchronous: after meeting teardown, this instance must
+    /// never start capture again, regardless of which queue a stale worker is
+    /// on. Distinct from cancel(), which disposes but permits re-prepare.
+    func invalidateForTeardown() {
+        queueLock.lock()
+        permanentlyInvalidated = true
+        queueLock.unlock()
     }
 
     func pause() {

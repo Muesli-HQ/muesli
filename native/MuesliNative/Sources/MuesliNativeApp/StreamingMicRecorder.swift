@@ -16,6 +16,17 @@ protocol StreamingDictationRecording: AnyObject {
     func stop() -> URL?
     func cancel()
     func currentPower() -> Float
+
+    /// Permanently disqualify this recorder instance from ever starting
+    /// capture again. Unlike cancel() (which disposes but allows re-prepare),
+    /// this is terminal and synchronous, so a stale handoff worker that calls
+    /// start() after meeting teardown loses the race no matter the
+    /// interleaving. Default no-op for recorders that don't need it.
+    func invalidateForTeardown()
+}
+
+extension StreamingDictationRecording {
+    func invalidateForTeardown() {}
 }
 
 protocol StreamingDictationLatencyReporting: AnyObject {
@@ -56,6 +67,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
     private let directoryName: String
     private let recoversFromInputConfigurationChanges: Bool
     private let graphLock = NSRecursiveLock()
+    private var permanentlyInvalidated = false
     private let lock = OSAllocatedUnfairLock(initialState: FileState())
     private let failureLock = OSAllocatedUnfairLock(initialState: FailureState())
     private let failureCallbackQueue = DispatchQueue(label: "com.muesli.streaming-mic-recorder-failures")
@@ -100,6 +112,11 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
     func prepare() throws {
         graphLock.lock()
         defer { graphLock.unlock() }
+        guard !permanentlyInvalidated else {
+            throw NSError(domain: "StreamingMicRecorder", code: 9, userInfo: [
+                NSLocalizedDescriptionKey: "Recorder was invalidated by teardown",
+            ])
+        }
 
         try prepareLocked()
     }
@@ -148,6 +165,11 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         graphLock.lock()
         defer { graphLock.unlock() }
 
+        guard !permanentlyInvalidated else {
+            throw NSError(domain: "StreamingMicRecorder", code: 9, userInfo: [
+                NSLocalizedDescriptionKey: "Recorder was invalidated by teardown",
+            ])
+        }
         guard !runState.isRunning else { return }
         try prepareLocked()
         let recordingID = UUID()
@@ -439,6 +461,14 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         lock.withLock { state in
             state.isPaused = false
         }
+    }
+
+    /// Terminal and synchronous: this instance must never start capture again
+    /// after meeting teardown. Distinct from cancel(), which permits reuse.
+    func invalidateForTeardown() {
+        graphLock.lock()
+        permanentlyInvalidated = true
+        graphLock.unlock()
     }
 
     func cancel() {

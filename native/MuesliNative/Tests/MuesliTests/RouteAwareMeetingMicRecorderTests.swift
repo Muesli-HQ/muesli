@@ -684,6 +684,10 @@ struct RouteAwareMeetingMicRecorderTests {
 
         // Tear down while the worker is blocked inside candidate.prepare().
         _ = recorder.stop()
+
+        // Teardown must poison the candidate synchronously — before the worker
+        // is even released — so no interleaving can start capture afterwards.
+        #expect(candidate.invalidatedForTeardown)
         allowPrepare.signal()
 
         // The worker must not proceed to start() after teardown cleared the
@@ -755,6 +759,7 @@ private final class FakeMeetingMicRecorder: MeetingMicRecording {
     var onCancel: (() -> Void)?
     var onPrepareStarted: (() -> Void)?
     var prepareGate: DispatchSemaphore?
+    var invalidatedForTeardown = false
 
     init(kind: MeetingMicRecorderKind) {
         self.kind = kind
@@ -767,6 +772,11 @@ private final class FakeMeetingMicRecorder: MeetingMicRecording {
     }
 
     func start() throws {
+        if invalidatedForTeardown {
+            throw NSError(domain: "test", code: 9, userInfo: [
+                NSLocalizedDescriptionKey: "invalidated",
+            ])
+        }
         startCalls += 1
         onStart?()
         if let startError { throw startError }
@@ -788,6 +798,10 @@ private final class FakeMeetingMicRecorder: MeetingMicRecording {
     func cancel() {
         cancelCalls += 1
         onCancel?()
+    }
+
+    func invalidateForTeardown() {
+        invalidatedForTeardown = true
     }
 
     func currentPower() -> Float {

@@ -43,6 +43,11 @@ protocol MeetingMicRecording: AnyObject {
     func currentPower() -> Float
     func diagnosticsSnapshot() -> MeetingMicRecorderDiagnosticsSnapshot
 
+    /// Permanently disqualify this instance from starting capture again —
+    /// synchronous, so teardown always wins against a stale queued handoff
+    /// worker. Default no-op for recorders without retained worker state.
+    func invalidateForTeardown()
+
     /// Request a serialized same-route recovery: prepare a replacement capture
     /// graph for the current input while the active graph keeps running, and
     /// promote it only after it produces a non-empty buffer. Used when the
@@ -55,6 +60,7 @@ protocol MeetingMicRecording: AnyObject {
 }
 
 extension MeetingMicRecording {
+    func invalidateForTeardown() {}
     func requestSameRouteRecovery(reason: String) -> Bool { false }
 }
 
@@ -109,6 +115,10 @@ final class StreamingMeetingMicRecorderAdapter: MeetingMicRecording {
 
     func cancel() {
         recorder.cancel()
+    }
+
+    func invalidateForTeardown() {
+        recorder.invalidateForTeardown()
     }
 
     func currentPower() -> Float {
@@ -313,8 +323,13 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
                 state.shouldRecoverOnResume = false
                 return result
             }
+            // Poison every child synchronously, before any async cancellation:
+            // a handoff worker that slipped past the pending-candidate guard
+            // must find start() permanently rejected, never merely delayed.
+            invalidateChildrenForTeardown(children)
             return (children.0, children.1, takeUnusedSeedRecorders())
         }
+        resources.unused.forEach { $0.invalidateForTeardown() }
         cancelAsync(resources.pending)
         cancelAsync(resources.unused)
         let url = resources.active?.recorder.stop()
@@ -327,19 +342,29 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         let resources = lifecycleQueue.sync { () -> (Child?, Child?, [MeetingMicRecording]) in
             let children = lock.withLock { state -> (Child?, Child?) in
                 state.lifecycleState = .stopping
-                state.generation &+= 1
+                state.generation = state.generation &+ 1
                 let result = (state.active, state.pending)
                 state.active = nil
                 state.pending = nil
                 state.shouldRecoverOnResume = false
                 return result
             }
+            invalidateChildrenForTeardown(children)
             lock.withLock { $0.lifecycleState = .idle }
             return (children.0, children.1, takeUnusedSeedRecorders())
         }
+        resources.2.forEach { $0.invalidateForTeardown() }
         cancelAsync(resources.0)
         cancelAsync(resources.1)
         cancelAsync(resources.2)
+    }
+
+    /// Synchronously poison active/pending children so no stale worker can
+    /// ever start them; the recording child is stopped first by the caller so
+    /// its WAV finalizes before invalidation.
+    private func invalidateChildrenForTeardown(_ children: (Child?, Child?)) {
+        children.0?.recorder.invalidateForTeardown()
+        children.1?.recorder.invalidateForTeardown()
     }
 
     func currentPower() -> Float {
