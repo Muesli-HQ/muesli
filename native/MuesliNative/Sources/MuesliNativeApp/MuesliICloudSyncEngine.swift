@@ -543,6 +543,38 @@ final class MuesliICloudSyncEngine {
         error is ICloudSyncAccountError
     }
 
+    static func isICloudAccountContextError(_ error: Error) -> Bool {
+        if isICloudAccountAvailabilityError(error) {
+            return true
+        }
+        if let ckError = error as? CKError {
+            if ckError.code == .notAuthenticated {
+                return true
+            }
+            if ckError.code == .partialFailure,
+               ckError.partialErrorsByItemID?.values.contains(where: isICloudAccountContextError) == true {
+                return true
+            }
+        }
+        return false
+    }
+
+    static func isSyncZoneRecoveryError(_ error: Error) -> Bool {
+        if isSyncZoneMissing(error) {
+            return true
+        }
+        if let ckError = error as? CKError {
+            if ckError.code == .zoneNotFound || ckError.code == .userDeletedZone {
+                return true
+            }
+            if ckError.code == .partialFailure,
+               ckError.partialErrorsByItemID?.values.contains(where: isSyncZoneRecoveryError) == true {
+                return true
+            }
+        }
+        return false
+    }
+
     @discardableResult
     func ensureSyncZone() async throws -> Bool {
         do {

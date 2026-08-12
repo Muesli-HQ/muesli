@@ -46,6 +46,29 @@ private actor TestCKSyncCycleLog {
     }
 }
 
+private actor TestCKSyncPreparationProbe {
+    private var state = MuesliCKSyncPreparationState()
+    private(set) var preflightCount = 0
+
+    func prepare() {
+        guard state.requiresPreparation else { return }
+        preflightCount += 1
+        state.markPrepared()
+    }
+
+    func invalidate() {
+        state.invalidate()
+    }
+}
+
+private actor TestCKSyncCancellationProbe {
+    private(set) var count = 0
+
+    func record() {
+        count += 1
+    }
+}
+
 @Suite("Muesli CKSyncEngine", .serialized)
 struct MuesliCKSyncEngineTests {
     private func makeStore() throws -> DictationStore {
@@ -80,34 +103,151 @@ struct MuesliCKSyncEngineTests {
         return cloud
     }
 
-    @Test("sync cycle fetches before registering and sending")
-    func fetchBeforeSendOrdering() async throws {
+    @Test("local changes prepare and send without fetching first")
+    func localChangeSendsWithoutFetch() async throws {
         let log = TestCKSyncCycleLog(registrationResults: [1, 0])
 
-        try await MuesliCKSyncCycle.run(
+        try await MuesliCKSyncOperation.run(
+            intent: .outgoing,
             maximumUploadBatches: 5,
-            fetch: { await log.append("fetch") },
+            prepare: { await log.append("prepare") },
             registerNextBatch: { await log.register() },
             uploadedCount: { await log.uploaded },
-            send: { await log.send(makesProgress: true) }
+            send: { await log.send(makesProgress: true) },
+            fetch: { await log.append("fetch") }
         )
 
-        #expect(await log.events == ["fetch", "register", "send", "register"])
+        #expect(await log.events == ["prepare", "register", "send", "register"])
+    }
+
+    @Test("incoming changes prepare and fetch without sending")
+    func incomingChangeFetchesWithoutSend() async throws {
+        let log = TestCKSyncCycleLog(registrationResults: [1])
+
+        try await MuesliCKSyncOperation.run(
+            intent: .incoming,
+            maximumUploadBatches: 5,
+            prepare: { await log.append("prepare") },
+            registerNextBatch: { await log.register() },
+            uploadedCount: { await log.uploaded },
+            send: { await log.send(makesProgress: true) },
+            fetch: { await log.append("fetch") }
+        )
+
+        #expect(await log.events == ["prepare", "fetch"])
+    }
+
+    @Test("manual sync sends then fetches exactly once")
+    func manualSyncSendsThenFetches() async throws {
+        let log = TestCKSyncCycleLog(registrationResults: [1, 0])
+
+        try await MuesliCKSyncOperation.run(
+            intent: .manual,
+            maximumUploadBatches: 5,
+            prepare: { await log.append("prepare") },
+            registerNextBatch: { await log.register() },
+            uploadedCount: { await log.uploaded },
+            send: { await log.send(makesProgress: true) },
+            fetch: { await log.append("fetch") }
+        )
+
+        #expect(await log.events == ["prepare", "register", "send", "register", "fetch"])
+    }
+
+    @Test("coalesced outgoing and incoming intent runs both directions once")
+    func coalescedIntentRunsBothDirectionsOnce() async throws {
+        var requests = MuesliCKSyncRequestQueue()
+        requests.enqueue(intent: .outgoing, userInitiated: false)
+        requests.enqueue(intent: .incoming, userInitiated: true)
+        requests.enqueue(intent: .outgoing, userInitiated: false)
+        requests.enqueue(intent: .incoming, userInitiated: false)
+        let consumedRequest = requests.consume()
+        let request = try #require(consumedRequest)
+        let log = TestCKSyncCycleLog(registrationResults: [1, 0])
+
+        try await MuesliCKSyncOperation.run(
+            intent: request.intent,
+            maximumUploadBatches: 5,
+            prepare: { await log.append("prepare") },
+            registerNextBatch: { await log.register() },
+            uploadedCount: { await log.uploaded },
+            send: { await log.send(makesProgress: true) },
+            fetch: { await log.append("fetch") }
+        )
+
+        #expect(request == MuesliCKSyncRequest(intent: .manual, userInitiated: true))
+        let nextRequest = requests.consume()
+        #expect(nextRequest == nil)
+        #expect(await log.events == ["prepare", "register", "send", "register", "fetch"])
+    }
+
+    @Test("a failed cycle drains only intent queued while it was active")
+    func failedCyclePreservesOnlyNewFollowUpIntent() throws {
+        var requests = MuesliCKSyncRequestQueue()
+        requests.enqueue(intent: .outgoing, userInitiated: false)
+        let failedRequest = requests.consume()
+        #expect(failedRequest == MuesliCKSyncRequest(intent: .outgoing, userInitiated: false))
+
+        requests.enqueue(intent: .incoming, userInitiated: true)
+        let followUpRequest = requests.consume()
+        #expect(followUpRequest == MuesliCKSyncRequest(intent: .incoming, userInitiated: true))
+        #expect(requests.isEmpty)
     }
 
     @Test("sync cycle stops immediately when a send makes no progress")
     func noProgressStopsRetryLoop() async throws {
         let log = TestCKSyncCycleLog(registrationResults: [1, 1, 1])
 
-        try await MuesliCKSyncCycle.run(
+        try await MuesliCKSyncOperation.run(
+            intent: .outgoing,
             maximumUploadBatches: 5,
-            fetch: { await log.append("fetch") },
+            prepare: { await log.append("prepare") },
             registerNextBatch: { await log.register() },
             uploadedCount: { await log.uploaded },
-            send: { await log.send(makesProgress: false) }
+            send: { await log.send(makesProgress: false) },
+            fetch: { await log.append("fetch") }
         )
 
-        #expect(await log.events == ["fetch", "register", "send"])
+        #expect(await log.events == ["prepare", "register", "send"])
+    }
+
+    @Test("successful preparation is reused until recovery invalidates it")
+    func preparationStateIsExplicitlyInvalidated() async throws {
+        let preparation = TestCKSyncPreparationProbe()
+        let log = TestCKSyncCycleLog(registrationResults: [0, 0, 0])
+
+        for _ in 0..<2 {
+            try await MuesliCKSyncOperation.run(
+                intent: .outgoing,
+                maximumUploadBatches: 5,
+                prepare: { await preparation.prepare() },
+                registerNextBatch: { await log.register() },
+                uploadedCount: { await log.uploaded },
+                send: { await log.send(makesProgress: true) },
+                fetch: { await log.append("fetch") }
+            )
+        }
+        #expect(await preparation.preflightCount == 1)
+
+        await preparation.invalidate()
+        try await MuesliCKSyncOperation.run(
+            intent: .outgoing,
+            maximumUploadBatches: 5,
+            prepare: { await preparation.prepare() },
+            registerNextBatch: { await log.register() },
+            uploadedCount: { await log.uploaded },
+            send: { await log.send(makesProgress: true) },
+            fetch: { await log.append("fetch") }
+        )
+        #expect(await preparation.preflightCount == 2)
+    }
+
+    @Test("account and zone failures invalidate the matching preparation context")
+    func preparationRecoveryErrorsAreClassified() {
+        #expect(MuesliICloudSyncEngine.isICloudAccountContextError(CKError(.notAuthenticated)))
+        #expect(MuesliICloudSyncEngine.isSyncZoneRecoveryError(CKError(.zoneNotFound)))
+        #expect(MuesliICloudSyncEngine.isSyncZoneRecoveryError(CKError(.userDeletedZone)))
+        #expect(!MuesliICloudSyncEngine.isSyncZoneRecoveryError(CKError(.networkUnavailable)))
     }
 
     @Test("restored pending save rebuilds its CKRecord from SQLite")
@@ -368,18 +508,32 @@ struct MuesliCKSyncEngineTests {
             systemFields: Data([0x01, 0x02]),
             recordUpdatedAt: local.updatedAt
         ))
-        let coordinator = MuesliCKSyncEngine(store: store)
+        let cancellationProbe = TestCKSyncCancellationProbe()
+        let coordinator = MuesliCKSyncEngine(
+            store: store,
+            engineCancellationObserver: { await cancellationProbe.record() }
+        )
+        let stalePending = CKSyncEngine.PendingRecordZoneChange.saveRecord(CKRecord.ID(
+            recordName: local.id,
+            zoneID: MuesliICloudSyncEngine.Schema.syncZoneID
+        ))
+        let state = TestCKSyncPendingState([stalePending])
         try store.saveCloudSyncStateData(
             Data("account-one-state".utf8),
             forKey: MuesliCKSyncEngine.stateKey
         )
 
-        try await coordinator.handleAccountChange(requiresMetadataReset: true)
+        try await coordinator.handleAccountChange(
+            requiresMetadataReset: true,
+            state: state
+        )
 
         let reset = try #require(try store.textRecordsNeedingSync().first { $0.id == local.id })
         #expect(reset.text == "Keep this local text")
         #expect(reset.cloudChangeTag == nil)
         #expect(reset.cloudSystemFields == nil)
         #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.stateKey) == nil)
+        #expect(state.pendingRecordZoneChanges.isEmpty)
+        #expect(await cancellationProbe.count == 0)
     }
 }

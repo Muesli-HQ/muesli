@@ -68,3 +68,58 @@ Review follow-up tightened both halves of the PR:
   one read snapshot;
 - bridge completion callbacks carry a controller-owned engine lifecycle token, so a
   queued callback from a retired engine cannot update a replacement engine's UI state.
+
+## 2026-08-12 follow-up: low-latency CKSyncEngine orchestration
+
+Physical bidirectional testing showed that small incremental records still paid the
+original migration-era fetch-first cost. Historical retrieval confirmed that
+fetch-before-send was chosen in PR #382 to protect the first complete replay and
+hydrate server system fields; it was not intended to require an extra network round
+trip before every later local mutation. Conflict handling and persisted CKRecord
+system fields now provide that safety in the steady state.
+
+The macOS orchestration now matches the cross-platform contract being applied to the
+open iOS CKSyncEngine PR:
+
+- `sendLocalChanges()` prepares, registers the SQLite `sync_dirty` outbox, and calls
+  `sendChanges()` without fetching first;
+- `fetchRemoteChanges()` prepares and calls `fetchChanges()` without spuriously
+  registering or sending local rows;
+- `syncManually()` deliberately sends outgoing changes before fetching incoming ones;
+- local committed mutations enqueue outgoing work immediately, while APNs,
+  foreground activation, and wake enqueue incoming work;
+- concurrent trigger intent is unioned, so coalesced outgoing and incoming work runs
+  once in outgoing-then-incoming order rather than one trigger replacing another;
+- startup/enable performs early preparation and initial bidirectional convergence,
+  with `automaticallySync` retained for subscription delivery and retry scheduling.
+
+Account/zone/default-zone preparation is cached after success instead of repeated for
+every incremental cycle. The cache is explicitly invalidated on cancellation, account
+events, account-context errors, zone-deletion events, and zone-not-found errors. A
+missing zone receives one bounded recreate-and-retry attempt; there is no permanent
+"prepared forever" state. Delegate callbacks only update state/invalidation and never
+launch recursive sync operations.
+
+Cross-review tightened that delegate boundary: account-change handling now invalidates
+preparation and discards stale pending engine changes through the supplied state, but
+does not call `cancelOperations()` from inside `handleEvent`. It still clears serialized
+CloudKit state and resets account-scoped record metadata while preserving local text.
+If another trigger arrives during a cycle that subsequently fails, only that newly
+queued unioned request is scheduled once; the failed request itself is not re-enqueued,
+preventing both lost wakeups and hot retry loops.
+
+All prior correctness behavior remains in place: environment-scoped serialized engine
+state, exact upload acknowledgement, size-bounded pagination, no-progress stopping,
+durable retries, conflict resolution, tombstones, ancillary bridge refresh,
+lifecycle-token UI protection, and the WPM snapshot/local-day/invalid-duration fixes.
+
+Validation used the existing SwiftPM scratch path
+`~/Library/Caches/muesli-spm/worktrees/production-cloudkit-sync-test/dev`:
+
+- 18 focused `MuesliCKSyncEngineTests` passed, including exact operation ordering,
+  incoming-no-send, outgoing-no-fetch, coalesced/manual semantics, preparation reuse,
+  failure follow-up draining, recovery classification, durable outbox, conflict,
+  acknowledgement, and non-reentrant account reset;
+- the combined CKSyncEngine, bridge identity/policy, DictationStore, and Insights run
+  passed 182 tests across 6 suites after the final request-coalescing and recovery
+  assertions were added.
