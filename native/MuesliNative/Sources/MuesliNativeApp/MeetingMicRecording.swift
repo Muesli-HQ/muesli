@@ -433,7 +433,16 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         )
         handoffWorkerQueue.async { [weak self] in
             do {
+                // Revalidate immediately before each stage: stop()/cancel()
+                // clear the pending candidate and bump the generation, but this
+                // queued worker can execute afterward — without the guard a
+                // stale candidate would start capture after the meeting ended.
+                guard self?.isPendingCandidateCurrent(candidate.id, generation: generation) == true else { return }
                 try candidate.recorder.prepare()
+                guard self?.isPendingCandidateCurrent(candidate.id, generation: generation) == true else {
+                    candidate.recorder.cancel()
+                    return
+                }
                 try candidate.recorder.start()
             } catch {
                 self?.lifecycleQueue.async { [weak self] in
@@ -446,6 +455,14 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
             }
         }
         return true
+    }
+
+    private func isPendingCandidateCurrent(_ candidateID: UUID, generation: UInt64) -> Bool {
+        lock.withLock { state in
+            state.pending?.id == candidateID
+                && state.generation == generation
+                && (state.lifecycleState == .running || state.lifecycleState == .failed)
+        }
     }
 
     private func makeChild(deviceID: AudioObjectID?, generation: UInt64) -> Child {

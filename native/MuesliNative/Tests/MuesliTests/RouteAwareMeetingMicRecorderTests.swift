@@ -662,6 +662,40 @@ struct RouteAwareMeetingMicRecorderTests {
         try await waitUntil { initial.stopCalls == 1 }
     }
 
+    @Test("stop while a recovery candidate is queued never starts the candidate")
+    func stopWithQueuedRecoveryNeverStartsCandidate() throws {
+        let prepareStarted = DispatchSemaphore(value: 0)
+        let allowPrepare = DispatchSemaphore(value: 0)
+        let initial = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let candidate = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        candidate.onPrepareStarted = { prepareStarted.signal() }
+        candidate.prepareGate = allowPrepare
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: initial,
+            appScopedRecorder: FakeMeetingMicRecorder(kind: .appScopedAudioQueue),
+            systemDefaultRecorderFactory: { candidate },
+            handoffTimeout: 1,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+
+        try recorder.start()
+        #expect(recorder.requestSameRouteRecovery(reason: "queued then stopped"))
+        #expect(prepareStarted.wait(timeout: .now() + 2) == .success)
+
+        // Tear down while the worker is blocked inside candidate.prepare().
+        _ = recorder.stop()
+        allowPrepare.signal()
+
+        // The worker must not proceed to start() after teardown cleared the
+        // pending candidate — capture must never begin after meeting end.
+        let quiesced = DispatchSemaphore(value: 0)
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { quiesced.signal() }
+        #expect(quiesced.wait(timeout: .now() + 2) == .success)
+        #expect(candidate.startCalls == 0)
+        #expect(candidate.cancelCalls >= 1)
+    }
+
+
     private func waitUntil(
         timeout: Duration = .seconds(5),
         condition: @escaping () -> Bool
@@ -719,6 +753,8 @@ private final class FakeMeetingMicRecorder: MeetingMicRecording {
     var startError: Error?
     var onStart: (() -> Void)?
     var onCancel: (() -> Void)?
+    var onPrepareStarted: (() -> Void)?
+    var prepareGate: DispatchSemaphore?
 
     init(kind: MeetingMicRecorderKind) {
         self.kind = kind
@@ -726,6 +762,8 @@ private final class FakeMeetingMicRecorder: MeetingMicRecording {
 
     func prepare() throws {
         prepareCalls += 1
+        onPrepareStarted?()
+        prepareGate?.wait()
     }
 
     func start() throws {
