@@ -196,3 +196,12 @@ both records locally without claiming scope, registering records, or altering th
 CloudKit metadata. Validation reused the existing scratch path: all 30 focused
 CKSyncEngine tests and 197 broader sync/bridge/store/Insights tests passed, the
 `MuesliNativeApp` product rebuilt successfully, and `git diff --check` was clean.
+
+The branch was then reverse-merged with `origin/main` at `d793858d`. The automatic
+merge retained both sides of the only semantic overlap in `MuesliController`: local
+mutations still request immediate outgoing sync; APNs, app-active, and wake events
+request incoming sync; startup, enable, and manual actions run send-then-fetch. Main's
+Whisper language propagation and imported-audio meeting hook dispatch also remain.
+Post-merge validation passed 30 focused CKSyncEngine tests and 365 broader relevant
+tests across 22 suites, rebuilt `MuesliNativeApp`, and left the branch current with
+`origin/main` and `git diff --check` clean.
