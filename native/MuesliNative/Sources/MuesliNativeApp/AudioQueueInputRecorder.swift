@@ -86,6 +86,17 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         emitLatency("audio_queue_start_begin")
         let status = AudioQueueStart(audioQueue, nil)
         emitLatency("audio_queue_start_end")
+        // AudioQueueStart can block while the daemon negotiates the route, and
+        // teardown may land during that window. If this instance was invalidated
+        // while the call was in flight, synchronously stop what just started
+        // before returning — capture must not outlive teardown.
+        if permanentlyInvalidated {
+            AudioQueueStop(audioQueue, true)
+            isRunning = false
+            captureGeneration &+= 1
+            cleanupAfterStartFailure()
+            throw Self.runtimeError(code: 9, message: "Recorder was invalidated by teardown")
+        }
         guard status == noErr else {
             isRunning = false
             captureGeneration &+= 1

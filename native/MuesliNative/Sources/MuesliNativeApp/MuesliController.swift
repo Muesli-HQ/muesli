@@ -364,7 +364,7 @@ final class MuesliController: NSObject {
     /// Set when a meeting stops, so telemetry events legitimately emitted by
     /// the stopping session (after activeMeetingID is cleared) still pass the
     /// session-identity gate. Replaced on the next meeting start.
-    private var lastStoppedMeetingID: Int64?
+    private var micEpisodeTelemetryGate = RecentMeetingIdentityGate()
     private var liveMeetingTranscriptGeneration: UUID?
     private var activeMeetingAudioWarning: ActiveMeetingAudioWarning?
     private var liveMeetingTitleCache: [Int64: String] = [:]
@@ -5477,6 +5477,10 @@ final class MuesliController: NSObject {
                 )
                 let micHealthWarningLock = NSLock()
                 var lastForwardedMicHealthWarning: String?
+                // Authorize this session's episode telemetry for its whole
+                // lifetime, including the terminal event emitted after the
+                // active-meeting identity has moved on during stop/discard.
+                micEpisodeTelemetryGate.authorize(meetingID)
                 meetingSession.onMicHealthChanged = { [weak self] snapshot in
                     let warningMessage = snapshot.warningMessage
                     micHealthWarningLock.lock()
@@ -5500,9 +5504,7 @@ final class MuesliController: NSObject {
                         // is stopping: stopMeetingRecording clears
                         // activeMeetingID before MeetingSession.stop() runs, so
                         // also accept the most recently stopped meeting.
-                        guard self.activeMeetingID == meetingID
-                                || self.meetingStartMeetingID == meetingID
-                                || self.lastStoppedMeetingID == meetingID else { return }
+                        guard self.micEpisodeTelemetryGate.allows(meetingID) else { return }
                         var parameters: [String: String] = [
                             "episode_id": event.episodeID.uuidString,
                             "reason": event.reason,
@@ -5771,7 +5773,7 @@ final class MuesliController: NSObject {
             disarmMeetingAutoStop()
             indicator.setMeetingRecording(false, config: config)
             if let meetingID = activeMeetingID {
-                lastStoppedMeetingID = meetingID
+                micEpisodeTelemetryGate.authorize(meetingID)
                 activeMeetingID = nil
                 if activeMeetingAudioWarning?.meetingID == meetingID {
                     activeMeetingAudioWarning = nil
@@ -5789,7 +5791,7 @@ final class MuesliController: NSObject {
         if let meetingID = activeMeetingID {
             // Preserve identity for episode terminal telemetry emitted by the
             // discarding session (it hops to the main actor asynchronously).
-            lastStoppedMeetingID = meetingID
+            micEpisodeTelemetryGate.authorize(meetingID)
             activeMeetingID = nil
             if activeMeetingAudioWarning?.meetingID == meetingID {
                 activeMeetingAudioWarning = nil
@@ -6073,7 +6075,9 @@ final class MuesliController: NSObject {
 
         // Unblock new recordings immediately — transcription runs in the background
         activeMeetingSession = nil
-        lastStoppedMeetingID = activeMeetingID
+        if let activeMeetingID {
+            micEpisodeTelemetryGate.authorize(activeMeetingID)
+        }
         activeMeetingID = nil
         if let liveMeetingID, activeMeetingAudioWarning?.meetingID == liveMeetingID {
             activeMeetingAudioWarning = nil

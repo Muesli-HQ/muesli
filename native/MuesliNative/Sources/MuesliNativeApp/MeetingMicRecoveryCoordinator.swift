@@ -36,6 +36,35 @@ struct MeetingMicHealthEpisodeEvent: Equatable {
     let context: MeetingMicEpisodeContext
 }
 
+/// Bounded authorization set for episode telemetry callbacks. Sessions emit
+/// their terminal event while stopping/discarding — after the controller's
+/// active-meeting identity has moved on — and more than one recently stopped
+/// meeting can have callbacks queued on the main actor at once, so a single
+/// "last stopped" slot is not safe authorization. Membership is by meeting ID,
+/// authorized at session creation, with simple FIFO eviction.
+struct RecentMeetingIdentityGate {
+    private var order: [Int64] = []
+    private var members = Set<Int64>()
+    private let capacity: Int
+
+    init(capacity: Int = 8) {
+        self.capacity = capacity
+    }
+
+    mutating func authorize(_ id: Int64) {
+        guard !members.contains(id) else { return }
+        members.insert(id)
+        order.append(id)
+        while order.count > capacity {
+            members.remove(order.removeFirst())
+        }
+    }
+
+    func allows(_ id: Int64) -> Bool {
+        members.contains(id)
+    }
+}
+
 /// Turns the raw mic-health state stream into one episode per degradation and
 /// drives bounded same-route recovery attempts while a meeting is degraded.
 ///

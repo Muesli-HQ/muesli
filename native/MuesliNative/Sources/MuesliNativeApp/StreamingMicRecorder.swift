@@ -184,6 +184,26 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         installConfigurationChangeObserverIfNeeded(recordingID: recordingID)
         do {
             try startEngineWithTapLocked(recordingID: recordingID)
+            // Engine start can block while the daemon negotiates the route;
+            // teardown may have landed during that window. Synchronously stop
+            // what just started rather than letting capture outlive teardown.
+            if permanentlyInvalidated {
+                removeTapIfNeeded()
+                stopEngineSafely()
+                removeConfigurationChangeObserverIfNeeded()
+                clearFailureState()
+                let state = lock.withLock { state -> FileState in
+                    let old = state
+                    state = FileState()
+                    return old
+                }
+                if let url = state.fileURL {
+                    try? FileManager.default.removeItem(at: url)
+                }
+                throw NSError(domain: "StreamingMicRecorder", code: 9, userInfo: [
+                    NSLocalizedDescriptionKey: "Recorder was invalidated by teardown",
+                ])
+            }
             runState.markStarted()
         } catch {
             removeTapIfNeeded()

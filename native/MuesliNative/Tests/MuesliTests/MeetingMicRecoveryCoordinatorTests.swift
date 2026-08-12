@@ -255,3 +255,41 @@ struct MeetingMicRecoveryCoordinatorTests {
         #expect(!harness.recoveryRequests.isEmpty)
     }
 }
+
+struct RecentMeetingIdentityGateTests {
+    @Test("authorized meetings pass until evicted past capacity")
+    func capacityEviction() {
+        var gate = RecentMeetingIdentityGate(capacity: 2)
+        gate.authorize(1)
+        gate.authorize(2)
+        #expect(gate.allows(1))
+        gate.authorize(3)
+        #expect(!gate.allows(1))
+        #expect(gate.allows(3))
+    }
+
+    @Test("a stopped meeting remains authorized alongside a newer stopped meeting")
+    func twoStoppedMeetingsStayAuthorized() {
+        var gate = RecentMeetingIdentityGate()
+        gate.authorize(10)
+        gate.authorize(11)
+        gate.authorize(12)
+        #expect(gate.allows(10))
+        #expect(gate.allows(11))
+        #expect(gate.allows(12))
+        #expect(!gate.allows(99))
+    }
+
+    @Test("re-authorizing an existing member does not evict")
+    func reauthorizationIsIdempotent() {
+        var gate = RecentMeetingIdentityGate(capacity: 2)
+        gate.authorize(1)
+        gate.authorize(2)
+        gate.authorize(1)
+        gate.authorize(3)
+        // Order is 1,2,3? No: re-authorize(1) is a no-op, so 1 is oldest and evicted.
+        #expect(!gate.allows(1))
+        #expect(gate.allows(2))
+        #expect(gate.allows(3))
+    }
+}
