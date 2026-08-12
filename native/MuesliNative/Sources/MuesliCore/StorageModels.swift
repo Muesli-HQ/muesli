@@ -65,6 +65,9 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
     public var wordCount: Int
     public var isDeleted: Bool
     public var cloudChangeTag: String?
+    /// Opaque CKRecord identity and version metadata. MuesliCore stores the bytes
+    /// without importing CloudKit; platform sync clients encode and decode them.
+    public var cloudSystemFields: Data?
     public var followUpToRecordName: String?
 
     public init(
@@ -87,6 +90,7 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
         wordCount: Int,
         isDeleted: Bool = false,
         cloudChangeTag: String? = nil,
+        cloudSystemFields: Data? = nil,
         followUpToRecordName: String? = nil
     ) {
         self.id = id
@@ -108,6 +112,7 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
         self.wordCount = wordCount
         self.isDeleted = isDeleted
         self.cloudChangeTag = cloudChangeTag
+        self.cloudSystemFields = cloudSystemFields
         self.followUpToRecordName = followUpToRecordName
     }
 }
@@ -218,6 +223,49 @@ public struct ComputerUseTraceEvent: Identifiable, Codable, Equatable, Sendable 
     }
 }
 
+public struct CalendarOccurrenceReference: Codable, Equatable, Sendable {
+    public enum Provider: String, Codable, Sendable {
+        case eventKit
+        case googleCalendar
+    }
+
+    public let provider: Provider
+    public let calendarID: String?
+    public let eventID: String
+    public let seriesID: String?
+    public let originalStartTime: Date
+
+    public init(
+        provider: Provider,
+        calendarID: String?,
+        eventID: String,
+        seriesID: String? = nil,
+        originalStartTime: Date
+    ) {
+        self.provider = provider
+        self.calendarID = calendarID
+        self.eventID = eventID
+        self.seriesID = seriesID
+        self.originalStartTime = originalStartTime
+    }
+
+    /// Stable identity for one provider occurrence. Recurring instances use
+    /// the series plus their immutable original start; one-off events use the
+    /// provider event id so rescheduling does not create a new occurrence.
+    public var identityKey: String {
+        let calendarComponent = Self.component(calendarID ?? "")
+        if let seriesID {
+            let originalStartMilliseconds = Int64((originalStartTime.timeIntervalSince1970 * 1_000).rounded())
+            return "v1|recurring|\(provider.rawValue)|\(calendarComponent)|\(Self.component(seriesID))|\(originalStartMilliseconds)"
+        }
+        return "v1|single|\(provider.rawValue)|\(calendarComponent)|\(Self.component(eventID))"
+    }
+
+    private static func component(_ value: String) -> String {
+        Data(value.utf8).base64EncodedString()
+    }
+}
+
 public struct MeetingRecord: Identifiable, Codable, Sendable {
     public let id: Int64
     public let title: String
@@ -228,6 +276,7 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
     public let wordCount: Int
     public let folderID: Int64?
     public let calendarEventID: String?
+    public let calendarOccurrence: CalendarOccurrenceReference?
     public let micAudioPath: String?
     public let systemAudioPath: String?
     public let savedRecordingPath: String?
@@ -255,6 +304,7 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
         wordCount: Int,
         folderID: Int64?,
         calendarEventID: String? = nil,
+        calendarOccurrence: CalendarOccurrenceReference? = nil,
         micAudioPath: String? = nil,
         systemAudioPath: String? = nil,
         savedRecordingPath: String? = nil,
@@ -277,6 +327,7 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
         self.wordCount = wordCount
         self.folderID = folderID
         self.calendarEventID = calendarEventID
+        self.calendarOccurrence = calendarOccurrence
         self.micAudioPath = micAudioPath
         self.systemAudioPath = systemAudioPath
         self.savedRecordingPath = savedRecordingPath
@@ -301,6 +352,7 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
         case wordCount
         case folderID
         case calendarEventID
+        case calendarOccurrence
         case micAudioPath
         case systemAudioPath
         case savedRecordingPath
@@ -327,6 +379,7 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
             wordCount: try c.decode(Int.self, forKey: .wordCount),
             folderID: try c.decodeIfPresent(Int64.self, forKey: .folderID),
             calendarEventID: try c.decodeIfPresent(String.self, forKey: .calendarEventID),
+            calendarOccurrence: try c.decodeIfPresent(CalendarOccurrenceReference.self, forKey: .calendarOccurrence),
             micAudioPath: try c.decodeIfPresent(String.self, forKey: .micAudioPath),
             systemAudioPath: try c.decodeIfPresent(String.self, forKey: .systemAudioPath),
             savedRecordingPath: try c.decodeIfPresent(String.self, forKey: .savedRecordingPath),

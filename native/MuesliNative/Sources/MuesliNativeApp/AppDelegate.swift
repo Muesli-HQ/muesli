@@ -8,6 +8,7 @@ import MuesliCore
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controller: MuesliController?
+    private var terminationTask: Task<Void, Never>?
     private(set) var updaterController: SPUStandardUpdaterController?
     private let sparkleUpdateDelegate = SparkleUpdateDelegate()
 
@@ -22,6 +23,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if runtimeTelemetry.isEnabled {
             TelemetryDeck.signal("app.launched")
         }
+        // Always drain a pending marker. TelemetryDeck's global privacy gate
+        // suppresses the signal when analytics are disabled.
+        DiarizerPreloadDiagnostics().reportInterruptedAttemptIfNeeded()
 
         do {
             let runtime = try RuntimePaths.resolve()
@@ -52,10 +56,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
-        controller?.shutdown()
-    }
-
     func application(
         _ application: NSApplication,
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
@@ -75,10 +75,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if terminationTask != nil {
+            return .terminateLater
+        }
         if controller?.shouldTerminateApplication() == false {
             return .terminateCancel
         }
-        return .terminateNow
+        guard let controller else { return .terminateNow }
+
+        terminationTask = Task { @MainActor [weak self] in
+            await controller.shutdown()
+            self?.terminationTask = nil
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     private static var hasConfiguredSparkleFeed: Bool {

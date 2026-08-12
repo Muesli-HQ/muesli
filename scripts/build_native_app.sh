@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/scripts/muesli_spm_cache.sh"
+source "$ROOT/scripts/localvqe_runtime.sh"
 PACKAGE_DIR="$ROOT/native/MuesliNative"
 DIST_DIR="$ROOT/dist-native"
 INSTALL_DIR="${MUESLI_INSTALL_DIR:-/Applications}"
@@ -17,7 +18,7 @@ APP_SUPPORT_DIR_NAME="${MUESLI_SUPPORT_DIR_NAME:-$APP_DISPLAY_NAME}"
 BUNDLE_ID="${MUESLI_BUNDLE_ID:-com.muesli.app}"
 TELEMETRYDECK_APP_ID="${MUESLI_TELEMETRYDECK_APP_ID:-}"
 TELEMETRY_CHANNEL="${MUESLI_TELEMETRY_CHANNEL:-unconfigured}"
-DEFAULT_APP_VERSION="0.8.0"
+DEFAULT_APP_VERSION="0.8.1"
 APP_VERSION="${MUESLI_BUILD_VERSION:-$DEFAULT_APP_VERSION}"
 APP_BUNDLE_VERSION="${MUESLI_BUNDLE_VERSION:-$APP_VERSION}"
 APP_SHORT_VERSION="${MUESLI_SHORT_VERSION:-$APP_VERSION}"
@@ -141,14 +142,77 @@ for bundle in "$BIN_DIR"/*.bundle; do
   ditto "$bundle" "$STAGED_APP_DIR/Contents/Resources/$(basename "$bundle")"
 done
 
-# Bundle optional LocalVQE runtime if it has been built for local AEC testing.
+# Bundle LocalVQE runtime (default meeting AEC). The .gguf model is committed;
+# the shared libraries under LocalVQE/lib/ are gitignored and produced by
+# scripts/build_localvqe.sh. Without them the app silently falls back to DTLN.
 LOCALVQE_LIB_DIR="${MUESLI_LOCALVQE_LIB_DIR:-$ROOT/native/MuesliNative/LocalVQE/lib}"
-if [[ -d "$LOCALVQE_LIB_DIR" ]]; then
-  find "$LOCALVQE_LIB_DIR" -maxdepth 1 \( -name "liblocalvqe*.dylib" -o -name "libggml*.dylib" -o -name "libggml*.so" \) \( -type f -o -type l \) | while read -r dylib; do
+ALLOW_MISSING_LOCALVQE="${MUESLI_ALLOW_MISSING_LOCALVQE:-0}"
+REQUIRE_LOCALVQE="${MUESLI_REQUIRE_LOCALVQE:-0}"
+BUILD_LOCALVQE="${MUESLI_BUILD_LOCALVQE:-0}"
+
+# Reject partial LocalVQE installs (e.g. liblocalvqe present but libggml-base
+# missing). Otherwise packaging would "succeed" and the app would still fall
+# back to DTLN at runtime when dlopen fails.
+refresh_localvqe_runtime_files() {
+  local collected=""
+  LOCALVQE_RUNTIME_FILES=()
+  if ! collected="$(muesli_collect_localvqe_runtime "$LOCALVQE_LIB_DIR")"; then
+    echo "Unable to inspect LocalVQE runtime in $LOCALVQE_LIB_DIR" >&2
+    return 1
+  fi
+  while IFS= read -r dylib; do
+    [[ -n "$dylib" ]] || continue
+    LOCALVQE_RUNTIME_FILES+=("$dylib")
+  done <<< "$collected"
+
+  if [[ ${#LOCALVQE_RUNTIME_FILES[@]} -gt 0 ]] && ! muesli_localvqe_runtime_is_complete "$LOCALVQE_LIB_DIR"; then
+    echo "Ignoring incomplete LocalVQE runtime in $LOCALVQE_LIB_DIR" >&2
+    LOCALVQE_RUNTIME_FILES=()
+  fi
+}
+
+refresh_localvqe_runtime_files
+
+if [[ ${#LOCALVQE_RUNTIME_FILES[@]} -eq 0 && "$BUILD_LOCALVQE" == "1" ]]; then
+  echo "LocalVQE runtime missing/incomplete; building via scripts/build_localvqe.sh (MUESLI_BUILD_LOCALVQE=1)..."
+  "$ROOT/scripts/build_localvqe.sh"
+  refresh_localvqe_runtime_files
+fi
+
+if [[ ${#LOCALVQE_RUNTIME_FILES[@]} -eq 0 ]]; then
+  cat >&2 <<EOF
+WARNING: Complete LocalVQE runtime not found in $LOCALVQE_LIB_DIR
+         Meeting echo cancellation will fall back to DTLN instead of the
+         documented LocalVQE default. A usable runtime needs liblocalvqe
+         plus its libggml* companions (especially libggml-base).
+
+  Build the runtime once with:
+    ./scripts/build_localvqe.sh
+
+  Or re-run this build with:
+    MUESLI_BUILD_LOCALVQE=1 $0 $*
+EOF
+  if [[ "$ALLOW_MISSING_LOCALVQE" == "1" && "$SKIP_SIGN" == "1" && "$REQUIRE_LOCALVQE" != "1" ]]; then
+    echo "Continuing without LocalVQE (MUESLI_ALLOW_MISSING_LOCALVQE=1, unsigned packaging)." >&2
+  elif [[ "$ALLOW_MISSING_LOCALVQE" == "1" ]]; then
+    echo "ERROR: MUESLI_ALLOW_MISSING_LOCALVQE=1 cannot override signed packaging or MUESLI_REQUIRE_LOCALVQE=1." >&2
+    exit 1
+  elif [[ "$REQUIRE_LOCALVQE" == "1" || "$SKIP_SIGN" != "1" ]]; then
+    # Intentionally keyed on signing, not BUILD_CONFIG: signed packaging
+    # (release scripts and maintainer ./scripts/dev-test.sh without
+    # MUESLI_SKIP_SIGN=1) must not silently ship a DTLN-only bundle.
+    echo "ERROR: refusing to package without a complete LocalVQE runtime. Set MUESLI_ALLOW_MISSING_LOCALVQE=1 with MUESLI_SKIP_SIGN=1 to override for unsigned builds." >&2
+    exit 1
+  else
+    echo "Continuing without LocalVQE for unsigned packaging (MUESLI_SKIP_SIGN=1). Set MUESLI_REQUIRE_LOCALVQE=1 to fail instead." >&2
+  fi
+else
+  for dylib in "${LOCALVQE_RUNTIME_FILES[@]}"; do
     target="$STAGED_APP_DIR/Contents/MacOS/$(basename "$dylib")"
     cp -RL "$dylib" "$target"
     thin_macho_to_bundle_arch "$target"
   done
+  echo "Bundled LocalVQE runtime (${#LOCALVQE_RUNTIME_FILES[@]} files) from $LOCALVQE_LIB_DIR"
 fi
 LOCALVQE_MODEL_PATH="${MUESLI_LOCALVQE_MODEL_PATH:-$ROOT/native/MuesliNative/LocalVQE/models/localvqe-v1.2-1.3M-f32.gguf}"
 if [[ -f "$LOCALVQE_MODEL_PATH" ]]; then
@@ -363,10 +427,14 @@ if [[ "$SKIP_SIGN" != "1" ]]; then
       [[ -n "$ICLOUD_CONTAINER_ENVIRONMENT" ]] || return 0
       /usr/libexec/PlistBuddy -c "Print :Entitlements:$key" "$PROFILE_PLIST" >/dev/null 2>&1 || return 0
       value="$(printf '%s' "$ICLOUD_CONTAINER_ENVIRONMENT" | tr '[:upper:]' '[:lower:]')"
-      if [[ "$value" != "development" && "$value" != "production" ]]; then
-        echo "ERROR: unsupported iCloud container environment '$value'. Expected development or production." >&2
-        exit 1
-      fi
+      case "$value" in
+        development) value="Development" ;;
+        production) value="Production" ;;
+        *)
+          echo "ERROR: unsupported iCloud container environment '$value'. Expected development or production." >&2
+          exit 1
+          ;;
+      esac
       /usr/libexec/PlistBuddy -c "Delete :$key" "$TEMP_ENTITLEMENTS" >/dev/null 2>&1 || true
       /usr/libexec/PlistBuddy -c "Add :$key string $value" "$TEMP_ENTITLEMENTS"
       echo "Using iCloud entitlement: $key=$value"
@@ -375,7 +443,7 @@ if [[ "$SKIP_SIGN" != "1" ]]; then
     copy_profile_string_entitlement "application-identifier"
     copy_profile_string_entitlement "com.apple.developer.team-identifier"
     # Do not copy this profile entitlement by default: Apple profiles may store
-    # it as an array, while CloudKit expects a single lowercase runtime value.
+    # it as an array, while the signed app requires one case-sensitive value.
     copy_explicit_icloud_container_environment_entitlement "com.apple.developer.icloud-container-environment"
     if [[ -n "$APS_ENVIRONMENT" ]]; then
       if ! /usr/libexec/PlistBuddy -c "Set :com.apple.developer.aps-environment $APS_ENVIRONMENT" "$TEMP_ENTITLEMENTS" 2>/dev/null; then

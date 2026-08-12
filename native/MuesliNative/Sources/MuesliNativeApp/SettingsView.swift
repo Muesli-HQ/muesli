@@ -202,6 +202,9 @@ struct SettingsView: View {
     private var selectedNemotron35Language: Nemotron35Language {
         appState.config.resolvedNemotron35Language
     }
+    private var selectedWhisperLanguage: WhisperKitLanguage {
+        appState.config.resolvedWhisperLanguage
+    }
 
     private var dictationMicrophoneOptions: [MicrophoneOption] {
         microphoneOptions(selectedUID: appState.config.dictationInputDeviceUID)
@@ -700,6 +703,12 @@ struct SettingsView: View {
                     indicLanguageMenu
                 }
             }
+            if appState.selectedBackend.supportsWhisperLanguageSelection {
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Whisper language", controlWidth: meetingControlWidth) {
+                    whisperLanguageMenu
+                }
+            }
         }
     }
 
@@ -800,6 +809,11 @@ struct SettingsView: View {
                 settingsRow("Indic language", controlWidth: meetingControlWidth) {
                     indicLanguageMenu
                 }
+            } else if appState.selectedMeetingTranscriptionBackend.supportsWhisperLanguageSelection {
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Whisper language", controlWidth: meetingControlWidth) {
+                    whisperLanguageMenu
+                }
             }
         }
     }
@@ -889,6 +903,16 @@ struct SettingsView: View {
         }
     }
 
+    private var whisperLanguageMenu: some View {
+        settingsMenu(
+            selection: selectedWhisperLanguage.label,
+            options: WhisperKitLanguage.allCases.map(\.label)
+        ) { label in
+            guard let language = WhisperKitLanguage.allCases.first(where: { $0.label == label }) else { return }
+            controller.selectWhisperLanguage(language)
+        }
+    }
+
     private var indicLanguageMenu: some View {
         FixedWidthPopUp(
             selection: selectedIndicASRLanguage.label,
@@ -913,7 +937,7 @@ struct SettingsView: View {
             settingsRow("Cleanup model", controlWidth: meetingControlWidth) {
                 settingsModelMenu(
                     currentModel: appState.config.postProcessorChatGPTModel,
-                    presets: SummaryModelPreset.chatGPTModels
+                    presets: SummaryModelPreset.chatGPTTranscriptCleanupModels
                 ) { controller.updatePostProcessorModel($0, for: backend) }
             }
         case .some(.openAI):

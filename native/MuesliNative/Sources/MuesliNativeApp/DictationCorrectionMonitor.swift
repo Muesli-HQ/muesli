@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import MuesliCore
 import os
 
 struct DictationCorrectionTargetApp: Sendable {

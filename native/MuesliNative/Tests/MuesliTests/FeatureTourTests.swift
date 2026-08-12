@@ -140,7 +140,7 @@ struct FeatureTourTests {
 
         let streamingStep = tour.steps.first { $0.target == .streamingModels }
         #expect(streamingStep?.message.contains("Nemotron 3.5") == true)
-        #expect(streamingStep?.message.contains("Parakeet Realtime") == true)
+        #expect(streamingStep?.message.contains("Parakeet Live Captions") == true)
         #expect(streamingStep?.target.modelsCategory == .streaming)
 
         let experimentalStep = tour.steps.last

@@ -1,4 +1,5 @@
 import Foundation
+import MuesliCore
 import CLiteRTLM
 
 enum Gemma4LiteRTLogging {
@@ -53,6 +54,7 @@ enum Gemma4LiteRTModelStore {
     static let repoID = "litert-community/gemma-4-E2B-it-litert-lm"
     static let modelFilename = "gemma-4-E2B-it.litertlm"
     static let cacheRelativePath = ".cache/muesli/models/gemma-4-e2b-litert-lm"
+    static let expectedModelByteCount: Int64 = 2_588_147_712
     static let minimumDownloadedModelSizeBytes: Int64 = 2_000_000_000
 
     static let downloadURL = URL(
@@ -138,6 +140,7 @@ enum Gemma4LiteRTModelStore {
 
     static func ensureModelDownloaded(
         progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default
     ) async throws -> URL {
@@ -153,7 +156,7 @@ enum Gemma4LiteRTModelStore {
             ])
         }
 
-        try await downloadManagedModel(progress: progress, fileManager: fileManager)
+        try await downloadManagedModel(progress: progress, progressSnapshot: progressSnapshot, fileManager: fileManager)
         guard isAvailableLocally(environment: environment, fileManager: fileManager) else {
             throw NSError(domain: "Gemma4LiteRTModelStore", code: 2, userInfo: [
                 NSLocalizedDescriptionKey: "Gemma 4 LiteRT-LM did not download successfully.",
@@ -180,27 +183,31 @@ enum Gemma4LiteRTModelStore {
 
     private static func downloadManagedModel(
         progress: ((Double, String?) -> Void)?,
+        progressSnapshot: ModelDownloadProgressHandler?,
         fileManager: FileManager
     ) async throws {
         let directory = cacheDirectory(fileManager: fileManager)
         let destination = managedModelURL(fileManager: fileManager)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
 
-        let stagingURL = destination.deletingLastPathComponent().appendingPathComponent(".\(modelFilename).download")
-        defer { try? fileManager.removeItem(at: stagingURL) }
-        try? fileManager.removeItem(at: stagingURL)
-        progress?(0.05, "Downloading Gemma 4 E2B...")
-        try await downloadWithRetry(from: downloadURL, to: stagingURL)
-        try validateDownloadedLiteRTLMFile(at: stagingURL, fileManager: fileManager)
-        try installDownloadedModel(from: stagingURL, to: destination, fileManager: fileManager)
-    }
-
-    private static func installDownloadedModel(from tempURL: URL, to destination: URL, fileManager: FileManager) throws {
-        if fileManager.fileExists(atPath: destination.path) {
-            _ = try fileManager.replaceItemAt(destination, withItemAt: tempURL, backupItemName: nil, options: [])
-        } else {
-            try fileManager.moveItem(at: tempURL, to: destination)
+        let manifest = ModelDownloadManifest(
+            id: repoID,
+            version: "main",
+            files: [ModelDownloadFile(
+                relativePath: modelFilename,
+                remoteURL: downloadURL,
+                expectedByteCount: expectedModelByteCount
+            )],
+            maximumConcurrency: 1
+        )
+        try await ModelDownloadCoordinator.shared.download(manifest, to: directory) { snapshot in
+            let fraction = snapshot.fractionCompleted ?? 0.05
+            let rate = ModelDownloadDisplayFormatting.rate(snapshot.bytesPerSecond)
+            let speed = rate.isEmpty ? "" : " · " + rate
+            progress?(fraction, "Downloading Gemma 4 E2B" + speed)
+            progressSnapshot?(snapshot)
         }
+        try validateDownloadedLiteRTLMFile(at: destination, fileManager: fileManager)
     }
 
     static func isValidLiteRTLMFile(
@@ -293,7 +300,10 @@ actor Gemma4LiteRTTranscriber {
         }
     }
 
-    func prepare(progress: ((Double, String?) -> Void)? = nil) async throws {
+    func prepare(
+        progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
+    ) async throws {
         if engine != nil { return }
         if isLoading {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -305,7 +315,7 @@ actor Gemma4LiteRTTranscriber {
         isLoading = true
         let generation = loadGeneration
         do {
-            try await loadEngine(progress: progress, generation: generation)
+            try await loadEngine(progress: progress, progressSnapshot: progressSnapshot, generation: generation)
             isLoading = false
             completeLoadWaiters()
         } catch {
@@ -315,10 +325,18 @@ actor Gemma4LiteRTTranscriber {
         }
     }
 
-    private func loadEngine(progress: ((Double, String?) -> Void)?, generation: Int) async throws {
+    private func loadEngine(
+        progress: ((Double, String?) -> Void)?,
+        progressSnapshot: ModelDownloadProgressHandler?,
+        generation: Int
+    ) async throws {
         let fileManager = FileManager.default
-        let modelURL = try await Gemma4LiteRTModelStore.ensureModelDownloaded(progress: progress)
+        let modelURL = try await Gemma4LiteRTModelStore.ensureModelDownloaded(
+            progress: progress,
+            progressSnapshot: progressSnapshot
+        )
         try checkLoadGeneration(generation)
+        progressSnapshot?(ModelDownloadProgress.preparing(modelID: Gemma4LiteRTModelStore.repoID, message: "Preparing Gemma 4 LiteRT-LM..."))
         guard fileManager.fileExists(atPath: modelURL.path) else {
             throw TranscriberError.modelMissing(path: modelURL.path)
         }

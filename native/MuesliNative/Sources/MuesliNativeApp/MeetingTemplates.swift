@@ -296,17 +296,31 @@ enum MeetingTemplates {
         [auto] + builtIns + customDefinitions(from: customTemplates)
     }
 
-    static func resolveDefinition(id: String?, customTemplates: [CustomMeetingTemplate]) -> MeetingTemplateDefinition {
-        let normalizedID = id?.trimmingCharacters(in: .whitespacesAndNewlines) ?? autoID
-        if normalizedID == autoID {
+    static func resolveDefinition(
+        id: String?,
+        customTemplates: [CustomMeetingTemplate],
+        defaultTemplateID: String? = nil
+    ) -> MeetingTemplateDefinition {
+        let normalizedID = id?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // When no explicit template is set, fall back to the configured default
+        // template (if any) before the hardcoded Auto backstop.
+        let effectiveID: String
+        if normalizedID.isEmpty || normalizedID == autoID {
+            let normalizedDefault = defaultTemplateID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            effectiveID = normalizedDefault.isEmpty ? autoID : normalizedDefault
+        } else {
+            effectiveID = normalizedID
+        }
+        if effectiveID == autoID {
             return auto
         }
-        if let builtIn = builtIns.first(where: { $0.id == normalizedID }) {
+        if let builtIn = builtIns.first(where: { $0.id == effectiveID }) {
             return builtIn
         }
-        if let custom = customTemplates.first(where: { $0.id == normalizedID }) {
+        if let custom = customTemplates.first(where: { $0.id == effectiveID }) {
             return customDefinition(from: custom)
         }
+        // Configured default may reference a deleted template; fall back to Auto.
         return auto
     }
 
@@ -324,15 +338,23 @@ enum MeetingTemplates {
         return nil
     }
 
-    static func resolveSnapshot(id: String?, customTemplates: [CustomMeetingTemplate]) -> MeetingTemplateSnapshot {
-        resolveDefinition(id: id, customTemplates: customTemplates).snapshot
+    static func resolveSnapshot(
+        id: String?,
+        customTemplates: [CustomMeetingTemplate],
+        defaultTemplateID: String? = nil
+    ) -> MeetingTemplateSnapshot {
+        resolveDefinition(id: id, customTemplates: customTemplates, defaultTemplateID: defaultTemplateID).snapshot
     }
 
     static func resolveExactSnapshot(id: String?, customTemplates: [CustomMeetingTemplate]) -> MeetingTemplateSnapshot? {
         resolveExactDefinition(id: id, customTemplates: customTemplates)?.snapshot
     }
 
-    static func snapshot(for meeting: MeetingRecord, customTemplates: [CustomMeetingTemplate]) -> MeetingTemplateSnapshot {
+    static func snapshot(
+        for meeting: MeetingRecord,
+        customTemplates: [CustomMeetingTemplate],
+        defaultTemplateID: String? = nil
+    ) -> MeetingTemplateSnapshot {
         let storedID = meeting.selectedTemplateID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let storedName = meeting.selectedTemplateName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let storedPrompt = meeting.selectedTemplatePrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -344,6 +366,10 @@ enum MeetingTemplates {
                 prompt: storedPrompt
             )
         }
-        return resolveSnapshot(id: storedID.isEmpty ? nil : storedID, customTemplates: customTemplates)
+        return resolveSnapshot(
+            id: storedID.isEmpty ? nil : storedID,
+            customTemplates: customTemplates,
+            defaultTemplateID: defaultTemplateID
+        )
     }
 }

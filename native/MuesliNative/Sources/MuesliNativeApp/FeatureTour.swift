@@ -139,7 +139,7 @@ enum FeatureTourCatalog {
                 id: "streaming-models",
                 eyebrow: "LIVE MODEL OPTIONS",
                 title: "Choose your live transcription engine",
-                message: "The Streaming tab groups Nemotron 3.5 for live and final meeting transcripts with Parakeet Realtime for low-latency live preview.",
+                message: "The Live Meetings tab offers Nemotron 3.5 when you want one live and saved meeting transcript, or Parakeet Live Captions when a fast English preview matters most.",
                 systemImage: "waveform.badge.mic",
                 target: .streamingModels
             ),
@@ -147,7 +147,7 @@ enum FeatureTourCatalog {
                 id: "experimental-models",
                 eyebrow: "EXPERIMENTAL MODELS",
                 title: "Try new local dictation backends",
-                message: "Expand Experimental to evaluate SenseVoice, Qwen3 ASR, Indic ASR, and Gemma 4 without mixing them into the default model choices.",
+                message: "Expand Experimental to try SenseVoice, Indic ASR, and Gemma 4. These early models can help with specific languages or evaluation, but may be less consistent.",
                 systemImage: "cpu",
                 target: .experimentalModels
             )
