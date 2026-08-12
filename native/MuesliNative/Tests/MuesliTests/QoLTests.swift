@@ -80,6 +80,37 @@ struct FloatingIndicatorVisibilityTests {
         #expect(config.showFloatingIndicator == false)
     }
 
+    @Test("floating hotkey defaults off while menu bar hotkey defaults on")
+    func hotkeyVisibilityRoundTrip() throws {
+        var config = AppConfig()
+        #expect(!config.showHotkeyOnFloatingIndicator)
+        #expect(config.showHotkeyInMenuBar)
+
+        config.showHotkeyOnFloatingIndicator = true
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+
+        #expect(decoded.showHotkeyOnFloatingIndicator)
+        #expect(decoded.showHotkeyInMenuBar)
+    }
+
+    @Test("missing hotkey visibility preferences use fresh-install defaults")
+    func hotkeyVisibilityMissingKeysUseDefaults() throws {
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+
+        #expect(!config.showHotkeyOnFloatingIndicator)
+        #expect(config.showHotkeyInMenuBar)
+    }
+
+    @Test("hotkey visibility controls decode from snake_case JSON")
+    func hotkeyVisibilitySnakeCaseDecode() throws {
+        let json = #"{"show_hotkey_on_floating_indicator": false, "show_hotkey_in_menu_bar": false}"#
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(!config.showHotkeyOnFloatingIndicator)
+        #expect(!config.showHotkeyInMenuBar)
+    }
+
     @Test("meeting transcript hover defaults on and persists")
     func meetingTranscriptHoverRoundTrip() throws {
         var config = AppConfig()
@@ -188,6 +219,55 @@ struct IndicatorFrameSizeTests {
         #expect(
             FloatingIndicatorController.anchorCenter(.bottomCenter, in: visibleFrame, size: size) ==
             CGPoint(x: 700, y: 72)
+        )
+    }
+
+    @Test("custom idle hover keeps the collapsed pill's left edge")
+    @MainActor
+    func customIdleHoverKeepsLeftEdge() {
+        let visibleFrame = NSRect(x: 100, y: 50, width: 1200, height: 800)
+        let positionCenter = CGPoint(x: 422, y: 450)
+        let collapsed = FloatingIndicatorController.customIdleFrame(
+            positionCenter: positionCenter,
+            size: NSSize(width: 44, height: 28),
+            in: visibleFrame
+        )
+        let expanded = FloatingIndicatorController.customIdleFrame(
+            positionCenter: positionCenter,
+            size: NSSize(width: 220, height: 36),
+            in: visibleFrame
+        )
+
+        #expect(collapsed.minX == 400)
+        #expect(expanded.minX == collapsed.minX)
+        #expect(expanded.midY == collapsed.midY)
+    }
+
+    @Test("idle hover width leaves room for the complete hotkey instruction")
+    @MainActor
+    func idleHoverWidthFitsInstruction() {
+        let standard = FloatingIndicatorController.idleHoverPillSize(
+            hotkeyLabel: "Left Option",
+            screenWidth: 1200
+        )
+        let combination = FloatingIndicatorController.idleHoverPillSize(
+            hotkeyLabel: "Control Option Shift R",
+            screenWidth: 1200
+        )
+
+        #expect(standard.width >= 220)
+        #expect(combination.width > standard.width)
+        #expect(combination.width <= 1168)
+        #expect(standard.height == 36)
+    }
+
+    @Test("expanded idle drag saves the equivalent collapsed center")
+    @MainActor
+    func expandedIdleDragSavesCollapsedCenter() {
+        let expanded = NSRect(x: 515, y: 240, width: 220, height: 36)
+        #expect(
+            FloatingIndicatorController.idlePositionCenter(for: expanded) ==
+            CGPoint(x: 537, y: 258)
         )
     }
 

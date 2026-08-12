@@ -1516,6 +1516,13 @@ struct SettingsView: View {
                     }
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Show hotkey on floating indicator") {
+                    settingsSwitch(isOn: appState.config.showHotkeyOnFloatingIndicator) { newValue in
+                        controller.updateConfig { $0.showHotkeyOnFloatingIndicator = newValue }
+                    }
+                    .disabled(!appState.config.showFloatingIndicator)
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Indicator position") {
                     let isCustom = appState.config.indicatorAnchor == .custom
                     let selection = isCustom ? customIndicatorPositionLabel : appState.config.indicatorAnchor.label
@@ -1542,6 +1549,12 @@ struct SettingsView: View {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Menu bar icon") {
                     menuBarIconPicker
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Show hotkey in menu bar") {
+                    settingsSwitch(isOn: appState.config.showHotkeyInMenuBar) { newValue in
+                        controller.updateConfig { $0.showHotkeyInMenuBar = newValue }
+                    }
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Accent color") {
