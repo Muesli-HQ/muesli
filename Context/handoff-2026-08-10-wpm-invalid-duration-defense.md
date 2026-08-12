@@ -59,3 +59,12 @@ The follow-up therefore removes bridge discovery from blocking CKSyncEngine pref
 After a successful text cycle, bridge refresh now runs as coalesced ancillary work,
 is cancelled with engine teardown, and updates linked-device UI state when it finishes.
 The visible sync spinner is now scoped to actual text upload/download completion.
+
+Review follow-up tightened both halves of the PR:
+
+- selected-range WPM now reads timed contributions from `insights_record_cache` using
+  the same calendar-local `activity_day` boundary as visible totals;
+- totals and timed contributions are aggregated by one SQLite statement and therefore
+  one read snapshot;
+- bridge completion callbacks carry a controller-owned engine lifecycle token, so a
+  queued callback from a retired engine cannot update a replacement engine's UI state.

@@ -81,6 +81,41 @@ struct InsightsTests {
         #expect(snapshot.selected.averageWPM == 2)
     }
 
+    @Test("selected average pace uses the caller's local-day boundary")
+    func selectedAveragePaceUsesLocalDayBoundary() throws {
+        let store = try makeStore()
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(identifier: "Asia/Kolkata"))
+        let localMidnightRecord = try #require(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 7,
+            day: 1,
+            hour: 0,
+            minute: 15
+        )))
+        let now = try #require(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 7,
+            day: 30,
+            hour: 12
+        )))
+        try store.insertDictation(
+            text: "one two",
+            durationSeconds: 60,
+            startedAt: localMidnightRecord.addingTimeInterval(-60),
+            endedAt: localMidnightRecord
+        )
+
+        let snapshot = try store.insightsSnapshot(
+            range: .thirtyDays,
+            now: now,
+            calendar: calendar
+        )
+
+        #expect(snapshot.selected.dictationWords == 2)
+        #expect(snapshot.selected.averageWPM == 2)
+    }
+
     @Test("deleted history is absent from totals, activity, and vocabulary")
     func deletedHistory() throws {
         let store = try makeStore()

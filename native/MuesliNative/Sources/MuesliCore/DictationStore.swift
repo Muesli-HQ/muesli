@@ -1514,14 +1514,32 @@ public final class DictationStore {
 
     private func cachedInsightsTotals(db: OpaquePointer?, sinceDay: String?) throws -> InsightsTotals {
         let sql = """
-        SELECT COALESCE(SUM(dictation_words),0), COALESCE(SUM(dictation_sessions),0),
-          COALESCE(SUM(meeting_words),0), COALESCE(SUM(meetings),0)
-        FROM insights_daily_cache WHERE (? IS NULL OR day >= ?)
+        WITH selected_day(value) AS (VALUES (?)),
+        daily AS (
+            SELECT dictation_words, dictation_sessions, meeting_words, meetings
+            FROM insights_daily_cache
+            WHERE (SELECT value FROM selected_day) IS NULL
+               OR day >= (SELECT value FROM selected_day)
+        ),
+        timed AS (
+            SELECT word_count + meeting_words AS words, duration_seconds
+            FROM insights_record_cache
+            WHERE duration_seconds > 0
+              AND ((SELECT value FROM selected_day) IS NULL
+                   OR activity_day >= (SELECT value FROM selected_day))
+        )
+        SELECT
+          (SELECT COALESCE(SUM(dictation_words), 0) FROM daily),
+          (SELECT COALESCE(SUM(dictation_sessions), 0) FROM daily),
+          (SELECT COALESCE(SUM(meeting_words), 0) FROM daily),
+          (SELECT COALESCE(SUM(meetings), 0) FROM daily),
+          (SELECT COALESCE(SUM(words), 0) FROM timed),
+          (SELECT COALESCE(SUM(duration_seconds), 0) FROM timed)
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
         defer { sqlite3_finalize(statement) }
-        bindOptionalText(sinceDay, at: 1, statement: statement); bindOptionalText(sinceDay, at: 2, statement: statement)
+        bindOptionalText(sinceDay, at: 1, statement: statement)
         guard sqlite3_step(statement) == SQLITE_ROW else {
             return InsightsTotals(dictationWords: 0, dictationSessions: 0, meetingWords: 0, meetings: 0, averageWPM: 0)
         }
@@ -1529,46 +1547,14 @@ public final class DictationStore {
         let dictationSessions = Int(sqlite3_column_int64(statement, 1))
         let meetingWords = Int(sqlite3_column_int64(statement, 2))
         let meetings = Int(sqlite3_column_int64(statement, 3))
-        let (timedWords, timedDuration) = try timedWPMTotals(db: db, sinceDay: sinceDay)
+        let timedWords = Int(sqlite3_column_int64(statement, 4))
+        let timedDuration = sqlite3_column_double(statement, 5)
         return InsightsTotals(
             dictationWords: dictationWords,
             dictationSessions: dictationSessions,
             meetingWords: meetingWords,
             meetings: meetings,
             averageWPM: timedDuration > 0 ? Double(timedWords) / (timedDuration / 60) : 0
-        )
-    }
-
-    private func timedWPMTotals(
-        db: OpaquePointer?,
-        sinceDay: String?
-    ) throws -> (words: Int, duration: Double) {
-        let sql = """
-        SELECT COALESCE(SUM(word_count), 0), COALESCE(SUM(duration_seconds), 0)
-        FROM (
-            SELECT word_count, duration_seconds, timestamp AS activity_date
-            FROM dictations
-            WHERE deleted_at IS NULL AND duration_seconds > 0
-            UNION ALL
-            SELECT word_count, duration_seconds, start_time AS activity_date
-            FROM meetings
-            WHERE deleted_at IS NULL
-              AND meeting_status IN ('completed', 'note_only')
-              AND duration_seconds > 0
-        )
-        WHERE (? IS NULL OR activity_date >= ?)
-        """
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
-            throw lastError(db)
-        }
-        defer { sqlite3_finalize(statement) }
-        bindOptionalText(sinceDay, at: 1, statement: statement)
-        bindOptionalText(sinceDay, at: 2, statement: statement)
-        guard sqlite3_step(statement) == SQLITE_ROW else { return (0, 0) }
-        return (
-            words: Int(sqlite3_column_int64(statement, 0)),
-            duration: sqlite3_column_double(statement, 1)
         )
     }
 

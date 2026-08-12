@@ -433,6 +433,7 @@ final class MuesliController: NSObject {
     private var pendingResumePriorTranscript: [Int64: String] = [:]
     private var iCloudSyncTask: Task<Void, Never>?
     private var ckSyncEngine: MuesliCKSyncEngine?
+    private var ckSyncEngineLifecycleID = UUID()
     private var ckSyncEngineCancellationTask: Task<Void, Never>?
     private var ckSyncEngineCancellationGeneration = 0
     private var iCloudSyncGeneration = 0
@@ -1897,11 +1898,14 @@ final class MuesliController: NSObject {
 
     private func resolvedCKSyncEngine() -> MuesliCKSyncEngine {
         if let ckSyncEngine { return ckSyncEngine }
+        let lifecycleID = UUID()
+        ckSyncEngineLifecycleID = lifecycleID
         let created = MuesliCKSyncEngine(
             store: dictationStore,
-            bridgeRefreshDidFinish: { [weak self] in
-                self?.refreshICloudBridgeDeviceState()
-                self?.refreshICloudBridgeStateForConfig()
+            bridgeRefreshDidFinish: { [weak self, lifecycleID] in
+                guard let self, self.ckSyncEngineLifecycleID == lifecycleID else { return }
+                self.refreshICloudBridgeDeviceState()
+                self.refreshICloudBridgeStateForConfig()
             }
         )
         ckSyncEngine = created
@@ -1912,6 +1916,7 @@ final class MuesliController: NSObject {
         guard let retiredEngine = ckSyncEngine else {
             return ckSyncEngineCancellationTask
         }
+        ckSyncEngineLifecycleID = UUID()
         ckSyncEngine = nil
         let previousCancellationTask = ckSyncEngineCancellationTask
         ckSyncEngineCancellationGeneration += 1
