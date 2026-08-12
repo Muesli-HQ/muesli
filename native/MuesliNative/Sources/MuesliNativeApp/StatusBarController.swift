@@ -37,7 +37,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     func refresh() {
         rebuildMenu()
-        updateMenuBarTitle()
+        refreshIcon()
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -54,7 +54,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     func refreshIcon() {
-        statusItem.button?.image = MenuBarIconRenderer.make(choice: controller.config.menuBarIcon)
+        let recording = controller.config.showMenuBarRecordingIndicator
+            && (controller.isMeetingActivelyCapturing() || controller.appState.dictationState == .recording)
+        statusItem.button?.image = MenuBarIconRenderer.make(choice: controller.config.menuBarIcon, recording: recording)
         updateMenuBarTitle()
     }
 

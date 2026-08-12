@@ -19,19 +19,41 @@ enum MenuBarIconRenderer {
 
     /// Returns a menu bar icon for the given choice.
     /// "muesli" loads the bundled M logo; anything else renders an SF Symbol.
-    static func make(choice: String = "muesli") -> NSImage? {
+    static func make(choice: String = "muesli", recording: Bool = false) -> NSImage? {
+        let baseIcon: NSImage?
         if choice == "muesli" {
             if let url = Bundle.main.url(forResource: "menu_m_template", withExtension: "png"),
                let image = NSImage(contentsOf: url) {
                 image.isTemplate = true
                 image.size = NSSize(width: 18, height: 18)
-                return image
+                baseIcon = image
+            } else {
+                baseIcon = nil
             }
+        } else {
+            let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
+            let image = NSImage(systemSymbolName: choice, accessibilityDescription: "Muesli")?
+                .withSymbolConfiguration(config)
+            image?.isTemplate = true
+            baseIcon = image
         }
-        let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
-        let image = NSImage(systemSymbolName: choice, accessibilityDescription: "Muesli")?
-            .withSymbolConfiguration(config)
-        image?.isTemplate = true
-        return image
+
+        guard recording, let icon = baseIcon else { return baseIcon }
+
+        let size = NSSize(width: 22, height: 22)
+        let result = NSImage(size: size, flipped: false) { rect in
+            NSColor(calibratedRed: 0.2, green: 0.78, blue: 0.35, alpha: 1.0).setFill()
+            NSBezierPath(ovalIn: rect).fill()
+            let iconRect = NSRect(
+                x: (rect.width - icon.size.width) / 2,
+                y: (rect.height - icon.size.height) / 2,
+                width: icon.size.width,
+                height: icon.size.height
+            )
+            icon.draw(in: iconRect, from: .zero, operation: .destinationOut, fraction: 1.0)
+            return true
+        }
+        result.isTemplate = false
+        return result
     }
 }
