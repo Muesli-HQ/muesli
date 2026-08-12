@@ -1499,13 +1499,59 @@ final class FloatingIndicatorController: NSObject {
         return allowedRect.contains(center)
     }
 
+    static func visibleFrameForCustomIndicator(
+        customPositionCenter: CGPoint?,
+        indicatorFrame: NSRect?,
+        savedPositionCenter: CGPoint?,
+        availableVisibleFrames: [NSRect],
+        fallback: NSRect
+    ) -> NSRect {
+        if let customPositionCenter,
+           let matchingFrame = availableVisibleFrames.first(where: { $0.contains(customPositionCenter) }) {
+            return matchingFrame
+        }
+
+        if let indicatorFrame, !indicatorFrame.isEmpty {
+            let matchingFrame = availableVisibleFrames
+                .compactMap { visibleFrame -> (frame: NSRect, overlap: CGFloat)? in
+                    let intersection = visibleFrame.intersection(indicatorFrame)
+                    guard !intersection.isNull, !intersection.isEmpty else { return nil }
+                    return (visibleFrame, intersection.width * intersection.height)
+                }
+                .max(by: { $0.overlap < $1.overlap })?
+                .frame
+            if let matchingFrame {
+                return matchingFrame
+            }
+        }
+
+        if let savedPositionCenter,
+           let matchingFrame = availableVisibleFrames.first(where: { $0.contains(savedPositionCenter) }) {
+            return matchingFrame
+        }
+
+        return fallback
+    }
+
     private func frameForState(
         _ state: DictationState,
         config: AppConfig,
         customPositionCenter: CGPoint? = nil
     ) -> NSRect {
-        guard let screen = NSScreen.main?.visibleFrame else {
+        guard let mainVisibleFrame = NSScreen.main?.visibleFrame else {
             return NSRect(x: 0, y: 0, width: 64, height: 28)
+        }
+        let screen: NSRect
+        if config.indicatorAnchor == .custom {
+            screen = Self.visibleFrameForCustomIndicator(
+                customPositionCenter: customPositionCenter,
+                indicatorFrame: indicatorScreenFrame,
+                savedPositionCenter: config.indicatorOrigin.map { CGPoint(x: $0.x, y: $0.y) },
+                availableVisibleFrames: NSScreen.screens.map(\.visibleFrame),
+                fallback: mainVisibleFrame
+            )
+        } else {
+            screen = mainVisibleFrame
         }
         let size: NSSize
         switch state {

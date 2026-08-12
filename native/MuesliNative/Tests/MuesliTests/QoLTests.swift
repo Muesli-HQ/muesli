@@ -87,11 +87,12 @@ struct FloatingIndicatorVisibilityTests {
         #expect(config.showHotkeyInMenuBar)
 
         config.showHotkeyOnFloatingIndicator = true
+        config.showHotkeyInMenuBar = false
         let data = try JSONEncoder().encode(config)
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
 
         #expect(decoded.showHotkeyOnFloatingIndicator)
-        #expect(decoded.showHotkeyInMenuBar)
+        #expect(!decoded.showHotkeyInMenuBar)
     }
 
     @Test("missing hotkey visibility preferences use fresh-install defaults")
@@ -241,6 +242,31 @@ struct IndicatorFrameSizeTests {
         #expect(collapsed.minX == 400)
         #expect(expanded.minX == collapsed.minX)
         #expect(expanded.midY == collapsed.midY)
+    }
+
+    @Test("custom indicator uses the display containing its saved position")
+    @MainActor
+    func customIndicatorUsesSecondaryDisplay() {
+        let primary = NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let secondary = NSRect(x: -1920, y: -180, width: 1920, height: 1080)
+        let savedPosition = CGPoint(x: -960, y: 360)
+
+        let selectedFrame = FloatingIndicatorController.visibleFrameForCustomIndicator(
+            customPositionCenter: nil,
+            indicatorFrame: nil,
+            savedPositionCenter: savedPosition,
+            availableVisibleFrames: [primary, secondary],
+            fallback: primary
+        )
+        let expanded = FloatingIndicatorController.customIdleFrame(
+            positionCenter: savedPosition,
+            size: NSSize(width: 220, height: 36),
+            in: selectedFrame
+        )
+
+        #expect(selectedFrame == secondary)
+        #expect(secondary.contains(expanded))
+        #expect(expanded.minX == savedPosition.x - 22)
     }
 
     @Test("idle hover width leaves room for the complete hotkey instruction")
