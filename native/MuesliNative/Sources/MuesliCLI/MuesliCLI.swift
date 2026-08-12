@@ -152,6 +152,17 @@ func ensureDatabaseAvailable(_ context: CLIContext, command: String) throws {
             fix: "Launch Muesli once or pass --db-path/--support-dir to point at the correct data directory."
         )
     }
+    migrateIfPossible(context)
+}
+
+/// Best-effort schema upgrade before touching the store. The app migrates its
+/// own database at launch, but the CLI can be pointed at a database an older
+/// app version created (--support-dir, or an updated bundle before the app's
+/// first relaunch), where newer column lists fail with "no such column".
+/// Migration only adds tables and columns, so older apps keep working; if the
+/// database cannot be written, fall through and let the query report the error.
+func migrateIfPossible(_ context: CLIContext) {
+    try? context.store.migrateIfNeeded()
 }
 
 struct GlobalOptions: ParsableArguments {
@@ -396,6 +407,7 @@ struct MeetingsListCommand: ParsableCommand {
             emitSuccess(command: "muesli-cli meetings list", data: [MeetingListRow](), dbPath: context.databaseURL, warnings: ["No Muesli database exists at the resolved path."])
             return
         }
+        migrateIfPossible(context)
         let rows = try context.store.recentMeetings(limit: limit, folderID: folderID).map(MeetingListRow.init)
         emitSuccess(command: "muesli-cli meetings list", data: rows, dbPath: context.databaseURL)
     }
@@ -479,6 +491,7 @@ struct DictationsListCommand: ParsableCommand {
             emitSuccess(command: "muesli-cli dictations list", data: [DictationListRow](), dbPath: context.databaseURL, warnings: ["No Muesli database exists at the resolved path."])
             return
         }
+        migrateIfPossible(context)
         let rows = try context.store.recentDictations(limit: limit).map(DictationListRow.init)
         emitSuccess(command: "muesli-cli dictations list", data: rows, dbPath: context.databaseURL)
     }

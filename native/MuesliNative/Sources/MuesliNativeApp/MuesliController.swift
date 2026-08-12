@@ -6857,13 +6857,20 @@ public final class MuesliController: NSObject {
         let originalStart = originalMeeting
             .flatMap { ISO8601DateFormatter().date(from: $0.startTime) }
         let accumulatedDuration = (originalMeeting?.durationSeconds ?? 0) + result.durationSeconds
+        // Persisting the resumed session's context alone would overwrite what
+        // earlier sessions of this meeting captured.
+        let mergedVisualContext = MeetingResumePolicy.combinedResumeVisualContext(
+            prior: originalMeeting?.visualContext,
+            new: result.visualContext
+        )
 
         guard MeetingResumePolicy.hasNewTranscriptContent(prior: prior, new: result.rawTranscript) else {
             return result.overriding(
                 startTime: originalStart,
                 durationSeconds: accumulatedDuration,
                 rawTranscript: combined,
-                formattedNotes: originalMeeting?.formattedNotes ?? result.formattedNotes
+                formattedNotes: originalMeeting?.formattedNotes ?? result.formattedNotes,
+                visualContext: mergedVisualContext
             )
         }
 
@@ -6876,7 +6883,7 @@ public final class MuesliController: NSObject {
                 template: result.templateSnapshot,
                 existingNotes: nil,
                 manualNotesToRetain: manualNotes,
-                visualContext: nil
+                visualContext: mergedVisualContext
             )
         } catch {
             fputs("[muesli-native] resume summary regeneration failed: \(error.localizedDescription)\n", stderr)
@@ -6891,7 +6898,8 @@ public final class MuesliController: NSObject {
             startTime: originalStart,
             durationSeconds: accumulatedDuration,
             rawTranscript: combined,
-            formattedNotes: regeneratedNotes
+            formattedNotes: regeneratedNotes,
+            visualContext: mergedVisualContext
         )
     }
 

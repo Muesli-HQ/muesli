@@ -115,7 +115,8 @@ extension MeetingSessionResult {
         startTime newStartTime: Date? = nil,
         durationSeconds newDurationSeconds: Double? = nil,
         rawTranscript: String,
-        formattedNotes: String
+        formattedNotes: String,
+        visualContext newVisualContext: String? = nil
     ) -> MeetingSessionResult {
         let resolvedStart = newStartTime ?? startTime
         let resolvedDuration = newDurationSeconds ?? durationSeconds
@@ -132,7 +133,7 @@ extension MeetingSessionResult {
             retainedRecordingError: retainedRecordingError,
             systemRecordingURL: systemRecordingURL,
             templateSnapshot: templateSnapshot,
-            visualContext: visualContext
+            visualContext: newVisualContext ?? visualContext
         )
     }
 }
