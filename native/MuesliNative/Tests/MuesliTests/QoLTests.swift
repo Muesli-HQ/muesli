@@ -292,8 +292,31 @@ struct IndicatorFrameSizeTests {
     func expandedIdleDragSavesCollapsedCenter() {
         let expanded = NSRect(x: 515, y: 240, width: 220, height: 36)
         #expect(
-            FloatingIndicatorController.idlePositionCenter(for: expanded) ==
+            FloatingIndicatorController.positionCenter(
+                for: expanded,
+                preservesCollapsedLeftEdge: true
+            ) ==
             CGPoint(x: 537, y: 258)
+        )
+    }
+
+    @Test("centered loading and warning drags save their true midpoint")
+    @MainActor
+    func centeredTransientIdleDragsSaveMidpoint() {
+        let loading = NSRect(x: 515, y: 240, width: 180, height: 36)
+        let warning = NSRect(x: 280, y: 180, width: 312, height: 36)
+
+        #expect(
+            FloatingIndicatorController.positionCenter(
+                for: loading,
+                preservesCollapsedLeftEdge: false
+            ) == CGPoint(x: 605, y: 258)
+        )
+        #expect(
+            FloatingIndicatorController.positionCenter(
+                for: warning,
+                preservesCollapsedLeftEdge: false
+            ) == CGPoint(x: 436, y: 198)
         )
     }
 
