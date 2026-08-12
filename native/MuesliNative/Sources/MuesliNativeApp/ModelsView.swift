@@ -124,7 +124,11 @@ struct ModelsView: View {
                 modelToDelete = nil
             }
         } message: {
-            Text("The downloaded model files will be removed from this Mac. You can download the model again later.")
+            if modelToDelete?.isLegacyWhisperModel == true {
+                Text("This older English-only Whisper model is no longer offered for download. If you delete it, it will disappear from the model list; the current multilingual Whisper models remain available.")
+            } else {
+                Text("The downloaded model files will be removed from this Mac. You can download the model again later.")
+            }
         }
         .alert(
             "Delete \"\(postProcModelToDelete?.label ?? "")\"?",
@@ -739,7 +743,11 @@ struct ModelsView: View {
     ) -> some View {
         let selectedOption = options.first(where: { $0.model == selection.wrappedValue }) ?? options[0]
         let isActive = appState.selectedBackend == selectedOption
+        // Legacy Whisper options are only present when their complete cache was
+        // detected, so avoid briefly showing an impossible Download action while
+        // the view's downloaded-model snapshot catches up on first render.
         let isDownloaded = downloadedModels.contains(selectedOption.model)
+            || selectedOption.isLegacyWhisperModel
         let isDownloading = downloadingModels.contains(selectedOption.model)
         let progress = downloadProgress[selectedOption.model] ?? 0
         let showsDownloadStatus = shouldShowDownloadStatus(for: selectedOption.model, isDownloading: isDownloading)
@@ -1651,6 +1659,13 @@ struct ModelsView: View {
                 try await deleteModelFiles(option)
                 await MainActor.run {
                     _ = downloadedModels.remove(option.model)
+                    if option.isLegacyWhisperModel,
+                       selectedWhisperModel == option.model {
+                        selectedWhisperModel = BackendOption.whisperSmall.model
+                    }
+                    if appState.selectedMeetingTranscriptionBackend == option {
+                        controller.refreshMeetingTranscriptionSelectionForAvailability()
+                    }
                     downloadSnapshots.removeValue(forKey: option.model)
                     downloadMessages.removeValue(forKey: option.model)
                     downloadGenerations.removeValue(forKey: option.model)

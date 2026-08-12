@@ -340,10 +340,11 @@ All three Whisper models auto-detect the spoken language by default, or you can
 choose a language to keep recognition focused. Tiny is the lightest option,
 Small balances speed and accuracy, and Large Turbo is the strongest choice for
 accents, background noise, and mixed-language audio. Saved Tiny and Small
-English-model selections move to their multilingual replacements, while saved
-Medium selections move to Large Turbo. These are different checkpoints, so an
-existing English-only download is not reused and the replacement downloads once
-before first use.
+English-only downloads remain available under clearly marked Legacy options on
+that Mac, and continue using their exact English checkpoints. They are not
+offered on fresh installations. A saved English-only selection whose checkpoint
+is no longer present moves to its multilingual replacement instead (Medium moves
+to Large Turbo).
 
 The app and `muesli-cli` share Nemotron 3.5's model cache at
 `~/.cache/muesli/models/nemotron35-multilingual-2240ms`; downloading it in one
