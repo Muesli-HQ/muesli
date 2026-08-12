@@ -30,6 +30,9 @@ protocol MeetingMicRecording: AnyObject {
     var preferredInputDeviceID: AudioObjectID? { get set }
     var onRawPCMSamples: (([Int16]) -> Void)? { get set }
     var onRecordingFailed: ((Error) -> Void)? { get set }
+    /// Fired when a route handoff settles: a candidate promoted to active, or
+    /// failed/timed out. Recorders without a handoff primitive never fire it.
+    var onHandoffOutcome: ((MeetingMicHandoffOutcome) -> Void)? { get set }
 
     func prepare() throws
     func start() throws
@@ -65,6 +68,8 @@ final class StreamingMeetingMicRecorderAdapter: MeetingMicRecording {
         get { recorder.onRecordingFailed }
         set { recorder.onRecordingFailed = newValue }
     }
+    /// No-op sink: this adapter has no handoff primitive, so it never fires.
+    var onHandoffOutcome: ((MeetingMicHandoffOutcome) -> Void)?
 
     private let recorder: StreamingDictationRecording
     private let kind: MeetingMicRecorderKind
@@ -169,6 +174,10 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         get { lock.withLock { $0.onRecordingFailedStorage } }
         set { lock.withLock { $0.onRecordingFailedStorage = newValue } }
     }
+    var onHandoffOutcome: ((MeetingMicHandoffOutcome) -> Void)? {
+        get { lock.withLock { $0.onHandoffOutcomeStorage } }
+        set { lock.withLock { $0.onHandoffOutcomeStorage = newValue } }
+    }
 
     private let systemDefaultRecorderFactory: RecorderFactory
     private let appScopedRecorderFactory: RecorderFactory
@@ -191,6 +200,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         var shouldRecoverOnResume = false
         var onRawPCMSamplesStorage: (([Int16]) -> Void)?
         var onRecordingFailedStorage: ((Error) -> Void)?
+        var onHandoffOutcomeStorage: ((MeetingMicHandoffOutcome) -> Void)?
     }
 
     private var preferredInputDeviceIDStorage: AudioObjectID? {
@@ -527,6 +537,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         }
         guard transition.completed else { return }
         onRawPCMSamplesStorage?(firstSamples)
+        onHandoffOutcome?(.promoted)
         retireAfterHandoffAsync(transition.old)
     }
 
@@ -540,6 +551,8 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         }
         guard let result else { return }
         cancelAsync(result.candidate)
+        let isTimeout = (error as NSError).domain == "MeetingMicrophoneRoute" && (error as NSError).code == 1
+        onHandoffOutcome?(isTimeout ? .timedOut : .failed)
         let outcome = result.isTerminalRecovery
             ? "microphone recovery failed"
             : "microphone handoff failed; continuing current route"

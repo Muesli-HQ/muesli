@@ -6,6 +6,20 @@ enum MeetingMicHealthEpisodeKind: String, Equatable {
     case unrecovered = "meeting.microphone.unrecovered"
 }
 
+enum MeetingMicHandoffOutcome: String, Equatable {
+    case promoted
+    case timedOut = "timed_out"
+    case failed = "failed"
+}
+
+/// Privacy-safe coarse context attached to episode telemetry: no audio, device
+/// names, or user content — only enum/classification-level fields.
+struct MeetingMicEpisodeContext: Equatable {
+    var recorderKind: String?
+    var routeCategory: String?
+    var selectedInputResolved: Bool?
+}
+
 struct MeetingMicHealthEpisodeEvent: Equatable {
     let kind: MeetingMicHealthEpisodeKind
     let episodeID: UUID
@@ -14,26 +28,37 @@ struct MeetingMicHealthEpisodeEvent: Equatable {
     let durationSeconds: TimeInterval
     let flapCount: Int
     let recoveryAttempts: Int
+    let handoffPromotions: Int
+    let lastHandoffOutcome: MeetingMicHandoffOutcome?
+    /// True when at least one recovery handoff promoted a replacement graph
+    /// during this episode before the healthy transition.
+    let recoveryCredited: Bool
+    let context: MeetingMicEpisodeContext
 }
 
 /// Turns the raw mic-health state stream into one episode per degradation and
 /// drives bounded same-route recovery attempts while a meeting is degraded.
 ///
-/// The health tracker can flap between degraded and neutral states within one
-/// real incident; this coordinator collapses that into a single episode so
-/// telemetry and recovery attempts are episode-scoped instead of per-flap.
-///
-/// Threading: all state is committed under a non-recursive lock, but the
-/// injected callbacks (`recoveryRequest`, `onEpisodeEvent`) always run *after*
-/// the lock is released — they may call back into audio infrastructure, and
-/// `process()` runs on the real-time sample path. Attempt reservations are
-/// made under the lock and rolled back if the request is not initiated.
+/// Design notes:
+/// - Flapping is collapsed into a single episode: a *sustained* healthy period
+///   (not one healthy buffer) is required to close an episode as recovered, so
+///   a degraded→healthy-blip→degraded route cannot reset the retry budget.
+/// - All state commits under a non-recursive lock; injected callbacks run after
+///   unlock. Recovery reservations carry a unique token, stored on the episode,
+///   revalidated immediately before dispatch and settled on rollback — a
+///   callback that closes or replaces the episode invalidates the token.
+/// - After finishMeeting(), late snapshots are ignored so a callback enqueued
+///   before teardown cannot open a dangling episode.
 final class MeetingMicRecoveryCoordinator {
     struct Policy: Equatable {
         /// Minimum wall-clock gap between recovery attempts within an episode.
         var attemptCooldown: TimeInterval = 15
         /// Maximum recovery attempts per episode.
         var maxAttemptsPerEpisode: Int = 3
+        /// Continuous healthy delivery required before an episode may close as
+        /// recovered. Prevents a single healthy buffer from resetting the
+        /// retry budget on a flapping route.
+        var sustainedHealthySeconds: TimeInterval = 10
 
         static let `default` = Policy()
     }
@@ -46,24 +71,27 @@ final class MeetingMicRecoveryCoordinator {
         var flapCount: Int
         var recoveryAttempts: Int
         var lastAttemptAt: Date?
+        var pendingRecoveryToken: UUID?
+        var handoffPromotions: Int
+        var lastHandoffOutcome: MeetingMicHandoffOutcome?
+        /// First timestamp of the current continuous healthy run, if any.
+        var healthySince: Date?
     }
 
     /// Called after the coordinator's lock is released when a recovery attempt
-    /// should be started. Returns whether a recovery was actually initiated
-    /// (false when one is already pending or the recorder is not in a
-    /// recoverable state); uninitiated attempts are rolled back.
+    /// should start. Returns whether one was actually initiated; uninitiated
+    /// reservations are rolled back.
     var recoveryRequest: (String) -> Bool = { _ in false }
     /// Called after the coordinator's lock is released.
     var onEpisodeEvent: ((MeetingMicHealthEpisodeEvent) -> Void)?
+    /// Coarse, privacy-safe context for telemetry; evaluated at event time.
+    var contextProvider: () -> MeetingMicEpisodeContext = { MeetingMicEpisodeContext() }
 
     private let policy: Policy
     private let now: () -> Date
     private let lock = NSLock()
     private var episode: Episode?
     private var previousState: MeetingMicHealthState?
-    /// Set by finishMeeting(). Late health snapshots (e.g. sample callbacks
-    /// enqueued before meeting teardown but processed after it) must not open
-    /// a fresh episode that would never see a terminal event.
     private var finished = false
 
     init(policy: Policy = .default, now: @escaping () -> Date = Date.init) {
@@ -72,8 +100,16 @@ final class MeetingMicRecoveryCoordinator {
     }
 
     func process(_ snapshot: MeetingMicHealthSnapshot) {
-        var eventToEmit: MeetingMicHealthEpisodeEvent?
-        var recoveryReservation: (episodeID: UUID, reason: String, reservedAt: Date)?
+        // State transitions commit under the lock; event construction (which
+        // evaluates the injected contextProvider) and all callbacks run after
+        // the lock is released.
+        struct PendingEvent {
+            let kind: MeetingMicHealthEpisodeKind
+            let episode: Episode
+            let duration: TimeInterval
+        }
+        var pendingEvent: PendingEvent?
+        var recoveryToDispatch: (token: UUID, reason: String)?
 
         lock.lock()
         if !finished {
@@ -82,19 +118,21 @@ final class MeetingMicRecoveryCoordinator {
             previousState = currentState
             let timestamp = now()
 
-            let isDegraded = Self.isDegraded(currentState)
-            if isDegraded, var active = episode {
-                // A flap is any state change observed while the episode is
-                // open: a return to degradation after a neutral dip, or a
-                // change in the degradation mode itself.
+            switch (Self.isDegraded(currentState), episode != nil) {
+            case (true, true):
+                var active = episode!
+                // A flap is any state change while the episode is open: a
+                // return to degradation after a neutral/healthy blip, or a
+                // change in degradation mode.
                 if let previous, previous != currentState {
                     active.flapCount += 1
                 }
+                active.healthySince = nil
                 if let reservation = reserveRecoveryIfDueLocked(&active, at: timestamp) {
-                    recoveryReservation = reservation
+                    recoveryToDispatch = reservation
                 }
                 episode = active
-            } else if isDegraded {
+            case (true, false):
                 let reason = snapshot.transitions.last?.reason ?? "unknown"
                 var newEpisode = Episode(
                     id: UUID(),
@@ -103,73 +141,90 @@ final class MeetingMicRecoveryCoordinator {
                     initialState: currentState,
                     flapCount: 0,
                     recoveryAttempts: 0,
-                    lastAttemptAt: nil
+                    lastAttemptAt: nil,
+                    pendingRecoveryToken: nil,
+                    handoffPromotions: 0,
+                    lastHandoffOutcome: nil,
+                    healthySince: nil
                 )
                 // The degraded event reports attempts as of episode start (0);
                 // the immediate first attempt is reserved below and reflected
                 // in the episode's closing event.
-                eventToEmit = MeetingMicHealthEpisodeEvent(
-                    kind: .degraded,
-                    episodeID: newEpisode.id,
-                    reason: reason,
-                    state: currentState.rawValue,
-                    durationSeconds: 0,
-                    flapCount: 0,
-                    recoveryAttempts: 0
-                )
-                // Confirmed degradation already waited ~3s inside the tracker;
-                // attempt recovery immediately at episode start.
-                recoveryReservation = reserveRecoveryLocked(&newEpisode, at: timestamp)
+                pendingEvent = PendingEvent(kind: .degraded, episode: newEpisode, duration: 0)
+                // The tracker already confirmed degradation for ~3s; attempt
+                // recovery immediately at episode start.
+                recoveryToDispatch = reserveRecoveryLocked(&newEpisode, at: timestamp)
                 episode = newEpisode
-            } else if currentState == .healthy, let active = episode {
-                episode = nil
-                eventToEmit = MeetingMicHealthEpisodeEvent(
-                    kind: .recovered,
-                    episodeID: active.id,
-                    reason: active.initialReason,
-                    state: active.initialState.rawValue,
-                    durationSeconds: timestamp.timeIntervalSince(active.startedAt),
-                    flapCount: active.flapCount,
-                    recoveryAttempts: active.recoveryAttempts
-                )
+            case (false, true):
+                var active = episode!
+                if currentState == .healthy {
+                    if active.healthySince == nil {
+                        active.healthySince = timestamp
+                    }
+                    if timestamp.timeIntervalSince(active.healthySince!) >= policy.sustainedHealthySeconds {
+                        // Sustained healthy delivery: close as recovered. The
+                        // retry budget is only released here, never on a blip.
+                        episode = nil
+                        pendingEvent = PendingEvent(
+                            kind: .recovered,
+                            episode: active,
+                            duration: timestamp.timeIntervalSince(active.startedAt)
+                        )
+                    } else {
+                        episode = active
+                    }
+                } else {
+                    // Neutral state (e.g. waitingForAudio): keep the episode
+                    // open without counting anything.
+                    episode = active
+                }
+            case (false, false):
+                break
             }
         }
+        let dispatch = recoveryToDispatch
         lock.unlock()
 
-        if let eventToEmit {
-            onEpisodeEvent?(eventToEmit)
+        if let pendingEvent {
+            onEpisodeEvent?(makeEvent(pendingEvent.kind, episode: pendingEvent.episode, duration: pendingEvent.duration))
         }
-        if let recoveryReservation {
-            let initiated = recoveryRequest(recoveryReservation.reason)
-            if !initiated {
-                rollbackReservationLocked(recoveryReservation)
-            }
+        if let dispatch {
+            dispatchRecovery(dispatch)
         }
     }
 
-    /// Call when the meeting stops. An open episode at meeting end is the
-    /// terminal condition that warrants an error-level signal. After this,
-    /// further snapshots are ignored.
+    /// Record the outcome of a recovery handoff (called by the recorder layer).
+    /// A promotion during an open episode marks the recovery as creditable if
+    /// healthy delivery follows.
+    func noteHandoffOutcome(_ outcome: MeetingMicHandoffOutcome) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var active = episode else { return }
+        active.lastHandoffOutcome = outcome
+        if outcome == .promoted {
+            active.handoffPromotions += 1
+        }
+        episode = active
+    }
+
+    /// Call when the meeting stops. An episode still degraded at meeting end is
+    /// the terminal condition that warrants an error-level signal; an episode
+    /// with healthy-but-not-yet-sustained delivery closes as recovered. After
+    /// this, further snapshots are ignored.
     func finishMeeting() {
-        var eventToEmit: MeetingMicHealthEpisodeEvent?
+        var pendingEvent: (kind: MeetingMicHealthEpisodeKind, episode: Episode, duration: TimeInterval)?
         lock.lock()
         finished = true
         if let active = episode {
             episode = nil
-            eventToEmit = MeetingMicHealthEpisodeEvent(
-                kind: .unrecovered,
-                episodeID: active.id,
-                reason: active.initialReason,
-                state: active.initialState.rawValue,
-                durationSeconds: now().timeIntervalSince(active.startedAt),
-                flapCount: active.flapCount,
-                recoveryAttempts: active.recoveryAttempts
-            )
+            let timestamp = now()
+            let kind: MeetingMicHealthEpisodeKind = active.healthySince != nil ? .recovered : .unrecovered
+            pendingEvent = (kind, active, timestamp.timeIntervalSince(active.startedAt))
         }
         lock.unlock()
 
-        if let eventToEmit {
-            onEpisodeEvent?(eventToEmit)
+        if let pendingEvent {
+            onEpisodeEvent?(makeEvent(pendingEvent.kind, episode: pendingEvent.episode, duration: pendingEvent.duration))
         }
     }
 
@@ -181,13 +236,34 @@ final class MeetingMicRecoveryCoordinator {
         state == .micCallbacksMissing || state == .micAllZeroWhileSystemActive
     }
 
-    /// Must be called with `lock` held. Reserves an attempt (counted under the
-    /// lock so concurrent snapshots cannot double-request); the caller invokes
-    /// `recoveryRequest` after unlocking and rolls back if not initiated.
+    /// Builds the event outside the lock: evaluates the injected context
+    /// provider without holding coordinator state.
+    private func makeEvent(
+        _ kind: MeetingMicHealthEpisodeKind,
+        episode: Episode,
+        duration: TimeInterval
+    ) -> MeetingMicHealthEpisodeEvent {
+        MeetingMicHealthEpisodeEvent(
+            kind: kind,
+            episodeID: episode.id,
+            reason: episode.initialReason,
+            state: episode.initialState.rawValue,
+            durationSeconds: duration,
+            flapCount: episode.flapCount,
+            recoveryAttempts: episode.recoveryAttempts,
+            handoffPromotions: episode.handoffPromotions,
+            lastHandoffOutcome: episode.lastHandoffOutcome,
+            recoveryCredited: episode.handoffPromotions > 0,
+            context: contextProvider()
+        )
+    }
+
+    /// Must be called with `lock` held. Reserves an attempt and issues a unique
+    /// token stored on the episode; the token is revalidated at dispatch.
     private func reserveRecoveryIfDueLocked(
         _ active: inout Episode,
         at timestamp: Date
-    ) -> (episodeID: UUID, reason: String, reservedAt: Date)? {
+    ) -> (token: UUID, reason: String)? {
         if let lastAttemptAt = active.lastAttemptAt,
            timestamp.timeIntervalSince(lastAttemptAt) < policy.attemptCooldown {
             return nil
@@ -198,21 +274,39 @@ final class MeetingMicRecoveryCoordinator {
     private func reserveRecoveryLocked(
         _ active: inout Episode,
         at timestamp: Date
-    ) -> (episodeID: UUID, reason: String, reservedAt: Date)? {
-        guard active.recoveryAttempts < policy.maxAttemptsPerEpisode else { return nil }
+    ) -> (token: UUID, reason: String)? {
+        guard active.recoveryAttempts < policy.maxAttemptsPerEpisode,
+              active.pendingRecoveryToken == nil else { return nil }
+        let token = UUID()
         active.recoveryAttempts += 1
         active.lastAttemptAt = timestamp
-        return (active.id, active.initialReason, timestamp)
+        active.pendingRecoveryToken = token
+        return (token, active.initialReason)
     }
 
-    private func rollbackReservationLocked(_ reservation: (episodeID: UUID, reason: String, reservedAt: Date)) {
+    /// Runs outside the lock. Revalidates the reservation token immediately
+    /// before dispatch: an episode that closed or moved on invalidates it.
+    private func dispatchRecovery(_ reservation: (token: UUID, reason: String)) {
         lock.lock()
-        defer { lock.unlock() }
-        guard var active = episode,
-              active.id == reservation.episodeID,
-              active.lastAttemptAt == reservation.reservedAt else { return }
-        active.recoveryAttempts -= 1
-        active.lastAttemptAt = nil
-        episode = active
+        guard !finished,
+              let active = episode,
+              active.pendingRecoveryToken == reservation.token else {
+            lock.unlock()
+            return
+        }
+        lock.unlock()
+
+        let initiated = recoveryRequest(reservation.reason)
+
+        lock.lock()
+        if var active = episode, active.pendingRecoveryToken == reservation.token {
+            active.pendingRecoveryToken = nil
+            if !initiated {
+                active.recoveryAttempts -= 1
+                active.lastAttemptAt = nil
+            }
+            episode = active
+        }
+        lock.unlock()
     }
 }

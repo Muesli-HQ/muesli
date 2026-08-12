@@ -41,6 +41,10 @@ struct MeetingMicRecoveryCoordinatorTests {
             coordinator.process(snapshot)
         }
 
+        func advance(seconds: TimeInterval) {
+            now = now.addingTimeInterval(seconds)
+        }
+
         func micSilence() {
             let snapshot = tracker.noteRawMicSamples(Array(repeating: 0, count: 1600), now: now)
             coordinator.process(snapshot)
@@ -95,11 +99,12 @@ struct MeetingMicRecoveryCoordinatorTests {
         #expect(harness.recoveryRequests.count == 2) // cap reached
     }
 
-    @Test("signal recovery closes the episode with exactly one recovered event")
+    @Test("signal recovery closes the episode with exactly one recovered event after sustained health")
     func recoveryClosesEpisode() {
         let harness = Harness()
         harness.systemActive(seconds: 4)
         harness.micSignal()
+        harness.advance(seconds: 10)
         harness.micSignal()
 
         #expect(harness.events.map(\.kind) == [.degraded, .recovered])
@@ -107,15 +112,61 @@ struct MeetingMicRecoveryCoordinatorTests {
         #expect(!harness.coordinator.hasActiveEpisode)
     }
 
-    @Test("a second episode after recovery is a new episode")
+    @Test("a healthy blip does not close the episode or reset the retry budget")
+    func healthyBlipKeepsEpisodeOpen() {
+        let harness = Harness(cooldown: 0.5, maxAttempts: 2)
+        harness.systemActive(seconds: 3)           // episode starts at t=3, attempt 1
+        harness.micSignal()                        // healthy blip (not sustained)
+        harness.micSilence()                       // mic goes all-zero again
+        harness.systemActive(seconds: 4)           // re-degrades (zero-mic) at ~t=6: flap, attempt 2
+
+        #expect(harness.events.map(\.kind) == [.degraded])
+        #expect(harness.recoveryRequests.count == 2)
+        #expect(harness.coordinator.hasActiveEpisode)
+
+        harness.systemActive(seconds: 2)           // still degraded; budget exhausted
+        #expect(harness.recoveryRequests.count == 2)
+    }
+
+    @Test("a second episode after sustained recovery is a new episode")
     func secondEpisodeIsDistinct() {
         let harness = Harness()
         harness.systemActive(seconds: 4)
+        harness.micSignal()
+        harness.advance(seconds: 10)
         harness.micSignal()
         harness.systemActive(seconds: 4)
 
         #expect(harness.events.map(\.kind) == [.degraded, .recovered, .degraded])
         #expect(harness.events[0].episodeID != harness.events[2].episodeID)
+    }
+
+    @Test("meeting ending after a healthy blip closes as recovered, not unrecovered")
+    func meetingEndAfterHealthyBlipIsRecovered() {
+        let harness = Harness()
+        harness.systemActive(seconds: 4)
+        harness.micSignal()                        // healthy but not sustained
+        harness.coordinator.finishMeeting()
+
+        #expect(harness.events.map(\.kind) == [.degraded, .recovered])
+    }
+
+    @Test("a recovery reserved before the episode closed is never dispatched")
+    func closedEpisodeInvalidatesPendingRecovery() {
+        let harness = Harness()
+        harness.coordinator.onEpisodeEvent = { [weak harness] event in
+            harness?.events.append(event)
+            guard let harness, event.kind == .degraded else { return }
+            // Recover synchronously inside the event callback, before the
+            // coordinator dispatches the reserved recovery.
+            harness.micSignal()
+            harness.advance(seconds: 10)
+            harness.micSignal()
+        }
+        harness.systemActive(seconds: 4)
+
+        #expect(harness.events.map(\.kind) == [.degraded, .recovered])
+        #expect(harness.recoveryRequests.isEmpty)
     }
 
     @Test("meeting ending while degraded emits one unrecovered event")

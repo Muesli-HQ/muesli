@@ -255,6 +255,19 @@ final class MeetingSession {
         micRecoveryCoordinator.onEpisodeEvent = { [weak self] event in
             self?.onMicHealthEpisode?(event)
         }
+        micRecoveryCoordinator.contextProvider = { [weak meetingMicRecorder] in
+            guard let snapshot = meetingMicRecorder?.diagnosticsSnapshot() else {
+                return MeetingMicEpisodeContext()
+            }
+            return MeetingMicEpisodeContext(
+                recorderKind: snapshot.recorderKind.rawValue,
+                routeCategory: snapshot.route?.outputRouteKind,
+                selectedInputResolved: snapshot.route?.selectedInputDeviceResolved
+            )
+        }
+        meetingMicRecorder.onHandoffOutcome = { [weak micRecoveryCoordinator] outcome in
+            micRecoveryCoordinator?.noteHandoffOutcome(outcome)
+        }
     }
 
     func updateBackend(_ backend: BackendOption) {

@@ -633,6 +633,35 @@ struct RouteAwareMeetingMicRecorderTests {
         #expect(factoryCalls == 1)
     }
 
+    @Test("handoff outcome reports promotion and candidate failure")
+    func handoffOutcomeReportsPromotionAndFailure() async throws {
+        let failingReplacement = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        failingReplacement.startError = NSError(domain: "test", code: 7)
+        let goodReplacement = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        var replacements = [failingReplacement, goodReplacement]
+        let initial = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: initial,
+            appScopedRecorder: FakeMeetingMicRecorder(kind: .appScopedAudioQueue),
+            systemDefaultRecorderFactory: { replacements.removeFirst() },
+            handoffTimeout: 1,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+        var outcomes: [MeetingMicHandoffOutcome] = []
+        recorder.onHandoffOutcome = { outcomes.append($0) }
+
+        try recorder.start()
+        #expect(recorder.requestSameRouteRecovery(reason: "first attempt"))
+        try await waitUntil { failingReplacement.cancelCalls == 1 }
+        try await waitUntil { outcomes == [.failed] }
+
+        #expect(recorder.requestSameRouteRecovery(reason: "second attempt"))
+        try await waitUntil { goodReplacement.startCalls == 1 }
+        goodReplacement.onRawPCMSamples?([1, 2])
+        try await waitUntil { outcomes == [.failed, .promoted] }
+        try await waitUntil { initial.stopCalls == 1 }
+    }
+
     private func waitUntil(
         timeout: Duration = .seconds(5),
         condition: @escaping () -> Bool
@@ -678,6 +707,7 @@ private final class FakeMeetingMicRecorder: MeetingMicRecording {
     var preferredInputDeviceID: AudioObjectID?
     var onRawPCMSamples: (([Int16]) -> Void)?
     var onRecordingFailed: ((Error) -> Void)?
+    var onHandoffOutcome: ((MeetingMicHandoffOutcome) -> Void)?
 
     let kind: MeetingMicRecorderKind
     var prepareCalls = 0
