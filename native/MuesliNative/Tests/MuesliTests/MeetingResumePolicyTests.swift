@@ -68,11 +68,14 @@ struct MeetingResumePolicyTests {
         #expect(MeetingResumePolicy.combinedResumeVisualContext(prior: " ", new: "") == nil)
     }
 
-    @Test("combined visual context is capped so repeated resumes stay bounded")
+    @Test("combined visual context is capped by dropping the oldest prior content")
     func combinedVisualContextCapped() {
-        let half = String(repeating: "x", count: MeetingResumePolicy.combinedVisualContextLimit)
-        let combined = MeetingResumePolicy.combinedResumeVisualContext(prior: half, new: half)
+        let prior = String(repeating: "p", count: MeetingResumePolicy.combinedVisualContextLimit)
+        let new = String(repeating: "n", count: 5000)
+        let combined = MeetingResumePolicy.combinedResumeVisualContext(prior: prior, new: new)
         #expect(combined?.count == MeetingResumePolicy.combinedVisualContextLimit)
+        #expect(combined?.hasSuffix(new) == true)
+        #expect(combined?.hasPrefix("p") == true)
     }
 
     private func makeResult(start: Date, end: Date) -> MeetingSessionResult {
