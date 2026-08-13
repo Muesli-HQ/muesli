@@ -306,8 +306,8 @@ final class MeetingSession {
         }
         // Volume and mute controls may live on the main element (0) or on any
         // input channel. Enumerate the device's actual input channel count via
-        // the stream configuration and probe every channel (capped at 8 for
-        // interface sanity); a read failure just means "no control there".
+        // the stream configuration and probe every channel; a read failure
+        // just means "no control there".
         var elements: [AudioObjectPropertyElement] = [kAudioObjectPropertyElementMain]
         var configAddress = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyStreamConfiguration,
@@ -326,7 +326,7 @@ final class MeetingSession {
                 let buffers = UnsafeMutableAudioBufferListPointer(bufferList)
                 let channelCount = buffers.reduce(0) { $0 + Int($1.mNumberChannels) }
                 if channelCount > 0 {
-                    elements.append(contentsOf: (1...min(channelCount, 8)).map { AudioObjectPropertyElement($0) })
+                    elements.append(contentsOf: (1...channelCount).map { AudioObjectPropertyElement($0) })
                 }
             }
         }
