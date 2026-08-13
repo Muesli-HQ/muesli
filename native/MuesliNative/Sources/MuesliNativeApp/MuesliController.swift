@@ -347,6 +347,7 @@ final class MuesliController: NSObject {
     private var preferencesWindowController: PreferencesWindowController?
     private var onboardingWindowController: OnboardingWindowController?
     private let featureTourStore = FeatureTourStore()
+    private var isFeatureTourPresentationQueued = false
     var updaterController: SPUStandardUpdaterController?
     private var busyStatusGeneration = 0
 
@@ -908,17 +909,25 @@ final class MuesliController: NSObject {
     @discardableResult
     private func offerFeatureTour(_ tour: FeatureTour) -> Bool {
         guard !tour.steps.isEmpty,
+              !isFeatureTourPresentationQueued,
               appState.pendingFeatureTourInvitation == nil,
               appState.activeFeatureTour == nil,
               ensureBasicDictationPermissionsBeforeDashboard() else { return false }
 
-        appState.pendingFeatureTourInvitation = tour
-        presentHistoryWindow()
-        TelemetryDeck.signal("feature_walkthrough.invitation_shown", parameters: [
-            "version": tour.version,
-            "step_count": "\(tour.steps.count)",
-            "includes_cloud_cleanup": "\(tour.steps.contains { $0.target == .cloudCleanupSetting })",
-        ])
+        isFeatureTourPresentationQueued = true
+        presentHistoryWindow(whenReady: { [weak self] in
+            guard let self else { return }
+            self.isFeatureTourPresentationQueued = false
+            guard self.appState.pendingFeatureTourInvitation == nil,
+                  self.appState.activeFeatureTour == nil else { return }
+
+            self.appState.pendingFeatureTourInvitation = tour
+            TelemetryDeck.signal("feature_walkthrough.invitation_shown", parameters: [
+                "version": tour.version,
+                "step_count": "\(tour.steps.count)",
+                "includes_cloud_cleanup": "\(tour.steps.contains { $0.target == .cloudCleanupSetting })",
+            ])
+        })
         // The normal startup preload task continues while this invitation and
         // the walkthrough are on screen, so no second backend load is started.
         return true
@@ -948,18 +957,23 @@ final class MuesliController: NSObject {
     @discardableResult
     private func beginFeatureTour(_ tour: FeatureTour, source: String) -> Bool {
         guard !tour.steps.isEmpty,
+              !isFeatureTourPresentationQueued,
               ensureBasicDictationPermissionsBeforeDashboard() else { return false }
 
         appState.pendingFeatureTourInvitation = nil
-        appState.activeFeatureTour = tour
-        appState.featureTourStepIndex = 0
-        navigateToFeatureTourStep(tour.steps[0])
-        presentHistoryWindow()
-        TelemetryDeck.signal("feature_walkthrough.started", parameters: [
-            "version": tour.version,
-            "source": source,
-            "step_count": "\(tour.steps.count)",
-        ])
+        isFeatureTourPresentationQueued = true
+        presentHistoryWindow(whenReady: { [weak self] in
+            guard let self else { return }
+            self.isFeatureTourPresentationQueued = false
+            self.appState.activeFeatureTour = tour
+            self.appState.featureTourStepIndex = 0
+            self.navigateToFeatureTourStep(tour.steps[0])
+            TelemetryDeck.signal("feature_walkthrough.started", parameters: [
+                "version": tour.version,
+                "source": source,
+                "step_count": "\(tour.steps.count)",
+            ])
+        })
         return true
     }
 
@@ -3794,9 +3808,9 @@ final class MuesliController: NSObject {
         presentHistoryWindow()
     }
 
-    private func presentHistoryWindow() {
+    private func presentHistoryWindow(whenReady readyAction: (() -> Void)? = nil) {
         DispatchQueue.main.async { [weak self] in
-            self?.historyWindowController?.show()
+            self?.historyWindowController?.show(whenReady: readyAction)
         }
     }
 
