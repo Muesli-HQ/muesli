@@ -304,10 +304,32 @@ final class MeetingSession {
                 AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID
             ) == noErr, deviceID != kAudioObjectUnknown else { return false }
         }
-        // Volume and mute controls may live on the main element (0) or on
-        // individual input channels (1...). Check main plus the first two
-        // channel elements; a read failure just means "no control there".
-        let elements: [AudioObjectPropertyElement] = [kAudioObjectPropertyElementMain, 1, 2]
+        // Volume and mute controls may live on the main element (0) or on any
+        // input channel. Enumerate the device's actual input channel count via
+        // the stream configuration and probe every channel (capped at 8 for
+        // interface sanity); a read failure just means "no control there".
+        var elements: [AudioObjectPropertyElement] = [kAudioObjectPropertyElementMain]
+        var configAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: kAudioObjectPropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var configSize: UInt32 = 0
+        if AudioObjectGetPropertyDataSize(deviceID, &configAddress, 0, nil, &configSize) == noErr, configSize > 0 {
+            let raw = UnsafeMutableRawPointer.allocate(
+                byteCount: Int(configSize),
+                alignment: MemoryLayout<AudioBufferList>.alignment
+            )
+            defer { raw.deallocate() }
+            if AudioObjectGetPropertyData(deviceID, &configAddress, 0, nil, &configSize, raw) == noErr {
+                let bufferList = raw.assumingMemoryBound(to: AudioBufferList.self)
+                let buffers = UnsafeMutableAudioBufferListPointer(bufferList)
+                let channelCount = buffers.reduce(0) { $0 + Int($1.mNumberChannels) }
+                if channelCount > 0 {
+                    elements.append(contentsOf: (1...min(channelCount, 8)).map { AudioObjectPropertyElement($0) })
+                }
+            }
+        }
         for element in elements {
             var volumeAddress = AudioObjectPropertyAddress(
                 mSelector: kAudioDevicePropertyVolumeScalar,
