@@ -15,6 +15,10 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
 
     private let directoryName: String
     private let queueLock = NSRecursiveLock()
+    /// Published independently of queueLock: invalidateForTeardown() must land
+    /// even while a worker is blocked inside AudioQueueStart holding queueLock,
+    /// so the post-start self-check observes it before start() returns.
+    private let teardownInvalidation = OSAllocatedUnfairLock(initialState: false)
     private let stateLock = OSAllocatedUnfairLock(initialState: FileState())
     private let processingQueue = DispatchQueue(label: "com.muesli.audio-queue-input-recorder-processing")
     private let failureCallbackQueue = DispatchQueue(label: "com.muesli.audio-queue-input-recorder-failures")
@@ -46,6 +50,9 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
     func prepare() throws {
         queueLock.lock()
         defer { queueLock.unlock() }
+        guard !isPermanentlyInvalidated else {
+            throw Self.runtimeError(code: 9, message: "Recorder was invalidated by teardown")
+        }
 
         try prepareLocked()
     }
@@ -53,6 +60,9 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
     func start() throws {
         queueLock.lock()
         defer { queueLock.unlock() }
+        guard !isPermanentlyInvalidated else {
+            throw Self.runtimeError(code: 9, message: "Recorder was invalidated by teardown")
+        }
 
         guard !isRunning else { return }
         try prepareLocked()
@@ -79,6 +89,17 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         emitLatency("audio_queue_start_begin")
         let status = AudioQueueStart(audioQueue, nil)
         emitLatency("audio_queue_start_end")
+        // AudioQueueStart can block while the daemon negotiates the route, and
+        // teardown may land during that window. If this instance was invalidated
+        // while the call was in flight, synchronously stop what just started
+        // before returning — capture must not outlive teardown.
+        if isPermanentlyInvalidated {
+            AudioQueueStop(audioQueue, true)
+            isRunning = false
+            captureGeneration &+= 1
+            cleanupAfterStartFailure()
+            throw Self.runtimeError(code: 9, message: "Recorder was invalidated by teardown")
+        }
         guard status == noErr else {
             isRunning = false
             captureGeneration &+= 1
@@ -162,6 +183,17 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
 
     func currentPower() -> Float {
         stateLock.withLock { $0.latestPowerDB }
+    }
+
+    /// Terminal and synchronous: after meeting teardown, this instance must
+    /// never start capture again, regardless of which queue a stale worker is
+    /// on. Distinct from cancel(), which disposes but permits re-prepare.
+    func invalidateForTeardown() {
+        teardownInvalidation.withLock { $0 = true }
+    }
+
+    private var isPermanentlyInvalidated: Bool {
+        teardownInvalidation.withLock { $0 }
     }
 
     func pause() {

@@ -174,6 +174,7 @@ final class MeetingSession {
     private let micChunkHealthTracker = MeetingTranscriptChunkHealthTracker()
     private let systemChunkHealthTracker = MeetingTranscriptChunkHealthTracker()
     private let micHealthTracker = MeetingMicHealthTracker()
+    private let micRecoveryCoordinator = MeetingMicRecoveryCoordinator()
     private let chunkRotationQueue = DispatchQueue(label: "MuesliNative.MeetingSession.chunkRotation")
     private let pausedDisplayLock = OSAllocatedUnfairLock(initialState: false)
     private var chunkTimingTracker = MeetingChunkTimingTracker()
@@ -181,6 +182,14 @@ final class MeetingSession {
     private var systemChunkRecorder: PCMChunkRecorder?
     var onProgress: ((MeetingProcessingStage) -> Void)?
     var onMicHealthChanged: ((MeetingMicHealthSnapshot) -> Void)?
+    /// Episode-level mic-health events: one degraded/recovered pair per actual
+    /// degradation episode, or a single unrecovered event if the meeting ends
+    /// while degraded. Feed telemetry here; keep per-snapshot UI updates on
+    /// onMicHealthChanged.
+    var onMicHealthEpisode: ((MeetingMicHealthEpisodeEvent) -> Void)?
+    /// Fired at most once per meeting when confirmed degradation is classified
+    /// as user-muted input (no recovery episode is opened in that case).
+    var onMicHealthUserMuted: (() -> Void)?
     var manualNotesProvider: (() async -> String?)?
     var liveTitleProvider: (() async -> String?)?
     /// Formatted notes of the predecessor meeting when this session records a
@@ -242,6 +251,32 @@ final class MeetingSession {
         } else {
             self.systemAudioRecorder = SystemAudioRecorder()
         }
+        micRecoveryCoordinator.recoveryRequest = { [weak meetingMicRecorder] reason in
+            guard let meetingMicRecorder else { return .unavailable }
+            return meetingMicRecorder.requestSameRouteRecovery(reason: reason)
+        }
+        micRecoveryCoordinator.onEpisodeEvent = { [weak self] event in
+            self?.onMicHealthEpisode?(event)
+        }
+        micRecoveryCoordinator.isInputMuted = { [weak self] in
+            self?.isCaptureInputMuted() ?? false
+        }
+        micRecoveryCoordinator.onUserMuted = { [weak self] in
+            self?.onMicHealthUserMuted?()
+        }
+        micRecoveryCoordinator.contextProvider = { [weak meetingMicRecorder] in
+            guard let snapshot = meetingMicRecorder?.diagnosticsSnapshot() else {
+                return MeetingMicEpisodeContext()
+            }
+            return MeetingMicEpisodeContext(
+                recorderKind: snapshot.recorderKind.rawValue,
+                routeCategory: snapshot.route?.outputRouteKind,
+                selectedInputResolved: snapshot.route?.selectedInputDeviceResolved
+            )
+        }
+        meetingMicRecorder.onHandoffOutcome = { [weak micRecoveryCoordinator] outcome in
+            micRecoveryCoordinator?.noteHandoffOutcome(outcome)
+        }
     }
 
     func updateBackend(_ backend: BackendOption) {
@@ -250,6 +285,45 @@ final class MeetingSession {
 
     func setPreferredMicrophoneInputDeviceID(_ deviceID: AudioObjectID?) {
         meetingMicRecorder.preferredInputDeviceID = deviceID
+    }
+
+    /// True when the capture device is muted or zero-gain at the source (user
+    /// intent), which presents the same all-zero signature as a broken route.
+    /// Read once per degradation confirmation, never per sample.
+    private func isCaptureInputMuted() -> Bool {
+        var deviceID = meetingMicRecorder.preferredInputDeviceID ?? kAudioObjectUnknown
+        if deviceID == kAudioObjectUnknown {
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDefaultInputDevice,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var size = UInt32(MemoryLayout<AudioObjectID>.size)
+            guard AudioObjectGetPropertyData(
+                AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID
+            ) == noErr, deviceID != kAudioObjectUnknown else { return false }
+        }
+        var volumeAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyVolumeScalar,
+            mScope: kAudioObjectPropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var volume: Float32 = 1
+        var volumeSize = UInt32(MemoryLayout<Float32>.size)
+        if AudioObjectGetPropertyData(deviceID, &volumeAddress, 0, nil, &volumeSize, &volume) == noErr {
+            return volume <= 0.0001
+        }
+        var muteAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyMute,
+            mScope: kAudioObjectPropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var muted: UInt32 = 0
+        var muteSize = UInt32(MemoryLayout<UInt32>.size)
+        if AudioObjectGetPropertyData(deviceID, &muteAddress, 0, nil, &muteSize, &muted) == noErr {
+            return muted != 0
+        }
+        return false
     }
 
     private func currentBackend() -> BackendOption {
@@ -493,6 +567,9 @@ final class MeetingSession {
             systemChunkRecorder = nil
             return (rawRecorder, systemRecorder)
         }
+        // Same contract as stop(): the queue barrier above drains pending
+        // sample callbacks; only then is episode state final.
+        micRecoveryCoordinator.finishMeeting()
         stopPartialSessions()
         vadController?.stop()
         vadController = nil
@@ -548,6 +625,11 @@ final class MeetingSession {
             let lastSystemChunkTiming = systemChunkTimingTracker.finish()
             return (meetingStart, lastChunkTiming, lastRawMicURL, lastSystemChunkTiming, lastSystemChunkURL)
         }
+        // The chunkRotationQueue barrier above guarantees every sample callback
+        // enqueued before teardown has been processed and that later callbacks
+        // bail on isRecording == false. Only now is the coordinator's episode
+        // state final; close any open degradation episode as unrecovered.
+        micRecoveryCoordinator.finishMeeting()
         let rawStreamingMicURL = meetingMicRecorder.stop()
         let retainedRecordingURL = retainedRecordingWriter?.stop()
         retainedRecordingWriter = nil
@@ -1013,6 +1095,7 @@ final class MeetingSession {
 
             let healthSnapshot = self.micHealthTracker.noteRawMicSamples(rawSamples)
             self.onMicHealthChanged?(healthSnapshot)
+            self.micRecoveryCoordinator.process(healthSnapshot)
             self.retainedRecordingWriter?.appendMic(rawSamples)
 
             let floatSamples = rawSamples.map { Float($0) / 32767.0 }
@@ -1038,6 +1121,7 @@ final class MeetingSession {
 
             let healthSnapshot = self.micHealthTracker.noteSystemSamples(samples)
             self.onMicHealthChanged?(healthSnapshot)
+            self.micRecoveryCoordinator.process(healthSnapshot)
             self.retainedRecordingWriter?.appendSystem(samples)
             self.systemChunkRecorder?.append(samples)
             self.systemChunkTimingTracker.append(sampleCount: samples.count)
