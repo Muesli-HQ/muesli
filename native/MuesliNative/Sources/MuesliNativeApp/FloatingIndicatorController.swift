@@ -61,7 +61,7 @@ private final class HoverIndicatorView: NSView {
     override func mouseDown(with event: NSEvent) {
         didDrag = false
         mouseDownScreenLocation = NSEvent.mouseLocation
-        owner?.collapseForDrag()
+        owner?.pointerInteractionBegan()
         windowOriginAtMouseDown = window?.frame.origin
     }
 
@@ -117,6 +117,7 @@ final class FloatingIndicatorController: NSObject {
     private var textLabel: NSTextField?
     private var state: DictationState = .idle
     private var isHovered = false
+    private var preservesCollapsedLeftEdge = false
     private var hoverExitWorkItem: DispatchWorkItem?
     private let configStore: ConfigStore
     private var isMeetingRecording = false
@@ -180,8 +181,16 @@ final class FloatingIndicatorController: NSObject {
         hideMeetingTranscript()
     }
 
+    func pointerInteractionBegan() {
+        isDragging = true
+        hoverExitWorkItem?.cancel()
+    }
+
     func pointerInteractionEnded() {
         isDragging = false
+        if state == .idle, isHovered, !pointerIsInsidePanel() {
+            scheduleHoverExit()
+        }
     }
 
     func handleClick(atX x: CGFloat? = nil) {
@@ -216,42 +225,12 @@ final class FloatingIndicatorController: NSObject {
         }
     }
 
-    func collapseForDrag() {
-        isDragging = true
-        hoverExitWorkItem?.cancel()
-        hideMeetingTranscript()
-        guard state == .idle,
-              !isShowingLoading,
-              let panel,
-              let contentView,
-              let iconLabel,
-              let textLabel else { return }
-        isHovered = false
-
-        let config = configStore.load()
-        let style = styleForState(.idle, config: config)
-        let targetFrame = frameForState(.idle, config: config)
-
-        // Instant resize — no animation
-        panel.setFrame(targetFrame, display: true)
-        contentView.frame = NSRect(origin: .zero, size: targetFrame.size)
-        contentView.layer?.cornerRadius = targetFrame.height / 2
-        contentView.layer?.backgroundColor = style.background.cgColor
-        contentView.layer?.borderColor = style.border.cgColor
-        glassView?.frame = NSRect(origin: .zero, size: targetFrame.size)
-        panel.alphaValue = style.alpha
-
-        iconLabel.stringValue = style.icon
-        iconLabel.textColor = style.iconColor
-        textLabel.isHidden = true
-        textLabel.alphaValue = 0
-        layoutLabels(iconLabel: iconLabel, textLabel: textLabel, in: targetFrame.size, hasTitle: false, animated: false)
-        applyGlassState(.idle, frameSize: targetFrame.size)
-    }
-
     func savePosition() {
         guard let frame = indicatorScreenFrame else { return }
-        let center = CGPoint(x: frame.midX, y: frame.midY)
+        let center = Self.positionCenter(
+            for: frame,
+            preservesCollapsedLeftEdge: preservesCollapsedLeftEdge
+        )
         onPositionSaved?(center)
     }
 
@@ -416,6 +395,7 @@ final class FloatingIndicatorController: NSObject {
     func setState(_ state: DictationState, config: AppConfig) {
         let previousState = self.state
         let previousHover = isHovered
+        let previouslyPreservedCollapsedLeftEdge = preservesCollapsedLeftEdge
         if isComputerUseCursorMode {
             exitComputerUseCursorMode(restoreFrame: false)
         }
@@ -430,6 +410,7 @@ final class FloatingIndicatorController: NSObject {
         if state != .idle {
             isHovered = false
         }
+        preservesCollapsedLeftEdge = state == .idle && isHovered
         if !config.showFloatingIndicator && state == .idle {
             close()
             return
@@ -456,7 +437,23 @@ final class FloatingIndicatorController: NSObject {
         }
 
         let style = styleForState(state, config: config)
-        let targetFrame = frameForState(state, config: config)
+        let customPositionCenter: CGPoint?
+        if previousState == .idle,
+           state != .idle,
+           config.indicatorAnchor == .custom,
+           let currentFrame = indicatorScreenFrame {
+            customPositionCenter = Self.positionCenter(
+                for: currentFrame,
+                preservesCollapsedLeftEdge: previouslyPreservedCollapsedLeftEdge
+            )
+        } else {
+            customPositionCenter = nil
+        }
+        let targetFrame = frameForState(
+            state,
+            config: config,
+            customPositionCenter: customPositionCenter
+        )
 
         let duration = transitionDuration(
             from: previousState,
@@ -565,6 +562,7 @@ final class FloatingIndicatorController: NSObject {
         isComputerUseCursorMode = true
         hoverExitWorkItem?.cancel()
         isHovered = false
+        preservesCollapsedLeftEdge = false
         isShowingLoading = false
         loadingSpinner?.stopAnimation(nil)
         loadingSpinner?.isHidden = true
@@ -634,7 +632,7 @@ final class FloatingIndicatorController: NSObject {
         let fallback = NSImage(systemSymbolName: "waveform.badge.microphone", accessibilityDescription: nil)?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)) ?? NSImage()
         let newImage = MenuBarIconRenderer.make(choice: config.menuBarIcon) ?? fallback
-        newImage.isTemplate = false
+        newImage.isTemplate = true
         micIconView?.image = newImage
     }
 
@@ -646,6 +644,7 @@ final class FloatingIndicatorController: NSObject {
         guard let panel, let contentView, let iconLabel, let textLabel else { return }
         guard let screen = NSScreen.main?.visibleFrame else { return }
 
+        preservesCollapsedLeftEdge = false
         let warningFont = NSFont.systemFont(ofSize: 11, weight: .medium)
         let warningSize = warningPillSize(
             message: message,
@@ -719,6 +718,7 @@ final class FloatingIndicatorController: NSObject {
         guard let screen = NSScreen.main?.visibleFrame else { return }
 
         isShowingLoading = true
+        preservesCollapsedLeftEdge = false
         let loadingSize = loadingPillSize(message: message, screen: screen)
         let center = CGPoint(x: panel.frame.midX, y: panel.frame.midY)
         let x = min(max(center.x - loadingSize.width / 2, screen.minX), screen.maxX - loadingSize.width)
@@ -861,6 +861,7 @@ final class FloatingIndicatorController: NSObject {
         stopWaveformAnimation()
         hoverExitWorkItem?.cancel()
         hoverExitWorkItem = nil
+        preservesCollapsedLeftEdge = false
         panel?.close()
         panel = nil
         containerView = nil
@@ -1108,12 +1109,48 @@ final class FloatingIndicatorController: NSObject {
             if let mic = micIconView {
                 mic.alphaValue = 1
                 if isHovered {
-                    mic.frame = NSRect(x: 12, y: (frameSize.height - iconSize.height) / 2,
-                                      width: iconSize.width, height: iconSize.height)
+                    mic.frame = NSRect(
+                        x: 14,
+                        y: (frameSize.height - iconSize.height) / 2,
+                        width: iconSize.width,
+                        height: iconSize.height
+                    )
+                    if let textLabel {
+                        let textX: CGFloat = 42
+                        let textHeight: CGFloat = 16
+                        textLabel.frame = NSRect(
+                            x: textX,
+                            y: floor((frameSize.height - textHeight) / 2),
+                            width: max(0, frameSize.width - textX - 14),
+                            height: textHeight
+                        )
+                    }
                 } else {
-                    mic.frame = NSRect(x: (frameSize.width - iconSize.width) / 2,
-                                       y: (frameSize.height - iconSize.height) / 2,
-                                       width: iconSize.width, height: iconSize.height)
+                    let showsHotkey = config.showHotkeyOnFloatingIndicator
+                    let compactIconSize = NSSize(width: 14, height: 14)
+                    let iconX = showsHotkey
+                        ? CGFloat(6)
+                        : floor((frameSize.width - compactIconSize.width) / 2)
+                    mic.frame = NSRect(
+                        x: iconX,
+                        y: floor((frameSize.height - compactIconSize.height) / 2),
+                        width: compactIconSize.width,
+                        height: compactIconSize.height
+                    )
+                    if let textLabel, showsHotkey {
+                        textLabel.stringValue = MenuBarIconRenderer.hotkeyCueLabel(
+                            for: config.dictationHotkey
+                        )
+                        textLabel.font = NSFont.monospacedSystemFont(ofSize: 8, weight: .semibold)
+                        textLabel.textColor = .white.withAlphaComponent(0.78)
+                        textLabel.alignment = .center
+                        textLabel.isHidden = false
+                        textLabel.alphaValue = 1
+                        textLabel.frame = NSRect(x: 21, y: 7, width: 18, height: 13)
+                    } else {
+                        textLabel?.isHidden = true
+                        textLabel?.alphaValue = 0
+                    }
                 }
             }
 
@@ -1380,7 +1417,7 @@ final class FloatingIndicatorController: NSObject {
         let fallbackImage = NSImage(systemSymbolName: "waveform.badge.microphone", accessibilityDescription: nil)?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)) ?? NSImage()
         let idleImage = MenuBarIconRenderer.make(choice: config.menuBarIcon) ?? fallbackImage
-        idleImage.isTemplate = false // we tint manually via contentTintColor
+        idleImage.isTemplate = true
         let micView = NSImageView(image: idleImage)
         micView.contentTintColor = .white
         micView.imageScaling = .scaleProportionallyDown
@@ -1412,6 +1449,36 @@ final class FloatingIndicatorController: NSObject {
 
     static func defaultIndicatorCenter(in visibleFrame: NSRect, idleSize: NSSize = NSSize(width: 44, height: 28)) -> CGPoint {
         anchorCenter(.midTrailing, in: visibleFrame, size: idleSize)
+    }
+
+    static func idlePositionCenter(
+        for frame: NSRect,
+        collapsedSize: NSSize = NSSize(width: 44, height: 28)
+    ) -> CGPoint {
+        CGPoint(x: frame.minX + collapsedSize.width / 2, y: frame.midY)
+    }
+
+    static func positionCenter(
+        for frame: NSRect,
+        preservesCollapsedLeftEdge: Bool,
+        collapsedSize: NSSize = NSSize(width: 44, height: 28)
+    ) -> CGPoint {
+        guard preservesCollapsedLeftEdge else {
+            return CGPoint(x: frame.midX, y: frame.midY)
+        }
+        return idlePositionCenter(for: frame, collapsedSize: collapsedSize)
+    }
+
+    static func customIdleFrame(
+        positionCenter: CGPoint,
+        size: NSSize,
+        in visibleFrame: NSRect,
+        collapsedSize: NSSize = NSSize(width: 44, height: 28)
+    ) -> NSRect {
+        let leftEdge = positionCenter.x - collapsedSize.width / 2
+        let x = min(max(leftEdge, visibleFrame.minX), visibleFrame.maxX - size.width)
+        let y = min(max(positionCenter.y - size.height / 2, visibleFrame.minY), visibleFrame.maxY - size.height)
+        return NSRect(origin: CGPoint(x: x, y: y), size: size)
     }
 
     static func anchorCenter(_ anchor: IndicatorAnchor, in visibleFrame: NSRect, size: NSSize) -> CGPoint {
@@ -1454,14 +1521,66 @@ final class FloatingIndicatorController: NSObject {
         return allowedRect.contains(center)
     }
 
-    private func frameForState(_ state: DictationState, config: AppConfig) -> NSRect {
-        guard let screen = NSScreen.main?.visibleFrame else {
+    static func visibleFrameForCustomIndicator(
+        customPositionCenter: CGPoint?,
+        indicatorFrame: NSRect?,
+        savedPositionCenter: CGPoint?,
+        availableVisibleFrames: [NSRect],
+        fallback: NSRect
+    ) -> NSRect {
+        if let customPositionCenter,
+           let matchingFrame = availableVisibleFrames.first(where: { $0.contains(customPositionCenter) }) {
+            return matchingFrame
+        }
+
+        if let indicatorFrame, !indicatorFrame.isEmpty {
+            let matchingFrame = availableVisibleFrames
+                .compactMap { visibleFrame -> (frame: NSRect, overlap: CGFloat)? in
+                    let intersection = visibleFrame.intersection(indicatorFrame)
+                    guard !intersection.isNull, !intersection.isEmpty else { return nil }
+                    return (visibleFrame, intersection.width * intersection.height)
+                }
+                .max(by: { $0.overlap < $1.overlap })?
+                .frame
+            if let matchingFrame {
+                return matchingFrame
+            }
+        }
+
+        if let savedPositionCenter,
+           let matchingFrame = availableVisibleFrames.first(where: { $0.contains(savedPositionCenter) }) {
+            return matchingFrame
+        }
+
+        return fallback
+    }
+
+    private func frameForState(
+        _ state: DictationState,
+        config: AppConfig,
+        customPositionCenter: CGPoint? = nil
+    ) -> NSRect {
+        guard let mainVisibleFrame = NSScreen.main?.visibleFrame else {
             return NSRect(x: 0, y: 0, width: 64, height: 28)
+        }
+        let screen: NSRect
+        if config.indicatorAnchor == .custom {
+            screen = Self.visibleFrameForCustomIndicator(
+                customPositionCenter: customPositionCenter,
+                indicatorFrame: indicatorScreenFrame,
+                savedPositionCenter: config.indicatorOrigin.map { CGPoint(x: $0.x, y: $0.y) },
+                availableVisibleFrames: NSScreen.screens.map(\.visibleFrame),
+                fallback: mainVisibleFrame
+            )
+        } else {
+            screen = mainVisibleFrame
         }
         let size: NSSize
         switch state {
         case .idle:
-            size = isHovered ? NSSize(width: 220, height: 36) : NSSize(width: 44, height: 28)
+            size = isHovered
+                ? Self.idleHoverPillSize(hotkeyLabel: config.dictationHotkey.label, screenWidth: screen.width)
+                : NSSize(width: 44, height: 28)
         case .preparing: size = NSSize(width: 76, height: 22)
         case .recording: size = NSSize(width: 76, height: 22)
         case .transcribing:
@@ -1472,12 +1591,30 @@ final class FloatingIndicatorController: NSObject {
             }
         }
 
-        // Use the pill's current on-screen center if it exists, so state
-        // transitions resize around the current position rather than jumping
-        // for custom placement. Preset anchors always resolve from config so
-        // changing the setting snaps immediately to the chosen anchor.
+        // Idle hover expansion uses the saved collapsed position as its anchor,
+        // so the left edge stays fixed instead of resizing around the midpoint.
+        // The expanded pill remains draggable; savePosition converts its frame
+        // back to the canonical collapsed center.
+        if state == .idle, config.indicatorAnchor == .custom {
+            let positionCenter: CGPoint
+            if let saved = config.indicatorOrigin {
+                positionCenter = CGPoint(x: saved.x, y: saved.y)
+            } else if let currentFrame = indicatorScreenFrame, currentFrame.width > 0 {
+                positionCenter = Self.idlePositionCenter(for: currentFrame)
+            } else {
+                positionCenter = Self.defaultIndicatorCenter(in: screen)
+            }
+            return Self.customIdleFrame(positionCenter: positionCenter, size: size, in: screen)
+        }
+
+        // Non-idle custom state transitions continue to resize around the
+        // current on-screen center. Preset anchors always resolve from config.
         let center: CGPoint
-        if config.indicatorAnchor == .custom,
+        if config.indicatorAnchor == .custom, let customPositionCenter {
+            // When dictation starts from the left-anchored hover pill, keep the
+            // compact icon position rather than jumping to the hover midpoint.
+            center = customPositionCenter
+        } else if config.indicatorAnchor == .custom,
            let currentFrame = indicatorScreenFrame,
            currentFrame.width > 0 {
             center = CGPoint(x: currentFrame.midX, y: currentFrame.midY)
@@ -1510,7 +1647,7 @@ final class FloatingIndicatorController: NSObject {
                 isHovered ? "Hold \(config.dictationHotkey.label) to dictate" : "",
                 .colorWith(hex: 0xFFFFFF, alpha: 0.75),
                 .colorWith(hex: 0xFFFFFF, alpha: 0.75),
-                isHovered ? 1.0 : 0.85
+                isHovered ? 1.0 : 0.90
             )
         case .preparing:
             return (.clear, .colorWith(hex: 0xFFFFFF, alpha: 0.16), "", "", .white, .white, 1.0)
@@ -1611,6 +1748,15 @@ final class FloatingIndicatorController: NSObject {
 
     static func transcribingPillSizeForTesting(title: String, screenWidth: CGFloat) -> NSSize {
         transcribingPillSize(title: title, screenWidth: screenWidth)
+    }
+
+    static func idleHoverPillSize(hotkeyLabel: String, screenWidth: CGFloat) -> NSSize {
+        let title = "Hold \(hotkeyLabel) to dictate"
+        let font = NSFont.systemFont(ofSize: 11, weight: .regular)
+        let textWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width)
+        let preferredWidth = 42 + textWidth + 22
+        let maxWidth = max(CGFloat(180), screenWidth - 32)
+        return NSSize(width: min(max(220, preferredWidth), maxWidth), height: 36)
     }
 
     static func computerUseTranscriptPillSizeForTesting(
