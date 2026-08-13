@@ -361,6 +361,10 @@ final class MuesliController: NSObject {
     private var activeMeetingSession: MeetingSession?
     private weak var preparingMeetingSession: MeetingSession?
     private var activeMeetingID: Int64?
+    /// Set when a meeting stops, so telemetry events legitimately emitted by
+    /// the stopping session (after activeMeetingID is cleared) still pass the
+    /// session-identity gate. Replaced on the next meeting start.
+    private var micEpisodeTelemetryGate = RecentMeetingIdentityGate()
     private var liveMeetingTranscriptGeneration: UUID?
     private var activeMeetingAudioWarning: ActiveMeetingAudioWarning?
     private var liveMeetingTitleCache: [Int64: String] = [:]
@@ -5544,6 +5548,10 @@ final class MuesliController: NSObject {
                 )
                 let micHealthWarningLock = NSLock()
                 var lastForwardedMicHealthWarning: String?
+                // Authorize this session's episode telemetry for its whole
+                // lifetime, including the terminal event emitted after the
+                // active-meeting identity has moved on during stop/discard.
+                micEpisodeTelemetryGate.authorize(meetingID)
                 meetingSession.onMicHealthChanged = { [weak self] snapshot in
                     let warningMessage = snapshot.warningMessage
                     micHealthWarningLock.lock()
@@ -5555,13 +5563,64 @@ final class MuesliController: NSObject {
                         guard let self,
                               self.activeMeetingID == meetingID || self.meetingStartMeetingID == meetingID else { return }
                         self.updateActiveMeetingAudioWarning(meetingID: meetingID, health: snapshot)
-                        if warningMessage != nil {
+                    }
+                }
+                // Episode-level telemetry replaces per-flap error events:
+                // exactly one degraded/recovered signal pair per degradation
+                // episode, and an error only when the meeting ends unrecovered.
+                meetingSession.onMicHealthUserMuted = { [weak self] in
+                    Task { @MainActor in
+                        guard let self, self.micEpisodeTelemetryGate.allows(meetingID) else { return }
+                        TelemetryDeck.signal(MeetingMicHealthEpisodeKind.userMuted.rawValue, parameters: [:])
+                    }
+                }
+                meetingSession.onMicHealthEpisode = { [weak self] event in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        // Terminal events legitimately arrive while the meeting
+                        // is stopping: stopMeetingRecording clears
+                        // activeMeetingID before MeetingSession.stop() runs, so
+                        // also accept the most recently stopped meeting.
+                        guard self.micEpisodeTelemetryGate.allows(meetingID) else { return }
+                        var parameters: [String: String] = [
+                            "episode_id": event.episodeID.uuidString,
+                            "reason": event.reason,
+                            "state": event.state,
+                            "duration_ms": String(Int(event.durationSeconds * 1000)),
+                            "flap_count": String(event.flapCount),
+                            "recovery_attempts": String(event.recoveryAttempts),
+                            "handoff_promotions": String(event.handoffPromotions),
+                            "recovery_credited": String(event.recoveryCredited),
+                        ]
+                        if let outcome = event.lastHandoffOutcome {
+                            parameters["last_handoff_outcome"] = outcome.rawValue
+                        }
+                        if let recorderKind = event.context.recorderKind {
+                            parameters["recorder_kind"] = recorderKind
+                        }
+                        if let routeCategory = event.context.routeCategory {
+                            parameters["route_category"] = routeCategory
+                        }
+                        if let resolved = event.context.selectedInputResolved {
+                            parameters["selected_input_resolved"] = String(resolved)
+                        }
+                        switch event.kind {
+                        case .degraded, .recovered:
+                            TelemetryDeck.signal(event.kind.rawValue, parameters: parameters)
+                        case .unrecovered:
+                            // Rich episode signal with full classification, plus
+                            // the legacy error incident for dashboard continuity.
+                            TelemetryDeck.signal(event.kind.rawValue, parameters: parameters)
                             self.recordDiagnosticIncident(
                                 kind: .meetingMicrophoneCaptureFailed,
                                 severity: .warning,
                                 stage: .meetingMicrophoneCapture,
                                 promptUser: false
                             )
+                        case .userMuted:
+                            // Emitted via onMicHealthUserMuted, not the episode
+                            // stream; nothing to do here.
+                            break
                         }
                     }
                 }
@@ -5795,6 +5854,7 @@ final class MuesliController: NSObject {
             disarmMeetingAutoStop()
             indicator.setMeetingRecording(false, config: config)
             if let meetingID = activeMeetingID {
+                micEpisodeTelemetryGate.authorize(meetingID)
                 activeMeetingID = nil
                 if activeMeetingAudioWarning?.meetingID == meetingID {
                     activeMeetingAudioWarning = nil
@@ -5810,6 +5870,9 @@ final class MuesliController: NSObject {
         self.activeMeetingSession = nil
         indicator.setMeetingRecording(false, config: config)
         if let meetingID = activeMeetingID {
+            // Preserve identity for episode terminal telemetry emitted by the
+            // discarding session (it hops to the main actor asynchronously).
+            micEpisodeTelemetryGate.authorize(meetingID)
             activeMeetingID = nil
             if activeMeetingAudioWarning?.meetingID == meetingID {
                 activeMeetingAudioWarning = nil
@@ -6093,6 +6156,9 @@ final class MuesliController: NSObject {
 
         // Unblock new recordings immediately — transcription runs in the background
         activeMeetingSession = nil
+        if let activeMeetingID {
+            micEpisodeTelemetryGate.authorize(activeMeetingID)
+        }
         activeMeetingID = nil
         if let liveMeetingID, activeMeetingAudioWarning?.meetingID == liveMeetingID {
             activeMeetingAudioWarning = nil
