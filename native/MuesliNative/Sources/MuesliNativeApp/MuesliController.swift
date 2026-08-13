@@ -7979,8 +7979,6 @@ final class MuesliController: NSObject {
         if blockDictationForMeetingActivityIfNeeded() { return }
         if isMeetingCapturingAudio { return }
 
-        cancelDictationTranscriptionIfNeeded()
-
         // Nemotron backends support hold-to-talk (record → transcribe on release) in
         // addition to double-tap handsfree streaming. The hold path uses the normal
         // record-then-transcribe pipeline below; double-tap streaming is handled in
@@ -8124,7 +8122,9 @@ final class MuesliController: NSObject {
         if isMeetingCapturingAudio { return }
         if shouldIgnoreDictationCleanupForComputerUseActivity() { return }
         fputs("[muesli-native] cancel\n", stderr)
-        cancelDictationTranscriptionIfNeeded()
+        if dictationState == .transcribing {
+            cancelDictationTranscriptionIfNeeded()
+        }
         resetDictationOutputMode()
 
         if isNemotron35Streaming {
@@ -8155,7 +8155,6 @@ final class MuesliController: NSObject {
         if blockDictationForMeetingActivityIfNeeded() { return }
         if isMeetingCapturingAudio { return }
         fputs("[muesli-native] toggle dictation start\n", stderr)
-        cancelDictationTranscriptionIfNeeded()
         if dictationLatencyTraceID == nil {
             beginDictationLatencyTrace(reason: "toggle")
         }
@@ -8379,7 +8378,6 @@ final class MuesliController: NSObject {
         let storageContext = capturedContext.map { DictationContextCapture.formatForStorage($0) }
             ?? correctionTargetApp?.appContext
             ?? ""
-        cancelDictationTranscriptionIfNeeded()
         let taskID = UUID()
         dictationTranscriptionTaskID = taskID
         let task = Task { [weak self] in
@@ -8402,14 +8400,12 @@ final class MuesliController: NSObject {
                     customWords: self.serializedCustomWords(),
                     appContext: promptContext
                 )
-                // Drop result if test was cancelled (user navigated away)
                 try Task.checkCancellation()
                 let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
 
-                // Test mode: route result to callback, skip history/paste
                 if isTestMode {
                     await MainActor.run {
-                        guard self.consumeDictationTranscriptionTaskIfCurrent(taskID) else { return }
+                        guard self.applyDictationTranscriptionResultToForeground(taskID) else { return }
                         self.dictationTestCallback?(text)
                         self.clearCapturedDictationSessionContext()
                         self.resetDictationOutputMode()
@@ -8421,33 +8417,30 @@ final class MuesliController: NSObject {
                 }
 
                 if !self.config.maraudersMapUnlocked {
+                    await MainActor.run { self.checkMaraudersMapActivation(text) }
+                }
+                if !text.isEmpty {
+                    _ = try? self.dictationStore.insertDictation(
+                        text: text,
+                        durationSeconds: duration,
+                        appContext: storageContext,
+                        startedAt: startedAt,
+                        endedAt: Date()
+                    )
                     await MainActor.run {
-                        guard self.dictationTranscriptionTaskID == taskID else { return }
-                        self.checkMaraudersMapActivation(text)
+                        self.scheduleICloudSyncAfterLocalChange()
                     }
                 }
-                guard !text.isEmpty else {
-                    await MainActor.run {
-                        guard self.consumeDictationTranscriptionTaskIfCurrent(taskID) else { return }
+                await MainActor.run {
+                    guard self.applyDictationTranscriptionResultToForeground(taskID) else { return }
+                    if text.isEmpty {
                         self.clearCapturedDictationSessionContext()
                         self.resetDictationOutputMode()
                         self.setState(.idle)
                         self.resumeMeetingMonitorAfterForegroundCapture()
                         self.syncDictationRecorderWarmup(intent: .postDictation(.transcriptionComplete))
+                        return
                     }
-                    return
-                }
-                guard await MainActor.run(body: { self.dictationTranscriptionTaskID == taskID }) else { return }
-                _ = try? self.dictationStore.insertDictation(
-                    text: text,
-                    durationSeconds: duration,
-                    appContext: storageContext,
-                    startedAt: startedAt,
-                    endedAt: Date()
-                )
-                await MainActor.run {
-                    guard self.consumeDictationTranscriptionTaskIfCurrent(taskID) else { return }
-                    self.scheduleICloudSyncAfterLocalChange()
                     self.clearCapturedDictationSessionContext()
                     self.statusBarController?.refresh()
                     self.historyWindowController?.reload()
@@ -8480,7 +8473,7 @@ final class MuesliController: NSObject {
             } catch is CancellationError {
                 fputs("[muesli-native] test dictation cancelled\n", stderr)
                 await MainActor.run {
-                    guard self.consumeDictationTranscriptionTaskIfCurrent(taskID) else { return }
+                    guard self.applyDictationTranscriptionResultToForeground(taskID) else { return }
                     self.clearCapturedDictationSessionContext()
                     self.resetDictationOutputMode()
                     self.setState(.idle)
@@ -8490,7 +8483,7 @@ final class MuesliController: NSObject {
             } catch {
                 fputs("[muesli-native] transcription failed: \(error)\n", stderr)
                 await MainActor.run {
-                    guard self.consumeDictationTranscriptionTaskIfCurrent(taskID) else { return }
+                    guard self.applyDictationTranscriptionResultToForeground(taskID) else { return }
                     if self.isDictationTestMode {
                         self.dictationTestFailureCallback?(self.userFacingDictationTestError(error))
                     } else {
@@ -8520,8 +8513,14 @@ final class MuesliController: NSObject {
     }
 
     @MainActor
-    private func consumeDictationTranscriptionTaskIfCurrent(_ taskID: UUID) -> Bool {
+    private func applyDictationTranscriptionResultToForeground(_ taskID: UUID) -> Bool {
         guard dictationTranscriptionTaskID == taskID else { return false }
+        guard dictationStartedAt == nil,
+              pendingDictationStopSessionID == nil,
+              !isNemotron35Streaming,
+              dictationState == .transcribing || dictationState == .idle else {
+            return false
+        }
         dictationTranscriptionTask = nil
         dictationTranscriptionTaskID = nil
         return true
