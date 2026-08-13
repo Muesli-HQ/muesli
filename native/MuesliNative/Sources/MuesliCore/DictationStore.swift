@@ -1143,41 +1143,64 @@ public final class DictationStore {
         now: Date = Date(),
         calendar: Calendar = .current
     ) throws -> InsightsSnapshot {
+        try insightsSnapshot(
+            range: range,
+            now: now,
+            calendar: calendar,
+            afterLifetimeRead: {}
+        )
+    }
+
+    func insightsSnapshot(
+        range: InsightsRange,
+        now: Date,
+        calendar: Calendar,
+        afterLifetimeRead: () throws -> Void
+    ) throws -> InsightsSnapshot {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         try reconcileInsightsCache(db: db, calendar: calendar)
 
         let startDate = range.startDate(now: now, calendar: calendar)
         let startDay = startDate.map { cacheDay($0, calendar: calendar) }
-        let lifetime = try cachedInsightsTotals(db: db, sinceDay: nil)
-        let selected = try cachedInsightsTotals(db: db, sinceDay: startDay)
-        let cachedDays = try cachedDailyActivity(db: db, sinceDay: startDay, calendar: calendar)
-        let today = calendar.startOfDay(for: now)
-        let firstDay = startDate.map { calendar.startOfDay(for: $0) }
-            ?? cachedDays.keys.min()
-            ?? today
-        var activity: [InsightsDailyActivity] = []
-        var cursor = min(firstDay, today)
-        while cursor <= today {
-            let value = cachedDays[cursor, default: (0, 0)]
-            activity.append(InsightsDailyActivity(date: cursor, words: value.words, meetings: value.meetings))
-            guard let next = calendar.date(byAdding: .day, value: 1, to: cursor) else { break }
-            cursor = next
-        }
+        try exec("BEGIN TRANSACTION", db: db)
+        do {
+            let lifetime = try cachedInsightsTotals(db: db, sinceDay: nil)
+            try afterLifetimeRead()
+            let selected = try cachedInsightsTotals(db: db, sinceDay: startDay)
+            let cachedDays = try cachedDailyActivity(db: db, sinceDay: startDay, calendar: calendar)
+            let today = calendar.startOfDay(for: now)
+            let firstDay = startDate.map { calendar.startOfDay(for: $0) }
+                ?? cachedDays.keys.min()
+                ?? today
+            var activity: [InsightsDailyActivity] = []
+            var cursor = min(firstDay, today)
+            while cursor <= today {
+                let value = cachedDays[cursor, default: (0, 0)]
+                activity.append(InsightsDailyActivity(date: cursor, words: value.words, meetings: value.meetings))
+                guard let next = calendar.date(byAdding: .day, value: 1, to: cursor) else { break }
+                cursor = next
+            }
 
-        let streaks = try dictationStreaks(db: db)
-        return InsightsSnapshot(
-            range: range,
-            generatedAt: now,
-            lifetime: lifetime,
-            selected: selected,
-            dailyActivity: activity,
-            currentStreakDays: streaks.current,
-            longestStreakDays: streaks.longest,
-            activeDaysInRange: activity.filter { $0.words > 0 || $0.meetings > 0 }.count,
-            dictationWords: try cachedTopWords(db: db, sinceDay: startDay, meeting: false),
-            meetingWords: try cachedTopWords(db: db, sinceDay: startDay, meeting: true)
-        )
+            let streaks = try dictationStreaks(db: db)
+            let snapshot = InsightsSnapshot(
+                range: range,
+                generatedAt: now,
+                lifetime: lifetime,
+                selected: selected,
+                dailyActivity: activity,
+                currentStreakDays: streaks.current,
+                longestStreakDays: streaks.longest,
+                activeDaysInRange: activity.filter { $0.words > 0 || $0.meetings > 0 }.count,
+                dictationWords: try cachedTopWords(db: db, sinceDay: startDay, meeting: false),
+                meetingWords: try cachedTopWords(db: db, sinceDay: startDay, meeting: true)
+            )
+            try exec("COMMIT", db: db)
+            return snapshot
+        } catch {
+            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
     }
 
     private struct InsightsCacheSource {

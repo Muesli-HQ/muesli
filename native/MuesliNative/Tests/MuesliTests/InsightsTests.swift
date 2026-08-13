@@ -116,6 +116,54 @@ struct InsightsTests {
         #expect(snapshot.selected.averageWPM == 2)
     }
 
+    @Test("snapshot reads every metric from one SQLite view")
+    func snapshotUsesOneSQLiteReadView() throws {
+        let store = try makeStore()
+        let writer = DictationStore(databaseURL: store.databasePath())
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = Date(timeIntervalSince1970: 1_784_092_800)
+        try store.insertDictation(
+            text: "initial",
+            durationSeconds: 60,
+            startedAt: now.addingTimeInterval(-60),
+            endedAt: now
+        )
+        _ = try store.insightsSnapshot(range: .thirtyDays, now: now, calendar: calendar)
+
+        let snapshot = try store.insightsSnapshot(
+            range: .thirtyDays,
+            now: now,
+            calendar: calendar,
+            afterLifetimeRead: {
+                try writer.insertDictation(
+                    text: "later cache commit",
+                    durationSeconds: 60,
+                    startedAt: now.addingTimeInterval(-60),
+                    endedAt: now
+                )
+                _ = try writer.insightsSnapshot(
+                    range: .thirtyDays,
+                    now: now,
+                    calendar: calendar
+                )
+            }
+        )
+
+        #expect(snapshot.lifetime.dictationWords == 1)
+        #expect(snapshot.selected.dictationWords == 1)
+        #expect(snapshot.dailyActivity.reduce(0) { $0 + $1.words } == 1)
+        #expect(snapshot.dictationWords == [InsightsWordFrequency(word: "initial", count: 1)])
+
+        let refreshed = try store.insightsSnapshot(
+            range: .thirtyDays,
+            now: now,
+            calendar: calendar
+        )
+        #expect(refreshed.lifetime.dictationWords == 4)
+        #expect(refreshed.selected.dictationWords == 4)
+    }
+
     @Test("deleted history is absent from totals, activity, and vocabulary")
     func deletedHistory() throws {
         let store = try makeStore()
