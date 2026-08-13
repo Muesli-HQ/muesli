@@ -304,28 +304,33 @@ final class MeetingSession {
                 AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID
             ) == noErr, deviceID != kAudioObjectUnknown else { return false }
         }
-        var volumeAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyVolumeScalar,
-            mScope: kAudioObjectPropertyScopeInput,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var volume: Float32 = 1
-        var volumeSize = UInt32(MemoryLayout<Float32>.size)
-        if AudioObjectGetPropertyData(deviceID, &volumeAddress, 0, nil, &volumeSize, &volume) == noErr,
-           volume <= 0.0001 {
-            return true
-        }
-        // A device can hold nonzero gain while its separate mute control is
-        // engaged — a successful nonzero volume read is not proof of unmuted.
-        var muteAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyMute,
-            mScope: kAudioObjectPropertyScopeInput,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var muted: UInt32 = 0
-        var muteSize = UInt32(MemoryLayout<UInt32>.size)
-        if AudioObjectGetPropertyData(deviceID, &muteAddress, 0, nil, &muteSize, &muted) == noErr {
-            return muted != 0
+        // Volume and mute controls may live on the main element (0) or on
+        // individual input channels (1...). Check main plus the first two
+        // channel elements; a read failure just means "no control there".
+        let elements: [AudioObjectPropertyElement] = [kAudioObjectPropertyElementMain, 1, 2]
+        for element in elements {
+            var volumeAddress = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyVolumeScalar,
+                mScope: kAudioObjectPropertyScopeInput,
+                mElement: element
+            )
+            var volume: Float32 = 1
+            var volumeSize = UInt32(MemoryLayout<Float32>.size)
+            if AudioObjectGetPropertyData(deviceID, &volumeAddress, 0, nil, &volumeSize, &volume) == noErr,
+               volume <= 0.0001 {
+                return true
+            }
+            var muteAddress = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyMute,
+                mScope: kAudioObjectPropertyScopeInput,
+                mElement: element
+            )
+            var muted: UInt32 = 0
+            var muteSize = UInt32(MemoryLayout<UInt32>.size)
+            if AudioObjectGetPropertyData(deviceID, &muteAddress, 0, nil, &muteSize, &muted) == noErr,
+               muted != 0 {
+                return true
+            }
         }
         return false
     }
