@@ -572,11 +572,9 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
                 conflictBaseRecords.removeAll()
                 switch change.changeType {
                 case .signIn, .switchAccounts:
-                    let currentUser = try await resolvedContainer().userRecordID()
-                    _ = try await handleAccountChange(
-                        currentUser: currentUser,
-                        state: syncEngine.state
-                    )
+                    _ = try await handleSignedInAccountChange(state: syncEngine.state) {
+                        try await self.resolvedContainer().userRecordID()
+                    }
                 case .signOut:
                     _ = try await handleAccountChange(
                         currentUser: nil,
@@ -695,6 +693,20 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
                 state.add(pendingRecordZoneChanges: [pending])
             }
         }
+    }
+
+    @discardableResult
+    func handleSignedInAccountChange(
+        state: any MuesliCKSyncPendingState,
+        currentUserProvider: @Sendable () async throws -> CKRecord.ID
+    ) async throws -> Bool {
+        // CKSyncEngine may continue automatic work while account identity is
+        // resolving. Block record provision immediately, then clear old pending
+        // state before any fallible CloudKit lookup can suspend or throw.
+        accountBoundaryBlocked = true
+        _ = try await handleAccountChange(currentUser: nil, state: state)
+        let currentUser = try await currentUserProvider()
+        return try await handleAccountChange(currentUser: currentUser, state: state)
     }
 
     @discardableResult

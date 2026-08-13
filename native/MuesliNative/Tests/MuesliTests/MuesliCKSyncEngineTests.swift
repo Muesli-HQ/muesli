@@ -875,6 +875,49 @@ struct MuesliCKSyncEngineTests {
         #expect(await cancellationProbe.count == 0)
     }
 
+    @Test("account identity failure blocks automatic upload and clears stale pending state")
+    func accountIdentityFailureFailsClosed() async throws {
+        struct IdentityFailure: Error {}
+
+        let store = try makeStore()
+        _ = try store.insertDictation(
+            text: "Keep this private after identity lookup fails",
+            durationSeconds: 2,
+            startedAt: Date().addingTimeInterval(-2),
+            endedAt: Date()
+        )
+        let originalOwner = CKRecord.ID(recordName: "original-owner")
+        #expect(try store.claimCloudSyncAccountScope(
+            MuesliCKSyncEngine.accountScope(for: originalOwner),
+            forKey: MuesliCKSyncEngine.accountScopeKey
+        ))
+        let state = TestCKSyncPendingState()
+        let coordinator = MuesliCKSyncEngine(store: store)
+        #expect(try await coordinator.handleAccountChange(
+            currentUser: originalOwner,
+            state: state
+        ))
+        #expect(!state.pendingRecordZoneChanges.isEmpty)
+        try store.saveCloudSyncStateData(
+            Data("original-account-engine-state".utf8),
+            forKey: MuesliCKSyncEngine.stateKey
+        )
+
+        do {
+            _ = try await coordinator.handleSignedInAccountChange(state: state) {
+                throw IdentityFailure()
+            }
+            Issue.record("Expected the account identity lookup to fail")
+        } catch is IdentityFailure {
+            // Expected: the engine must remain blocked after lookup failure.
+        }
+
+        #expect(state.pendingRecordZoneChanges.isEmpty)
+        #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.stateKey) == nil)
+        #expect(try store.hasTextRecordsNeedingSync())
+        #expect(try await coordinator.registerNextDirtyBatch(state: state) == 0)
+    }
+
     @Test("sign-out leaves dirty local text durable but impossible to register")
     func signOutBlocksDirtyOutbox() async throws {
         let store = try makeStore()
