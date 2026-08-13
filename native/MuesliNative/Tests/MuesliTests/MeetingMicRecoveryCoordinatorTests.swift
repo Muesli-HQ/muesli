@@ -242,10 +242,25 @@ struct MeetingMicRecoveryCoordinatorTests {
         #expect(harness.events.isEmpty)
 
         muted = false
-        harness.systemActive(seconds: 1) // still degraded, no longer muted
+        harness.advance(seconds: 1.5)      // past the 1Hz mute-read throttle
+        harness.systemActive(seconds: 1)   // still degraded, no longer muted
 
         #expect(harness.events.map(\.kind) == [.degraded])
         #expect(harness.recoveryRequests.count == 1)
+    }
+
+    @Test("no mute reads happen while an episode is open")
+    func noMuteReadsWhileEpisodeOpen() {
+        let harness = Harness()
+        var reads = 0
+        harness.coordinator.isInputMuted = { reads += 1; return false }
+
+        harness.systemActive(seconds: 3)   // episode opens at t=3
+        let readsAtOpen = reads
+        harness.systemActive(seconds: 10)  // episode open: zero further reads
+
+        #expect(readsAtOpen == 1)
+        #expect(reads == 1)
     }
 
     @Test("muted classification does not latch past a healthy stretch")

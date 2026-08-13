@@ -289,7 +289,8 @@ final class MeetingSession {
 
     /// True when the capture device is muted or zero-gain at the source (user
     /// intent), which presents the same all-zero signature as a broken route.
-    /// Read once per degradation confirmation, never per sample.
+    /// Called by the coordinator at episode confirmation and at most 1Hz while
+    /// a suppressed degradation continues — never per sample batch.
     private func isCaptureInputMuted() -> Bool {
         var deviceID = meetingMicRecorder.preferredInputDeviceID ?? kAudioObjectUnknown
         if deviceID == kAudioObjectUnknown {
@@ -310,9 +311,12 @@ final class MeetingSession {
         )
         var volume: Float32 = 1
         var volumeSize = UInt32(MemoryLayout<Float32>.size)
-        if AudioObjectGetPropertyData(deviceID, &volumeAddress, 0, nil, &volumeSize, &volume) == noErr {
-            return volume <= 0.0001
+        if AudioObjectGetPropertyData(deviceID, &volumeAddress, 0, nil, &volumeSize, &volume) == noErr,
+           volume <= 0.0001 {
+            return true
         }
+        // A device can hold nonzero gain while its separate mute control is
+        // engaged — a successful nonzero volume read is not proof of unmuted.
         var muteAddress = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyMute,
             mScope: kAudioObjectPropertyScopeInput,

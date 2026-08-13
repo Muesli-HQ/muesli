@@ -121,8 +121,9 @@ final class FallbackStreamingDictationRecorder: StreamingDictationRecording, Str
     }
 
     func invalidateForTeardown() {
-        lock.lock()
-        defer { lock.unlock() }
+        // Deliberately not under `lock`: start() holds `lock` across a
+        // potentially blocking child start(), and teardown invalidation must
+        // land during that window. `primary` and `fallback` are immutable.
         primary.invalidateForTeardown()
         fallback.invalidateForTeardown()
     }
