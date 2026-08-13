@@ -252,7 +252,7 @@ final class MeetingSession {
             self.systemAudioRecorder = SystemAudioRecorder()
         }
         micRecoveryCoordinator.recoveryRequest = { [weak meetingMicRecorder] reason in
-            guard let meetingMicRecorder else { return false }
+            guard let meetingMicRecorder else { return .unavailable }
             return meetingMicRecorder.requestSameRouteRecovery(reason: reason)
         }
         micRecoveryCoordinator.onEpisodeEvent = { [weak self] event in

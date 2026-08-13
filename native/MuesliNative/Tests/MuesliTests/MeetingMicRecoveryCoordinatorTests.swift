@@ -17,7 +17,7 @@ struct MeetingMicRecoveryCoordinatorTests {
             )
             coordinator.recoveryRequest = { [weak self] reason in
                 self?.recoveryRequests.append(reason)
-                return true
+                return .initiated
             }
             coordinator.onEpisodeEvent = { [weak self] event in
                 self?.events.append(event)
@@ -263,14 +263,20 @@ struct MeetingMicRecoveryCoordinatorTests {
         #expect(harness.recoveryRequests.count == 1)
     }
 
-    @Test("recovery request returning false does not count an attempt")
-    func uninitiatedRecoveryIsNotCounted() {
-        let harness = Harness(cooldown: 0.5, maxAttempts: 1)
-        harness.coordinator.recoveryRequest = { _ in false }
-        harness.systemActive(seconds: 4)
+    @Test("unavailable recovery counts toward the cap so refusals cannot churn forever")
+    func unavailableRecoveryCountsTowardCap() {
+        let harness = Harness(cooldown: 0.5, maxAttempts: 2)
+        var requestCount = 0
+        harness.coordinator.recoveryRequest = { _ in
+            requestCount += 1
+            return .unavailable
+        }
+        harness.systemActive(seconds: 3)   // dispatch #1
+        harness.systemActive(seconds: 1)   // past cooldown: dispatch #2
+        harness.systemActive(seconds: 2)   // cap reached: no more
 
-        #expect(harness.events.count == 1)
-        #expect(harness.events.first?.recoveryAttempts == 0)
+        #expect(requestCount == 2)
+        #expect(harness.events.first?.recoveryAttempts == 0) // measured at episode start
     }
 
     @Test("transient recovery refusals are throttled by the cooldown, not per-snapshot")
@@ -282,7 +288,7 @@ struct MeetingMicRecoveryCoordinatorTests {
         var requestCount = 0
         harness.coordinator.recoveryRequest = { _ in
             requestCount += 1
-            return false
+            return .busy
         }
         harness.systemActive(seconds: 3)   // episode start: dispatch #1 at t=3
         harness.systemActive(seconds: 10)  // t=3→13, all within cooldown
@@ -315,7 +321,7 @@ struct MeetingMicRecoveryCoordinatorTests {
             // Synchronous re-entry, as if a recovery drove an audio callback
             // straight back into the coordinator.
             harness?.micSignal()
-            return true
+            return .initiated
         }
         harness.systemActive(seconds: 4)
         #expect(!harness.recoveryRequests.isEmpty)

@@ -26,6 +26,16 @@ struct MeetingMicRecorderDiagnosticsSnapshot: Codable, Equatable {
     let route: MeetingMicRouteDiagnosticsSnapshot?
 }
 
+/// Result of a same-route recovery request. The distinction matters to the
+/// coordinator's accounting: a busy recorder is back-pressure (in-flight
+/// handoff already covers the episode), while an unavailable recorder cannot
+/// recover at all and the request must count toward the episode's attempt cap.
+enum MeetingMicRecoveryRequestResult: Equatable {
+    case initiated
+    case busy
+    case unavailable
+}
+
 protocol MeetingMicRecording: AnyObject {
     var preferredInputDeviceID: AudioObjectID? { get set }
     var onRawPCMSamples: (([Int16]) -> Void)? { get set }
@@ -52,16 +62,15 @@ protocol MeetingMicRecording: AnyObject {
     /// graph for the current input while the active graph keeps running, and
     /// promote it only after it produces a non-empty buffer. Used when the
     /// health tracker confirms a semantically dead graph (missing/zero
-    /// callbacks) that never raises an explicit CoreAudio error. Returns true
-    /// when a recovery handoff was actually initiated. Recorders without a
-    /// recovery primitive keep the default no-op (returns false).
+    /// callbacks) that never raises an explicit CoreAudio error. Recorders
+    /// without a recovery primitive keep the default no-op (.unavailable).
     @discardableResult
-    func requestSameRouteRecovery(reason: String) -> Bool
+    func requestSameRouteRecovery(reason: String) -> MeetingMicRecoveryRequestResult
 }
 
 extension MeetingMicRecording {
     func invalidateForTeardown() {}
-    func requestSameRouteRecovery(reason: String) -> Bool { false }
+    func requestSameRouteRecovery(reason: String) -> MeetingMicRecoveryRequestResult { .unavailable }
 }
 
 final class StreamingMeetingMicRecorderAdapter: MeetingMicRecording {
@@ -330,16 +339,13 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
             return (children.0, children.1, takeUnusedSeedRecorders())
         }
         resources.unused.forEach { $0.invalidateForTeardown() }
-        // Stop the pending candidate's capture synchronously — teardown must
-        // not return while a replacement recorder is still capturing. Disposal
-        // (cancel) stays async: it can block on wedged CoreAudio cleanup and
-        // must not stall meeting teardown.
-        if let pending = resources.pending {
-            if let url = pending.recorder.stop() {
-                try? FileManager.default.removeItem(at: url)
-            }
-            cancelAsync(pending)
-        }
+        // The pending candidate is invalidated synchronously above; a worker
+        // mid-start self-stops via the post-start invalidation check before
+        // start() returns. Do NOT call its stop() synchronously here: that
+        // contends on the recorder's graph lock, which a blocked startup may
+        // hold, and would stall meeting teardown behind it (#322 class).
+        // Disposal stays on the async cleanup queue.
+        cancelAsync(resources.pending)
         cancelAsync(resources.unused)
         let url = resources.active?.recorder.stop()
         resources.active?.recorder.cancel()
@@ -363,14 +369,10 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
             return (children.0, children.1, takeUnusedSeedRecorders())
         }
         resources.2.forEach { $0.invalidateForTeardown() }
-        // Same guarantee as stop(): a pending candidate's capture ceases
-        // synchronously; only disposal is deferred.
-        if let pending = resources.1 {
-            if let url = pending.recorder.stop() {
-                try? FileManager.default.removeItem(at: url)
-            }
-            cancelAsync(pending)
-        }
+        // Same contract as stop(): the pending candidate is already poisoned
+        // (never starts, or self-stops after a blocked start); only disposal
+        // is deferred to the cleanup queue.
+        cancelAsync(resources.1)
         cancelAsync(resources.0)
         cancelAsync(resources.2)
     }
@@ -407,15 +409,22 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
     /// Health-driven recovery entry point: the current graph is confirmed
     /// degraded (missing/zero mic callbacks while system audio is active) but
     /// never threw, so force a same-route candidate through the existing
-    /// serialized handoff. beginHandoffIfNeeded already guards against
-    /// concurrent pendings and non-recoverable lifecycle states; the candidate
-    /// promotes only after producing a non-empty buffer, otherwise the current
-    /// route keeps running.
+    /// serialized handoff. Reports .busy when a handoff is already pending
+    /// (back-pressure: the in-flight handoff covers this episode), and
+    /// .unavailable when the lifecycle is not in a recoverable state.
     @discardableResult
-    func requestSameRouteRecovery(reason: String) -> Bool {
+    func requestSameRouteRecovery(reason: String) -> MeetingMicRecoveryRequestResult {
         fputs("[meeting-mic] health-triggered same-route recovery requested: \(reason)\n", stderr)
         return lifecycleQueue.sync { [weak self] in
-            self?.beginHandoffIfNeeded(force: true) ?? false
+            guard let self else { return .unavailable }
+            if let availability = self.lock.withLock({ state -> MeetingMicRecoveryRequestResult? in
+                guard state.lifecycleState == .running || state.lifecycleState == .failed else { return .unavailable }
+                guard state.pending == nil else { return .busy }
+                return nil
+            }) {
+                return availability
+            }
+            return self.beginHandoffIfNeeded(force: true) ? .initiated : .unavailable
         }
     }
 

@@ -580,7 +580,7 @@ struct RouteAwareMeetingMicRecorderTests {
         recorder.onRawPCMSamples = { samples.append($0) }
 
         try recorder.start()
-        #expect(recorder.requestSameRouteRecovery(reason: "system_audio_active_with_zero_mic"))
+        #expect(recorder.requestSameRouteRecovery(reason: "system_audio_active_with_zero_mic") == .initiated)
         try await waitUntil { replacement.startCalls == 1 }
         #expect(factoryCalls == 1)
 
@@ -606,7 +606,7 @@ struct RouteAwareMeetingMicRecorderTests {
             handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
         )
 
-        #expect(!recorder.requestSameRouteRecovery(reason: "system_audio_active_without_mic_callbacks"))
+        #expect(recorder.requestSameRouteRecovery(reason: "system_audio_active_without_mic_callbacks") == .unavailable)
         #expect(factoryCalls == 0)
     }
 
@@ -626,8 +626,8 @@ struct RouteAwareMeetingMicRecorderTests {
         )
 
         try recorder.start()
-        #expect(recorder.requestSameRouteRecovery(reason: "first"))
-        #expect(!recorder.requestSameRouteRecovery(reason: "second"))
+        #expect(recorder.requestSameRouteRecovery(reason: "first") == .initiated)
+        #expect(recorder.requestSameRouteRecovery(reason: "second") == .busy)
         try await waitUntil { factoryCalls == 1 }
         try await Task.sleep(for: .milliseconds(50))
         #expect(factoryCalls == 1)
@@ -651,11 +651,11 @@ struct RouteAwareMeetingMicRecorderTests {
         recorder.onHandoffOutcome = { outcomes.append($0) }
 
         try recorder.start()
-        #expect(recorder.requestSameRouteRecovery(reason: "first attempt"))
+        #expect(recorder.requestSameRouteRecovery(reason: "first attempt") == .initiated)
         try await waitUntil { failingReplacement.cancelCalls == 1 }
         try await waitUntil { outcomes == [.failed] }
 
-        #expect(recorder.requestSameRouteRecovery(reason: "second attempt"))
+        #expect(recorder.requestSameRouteRecovery(reason: "second attempt") == .initiated)
         try await waitUntil { goodReplacement.startCalls == 1 }
         goodReplacement.onRawPCMSamples?([1, 2])
         try await waitUntil { outcomes == [.failed, .promoted] }
@@ -679,7 +679,7 @@ struct RouteAwareMeetingMicRecorderTests {
         )
 
         try recorder.start()
-        #expect(recorder.requestSameRouteRecovery(reason: "queued then stopped"))
+        #expect(recorder.requestSameRouteRecovery(reason: "queued then stopped") == .initiated)
         #expect(prepareStarted.wait(timeout: .now() + 2) == .success)
 
         // Tear down while the worker is blocked inside candidate.prepare().

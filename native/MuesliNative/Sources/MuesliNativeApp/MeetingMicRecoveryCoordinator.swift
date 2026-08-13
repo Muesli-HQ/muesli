@@ -113,9 +113,11 @@ final class MeetingMicRecoveryCoordinator {
     }
 
     /// Called after the coordinator's lock is released when a recovery attempt
-    /// should start. Returns whether one was actually initiated; uninitiated
-    /// reservations are rolled back.
-    var recoveryRequest: (String) -> Bool = { _ in false }
+    /// should start. `.busy` (a handoff is already pending) is back-pressure:
+    /// the attempt is refunded but the cooldown timestamp is retained so
+    /// refusal cannot churn per-snapshot. `.unavailable` keeps the attempt
+    /// counted so the episode cap bounds total requests.
+    var recoveryRequest: (String) -> MeetingMicRecoveryRequestResult = { _ in .unavailable }
     /// Called after the coordinator's lock is released.
     var onEpisodeEvent: ((MeetingMicHealthEpisodeEvent) -> Void)?
     /// Coarse, privacy-safe context for telemetry; evaluated at event time.
@@ -372,19 +374,19 @@ final class MeetingMicRecoveryCoordinator {
         }
         lock.unlock()
 
-        let initiated = recoveryRequest(reservation.reason)
+        let result = recoveryRequest(reservation.reason)
 
         lock.lock()
         if var active = episode, active.pendingRecoveryToken == reservation.token {
             active.pendingRecoveryToken = nil
-            if !initiated {
-                // Transient refusal (e.g. a handoff already pending) is the
-                // normal back-pressure response: refund the attempt so it does
-                // not burn the episode budget, but KEEP lastAttemptAt so the
-                // cooldown still throttles re-dispatch. Clearing it would let
-                // every degraded snapshot re-dispatch immediately.
+            if result == .busy {
+                // Back-pressure from an in-flight handoff: refund the attempt
+                // so it does not burn the episode budget, but KEEP
+                // lastAttemptAt so the cooldown still throttles re-dispatch.
                 active.recoveryAttempts -= 1
             }
+            // .unavailable keeps the attempt counted: the per-episode cap must
+            // bound total recovery requests, not only accepted ones.
             episode = active
         }
         lock.unlock()
