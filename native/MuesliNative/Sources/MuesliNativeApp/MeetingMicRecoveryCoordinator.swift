@@ -331,8 +331,12 @@ final class MeetingMicRecoveryCoordinator {
         if var active = episode, active.pendingRecoveryToken == reservation.token {
             active.pendingRecoveryToken = nil
             if !initiated {
+                // Transient refusal (e.g. a handoff already pending) is the
+                // normal back-pressure response: refund the attempt so it does
+                // not burn the episode budget, but KEEP lastAttemptAt so the
+                // cooldown still throttles re-dispatch. Clearing it would let
+                // every degraded snapshot re-dispatch immediately.
                 active.recoveryAttempts -= 1
-                active.lastAttemptAt = nil
             }
             episode = active
         }

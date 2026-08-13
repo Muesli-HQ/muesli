@@ -226,6 +226,25 @@ struct MeetingMicRecoveryCoordinatorTests {
         #expect(harness.events.first?.recoveryAttempts == 0)
     }
 
+    @Test("transient recovery refusals are throttled by the cooldown, not per-snapshot")
+    func transientRefusalsRespectCooldown() {
+        // Simulates a handoff already pending: the recorder declines (false)
+        // while degradation continues. The coordinator must not re-dispatch
+        // per snapshot — the refusal keeps its back-pressure timestamp.
+        let harness = Harness() // default 15s cooldown
+        var requestCount = 0
+        harness.coordinator.recoveryRequest = { _ in
+            requestCount += 1
+            return false
+        }
+        harness.systemActive(seconds: 3)   // episode start: dispatch #1 at t=3
+        harness.systemActive(seconds: 10)  // t=3→13, all within cooldown
+        #expect(requestCount == 1)
+
+        harness.systemActive(seconds: 6)   // t=13→19: cooldown elapsed at t=18
+        #expect(requestCount == 2)
+    }
+
     @Test("episode event callbacks may re-enter process without deadlock")
     func episodeCallbackReentryDoesNotDeadlock() {
         let harness = Harness()
