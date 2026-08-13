@@ -216,6 +216,53 @@ struct MeetingMicRecoveryCoordinatorTests {
         #expect(harness.recoveryRequests.isEmpty)
     }
 
+    @Test("muted input at confirmation suppresses the episode and signals once")
+    func mutedInputSuppressesEpisode() {
+        let harness = Harness()
+        var mutedSignals = 0
+        harness.coordinator.isInputMuted = { true }
+        harness.coordinator.onUserMuted = { mutedSignals += 1 }
+
+        harness.systemActive(seconds: 4)
+        harness.systemActive(seconds: 4)
+
+        #expect(harness.events.isEmpty)
+        #expect(harness.recoveryRequests.isEmpty)
+        #expect(mutedSignals == 1)
+        #expect(!harness.coordinator.hasActiveEpisode)
+    }
+
+    @Test("un-muting while still degraded opens the episode then")
+    func unmuteWhileDegradedOpensEpisode() {
+        let harness = Harness()
+        var muted = true
+        harness.coordinator.isInputMuted = { muted }
+
+        harness.systemActive(seconds: 4) // muted: suppressed
+        #expect(harness.events.isEmpty)
+
+        muted = false
+        harness.systemActive(seconds: 1) // still degraded, no longer muted
+
+        #expect(harness.events.map(\.kind) == [.degraded])
+        #expect(harness.recoveryRequests.count == 1)
+    }
+
+    @Test("muted classification does not latch past a healthy stretch")
+    func mutedClassificationDoesNotLatch() {
+        let harness = Harness()
+        var muted = true
+        harness.coordinator.isInputMuted = { muted }
+
+        harness.systemActive(seconds: 4)   // muted episode suppressed
+        muted = false
+        harness.micSignal()                // healthy
+        harness.systemActive(seconds: 4)   // new degradation, unmuted
+
+        #expect(harness.events.map(\.kind) == [.degraded])
+        #expect(harness.recoveryRequests.count == 1)
+    }
+
     @Test("recovery request returning false does not count an attempt")
     func uninitiatedRecoveryIsNotCounted() {
         let harness = Harness(cooldown: 0.5, maxAttempts: 1)

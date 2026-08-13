@@ -187,6 +187,9 @@ final class MeetingSession {
     /// while degraded. Feed telemetry here; keep per-snapshot UI updates on
     /// onMicHealthChanged.
     var onMicHealthEpisode: ((MeetingMicHealthEpisodeEvent) -> Void)?
+    /// Fired at most once per meeting when confirmed degradation is classified
+    /// as user-muted input (no recovery episode is opened in that case).
+    var onMicHealthUserMuted: (() -> Void)?
     var manualNotesProvider: (() async -> String?)?
     var liveTitleProvider: (() async -> String?)?
     /// Formatted notes of the predecessor meeting when this session records a
@@ -255,6 +258,12 @@ final class MeetingSession {
         micRecoveryCoordinator.onEpisodeEvent = { [weak self] event in
             self?.onMicHealthEpisode?(event)
         }
+        micRecoveryCoordinator.isInputMuted = { [weak self] in
+            self?.isCaptureInputMuted() ?? false
+        }
+        micRecoveryCoordinator.onUserMuted = { [weak self] in
+            self?.onMicHealthUserMuted?()
+        }
         micRecoveryCoordinator.contextProvider = { [weak meetingMicRecorder] in
             guard let snapshot = meetingMicRecorder?.diagnosticsSnapshot() else {
                 return MeetingMicEpisodeContext()
@@ -276,6 +285,45 @@ final class MeetingSession {
 
     func setPreferredMicrophoneInputDeviceID(_ deviceID: AudioObjectID?) {
         meetingMicRecorder.preferredInputDeviceID = deviceID
+    }
+
+    /// True when the capture device is muted or zero-gain at the source (user
+    /// intent), which presents the same all-zero signature as a broken route.
+    /// Read once per degradation confirmation, never per sample.
+    private func isCaptureInputMuted() -> Bool {
+        var deviceID = meetingMicRecorder.preferredInputDeviceID ?? kAudioObjectUnknown
+        if deviceID == kAudioObjectUnknown {
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDefaultInputDevice,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var size = UInt32(MemoryLayout<AudioObjectID>.size)
+            guard AudioObjectGetPropertyData(
+                AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID
+            ) == noErr, deviceID != kAudioObjectUnknown else { return false }
+        }
+        var volumeAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyVolumeScalar,
+            mScope: kAudioObjectPropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var volume: Float32 = 1
+        var volumeSize = UInt32(MemoryLayout<Float32>.size)
+        if AudioObjectGetPropertyData(deviceID, &volumeAddress, 0, nil, &volumeSize, &volume) == noErr {
+            return volume <= 0.0001
+        }
+        var muteAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyMute,
+            mScope: kAudioObjectPropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var muted: UInt32 = 0
+        var muteSize = UInt32(MemoryLayout<UInt32>.size)
+        if AudioObjectGetPropertyData(deviceID, &muteAddress, 0, nil, &muteSize, &muted) == noErr {
+            return muted != 0
+        }
+        return false
     }
 
     private func currentBackend() -> BackendOption {

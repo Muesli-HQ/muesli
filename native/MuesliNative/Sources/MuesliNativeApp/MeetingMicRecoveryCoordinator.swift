@@ -4,6 +4,11 @@ enum MeetingMicHealthEpisodeKind: String, Equatable {
     case degraded = "meeting.microphone.degraded"
     case recovered = "meeting.microphone.recovered"
     case unrecovered = "meeting.microphone.unrecovered"
+    /// The capture device is muted/zero-gain at the source (user intent), which
+    /// presents the same all-zero signature as a broken route. Classified
+    /// separately so user intent never triggers recovery work or failure
+    /// telemetry, and so production can measure how common it is.
+    case userMuted = "meeting.microphone.user_muted"
 }
 
 enum MeetingMicHandoffOutcome: String, Equatable {
@@ -115,6 +120,14 @@ final class MeetingMicRecoveryCoordinator {
     var onEpisodeEvent: ((MeetingMicHealthEpisodeEvent) -> Void)?
     /// Coarse, privacy-safe context for telemetry; evaluated at event time.
     var contextProvider: () -> MeetingMicEpisodeContext = { MeetingMicEpisodeContext() }
+    /// Evaluated once at episode confirmation (never per sample). When the
+    /// capture device is muted/zero-gain at the source, no recovery episode
+    /// opens: the all-zero signature is user intent, not a broken route.
+    /// Called outside the coordinator lock (may read device state via HAL).
+    var isInputMuted: () -> Bool = { false }
+    /// Fired at most once per meeting when confirmed degradation is classified
+    /// as user-muted input. Runs after the coordinator lock is released.
+    var onUserMuted: (() -> Void)?
 
     private let policy: Policy
     private let now: () -> Date
@@ -122,6 +135,11 @@ final class MeetingMicRecoveryCoordinator {
     private var episode: Episode?
     private var previousState: MeetingMicHealthState?
     private var finished = false
+    /// True while degradation snapshots are suppressed because the input was
+    /// muted at confirmation. Cleared when the input un-mutes or the state
+    /// leaves degraded, so a genuinely broken route still opens an episode.
+    private var mutedSuppressed = false
+    private var mutedSignalEmitted = false
 
     init(policy: Policy = .default, now: @escaping () -> Date = Date.init) {
         self.policy = policy
@@ -139,6 +157,11 @@ final class MeetingMicRecoveryCoordinator {
         }
         var pendingEvent: PendingEvent?
         var recoveryToDispatch: (token: UUID, reason: String)?
+        // The mute read (HAL, can block) happens before the lock; the snapshot
+        // state itself needs no lock.
+        let degradedNow = Self.isDegraded(snapshot.state)
+        let inputMuted = degradedNow ? isInputMuted() : false
+        var emitUserMuted = false
 
         lock.lock()
         if !finished {
@@ -146,8 +169,11 @@ final class MeetingMicRecoveryCoordinator {
             let previous = previousState
             previousState = currentState
             let timestamp = now()
+            if !degradedNow {
+                mutedSuppressed = false
+            }
 
-            switch (Self.isDegraded(currentState), episode != nil) {
+            switch (degradedNow, episode != nil) {
             case (true, true):
                 var active = episode!
                 // A flap is any state change while the episode is open: a
@@ -162,28 +188,46 @@ final class MeetingMicRecoveryCoordinator {
                 }
                 episode = active
             case (true, false):
-                let reason = snapshot.transitions.last?.reason ?? "unknown"
-                var newEpisode = Episode(
-                    id: UUID(),
-                    startedAt: timestamp,
-                    initialReason: reason,
-                    initialState: currentState,
-                    flapCount: 0,
-                    recoveryAttempts: 0,
-                    lastAttemptAt: nil,
-                    pendingRecoveryToken: nil,
-                    handoffPromotions: 0,
-                    lastHandoffOutcome: nil,
-                    healthySince: nil
-                )
-                // The degraded event reports attempts as of episode start (0);
-                // the immediate first attempt is reserved below and reflected
-                // in the episode's closing event.
-                pendingEvent = PendingEvent(kind: .degraded, episode: newEpisode, duration: 0)
-                // The tracker already confirmed degradation for ~3s; attempt
-                // recovery immediately at episode start.
-                recoveryToDispatch = reserveRecoveryLocked(&newEpisode, at: timestamp)
-                episode = newEpisode
+                // Degradation confirmed with no episode open. If the capture
+                // device is muted/zero-gain at the source, this is user
+                // intent, not a broken route: signal it once and suppress
+                // recovery work. If the input un-mutes while still degraded,
+                // the route may be genuinely broken — open the episode then.
+                if inputMuted {
+                    mutedSuppressed = true
+                    if !mutedSignalEmitted {
+                        mutedSignalEmitted = true
+                        emitUserMuted = true
+                    }
+                } else if mutedSuppressed {
+                    // Un-muted while still degraded: now the route may be
+                    // genuinely broken — fall through to opening the episode.
+                    mutedSuppressed = false
+                }
+                if !mutedSuppressed {
+                    let reason = snapshot.transitions.last?.reason ?? "unknown"
+                    var newEpisode = Episode(
+                        id: UUID(),
+                        startedAt: timestamp,
+                        initialReason: reason,
+                        initialState: currentState,
+                        flapCount: 0,
+                        recoveryAttempts: 0,
+                        lastAttemptAt: nil,
+                        pendingRecoveryToken: nil,
+                        handoffPromotions: 0,
+                        lastHandoffOutcome: nil,
+                        healthySince: nil
+                    )
+                    // The degraded event reports attempts as of episode start
+                    // (0); the immediate first attempt is reserved below and
+                    // reflected in the episode's closing event.
+                    pendingEvent = PendingEvent(kind: .degraded, episode: newEpisode, duration: 0)
+                    // The tracker already confirmed degradation for ~3s;
+                    // attempt recovery immediately at episode start.
+                    recoveryToDispatch = reserveRecoveryLocked(&newEpisode, at: timestamp)
+                    episode = newEpisode
+                }
             case (false, true):
                 var active = episode!
                 if currentState == .healthy {
@@ -214,6 +258,9 @@ final class MeetingMicRecoveryCoordinator {
         let dispatch = recoveryToDispatch
         lock.unlock()
 
+        if emitUserMuted {
+            onUserMuted?()
+        }
         if let pendingEvent {
             onEpisodeEvent?(makeEvent(pendingEvent.kind, episode: pendingEvent.episode, duration: pendingEvent.duration))
         }

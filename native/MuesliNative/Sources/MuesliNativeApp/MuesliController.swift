@@ -5497,6 +5497,12 @@ final class MuesliController: NSObject {
                 // Episode-level telemetry replaces per-flap error events:
                 // exactly one degraded/recovered signal pair per degradation
                 // episode, and an error only when the meeting ends unrecovered.
+                meetingSession.onMicHealthUserMuted = { [weak self] in
+                    Task { @MainActor in
+                        guard let self, self.micEpisodeTelemetryGate.allows(meetingID) else { return }
+                        TelemetryDeck.signal(MeetingMicHealthEpisodeKind.userMuted.rawValue, parameters: [:])
+                    }
+                }
                 meetingSession.onMicHealthEpisode = { [weak self] event in
                     Task { @MainActor in
                         guard let self else { return }
@@ -5540,6 +5546,10 @@ final class MuesliController: NSObject {
                                 stage: .meetingMicrophoneCapture,
                                 promptUser: false
                             )
+                        case .userMuted:
+                            // Emitted via onMicHealthUserMuted, not the episode
+                            // stream; nothing to do here.
+                            break
                         }
                     }
                 }
