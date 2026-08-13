@@ -37,4 +37,14 @@ struct CoreAudioSystemRecorderTests {
         #expect(tap[kAudioSubTapUIDKey] as? String == "tap-uid")
         #expect(tap[kAudioSubTapDriftCompensationKey] as? Bool == true)
     }
+
+    @Test("rebuild retry policy backs off then exhausts")
+    func rebuildRetryPolicyBackoff() {
+        let policy = RebuildRetryPolicy.default
+        #expect(policy.nextDelay(afterFailures: 0) == 0.5)
+        #expect(policy.nextDelay(afterFailures: 1) == 1.5)
+        #expect(policy.nextDelay(afterFailures: 2) == 3.5)
+        #expect(policy.nextDelay(afterFailures: 3) == nil)
+        #expect(policy.nextDelay(afterFailures: 10) == nil)
+    }
 }

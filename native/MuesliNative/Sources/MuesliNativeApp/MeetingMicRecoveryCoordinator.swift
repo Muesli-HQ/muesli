@@ -292,6 +292,46 @@ final class MeetingMicRecoveryCoordinator {
         }
     }
 
+    /// Open an episode from an external detector (e.g. the system-audio
+    /// watchdog noticing mic callbacks stalled while the tap is dead — the
+    /// health tracker's own precondition is blind in that state). Shares the
+    /// same episode lifecycle: no-op when an episode is already open or the
+    /// meeting has finished.
+    func noteExternalDegradation(reason: String) {
+        var pendingEpisode: Episode?
+        var recoveryToDispatch: (token: UUID, reason: String)?
+
+        lock.lock()
+        if !finished, episode == nil {
+            let timestamp = now()
+            var newEpisode = Episode(
+                id: UUID(),
+                startedAt: timestamp,
+                initialReason: reason,
+                initialState: .micCallbacksMissing,
+                flapCount: 0,
+                recoveryAttempts: 0,
+                lastAttemptAt: nil,
+                pendingRecoveryToken: nil,
+                handoffPromotions: 0,
+                lastHandoffOutcome: nil,
+                healthySince: nil
+            )
+            pendingEpisode = newEpisode
+            recoveryToDispatch = reserveRecoveryLocked(&newEpisode, at: timestamp)
+            episode = newEpisode
+        }
+        let dispatch = recoveryToDispatch
+        lock.unlock()
+
+        if let pendingEpisode {
+            onEpisodeEvent?(makeEvent(.degraded, episode: pendingEpisode, duration: 0))
+        }
+        if let dispatch {
+            dispatchRecovery(dispatch)
+        }
+    }
+
     /// Record the outcome of a recovery handoff (called by the recorder layer).
     /// A promotion during an open episode marks the recovery as creditable if
     /// healthy delivery follows.

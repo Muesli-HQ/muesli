@@ -16,6 +16,51 @@ protocol SystemAudioCapturing: AnyObject {
     func pause()
     func resume()
     func stop() -> URL?
+
+    /// Monotonic liveness counter advanced by every IO callback while
+    /// capturing. A stall while recording means the capture graph is dead even
+    /// if every API reports success. Backends without a heartbeat (the SCK
+    /// fallback) return 0 and are exempt from stall monitoring.
+    var captureHeartbeat: UInt64 { get }
+    /// Fired when a route-change rebuild fails permanently (all retries
+    /// exhausted). Capture is dead from this point unless a later route change
+    /// or recovery attempt succeeds.
+    var onCaptureFailure: ((Error) -> Void)? { get set }
+    /// True while a route-change/health rebuild (including retries) is in
+    /// flight; the watchdog treats this as a known-transient stall window.
+    var isRebuilding: Bool { get }
+    /// Health-driven rebuild: tear down and recreate the capture graph with
+    /// the same bounded retry policy used for route changes. Returns whether a
+    /// rebuild was actually started. Default no-op (false) for backends without
+    /// a rebuild path.
+    @discardableResult
+    func rebuildForHealthRecovery(reason: String) -> Bool
+}
+
+extension SystemAudioCapturing {
+    var captureHeartbeat: UInt64 { 0 }
+    var isRebuilding: Bool { false }
+    var onCaptureFailure: ((Error) -> Void)? {
+        get { nil }
+        set {}
+    }
+    func rebuildForHealthRecovery(reason: String) -> Bool { false }
+}
+
+/// Bounded backoff for tap rebuilds after route-change/health failures.
+/// The observed failure mode (tapCreationFailed mid-route-churn) is transient,
+/// so a short schedule covers the churn window; after the schedule is
+/// exhausted the failure is terminal for this episode.
+struct RebuildRetryPolicy: Equatable {
+    let delays: [TimeInterval]
+
+    static let `default` = RebuildRetryPolicy(delays: [0.5, 1.5, 3.5])
+
+    /// Delay before the next attempt after `failures` consecutive failures,
+    /// or nil when the budget is exhausted.
+    func nextDelay(afterFailures failures: Int) -> TimeInterval? {
+        failures < delays.count ? delays[failures] : nil
+    }
 }
 
 /// Captures system audio via CoreAudio process tap + aggregate device.
@@ -42,6 +87,21 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
     private var activeCaptureGeneration: UInt64 = 0
     private let recordingFlag = ManagedAtomic(false)
     private let pausedFlag = ManagedAtomic(false)
+    /// Monotonic liveness counter: advanced by every IO callback while
+    /// capturing. A stall while isRecording && !isPaused means the capture
+    /// graph is dead even when every CoreAudio call reported success.
+    private let heartbeatCounter = ManagedAtomic<UInt64>(0)
+    var captureHeartbeat: UInt64 { heartbeatCounter.load(ordering: .relaxed) }
+    /// Fired when a route-change/health rebuild exhausts its retry budget and
+    /// capture is dead. Bridged to episode telemetry by MeetingSession.
+    var onCaptureFailure: ((Error) -> Void)?
+    /// True while a route-change/health rebuild (including retries) is in
+    /// flight; the watchdog treats this as a known-transient stall window.
+    private(set) var isRebuilding = false
+    private var rebuildRetryWorkItem: DispatchWorkItem?
+    private var rebuildRetryCount = 0
+    /// Backoff after the initial failure: ~5.5s of route-churn coverage.
+    private static let rebuildRetryPolicy = RebuildRetryPolicy.default
     private(set) var isRecording: Bool {
         get { recordingFlag.load(ordering: .acquiring) }
         set { recordingFlag.store(newValue, ordering: .releasing) }
@@ -139,6 +199,11 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
         isPaused = false
 
         removeDefaultOutputDeviceListener()
+        // A rebuild retry pending on processingQueue must not fire after
+        // teardown (attemptTapRebuild also guards on isRecording, belt and
+        // suspenders).
+        rebuildRetryWorkItem?.cancel()
+        isRebuilding = false
         processingQueue.sync {
             teardownTapAndAudioDevice()
             onPCMSamples = nil
@@ -274,6 +339,7 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
         let generation = activeCaptureGeneration
         let block: AudioDeviceIOBlock = { [weak self] _, inputData, _, _, _ in
             guard let self, self.isRecording, !self.isPaused else { return }
+            self.heartbeatCounter.wrappingIncrement(ordering: .relaxed)
             self.diagnosticsLock.withLock { $0.callbackCount += 1 }
 
             let buffers = Self.copyAudioBuffers(from: inputData)
@@ -754,22 +820,68 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
 
     private func restartTapForDefaultOutputDeviceChange() {
         guard isRecording else { return }
-
+        // A newer route change supersedes any pending retry.
+        rebuildRetryWorkItem?.cancel()
+        rebuildRetryCount = 0
         fputs("[system-audio] default output device changed; rebuilding tap\n", stderr)
-        teardownTapAndAudioDevice()
-        guard isRecording else { return }
+        attemptTapRebuild(reason: "route_change")
+    }
 
+    /// Serialized on processingQueue. A failed rebuild retries on a bounded
+    /// backoff — the observed failure mode (tapCreationFailed mid-route-churn)
+    /// is transient — and only after the budget is exhausted does capture go
+    /// terminal, reporting via onCaptureFailure instead of dying silently.
+    private func attemptTapRebuild(reason: String) {
+        guard isRecording else { return }
+        isRebuilding = true
+        let attempt = rebuildRetryCount + 1
+        fputs("[system-audio] rebuilding tap (reason=\(reason), attempt=\(attempt))\n", stderr)
+        teardownTapAndAudioDevice()
+        guard isRecording else {
+            isRebuilding = false
+            return
+        }
         do {
             try createTapAndAggregateDevice()
             try setupAndStartAudioDevice()
-            fputs("[system-audio] CoreAudio tap capture restarted for default output device\n", stderr)
+            isRebuilding = false
+            rebuildRetryCount = 0
+            fputs("[system-audio] CoreAudio tap capture restarted (reason=\(reason), attempt=\(attempt))\n", stderr)
         } catch {
             teardownTapAndAudioDevice()
-            isRecording = false
-            isPaused = false
-            onPCMSamples = nil
-            fputs("[system-audio] failed to restart after default output device change: \(error)\n", stderr)
+            if let delay = Self.rebuildRetryPolicy.nextDelay(afterFailures: rebuildRetryCount) {
+                rebuildRetryCount += 1
+                let item = DispatchWorkItem { [weak self] in
+                    self?.attemptTapRebuild(reason: reason)
+                }
+                rebuildRetryWorkItem = item
+                processingQueue.asyncAfter(deadline: .now() + delay, execute: item)
+                fputs("[system-audio] tap rebuild failed (reason=\(reason), retrying in \(delay)s): \(error)\n", stderr)
+            } else {
+                isRebuilding = false
+                rebuildRetryCount = 0
+                isRecording = false
+                isPaused = false
+                onPCMSamples = nil
+                fputs("[system-audio] tap rebuild exhausted retries; capture is dead (reason=\(reason)): \(error)\n", stderr)
+                onCaptureFailure?(error)
+            }
         }
+    }
+
+    /// Health-driven rebuild entry point (watchdog: IO heartbeat stalled while
+    /// recording). Same serialized retry policy as route-change rebuilds.
+    @discardableResult
+    func rebuildForHealthRecovery(reason: String) -> Bool {
+        guard isRecording, !isPaused else { return false }
+        fputs("[system-audio] health-triggered tap rebuild requested: \(reason)\n", stderr)
+        processingQueue.async { [weak self] in
+            guard let self, self.isRecording else { return }
+            self.rebuildRetryWorkItem?.cancel()
+            self.rebuildRetryCount = 0
+            self.attemptTapRebuild(reason: "health_recovery: \(reason)")
+        }
+        return true
     }
 
     // MARK: - Helpers
