@@ -12,6 +12,10 @@ enum AppIdentity {
         stringValue(for: "CFBundleDisplayName") ?? bundleName
     }
 
+    static var marketingVersion: String {
+        stringValue(for: "CFBundleShortVersionString") ?? "0.0.0"
+    }
+
     static var supportDirectoryName: String {
         stringValue(for: "MuesliSupportDirectoryName") ?? displayName
     }

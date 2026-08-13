@@ -74,6 +74,38 @@ struct TranscriptReconcilerTests {
         #expect(reconciled.systemSegments.count == 3)
     }
 
+    @Test("keeps Devanagari system turns")
+    func keepsDevanagariSystemTurns() {
+        let system = [
+            SpeechSegment(start: 2.0, end: 4.0, text: "रिश्ते में संवाद जरूरी है")
+        ]
+
+        let reconciled = TranscriptReconciler.reconcile(
+            micTurns: [],
+            systemSegments: system,
+            diarizationSegments: nil
+        )
+
+        #expect(reconciled.systemSegments.count == 1)
+        #expect(reconciled.systemSegments[0].text == "रिश्ते में संवाद जरूरी है")
+    }
+
+    @Test("preserves Indic combining marks while deduplicating short overlaps")
+    func preservesIndicCombiningMarksDuringDeduplication() {
+        let system = [
+            SpeechSegment(start: 0.0, end: 0.8, text: "कि"),
+            SpeechSegment(start: 0.1, end: 0.7, text: "क")
+        ]
+
+        let reconciled = TranscriptReconciler.reconcile(
+            micTurns: [],
+            systemSegments: system,
+            diarizationSegments: nil
+        )
+
+        #expect(reconciled.systemSegments.map(\.text) == ["कि", "क"])
+    }
+
     private func makeDiarSeg(speakerId: String, start: Float, end: Float) -> TimedSpeakerSegment {
         TimedSpeakerSegment(
             speakerId: speakerId,

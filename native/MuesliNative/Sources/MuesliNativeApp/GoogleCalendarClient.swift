@@ -1,4 +1,5 @@
 import Foundation
+import MuesliCore
 
 // MARK: - Shared Calendar Event Model
 
@@ -13,11 +14,30 @@ struct UnifiedCalendarEvent: Identifiable, Equatable {
     /// EventKit: `EKCalendar.calendarIdentifier`. Google: the calendar list `id`.
     /// Optional because legacy events deserialized from older state may not have it.
     var calendarID: String? = nil
+    var calendarOccurrence: CalendarOccurrenceReference? = nil
     var meetingURL: URL? = nil
 
     enum CalendarSource: String {
         case eventKit
         case googleCalendar
+
+        var occurrenceProvider: CalendarOccurrenceReference.Provider {
+            switch self {
+            case .eventKit:
+                return .eventKit
+            case .googleCalendar:
+                return .googleCalendar
+            }
+        }
+    }
+
+    var resolvedCalendarOccurrence: CalendarOccurrenceReference {
+        calendarOccurrence ?? CalendarOccurrenceReference(
+            provider: source.occurrenceProvider,
+            calendarID: calendarID,
+            eventID: id,
+            originalStartTime: startDate
+        )
     }
 
     /// Drop events whose `calendarID` is in `disabledCalendarIDs`. Events with `nil`
@@ -43,13 +63,21 @@ struct GoogleCalendarSummary: Identifiable, Equatable {
     let colorHex: String?
 }
 
+struct GoogleCalendarFetchResult {
+    let events: [UnifiedCalendarEvent]
+    let wasComplete: Bool
+}
+
 enum GoogleCalendarClientError: Error, LocalizedError {
     case requestFailed(String)
+    case staleRequest
 
     var errorDescription: String? {
         switch self {
         case .requestFailed(let message):
             return "Google Calendar request failed: \(message)"
+        case .staleRequest:
+            return "Google Calendar request was superseded"
         }
     }
 }
@@ -63,29 +91,84 @@ final class GoogleCalendarClient {
     private static let baseURL = "https://www.googleapis.com/calendar/v3"
     private static let primaryCalendarID = "primary"
 
+    private struct EventWindowScope: Equatable {
+        let dayCount: Int
+        let startOfDay: Date
+
+        func covers(_ scope: EventWindowScope, calendar: Calendar = .current) -> Bool {
+            guard
+                let end = calendar.date(byAdding: .day, value: dayCount, to: startOfDay),
+                let scopeEnd = calendar.date(byAdding: .day, value: scope.dayCount, to: scope.startOfDay)
+            else {
+                return false
+            }
+            return startOfDay <= scope.startOfDay && end >= scopeEnd
+        }
+
+        func overlaps(_ scope: EventWindowScope, calendar: Calendar = .current) -> Bool {
+            guard
+                let end = calendar.date(byAdding: .day, value: dayCount, to: startOfDay),
+                let scopeEnd = calendar.date(byAdding: .day, value: scope.dayCount, to: scope.startOfDay)
+            else {
+                return false
+            }
+            return startOfDay < scopeEnd && scope.startOfDay < end
+        }
+    }
+
     /// Stored sync token per calendar from last full fetch — subsequent requests
     /// return only changes for that calendar.
     private var syncTokens: [String: String] = [:]
     /// Cached events keyed by calendar ID, then by event ID. A 410 (sync token
     /// expired) for one calendar invalidates only that calendar's cache.
     private var cachedEventsByCalendar: [String: [String: UnifiedCalendarEvent]] = [:]
+    /// Window/day represented by each per-calendar event cache.
+    private var cachedEventScopesByCalendar: [String: EventWindowScope] = [:]
+    /// The event window used for the current sync tokens. Google incremental
+    /// sync does not include a new time range, so changing the selected window
+    /// requires a full re-fetch.
+    private var cachedEventWindowDayCount: Int?
+    /// The local day that anchored the current event window. The selected
+    /// window may stay at the same day count while the query range advances at
+    /// midnight, which also requires a full re-fetch.
+    private var cachedEventWindowStartOfDay: Date?
     /// Last fetched calendar list. Refreshed each time `fetchUpcomingEvents` runs
     /// so calendars added in the Google web UI get picked up automatically.
     private var cachedCalendarList: [GoogleCalendarSummary] = []
+    private var upcomingEventsFetchGeneration = 0
 
     /// Fetch upcoming events from every Google calendar the user can read,
     /// minus any in `disabledCalendarIDs`. Refreshes the calendar list on each
     /// call so newly-added calendars show up; per-calendar sync tokens keep
     /// each event fetch incremental.
     func fetchUpcomingEvents(
-        daysAhead: Int = 7,
-        disabledCalendarIDs: Set<String> = []
-    ) async throws -> [UnifiedCalendarEvent] {
+        daysAhead: Int = UpcomingMeetingsWindow.defaultDayCount,
+        disabledCalendarIDs: Set<String> = [],
+        now: Date = Date()
+    ) async throws -> GoogleCalendarFetchResult {
+        upcomingEventsFetchGeneration += 1
+        let fetchGeneration = upcomingEventsFetchGeneration
+        var completedAllFetches = true
+
+        let resolvedDayCount = UpcomingMeetingsWindow.resolve(dayCount: daysAhead).dayCount
+        let windowScope = EventWindowScope(
+            dayCount: resolvedDayCount,
+            startOfDay: Calendar.current.startOfDay(for: now)
+        )
+        resetEventSyncIfNeededForWindow(daysAhead: resolvedDayCount, now: now)
+
+        guard let future = UpcomingMeetingsWindow.endDate(from: now, dayCount: resolvedDayCount) else {
+            throw GoogleCalendarClientError.requestFailed("invalid upcoming events window")
+        }
+
         // Refresh the calendar list. If this fails, fall back to whatever we
         // last saw — better to return something than nothing.
         do {
-            cachedCalendarList = try await fetchCalendarList()
+            let calendarList = try await fetchCalendarList()
+            try ensureCurrentFetch(fetchGeneration)
+            cachedCalendarList = calendarList
         } catch {
+            try ensureCurrentFetch(fetchGeneration)
             if cachedCalendarList.isEmpty {
                 // First call ever and we can't list — try the primary calendar
                 // directly so users with read-only access at least see something.
@@ -97,42 +180,82 @@ final class GoogleCalendarClient {
                 )]
             }
             fputs("[google-cal] calendarList fetch failed, using cached list: \(error)\n", stderr)
+            completedAllFetches = false
         }
 
         let enabled = cachedCalendarList.filter { !disabledCalendarIDs.contains($0.id) }
+        var failedCalendarIDs = Set<String>()
         // Drop cached events for any calendar that's now disabled or absent so
         // we don't leak stale events into the merged result.
         let keepIDs = Set(enabled.map(\.id))
         let calendarIDsToRemove = cachedEventsByCalendar.keys.filter { !keepIDs.contains($0) }
         for calID in calendarIDsToRemove {
+            try ensureCurrentFetch(fetchGeneration)
             cachedEventsByCalendar.removeValue(forKey: calID)
+            cachedEventScopesByCalendar.removeValue(forKey: calID)
             syncTokens.removeValue(forKey: calID)
         }
 
         for calendar in enabled {
             do {
-                try await fetchEvents(forCalendarID: calendar.id, daysAhead: daysAhead)
+                try await fetchEvents(
+                    forCalendarID: calendar.id,
+                    daysAhead: resolvedDayCount,
+                    windowScope: windowScope,
+                    fetchGeneration: fetchGeneration,
+                    now: now
+                )
             } catch let authError as GoogleCalendarAuthError {
                 throw authError
+            } catch GoogleCalendarClientError.staleRequest {
+                throw GoogleCalendarClientError.staleRequest
             } catch {
+                try ensureCurrentFetch(fetchGeneration)
                 fputs("[google-cal] events fetch failed for \(calendar.id), keeping cached events: \(error)\n", stderr)
+                failedCalendarIDs.insert(calendar.id)
+                completedAllFetches = false
             }
         }
 
-        let now = Date()
-        let merged = cachedEventsByCalendar.values
+        let merged = cachedEventsByCalendar
+            .filter { calendarID, _ in
+                guard let cachedScope = cachedEventScopesByCalendar[calendarID] else {
+                    return false
+                }
+                if cachedScope == windowScope {
+                    return true
+                }
+                guard failedCalendarIDs.contains(calendarID) else {
+                    return false
+                }
+                return cachedScope.covers(windowScope) ||
+                    (cachedScope.dayCount == windowScope.dayCount && cachedScope.overlaps(windowScope))
+            }
+            .values
             .flatMap { $0.values }
-            .filter { $0.endDate > now }
-        return merged.sorted { $0.startDate < $1.startDate }
+            .filter { $0.endDate > now && $0.startDate < future }
+        return GoogleCalendarFetchResult(
+            events: merged.sorted { $0.startDate < $1.startDate },
+            wasComplete: completedAllFetches
+        )
     }
 
     /// Fetch events for a single calendar, populating `cachedEventsByCalendar[calendarID]`.
     /// Uses the per-calendar sync token if present; falls back to a windowed query otherwise.
     /// Handles pagination, 401 refresh, and 410 sync-token expiry per calendar.
-    private func fetchEvents(forCalendarID calendarID: String, daysAhead: Int, isRetry: Bool = false) async throws {
+    private func fetchEvents(
+        forCalendarID calendarID: String,
+        daysAhead: Int,
+        windowScope: EventWindowScope,
+        fetchGeneration: Int,
+        now: Date,
+        isRetry: Bool = false
+    ) async throws {
         var token = try await auth.validAccessToken()
         let isoFormatter = Self.isoFormatter
 
+        let isFullWindowFetch = syncTokens[calendarID] == nil
+        var bucket = isFullWindowFetch ? [:] : cachedEventsByCalendar[calendarID] ?? [:]
         var pageToken: String? = nil
         var tokenRetried = false
 
@@ -146,8 +269,9 @@ final class GoogleCalendarClient {
             } else if let syncToken = syncTokens[calendarID] {
                 components.queryItems = [URLQueryItem(name: "syncToken", value: syncToken)]
             } else {
-                let now = Date()
-                guard let future = Calendar.current.date(byAdding: .day, value: daysAhead, to: now) else { return }
+                guard let future = UpcomingMeetingsWindow.endDate(from: now, dayCount: daysAhead) else {
+                    throw GoogleCalendarClientError.requestFailed("invalid upcoming events window")
+                }
                 components.queryItems = [
                     URLQueryItem(name: "timeMin", value: isoFormatter.string(from: now)),
                     URLQueryItem(name: "timeMax", value: isoFormatter.string(from: future)),
@@ -166,12 +290,19 @@ final class GoogleCalendarClient {
             if statusCode == 410 {
                 guard !isRetry else {
                     fputs("[google-cal] 410 on full re-fetch for \(calendarID), giving up\n", stderr)
-                    return
+                    throw GoogleCalendarClientError.requestFailed("events sync token expired during full re-fetch")
                 }
                 fputs("[google-cal] sync token expired for \(calendarID), performing full re-fetch\n", stderr)
+                try ensureCurrentFetch(fetchGeneration)
                 syncTokens.removeValue(forKey: calendarID)
-                cachedEventsByCalendar.removeValue(forKey: calendarID)
-                return try await fetchEvents(forCalendarID: calendarID, daysAhead: daysAhead, isRetry: true)
+                return try await fetchEvents(
+                    forCalendarID: calendarID,
+                    daysAhead: daysAhead,
+                    windowScope: windowScope,
+                    fetchGeneration: fetchGeneration,
+                    now: now,
+                    isRetry: true
+                )
             }
 
             if statusCode == 401 && !tokenRetried {
@@ -190,10 +321,9 @@ final class GoogleCalendarClient {
             }
 
             guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                break
+                throw GoogleCalendarClientError.requestFailed("events returned malformed JSON")
             }
 
-            var bucket = cachedEventsByCalendar[calendarID] ?? [:]
             if let items = json["items"] as? [[String: Any]] {
                 for item in items {
                     guard let id = item["id"] as? String else { continue }
@@ -206,17 +336,24 @@ final class GoogleCalendarClient {
                     }
                 }
             }
-            cachedEventsByCalendar[calendarID] = bucket
-
             if let nextPage = json["nextPageToken"] as? String {
                 pageToken = nextPage
             } else {
                 pageToken = nil
+                try ensureCurrentFetch(fetchGeneration)
                 if let newSyncToken = json["nextSyncToken"] as? String {
                     syncTokens[calendarID] = newSyncToken
                 }
+                cachedEventsByCalendar[calendarID] = bucket
+                cachedEventScopesByCalendar[calendarID] = windowScope
             }
         } while pageToken != nil
+    }
+
+    private func ensureCurrentFetch(_ fetchGeneration: Int) throws {
+        guard fetchGeneration == upcomingEventsFetchGeneration else {
+            throw GoogleCalendarClientError.staleRequest
+        }
     }
 
     /// Enumerate every Google calendar the authenticated user can read.
@@ -260,7 +397,7 @@ final class GoogleCalendarClient {
             }
 
             guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                break
+                throw GoogleCalendarClientError.requestFailed("calendarList returned malformed JSON")
             }
             if let entries = json["items"] as? [[String: Any]] {
                 for entry in entries {
@@ -299,7 +436,26 @@ final class GoogleCalendarClient {
     func resetSync() {
         syncTokens.removeAll()
         cachedEventsByCalendar.removeAll()
+        cachedEventScopesByCalendar.removeAll()
+        cachedEventWindowDayCount = nil
+        cachedEventWindowStartOfDay = nil
         cachedCalendarList.removeAll()
+    }
+
+    @discardableResult
+    func resetEventSyncIfNeededForWindow(
+        daysAhead: Int,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> Bool {
+        let resolvedDayCount = UpcomingMeetingsWindow.resolve(dayCount: daysAhead).dayCount
+        let windowStartOfDay = calendar.startOfDay(for: now)
+        guard cachedEventWindowDayCount != resolvedDayCount ||
+            cachedEventWindowStartOfDay != windowStartOfDay else { return false }
+        syncTokens.removeAll()
+        cachedEventWindowDayCount = resolvedDayCount
+        cachedEventWindowStartOfDay = windowStartOfDay
+        return true
     }
 
     private static let isoFormatter: ISO8601DateFormatter = {
@@ -366,6 +522,28 @@ final class GoogleCalendarClient {
             }
             return nil
         }()
+        let recurringEventID = item["recurringEventId"] as? String
+        let originalStartTime: Date = {
+            guard let originalStart = item["originalStartTime"] as? [String: Any] else {
+                return startDate
+            }
+            if let value = originalStart["dateTime"] as? String,
+               let date = isoFormatter.date(from: value) {
+                return date
+            }
+            if let value = originalStart["date"] as? String,
+               let date = dateOnlyFormatter.date(from: value) {
+                return date
+            }
+            return startDate
+        }()
+        let occurrence = CalendarOccurrenceReference(
+            provider: .googleCalendar,
+            calendarID: calendarID,
+            eventID: id,
+            seriesID: recurringEventID,
+            originalStartTime: originalStartTime
+        )
 
         return UnifiedCalendarEvent(
             id: id,
@@ -375,6 +553,7 @@ final class GoogleCalendarClient {
             isAllDay: isAllDay,
             source: .googleCalendar,
             calendarID: calendarID,
+            calendarOccurrence: occurrence,
             meetingURL: meetingURL
         )
     }

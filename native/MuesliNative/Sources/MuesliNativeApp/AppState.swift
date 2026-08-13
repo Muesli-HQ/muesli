@@ -4,12 +4,58 @@ import MuesliCore
 
 enum DashboardTab: String, CaseIterable {
     case dictations
+    case insights
     case meetings
     case dictionary
     case models
     case shortcuts
     case settings
     case about
+}
+
+enum InsightsSection: String, CaseIterable, Sendable {
+    case streak
+    case words
+    case pace
+    case meetings
+}
+
+enum SettingsPane: String, CaseIterable, Identifiable {
+    case general
+    case sync
+    case dictation
+    case computerUse
+    case meetings
+    case appearance
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .general: return "General"
+        case .sync: return "Sync"
+        case .dictation: return "Dictation"
+        case .computerUse: return "Computer Use"
+        case .meetings: return "Meetings"
+        case .appearance: return "Appearance"
+        }
+    }
+}
+
+enum ModelsCategory: String, CaseIterable, Identifiable {
+    case dictation
+    case streaming
+    case postProcessing
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .dictation: return "Dictation"
+        case .streaming: return "Live Meetings"
+        case .postProcessing: return "Cleanup"
+        }
+    }
 }
 
 enum MeetingsNavigationState: Equatable {
@@ -29,11 +75,6 @@ enum SparkleUpdateStatus: Equatable {
     case failed(message: String)
 }
 
-enum UserInitiatedUpdateAction: Equatable {
-    case presentStandardUpdater
-    case showBusy(message: String)
-}
-
 enum GoogleCalendarListLoadState: Equatable {
     case idle
     case loading
@@ -41,17 +82,18 @@ enum GoogleCalendarListLoadState: Equatable {
     case failed(String)
 }
 
-enum UpdateInteractionPolicy {
-    static let busyMessage = "Sparkle is still finishing the previous update check. Try again in a moment."
+enum ICloudBridgeState: Equatable {
+    case notConfigured
+    case checkingICloud
+    case syncing
+    case active
+    case needsICloud
+    case error
+}
 
-    static func installAction(for status: SparkleUpdateStatus) -> UserInitiatedUpdateAction {
-        switch status {
-        case .checking, .busy, .installing:
-            return .showBusy(message: busyMessage)
-        case .idle, .available, .downloaded, .upToDate, .disabled, .failed:
-            return .presentStandardUpdater
-        }
-    }
+struct ActiveMeetingAudioWarning: Equatable {
+    let meetingID: Int64
+    let message: String
 }
 
 @MainActor
@@ -62,11 +104,13 @@ final class AppState {
     var meetingRows: [MeetingRecord] = []
     var totalMeetingCount: Int = 0
     var meetingCountsByFolder: [Int64: Int] = [:]
+    var directMeetingCountsByFolder: [Int64: Int] = [:]
     var selectedMeetingID: Int64?
     var selectedMeetingRecord: MeetingRecord?
     var folders: [MeetingFolder] = []
     var selectedFolderID: Int64?  // nil = "All Meetings"
     var meetingsNavigationState: MeetingsNavigationState = .browser
+    var meetingNotesFocusRequest = 0
     var isMeetingTemplatesManagerPresented: Bool = false
     var dictationStats: DictationStats = DictationStats(
         totalWords: 0, totalSessions: 0, averageWordsPerSession: 0,
@@ -78,6 +122,7 @@ final class AppState {
     var selectedBackend: BackendOption = .whisper
     var selectedMeetingTranscriptionBackend: BackendOption = .whisper
     var selectedMeetingSummaryBackend: MeetingSummaryBackendOption = .chatGPT
+    var selectedPostProcessorBackend: TranscriptCleanupBackendOption = .local
     var activePostProcessor: PostProcessorOption = PostProcessorOption.defaultOption
     var config: AppConfig = AppConfig()
     var launchAtLoginRegistrationState: LaunchAtLoginRegistrationState = .disabled
@@ -87,6 +132,13 @@ final class AppState {
     var isMeetingRecordingPaused: Bool = false
     var isMeetingStarting: Bool = false
     var meetingStartStatus: String?
+    var liveMeetingTranscript: String = ""
+    var liveMeetingTranscriptOwnerID: Int64? = nil
+    /// Provisional streaming tails for the live transcript view, one per
+    /// source; owner-gated by `liveMeetingTranscriptOwnerID` like the transcript.
+    var liveMeetingPartialYou: String = ""
+    var liveMeetingPartialOthers: String = ""
+    var activeMeetingAudioWarning: ActiveMeetingAudioWarning?
     var dictationState: DictationState = .idle
     var isVoiceNoteRecording: Bool = false
     var isChatGPTAuthenticated: Bool = false
@@ -100,6 +152,30 @@ final class AppState {
     var googleCalendarListLoadState: GoogleCalendarListLoadState = .idle
     var sparkleUpdateStatus: SparkleUpdateStatus = .idle
     var sparkleLastCheckedAt: Date?
+    var iCloudSyncStatus: String?
+    var isICloudSyncInProgress: Bool = false
+    var isICloudBridgeActivationPending: Bool = false
+    var iCloudBridgeState: ICloudBridgeState = .notConfigured
+    var iCloudBridgeMessage: String?
+    var iCloudBridgeRemoteDeviceName: String?
+    var iCloudBridgeRemoteDevicePlatform: String?
+    var iCloudBridgeCompanionDeviceName: String? {
+        guard isICloudBridgeCompanionPlatform else { return nil }
+        return iCloudBridgeRemoteDeviceName
+    }
+    var isICloudBridgeCompanionPlatform: Bool {
+        guard let platform = iCloudBridgeRemoteDevicePlatform else { return false }
+        switch platform.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "ios", "ipados":
+            return true
+        default:
+            return false
+        }
+    }
+    var iCloudLastSyncSummary: String?
+    var iCloudLastSyncedAt: Date?
+    var contributionMilestonePrompt: ContributionMilestonePrompt?
+    var pendingDiagnosticIncident: DiagnosticIncident?
     var modelPreparationTitle: String?
     var modelPreparationDetail: String?
     var modelPreparationProgress: Double?
@@ -110,7 +186,9 @@ final class AppState {
     var dictationPageSize: Int = 50
     var dictationFromDate: String? = nil
     var dictationToDate: String? = nil
+    var dictationOriginFilter: RecordOriginFilter = .all
     var hasMoreDictations: Bool = true
+    var meetingOriginFilter: RecordOriginFilter = .all
 
     // Search
     var searchQuery: String = ""
@@ -121,6 +199,12 @@ final class AppState {
 
     // Navigation
     var selectedTab: DashboardTab = .dictations
+    var insightsInitialSection: InsightsSection = .words
+    var selectedSettingsPane: SettingsPane = .general
+    var selectedModelsCategory: ModelsCategory = .dictation
+    var pendingFeatureTourInvitation: FeatureTour?
+    var activeFeatureTour: FeatureTour?
+    var featureTourStepIndex: Int = 0
 
     // Computed
     var selectedMeeting: MeetingRecord? {

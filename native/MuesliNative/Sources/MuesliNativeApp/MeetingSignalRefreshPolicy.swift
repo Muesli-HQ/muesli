@@ -20,7 +20,7 @@ enum MeetingDetectionMode: Equatable {
 struct MeetingSignalRefreshState: Equatable {
     var lastAudioAttributionRefreshAt: Date?
     var lastBrowserRefreshAt: Date?
-    var lastAppleScriptAttemptAtByBundleID: [String: Date] = [:]
+    var lastActiveTabFallbackAttemptAtByBundleID: [String: Date] = [:]
     var lastSuspicionAt: Date?
     var hasMicOrCameraSignal = false
     var hasRecentBrowserMeeting = false
@@ -46,7 +46,7 @@ struct MeetingSignalRefreshPolicy {
     let audioIdleThrottle: TimeInterval
     let browserSuspiciousThrottle: TimeInterval
     let browserIdleThrottle: TimeInterval
-    let appleScriptThrottle: TimeInterval
+    let activeTabFallbackThrottle: TimeInterval
 
     init(
         idleFallbackInterval: TimeInterval = 120,
@@ -57,7 +57,7 @@ struct MeetingSignalRefreshPolicy {
         audioIdleThrottle: TimeInterval = 120,
         browserSuspiciousThrottle: TimeInterval = 3,
         browserIdleThrottle: TimeInterval = 120,
-        appleScriptThrottle: TimeInterval = 15
+        activeTabFallbackThrottle: TimeInterval = 15
     ) {
         self.idleFallbackInterval = idleFallbackInterval
         self.suspiciousFallbackInterval = suspiciousFallbackInterval
@@ -67,7 +67,7 @@ struct MeetingSignalRefreshPolicy {
         self.audioIdleThrottle = audioIdleThrottle
         self.browserSuspiciousThrottle = browserSuspiciousThrottle
         self.browserIdleThrottle = browserIdleThrottle
-        self.appleScriptThrottle = appleScriptThrottle
+        self.activeTabFallbackThrottle = activeTabFallbackThrottle
     }
 
     func decision(
@@ -87,9 +87,9 @@ struct MeetingSignalRefreshPolicy {
         )
     }
 
-    func allowsAppleScript(for bundleID: String, state: MeetingSignalRefreshState, now: Date) -> Bool {
-        guard let lastAttempt = state.lastAppleScriptAttemptAtByBundleID[bundleID] else { return true }
-        return now.timeIntervalSince(lastAttempt) >= appleScriptThrottle
+    func allowsActiveTabFallbackProbe(for bundleID: String, state: MeetingSignalRefreshState, now: Date) -> Bool {
+        guard let lastAttempt = state.lastActiveTabFallbackAttemptAtByBundleID[bundleID] else { return true }
+        return now.timeIntervalSince(lastAttempt) >= activeTabFallbackThrottle
     }
 
     func suspicionDate(

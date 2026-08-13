@@ -8,11 +8,32 @@ enum AppFonts {
 
     static func registerIfNeeded(runtime: RuntimePaths) {
         guard !didRegister else { return }
-        let fontURLs = bundledFontURLs(runtime: runtime)
+        register(fontURLs: bundledFontURLs(runtime: runtime))
+    }
+
+    static func registerForRenderingIfNeeded() {
+        guard !didRegister else { return }
+        let fileManager = FileManager.default
+        let workingFonts = URL(fileURLWithPath: fileManager.currentDirectoryPath, isDirectory: true)
+            .appendingPathComponent("assets/fonts", isDirectory: true)
+        let locations = [
+            Bundle.main.resourceURL?.appendingPathComponent("fonts", isDirectory: true),
+            workingFonts,
+        ].compactMap { $0 }
+        let urls = locations.flatMap { directory -> [URL] in
+            guard let entries = try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
+                return []
+            }
+            return entries.filter { ["ttf", "otf"].contains($0.pathExtension.lowercased()) }
+        }
+        register(fontURLs: urls)
+    }
+
+    private static func register(fontURLs: [URL]) {
         for url in fontURLs {
             CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
         }
-        didRegister = true
+        didRegister = !fontURLs.isEmpty
     }
 
     static func regular(_ size: CGFloat) -> NSFont {

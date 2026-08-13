@@ -37,7 +37,7 @@ struct MeetingExporterTests {
         let md = MeetingExporter.buildMarkdown(meeting: meeting, content: .notes)
 
         #expect(md.contains("# Weekly Standup"))
-        #expect(md.contains("**Date:** 2026-04-14 10:00:00"))
+        #expect(md.contains("**Date:** \(MeetingBrowserLogic.formatStartTime(meeting.startTime))"))
         #expect(md.contains("**Duration:** 30 minutes"))
         #expect(md.contains("**Words:** 42"))
         #expect(md.contains("**Template:** Default"))

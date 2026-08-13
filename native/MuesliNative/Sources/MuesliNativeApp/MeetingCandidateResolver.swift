@@ -250,17 +250,14 @@ final class MeetingCandidateResolver {
         "net.whatsapp.WhatsApp": ("WhatsApp", .whatsApp),
     ]
 
-    /// Apps that are call-capable but too noisy for generic "running + mic"
-    /// detection. Electron chat apps can keep audio sessions warm while the
-    /// user is only messaging, so they need attributed full-duplex audio or a
-    /// stronger signal such as a calendar/browser meeting.
     static let weakDedicatedAppBundleIDs: Set<String> = [
         "com.tinyspeck.slackmacgap",
         "net.whatsapp.WhatsApp",
     ]
 
-    private static let fullDuplexAudioRequiredBundleIDs: Set<String> = [
+    private static let calendarFullDuplexAudioRequiredBundleIDs: Set<String> = [
         "com.tinyspeck.slackmacgap",
+        "net.whatsapp.WhatsApp",
     ]
 
     static let browserApps: [String: String] = [
@@ -346,7 +343,7 @@ final class MeetingCandidateResolver {
                 )
             }
 
-            if let audioApp = bestMeetingAudioProcess(from: snapshot.audioInputProcesses, includeWeakApps: true) {
+            if let audioApp = bestCalendarMeetingAudioProcess(from: snapshot.audioInputProcesses) {
                 let appSessionID = appAudioSessionID(for: audioApp, now: snapshot.now)
                 return candidate(
                     id: "cal:\(calendarEvent.id)",
@@ -382,7 +379,7 @@ final class MeetingCandidateResolver {
                 )
             }
 
-            let app = bestApp(from: snapshot.runningApps, includeWeakApps: true)
+            let app = bestCalendarApp(from: snapshot.runningApps)
             return candidate(
                 id: "cal:\(calendarEvent.id)",
                 platform: app?.platform ?? .unknown,
@@ -416,7 +413,7 @@ final class MeetingCandidateResolver {
             )
         }
 
-        if let audioApp = bestMeetingAudioProcess(from: snapshot.audioInputProcesses, includeWeakApps: true) {
+        if let audioApp = bestMeetingAudioProcess(from: snapshot.audioInputProcesses) {
             let platform = platform(for: audioApp.bundleID) ?? .unknown
             let appSessionID = appAudioSessionID(for: audioApp, now: snapshot.now)
             return candidate(
@@ -433,37 +430,36 @@ final class MeetingCandidateResolver {
             )
         }
 
-        if let app = bestApp(from: snapshot.runningApps, includeWeakApps: false) {
+        if let foregroundCameraApp = bestForegroundCameraApp(from: snapshot) {
             return candidate(
-                id: "app:\(app.bundleID)",
-                platform: app.platform,
-                appName: app.name,
+                id: "app:\(foregroundCameraApp.bundleID)",
+                platform: foregroundCameraApp.platform,
+                appName: foregroundCameraApp.name,
                 url: nil,
                 title: nil,
-                evidence: mediaEvidence(from: snapshot).union([.dedicatedApp]),
-                sourceBundleID: app.bundleID,
-                sourcePID: nil,
-                now: snapshot.now
-            )
-        }
-
-        if let foregroundBrowser = snapshot.runningApps.first(where: {
-            $0.bundleID == snapshot.foregroundBundleID && Self.browserApps[$0.bundleID] != nil
-        }), let appName = Self.browserApps[foregroundBrowser.bundleID] {
-            return candidate(
-                id: "browser:\(foregroundBrowser.bundleID)",
-                platform: .unknown,
-                appName: appName,
-                url: nil,
-                title: nil,
-                evidence: mediaEvidence(from: snapshot).union([.foregroundApp]),
-                sourceBundleID: foregroundBrowser.bundleID,
+                evidence: mediaEvidence(from: snapshot).union([.dedicatedApp, .foregroundApp]),
+                sourceBundleID: foregroundCameraApp.bundleID,
                 sourcePID: nil,
                 now: snapshot.now
             )
         }
 
         return nil
+    }
+
+    private func bestForegroundCameraApp(
+        from snapshot: MeetingSignalSnapshot
+    ) -> (bundleID: String, name: String, platform: MeetingCandidate.Platform)? {
+        guard snapshot.micActive, snapshot.cameraActive else { return nil }
+        return snapshot.runningApps
+            .filter { $0.bundleID != selfBundleID && $0.bundleID == snapshot.foregroundBundleID && $0.isActive }
+            .compactMap { app -> (bundleID: String, name: String, platform: MeetingCandidate.Platform)? in
+                guard let match = Self.dedicatedApps[app.bundleID] else {
+                    return nil
+                }
+                return (app.bundleID, match.name, match.platform)
+            }
+            .first
     }
 
     private func bestBrowserMeeting(from snapshot: MeetingSignalSnapshot) -> BrowserMeetingContext? {
@@ -474,33 +470,46 @@ final class MeetingCandidateResolver {
         }.first
     }
 
-    private func bestApp(
-        from apps: [RunningAppInfo],
-        includeWeakApps: Bool
+    private func bestCalendarApp(
+        from apps: [RunningAppInfo]
     ) -> (bundleID: String, name: String, platform: MeetingCandidate.Platform)? {
+        // Calendar-backed prompts keep legacy app attribution; the stricter
+        // full-duplex gate is only for opportunistic no-calendar detection.
         for app in apps.sorted(by: { $0.isActive && !$1.isActive }) where app.bundleID != selfBundleID {
             guard let match = Self.dedicatedApps[app.bundleID] else { continue }
-            if !includeWeakApps && Self.weakDedicatedAppBundleIDs.contains(app.bundleID) { continue }
-            if Self.fullDuplexAudioRequiredBundleIDs.contains(app.bundleID) { continue }
+            if Self.calendarFullDuplexAudioRequiredBundleIDs.contains(app.bundleID) { continue }
             return (app.bundleID, match.name, match.platform)
         }
         return nil
     }
 
-    private func bestMeetingAudioProcess(
-        from processes: [AudioProcessActivity],
-        includeWeakApps: Bool
-    ) -> AudioProcessActivity? {
+    private func bestCalendarMeetingAudioProcess(from processes: [AudioProcessActivity]) -> AudioProcessActivity? {
         let candidates = processes.filter { process in
             guard process.bundleID != selfBundleID else { return false }
+            guard process.isRunningInput else { return false }
             guard Self.dedicatedApps[process.bundleID] != nil else { return false }
             if !Self.weakDedicatedAppBundleIDs.contains(process.bundleID) {
                 return true
             }
-            guard includeWeakApps else { return false }
-            guard Self.fullDuplexAudioRequiredBundleIDs.contains(process.bundleID) else {
+            guard Self.calendarFullDuplexAudioRequiredBundleIDs.contains(process.bundleID) else {
                 return true
             }
+            return process.isRunningOutput
+        }
+
+        return candidates.sorted { lhs, rhs in
+            let lhsWeak = Self.weakDedicatedAppBundleIDs.contains(lhs.bundleID)
+            let rhsWeak = Self.weakDedicatedAppBundleIDs.contains(rhs.bundleID)
+            if lhsWeak != rhsWeak { return !lhsWeak && rhsWeak }
+            return lhs.appName < rhs.appName
+        }.first
+    }
+
+    private func bestMeetingAudioProcess(from processes: [AudioProcessActivity]) -> AudioProcessActivity? {
+        let candidates = processes.filter { process in
+            guard process.bundleID != selfBundleID else { return false }
+            guard process.isRunningInput else { return false }
+            guard Self.dedicatedApps[process.bundleID] != nil else { return false }
             return process.isRunningOutput
         }
 
@@ -517,6 +526,7 @@ final class MeetingCandidateResolver {
     ) -> (process: AudioProcessActivity, bundleID: String, appName: String)? {
         let candidates = processes.compactMap { process -> (process: AudioProcessActivity, bundleID: String, appName: String)? in
             guard process.bundleID != selfBundleID,
+                  process.isRunningInput,
                   let browserBundleID = browserBundleID(for: process.bundleID),
                   let appName = Self.browserApps[browserBundleID] else {
                 return nil
@@ -572,7 +582,7 @@ final class MeetingCandidateResolver {
     }
 
     private func hasMediaActivity(_ snapshot: MeetingSignalSnapshot) -> Bool {
-        snapshot.micActive || snapshot.cameraActive || !snapshot.audioInputProcesses.isEmpty
+        snapshot.micActive || snapshot.cameraActive || snapshot.audioInputProcesses.contains { $0.isRunningInput }
     }
 
     private func activeInputProcess(
@@ -580,7 +590,7 @@ final class MeetingCandidateResolver {
         in snapshot: MeetingSignalSnapshot
     ) -> AudioProcessActivity? {
         snapshot.audioInputProcesses.first {
-            $0.bundleID == bundleID || isHelperBundleID($0.bundleID, for: bundleID)
+            $0.isRunningInput && ($0.bundleID == bundleID || isHelperBundleID($0.bundleID, for: bundleID))
         }
     }
 

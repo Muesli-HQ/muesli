@@ -4,7 +4,10 @@ import MuesliCore
 struct MeetingListItemView: View {
     let record: MeetingRecord
     let isSelected: Bool
+    let hasFollowUps: Bool
     let folders: [MeetingFolder]
+    private let folderByID: [Int64: MeetingFolder]
+    private let folderIDsWithChildren: Set<Int64>
     let onSelect: () -> Void
     let onMove: (Int64?) -> Void
     let onCreateFolderAndMove: ((String) -> Void)?
@@ -15,9 +18,40 @@ struct MeetingListItemView: View {
     @State private var showNewFolderPrompt = false
     @State private var newFolderName = ""
 
+    init(
+        record: MeetingRecord,
+        isSelected: Bool,
+        hasFollowUps: Bool,
+        folders: [MeetingFolder],
+        onSelect: @escaping () -> Void,
+        onMove: @escaping (Int64?) -> Void,
+        onCreateFolderAndMove: ((String) -> Void)?,
+        onDelete: (() -> Void)?
+    ) {
+        self.record = record
+        self.isSelected = isSelected
+        self.hasFollowUps = hasFollowUps
+        self.folders = folders
+        self.folderByID = Dictionary(uniqueKeysWithValues: folders.map { ($0.id, $0) })
+        self.folderIDsWithChildren = Set(folders.compactMap(\.parentID))
+        self.onSelect = onSelect
+        self.onMove = onMove
+        self.onCreateFolderAndMove = onCreateFolderAndMove
+        self.onDelete = onDelete
+    }
+
     private var currentFolderName: String? {
         guard let fid = record.folderID else { return nil }
-        return folders.first(where: { $0.id == fid })?.name
+        guard let folder = folderByID[fid] else { return nil }
+        // Build breadcrumb path: "Grandparent / Parent / Folder"
+        var parts: [String] = [folder.name]
+        var current = folder.parentID
+        var seen: Set<Int64> = [folder.id]
+        while let pid = current, let parent = folderByID[pid], seen.insert(pid).inserted {
+            parts.insert(parent.name, at: 0)
+            current = parent.parentID
+        }
+        return parts.joined(separator: " / ")
     }
 
     var body: some View {
@@ -31,6 +65,7 @@ struct MeetingListItemView: View {
                 Spacer(minLength: 4)
 
                 HStack(spacing: 6) {
+                    relationshipIndicators
                     if !folders.isEmpty {
                         folderMenuButton
                     }
@@ -50,6 +85,10 @@ struct MeetingListItemView: View {
                 Text(formatMeta())
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textSecondary)
+
+                if let sourceIndicator = sourceIndicator {
+                    sourceIndicator
+                }
 
                 // Current folder badge
                 if let name = currentFolderName {
@@ -96,6 +135,46 @@ struct MeetingListItemView: View {
     // MARK: - Folder menu button
 
     @ViewBuilder
+    private var relationshipIndicators: some View {
+        if record.followUpToID != nil || hasFollowUps {
+            HStack(spacing: 4) {
+                if record.followUpToID != nil {
+                    relationshipIcon(
+                        "arrow.turn.down.right",
+                        help: "Follow-up meeting"
+                    )
+                }
+                if hasFollowUps {
+                    relationshipIcon(
+                        "arrow.triangle.branch",
+                        help: "Has follow-up meetings"
+                    )
+                }
+            }
+        }
+    }
+
+    private func relationshipIcon(_ systemName: String, help: String) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(MuesliTheme.accent.opacity(0.9))
+            .frame(width: 24, height: 24)
+            .help(help)
+            .accessibilityLabel(help)
+    }
+
+    private func folderBreadcrumb(_ folder: MeetingFolder) -> String {
+        var parts: [String] = [folder.name]
+        var current = folder.parentID
+        var seen: Set<Int64> = [folder.id]
+        while let pid = current, let parent = folderByID[pid], seen.insert(pid).inserted {
+            parts.insert(parent.name, at: 0)
+            current = parent.parentID
+        }
+        return parts.joined(separator: " / ")
+    }
+
+    @ViewBuilder
     private var folderMenuButton: some View {
         Button {
             showFolderPopover.toggle()
@@ -120,7 +199,12 @@ struct MeetingListItemView: View {
                 }
                 Divider().padding(.vertical, 4)
                 ForEach(folders) { folder in
-                    folderPopoverRow(icon: "folder", label: folder.name, isActive: record.folderID == folder.id) {
+                    let hasChildren = folderIDsWithChildren.contains(folder.id)
+                    folderPopoverRow(
+                        icon: hasChildren ? "folder.fill" : "folder",
+                        label: folderBreadcrumb(folder),
+                        isActive: record.folderID == folder.id
+                    ) {
                         onMove(folder.id)
                         showFolderPopover = false
                     }
@@ -205,18 +289,55 @@ struct MeetingListItemView: View {
             .clipShape(Capsule())
     }
 
-    private func formatMeta() -> String {
-        let time = formatTime(record.startTime)
-        let duration = formatDuration(record.durationSeconds)
-        return "\(time)  \u{2022}  \(duration)"
+    private var sourceIndicator: AnyView? {
+        if let label = SyncOriginDisplay.badgeLabel(forMeetingSource: record.source) {
+            return AnyView(SyncOriginBadge(label: label))
+        }
+        if isImportedAudio {
+            return AnyView(sourceBadge(icon: "square.and.arrow.down", label: "Imported", help: "Imported audio"))
+        }
+        if hasSavedRecording {
+            return AnyView(sourceBadge(icon: "waveform", label: "Recording", help: "Saved recording available"))
+        }
+        return nil
     }
 
-    private func formatTime(_ raw: String) -> String {
-        let clean = raw.replacingOccurrences(of: "T", with: " ")
-        if clean.count > 16 {
-            return String(clean.prefix(16))
+    private var isImportedAudio: Bool {
+        record.source == .audioImport || hasLegacyImportedRecordingPath
+    }
+
+    private var hasLegacyImportedRecordingPath: Bool {
+        guard let savedRecordingPath = record.savedRecordingPath else { return false }
+        let filename = URL(fileURLWithPath: savedRecordingPath).lastPathComponent
+        let pattern = #"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}_.+_[0-9A-Fa-f]{8}\.wav$"#
+        return filename.range(of: pattern, options: .regularExpression) != nil
+    }
+
+    private var hasSavedRecording: Bool {
+        guard let savedRecordingPath = record.savedRecordingPath else { return false }
+        return !savedRecordingPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func sourceBadge(icon: String, label: String, help: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 10, weight: .semibold))
+            Text(label)
+                .font(.system(size: 10, weight: .semibold))
         }
-        return clean
+        .foregroundStyle(isImportedAudio ? MuesliTheme.accent : MuesliTheme.textSecondary)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background((isImportedAudio ? MuesliTheme.accent : MuesliTheme.textSecondary).opacity(0.12))
+        .clipShape(Capsule())
+        .help(help)
+        .accessibilityLabel(help)
+    }
+
+    private func formatMeta() -> String {
+        let time = MeetingBrowserLogic.formatStartTime(record.startTime)
+        let duration = formatDuration(record.durationSeconds)
+        return "\(time)  \u{2022}  \(duration)"
     }
 
     private func formatDuration(_ seconds: Double) -> String {

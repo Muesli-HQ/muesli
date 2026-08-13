@@ -17,12 +17,16 @@ set -euo pipefail
 #   7. Re-download the hosted DMG from GitHub Releases and verify that exact file
 #   8. Update downstream release surfaces from the verified hosted DMG:
 #      - GitHub Pages appcast + landing-page metadata
-#      - Personal Homebrew tap cask
+#      - Official Homebrew cask livecheck/autobump verification
 #
 # Prerequisites:
 #   - Developer ID cert in keychain
+#   - Production provisioning profile for com.muesli.app when CloudKit
+#     entitlements are enabled:
+#       MUESLI_PROVISIONING_PROFILE=/path/to/profile.provisionprofile
 #   - Notary profile stored: xcrun notarytool store-credentials MuesliNotary
 #   - gh CLI authenticated
+#   - Homebrew installed for post-release cask livecheck/autobump verification
 #
 # Usage: ./scripts/release.sh [version]
 #   e.g.: ./scripts/release.sh 0.5.0
@@ -30,19 +34,35 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/muesli_spm_cache.sh"
+source "$ROOT/scripts/muesli_telemetry_channels.sh"
+PACKAGE_DIR="$ROOT/native/MuesliNative"
+SWIFTPM_SCRATCH_PATH=""
+SWIFT_TEST_ARGS=(--package-path "$PACKAGE_DIR")
+BUILD_ENV=()
+# The release channel is intentionally shared across worktrees. Do not run this
+# script concurrently from multiple worktrees unless you set an isolated
+# MUESLI_SWIFTPM_SCRATCH_PATH or MUESLI_SWIFTPM_SCRATCH_CHANNEL.
+if ! muesli_spm_scratch_disabled; then
+  SWIFTPM_SCRATCH_PATH="$(muesli_resolve_spm_scratch_path release)"
+  SWIFT_TEST_ARGS+=(--scratch-path "$SWIFTPM_SCRATCH_PATH")
+  BUILD_ENV+=(MUESLI_SWIFTPM_SCRATCH_PATH="$SWIFTPM_SCRATCH_PATH")
+else
+  BUILD_ENV+=(MUESLI_DISABLE_SWIFTPM_SCRATCH_PATH=1)
+fi
 PROFILE_NAME="${MUESLI_NOTARY_PROFILE:-MuesliNotary}"
 SIGN_IDENTITY="${MUESLI_SIGN_IDENTITY:-Developer ID Application: Pranav Hari Guruvayurappan (58W55QJ567)}"
+PROVISIONING_PROFILE="${MUESLI_PROVISIONING_PROFILE:-}"
 OUTPUT_DIR="$ROOT/dist-release"
 INSTALL_DIR="${MUESLI_RELEASE_INSTALL_DIR:-$OUTPUT_DIR/install-root}"
 APP_DIR="${MUESLI_RELEASE_APP_DIR:-$INSTALL_DIR/Muesli.app}"
-GENERATE_APPCAST="$ROOT/native/MuesliNative/.build/artifacts/sparkle/Sparkle/bin/generate_appcast"
+GENERATE_APPCAST="$(muesli_spm_artifacts_dir "$PACKAGE_DIR" "$SWIFTPM_SCRATCH_PATH")/sparkle/Sparkle/bin/generate_appcast"
 UPDATE_APPCAST_RELEASE_NOTES="$ROOT/scripts/update_appcast_release_notes.py"
-TAP_REPO="${MUESLI_TAP_REPO:-pHequals7/homebrew-muesli}"
-TAP_CASK_REL_PATH="${MUESLI_TAP_CASK_REL_PATH:-Casks/m/muesli.rb}"
-SKIP_TAP_UPDATE="${MUESLI_SKIP_TAP_UPDATE:-0}"
+HOMEBREW_CASK="${MUESLI_HOMEBREW_CASK:-muesli}"
+SKIP_HOMEBREW_CHECK="${MUESLI_SKIP_HOMEBREW_CHECK:-0}"
 VERIFY_DIR=""
 HOSTED_MOUNT_POINT=""
-TAP_WORK_DIR=""
+HOMEBREW_CHECK_STATUS="skipped"
 
 cleanup() {
   if [[ -n "$HOSTED_MOUNT_POINT" ]]; then
@@ -50,9 +70,6 @@ cleanup() {
   fi
   if [[ -n "$VERIFY_DIR" && -d "$VERIFY_DIR" ]]; then
     rm -rf "$VERIFY_DIR"
-  fi
-  if [[ -n "$TAP_WORK_DIR" && -d "$TAP_WORK_DIR" ]]; then
-    rm -rf "$TAP_WORK_DIR"
   fi
 }
 
@@ -86,20 +103,42 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 
-if [[ ! -x "$GENERATE_APPCAST" ]]; then
-  echo "ERROR: generate_appcast not found at $GENERATE_APPCAST" >&2
-  exit 1
-fi
-
 if [[ ! -f "$UPDATE_APPCAST_RELEASE_NOTES" ]]; then
   echo "ERROR: update_appcast_release_notes.py not found at $UPDATE_APPCAST_RELEASE_NOTES" >&2
   exit 1
 fi
 
-DOWNLOAD_URL="https://github.com/pHequals7/muesli/releases/download/v${VERSION}/Muesli-${VERSION}.dmg"
+if [[ -z "$PROVISIONING_PROFILE" ]]; then
+  echo "ERROR: stable release builds require MUESLI_PROVISIONING_PROFILE." >&2
+  echo "Use the production provisioning profile for bundle ID com.muesli.app with CloudKit container iCloud.com.mueslihq.muesli." >&2
+  exit 1
+fi
+
+if [[ ! -f "$PROVISIONING_PROFILE" ]]; then
+  echo "ERROR: provisioning profile not found: $PROVISIONING_PROFILE" >&2
+  exit 1
+fi
+
+DOWNLOAD_URL="https://github.com/Muesli-HQ/muesli/releases/download/v${VERSION}/Muesli-${VERSION}.dmg"
 TAG="v${VERSION}"
 RELEASE_TITLE="Muesli ${VERSION}"
-RELEASE_NOTES="$(cat <<EOF
+DEFAULT_RELEASE_NOTES_FILE="$ROOT/docs/release-notes/${VERSION}.md"
+RELEASE_NOTES_FILE="${MUESLI_RELEASE_NOTES_FILE:-$DEFAULT_RELEASE_NOTES_FILE}"
+RELEASE_NOTES=""
+RELEASE_NOTES_FROM_FILE=0
+RELEASE_NOTES_ARGS=()
+
+if [[ -n "${MUESLI_RELEASE_NOTES_FILE:-}" && ! -f "$RELEASE_NOTES_FILE" ]]; then
+  echo "ERROR: release notes file not found: $RELEASE_NOTES_FILE" >&2
+  exit 1
+fi
+
+if [[ -f "$RELEASE_NOTES_FILE" ]]; then
+  RELEASE_NOTES_FROM_FILE=1
+  RELEASE_NOTES_ARGS=(--notes-file "$RELEASE_NOTES_FILE")
+  echo "Using release notes from $RELEASE_NOTES_FILE"
+else
+  RELEASE_NOTES="$(cat <<EOF
 ## Muesli ${VERSION}
 
 Native macOS app — dictation + meeting transcription on Apple Silicon.
@@ -112,34 +151,27 @@ Native macOS app — dictation + meeting transcription on Apple Silicon.
 Signed, notarized, and stapled by Apple.
 EOF
 )"
+  RELEASE_NOTES_ARGS=(--notes "$RELEASE_NOTES")
+fi
 
-update_personal_tap() {
-  if [[ "$SKIP_TAP_UPDATE" == "1" ]]; then
-    echo "  Skipping personal tap update because MUESLI_SKIP_TAP_UPDATE=1."
+verify_homebrew_autobump() {
+  if [[ "$SKIP_HOMEBREW_CHECK" == "1" ]]; then
+    echo "  Skipping official Homebrew cask livecheck because MUESLI_SKIP_HOMEBREW_CHECK=1."
+    HOMEBREW_CHECK_STATUS="skipped"
     return 0
   fi
 
-  TAP_WORK_DIR="$(mktemp -d)"
-  echo "  Cloning $TAP_REPO..."
-  gh repo clone "$TAP_REPO" "$TAP_WORK_DIR" -- --quiet
-
-  local cask_path="$TAP_WORK_DIR/$TAP_CASK_REL_PATH"
-  if [[ ! -f "$cask_path" ]]; then
-    echo "ERROR: Personal tap cask not found at $TAP_CASK_REL_PATH in $TAP_REPO." >&2
-    return 1
+  echo "  Verifying official Homebrew cask livecheck for ${HOMEBREW_CASK}..."
+  HOMEBREW_CHECK_STATUS="verified"
+  if ! brew livecheck --cask "$HOMEBREW_CASK"; then
+    echo "  WARNING: Homebrew livecheck failed; check ${HOMEBREW_CASK} manually." >&2
+    HOMEBREW_CHECK_STATUS="warning"
   fi
-
-  perl -0pi -e 's/version "[^"]+"/version "'"$VERSION"'"/; s/sha256 "[^"]+"/sha256 "'"$HOSTED_SHA"'"/' "$cask_path"
-
-  git -C "$TAP_WORK_DIR" add "$TAP_CASK_REL_PATH"
-  if git -C "$TAP_WORK_DIR" diff --cached --quiet; then
-    echo "  Personal tap already points at v${VERSION}."
-    return 0
+  if ! brew bump --cask --no-pull-requests "$HOMEBREW_CASK"; then
+    echo "  WARNING: Homebrew autobump verification failed; check ${HOMEBREW_CASK} manually." >&2
+    HOMEBREW_CHECK_STATUS="warning"
   fi
-
-  git -C "$TAP_WORK_DIR" commit -m "muesli ${VERSION}"
-  git -C "$TAP_WORK_DIR" push origin HEAD
-  echo "  Personal tap updated: https://github.com/$TAP_REPO"
+  echo "  BrewTestBot should open ${HOMEBREW_CASK} version bump PRs automatically."
 }
 
 echo "=== Muesli Release v${VERSION} ==="
@@ -151,15 +183,36 @@ sed -i '' "s/^DEFAULT_APP_VERSION=.*/DEFAULT_APP_VERSION=\"${VERSION}\"/" "$ROOT
 
 # --- Step 1: Run tests ---
 echo "[1/13] Running tests..."
-swift test --package-path "$ROOT/native/MuesliNative"
+if [[ -n "$SWIFTPM_SCRATCH_PATH" ]]; then
+  mkdir -p "$SWIFTPM_SCRATCH_PATH"
+  echo "  SwiftPM scratch path: $SWIFTPM_SCRATCH_PATH"
+else
+  echo "  SwiftPM scratch path: package-local .build"
+fi
+swift test "${SWIFT_TEST_ARGS[@]}"
 echo "  Tests passed."
 
 # --- Step 2: Build and sign ---
 echo "[2/13] Building and signing..."
 rm -rf "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
-echo "y" | MUESLI_INSTALL_DIR="$INSTALL_DIR" "$ROOT/scripts/build_native_app.sh" > /dev/null 2>&1
+RELEASE_BUILD_ENV=(
+  MUESLI_INSTALL_DIR="$INSTALL_DIR"
+  MUESLI_PROVISIONING_PROFILE="$PROVISIONING_PROFILE"
+  MUESLI_SIGN_IDENTITY="$SIGN_IDENTITY"
+  MUESLI_TELEMETRYDECK_APP_ID="$MUESLI_TELEMETRYDECK_PRODUCTION_APP_ID"
+  MUESLI_TELEMETRY_CHANNEL="production"
+  "${BUILD_ENV[@]}"
+)
+echo "  Bundle ID: com.muesli.app"
+echo "  Profile:   $PROVISIONING_PROFILE"
+echo "  Identity:  $SIGN_IDENTITY"
+echo "y" | env "${RELEASE_BUILD_ENV[@]}" "$ROOT/scripts/build_native_app.sh" > /dev/null
 echo "  Installed to $APP_DIR"
+if [[ ! -x "$GENERATE_APPCAST" ]]; then
+  echo "ERROR: generate_appcast not found at $GENERATE_APPCAST" >&2
+  exit 1
+fi
 
 # Verify signature
 FLAGS=$(codesign -dvvv "$APP_DIR" 2>&1 | grep -o 'flags=0x[0-9a-f]*([^)]*)')
@@ -287,7 +340,7 @@ gh release create "$TAG" \
   --draft \
   --verify-tag \
   --title "$RELEASE_TITLE" \
-  --notes "$RELEASE_NOTES" \
+  "${RELEASE_NOTES_ARGS[@]}" \
   "$DMG_PATH"
 
 DRAFT_RELEASE_URL=$(gh release view "$TAG" --json url -q .url)
@@ -365,7 +418,7 @@ echo "[11/13] Publishing verified GitHub release..."
 gh release edit "$TAG" \
   --draft=false \
   --title "$RELEASE_TITLE" \
-  --notes "$RELEASE_NOTES"
+  "${RELEASE_NOTES_ARGS[@]}"
 
 RELEASE_URL=$(gh release view "$TAG" --json url -q .url)
 echo "  Release published: $RELEASE_URL"
@@ -375,18 +428,26 @@ echo "[12/13] Updating appcast and release metadata..."
 "$GENERATE_APPCAST" "$OUTPUT_DIR" -o "$ROOT/docs/appcast.xml"
 
 # Point appcast enclosures at GitHub Releases, not GitHub Pages.
-perl -0pi -e 's{https://pHequals7\.github\.io/muesli/(Muesli-([0-9][0-9A-Za-z\.\-]*)\.dmg)}{"https://github.com/pHequals7/muesli/releases/download/v$2/$1"}ge' "$ROOT/docs/appcast.xml"
+perl -0pi -e 's{https://muesli-hq\.github\.io/muesli/(Muesli-([0-9][0-9A-Za-z\.\-]*)\.dmg)}{"https://github.com/Muesli-HQ/muesli/releases/download/v$2/$1"}ge' "$ROOT/docs/appcast.xml"
 
 # Delta artifacts are not hosted, so strip delta enclosures from the appcast.
 perl -0pi -e 's{^\h*<enclosure\b[^>]*\bsparkle:deltaFrom="[^"]*"[^>]*/>\n}{}mg' "$ROOT/docs/appcast.xml"
-printf '%s\n' "$RELEASE_NOTES" | python3 "$UPDATE_APPCAST_RELEASE_NOTES" \
-  "$ROOT/docs/appcast.xml" \
-  --sparkle-version "$VERSION" \
-  --short-version "$VERSION"
+if [[ "$RELEASE_NOTES_FROM_FILE" == "1" ]]; then
+  python3 "$UPDATE_APPCAST_RELEASE_NOTES" \
+    "$ROOT/docs/appcast.xml" \
+    --sparkle-version "$VERSION" \
+    --short-version "$VERSION" \
+    < "$RELEASE_NOTES_FILE"
+else
+  printf '%s\n' "$RELEASE_NOTES" | python3 "$UPDATE_APPCAST_RELEASE_NOTES" \
+    "$ROOT/docs/appcast.xml" \
+    --sparkle-version "$VERSION" \
+    --short-version "$VERSION"
+fi
 
 # Keep the marketing/docs surface aligned with the published GitHub Release.
-sed -i '' "s|https://github.com/pHequals7/muesli/releases/download/[^\"]*\\.dmg|$DOWNLOAD_URL|g" "$ROOT/docs/index.html"
-sed -i '' "s|https://github.com/pHequals7/muesli/releases/download/.*\\.dmg|$DOWNLOAD_URL|g" "$ROOT/docs/llms.txt"
+sed -i '' "s|https://github.com/Muesli-HQ/muesli/releases/download/[^\"]*\\.dmg|$DOWNLOAD_URL|g" "$ROOT/docs/index.html"
+sed -i '' "s|https://github.com/Muesli-HQ/muesli/releases/download/.*\\.dmg|$DOWNLOAD_URL|g" "$ROOT/docs/llms.txt"
 
 echo "  Verifying Sparkle update flow metadata..."
 "$ROOT/scripts/verify_update_flow.sh" \
@@ -404,9 +465,9 @@ else
   echo "  Pushed appcast and landing-page updates to main."
 fi
 
-# --- Step 13: Update the personal Homebrew tap from the verified hosted DMG ---
-echo "[13/13] Updating personal Homebrew tap..."
-update_personal_tap
+# --- Step 13: Verify the official Homebrew cask can see the new release ---
+echo "[13/13] Verifying official Homebrew cask livecheck..."
+verify_homebrew_autobump
 
 echo ""
 echo "=== Release complete ==="
@@ -414,6 +475,9 @@ echo "  Version: ${VERSION}"
 echo "  DMG: $DMG_PATH"
 echo "  Release: $RELEASE_URL"
 echo "  Hosted asset verified."
-if [[ "$SKIP_TAP_UPDATE" != "1" ]]; then
-  echo "  Personal tap: https://github.com/$TAP_REPO"
+if [[ "$HOMEBREW_CHECK_STATUS" == "verified" ]]; then
+  echo "  Homebrew cask livecheck verified for ${HOMEBREW_CASK}."
+  echo "  Watch Homebrew/homebrew-cask for the BrewTestBot autobump PR."
+elif [[ "$HOMEBREW_CHECK_STATUS" == "warning" ]]; then
+  echo "  Homebrew cask verification had warnings; check ${HOMEBREW_CASK} manually."
 fi

@@ -9,13 +9,13 @@ struct MeetingPreparationBanner: View {
             ProgressView()
                 .controlSize(.small)
                 .frame(width: 18, height: 18)
-                .accessibilityLabel("Preparing meeting")
+                .accessibilityLabel("Preparing transcription")
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Preparing meeting")
+                Text("Preparing transcription")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(MuesliTheme.textPrimary)
-                Text(status ?? "Loading transcription, VAD, and speaker diarization...")
+                Text(status ?? "Meeting transcription will start shortly.")
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textSecondary)
                     .lineLimit(2)

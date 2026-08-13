@@ -5,7 +5,7 @@ Run `./scripts/release.sh [version]` — it automates steps 1-9 and is the only 
 Source of truth:
 - GitHub Releases hosts the official DMG binaries
 - GitHub Pages hosts the Sparkle appcast consumed by the app
-- `pHequals7/homebrew-muesli` mirrors the verified GitHub Release DMG via the personal tap cask
+- The official `Homebrew/homebrew-cask` cask tracks the verified GitHub Release DMG
 - Marketing surfaces may link to those assets, but they are not release authorities
 
 This checklist is for **verification** after the script runs, and for manual recovery if any step fails.
@@ -16,6 +16,35 @@ This checklist is for **verification** after the script runs, and for manual rec
 - [ ] `swift test --package-path native/MuesliNative` — all tests pass
 - [ ] Version bumped in `scripts/build_native_app.sh` (CFBundleVersion + CFBundleShortVersionString)
 - [ ] No uncommitted changes (`git status` clean)
+- [ ] Homebrew installed and updated enough to run post-release `brew livecheck --cask muesli`
+
+## Signing Profiles
+
+Muesli's default entitlements include CloudKit (`iCloud.com.mueslihq.muesli`). Any cloud-entitled build must be signed with a provisioning profile whose app identifier matches the bundle ID and whose certificate matches the signing identity.
+
+- [ ] Dev lane `MuesliDev` / `com.muesli.dev`
+  - Use profile: `../muesli-ios/secrets/mueslimacosdevcloudkitcommueslidev.provisionprofile`
+  - Use identity: `Apple Development: Pranav Hari Guruvayurappan (59WTZW55XG)`
+  - Use `MUESLI_CODESIGN_TIMESTAMP=none`
+  - `scripts/dev-test.sh --cloud-entitlements` auto-selects these values when that local profile exists
+
+- [ ] Named dev lanes `com.muesli.dev.a/b/c`
+  - Default to local-only entitlements and do not need a CloudKit profile
+  - If running with `--cloud-entitlements`, provide a lane-specific profile and matching Apple Development identity
+
+- [ ] Preprod `MuesliPreprod` / `com.muesli.preprod`
+  - Export `MUESLI_PROVISIONING_PROFILE=/path/to/com.muesli.preprod.profile`
+  - Maintainer local profile: `../muesli-ios/secrets/mueslimacospreproddeveloperidcloudkit.provisionprofile`
+  - Use the Developer ID release identity unless intentionally overriding `MUESLI_SIGN_IDENTITY`
+  - Verify the embedded profile carries `iCloud.com.mueslihq.muesli`
+
+- [ ] Stable `Muesli` / `com.muesli.app`
+  - Export `MUESLI_PROVISIONING_PROFILE=/path/to/com.muesli.app.profile`
+  - Maintainer local profile: `../muesli-ios/secrets/mueslimacosproductiondeveloperidcloudkit.provisionprofile`
+  - Use `Developer ID Application: Pranav Hari Guruvayurappan (58W55QJ567)`
+  - Final app and DMG must be notarized, stapled, and accepted by Gatekeeper
+
+If launch fails with `No matching profile found`, the embedded profile, bundle ID, entitlements, or signing identity do not match.
 
 ## Build & Sign
 
@@ -23,6 +52,13 @@ This checklist is for **verification** after the script runs, and for manual rec
 - [ ] App installed to `/Applications/Muesli.app`
 - [ ] Verify signature: `codesign -dvvv /Applications/Muesli.app 2>&1 | grep "Authority"`
   - Must show `Developer ID Application: Pranav Hari Guruvayurappan (58W55QJ567)`
+- [ ] Verify effective entitlements:
+  ```bash
+  codesign -d --entitlements :- /Applications/Muesli.app | plutil -p -
+  ```
+  - Must show CloudKit container `iCloud.com.mueslihq.muesli`
+  - Must show CloudKit environment `Production`
+  - Must show APNs environment `production` when using the production Developer ID CloudKit profile
 
 ## Notarize & Staple (CRITICAL ORDER)
 
@@ -111,9 +147,9 @@ This checklist is for **verification** after the script runs, and for manual rec
 
 - [ ] **Fix appcast enclosure URLs to GitHub Releases** — `generate_appcast` writes GitHub Pages URLs. Replace with GitHub Releases URLs:
   ```
-  https://pHequals7.github.io/muesli/Muesli-X.Y.Z.dmg
+  https://muesli-hq.github.io/muesli/Muesli-X.Y.Z.dmg
   →
-  https://github.com/pHequals7/muesli/releases/download/vX.Y.Z/Muesli-X.Y.Z.dmg
+  https://github.com/Muesli-HQ/muesli/releases/download/vX.Y.Z/Muesli-X.Y.Z.dmg
   ```
 
 - [ ] **Remove delta entries** from appcast (deltas aren't hosted)
@@ -132,22 +168,30 @@ This checklist is for **verification** after the script runs, and for manual rec
   git push
   ```
 
-## Personal Tap
+## Homebrew Cask
 
-- [ ] **Update the personal Homebrew tap cask** in `pHequals7/homebrew-muesli`
-  - `Casks/m/muesli.rb` must point at the new version and the hosted GitHub Release SHA256
-  - Commit message should be `muesli X.Y.Z`
-  - The canonical release flow now automates this inside `scripts/release.sh`
+- [ ] **Verify the official Homebrew cask autobump path**
+  - The canonical release flow runs `brew livecheck --cask muesli` after the GitHub Release is published
+  - It also runs `brew bump --cask --no-pull-requests muesli` to confirm BrewTestBot owns update PRs
+  - Homebrew's BrewTestBot owns official cask bump PRs for `muesli` and opens them automatically about every 3 hours
+  - If a PR does not appear after the next autobump cycle, investigate livecheck/autobump rather than using `brew bump-cask-pr`
+  - Set `MUESLI_SKIP_HOMEBREW_CHECK=1` only when intentionally skipping the release-time livecheck
 
-- [ ] **Verify the tap install path if the cask changed shape**
+- [ ] **Verify the official cask install path if the cask changed shape**
   ```bash
-  brew tap pHequals7/muesli
-  brew install --cask pHequals7/muesli/muesli
+  brew install --cask muesli
+  ```
+
+- [ ] **Verify the Homebrew CLI alias when the cask exposes the bundled binary**
+  ```bash
+  brew install muesli
+  command -v muesli
+  muesli transcribe --help
   ```
 
 ## Post-release
 
-- [ ] Verify GitHub Pages serves appcast: `curl -s https://phequals7.github.io/muesli/appcast.xml | head -5`
+- [ ] Verify GitHub Pages serves appcast: `curl -s https://muesli-hq.github.io/muesli/appcast.xml | head -5`
 - [ ] Verify the GitHub Release page exposes the DMG you just uploaded
 - [ ] Verify `docs/index.html` and `docs/llms.txt` point to the newly published GitHub Release DMG
 - [ ] Optional: install previous version and confirm Sparkle shows update prompt

@@ -11,7 +11,11 @@ set -euo pipefail
 #   - App name: MuesliPreprod
 #   - Bundle ID: com.muesli.preprod
 #   - Support dir: ~/Library/Application Support/MuesliPreprod
-#   - Sparkle feed: https://pHequals7.github.io/muesli/appcast-preprod.xml
+#   - Sparkle feed: https://muesli-hq.github.io/muesli/appcast-preprod.xml
+#
+# Required signing environment:
+#   MUESLI_PROVISIONING_PROFILE=/path/to/com.muesli.preprod.profile
+#   MUESLI_SIGN_IDENTITY="Developer ID Application: ... (TEAMID)"
 #
 # Usage: ./scripts/release-preprod.sh [version]
 #   e.g. ./scripts/release-preprod.sh 0.6.3-preprod.1
@@ -19,18 +23,35 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/muesli_spm_cache.sh"
+source "$ROOT/scripts/muesli_telemetry_channels.sh"
 
+PACKAGE_DIR="$ROOT/native/MuesliNative"
+SWIFTPM_SCRATCH_PATH=""
+SWIFT_TEST_ARGS=(--package-path "$PACKAGE_DIR")
+BUILD_ENV=()
+# The preprod channel is intentionally shared across worktrees. Do not run this
+# script concurrently from multiple worktrees unless you set an isolated
+# MUESLI_SWIFTPM_SCRATCH_PATH or MUESLI_SWIFTPM_SCRATCH_CHANNEL.
+if ! muesli_spm_scratch_disabled; then
+  SWIFTPM_SCRATCH_PATH="$(muesli_resolve_spm_scratch_path preprod)"
+  SWIFT_TEST_ARGS+=(--scratch-path "$SWIFTPM_SCRATCH_PATH")
+  BUILD_ENV+=(MUESLI_SWIFTPM_SCRATCH_PATH="$SWIFTPM_SCRATCH_PATH")
+else
+  BUILD_ENV+=(MUESLI_DISABLE_SWIFTPM_SCRATCH_PATH=1)
+fi
 PROFILE_NAME="${MUESLI_NOTARY_PROFILE:-MuesliNotary}"
 SIGN_IDENTITY="${MUESLI_SIGN_IDENTITY:-Developer ID Application: Pranav Hari Guruvayurappan (58W55QJ567)}"
+PROVISIONING_PROFILE="${MUESLI_PROVISIONING_PROFILE:-}"
 APP_NAME="MuesliPreprod"
 BUNDLE_ID="com.muesli.preprod"
 SUPPORT_DIR_NAME="MuesliPreprod"
-PREPROD_FEED_URL="https://pHequals7.github.io/muesli/appcast-preprod.xml"
+PREPROD_FEED_URL="https://muesli-hq.github.io/muesli/appcast-preprod.xml"
 OUTPUT_DIR="$ROOT/dist-preprod"
 INSTALL_DIR="$OUTPUT_DIR/install-root"
 APP_DIR="$INSTALL_DIR/${APP_NAME}.app"
 APPCAST_PATH="$ROOT/docs/appcast-preprod.xml"
-GENERATE_APPCAST="$ROOT/native/MuesliNative/.build/artifacts/sparkle/Sparkle/bin/generate_appcast"
+GENERATE_APPCAST="$(muesli_spm_artifacts_dir "$PACKAGE_DIR" "$SWIFTPM_SCRATCH_PATH")/sparkle/Sparkle/bin/generate_appcast"
 UPDATE_APPCAST_RELEASE_NOTES="$ROOT/scripts/update_appcast_release_notes.py"
 VERIFY_DIR=""
 HOSTED_MOUNT_POINT=""
@@ -85,13 +106,19 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 
-if [[ ! -x "$GENERATE_APPCAST" ]]; then
-  echo "ERROR: generate_appcast not found at $GENERATE_APPCAST" >&2
+if [[ ! -f "$UPDATE_APPCAST_RELEASE_NOTES" ]]; then
+  echo "ERROR: update_appcast_release_notes.py not found at $UPDATE_APPCAST_RELEASE_NOTES" >&2
   exit 1
 fi
 
-if [[ ! -f "$UPDATE_APPCAST_RELEASE_NOTES" ]]; then
-  echo "ERROR: update_appcast_release_notes.py not found at $UPDATE_APPCAST_RELEASE_NOTES" >&2
+if [[ -z "$PROVISIONING_PROFILE" ]]; then
+  echo "ERROR: preprod release builds require MUESLI_PROVISIONING_PROFILE." >&2
+  echo "Use the provisioning profile for bundle ID $BUNDLE_ID with CloudKit container iCloud.com.mueslihq.muesli." >&2
+  exit 1
+fi
+
+if [[ ! -f "$PROVISIONING_PROFILE" ]]; then
+  echo "ERROR: provisioning profile not found: $PROVISIONING_PROFILE" >&2
   exit 1
 fi
 
@@ -132,24 +159,43 @@ mkdir -p "$INSTALL_DIR"
 
 # --- Step 1: Run tests ---
 echo "[1/11] Running tests..."
-swift test --package-path "$ROOT/native/MuesliNative"
+if [[ -n "$SWIFTPM_SCRATCH_PATH" ]]; then
+  mkdir -p "$SWIFTPM_SCRATCH_PATH"
+  echo "  SwiftPM scratch path: $SWIFTPM_SCRATCH_PATH"
+else
+  echo "  SwiftPM scratch path: package-local .build"
+fi
+swift test "${SWIFT_TEST_ARGS[@]}"
 echo "  Tests passed."
 
 # --- Step 2: Build and sign ---
 echo "[2/11] Building and signing..."
-MUESLI_INSTALL_DIR="$INSTALL_DIR" \
-  MUESLI_BUILD_VERSION="$VERSION" \
-  MUESLI_BUNDLE_VERSION="$SPARKLE_BUILD_VERSION" \
-  MUESLI_SHORT_VERSION="$VERSION" \
-  MUESLI_APP_NAME="$APP_NAME" \
-  MUESLI_APP_BUNDLE_NAME="${APP_NAME}.app" \
-  MUESLI_BUNDLE_ID="$BUNDLE_ID" \
-  MUESLI_DISPLAY_NAME="$APP_NAME" \
-  MUESLI_SUPPORT_DIR_NAME="$SUPPORT_DIR_NAME" \
-  MUESLI_SPARKLE_FEED_URL="$PREPROD_FEED_URL" \
-  MUESLI_SIGN_IDENTITY="$SIGN_IDENTITY" \
-  "$ROOT/scripts/build_native_app.sh" > /dev/null
+PREPROD_BUILD_ENV=(
+  MUESLI_INSTALL_DIR="$INSTALL_DIR"
+  "${BUILD_ENV[@]}"
+  MUESLI_BUILD_VERSION="$VERSION"
+  MUESLI_BUNDLE_VERSION="$SPARKLE_BUILD_VERSION"
+  MUESLI_SHORT_VERSION="$VERSION"
+  MUESLI_APP_NAME="$APP_NAME"
+  MUESLI_APP_BUNDLE_NAME="${APP_NAME}.app"
+  MUESLI_BUNDLE_ID="$BUNDLE_ID"
+  MUESLI_DISPLAY_NAME="$APP_NAME"
+  MUESLI_SUPPORT_DIR_NAME="$SUPPORT_DIR_NAME"
+  MUESLI_SPARKLE_FEED_URL="$PREPROD_FEED_URL"
+  MUESLI_TELEMETRYDECK_APP_ID="$MUESLI_TELEMETRYDECK_PREPROD_APP_ID"
+  MUESLI_TELEMETRY_CHANNEL="preprod"
+  MUESLI_SIGN_IDENTITY="$SIGN_IDENTITY"
+  MUESLI_PROVISIONING_PROFILE="$PROVISIONING_PROFILE"
+)
+echo "  Bundle ID: $BUNDLE_ID"
+echo "  Profile:   $PROVISIONING_PROFILE"
+echo "  Identity:  $SIGN_IDENTITY"
+env "${PREPROD_BUILD_ENV[@]}" "$ROOT/scripts/build_native_app.sh" > /dev/null
 echo "  Installed to $APP_DIR"
+if [[ ! -x "$GENERATE_APPCAST" ]]; then
+  echo "ERROR: generate_appcast not found at $GENERATE_APPCAST" >&2
+  exit 1
+fi
 
 FLAGS=$(codesign -dvvv "$APP_DIR" 2>&1 | grep -o 'flags=0x[0-9a-f]*([^)]*)')
 echo "  Signature: $FLAGS"
@@ -312,7 +358,7 @@ echo "  Hosted asset verified and prerelease published."
 echo "[11/11] Updating preprod appcast..."
 "$GENERATE_APPCAST" "$OUTPUT_DIR" -o "$APPCAST_PATH"
 
-perl -0pi -e 's{https://pHequals7\.github\.io/muesli/(MuesliPreprod-([0-9][0-9A-Za-z\.\-]*)\.dmg)}{"https://github.com/pHequals7/muesli/releases/download/v$2/$1"}ge' "$APPCAST_PATH"
+perl -0pi -e 's{https://muesli-hq\.github\.io/muesli/(MuesliPreprod-([0-9][0-9A-Za-z\.\-]*)\.dmg)}{"https://github.com/Muesli-HQ/muesli/releases/download/v$2/$1"}ge' "$APPCAST_PATH"
 perl -0pi -e 's{^\h*<enclosure\b[^>]*\bsparkle:deltaFrom="[^"]*"[^>]*/>\n}{}mg' "$APPCAST_PATH"
 perl -0pi -e 's{^\h*<sparkle:deltas>\s*</sparkle:deltas>\n}{}mg' "$APPCAST_PATH"
 python3 - "$APPCAST_PATH" "$SPARKLE_BUILD_VERSION" "$VERSION" <<'PY'

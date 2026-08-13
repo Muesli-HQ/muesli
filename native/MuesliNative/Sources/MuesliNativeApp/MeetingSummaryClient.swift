@@ -20,22 +20,127 @@ enum MeetingSummaryError: LocalizedError {
     }
 }
 
+enum MeetingSummaryRetryPolicy {
+    static let defaultRetryCount = 3
+    static let maximumRetryCount = 5
+
+    static func clampedRetryCount(_ count: Int) -> Int {
+        min(max(count, 0), maximumRetryCount)
+    }
+
+    static func shouldRetry(_ error: Error) -> Bool {
+        if error is CancellationError {
+            return false
+        }
+
+        guard let summaryError = error as? MeetingSummaryError else {
+            return false
+        }
+
+        switch summaryError {
+        case .requestFailed(let backend, let underlying):
+            if isPermanentRequestFailure(underlying) {
+                return false
+            }
+            if isLocalBackend(backend), isLocalEndpointUnavailable(underlying) {
+                return false
+            }
+            return true
+        case .emptyResponse:
+            return true
+        case .backendFailed(_, let statusCode, _):
+            guard let statusCode else { return false }
+            return isTransientHTTPStatus(statusCode)
+        }
+    }
+
+    static func effectiveRetryCount(configuredCount: Int, after error: Error) -> Int {
+        let retryCount = clampedRetryCount(configuredCount)
+        guard retryCount > 0, shouldRetry(error) else { return 0 }
+        guard let summaryError = error as? MeetingSummaryError else { return 0 }
+
+        switch summaryError {
+        case .requestFailed(let backend, _),
+             .emptyResponse(let backend),
+             .backendFailed(let backend, _, _):
+            if isLocalBackend(backend) {
+                return min(retryCount, 1)
+            }
+            return retryCount
+        }
+    }
+
+    private static func isPermanentRequestFailure(_ error: Error) -> Bool {
+        if error is CancellationError || error is ChatGPTAuthError {
+            return true
+        }
+
+        guard let urlError = error as? URLError else {
+            return false
+        }
+        switch urlError.code {
+        case .badURL, .unsupportedURL, .cancelled:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func isLocalBackend(_ backend: String) -> Bool {
+        let normalized = backend.lowercased()
+        return normalized == MeetingSummaryBackendOption.ollama.backend
+            || normalized == MeetingSummaryBackendOption.lmStudio.backend
+            || normalized == "lm studio"
+    }
+
+    private static func isLocalEndpointUnavailable(_ error: Error) -> Bool {
+        guard let urlError = error as? URLError else {
+            return false
+        }
+        switch urlError.code {
+        case .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func isTransientHTTPStatus(_ statusCode: Int) -> Bool {
+        statusCode == 408
+            || statusCode == 409
+            || statusCode == 425
+            || statusCode == 429
+            || (500..<600).contains(statusCode)
+    }
+
+    static func retryDelay(forAttempt attempt: Int) -> TimeInterval {
+        min(pow(2.0, Double(max(attempt - 1, 0))), 8.0)
+    }
+}
+
 enum MeetingSummaryClient {
     private static let logger = Logger(subsystem: "com.muesli.native", category: "MeetingSummary")
     private static let openAIURL = URL(string: "https://api.openai.com/v1/responses")!
     private static let openRouterURL = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
-    private static let whamURL = URL(string: "https://chatgpt.com/backend-api/wham/responses")!
     private static let defaultOllamaBaseURL = URL(string: "http://localhost:11434")!
+    private static let defaultLMStudioBaseURL = URL(string: "http://localhost:1234")!
     private static let defaultOpenAIModel = "gpt-5.4-mini"
     private static let defaultOpenRouterModel = "stepfun/step-3.5-flash:free"
     private static let defaultChatGPTModel = "gpt-5.4-mini"
     private static let defaultOllamaModel = "qwen3.5"
     private static let defaultSummaryMaxOutputTokens = 2500
+    private static let titlePromptCharacterLimit = 6_000
     private static let ollamaSummaryTimeout: TimeInterval = 300
     private static let ollamaTitleTimeout: TimeInterval = 120
+    private static let lmStudioSummaryTimeout: TimeInterval = 300
+    private static let lmStudioTitleTimeout: TimeInterval = 120
+    private static let customLLMSummaryTimeout: TimeInterval = 300
+    private static let customLLMTitleTimeout: TimeInterval = 120
 
     private static let titleInstructions = """
-    Generate a short, descriptive meeting title (3-7 words) from this transcript. \
+    Generate a short, descriptive meeting title (3-7 words) from these transcript excerpts and any written notes. \
+    Treat written notes as high-priority context: they may contain the clearest statement of the meeting's topic or outcome. \
+    Prefer the main topic and outcome across the whole meeting over opening small talk or setup. \
     Return ONLY the title text, nothing else. No quotes, no prefix, no explanation. \
     Examples: "Q3 Sprint Planning", "Customer Onboarding Review", "Security Audit Discussion"
     """
@@ -54,7 +159,59 @@ enum MeetingSummaryClient {
         template: MeetingTemplateSnapshot = MeetingTemplates.auto.snapshot,
         existingNotes: String? = nil,
         manualNotesToRetain: String? = nil,
-        visualContext: String? = nil
+        visualContext: String? = nil,
+        previousMeetingNotes: String? = nil
+    ) async throws -> String {
+        try await withSummaryRetries(maxRetries: config.meetingSummaryRetryCount) {
+            try await summarizeOnce(
+                transcript: transcript,
+                meetingTitle: meetingTitle,
+                config: config,
+                template: template,
+                existingNotes: existingNotes,
+                manualNotesToRetain: manualNotesToRetain,
+                visualContext: visualContext,
+                previousMeetingNotes: previousMeetingNotes
+            )
+        }
+    }
+
+    static func withSummaryRetries(
+        maxRetries: Int,
+        sleep: (TimeInterval) async throws -> Void = { delay in
+            try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+        },
+        operation: () async throws -> String
+    ) async throws -> String {
+        let retryCount = MeetingSummaryRetryPolicy.clampedRetryCount(maxRetries)
+        var attempt = 0
+        while true {
+            do {
+                return try await operation()
+            } catch {
+                let effectiveRetryCount = MeetingSummaryRetryPolicy.effectiveRetryCount(
+                    configuredCount: retryCount,
+                    after: error
+                )
+                guard attempt < effectiveRetryCount else {
+                    throw error
+                }
+                attempt += 1
+                fputs("[summary] retrying summary generation after failure (\(attempt)/\(effectiveRetryCount)): \(error.localizedDescription)\n", stderr)
+                try await sleep(MeetingSummaryRetryPolicy.retryDelay(forAttempt: attempt))
+            }
+        }
+    }
+
+    private static func summarizeOnce(
+        transcript: String,
+        meetingTitle: String,
+        config: AppConfig,
+        template: MeetingTemplateSnapshot,
+        existingNotes: String?,
+        manualNotesToRetain: String?,
+        visualContext: String?,
+        previousMeetingNotes: String?
     ) async throws -> String {
         let backend = (config.meetingSummaryBackend.isEmpty ? MeetingSummaryBackendOption.chatGPT.backend : config.meetingSummaryBackend).lowercased()
         let generatedNotes: String
@@ -66,7 +223,8 @@ enum MeetingSummaryClient {
                 manualNotes: manualNotesToRetain,
                 config: config,
                 template: template,
-                visualContext: visualContext
+                visualContext: visualContext,
+                previousMeetingNotes: previousMeetingNotes
             )
             return notesByRetainingManualNotes(generatedNotes: generatedNotes, manualNotes: manualNotesToRetain)
         }
@@ -78,7 +236,8 @@ enum MeetingSummaryClient {
                 manualNotes: manualNotesToRetain,
                 config: config,
                 template: template,
-                visualContext: visualContext
+                visualContext: visualContext,
+                previousMeetingNotes: previousMeetingNotes
             )
             return notesByRetainingManualNotes(generatedNotes: generatedNotes, manualNotes: manualNotesToRetain)
         }
@@ -90,7 +249,34 @@ enum MeetingSummaryClient {
                 manualNotes: manualNotesToRetain,
                 config: config,
                 template: template,
-                visualContext: visualContext
+                visualContext: visualContext,
+                previousMeetingNotes: previousMeetingNotes
+            )
+            return notesByRetainingManualNotes(generatedNotes: generatedNotes, manualNotes: manualNotesToRetain)
+        }
+        if backend == MeetingSummaryBackendOption.lmStudio.backend {
+            generatedNotes = try await summarizeWithLMStudio(
+                transcript: transcript,
+                meetingTitle: meetingTitle,
+                existingNotes: existingNotes,
+                manualNotes: manualNotesToRetain,
+                config: config,
+                template: template,
+                visualContext: visualContext,
+                previousMeetingNotes: previousMeetingNotes
+            )
+            return notesByRetainingManualNotes(generatedNotes: generatedNotes, manualNotes: manualNotesToRetain)
+        }
+        if backend == MeetingSummaryBackendOption.customLLM.backend {
+            generatedNotes = try await summarizeWithCustomLLM(
+                transcript: transcript,
+                meetingTitle: meetingTitle,
+                existingNotes: existingNotes,
+                manualNotes: manualNotesToRetain,
+                config: config,
+                template: template,
+                visualContext: visualContext,
+                previousMeetingNotes: previousMeetingNotes
             )
             return notesByRetainingManualNotes(generatedNotes: generatedNotes, manualNotes: manualNotesToRetain)
         }
@@ -101,7 +287,8 @@ enum MeetingSummaryClient {
             manualNotes: manualNotesToRetain,
             config: config,
             template: template,
-            visualContext: visualContext
+            visualContext: visualContext,
+            previousMeetingNotes: previousMeetingNotes
         )
         return notesByRetainingManualNotes(generatedNotes: generatedNotes, manualNotes: manualNotesToRetain)
     }
@@ -121,7 +308,7 @@ enum MeetingSummaryClient {
         return sections.joined(separator: "\n\n")
     }
 
-    static func summaryInstructions(for template: MeetingTemplateSnapshot, existingNotes: String? = nil, manualNotes: String? = nil) -> String {
+    static func summaryInstructions(for template: MeetingTemplateSnapshot, existingNotes: String? = nil, manualNotes: String? = nil, previousMeetingNotes: String? = nil) -> String {
         let notePreservationInstructions: String
         let hasManualNotes = !(manualNotes?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
         if let existingNotes,
@@ -131,12 +318,17 @@ enum MeetingSummaryClient {
             notePreservationInstructions = ""
         }
         let manualNoteInstructions = hasManualNotes
-            ? "\n\nProtected written notes may also be provided. These are notes the user typed by hand during the meeting. Use them as high-priority context. Place each written note near the most relevant section of the summary, preserving the user's wording verbatim when possible. Do not rewrite, polish, summarize away, or omit concrete user-written notes. Avoid creating a large standalone Manual Notes appendix unless there is no relevant section for a note."
+            ? "\n\nProtected written notes may also be provided. These are notes the user typed by hand during the meeting. Treat them as first-class meeting context, not only as text to retain: use their concrete details to inform the summary, decisions, action items, risks, and outcomes, including details that are not stated verbatim in the transcript. Place each written note near the most relevant section of the summary, preserving the user's wording verbatim when possible. Do not rewrite, polish, summarize away, or omit concrete user-written notes. Avoid creating a large standalone Manual Notes appendix unless there is no relevant section for a note."
+            : ""
+        let hasPreviousNotes = !(previousMeetingNotes?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        let followUpInstructions = hasPreviousNotes
+            ? "\n\nThis meeting is a follow-up to an earlier meeting whose notes are provided as read-only context. Use them to resolve references to earlier decisions, and carry forward action items from the previous meeting that are still open after this meeting's discussion, marking them as carried over. Do not otherwise restate the previous meeting's content."
             : ""
 
         return baseSummaryInstructions
             + notePreservationInstructions
             + manualNoteInstructions
+            + followUpInstructions
             + "\n\nFollow this note template exactly:\n\n"
             + template.prompt
     }
@@ -146,7 +338,8 @@ enum MeetingSummaryClient {
         meetingTitle: String,
         existingNotes: String? = nil,
         manualNotes: String? = nil,
-        visualContext: String? = nil
+        visualContext: String? = nil,
+        previousMeetingNotes: String? = nil
     ) -> String {
         var prompt = "Meeting title: \(meetingTitle)\n\n"
         let visualContextCharCount = visualContext?.trimmingCharacters(in: .whitespacesAndNewlines).count ?? 0
@@ -157,6 +350,11 @@ enum MeetingSummaryClient {
             prompt += "Meeting context captured during the meeting:\n\(visualContext)\n---\n\n"
         }
 
+        let trimmedPreviousNotes = previousMeetingNotes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmedPreviousNotes.isEmpty {
+            prompt += "Notes from the previous meeting in this thread (this meeting is its follow-up). Read-only context — resolve references to earlier decisions and carry forward still-open action items:\n\(trimmedPreviousNotes)\n---\n\n"
+        }
+
         let trimmedNotes = existingNotes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !trimmedNotes.isEmpty {
             prompt += "Current generated notes to preserve and reformat:\n\(trimmedNotes)\n\n"
@@ -164,7 +362,7 @@ enum MeetingSummaryClient {
 
         let trimmedManualNotes = manualNotes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !trimmedManualNotes.isEmpty {
-            prompt += "Protected written notes typed by the user during the meeting. Preserve these verbatim and place them where they belong in the summary:\n\(trimmedManualNotes)\n\n"
+            prompt += "First-class meeting context from written notes typed by the user during the meeting. Use these notes together with the transcript to identify the meeting's topic, decisions, action items, risks, and outcomes. Preserve the written notes verbatim in the final summary:\n\(trimmedManualNotes)\n\n"
         }
 
         prompt += "Raw transcript:\n\(transcript)"
@@ -272,28 +470,31 @@ enum MeetingSummaryClient {
         manualNotes: String?,
         config: AppConfig,
         template: MeetingTemplateSnapshot,
-        visualContext: String? = nil
+        visualContext: String? = nil,
+        previousMeetingNotes: String? = nil
     ) async throws -> String {
         let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? config.openAIAPIKey
         guard !apiKey.isEmpty else {
             return rawTranscriptFallback(transcript: transcript, meetingTitle: meetingTitle)
         }
 
-        let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes)
+        let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes, previousMeetingNotes: previousMeetingNotes)
         let userPrompt = summaryUserPrompt(
             transcript: transcript,
             meetingTitle: meetingTitle,
             existingNotes: existingNotes,
             manualNotes: manualNotes,
-            visualContext: visualContext
+            visualContext: visualContext,
+            previousMeetingNotes: previousMeetingNotes
         )
+        let model = config.openAIModel.isEmpty ? defaultOpenAIModel : config.openAIModel
         let body: [String: Any] = [
-            "model": config.openAIModel.isEmpty ? defaultOpenAIModel : config.openAIModel,
+            "model": model,
             "input": [
                 ["role": "system", "content": instructions],
                 ["role": "user", "content": userPrompt],
             ],
-            "reasoning": ["effort": "low"],
+            "reasoning": ["effort": SummaryModelPreset.reasoningEffort(for: model) ?? "low"],
             "text": ["verbosity": "low"],
             "max_output_tokens": defaultSummaryMaxOutputTokens,
         ]
@@ -330,7 +531,8 @@ enum MeetingSummaryClient {
         manualNotes: String?,
         config: AppConfig,
         template: MeetingTemplateSnapshot,
-        visualContext: String? = nil
+        visualContext: String? = nil,
+        previousMeetingNotes: String? = nil
     ) async throws -> String {
         let apiKey = ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"] ?? config.openRouterAPIKey
         guard !apiKey.isEmpty else {
@@ -339,13 +541,14 @@ enum MeetingSummaryClient {
 
         let configuredModel = config.openRouterModel.trimmingCharacters(in: .whitespacesAndNewlines)
         let model = configuredModel.isEmpty ? defaultOpenRouterModel : configuredModel
-        let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes)
+        let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes, previousMeetingNotes: previousMeetingNotes)
         let userPrompt = summaryUserPrompt(
             transcript: transcript,
             meetingTitle: meetingTitle,
             existingNotes: existingNotes,
             manualNotes: manualNotes,
-            visualContext: visualContext
+            visualContext: visualContext,
+            previousMeetingNotes: previousMeetingNotes
         )
         let body: [String: Any] = [
             "model": model,
@@ -389,25 +592,28 @@ enum MeetingSummaryClient {
         manualNotes: String?,
         config: AppConfig,
         template: MeetingTemplateSnapshot,
-        visualContext: String? = nil
+        visualContext: String? = nil,
+        previousMeetingNotes: String? = nil
     ) async throws -> String {
         do {
-            let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes)
-            let text = try await callWHAM(
+            let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes, previousMeetingNotes: previousMeetingNotes)
+            let text = try await ChatGPTResponsesClient.respond(
                 systemPrompt: instructions,
                 userPrompt: summaryUserPrompt(
                     transcript: transcript,
                     meetingTitle: meetingTitle,
                     existingNotes: existingNotes,
                     manualNotes: manualNotes,
-                    visualContext: visualContext
+                    visualContext: visualContext,
+                    previousMeetingNotes: previousMeetingNotes
                 ),
-                model: config.chatGPTModel.isEmpty ? defaultChatGPTModel : config.chatGPTModel
+                model: config.chatGPTModel.isEmpty ? defaultChatGPTModel : config.chatGPTModel,
+                logCategory: "summary"
             )
-            if let text, !text.isEmpty {
-                return text
+            guard !text.isEmpty else {
+                throw MeetingSummaryError.emptyResponse(backend: "ChatGPT")
             }
-            throw MeetingSummaryError.emptyResponse(backend: "ChatGPT")
+            return text
         } catch {
             fputs("[summary] ChatGPT summarization failed: \(error)\n", stderr)
             throw summaryRequestError(backend: "ChatGPT", error: error)
@@ -421,7 +627,8 @@ enum MeetingSummaryClient {
         manualNotes: String?,
         config: AppConfig,
         template: MeetingTemplateSnapshot,
-        visualContext: String? = nil
+        visualContext: String? = nil,
+        previousMeetingNotes: String? = nil
     ) async throws -> String {
         let baseURLString = config.ollamaURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let baseURL: URL
@@ -437,13 +644,14 @@ enum MeetingSummaryClient {
 
         let configuredModel = config.ollamaModel.trimmingCharacters(in: .whitespacesAndNewlines)
         let model = configuredModel.isEmpty ? defaultOllamaModel : configuredModel
-        let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes)
+        let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes, previousMeetingNotes: previousMeetingNotes)
         let userPrompt = summaryUserPrompt(
             transcript: transcript,
             meetingTitle: meetingTitle,
             existingNotes: existingNotes,
             manualNotes: manualNotes,
-            visualContext: visualContext
+            visualContext: visualContext,
+            previousMeetingNotes: previousMeetingNotes
         )
         let body: [String: Any] = [
             "model": model,
@@ -481,70 +689,247 @@ enum MeetingSummaryClient {
         }
     }
 
-    /// Call the WHAM streaming API and collect the full response text.
-    private static func callWHAM(systemPrompt: String, userPrompt: String, model: String) async throws -> String? {
-        let (token, accountId) = try await ChatGPTAuthManager.shared.validAccessToken()
+    private static func summarizeWithLMStudio(
+        transcript: String,
+        meetingTitle: String,
+        existingNotes: String?,
+        manualNotes: String?,
+        config: AppConfig,
+        template: MeetingTemplateSnapshot,
+        visualContext: String? = nil,
+        previousMeetingNotes: String? = nil
+    ) async throws -> String {
+        guard let requestURL = resolveLMStudioURL(config: config) else {
+            throw MeetingSummaryError.backendFailed(backend: "LM Studio", statusCode: nil, message: "Invalid LM Studio URL: \(config.lmStudioURL)")
+        }
+        let configuredModel = config.lmStudioModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !configuredModel.isEmpty else {
+            throw MeetingSummaryError.backendFailed(
+                backend: "LM Studio",
+                statusCode: nil,
+                message: "No model selected. Select an LM Studio model in Settings."
+            )
+        }
+        return try await summarizeWithChatCompletions(
+            backend: "LM Studio",
+            requestURL: requestURL,
+            apiKey: "",
+            model: configuredModel,
+            transcript: transcript,
+            meetingTitle: meetingTitle,
+            existingNotes: existingNotes,
+            manualNotes: manualNotes,
+            config: config,
+            template: template,
+            visualContext: visualContext,
+            previousMeetingNotes: previousMeetingNotes,
+            timeout: lmStudioSummaryTimeout
+        )
+    }
 
-        let body: [String: Any] = [
+    private static func summarizeWithCustomLLM(
+        transcript: String,
+        meetingTitle: String,
+        existingNotes: String?,
+        manualNotes: String?,
+        config: AppConfig,
+        template: MeetingTemplateSnapshot,
+        visualContext: String? = nil,
+        previousMeetingNotes: String? = nil
+    ) async throws -> String {
+        let format = CustomLLMFormat(rawValue: config.customLLMFormat) ?? .openAI
+        guard let requestURL = resolveCustomLLMURL(config: config, format: format) else {
+            throw MeetingSummaryError.backendFailed(backend: "Custom LLM", statusCode: nil, message: "Invalid custom URL: \(config.customLLMURL)")
+        }
+        let configuredModel = config.customLLMModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !configuredModel.isEmpty else {
+            throw MeetingSummaryError.backendFailed(
+                backend: "Custom LLM",
+                statusCode: nil,
+                message: "No model selected. Enter a model in Settings."
+            )
+        }
+        let apiKey = config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if customLLMRequiresAPIKey(config: config) && apiKey.isEmpty {
+            throw MeetingSummaryError.backendFailed(
+                backend: "Custom LLM",
+                statusCode: nil,
+                message: "Enter an API key for the selected Custom LLM format."
+            )
+        }
+
+        switch format {
+        case .openAI:
+            return try await summarizeWithChatCompletions(
+                backend: "Custom LLM",
+                requestURL: requestURL,
+                apiKey: apiKey,
+                model: configuredModel,
+                transcript: transcript,
+                meetingTitle: meetingTitle,
+                existingNotes: existingNotes,
+                manualNotes: manualNotes,
+                config: config,
+                template: template,
+                visualContext: visualContext,
+                previousMeetingNotes: previousMeetingNotes,
+                timeout: customLLMSummaryTimeout
+            )
+        case .anthropic:
+            return try await summarizeWithAnthropicMessages(
+                backend: "Custom LLM",
+                requestURL: requestURL,
+                apiKey: apiKey,
+                model: configuredModel,
+                transcript: transcript,
+                meetingTitle: meetingTitle,
+                existingNotes: existingNotes,
+                manualNotes: manualNotes,
+                config: config,
+                template: template,
+                visualContext: visualContext,
+                previousMeetingNotes: previousMeetingNotes,
+                timeout: customLLMSummaryTimeout
+            )
+        }
+    }
+
+    static func customLLMRequiresAPIKey(config: AppConfig) -> Bool {
+        (CustomLLMFormat(rawValue: config.customLLMFormat) ?? .openAI) == .anthropic
+    }
+
+    static func lmStudioHasRequiredSettings(config: AppConfig) -> Bool {
+        !config.lmStudioModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    static func customLLMHasRequiredSettings(config: AppConfig) -> Bool {
+        let model = config.customLLMModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let apiKey = config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !model.isEmpty && (!customLLMRequiresAPIKey(config: config) || !apiKey.isEmpty)
+    }
+
+    private static func summarizeWithChatCompletions(
+        backend: String,
+        requestURL: URL,
+        apiKey: String,
+        model: String,
+        transcript: String,
+        meetingTitle: String,
+        existingNotes: String?,
+        manualNotes: String?,
+        config: AppConfig,
+        template: MeetingTemplateSnapshot,
+        visualContext: String?,
+        previousMeetingNotes: String?,
+        timeout: TimeInterval
+    ) async throws -> String {
+        let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes, previousMeetingNotes: previousMeetingNotes)
+        let userPrompt = summaryUserPrompt(
+            transcript: transcript,
+            meetingTitle: meetingTitle,
+            existingNotes: existingNotes,
+            manualNotes: manualNotes,
+            visualContext: visualContext,
+            previousMeetingNotes: previousMeetingNotes
+        )
+        let isOpenAI = requestURL.host?.contains("openai.com") == true
+        var body: [String: Any] = [
             "model": model,
-            "store": false,
-            "stream": true,
-            "instructions": systemPrompt,
-            "input": [
-                [
-                    "role": "user",
-                    "content": [
-                        ["type": "input_text", "text": userPrompt],
-                    ],
-                ] as [String: Any],
+            "messages": [
+                ["role": "system", "content": instructions],
+                ["role": "user", "content": userPrompt],
             ],
         ]
-        // Note: WHAM does not support max_output_tokens
+        body[isOpenAI ? "max_completion_tokens" : "max_tokens"] = defaultSummaryMaxOutputTokens
 
-        var request = URLRequest(url: whamURL)
+        var request = URLRequest(url: requestURL)
+        request.timeoutInterval = timeout
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        if !accountId.isEmpty {
-            request.setValue(accountId, forHTTPHeaderField: "ChatGPT-Account-Id")
+        if !apiKey.isEmpty {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (bytes, response) = try await URLSession.shared.bytes(for: request)
-        let httpStatus = (response as? HTTPURLResponse)?.statusCode ?? 0
-
-        guard httpStatus == 200 else {
-            // Collect error body
-            var errorData = Data()
-            for try await byte in bytes { errorData.append(byte) }
-            let message = extractErrorMessage(from: errorData) ?? String(data: errorData, encoding: .utf8) ?? "(unknown)"
-            fputs("[summary] ChatGPT WHAM: HTTP \(httpStatus): \(String(message.prefix(500)))\n", stderr)
-            throw MeetingSummaryError.backendFailed(backend: "ChatGPT", statusCode: httpStatus, message: message)
-        }
-
-        // Parse SSE stream: collect text deltas from response.output_text.delta events
-        var fullText = ""
-        for try await line in bytes.lines {
-            guard line.hasPrefix("data: ") else { continue }
-            let jsonStr = String(line.dropFirst(6))
-            if jsonStr == "[DONE]" { break }
-            guard let data = jsonStr.data(using: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-
-            // Check for output_text.done with full text
-            if let outputText = json["output_text"] as? String, !outputText.isEmpty {
-                fullText = outputText
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            try validateHTTPResponse(response, data: data, backend: backend)
+            guard
+                let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let text = extractOpenRouterText(from: json),
+                !text.isEmpty
+            else {
+                if let message = extractErrorMessage(from: data) {
+                    throw MeetingSummaryError.backendFailed(backend: backend, statusCode: nil, message: message)
+                }
+                throw MeetingSummaryError.emptyResponse(backend: backend)
             }
-
-            // Check for streaming delta
-            if let type = json["type"] as? String, type == "response.output_text.delta",
-               let delta = json["delta"] as? String {
-                fullText += delta
-            }
+            return text
+        } catch {
+            throw summaryRequestError(backend: backend, error: error)
         }
+    }
 
-        fputs("[summary] ChatGPT WHAM: collected \(fullText.count) chars\n", stderr)
-        return fullText.trimmingCharacters(in: .whitespacesAndNewlines)
+    private static func summarizeWithAnthropicMessages(
+        backend: String,
+        requestURL: URL,
+        apiKey: String,
+        model: String,
+        transcript: String,
+        meetingTitle: String,
+        existingNotes: String?,
+        manualNotes: String?,
+        config: AppConfig,
+        template: MeetingTemplateSnapshot,
+        visualContext: String?,
+        previousMeetingNotes: String?,
+        timeout: TimeInterval
+    ) async throws -> String {
+        let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes, previousMeetingNotes: previousMeetingNotes)
+        let userPrompt = summaryUserPrompt(
+            transcript: transcript,
+            meetingTitle: meetingTitle,
+            existingNotes: existingNotes,
+            manualNotes: manualNotes,
+            visualContext: visualContext,
+            previousMeetingNotes: previousMeetingNotes
+        )
+        let body: [String: Any] = [
+            "model": model,
+            "max_tokens": defaultSummaryMaxOutputTokens,
+            "system": instructions,
+            "messages": [
+                ["role": "user", "content": userPrompt],
+            ],
+        ]
+
+        var request = URLRequest(url: requestURL)
+        request.timeoutInterval = timeout
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        if !apiKey.isEmpty {
+            request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            try validateHTTPResponse(response, data: data, backend: backend)
+            guard
+                let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let text = extractAnthropicText(from: json),
+                !text.isEmpty
+            else {
+                if let message = extractErrorMessage(from: data) {
+                    throw MeetingSummaryError.backendFailed(backend: backend, statusCode: nil, message: message)
+                }
+                throw MeetingSummaryError.emptyResponse(backend: backend)
+            }
+            return text
+        } catch {
+            throw summaryRequestError(backend: backend, error: error)
+        }
     }
 
     private static func extractOpenAIText(from payload: [String: Any]) -> String? {
@@ -609,6 +994,12 @@ enum MeetingSummaryClient {
         if error is MeetingSummaryError {
             return error
         }
+        if let error = error as? ChatGPTResponsesError {
+            switch error {
+            case let .backendFailed(statusCode, message):
+                return MeetingSummaryError.backendFailed(backend: backend, statusCode: statusCode, message: message)
+            }
+        }
         return MeetingSummaryError.requestFailed(backend: backend, underlying: error)
     }
 
@@ -634,14 +1025,89 @@ enum MeetingSummaryClient {
         return nil
     }
 
+    static func extractAnthropicText(from payload: [String: Any]) -> String? {
+        guard let content = payload["content"] as? [[String: Any]] else { return nil }
+        let parts = content.compactMap { entry -> String? in
+            guard (entry["type"] as? String) == "text",
+                  let text = entry["text"] as? String,
+                  !text.isEmpty else {
+                return nil
+            }
+            return text
+        }
+        guard !parts.isEmpty else { return nil }
+        return parts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func resolveCustomLLMURL(config: AppConfig, format: CustomLLMFormat) -> URL? {
+        let rawURL = config.customLLMURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let defaultURL: String
+        let endpointSuffix: String
+        switch format {
+        case .openAI:
+            defaultURL = "http://localhost:8080/v1/chat/completions"
+            endpointSuffix = "v1/chat/completions"
+        case .anthropic:
+            defaultURL = "https://api.anthropic.com/v1/messages"
+            endpointSuffix = "v1/messages"
+        }
+        return resolveEndpointURL(rawURL.isEmpty ? defaultURL : rawURL, endpointSuffix: endpointSuffix)
+    }
+
+    static func resolveLMStudioURL(config: AppConfig) -> URL? {
+        let rawURL = config.lmStudioURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        return resolveEndpointURL(
+            rawURL.isEmpty ? defaultLMStudioBaseURL.absoluteString : rawURL,
+            endpointSuffix: "v1/chat/completions"
+        )
+    }
+
+    private static func resolveEndpointURL(_ rawURL: String, endpointSuffix: String) -> URL? {
+        guard var components = URLComponents(string: rawURL.trimmingCharacters(in: .whitespacesAndNewlines)),
+              components.scheme != nil,
+              components.host != nil else {
+            return nil
+        }
+
+        let suffixParts = endpointSuffix.split(separator: "/").map(String.init)
+        var pathParts = components.path.split(separator: "/").map(String.init)
+
+        if pathParts.isEmpty {
+            pathParts = suffixParts
+        } else if pathParts.last == suffixParts.first {
+            pathParts = Array(pathParts.dropLast()) + suffixParts
+        } else if !isCompleteEndpointPath(pathParts, endpointSuffixParts: suffixParts) {
+            pathParts.append(contentsOf: suffixParts)
+        }
+
+        components.path = "/" + pathParts.joined(separator: "/")
+        return components.url
+    }
+
+    private static func isCompleteEndpointPath(_ pathParts: [String], endpointSuffixParts suffixParts: [String]) -> Bool {
+        if pathParts.suffix(suffixParts.count).elementsEqual(suffixParts) {
+            return true
+        }
+        if suffixParts == ["v1", "chat", "completions"] {
+            return pathParts.suffix(2).elementsEqual(["chat", "completions"])
+        }
+        if suffixParts == ["v1", "messages"] {
+            return pathParts.count >= suffixParts.count && pathParts.last == "messages"
+        }
+        return false
+    }
+
     static func generateTitle(transcript: String, config: AppConfig) async -> String? {
+        await generateTitle(transcript: transcript, manualNotes: nil, config: config)
+    }
+
+    static func generateTitle(transcript: String, manualNotes: String?, config: AppConfig) async -> String? {
         let backend = (config.meetingSummaryBackend.isEmpty ? MeetingSummaryBackendOption.chatGPT.backend : config.meetingSummaryBackend).lowercased()
 
-        // Use a short prefix of the transcript for title generation (save tokens)
-        let truncated = String(transcript.prefix(1500))
+        let excerpt = titlePrompt(transcript: transcript, manualNotes: manualNotes)
 
         if backend == MeetingSummaryBackendOption.chatGPT.backend {
-            return await generateTitleWithChatGPT(transcript: truncated, config: config)
+            return await generateTitleWithChatGPT(transcript: excerpt, config: config)
         }
 
         if backend == MeetingSummaryBackendOption.openRouter.backend {
@@ -654,14 +1120,22 @@ enum MeetingSummaryClient {
                 apiKey: apiKey,
                 model: model,
                 systemPrompt: titleInstructions,
-                userPrompt: truncated,
+                userPrompt: excerpt,
                 maxTokens: nil,
                 extraHeaders: ["X-OpenRouter-Title": AppIdentity.displayName]
             )
         }
 
         if backend == MeetingSummaryBackendOption.ollama.backend {
-            return await generateTitleWithOllama(transcript: truncated, config: config)
+            return await generateTitleWithOllama(transcript: excerpt, config: config)
+        }
+
+        if backend == MeetingSummaryBackendOption.lmStudio.backend {
+            return await generateTitleWithLMStudio(transcript: excerpt, config: config)
+        }
+
+        if backend == MeetingSummaryBackendOption.customLLM.backend {
+            return await generateTitleWithCustomLLM(transcript: excerpt, config: config)
         }
 
         let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? config.openAIAPIKey
@@ -672,16 +1146,58 @@ enum MeetingSummaryClient {
             apiKey: apiKey,
             model: model,
             systemPrompt: titleInstructions,
-            userPrompt: truncated,
+            userPrompt: excerpt,
             maxTokens: nil,
             extraHeaders: [:]
         )
     }
 
+    static func titlePrompt(transcript: String, manualNotes: String? = nil) -> String {
+        let excerpt = titleTranscriptExcerpt(from: transcript)
+        let trimmedManualNotes = manualNotes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmedManualNotes.isEmpty else { return excerpt }
+
+        let transcriptLabel = "Meeting transcript excerpts:\n"
+        let notesLabel = "\n\nWritten notes captured by the user during the meeting. Treat these as high-priority context when choosing the main topic and outcome:\n"
+        let availableNotesCharacters = max(
+            0,
+            titlePromptCharacterLimit - transcriptLabel.count - excerpt.count - notesLabel.count
+        )
+        let boundedManualNotes = String(trimmedManualNotes.prefix(availableNotesCharacters))
+
+        return transcriptLabel + excerpt + notesLabel + boundedManualNotes
+    }
+
+    static func titleTranscriptExcerpt(from transcript: String, segmentLength: Int = 900) -> String {
+        let normalized = transcript
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty, segmentLength > 0 else { return normalized }
+        guard normalized.count > segmentLength * 3 else { return normalized }
+
+        let start = String(normalized.prefix(segmentLength)).trimmingCharacters(in: .whitespacesAndNewlines)
+        let middleStartOffset = max(0, (normalized.count / 2) - (segmentLength / 2))
+        let middleStart = normalized.index(normalized.startIndex, offsetBy: middleStartOffset)
+        let middleEnd = normalized.index(middleStart, offsetBy: segmentLength, limitedBy: normalized.endIndex) ?? normalized.endIndex
+        let middle = String(normalized[middleStart..<middleEnd]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let end = String(normalized.suffix(segmentLength)).trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return """
+        Opening excerpt:
+        \(start)
+
+        Middle excerpt:
+        \(middle)
+
+        Closing excerpt:
+        \(end)
+        """
+    }
+
     private static func callChatCompletions(
         url: URL, apiKey: String, model: String,
         systemPrompt: String, userPrompt: String,
-        maxTokens: Int?, extraHeaders: [String: String]
+        maxTokens: Int?, extraHeaders: [String: String], timeout: TimeInterval? = nil
     ) async -> String? {
         let isOpenAI = url.host?.contains("openai.com") == true
         var body: [String: Any] = [
@@ -695,11 +1211,19 @@ enum MeetingSummaryClient {
             // OpenAI newer models require max_completion_tokens; OpenRouter uses max_tokens
             body[isOpenAI ? "max_completion_tokens" : "max_tokens"] = maxTokens
         }
+        if isOpenAI, let effort = SummaryModelPreset.reasoningEffort(for: model) {
+            body["reasoning_effort"] = effort
+        }
 
         var request = URLRequest(url: url)
+        if let timeout {
+            request.timeoutInterval = timeout
+        }
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        if !apiKey.isEmpty {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
         for (key, value) in extraHeaders {
             request.setValue(value, forHTTPHeaderField: key)
         }
@@ -732,20 +1256,128 @@ enum MeetingSummaryClient {
         }
     }
 
+    private static func callAnthropicMessages(
+        url: URL,
+        apiKey: String,
+        model: String,
+        systemPrompt: String,
+        userPrompt: String,
+        maxTokens: Int,
+        timeout: TimeInterval? = nil
+    ) async -> String? {
+        let body: [String: Any] = [
+            "model": model,
+            "max_tokens": maxTokens,
+            "system": systemPrompt,
+            "messages": [
+                ["role": "user", "content": userPrompt],
+            ],
+        ]
+
+        var request = URLRequest(url: url)
+        if let timeout {
+            request.timeoutInterval = timeout
+        }
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        if !apiKey.isEmpty {
+            request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            try validateHTTPResponse(response, data: data, backend: "Custom LLM")
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                fputs("[summary] Anthropic title generation: invalid JSON response\n", stderr)
+                return nil
+            }
+            return extractAnthropicText(from: json)?
+                .trimmingCharacters(in: .whitespacesAndNewlines.union(.init(charactersIn: "\"")))
+        } catch {
+            fputs("[summary] Anthropic title generation failed: \(error)\n", stderr)
+            return nil
+        }
+    }
+
     private static func generateTitleWithChatGPT(transcript: String, config: AppConfig) async -> String? {
         do {
             let model = config.chatGPTModel.isEmpty ? defaultChatGPTModel : config.chatGPTModel
-            let result = try await callWHAM(
+            let result = try await ChatGPTResponsesClient.respond(
                 systemPrompt: titleInstructions,
                 userPrompt: transcript,
-                model: model
+                model: model,
+                logCategory: "summary"
             )
-            let title = result?.trimmingCharacters(in: .whitespacesAndNewlines.union(.init(charactersIn: "\"")))
-            fputs("[summary] ChatGPT generated title: \(title ?? "(nil)")\n", stderr)
+            let title = result.trimmingCharacters(in: .whitespacesAndNewlines.union(.init(charactersIn: "\"")))
+            guard !title.isEmpty else { return nil }
+            fputs("[summary] ChatGPT generated title: \(title)\n", stderr)
             return title
         } catch {
             fputs("[summary] ChatGPT title generation failed: \(error)\n", stderr)
             return nil
+        }
+    }
+
+    private static func generateTitleWithLMStudio(transcript: String, config: AppConfig) async -> String? {
+        guard let requestURL = resolveLMStudioURL(config: config) else {
+            fputs("[summary] LM Studio title generation: invalid URL \(config.lmStudioURL)\n", stderr)
+            return nil
+        }
+        let model = config.lmStudioModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !model.isEmpty else {
+            fputs("[summary] LM Studio title generation: no model selected\n", stderr)
+            return nil
+        }
+        return await callChatCompletions(
+            url: requestURL,
+            apiKey: "",
+            model: model,
+            systemPrompt: titleInstructions,
+            userPrompt: transcript,
+            maxTokens: 100,
+            extraHeaders: [:],
+            timeout: lmStudioTitleTimeout
+        )
+    }
+
+    private static func generateTitleWithCustomLLM(transcript: String, config: AppConfig) async -> String? {
+        let format = CustomLLMFormat(rawValue: config.customLLMFormat) ?? .openAI
+        guard let requestURL = resolveCustomLLMURL(config: config, format: format) else { return nil }
+        let apiKey = config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let configuredModel = config.customLLMModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !configuredModel.isEmpty else {
+            fputs("[summary] Custom LLM title generation: no model selected\n", stderr)
+            return nil
+        }
+        if customLLMRequiresAPIKey(config: config) && apiKey.isEmpty {
+            fputs("[summary] Custom LLM title generation: no API key configured\n", stderr)
+            return nil
+        }
+
+        switch format {
+        case .openAI:
+            return await callChatCompletions(
+                url: requestURL,
+                apiKey: apiKey,
+                model: configuredModel,
+                systemPrompt: titleInstructions,
+                userPrompt: transcript,
+                maxTokens: 100,
+                extraHeaders: [:],
+                timeout: customLLMTitleTimeout
+            )
+        case .anthropic:
+            return await callAnthropicMessages(
+                url: requestURL,
+                apiKey: apiKey,
+                model: configuredModel,
+                systemPrompt: titleInstructions,
+                userPrompt: transcript,
+                maxTokens: 100,
+                timeout: customLLMTitleTimeout
+            )
         }
     }
 

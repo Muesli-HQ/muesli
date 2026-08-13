@@ -4,8 +4,11 @@ import Foundation
 /// Applied as post-processing after ASR, before filler word filtering.
 struct TranscriptionEngineArtifactsFilter {
 
-    private static let artifacts: Set<String> = [
-        "[blank_audio]",
+    private static let artifactPatterns: [String] = [
+        #"(?i)\[\s*(?:blank[_\s-]*audio|no[_\s-]*speech|silence|inaudible|music|applause|laughter|screaming|cheering)\s*\]"#,
+        #"(?i)[\[(<]\s*(?:speaking\s+in\s+)?(?:a\s+)?foreign\s+language\s*[\])>]"#,
+        #"(?i)<\s*(?:eou|eob|unk|blank|pad)\s*>"#,
+        #"(?i)<\|\s*(?:endoftext|nospeech|notimestamp|nodiarize|noitn|pnc|startofcontext|startoftranscript)\s*\|>"#,
     ]
 
     private static let promptLeakPatterns: [String] = [
@@ -13,16 +16,31 @@ struct TranscriptionEngineArtifactsFilter {
         #"(?i)\bif a word is unclear,?\s*use the most likely word that fits well within the context of the overall sentence(?:\s+transcription)?\.?"#,
     ]
 
-    /// Returns an empty string if the entire transcription is a known blank-audio artifact;
-    /// otherwise removes known prompt leakage while preserving normal transcript text.
+    /// Removes known engine control tokens and non-speech annotations, then strips
+    /// prompt leakage while preserving ordinary transcript text.
     static func apply(_ text: String) -> String {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if artifacts.contains(trimmed.lowercased()) {
-            return ""
+        var stripped = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var removedArtifact = false
+        for pattern in artifactPatterns {
+            let filtered = stripped.replacingOccurrences(
+                of: pattern,
+                with: " ",
+                options: .regularExpression
+            )
+            removedArtifact = removedArtifact || filtered != stripped
+            stripped = filtered
+        }
+        // Some streaming decoders prefix non-speech annotations with a speaker
+        // marker. Do not leave that marker behind when the annotation is removed.
+        if removedArtifact {
+            stripped = stripped.replacingOccurrences(
+                of: #"^\s*(?:>>|>|»)+\s*"#,
+                with: "",
+                options: .regularExpression
+            )
         }
 
-        let stripped = stripPromptLeakage(from: trimmed)
-        return stripped
+        return stripPromptLeakage(from: stripped)
     }
 
     private static func stripPromptLeakage(from text: String) -> String {

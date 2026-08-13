@@ -90,8 +90,188 @@ struct MeetingSummaryClientTests {
         )
 
         #expect(prompt.contains("Current generated notes to preserve and reformat:"))
-        #expect(prompt.contains("Protected written notes typed by the user during the meeting"))
+        #expect(prompt.contains("First-class meeting context from written notes typed by the user during the meeting"))
+        #expect(prompt.contains("identify the meeting's topic, decisions, action items, risks, and outcomes"))
         #expect(prompt.contains("- User typed decision"))
+    }
+
+    @Test("title prompt includes written notes as meeting context")
+    func titlePromptIncludesWrittenNotes() {
+        let prompt = MeetingSummaryClient.titlePrompt(
+            transcript: "Transcript body",
+            manualNotes: "Decision: launch the new workflow"
+        )
+
+        #expect(prompt.contains("Meeting transcript excerpts:"))
+        #expect(prompt.contains("Transcript body"))
+        #expect(prompt.contains("Written notes captured by the user during the meeting"))
+        #expect(prompt.contains("Decision: launch the new workflow"))
+    }
+
+    @Test("title prompt bounds oversized written notes")
+    func titlePromptBoundsOversizedWrittenNotes() {
+        let prompt = MeetingSummaryClient.titlePrompt(
+            transcript: "Transcript body",
+            manualNotes: String(repeating: "Decision: launch the new workflow\n", count: 1_000)
+        )
+
+        #expect(prompt.contains("Transcript body"))
+        #expect(prompt.count <= 6_000)
+    }
+
+    @Test("ChatGPT WHAM requests fix GPT-5.6 reasoning to High")
+    func chatGPTWHAMRequestUsesHighReasoningForGPT56() {
+        for model in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+            let body = ChatGPTResponsesClient.requestBody(
+                systemPrompt: "System",
+                userPrompt: "User",
+                model: model
+            )
+            let reasoning = body["reasoning"] as? [String: String]
+
+            #expect(reasoning?["effort"] == "high")
+        }
+    }
+
+    @Test("ChatGPT WHAM requests preserve GPT-5.4 Mini reasoning behavior")
+    func chatGPTWHAMRequestPreservesGPT54MiniReasoning() {
+        let body = ChatGPTResponsesClient.requestBody(
+            systemPrompt: "System",
+            userPrompt: "User",
+            model: "gpt-5.4-mini"
+        )
+
+        #expect(body["reasoning"] == nil)
+    }
+
+    @Test("ChatGPT WHAM parser reads top-level output text")
+    func chatGPTWHAMParserReadsTopLevelOutputText() {
+        let payload: [String: Any] = [
+            "output_text": "Cleaned dictation text",
+        ]
+
+        #expect(ChatGPTResponsesClient.extractOutputText(from: payload) == "Cleaned dictation text")
+    }
+
+    @Test("ChatGPT WHAM parser reads streaming deltas")
+    func chatGPTWHAMParserReadsStreamingDeltas() {
+        let payload: [String: Any] = [
+            "type": "response.output_text.delta",
+            "delta": "streamed text",
+        ]
+
+        #expect(ChatGPTResponsesClient.extractOutputTextDelta(from: payload) == "streamed text")
+    }
+
+    @Test("ChatGPT WHAM parser rejects malformed stream payloads")
+    func chatGPTWHAMParserRejectsMalformedStreamPayloads() {
+        #expect(throws: ChatGPTResponsesError.self) {
+            _ = try ChatGPTResponsesClient.decodeStreamPayload("{", httpStatus: 200)
+        }
+    }
+
+    @Test("ChatGPT WHAM parser ignores heartbeat stream payloads")
+    func chatGPTWHAMParserIgnoresHeartbeatPayloads() throws {
+        #expect(try ChatGPTResponsesClient.decodeStreamPayload("ping", httpStatus: 200) == nil)
+    }
+
+    @Test("ChatGPT WHAM parser ignores blank stream payloads")
+    func chatGPTWHAMParserIgnoresBlankStreamPayloads() throws {
+        #expect(try ChatGPTResponsesClient.decodeStreamPayload("   ", httpStatus: 200) == nil)
+    }
+
+    @Test("ChatGPT WHAM parser ignores valid unknown stream events")
+    func chatGPTWHAMParserIgnoresValidUnknownStreamEvents() throws {
+        var deltaText = "partial"
+        var finalText = ""
+        let decoded = try ChatGPTResponsesClient.decodeStreamPayload(
+            #"{"type":"response.created","response":{"id":"resp_1"}}"#,
+            httpStatus: 200
+        )
+        let payload = try #require(decoded)
+
+        ChatGPTResponsesClient.applyStreamPayload(
+            payload,
+            deltaText: &deltaText,
+            finalText: &finalText
+        )
+
+        #expect(deltaText == "partial")
+        #expect(finalText.isEmpty)
+    }
+
+    @Test("ChatGPT WHAM parser prefers final output over streamed deltas")
+    func chatGPTWHAMParserPrefersFinalOutputOverDeltas() {
+        var deltaText = ""
+        var finalText = ""
+
+        ChatGPTResponsesClient.applyStreamPayload(
+            [
+                "type": "response.output_text.delta",
+                "delta": "partial ",
+            ],
+            deltaText: &deltaText,
+            finalText: &finalText
+        )
+        ChatGPTResponsesClient.applyStreamPayload(
+            [
+                "type": "response.completed",
+                "response": [
+                    "output_text": "final cleaned text",
+                ],
+            ],
+            deltaText: &deltaText,
+            finalText: &finalText
+        )
+
+        #expect(deltaText == "partial ")
+        #expect(finalText == "final cleaned text")
+        #expect(ChatGPTResponsesClient.accumulatedOutputText(deltaText: deltaText, finalText: finalText) == "final cleaned text")
+    }
+
+    @Test("ChatGPT WHAM parser reads nested final response payload")
+    func chatGPTWHAMParserReadsNestedFinalResponsePayload() {
+        let payload: [String: Any] = [
+            "type": "response.completed",
+            "response": [
+                "output": [
+                    [
+                        "content": [
+                            [
+                                "type": "output_text",
+                                "text": [
+                                    "value": "Nested final response text",
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ]
+
+        #expect(ChatGPTResponsesClient.extractOutputText(from: payload) == "Nested final response text")
+    }
+
+    @Test("ChatGPT WHAM parser reads output content text")
+    func chatGPTWHAMParserReadsOutputContentText() {
+        let payload: [String: Any] = [
+            "output": [
+                [
+                    "content": [
+                        [
+                            "type": "output_text",
+                            "text": "Part one ",
+                        ],
+                        [
+                            "type": "output_text",
+                            "text": "part two",
+                        ],
+                    ],
+                ],
+            ],
+        ]
+
+        #expect(ChatGPTResponsesClient.extractOutputText(from: payload) == "Part one part two")
     }
 
     @Test("final notes retain manual notes verbatim")
@@ -246,6 +426,158 @@ struct MeetingSummaryClientTests {
         #expect(error.localizedDescription.contains("unavailable or incompatible"))
     }
 
+    @Test("summary retries transient failures until success")
+    func summaryRetriesTransientFailuresUntilSuccess() async throws {
+        var attempts = 0
+
+        let result = try await MeetingSummaryClient.withSummaryRetries(
+            maxRetries: 3,
+            sleep: { _ in }
+        ) {
+            attempts += 1
+            if attempts < 3 {
+                throw MeetingSummaryError.requestFailed(
+                    backend: "OpenAI",
+                    underlying: URLError(.cannotConnectToHost)
+                )
+            }
+            return "Recovered summary"
+        }
+
+        #expect(result == "Recovered summary")
+        #expect(attempts == 3)
+    }
+
+    @Test("summary retries stop after configured retry count")
+    func summaryRetriesStopAfterConfiguredRetryCount() async {
+        var attempts = 0
+
+        do {
+            _ = try await MeetingSummaryClient.withSummaryRetries(
+                maxRetries: 2,
+                sleep: { _ in }
+            ) {
+                attempts += 1
+                throw MeetingSummaryError.emptyResponse(backend: "OpenRouter")
+            }
+            #expect(Bool(false), "Expected summary retries to exhaust and throw")
+        } catch {
+            #expect(attempts == 3)
+            guard case .emptyResponse(let backend) = error as? MeetingSummaryError else {
+                #expect(Bool(false), "Expected emptyResponse, got \(String(describing: error))")
+                return
+            }
+            #expect(backend == "OpenRouter")
+        }
+    }
+
+    @Test("summary retries cap local transient failures")
+    func summaryRetriesCapLocalTransientFailures() async {
+        var attempts = 0
+
+        do {
+            _ = try await MeetingSummaryClient.withSummaryRetries(
+                maxRetries: 5,
+                sleep: { _ in }
+            ) {
+                attempts += 1
+                throw MeetingSummaryError.emptyResponse(backend: "Ollama")
+            }
+            #expect(Bool(false), "Expected local summary retries to exhaust and throw")
+        } catch {
+            #expect(attempts == 2)
+            guard case .emptyResponse(let backend) = error as? MeetingSummaryError else {
+                #expect(Bool(false), "Expected emptyResponse, got \(String(describing: error))")
+                return
+            }
+            #expect(backend == "Ollama")
+        }
+    }
+
+    @Test("summary retries skip local endpoint unavailable failures")
+    func summaryRetriesSkipLocalEndpointUnavailableFailures() async {
+        var attempts = 0
+
+        do {
+            _ = try await MeetingSummaryClient.withSummaryRetries(
+                maxRetries: 5,
+                sleep: { _ in }
+            ) {
+                attempts += 1
+                throw MeetingSummaryError.requestFailed(
+                    backend: "LM Studio",
+                    underlying: URLError(.cannotConnectToHost)
+                )
+            }
+            #expect(Bool(false), "Expected local endpoint failure to throw without retries")
+        } catch {
+            #expect(attempts == 1)
+            guard case .requestFailed(let backend, _) = error as? MeetingSummaryError else {
+                #expect(Bool(false), "Expected requestFailed, got \(String(describing: error))")
+                return
+            }
+            #expect(backend == "LM Studio")
+        }
+    }
+
+    @Test("summary retry policy skips cancellation and permanent backend failures")
+    func summaryRetryPolicySkipsCancellationAndPermanentBackendFailures() {
+        #expect(!MeetingSummaryRetryPolicy.shouldRetry(CancellationError()))
+        #expect(!MeetingSummaryRetryPolicy.shouldRetry(
+            MeetingSummaryError.requestFailed(backend: "OpenAI", underlying: URLError(.cancelled))
+        ))
+        #expect(!MeetingSummaryRetryPolicy.shouldRetry(
+            MeetingSummaryError.requestFailed(backend: "ChatGPT", underlying: ChatGPTAuthError.notAuthenticated)
+        ))
+        #expect(!MeetingSummaryRetryPolicy.shouldRetry(
+            MeetingSummaryError.requestFailed(backend: "Ollama", underlying: URLError(.unsupportedURL))
+        ))
+        #expect(!MeetingSummaryRetryPolicy.shouldRetry(
+            MeetingSummaryError.backendFailed(backend: "Custom LLM", statusCode: nil, message: "No model selected")
+        ))
+        #expect(!MeetingSummaryRetryPolicy.shouldRetry(
+            MeetingSummaryError.backendFailed(backend: "OpenRouter", statusCode: 400, message: "Bad request")
+        ))
+        #expect(!MeetingSummaryRetryPolicy.shouldRetry(
+            MeetingSummaryError.requestFailed(backend: "Ollama", underlying: URLError(.cannotConnectToHost))
+        ))
+        #expect(!MeetingSummaryRetryPolicy.shouldRetry(
+            MeetingSummaryError.requestFailed(backend: "LM Studio", underlying: URLError(.dnsLookupFailed))
+        ))
+        #expect(MeetingSummaryRetryPolicy.shouldRetry(
+            MeetingSummaryError.requestFailed(backend: "OpenAI", underlying: URLError(.cannotConnectToHost))
+        ))
+        #expect(MeetingSummaryRetryPolicy.shouldRetry(
+            MeetingSummaryError.backendFailed(backend: "OpenRouter", statusCode: 429, message: "Rate limited")
+        ))
+        #expect(MeetingSummaryRetryPolicy.shouldRetry(
+            MeetingSummaryError.backendFailed(backend: "OpenAI", statusCode: 503, message: "Unavailable")
+        ))
+    }
+
+    @Test("summary retry policy uses backend-aware retry budgets")
+    func summaryRetryPolicyUsesBackendAwareRetryBudgets() {
+        #expect(MeetingSummaryRetryPolicy.effectiveRetryCount(
+            configuredCount: 5,
+            after: MeetingSummaryError.backendFailed(backend: "OpenAI", statusCode: 503, message: "Unavailable")
+        ) == 5)
+        #expect(MeetingSummaryRetryPolicy.effectiveRetryCount(
+            configuredCount: 5,
+            after: MeetingSummaryError.emptyResponse(backend: "Ollama")
+        ) == 1)
+        #expect(MeetingSummaryRetryPolicy.effectiveRetryCount(
+            configuredCount: 5,
+            after: MeetingSummaryError.requestFailed(
+                backend: "LM Studio",
+                underlying: URLError(.cannotConnectToHost)
+            )
+        ) == 0)
+        #expect(MeetingSummaryRetryPolicy.effectiveRetryCount(
+            configuredCount: 99,
+            after: MeetingSummaryError.backendFailed(backend: "OpenRouter", statusCode: 429, message: "Rate limited")
+        ) == MeetingSummaryRetryPolicy.maximumRetryCount)
+    }
+
     @Test("generateTitle returns nil without API key")
     func titleWithoutKey() async {
         var config = AppConfig()
@@ -258,6 +590,33 @@ struct MeetingSummaryClientTests {
         )
 
         #expect(title == nil)
+    }
+
+    @Test("title excerpt samples opening middle and closing transcript")
+    func titleExcerptSamplesMeetingBreadth() {
+        let transcript = [
+            String(repeating: "opening setup ", count: 80),
+            String(repeating: "middle product strategy ", count: 80),
+            String(repeating: "closing storage roadmap ", count: 80),
+        ].joined(separator: "\n\n")
+
+        let excerpt = MeetingSummaryClient.titleTranscriptExcerpt(from: transcript, segmentLength: 120)
+
+        #expect(excerpt.contains("Opening excerpt:"))
+        #expect(excerpt.contains("Middle excerpt:"))
+        #expect(excerpt.contains("Closing excerpt:"))
+        #expect(excerpt.contains("opening setup"))
+        #expect(excerpt.contains("middle product strategy"))
+        #expect(excerpt.contains("closing storage roadmap"))
+    }
+
+    @Test("short title excerpt keeps full transcript")
+    func shortTitleExcerptKeepsFullTranscript() {
+        let transcript = "Short discussion about customer onboarding"
+
+        let excerpt = MeetingSummaryClient.titleTranscriptExcerpt(from: transcript, segmentLength: 120)
+
+        #expect(excerpt == transcript)
     }
 
     @Test("generateTitle returns nil for OpenRouter without key")
@@ -291,6 +650,7 @@ struct MeetingSummaryClientTests {
         var config = AppConfig()
         config.meetingSummaryBackend = "ollama"
         config.ollamaURL = "http://localhost:1" // invalid port to force connection failure
+        config.meetingSummaryRetryCount = 0
 
         do {
             _ = try await MeetingSummaryClient.summarize(
@@ -344,6 +704,7 @@ struct MeetingSummaryClientTests {
         config.meetingSummaryBackend = "ollama"
         config.ollamaModel = ""
         config.ollamaURL = "http://localhost:1"
+        config.meetingSummaryRetryCount = 0
 
         do {
             _ = try await MeetingSummaryClient.summarize(
@@ -357,5 +718,311 @@ struct MeetingSummaryClientTests {
             let summaryError = error as? MeetingSummaryError
             #expect(summaryError != nil)
         }
+    }
+
+    @Test("resolveCustomLLMURL expands OpenAI-compatible endpoints")
+    func resolveCustomLLMOpenAIURL() {
+        var config = AppConfig()
+
+        config.customLLMURL = ""
+        #expect(
+            MeetingSummaryClient.resolveCustomLLMURL(config: config, format: .openAI)?.absoluteString ==
+                "http://localhost:8080/v1/chat/completions"
+        )
+
+        config.customLLMURL = "https://models.example.com"
+        #expect(
+            MeetingSummaryClient.resolveCustomLLMURL(config: config, format: .openAI)?.absoluteString ==
+                "https://models.example.com/v1/chat/completions"
+        )
+
+        config.customLLMURL = "https://models.example.com/v1/"
+        #expect(
+            MeetingSummaryClient.resolveCustomLLMURL(config: config, format: .openAI)?.absoluteString ==
+                "https://models.example.com/v1/chat/completions"
+        )
+
+        config.customLLMURL = "https://models.example.com/openai/v1"
+        #expect(
+            MeetingSummaryClient.resolveCustomLLMURL(config: config, format: .openAI)?.absoluteString ==
+                "https://models.example.com/openai/v1/chat/completions"
+        )
+
+        config.customLLMURL = "https://models.example.com/llm/v2/chat/completions"
+        #expect(
+            MeetingSummaryClient.resolveCustomLLMURL(config: config, format: .openAI)?.absoluteString ==
+                "https://models.example.com/llm/v2/chat/completions"
+        )
+
+        config.customLLMURL = "https://models.example.com/llm/v2/completions"
+        #expect(
+            MeetingSummaryClient.resolveCustomLLMURL(config: config, format: .openAI)?.absoluteString ==
+                "https://models.example.com/llm/v2/completions/v1/chat/completions"
+        )
+
+        config.customLLMURL = "https://models.example.com/openai/deployments/my-model/chat/completions?api-version=2024-10-21"
+        #expect(
+            MeetingSummaryClient.resolveCustomLLMURL(config: config, format: .openAI)?.absoluteString ==
+                "https://models.example.com/openai/deployments/my-model/chat/completions?api-version=2024-10-21"
+        )
+
+        config.customLLMURL = "https://models.example.com/v1/chat/completions/"
+        #expect(
+            MeetingSummaryClient.resolveCustomLLMURL(config: config, format: .openAI)?.absoluteString ==
+                "https://models.example.com/v1/chat/completions"
+        )
+    }
+
+    @Test("resolveLMStudioURL expands chat completion endpoints")
+    func resolveLMStudioURL() {
+        var config = AppConfig()
+
+        config.lmStudioURL = ""
+        #expect(
+            MeetingSummaryClient.resolveLMStudioURL(config: config)?.absoluteString ==
+                "http://localhost:1234/v1/chat/completions"
+        )
+
+        config.lmStudioURL = "http://localhost:1234/v1"
+        #expect(
+            MeetingSummaryClient.resolveLMStudioURL(config: config)?.absoluteString ==
+                "http://localhost:1234/v1/chat/completions"
+        )
+
+        config.lmStudioURL = "http://localhost:1234/proxy/v1"
+        #expect(
+            MeetingSummaryClient.resolveLMStudioURL(config: config)?.absoluteString ==
+                "http://localhost:1234/proxy/v1/chat/completions"
+        )
+
+        config.lmStudioURL = "http://localhost:1234/v1/chat/completions"
+        #expect(
+            MeetingSummaryClient.resolveLMStudioURL(config: config)?.absoluteString ==
+                "http://localhost:1234/v1/chat/completions"
+        )
+    }
+
+    @Test("resolveCustomLLMURL expands Anthropic endpoints")
+    func resolveCustomLLMAnthropicURL() {
+        var config = AppConfig()
+
+        config.customLLMURL = ""
+        #expect(
+            MeetingSummaryClient.resolveCustomLLMURL(config: config, format: .anthropic)?.absoluteString ==
+                "https://api.anthropic.com/v1/messages"
+        )
+
+        config.customLLMURL = "https://models.example.com/anthropic"
+        #expect(
+            MeetingSummaryClient.resolveCustomLLMURL(config: config, format: .anthropic)?.absoluteString ==
+                "https://models.example.com/anthropic/v1/messages"
+        )
+
+        config.customLLMURL = "https://models.example.com/anthropic/v1"
+        #expect(
+            MeetingSummaryClient.resolveCustomLLMURL(config: config, format: .anthropic)?.absoluteString ==
+                "https://models.example.com/anthropic/v1/messages"
+        )
+
+        config.customLLMURL = "https://models.example.com/anthropic/v2/messages"
+        #expect(
+            MeetingSummaryClient.resolveCustomLLMURL(config: config, format: .anthropic)?.absoluteString ==
+                "https://models.example.com/anthropic/v2/messages"
+        )
+
+        config.customLLMURL = "https://models.example.com/messages"
+        #expect(
+            MeetingSummaryClient.resolveCustomLLMURL(config: config, format: .anthropic)?.absoluteString ==
+                "https://models.example.com/messages/v1/messages"
+        )
+
+        config.customLLMURL = "https://models.example.com/v1/messages/"
+        #expect(
+            MeetingSummaryClient.resolveCustomLLMURL(config: config, format: .anthropic)?.absoluteString ==
+                "https://models.example.com/v1/messages"
+        )
+    }
+
+    @Test("extractAnthropicText joins text blocks")
+    func extractAnthropicText() {
+        let payload: [String: Any] = [
+            "content": [
+                ["type": "text", "text": "First"],
+                ["type": "text", "text": "Second"],
+            ],
+        ]
+
+        #expect(MeetingSummaryClient.extractAnthropicText(from: payload) == "First\nSecond")
+        #expect(MeetingSummaryClient.extractAnthropicText(from: [:]) == nil)
+    }
+
+    @Test("summarize routes to LM Studio when configured")
+    func routesToLMStudio() async throws {
+        var config = AppConfig()
+        config.meetingSummaryBackend = "lmstudio"
+        config.lmStudioURL = "http://localhost:1"
+        config.lmStudioModel = "local-model"
+        config.meetingSummaryRetryCount = 0
+
+        do {
+            _ = try await MeetingSummaryClient.summarize(
+                transcript: "Test transcript",
+                meetingTitle: "My Meeting",
+                config: config
+            )
+            #expect(Bool(false), "Expected error to be thrown")
+        } catch {
+            let summaryError = error as? MeetingSummaryError
+            #expect(summaryError != nil)
+            if case .requestFailed(let backend, _) = summaryError! {
+                #expect(backend == "LM Studio")
+            } else {
+                #expect(Bool(false), "Expected requestFailed error, got \(String(describing: error))")
+            }
+        }
+    }
+
+    @Test("summarize routes to custom LLM without requiring an API key")
+    func routesToCustomLLMWithoutKey() async throws {
+        var config = AppConfig()
+        config.meetingSummaryBackend = "custom_llm"
+        config.customLLMFormat = "openai"
+        config.customLLMURL = "http://localhost:1"
+        config.customLLMAPIKey = ""
+        config.customLLMModel = "local-model"
+        config.meetingSummaryRetryCount = 0
+
+        do {
+            _ = try await MeetingSummaryClient.summarize(
+                transcript: "Test transcript",
+                meetingTitle: "My Custom Meeting",
+                config: config
+            )
+            #expect(Bool(false), "Expected error to be thrown")
+        } catch {
+            let summaryError = error as? MeetingSummaryError
+            #expect(summaryError != nil)
+            if case .requestFailed(let backend, _) = summaryError! {
+                #expect(backend == "Custom LLM")
+            } else {
+                #expect(Bool(false), "Expected requestFailed error, got \(String(describing: error))")
+            }
+        }
+    }
+
+    @Test("custom LLM summary requires explicit model")
+    func customLLMRequiresModel() async throws {
+        var config = AppConfig()
+        config.meetingSummaryBackend = "custom_llm"
+        config.customLLMFormat = "openai"
+        config.customLLMURL = "http://localhost:1"
+        config.customLLMModel = ""
+
+        do {
+            _ = try await MeetingSummaryClient.summarize(
+                transcript: "Test transcript",
+                meetingTitle: "My Custom Meeting",
+                config: config
+            )
+            #expect(Bool(false), "Expected error to be thrown")
+        } catch {
+            guard case .backendFailed(let backend, _, let message) = error as? MeetingSummaryError else {
+                #expect(Bool(false), "Expected backendFailed error, got \(String(describing: error))")
+                return
+            }
+            #expect(backend == "Custom LLM")
+            #expect(message.contains("No model selected"))
+        }
+    }
+
+    @Test("Anthropic custom LLM requires API key")
+    func anthropicCustomLLMRequiresAPIKey() async throws {
+        var config = AppConfig()
+        config.meetingSummaryBackend = "custom_llm"
+        config.customLLMFormat = "anthropic"
+        config.customLLMAPIKey = ""
+        config.customLLMModel = "claude-test"
+
+        #expect(MeetingSummaryClient.customLLMRequiresAPIKey(config: config))
+
+        do {
+            _ = try await MeetingSummaryClient.summarize(
+                transcript: "Test transcript",
+                meetingTitle: "My Custom Meeting",
+                config: config
+            )
+            #expect(Bool(false), "Expected error to be thrown")
+        } catch {
+            guard case .backendFailed(let backend, _, let message) = error as? MeetingSummaryError else {
+                #expect(Bool(false), "Expected backendFailed error, got \(String(describing: error))")
+                return
+            }
+            #expect(backend == "Custom LLM")
+            #expect(message.contains("API key"))
+        }
+    }
+
+    @Test("OpenAI-compatible custom LLM does not require API key")
+    func openAICustomLLMDoesNotRequireAPIKey() {
+        var config = AppConfig()
+        config.customLLMFormat = "openai"
+        config.customLLMAPIKey = ""
+
+        #expect(!MeetingSummaryClient.customLLMRequiresAPIKey(config: config))
+    }
+
+    @Test("LM Studio readiness requires model")
+    func lmStudioReadinessRequiresModel() {
+        var config = AppConfig()
+
+        config.lmStudioModel = ""
+        #expect(!MeetingSummaryClient.lmStudioHasRequiredSettings(config: config))
+
+        config.lmStudioModel = "   "
+        #expect(!MeetingSummaryClient.lmStudioHasRequiredSettings(config: config))
+
+        config.lmStudioModel = "local-model"
+        #expect(MeetingSummaryClient.lmStudioHasRequiredSettings(config: config))
+    }
+
+    @Test("Custom LLM readiness requires model and Anthropic key")
+    func customLLMReadinessRequiresModelAndAnthropicKey() {
+        var config = AppConfig()
+
+        config.customLLMFormat = "openai"
+        config.customLLMModel = ""
+        config.customLLMAPIKey = ""
+        #expect(!MeetingSummaryClient.customLLMHasRequiredSettings(config: config))
+
+        config.customLLMModel = "   "
+        #expect(!MeetingSummaryClient.customLLMHasRequiredSettings(config: config))
+
+        config.customLLMModel = "local-model"
+        #expect(MeetingSummaryClient.customLLMHasRequiredSettings(config: config))
+
+        config.customLLMFormat = "anthropic"
+        config.customLLMAPIKey = ""
+        #expect(!MeetingSummaryClient.customLLMHasRequiredSettings(config: config))
+
+        config.customLLMAPIKey = "   "
+        #expect(!MeetingSummaryClient.customLLMHasRequiredSettings(config: config))
+
+        config.customLLMAPIKey = "sk-ant-test"
+        #expect(MeetingSummaryClient.customLLMHasRequiredSettings(config: config))
+    }
+
+    @Test("generateTitle returns nil for LM Studio when unreachable")
+    func titleLMStudioUnreachable() async {
+        var config = AppConfig()
+        config.meetingSummaryBackend = "lmstudio"
+        config.lmStudioURL = "http://localhost:1"
+        config.lmStudioModel = "local-model"
+
+        let title = await MeetingSummaryClient.generateTitle(
+            transcript: "Sprint planning discussion",
+            config: config
+        )
+
+        #expect(title == nil)
     }
 }
