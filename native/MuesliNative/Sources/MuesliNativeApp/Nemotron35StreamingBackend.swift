@@ -60,14 +60,12 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
 
     // MARK: - Model Loading
 
-    private static let cacheDir: URL = {
-        let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".cache/muesli/models/nemotron35-multilingual-2240ms", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
-    }()
+    private static var cacheDir: URL { Nemotron35ModelStore.cacheDirectory() }
 
-    func loadModels(progress: ((Double, String?) -> Void)? = nil) async throws {
+    func loadModels(
+        progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
+    ) async throws {
         if loaded, loadedRevision == Self.installedRevision() { return }
         if isLoading {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -79,7 +77,7 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
         isLoading = true
         let generation = loadGeneration
         do {
-            try await performLoadModels(progress: progress, generation: generation)
+            try await performLoadModels(progress: progress, progressSnapshot: progressSnapshot, generation: generation)
             isLoading = false
             completeLoadWaiters()
         } catch {
@@ -91,9 +89,10 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
 
     private func performLoadModels(
         progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil,
         generation: Int
     ) async throws {
-        let modelDir = try await ensureModelsDownloaded(progress: progress)
+        let modelDir = try await ensureModelsDownloaded(progress: progress, progressSnapshot: progressSnapshot)
         let installedRevision = Self.installedRevision()
         if loaded, loadedRevision == installedRevision { return }
         if loaded {
@@ -101,6 +100,7 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
         }
 
         fputs("[nemotron35] loading CoreML models...\n", stderr)
+        progressSnapshot?(ModelDownloadProgress.preparing(modelID: Nemotron35ModelStore.repoID, message: "Preparing Nemotron 3.5 Core ML models..."))
         let mlConfig = MLModelConfiguration()
         mlConfig.computeUnits = .all
 
@@ -221,26 +221,18 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
 
     // MARK: - Model Download
 
-    static let repoID = "FluidInference/Nemotron-3.5-ASR-Streaming-Multilingual-0.6b-CoreML"
-    private static let variantPath = "multilingual/2240ms"
-    private static var revisionFile: URL { cacheDir.appendingPathComponent(".revision") }
+    static let repoID = Nemotron35ModelStore.repoID
 
     // MARK: - Update detection
 
     /// The HuggingFace commit sha recorded when the model was last downloaded, if any.
     nonisolated static func installedRevision() -> String? {
-        guard let s = try? String(contentsOf: revisionFile, encoding: .utf8) else { return nil }
-        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+        Nemotron35ModelStore.installedRevision()
     }
 
     /// The repo's current `main` commit sha (one lightweight HF API call), or nil on failure.
     static func fetchRemoteRevision() async -> String? {
-        guard let url = URL(string: "https://huggingface.co/api/models/\(repoID)") else { return nil }
-        guard let (data, _) = try? await URLSession.shared.data(from: url),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let sha = obj["sha"] as? String else { return nil }
-        return sha
+        await Nemotron35ModelStore.fetchRemoteRevision()
     }
 
     /// True only when a model is installed with a known revision that differs from the
@@ -252,32 +244,18 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
         return local != remote
     }
 
-    private func ensureModelsDownloaded(progress: ((Double, String?) -> Void)? = nil) async throws -> URL {
+    private func ensureModelsDownloaded(
+        progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
+    ) async throws -> URL {
         let modelDir = Self.cacheDir
-        let requiredFile = modelDir.appendingPathComponent("encoder.mlmodelc/coremldata.bin")
-        if FileManager.default.fileExists(atPath: requiredFile.path) {
+        if Nemotron35ModelStore.isModelDownloaded() {
             fputs("[nemotron35] models already cached\n", stderr)
             return modelDir
         }
 
         fputs("[nemotron35] downloading multilingual/2240ms variant from HuggingFace...\n", stderr)
-        progress?(0.0, "Downloading Nemotron 3.5 model...")
-
-        let hfAPI = "https://huggingface.co/api/models/\(Self.repoID)/tree/main/\(Self.variantPath)"
-        var filesDownloaded = 0
-        // Skip the fused decoder_joint — we run decoder + joint separately (saves ~49 MB).
-        try await nemotronDownloadHuggingFaceTree(
-            repoID: Self.repoID, apiURL: hfAPI, remotePath: Self.variantPath,
-            localDir: modelDir, skipRelativePrefix: "decoder_joint.mlmodelc", logPrefix: "[nemotron35]"
-        ) {
-            filesDownloaded += 1
-            progress?(min(Double(filesDownloaded) / 30.0, 0.95), "Downloading Nemotron 3.5 model...")
-        }
-
-        // Record the repo revision so we can later detect upstream updates.
-        if let sha = await Self.fetchRemoteRevision() {
-            try? sha.write(to: Self.revisionFile, atomically: true, encoding: .utf8)
-        }
+        _ = try await Nemotron35ModelStore.ensureDownloaded(progress: progress, progressSnapshot: progressSnapshot)
 
         fputs("[nemotron35] download complete\n", stderr)
         return modelDir

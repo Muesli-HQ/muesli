@@ -26,10 +26,23 @@ struct MeetingMicRecorderDiagnosticsSnapshot: Codable, Equatable {
     let route: MeetingMicRouteDiagnosticsSnapshot?
 }
 
+/// Result of a same-route recovery request. The distinction matters to the
+/// coordinator's accounting: a busy recorder is back-pressure (in-flight
+/// handoff already covers the episode), while an unavailable recorder cannot
+/// recover at all and the request must count toward the episode's attempt cap.
+enum MeetingMicRecoveryRequestResult: Equatable {
+    case initiated
+    case busy
+    case unavailable
+}
+
 protocol MeetingMicRecording: AnyObject {
     var preferredInputDeviceID: AudioObjectID? { get set }
     var onRawPCMSamples: (([Int16]) -> Void)? { get set }
     var onRecordingFailed: ((Error) -> Void)? { get set }
+    /// Fired when a route handoff settles: a candidate promoted to active, or
+    /// failed/timed out. Recorders without a handoff primitive never fire it.
+    var onHandoffOutcome: ((MeetingMicHandoffOutcome) -> Void)? { get set }
 
     func prepare() throws
     func start() throws
@@ -39,6 +52,25 @@ protocol MeetingMicRecording: AnyObject {
     func cancel()
     func currentPower() -> Float
     func diagnosticsSnapshot() -> MeetingMicRecorderDiagnosticsSnapshot
+
+    /// Permanently disqualify this instance from starting capture again —
+    /// synchronous, so teardown always wins against a stale queued handoff
+    /// worker. Default no-op for recorders without retained worker state.
+    func invalidateForTeardown()
+
+    /// Request a serialized same-route recovery: prepare a replacement capture
+    /// graph for the current input while the active graph keeps running, and
+    /// promote it only after it produces a non-empty buffer. Used when the
+    /// health tracker confirms a semantically dead graph (missing/zero
+    /// callbacks) that never raises an explicit CoreAudio error. Recorders
+    /// without a recovery primitive keep the default no-op (.unavailable).
+    @discardableResult
+    func requestSameRouteRecovery(reason: String) -> MeetingMicRecoveryRequestResult
+}
+
+extension MeetingMicRecording {
+    func invalidateForTeardown() {}
+    func requestSameRouteRecovery(reason: String) -> MeetingMicRecoveryRequestResult { .unavailable }
 }
 
 final class StreamingMeetingMicRecorderAdapter: MeetingMicRecording {
@@ -51,6 +83,8 @@ final class StreamingMeetingMicRecorderAdapter: MeetingMicRecording {
         get { recorder.onRecordingFailed }
         set { recorder.onRecordingFailed = newValue }
     }
+    /// No-op sink: this adapter has no handoff primitive, so it never fires.
+    var onHandoffOutcome: ((MeetingMicHandoffOutcome) -> Void)?
 
     private let recorder: StreamingDictationRecording
     private let kind: MeetingMicRecorderKind
@@ -90,6 +124,10 @@ final class StreamingMeetingMicRecorderAdapter: MeetingMicRecording {
 
     func cancel() {
         recorder.cancel()
+    }
+
+    func invalidateForTeardown() {
+        recorder.invalidateForTeardown()
     }
 
     func currentPower() -> Float {
@@ -155,6 +193,10 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         get { lock.withLock { $0.onRecordingFailedStorage } }
         set { lock.withLock { $0.onRecordingFailedStorage = newValue } }
     }
+    var onHandoffOutcome: ((MeetingMicHandoffOutcome) -> Void)? {
+        get { lock.withLock { $0.onHandoffOutcomeStorage } }
+        set { lock.withLock { $0.onHandoffOutcomeStorage = newValue } }
+    }
 
     private let systemDefaultRecorderFactory: RecorderFactory
     private let appScopedRecorderFactory: RecorderFactory
@@ -177,6 +219,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         var shouldRecoverOnResume = false
         var onRawPCMSamplesStorage: (([Int16]) -> Void)?
         var onRecordingFailedStorage: ((Error) -> Void)?
+        var onHandoffOutcomeStorage: ((MeetingMicHandoffOutcome) -> Void)?
     }
 
     private var preferredInputDeviceIDStorage: AudioObjectID? {
@@ -202,7 +245,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
             label: "com.muesli.route-aware-meeting-mic-recorder-cleanup",
             attributes: .concurrent
         ),
-        handoffTimeout: TimeInterval = 2,
+        handoffTimeout: TimeInterval = 5,
         handoffTimeoutScheduler: HandoffTimeoutScheduler? = nil
     ) {
         self.seededSystemDefaultRecorder = systemDefaultRecorder
@@ -289,8 +332,19 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
                 state.shouldRecoverOnResume = false
                 return result
             }
+            // Poison every child synchronously, before any async cancellation:
+            // a handoff worker that slipped past the pending-candidate guard
+            // must find start() permanently rejected, never merely delayed.
+            invalidateChildrenForTeardown(children)
             return (children.0, children.1, takeUnusedSeedRecorders())
         }
+        resources.unused.forEach { $0.invalidateForTeardown() }
+        // The pending candidate is invalidated synchronously above; a worker
+        // mid-start self-stops via the post-start invalidation check before
+        // start() returns. Do NOT call its stop() synchronously here: that
+        // contends on the recorder's graph lock, which a blocked startup may
+        // hold, and would stall meeting teardown behind it (#322 class).
+        // Disposal stays on the async cleanup queue.
         cancelAsync(resources.pending)
         cancelAsync(resources.unused)
         let url = resources.active?.recorder.stop()
@@ -303,19 +357,32 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         let resources = lifecycleQueue.sync { () -> (Child?, Child?, [MeetingMicRecording]) in
             let children = lock.withLock { state -> (Child?, Child?) in
                 state.lifecycleState = .stopping
-                state.generation &+= 1
+                state.generation = state.generation &+ 1
                 let result = (state.active, state.pending)
                 state.active = nil
                 state.pending = nil
                 state.shouldRecoverOnResume = false
                 return result
             }
+            invalidateChildrenForTeardown(children)
             lock.withLock { $0.lifecycleState = .idle }
             return (children.0, children.1, takeUnusedSeedRecorders())
         }
-        cancelAsync(resources.0)
+        resources.2.forEach { $0.invalidateForTeardown() }
+        // Same contract as stop(): the pending candidate is already poisoned
+        // (never starts, or self-stops after a blocked start); only disposal
+        // is deferred to the cleanup queue.
         cancelAsync(resources.1)
+        cancelAsync(resources.0)
         cancelAsync(resources.2)
+    }
+
+    /// Synchronously poison active/pending children so no stale worker can
+    /// ever start them; the recording child is stopped first by the caller so
+    /// its WAV finalizes before invalidation.
+    private func invalidateChildrenForTeardown(_ children: (Child?, Child?)) {
+        children.0?.recorder.invalidateForTeardown()
+        children.1?.recorder.invalidateForTeardown()
     }
 
     func currentPower() -> Float {
@@ -337,6 +404,28 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
             )
         }
         return snapshot
+    }
+
+    /// Health-driven recovery entry point: the current graph is confirmed
+    /// degraded (missing/zero mic callbacks while system audio is active) but
+    /// never threw, so force a same-route candidate through the existing
+    /// serialized handoff. Reports .busy when a handoff is already pending
+    /// (back-pressure: the in-flight handoff covers this episode), and
+    /// .unavailable when the lifecycle is not in a recoverable state.
+    @discardableResult
+    func requestSameRouteRecovery(reason: String) -> MeetingMicRecoveryRequestResult {
+        fputs("[meeting-mic] health-triggered same-route recovery requested: \(reason)\n", stderr)
+        return lifecycleQueue.sync { [weak self] in
+            guard let self else { return .unavailable }
+            if let availability = self.lock.withLock({ state -> MeetingMicRecoveryRequestResult? in
+                guard state.lifecycleState == .running || state.lifecycleState == .failed else { return .unavailable }
+                guard state.pending == nil else { return .busy }
+                return nil
+            }) {
+                return availability
+            }
+            return self.beginHandoffIfNeeded(force: true) ? .initiated : .unavailable
+        }
     }
 
     private func ensureCurrentChild() throws -> Child {
@@ -363,14 +452,16 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         beginHandoffIfNeeded(force: force)
     }
 
-    private func beginHandoffIfNeeded(force: Bool = false) {
+    /// Returns true when a candidate handoff was actually started.
+    @discardableResult
+    private func beginHandoffIfNeeded(force: Bool = false) -> Bool {
         let request = lock.withLock { state -> (AudioObjectID, UInt64)? in
             guard state.lifecycleState == .running || state.lifecycleState == .failed,
                   state.pending == nil,
                   force || state.active?.deviceID != state.preferredInputDeviceIDStorage else { return nil }
             return (state.preferredInputDeviceIDStorage ?? kAudioObjectUnknown, state.generation)
         }
-        guard let (encodedDeviceID, generation) = request else { return }
+        guard let (encodedDeviceID, generation) = request else { return false }
         let deviceID = encodedDeviceID == kAudioObjectUnknown ? nil : encodedDeviceID
         let candidate = makeChild(deviceID: deviceID, generation: generation)
         lock.withLock { $0.pending = candidate }
@@ -392,7 +483,16 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         )
         handoffWorkerQueue.async { [weak self] in
             do {
+                // Revalidate immediately before each stage: stop()/cancel()
+                // clear the pending candidate and bump the generation, but this
+                // queued worker can execute afterward — without the guard a
+                // stale candidate would start capture after the meeting ended.
+                guard self?.isPendingCandidateCurrent(candidate.id, generation: generation) == true else { return }
                 try candidate.recorder.prepare()
+                guard self?.isPendingCandidateCurrent(candidate.id, generation: generation) == true else {
+                    candidate.recorder.cancel()
+                    return
+                }
                 try candidate.recorder.start()
             } catch {
                 self?.lifecycleQueue.async { [weak self] in
@@ -403,6 +503,15 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
                     )
                 }
             }
+        }
+        return true
+    }
+
+    private func isPendingCandidateCurrent(_ candidateID: UUID, generation: UInt64) -> Bool {
+        lock.withLock { state in
+            state.pending?.id == candidateID
+                && state.generation == generation
+                && (state.lifecycleState == .running || state.lifecycleState == .failed)
         }
     }
 
@@ -495,6 +604,8 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         }
         guard transition.completed else { return }
         onRawPCMSamplesStorage?(firstSamples)
+        onHandoffOutcome?(.promoted)
+        fputs("[meeting-mic] handoff promoted: replacement is now capturing\n", stderr)
         retireAfterHandoffAsync(transition.old)
     }
 
@@ -508,6 +619,8 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         }
         guard let result else { return }
         cancelAsync(result.candidate)
+        let isTimeout = (error as NSError).domain == "MeetingMicrophoneRoute" && (error as NSError).code == 1
+        onHandoffOutcome?(isTimeout ? .timedOut : .failed)
         let outcome = result.isTerminalRecovery
             ? "microphone recovery failed"
             : "microphone handoff failed; continuing current route"

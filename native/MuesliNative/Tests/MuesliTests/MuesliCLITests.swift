@@ -7,7 +7,8 @@ import MuesliCore
 struct MuesliCLITests {
     @Test("spec exposes the agent-facing command set")
     func specPayloadIncludesCommands() {
-        let names = Set(MuesliCLI.specPayload().commands.map(\.name))
+        let payload = MuesliCLI.specPayload()
+        let names = Set(payload.commands.map(\.name))
 
         #expect(names.contains("spec"))
         #expect(names.contains("info"))
@@ -17,6 +18,16 @@ struct MuesliCLITests {
         #expect(names.contains("meetings update-notes"))
         #expect(names.contains("dictations list"))
         #expect(names.contains("dictations get"))
+
+        let transcribeSpec = payload.commands.first { $0.name == "transcribe" }
+        #expect(transcribeSpec?.usage.contains("nemotron35") == true)
+        #expect(transcribeSpec?.usage.contains("--dictionary") == true)
+        for model in TranscribeModel.allCases {
+            #expect(
+                transcribeSpec?.usage.contains(model.rawValue) == true,
+                "CLI spec does not advertise \(model.rawValue)"
+            )
+        }
     }
 
     @Test("explicit db path overrides support directory resolution")
@@ -78,11 +89,212 @@ struct MuesliCLITests {
     func transcribeEnumsAcceptDocumentedValues() {
         #expect(TranscribeModel(argument: "parakeet-v3") == .parakeetV3)
         #expect(TranscribeModel(argument: "parakeet-v2") == .parakeetV2)
+        #expect(TranscribeModel(argument: "parakeet-eou-320ms") == .parakeetEou320ms)
+        #expect(TranscribeModel(argument: "sensevoice") == .senseVoice)
+        #expect(TranscribeModel(argument: "qwen3-asr") == .qwen3Asr)
+        #expect(TranscribeModel(argument: "nemotron35") == .nemotron35)
+        #expect(TranscribeModel(argument: "whisper-tiny") == .whisperTiny)
+        #expect(TranscribeModel(argument: "whisper-tiny-english") == .whisperTinyEnglish)
+        #expect(TranscribeModel(argument: "whisper-small") == .whisperSmall)
+        #expect(TranscribeModel(argument: "whisper-small-english") == .whisperSmallEnglish)
+        #expect(TranscribeModel(argument: "whisper-medium-english") == .whisperMediumEnglish)
+        #expect(TranscribeModel(argument: "whisper-large-turbo") == .whisperLargeTurbo)
+        #expect(TranscribeModel.nemotron35.asrModelVersion == nil)
+        #expect(TranscribeModel.whisperTiny.whisperKitModelName == "tiny")
+        #expect(TranscribeModel.whisperTinyEnglish.whisperKitModelName == "tiny.en")
+        #expect(TranscribeModel.whisperSmall.whisperKitModelName == "small")
+        #expect(TranscribeModel.whisperSmallEnglish.whisperKitModelName == "small.en")
+        #expect(TranscribeModel.whisperMediumEnglish.whisperKitModelName == "medium.en")
+        #expect(TranscribeModel.whisperLargeTurbo.whisperKitModelName == "large-v3-v20240930_626MB")
+        #expect(TranscribeModel(argument: "whisper-medium") == nil)
         #expect(TranscribeModel(argument: "canary-qwen") == nil)
         #expect(TranscribeOutputFormat(argument: "text") == .text)
         #expect(TranscribeOutputFormat(argument: "json") == .json)
         #expect(TranscribeOutputFormat(argument: "markdown") == .markdown)
         #expect(TranscribeOutputFormat(argument: "xml") == nil)
+    }
+
+    @Test("--dictionary parses into the request")
+    func dictionaryOptionParses() throws {
+        let command = try TranscribeCommand.parse(["recording.wav", "--dictionary", "/tmp/dictionary.json"])
+        #expect(command.dictionary == "/tmp/dictionary.json")
+    }
+
+    @Test("loadCustomWords accepts a plain JSON array")
+    func loadCustomWordsAcceptsPlainArray() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-cli-dictionary-\(UUID().uuidString).json")
+        try Data("""
+        [{"word": "museli", "replacement": "muesli", "matching_threshold": 0.85}]
+        """.utf8).write(to: url)
+
+        let words = try MuesliAudioTranscriptionPipeline.loadCustomWords(from: url)
+        #expect(words.count == 1)
+        #expect(words[0].word == "museli")
+        #expect(words[0].targetWord == "muesli")
+    }
+
+    @Test("loadCustomWords accepts a config.json-shaped object")
+    func loadCustomWordsAcceptsConfigShape() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-cli-dictionary-\(UUID().uuidString).json")
+        try Data("""
+        {"custom_words": [{"word": "kubernete", "replacement": "Kubernetes"}], "other_config_key": true}
+        """.utf8).write(to: url)
+
+        let words = try MuesliAudioTranscriptionPipeline.loadCustomWords(from: url)
+        #expect(words.count == 1)
+        #expect(words[0].targetWord == "Kubernetes")
+    }
+
+    @Test("loadCustomWords rejects a missing file")
+    func loadCustomWordsRejectsMissingFile() {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("does-not-exist-\(UUID().uuidString).json")
+        #expect(throws: Error.self) {
+            _ = try MuesliAudioTranscriptionPipeline.loadCustomWords(from: url)
+        }
+    }
+
+    @Test("loadCustomWords distinguishes unreadable paths from missing files")
+    func loadCustomWordsRejectsUnreadablePath() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-cli-dictionary-directory-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+
+        do {
+            _ = try MuesliAudioTranscriptionPipeline.loadCustomWords(from: url)
+            Issue.record("Expected reading a directory as a dictionary to fail")
+        } catch let error as CLIError {
+            #expect(error.errorBody.code == "invalid_input")
+            #expect(error.errorBody.message.contains("Could not read dictionary file"))
+        }
+    }
+
+    @Test("pipeline validates the dictionary before transcription")
+    func pipelineValidatesDictionaryBeforeTranscription() async throws {
+        let fixture = try TranscribeFixture()
+        let missingDictionaryURL = fixture.directory.appendingPathComponent("missing-dictionary.json")
+        let pipeline = MuesliAudioTranscriptionPipeline(
+            audioPreparer: FakeAudioPreparer(wavURL: fixture.wavURL, durationSeconds: 3),
+            transcriber: FailingTranscriber(),
+            summarizer: SuccessfulSummarizer(notes: "should not run"),
+            dataChangePoster: {}
+        )
+
+        do {
+            _ = try await pipeline.run(
+                request: MuesliAudioTranscriptionRequest(
+                    sourceURL: fixture.sourceURL,
+                    model: .parakeetV3,
+                    title: "Fail Fast Demo",
+                    summarize: false,
+                    saveMeeting: false,
+                    dictionaryURL: missingDictionaryURL
+                ),
+                context: fixture.context
+            )
+            Issue.record("Expected the missing dictionary to fail before transcription")
+        } catch let error as CLIError {
+            #expect(error.errorBody.code == "not_found")
+        }
+    }
+
+    @Test("pipeline applies the dictionary to the transcript")
+    func pipelineAppliesDictionary() async throws {
+        let fixture = try TranscribeFixture()
+        let dictionaryURL = fixture.directory.appendingPathComponent("dictionary.json")
+        try Data("""
+        [{"word": "museli", "replacement": "muesli"}]
+        """.utf8).write(to: dictionaryURL)
+
+        let pipeline = MuesliAudioTranscriptionPipeline(
+            audioPreparer: FakeAudioPreparer(wavURL: fixture.wavURL, durationSeconds: 3),
+            transcriber: FakeTranscriber(text: "I love museli"),
+            summarizer: SuccessfulSummarizer(notes: "unused"),
+            dataChangePoster: {}
+        )
+
+        let result = try await pipeline.run(
+            request: MuesliAudioTranscriptionRequest(
+                sourceURL: fixture.sourceURL,
+                model: .parakeetV3,
+                title: "Dictionary Demo",
+                summarize: false,
+                saveMeeting: false,
+                dictionaryURL: dictionaryURL
+            ),
+            context: fixture.context
+        )
+
+        #expect(result.transcript == "I love muesli")
+    }
+
+    @Test("pipeline rejects a dictionary that removes the entire transcript")
+    func pipelineRejectsDictionaryEmptiedTranscript() async throws {
+        let fixture = try TranscribeFixture()
+        let dictionaryURL = fixture.directory.appendingPathComponent("empty-dictionary.json")
+        try Data("""
+        [{"word": "hello", "replacement": ""}]
+        """.utf8).write(to: dictionaryURL)
+
+        let pipeline = MuesliAudioTranscriptionPipeline(
+            audioPreparer: FakeAudioPreparer(wavURL: fixture.wavURL, durationSeconds: 3),
+            transcriber: FakeTranscriber(text: "hello"),
+            summarizer: SuccessfulSummarizer(notes: "should not run"),
+            dataChangePoster: {}
+        )
+
+        do {
+            _ = try await pipeline.run(
+                request: MuesliAudioTranscriptionRequest(
+                    sourceURL: fixture.sourceURL,
+                    model: .parakeetV3,
+                    title: "Empty Dictionary Demo",
+                    summarize: true,
+                    saveMeeting: true,
+                    dictionaryURL: dictionaryURL
+                ),
+                context: fixture.context
+            )
+            Issue.record("Expected the post-dictionary empty transcript to be rejected")
+        } catch let error as CLIError {
+            #expect(error.errorBody.code == "invalid_input")
+            #expect(error.errorBody.message.contains("No speech remains"))
+        }
+    }
+
+    @Test("pipeline rejects a dictionary that leaves only punctuation")
+    func pipelineRejectsDictionaryPunctuationOnlyTranscript() async throws {
+        let fixture = try TranscribeFixture()
+        let dictionaryURL = fixture.directory.appendingPathComponent("punctuation-dictionary.json")
+        try Data("""
+        [{"word": "hello", "replacement": ""}]
+        """.utf8).write(to: dictionaryURL)
+
+        let pipeline = MuesliAudioTranscriptionPipeline(
+            audioPreparer: FakeAudioPreparer(wavURL: fixture.wavURL, durationSeconds: 3),
+            transcriber: FakeTranscriber(text: "hello!"),
+            summarizer: SuccessfulSummarizer(notes: "should not run"),
+            dataChangePoster: {}
+        )
+
+        do {
+            _ = try await pipeline.run(
+                request: MuesliAudioTranscriptionRequest(
+                    sourceURL: fixture.sourceURL,
+                    model: .parakeetV3,
+                    title: "Punctuation Dictionary Demo",
+                    summarize: true,
+                    saveMeeting: true,
+                    dictionaryURL: dictionaryURL
+                ),
+                context: fixture.context
+            )
+            Issue.record("Expected a punctuation-only post-dictionary transcript to be rejected")
+        } catch let error as CLIError {
+            #expect(error.errorBody.code == "invalid_input")
+            #expect(error.errorBody.message.contains("No speech remains"))
+        }
     }
 
     @Test("transcribe text output is transcript only")
@@ -286,6 +498,12 @@ private struct FakeTranscriber: AudioTranscribing {
     func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
         progress("fake")
         return HeadlessTranscription(text: text, durationSeconds: nil)
+    }
+}
+
+private struct FailingTranscriber: AudioTranscribing {
+    func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
+        throw CLIError.invalidInput("Transcription should not run when dictionary validation fails.")
     }
 }
 

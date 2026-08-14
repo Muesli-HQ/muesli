@@ -71,6 +71,7 @@ public final class DictationStore {
             deleted_at REAL,
             cloud_record_name TEXT,
             cloud_change_tag TEXT,
+            cloud_system_fields BLOB,
             last_synced_at REAL,
             sync_dirty INTEGER NOT NULL DEFAULT 1,
             created_at TEXT DEFAULT (datetime('now'))
@@ -116,6 +117,7 @@ public final class DictationStore {
             deleted_at REAL,
             cloud_record_name TEXT,
             cloud_change_tag TEXT,
+            cloud_system_fields BLOB,
             cloud_transcript_record_name TEXT,
             last_synced_at REAL,
             sync_dirty INTEGER NOT NULL DEFAULT 1,
@@ -138,6 +140,12 @@ public final class DictationStore {
         );
         CREATE INDEX IF NOT EXISTS idx_meeting_transcript_checkpoints_meeting
             ON meeting_transcript_checkpoints(meeting_id, start_seconds, id);
+
+        CREATE TABLE IF NOT EXISTS cloud_sync_state (
+            key TEXT PRIMARY KEY,
+            value BLOB NOT NULL,
+            updated_at REAL NOT NULL
+        );
 
         CREATE TABLE IF NOT EXISTS meeting_resume_snapshots (
             meeting_id INTEGER PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE,
@@ -199,12 +207,14 @@ public final class DictationStore {
             "ALTER TABLE dictations ADD COLUMN deleted_at REAL",
             "ALTER TABLE dictations ADD COLUMN cloud_record_name TEXT",
             "ALTER TABLE dictations ADD COLUMN cloud_change_tag TEXT",
+            "ALTER TABLE dictations ADD COLUMN cloud_system_fields BLOB",
             "ALTER TABLE dictations ADD COLUMN last_synced_at REAL",
             "ALTER TABLE dictations ADD COLUMN sync_dirty INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE meetings ADD COLUMN updated_at REAL NOT NULL DEFAULT 0",
             "ALTER TABLE meetings ADD COLUMN deleted_at REAL",
             "ALTER TABLE meetings ADD COLUMN cloud_record_name TEXT",
             "ALTER TABLE meetings ADD COLUMN cloud_change_tag TEXT",
+            "ALTER TABLE meetings ADD COLUMN cloud_system_fields BLOB",
             "ALTER TABLE meetings ADD COLUMN cloud_transcript_record_name TEXT",
             "ALTER TABLE meetings ADD COLUMN last_synced_at REAL",
             "ALTER TABLE meetings ADD COLUMN sync_dirty INTEGER NOT NULL DEFAULT 1",
@@ -1060,7 +1070,10 @@ public final class DictationStore {
         SELECT
             COUNT(*) AS total_sessions,
             COALESCE(SUM(word_count), 0) AS total_words,
-            COALESCE(SUM(duration_seconds), 0) AS total_duration_seconds
+            COALESCE(SUM(CASE WHEN duration_seconds > 0 THEN word_count ELSE 0 END), 0)
+                AS timed_words,
+            COALESCE(SUM(CASE WHEN duration_seconds > 0 THEN duration_seconds ELSE 0 END), 0)
+                AS timed_duration_seconds
         FROM dictations
         WHERE deleted_at IS NULL
         """
@@ -1075,13 +1088,14 @@ public final class DictationStore {
 
         let totalSessions = Int(sqlite3_column_int(statement, 0))
         let totalWords = Int(sqlite3_column_int(statement, 1))
-        let totalDuration = sqlite3_column_double(statement, 2)
+        let timedWords = Int(sqlite3_column_int(statement, 2))
+        let timedDuration = sqlite3_column_double(statement, 3)
         let streaks = try dictationStreaks(db: db)
         return DictationStats(
             totalWords: totalWords,
             totalSessions: totalSessions,
             averageWordsPerSession: totalSessions > 0 ? Double(totalWords) / Double(totalSessions) : 0,
-            averageWPM: totalDuration > 0 ? Double(totalWords) / (totalDuration / 60.0) : 0,
+            averageWPM: timedDuration > 0 ? Double(timedWords) / (timedDuration / 60.0) : 0,
             currentStreakDays: streaks.current,
             longestStreakDays: streaks.longest
         )
@@ -1095,7 +1109,10 @@ public final class DictationStore {
         SELECT
             COUNT(*) AS total_meetings,
             COALESCE(SUM(word_count), 0) AS total_words,
-            COALESCE(SUM(duration_seconds), 0) AS total_duration_seconds
+            COALESCE(SUM(CASE WHEN duration_seconds > 0 THEN word_count ELSE 0 END), 0)
+                AS timed_words,
+            COALESCE(SUM(CASE WHEN duration_seconds > 0 THEN duration_seconds ELSE 0 END), 0)
+                AS timed_duration_seconds
         FROM meetings
         WHERE deleted_at IS NULL AND meeting_status IN (?, ?)
         """
@@ -1112,11 +1129,12 @@ public final class DictationStore {
 
         let totalMeetings = Int(sqlite3_column_int(statement, 0))
         let totalWords = Int(sqlite3_column_int(statement, 1))
-        let totalDuration = sqlite3_column_double(statement, 2)
+        let timedWords = Int(sqlite3_column_int(statement, 2))
+        let timedDuration = sqlite3_column_double(statement, 3)
         return MeetingStats(
             totalWords: totalWords,
             totalMeetings: totalMeetings,
-            averageWPM: totalDuration > 0 ? Double(totalWords) / (totalDuration / 60.0) : 0
+            averageWPM: timedDuration > 0 ? Double(timedWords) / (timedDuration / 60.0) : 0
         )
     }
 
@@ -1125,41 +1143,64 @@ public final class DictationStore {
         now: Date = Date(),
         calendar: Calendar = .current
     ) throws -> InsightsSnapshot {
+        try insightsSnapshot(
+            range: range,
+            now: now,
+            calendar: calendar,
+            afterLifetimeRead: {}
+        )
+    }
+
+    func insightsSnapshot(
+        range: InsightsRange,
+        now: Date,
+        calendar: Calendar,
+        afterLifetimeRead: () throws -> Void
+    ) throws -> InsightsSnapshot {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         try reconcileInsightsCache(db: db, calendar: calendar)
 
         let startDate = range.startDate(now: now, calendar: calendar)
         let startDay = startDate.map { cacheDay($0, calendar: calendar) }
-        let lifetime = try cachedInsightsTotals(db: db, sinceDay: nil)
-        let selected = try cachedInsightsTotals(db: db, sinceDay: startDay)
-        let cachedDays = try cachedDailyActivity(db: db, sinceDay: startDay, calendar: calendar)
-        let today = calendar.startOfDay(for: now)
-        let firstDay = startDate.map { calendar.startOfDay(for: $0) }
-            ?? cachedDays.keys.min()
-            ?? today
-        var activity: [InsightsDailyActivity] = []
-        var cursor = min(firstDay, today)
-        while cursor <= today {
-            let value = cachedDays[cursor, default: (0, 0)]
-            activity.append(InsightsDailyActivity(date: cursor, words: value.words, meetings: value.meetings))
-            guard let next = calendar.date(byAdding: .day, value: 1, to: cursor) else { break }
-            cursor = next
-        }
+        try exec("BEGIN TRANSACTION", db: db)
+        do {
+            let lifetime = try cachedInsightsTotals(db: db, sinceDay: nil)
+            try afterLifetimeRead()
+            let selected = try cachedInsightsTotals(db: db, sinceDay: startDay)
+            let cachedDays = try cachedDailyActivity(db: db, sinceDay: startDay, calendar: calendar)
+            let today = calendar.startOfDay(for: now)
+            let firstDay = startDate.map { calendar.startOfDay(for: $0) }
+                ?? cachedDays.keys.min()
+                ?? today
+            var activity: [InsightsDailyActivity] = []
+            var cursor = min(firstDay, today)
+            while cursor <= today {
+                let value = cachedDays[cursor, default: (0, 0)]
+                activity.append(InsightsDailyActivity(date: cursor, words: value.words, meetings: value.meetings))
+                guard let next = calendar.date(byAdding: .day, value: 1, to: cursor) else { break }
+                cursor = next
+            }
 
-        let streaks = try dictationStreaks(db: db)
-        return InsightsSnapshot(
-            range: range,
-            generatedAt: now,
-            lifetime: lifetime,
-            selected: selected,
-            dailyActivity: activity,
-            currentStreakDays: streaks.current,
-            longestStreakDays: streaks.longest,
-            activeDaysInRange: activity.filter { $0.words > 0 || $0.meetings > 0 }.count,
-            dictationWords: try cachedTopWords(db: db, sinceDay: startDay, meeting: false),
-            meetingWords: try cachedTopWords(db: db, sinceDay: startDay, meeting: true)
-        )
+            let streaks = try dictationStreaks(db: db)
+            let snapshot = InsightsSnapshot(
+                range: range,
+                generatedAt: now,
+                lifetime: lifetime,
+                selected: selected,
+                dailyActivity: activity,
+                currentStreakDays: streaks.current,
+                longestStreakDays: streaks.longest,
+                activeDaysInRange: activity.filter { $0.words > 0 || $0.meetings > 0 }.count,
+                dictationWords: try cachedTopWords(db: db, sinceDay: startDay, meeting: false),
+                meetingWords: try cachedTopWords(db: db, sinceDay: startDay, meeting: true)
+            )
+            try exec("COMMIT", db: db)
+            return snapshot
+        } catch {
+            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
     }
 
     private struct InsightsCacheSource {
@@ -1496,14 +1537,32 @@ public final class DictationStore {
 
     private func cachedInsightsTotals(db: OpaquePointer?, sinceDay: String?) throws -> InsightsTotals {
         let sql = """
-        SELECT COALESCE(SUM(dictation_words),0), COALESCE(SUM(dictation_sessions),0),
-          COALESCE(SUM(meeting_words),0), COALESCE(SUM(meetings),0), COALESCE(SUM(duration_seconds),0)
-        FROM insights_daily_cache WHERE (? IS NULL OR day >= ?)
+        WITH selected_day(value) AS (VALUES (?)),
+        daily AS (
+            SELECT dictation_words, dictation_sessions, meeting_words, meetings
+            FROM insights_daily_cache
+            WHERE (SELECT value FROM selected_day) IS NULL
+               OR day >= (SELECT value FROM selected_day)
+        ),
+        timed AS (
+            SELECT word_count + meeting_words AS words, duration_seconds
+            FROM insights_record_cache
+            WHERE duration_seconds > 0
+              AND ((SELECT value FROM selected_day) IS NULL
+                   OR activity_day >= (SELECT value FROM selected_day))
+        )
+        SELECT
+          (SELECT COALESCE(SUM(dictation_words), 0) FROM daily),
+          (SELECT COALESCE(SUM(dictation_sessions), 0) FROM daily),
+          (SELECT COALESCE(SUM(meeting_words), 0) FROM daily),
+          (SELECT COALESCE(SUM(meetings), 0) FROM daily),
+          (SELECT COALESCE(SUM(words), 0) FROM timed),
+          (SELECT COALESCE(SUM(duration_seconds), 0) FROM timed)
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
         defer { sqlite3_finalize(statement) }
-        bindOptionalText(sinceDay, at: 1, statement: statement); bindOptionalText(sinceDay, at: 2, statement: statement)
+        bindOptionalText(sinceDay, at: 1, statement: statement)
         guard sqlite3_step(statement) == SQLITE_ROW else {
             return InsightsTotals(dictationWords: 0, dictationSessions: 0, meetingWords: 0, meetings: 0, averageWPM: 0)
         }
@@ -1511,14 +1570,14 @@ public final class DictationStore {
         let dictationSessions = Int(sqlite3_column_int64(statement, 1))
         let meetingWords = Int(sqlite3_column_int64(statement, 2))
         let meetings = Int(sqlite3_column_int64(statement, 3))
-        let duration = sqlite3_column_double(statement, 4)
-        let totalWords = dictationWords + meetingWords
+        let timedWords = Int(sqlite3_column_int64(statement, 4))
+        let timedDuration = sqlite3_column_double(statement, 5)
         return InsightsTotals(
             dictationWords: dictationWords,
             dictationSessions: dictationSessions,
             meetingWords: meetingWords,
             meetings: meetings,
-            averageWPM: duration > 0 ? Double(totalWords) / (duration / 60) : 0
+            averageWPM: timedDuration > 0 ? Double(timedWords) / (timedDuration / 60) : 0
         )
     }
 
@@ -2769,6 +2828,233 @@ public final class DictationStore {
         return Array((dictations + meetings).prefix(boundedLimit))
     }
 
+    /// Returns the current local snapshot for a CloudKit record name.
+    ///
+    /// CKSyncEngine may restore pending changes from its serialized state after an
+    /// app restart, so the record provider cannot rely on an in-memory upload cache.
+    public func textRecordForSync(recordName: String) throws -> SyncTextRecord? {
+        try textRecordsForSync(recordNames: [recordName])[recordName]
+    }
+
+    /// Returns local snapshots for a batch of CloudKit record names using one
+    /// database connection and one record-name migration pass.
+    public func textRecordsForSync(recordNames: [String]) throws -> [String: SyncTextRecord] {
+        let recordNames = Array(Set(recordNames.filter { !$0.isEmpty }))
+        guard !recordNames.isEmpty else { return [:] }
+
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try ensureCloudRecordNames(db: db)
+
+        let placeholders = Array(repeating: "?", count: recordNames.count).joined(separator: ", ")
+        var records: [String: SyncTextRecord] = [:]
+
+        let dictationSQL = """
+        SELECT cloud_record_name, raw_text, app_context, timestamp, started_at, ended_at,
+               duration_seconds, word_count, source, updated_at, deleted_at, cloud_change_tag,
+               cloud_system_fields
+        FROM dictations
+        WHERE cloud_record_name IN (\(placeholders))
+        """
+        var dictationStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, dictationSQL, -1, &dictationStatement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(dictationStatement) }
+        for (index, recordName) in recordNames.enumerated() {
+            sqlite3_bind_text(
+                dictationStatement,
+                Int32(index + 1),
+                (recordName as NSString).utf8String,
+                -1,
+                nil
+            )
+        }
+        while sqlite3_step(dictationStatement) == SQLITE_ROW {
+            if let record = makeSyncDictationRecord(dictationStatement) {
+                records[record.id] = record
+            }
+        }
+
+        let meetingSQL = """
+        SELECT m.cloud_record_name, m.title, m.raw_transcript, m.formatted_notes, m.manual_notes,
+               m.start_time, m.duration_seconds, m.word_count, m.source, m.meeting_status,
+               m.updated_at, m.deleted_at, m.cloud_change_tag,
+               COALESCE(m.follow_up_to_record_name, predecessor.cloud_record_name),
+               m.cloud_system_fields
+        FROM meetings AS m
+        LEFT JOIN meetings AS predecessor ON predecessor.id = m.follow_up_to_id
+        WHERE m.cloud_record_name IN (\(placeholders))
+        """
+        var meetingStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, meetingSQL, -1, &meetingStatement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(meetingStatement) }
+        for (index, recordName) in recordNames.enumerated() {
+            sqlite3_bind_text(
+                meetingStatement,
+                Int32(index + 1),
+                (recordName as NSString).utf8String,
+                -1,
+                nil
+            )
+        }
+        while sqlite3_step(meetingStatement) == SQLITE_ROW {
+            if let record = makeSyncMeetingRecord(meetingStatement) {
+                records[record.id] = record
+            }
+        }
+        return records
+    }
+
+    public func cloudSyncStateData(forKey key: String) throws -> Data? {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = "SELECT value FROM cloud_sync_state WHERE key = ? LIMIT 1"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, (key as NSString).utf8String, -1, nil)
+        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+        guard let bytes = sqlite3_column_blob(statement, 0) else { return Data() }
+        return Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, 0)))
+    }
+
+    public func saveCloudSyncStateData(_ data: Data, forKey key: String) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = """
+        INSERT INTO cloud_sync_state (key, value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+            value = excluded.value,
+            updated_at = excluded.updated_at
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, (key as NSString).utf8String, -1, nil)
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        _ = data.withUnsafeBytes {
+            sqlite3_bind_blob(statement, 2, $0.baseAddress, Int32(data.count), transient)
+        }
+        sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970)
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+    }
+
+    public func clearCloudSyncStateData(forKey key: String) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = "DELETE FROM cloud_sync_state WHERE key = ?"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, (key as NSString).utf8String, -1, nil)
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+    }
+
+    /// Atomically claims an environment-scoped CloudKit account boundary.
+    /// The first claimant wins; subsequent callers may only confirm the same scope.
+    public func claimCloudSyncAccountScope(_ scope: String, forKey key: String) throws -> Bool {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE TRANSACTION", db: db)
+        do {
+            let selectSQL = "SELECT value FROM cloud_sync_state WHERE key = ? LIMIT 1"
+            var selectStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, selectSQL, -1, &selectStatement, nil) == SQLITE_OK else {
+                throw lastError(db)
+            }
+            sqlite3_bind_text(selectStatement, 1, (key as NSString).utf8String, -1, nil)
+            let existing: Data?
+            switch sqlite3_step(selectStatement) {
+            case SQLITE_ROW:
+                if let bytes = sqlite3_column_blob(selectStatement, 0) {
+                    existing = Data(bytes: bytes, count: Int(sqlite3_column_bytes(selectStatement, 0)))
+                } else {
+                    existing = Data()
+                }
+            case SQLITE_DONE:
+                existing = nil
+            default:
+                sqlite3_finalize(selectStatement)
+                throw lastError(db)
+            }
+            sqlite3_finalize(selectStatement)
+
+            let scopeData = Data(scope.utf8)
+            if let existing {
+                try exec("COMMIT", db: db)
+                return existing == scopeData
+            }
+
+            let insertSQL = "INSERT INTO cloud_sync_state (key, value, updated_at) VALUES (?, ?, ?)"
+            var insertStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, insertSQL, -1, &insertStatement, nil) == SQLITE_OK else {
+                throw lastError(db)
+            }
+            defer { sqlite3_finalize(insertStatement) }
+            sqlite3_bind_text(insertStatement, 1, (key as NSString).utf8String, -1, nil)
+            bindOptionalBlob(scopeData, at: 2, statement: insertStatement)
+            sqlite3_bind_double(insertStatement, 3, Date().timeIntervalSince1970)
+            guard sqlite3_step(insertStatement) == SQLITE_DONE else { throw lastError(db) }
+            try exec("COMMIT", db: db)
+            return true
+        } catch {
+            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
+    }
+
+    /// Returns stable IDs only for rows that have evidence of prior CloudKit sync.
+    /// Fresh local-only rows intentionally do not participate in account proof.
+    public func textRecordNamesRequiringAccountVerification() throws -> Set<String> {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try ensureCloudRecordNames(db: db)
+        let sql = """
+        SELECT cloud_record_name
+        FROM dictations
+        WHERE cloud_record_name IS NOT NULL
+          AND (
+              cloud_change_tag IS NOT NULL
+              OR cloud_system_fields IS NOT NULL
+              OR last_synced_at IS NOT NULL
+              OR sync_dirty = 0
+          )
+        UNION
+        SELECT cloud_record_name
+        FROM meetings
+        WHERE cloud_record_name IS NOT NULL
+          AND meeting_status NOT IN ('recording', 'processing')
+          AND (
+              cloud_change_tag IS NOT NULL
+              OR cloud_system_fields IS NOT NULL
+              OR last_synced_at IS NOT NULL
+              OR sync_dirty = 0
+          )
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        var names = Set<String>()
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let value = sqlite3_column_text(statement, 0) else { continue }
+            let name = String(cString: value)
+            if !name.isEmpty { names.insert(name) }
+        }
+        return names
+    }
+
     private func dirtyDictationTextRecords(
         limit: Int,
         offset: Int,
@@ -2778,7 +3064,8 @@ public final class DictationStore {
         var records: [SyncTextRecord] = []
         let dictationSQL = """
         SELECT cloud_record_name, raw_text, app_context, timestamp, started_at, ended_at,
-               duration_seconds, word_count, source, updated_at, deleted_at, cloud_change_tag
+               duration_seconds, word_count, source, updated_at, deleted_at, cloud_change_tag,
+               cloud_system_fields
         FROM dictations
         WHERE sync_dirty = 1 AND cloud_record_name IS NOT NULL
         ORDER BY updated_at DESC, id DESC
@@ -2810,7 +3097,8 @@ public final class DictationStore {
         SELECT m.cloud_record_name, m.title, m.raw_transcript, m.formatted_notes, m.manual_notes,
                m.start_time, m.duration_seconds, m.word_count, m.source, m.meeting_status,
                m.updated_at, m.deleted_at, m.cloud_change_tag,
-               COALESCE(m.follow_up_to_record_name, predecessor.cloud_record_name)
+               COALESCE(m.follow_up_to_record_name, predecessor.cloud_record_name),
+               m.cloud_system_fields
         FROM meetings AS m
         LEFT JOIN meetings AS predecessor ON predecessor.id = m.follow_up_to_id
         WHERE m.sync_dirty = 1 AND m.cloud_record_name IS NOT NULL
@@ -2882,7 +3170,8 @@ public final class DictationStore {
         var records: [SyncTextRecord] = []
         let dictationSQL = """
         SELECT cloud_record_name, raw_text, app_context, timestamp, started_at, ended_at,
-               duration_seconds, word_count, source, updated_at, deleted_at, cloud_change_tag
+               duration_seconds, word_count, source, updated_at, deleted_at, cloud_change_tag,
+               cloud_system_fields
         FROM dictations
         WHERE cloud_record_name IS NOT NULL
         ORDER BY updated_at DESC, id DESC
@@ -2913,7 +3202,8 @@ public final class DictationStore {
         SELECT m.cloud_record_name, m.title, m.raw_transcript, m.formatted_notes, m.manual_notes,
                m.start_time, m.duration_seconds, m.word_count, m.source, m.meeting_status,
                m.updated_at, m.deleted_at, m.cloud_change_tag,
-               COALESCE(m.follow_up_to_record_name, predecessor.cloud_record_name)
+               COALESCE(m.follow_up_to_record_name, predecessor.cloud_record_name),
+               m.cloud_system_fields
         FROM meetings AS m
         LEFT JOIN meetings AS predecessor ON predecessor.id = m.follow_up_to_id
         WHERE m.cloud_record_name IS NOT NULL
@@ -3014,6 +3304,7 @@ public final class DictationStore {
         kind: SyncTextRecordKind,
         recordName: String,
         changeTag: String?,
+        systemFields: Data? = nil,
         recordUpdatedAt: Date,
         syncedAt: Date = Date()
     ) throws -> Bool {
@@ -3022,7 +3313,7 @@ public final class DictationStore {
         let table = kind == .dictation ? "dictations" : "meetings"
         let sql = """
         UPDATE \(table)
-        SET cloud_change_tag = ?, last_synced_at = ?, sync_dirty = 0
+        SET cloud_change_tag = ?, cloud_system_fields = ?, last_synced_at = ?, sync_dirty = 0
         WHERE cloud_record_name = ? AND updated_at <= ?
         """
         var statement: OpaquePointer?
@@ -3031,13 +3322,86 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
         bindOptionalText(changeTag, at: 1, statement: statement)
-        sqlite3_bind_double(statement, 2, syncedAt.timeIntervalSince1970)
-        sqlite3_bind_text(statement, 3, (recordName as NSString).utf8String, -1, nil)
-        sqlite3_bind_double(statement, 4, recordUpdatedAt.timeIntervalSince1970)
+        bindOptionalBlob(systemFields, at: 2, statement: statement)
+        sqlite3_bind_double(statement, 3, syncedAt.timeIntervalSince1970)
+        sqlite3_bind_text(statement, 4, (recordName as NSString).utf8String, -1, nil)
+        sqlite3_bind_double(statement, 5, recordUpdatedAt.timeIntervalSince1970)
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         return sqlite3_changes(db) > 0
+    }
+
+    /// Refreshes CKRecord identity/version metadata without touching local text,
+    /// timestamps, or the durable dirty flag. This is used when a fetched server
+    /// record loses last-write-wins to a newer local edit.
+    public func updateTextRecordCloudMetadata(
+        kind: SyncTextRecordKind,
+        recordName: String,
+        changeTag: String?,
+        systemFields: Data?
+    ) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let table = kind == .dictation ? "dictations" : "meetings"
+        let sql = """
+        UPDATE \(table)
+        SET cloud_change_tag = ?, cloud_system_fields = ?
+        WHERE cloud_record_name = ?
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        bindOptionalText(changeTag, at: 1, statement: statement)
+        bindOptionalBlob(systemFields, at: 2, statement: statement)
+        sqlite3_bind_text(statement, 3, (recordName as NSString).utf8String, -1, nil)
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+    }
+
+    /// Drops obsolete CKRecord versions after this same account's zone was recreated.
+    /// Stable names and local text remain intact while eligible rows return to the
+    /// durable dirty outbox for the newly-created zone.
+    public func resetTextRecordCloudMetadataForZoneRecreation() throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE TRANSACTION", db: db)
+        do {
+            try exec(
+                """
+                UPDATE dictations
+                SET cloud_change_tag = NULL,
+                    cloud_system_fields = NULL,
+                    last_synced_at = NULL,
+                    sync_dirty = 1
+                WHERE cloud_record_name IS NOT NULL
+                """,
+                db: db
+            )
+            try exec(
+                """
+                UPDATE meetings
+                SET cloud_change_tag = NULL,
+                    cloud_system_fields = NULL,
+                    last_synced_at = NULL,
+                    sync_dirty = 1
+                WHERE cloud_record_name IS NOT NULL
+                  AND meeting_status NOT IN ('recording', 'processing')
+                """,
+                db: db
+            )
+            try exec("COMMIT", db: db)
+        } catch {
+            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
+    }
+
+    /// Retained for source compatibility. Account switches must not invoke this:
+    /// requeueing would copy the previous account's library into the new account.
+    public func resetTextRecordCloudMetadataForAccountChange() throws {
+        try resetTextRecordCloudMetadataForZoneRecreation()
     }
 
     public func databasePath() -> URL {
@@ -3318,7 +3682,8 @@ public final class DictationStore {
             durationSeconds: sqlite3_column_double(statement, 6),
             wordCount: Int(sqlite3_column_int(statement, 7)),
             isDeleted: sqlite3_column_type(statement, 10) != SQLITE_NULL,
-            cloudChangeTag: optionalStringColumn(statement, index: 11)
+            cloudChangeTag: optionalStringColumn(statement, index: 11),
+            cloudSystemFields: optionalDataColumn(statement, index: 12)
         )
     }
 
@@ -3350,6 +3715,7 @@ public final class DictationStore {
             wordCount: Int(sqlite3_column_int(statement, 7)),
             isDeleted: sqlite3_column_type(statement, 11) != SQLITE_NULL,
             cloudChangeTag: optionalStringColumn(statement, index: 12),
+            cloudSystemFields: optionalDataColumn(statement, index: 14),
             followUpToRecordName: optionalStringColumn(statement, index: 13)
         )
     }
@@ -3479,9 +3845,9 @@ public final class DictationStore {
         INSERT INTO dictations (
             timestamp, duration_seconds, raw_text, app_context, word_count, source,
             started_at, ended_at, updated_at, deleted_at, cloud_record_name,
-            cloud_change_tag, last_synced_at, sync_dirty
+            cloud_change_tag, cloud_system_fields, last_synced_at, sync_dirty
         )
-        VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+        VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
         ON CONFLICT(cloud_record_name) DO UPDATE SET
             timestamp = excluded.timestamp,
             duration_seconds = excluded.duration_seconds,
@@ -3493,6 +3859,7 @@ public final class DictationStore {
             updated_at = excluded.updated_at,
             deleted_at = excluded.deleted_at,
             cloud_change_tag = excluded.cloud_change_tag,
+            cloud_system_fields = excluded.cloud_system_fields,
             last_synced_at = excluded.last_synced_at,
             sync_dirty = 0
         WHERE excluded.updated_at > dictations.updated_at
@@ -3516,7 +3883,8 @@ public final class DictationStore {
         bindOptionalDouble(record.isDeleted ? record.updatedAt.timeIntervalSince1970 : nil, at: 9, statement: statement)
         sqlite3_bind_text(statement, 10, (record.id as NSString).utf8String, -1, nil)
         bindOptionalText(record.cloudChangeTag, at: 11, statement: statement)
-        sqlite3_bind_double(statement, 12, Date().timeIntervalSince1970)
+        bindOptionalBlob(record.cloudSystemFields, at: 12, statement: statement)
+        sqlite3_bind_double(statement, 13, Date().timeIntervalSince1970)
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
@@ -3538,11 +3906,11 @@ public final class DictationStore {
             raw_transcript, formatted_notes, mic_audio_path, system_audio_path,
             saved_recording_path, meeting_status, manual_notes, word_count, source,
             follow_up_to_id, follow_up_to_record_name, updated_at, deleted_at, cloud_record_name, cloud_change_tag,
-            last_synced_at, sync_dirty
+            cloud_system_fields, last_synced_at, sync_dirty
         )
         VALUES (?, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?,
                 (SELECT id FROM meetings WHERE cloud_record_name = ? AND deleted_at IS NULL LIMIT 1),
-                ?, ?, ?, ?, ?, ?, 0)
+                ?, ?, ?, ?, ?, ?, ?, 0)
         ON CONFLICT(cloud_record_name) DO UPDATE SET
             title = excluded.title,
             start_time = excluded.start_time,
@@ -3559,6 +3927,7 @@ public final class DictationStore {
             updated_at = excluded.updated_at,
             deleted_at = excluded.deleted_at,
             cloud_change_tag = excluded.cloud_change_tag,
+            cloud_system_fields = excluded.cloud_system_fields,
             last_synced_at = excluded.last_synced_at,
             sync_dirty = 0
         WHERE excluded.updated_at > meetings.updated_at
@@ -3588,7 +3957,8 @@ public final class DictationStore {
         bindOptionalDouble(record.isDeleted ? record.updatedAt.timeIntervalSince1970 : nil, at: 14, statement: statement)
         sqlite3_bind_text(statement, 15, (record.id as NSString).utf8String, -1, nil)
         bindOptionalText(record.cloudChangeTag, at: 16, statement: statement)
-        sqlite3_bind_double(statement, 17, Date().timeIntervalSince1970)
+        bindOptionalBlob(record.cloudSystemFields, at: 17, statement: statement)
+        sqlite3_bind_double(statement, 18, Date().timeIntervalSince1970)
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
@@ -3754,11 +4124,29 @@ public final class DictationStore {
         return value.isEmpty ? nil : value
     }
 
+    private func optionalDataColumn(_ statement: OpaquePointer?, index: Int32) -> Data? {
+        guard sqlite3_column_type(statement, index) != SQLITE_NULL else { return nil }
+        let count = Int(sqlite3_column_bytes(statement, index))
+        guard count > 0, let bytes = sqlite3_column_blob(statement, index) else { return Data() }
+        return Data(bytes: bytes, count: count)
+    }
+
     private func bindOptionalText(_ value: String?, at index: Int32, statement: OpaquePointer?) {
         if let value {
             sqlite3_bind_text(statement, index, (value as NSString).utf8String, -1, nil)
         } else {
             sqlite3_bind_null(statement, index)
+        }
+    }
+
+    private func bindOptionalBlob(_ value: Data?, at index: Int32, statement: OpaquePointer?) {
+        guard let value else {
+            sqlite3_bind_null(statement, index)
+            return
+        }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        _ = value.withUnsafeBytes {
+            sqlite3_bind_blob(statement, index, $0.baseAddress, Int32(value.count), transient)
         }
     }
 

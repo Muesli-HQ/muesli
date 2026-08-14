@@ -347,6 +347,7 @@ final class MuesliController: NSObject {
     private var preferencesWindowController: PreferencesWindowController?
     private var onboardingWindowController: OnboardingWindowController?
     private let featureTourStore = FeatureTourStore()
+    private var isFeatureTourPresentationQueued = false
     var updaterController: SPUStandardUpdaterController?
     private var busyStatusGeneration = 0
 
@@ -360,6 +361,10 @@ final class MuesliController: NSObject {
     private var activeMeetingSession: MeetingSession?
     private weak var preparingMeetingSession: MeetingSession?
     private var activeMeetingID: Int64?
+    /// Set when a meeting stops, so telemetry events legitimately emitted by
+    /// the stopping session (after activeMeetingID is cleared) still pass the
+    /// session-identity gate. Replaced on the next meeting start.
+    private var micEpisodeTelemetryGate = RecentMeetingIdentityGate()
     private var liveMeetingTranscriptGeneration: UUID?
     private var activeMeetingAudioWarning: ActiveMeetingAudioWarning?
     private var liveMeetingTitleCache: [Int64: String] = [:]
@@ -432,8 +437,13 @@ final class MuesliController: NSObject {
     /// transcript, and cleared on success or restored-on-failure.
     private var pendingResumePriorTranscript: [Int64: String] = [:]
     private var iCloudSyncTask: Task<Void, Never>?
+    private var ckSyncEngine: MuesliCKSyncEngine?
+    private var ckSyncEngineLifecycleID = UUID()
+    private var ckSyncEngineCancellationTask: Task<Void, Never>?
+    private var ckSyncEngineCancellationGeneration = 0
     private var iCloudSyncGeneration = 0
     private var iCloudSyncDebounceTask: Task<Void, Never>?
+    private var pendingICloudSyncRequests = MuesliCKSyncRequestQueue()
     private var iCloudSubscriptionTask: Task<Void, Never>?
     private var hasEnsuredICloudSubscription = false
     private var bridgeActivationPending = false
@@ -672,7 +682,7 @@ final class MuesliController: NSObject {
         if config.iCloudSyncEnabled {
             if MuesliICloudSyncEngine.hasRequiredEntitlement {
                 enableICloudPersistentSync()
-                scheduleICloudSync(delay: 0.5, userInitiated: false)
+                scheduleICloudSync(intent: .manual, delay: 0.5, userInitiated: false)
             } else {
                 disableICloudSyncForUnavailableEntitlement()
             }
@@ -788,7 +798,7 @@ final class MuesliController: NSObject {
         }
     }
 
-    func shutdown() {
+    func shutdown() async {
         if let workspaceObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver)
             self.workspaceObserver = nil
@@ -810,6 +820,7 @@ final class MuesliController: NSObject {
         iCloudSyncDebounceTask = nil
         iCloudSubscriptionTask?.cancel()
         iCloudSubscriptionTask = nil
+        let syncEngineCancellationTask = retireCKSyncEngine()
         hotkeyMonitor.stop()
         computerUseHotkeyMonitor.stop()
         meetingRecordingHotkeyMonitor.stop()
@@ -844,9 +855,8 @@ final class MuesliController: NSObject {
         endMeetingActivity()
         dictationAudioSessionManager.cancel(reason: "shutdown")
         computerUseAudioSessionManager.cancel(reason: "shutdown")
-        Task {
-            await transcriptionCoordinator.shutdown()
-        }
+        await syncEngineCancellationTask?.value
+        await transcriptionCoordinator.shutdown()
         indicator.close()
         CoreAudioSystemRecorder.cleanupStaleDevices()
     }
@@ -903,17 +913,25 @@ final class MuesliController: NSObject {
     @discardableResult
     private func offerFeatureTour(_ tour: FeatureTour) -> Bool {
         guard !tour.steps.isEmpty,
+              !isFeatureTourPresentationQueued,
               appState.pendingFeatureTourInvitation == nil,
               appState.activeFeatureTour == nil,
               ensureBasicDictationPermissionsBeforeDashboard() else { return false }
 
-        appState.pendingFeatureTourInvitation = tour
-        presentHistoryWindow()
-        TelemetryDeck.signal("feature_walkthrough.invitation_shown", parameters: [
-            "version": tour.version,
-            "step_count": "\(tour.steps.count)",
-            "includes_cloud_cleanup": "\(tour.steps.contains { $0.target == .cloudCleanupSetting })",
-        ])
+        isFeatureTourPresentationQueued = true
+        presentHistoryWindow(whenReady: { [weak self] in
+            guard let self else { return }
+            self.isFeatureTourPresentationQueued = false
+            guard self.appState.pendingFeatureTourInvitation == nil,
+                  self.appState.activeFeatureTour == nil else { return }
+
+            self.appState.pendingFeatureTourInvitation = tour
+            TelemetryDeck.signal("feature_walkthrough.invitation_shown", parameters: [
+                "version": tour.version,
+                "step_count": "\(tour.steps.count)",
+                "includes_cloud_cleanup": "\(tour.steps.contains { $0.target == .cloudCleanupSetting })",
+            ])
+        })
         // The normal startup preload task continues while this invitation and
         // the walkthrough are on screen, so no second backend load is started.
         return true
@@ -943,18 +961,23 @@ final class MuesliController: NSObject {
     @discardableResult
     private func beginFeatureTour(_ tour: FeatureTour, source: String) -> Bool {
         guard !tour.steps.isEmpty,
+              !isFeatureTourPresentationQueued,
               ensureBasicDictationPermissionsBeforeDashboard() else { return false }
 
         appState.pendingFeatureTourInvitation = nil
-        appState.activeFeatureTour = tour
-        appState.featureTourStepIndex = 0
-        navigateToFeatureTourStep(tour.steps[0])
-        presentHistoryWindow()
-        TelemetryDeck.signal("feature_walkthrough.started", parameters: [
-            "version": tour.version,
-            "source": source,
-            "step_count": "\(tour.steps.count)",
-        ])
+        isFeatureTourPresentationQueued = true
+        presentHistoryWindow(whenReady: { [weak self] in
+            guard let self else { return }
+            self.isFeatureTourPresentationQueued = false
+            self.appState.activeFeatureTour = tour
+            self.appState.featureTourStepIndex = 0
+            self.navigateToFeatureTourStep(tour.steps[0])
+            TelemetryDeck.signal("feature_walkthrough.started", parameters: [
+                "version": tour.version,
+                "source": source,
+                "step_count": "\(tour.steps.count)",
+            ])
+        })
         return true
     }
 
@@ -1363,7 +1386,7 @@ final class MuesliController: NSObject {
         syncDictationRecorderWarmup(intent: .idlePrewarm(.configChange))
         if !wasICloudSyncEnabled && config.iCloudSyncEnabled {
             enableICloudPersistentSync()
-            scheduleICloudSync(delay: 0.2, userInitiated: false)
+            scheduleICloudSync(intent: .manual, delay: 0.2, userInitiated: false)
         } else if wasICloudSyncEnabled && !config.iCloudSyncEnabled {
             disableICloudSyncRuntimeState()
         }
@@ -1559,7 +1582,7 @@ final class MuesliController: NSObject {
     }
 
     func performICloudSync() {
-        startICloudSync(userInitiated: true)
+        scheduleICloudSync(intent: .manual, delay: 0, userInitiated: true)
     }
 
     func setICloudSyncEnabledFromSettings(_ enabled: Bool) {
@@ -1595,10 +1618,11 @@ final class MuesliController: NSObject {
 
         iCloudSyncGeneration += 1
         let generation = iCloudSyncGeneration
+        let syncEngine = resolvedCKSyncEngine()
         iCloudSubscriptionTask?.cancel()
         iCloudSubscriptionTask = Task { [weak self] in
             do {
-                try await MuesliICloudSyncEngine().ensureTextRecordSubscription()
+                try await syncEngine.prepare()
                 await MainActor.run {
                     guard let self, self.iCloudSyncGeneration == generation else { return }
                     self.iCloudSubscriptionTask = nil
@@ -1641,10 +1665,11 @@ final class MuesliController: NSObject {
 
     func handleICloudRemoteNotification(userInfo: [AnyHashable: Any]) {
         guard config.iCloudSyncEnabled,
-              MuesliICloudSyncEngine.isTextRecordSubscriptionNotification(userInfo) else {
+              (MuesliICloudSyncEngine.isTextRecordSubscriptionNotification(userInfo)
+                  || MuesliCKSyncEngine.isSyncNotification(userInfo)) else {
             return
         }
-        scheduleICloudSync(delay: 0.2, userInitiated: false)
+        scheduleICloudSync(intent: .incoming, delay: 0.2, userInitiated: false)
     }
 
     private func installICloudPersistentSyncObservers() {
@@ -1656,6 +1681,7 @@ final class MuesliController: NSObject {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.scheduleICloudSync(
+                    intent: .incoming,
                     delay: 0.5,
                     userInitiated: false,
                     bridgeDiscoveryTriggered: true
@@ -1669,6 +1695,7 @@ final class MuesliController: NSObject {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.scheduleICloudSync(
+                    intent: .incoming,
                     delay: 0.5,
                     userInitiated: false,
                     bridgeDiscoveryTriggered: true
@@ -1687,15 +1714,19 @@ final class MuesliController: NSObject {
               iCloudSubscriptionTask == nil else {
             return
         }
+        let syncEngine = resolvedCKSyncEngine()
         iCloudSubscriptionTask = Task { [weak self] in
             do {
-                try await MuesliICloudSyncEngine().ensureTextRecordSubscription()
+                try await syncEngine.prepare()
                 await MainActor.run {
                     self?.hasEnsuredICloudSubscription = true
                     self?.iCloudSubscriptionTask = nil
                 }
             } catch {
-                fputs("[muesli-native] failed to ensure iCloud sync subscription: \(error)\n", stderr)
+                fputs(
+                    "[muesli-native] failed to prepare CKSyncEngine: \(String(describing: type(of: error)))\n",
+                    stderr
+                )
                 await MainActor.run {
                     self?.iCloudSubscriptionTask = nil
                 }
@@ -1710,10 +1741,11 @@ final class MuesliController: NSObject {
             }
             return
         }
-        scheduleICloudSync(delay: 2.0, userInitiated: false)
+        scheduleICloudSync(intent: .outgoing, delay: 0, userInitiated: false)
     }
 
     private func scheduleICloudSync(
+        intent: MuesliCKSyncIntent,
         delay: TimeInterval,
         userInitiated: Bool,
         bridgeDiscoveryTriggered: Bool = false
@@ -1727,6 +1759,13 @@ final class MuesliController: NSObject {
         if bridgeDiscoveryTriggered {
             bridgeDiscoveryPending = true
         }
+        pendingICloudSyncRequests.enqueue(intent: intent, userInitiated: userInitiated)
+        guard iCloudSyncTask == nil else {
+            if bridgeDiscoveryTriggered {
+                bridgeDiscoveryFollowUpPending = true
+            }
+            return
+        }
         iCloudSyncDebounceTask?.cancel()
         let milliseconds = max(Int(delay * 1_000), 0)
         iCloudSyncDebounceTask = Task { [weak self] in
@@ -1736,12 +1775,13 @@ final class MuesliController: NSObject {
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 self?.iCloudSyncDebounceTask = nil
-                self?.startICloudSync(userInitiated: userInitiated)
+                self?.startICloudSync()
             }
         }
     }
 
-    private func startICloudSync(userInitiated: Bool) {
+    private func startICloudSync() {
+        let userInitiated = pendingICloudSyncRequests.isUserInitiated
         guard config.iCloudSyncEnabled else {
             if userInitiated {
                 appState.iCloudSyncStatus = "Turn on iCloud sync first."
@@ -1766,6 +1806,8 @@ final class MuesliController: NSObject {
             }
             return
         }
+        guard let request = pendingICloudSyncRequests.consume() else { return }
+        let intent = request.intent
         if userInitiated {
             iCloudSyncDebounceTask?.cancel()
             iCloudSyncDebounceTask = nil
@@ -1778,6 +1820,7 @@ final class MuesliController: NSObject {
         let store = dictationStore
         iCloudSyncGeneration += 1
         let generation = iCloudSyncGeneration
+        let syncEngine = resolvedCKSyncEngine()
         let bridgeActivationPendingAtStart = bridgeActivationPending
         let bridgeDiscoveryTriggeredAtStart = bridgeDiscoveryPending
         bridgeDiscoveryPending = false
@@ -1790,14 +1833,27 @@ final class MuesliController: NSObject {
                     bridgeDiscoveryTriggered: bridgeDiscoveryTriggeredAtStart,
                     hasKnownCompanionDevice: hasKnownCompanionDeviceAtStart
                 )
-                let result = try await MuesliICloudSyncEngine().sync(
-                    store: store,
-                    forceBridgeDeviceRefresh: forceBridgeDeviceRefresh
-                )
+                let result: ICloudSyncResult
+                if intent == .manual {
+                    result = try await syncEngine.syncManually(
+                        forceBridgeDeviceRefresh: forceBridgeDeviceRefresh
+                    )
+                } else if intent == .outgoing {
+                    result = try await syncEngine.sendLocalChanges(
+                        forceBridgeDeviceRefresh: forceBridgeDeviceRefresh
+                    )
+                } else {
+                    result = try await syncEngine.fetchRemoteChanges(
+                        forceBridgeDeviceRefresh: forceBridgeDeviceRefresh
+                    )
+                }
                 do {
                     _ = try store.purgeSoftDeletedTextRecords()
                 } catch {
-                    fputs("[muesli-native] failed to purge old iCloud tombstones: \(error)\n", stderr)
+                    fputs(
+                        "[muesli-native] failed to purge old iCloud tombstones: \(String(describing: type(of: error)))\n",
+                        stderr
+                    )
                 }
                 await MainActor.run {
                     guard let self, self.iCloudSyncGeneration == generation else { return }
@@ -1824,17 +1880,26 @@ final class MuesliController: NSObject {
                         self.appState.isICloudBridgeActivationPending = false
                         TelemetryDeck.signal("bridge_enable_completed", parameters: ["platform": "macos"])
                     }
-                    if result.syncZoneWasRecreated {
-                        self.resetICloudSubscriptionState()
-                        self.ensureICloudSubscription()
-                    }
                     self.refreshUI()
                     let shouldRunBridgeDiscoveryFollowUp = self.bridgeDiscoveryFollowUpPending
                     self.bridgeDiscoveryFollowUpPending = false
-                    if result.hasPendingUploads || shouldRunBridgeDiscoveryFollowUp {
+                    if result.hasPendingUploads && intent.contains(.outgoing) {
+                        self.pendingICloudSyncRequests.enqueue(
+                            intent: .outgoing,
+                            userInitiated: false
+                        )
+                    }
+                    if shouldRunBridgeDiscoveryFollowUp {
+                        self.pendingICloudSyncRequests.enqueue(
+                            intent: .incoming,
+                            userInitiated: false
+                        )
+                    }
+                    if let followUp = self.pendingICloudSyncRequests.consume() {
                         self.scheduleICloudSync(
+                            intent: followUp.intent,
                             delay: 0.2,
-                            userInitiated: false,
+                            userInitiated: followUp.userInitiated,
                             bridgeDiscoveryTriggered: shouldRunBridgeDiscoveryFollowUp
                         )
                     }
@@ -1844,18 +1909,28 @@ final class MuesliController: NSObject {
                     guard let self, self.iCloudSyncGeneration == generation else { return }
                     self.iCloudSyncTask = nil
                     self.appState.isICloudSyncInProgress = false
+                    let shouldRunBridgeDiscoveryFollowUp = self.bridgeDiscoveryFollowUpPending
                     self.bridgeDiscoveryFollowUpPending = false
                     if self.bridgeActivationPending {
                         self.bridgeActivationPending = false
                         self.appState.isICloudBridgeActivationPending = false
                     }
                     self.refreshICloudBridgeStateForConfig()
+                    if let followUp = self.pendingICloudSyncRequests.consume() {
+                        self.scheduleICloudSync(
+                            intent: followUp.intent,
+                            delay: 0.2,
+                            userInitiated: followUp.userInitiated,
+                            bridgeDiscoveryTriggered: shouldRunBridgeDiscoveryFollowUp
+                        )
+                    }
                 }
             } catch {
                 await MainActor.run {
                     guard let self, self.iCloudSyncGeneration == generation else { return }
                     self.iCloudSyncTask = nil
                     self.appState.isICloudSyncInProgress = false
+                    let shouldRunBridgeDiscoveryFollowUp = self.bridgeDiscoveryFollowUpPending
                     self.bridgeDiscoveryFollowUpPending = false
                     let message = error.localizedDescription
                     self.appState.iCloudSyncStatus = "Sync failed: \(message)"
@@ -1873,6 +1948,17 @@ final class MuesliController: NSObject {
                             parameters: ["platform": "macos", "reason": String(describing: type(of: error))]
                         )
                     }
+                    // The request that failed was consumed before the cycle began.
+                    // Only drain intent that arrived while it was running, so a
+                    // transient failure cannot create a hot self-retry loop.
+                    if let followUp = self.pendingICloudSyncRequests.consume() {
+                        self.scheduleICloudSync(
+                            intent: followUp.intent,
+                            delay: 0.2,
+                            userInitiated: followUp.userInitiated,
+                            bridgeDiscoveryTriggered: shouldRunBridgeDiscoveryFollowUp
+                        )
+                    }
                 }
             }
         }
@@ -1882,9 +1968,46 @@ final class MuesliController: NSObject {
         iCloudSyncGeneration += 1
         iCloudSyncTask?.cancel()
         iCloudSyncTask = nil
+        pendingICloudSyncRequests.reset()
         appState.isICloudSyncInProgress = false
         resetBridgeDiscoveryRuntimeState()
         refreshICloudBridgeStateForConfig()
+    }
+
+    private func resolvedCKSyncEngine() -> MuesliCKSyncEngine {
+        if let ckSyncEngine { return ckSyncEngine }
+        let lifecycleID = UUID()
+        ckSyncEngineLifecycleID = lifecycleID
+        let created = MuesliCKSyncEngine(
+            store: dictationStore,
+            bridgeRefreshDidFinish: { [weak self, lifecycleID] in
+                guard let self, self.ckSyncEngineLifecycleID == lifecycleID else { return }
+                self.refreshICloudBridgeDeviceState()
+                self.refreshICloudBridgeStateForConfig()
+            }
+        )
+        ckSyncEngine = created
+        return created
+    }
+
+    private func retireCKSyncEngine() -> Task<Void, Never>? {
+        guard let retiredEngine = ckSyncEngine else {
+            return ckSyncEngineCancellationTask
+        }
+        ckSyncEngineLifecycleID = UUID()
+        ckSyncEngine = nil
+        let previousCancellationTask = ckSyncEngineCancellationTask
+        ckSyncEngineCancellationGeneration += 1
+        let cancellationGeneration = ckSyncEngineCancellationGeneration
+        let cancellationTask = Task { [weak self] in
+            await previousCancellationTask?.value
+            await retiredEngine.cancel()
+            guard let self,
+                  self.ckSyncEngineCancellationGeneration == cancellationGeneration else { return }
+            self.ckSyncEngineCancellationTask = nil
+        }
+        ckSyncEngineCancellationTask = cancellationTask
+        return cancellationTask
     }
 
     private func disableICloudSyncRuntimeState() {
@@ -1893,11 +2016,21 @@ final class MuesliController: NSObject {
         iCloudSyncDebounceTask = nil
         iCloudSubscriptionTask?.cancel()
         iCloudSubscriptionTask = nil
+        let generation = iCloudSyncGeneration
+        let cancellationTask = retireCKSyncEngine()
         resetICloudSubscriptionState()
         resetBridgeDiscoveryRuntimeState()
-        appState.iCloudSyncStatus = "iCloud sync is off."
-        appState.iCloudBridgeState = .notConfigured
+        appState.iCloudSyncStatus = "Turning off iCloud sync..."
+        appState.iCloudBridgeState = .syncing
         appState.iCloudBridgeMessage = nil
+        Task { [weak self] in
+            await cancellationTask?.value
+            guard let self,
+                  self.iCloudSyncGeneration == generation,
+                  self.ckSyncEngine == nil else { return }
+            self.appState.iCloudSyncStatus = "iCloud sync is off."
+            self.appState.iCloudBridgeState = .notConfigured
+        }
     }
 
     private func disableICloudSyncForUnavailableEntitlement() {
@@ -1906,11 +2039,21 @@ final class MuesliController: NSObject {
         iCloudSyncDebounceTask = nil
         iCloudSubscriptionTask?.cancel()
         iCloudSubscriptionTask = nil
+        let generation = iCloudSyncGeneration
+        let cancellationTask = retireCKSyncEngine()
         resetICloudSubscriptionState()
         resetBridgeDiscoveryRuntimeState()
-        appState.iCloudSyncStatus = "iCloud sync is unavailable in this local-only build."
-        appState.iCloudBridgeState = .notConfigured
+        appState.iCloudSyncStatus = "Stopping unavailable iCloud sync..."
+        appState.iCloudBridgeState = .syncing
         appState.iCloudBridgeMessage = nil
+        Task { [weak self] in
+            await cancellationTask?.value
+            guard let self,
+                  self.iCloudSyncGeneration == generation,
+                  self.ckSyncEngine == nil else { return }
+            self.appState.iCloudSyncStatus = "iCloud sync is unavailable in this local-only build."
+            self.appState.iCloudBridgeState = .notConfigured
+        }
     }
 
     private func resetBridgeDiscoveryRuntimeState() {
@@ -2183,6 +2326,12 @@ final class MuesliController: NSObject {
     func selectIndicASRLanguage(_ language: IndicASRLanguage) {
         updateConfig {
             $0.indicASRLanguage = language.rawValue
+        }
+    }
+
+    func selectWhisperLanguage(_ language: WhisperKitLanguage) {
+        updateConfig {
+            $0.whisperLanguage = language.rawValue
         }
     }
 
@@ -3477,7 +3626,8 @@ final class MuesliController: NSObject {
     func downloadModelForOnboarding(
         _ backend: BackendOption,
         onboardingUseCase: OnboardingUseCase,
-        progress: @escaping (Double, String?) -> Void
+        progress: @escaping (Double, String?) -> Void,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
         let wasDownloaded = backend.isDownloaded
         progress(
@@ -3502,7 +3652,8 @@ final class MuesliController: NSObject {
                 } else {
                     progress(value, status ?? "Preparing \(backend.label)...")
                 }
-            }
+            },
+            progressSnapshot: progressSnapshot
         )
         guard backend.isDownloaded else {
             throw NSError(
@@ -3661,9 +3812,9 @@ final class MuesliController: NSObject {
         presentHistoryWindow()
     }
 
-    private func presentHistoryWindow() {
+    private func presentHistoryWindow(whenReady readyAction: (() -> Void)? = nil) {
         DispatchQueue.main.async { [weak self] in
-            self?.historyWindowController?.show()
+            self?.historyWindowController?.show(whenReady: readyAction)
         }
     }
 
@@ -4019,7 +4170,8 @@ final class MuesliController: NSObject {
                     at: recordingURL,
                     backend: backend,
                     cohereLanguage: self.config.resolvedCohereLanguage,
-                    indicASRLanguage: self.config.resolvedIndicASRLanguage
+                    indicASRLanguage: self.config.resolvedIndicASRLanguage,
+                    whisperLanguage: self.config.resolvedWhisperLanguage
                 )
                 let rawTranscript = transcription.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !rawTranscript.isEmpty else {
@@ -5189,6 +5341,11 @@ final class MuesliController: NSObject {
             source: .audioImport
         )
         scheduleICloudSyncAfterLocalChange()
+        meetingHookDispatcher.dispatchCompletedMeetingHook(
+            meetingID: meetingID,
+            completedAt: endTime,
+            config: config
+        )
         return meetingID
     }
 
@@ -5391,6 +5548,10 @@ final class MuesliController: NSObject {
                 )
                 let micHealthWarningLock = NSLock()
                 var lastForwardedMicHealthWarning: String?
+                // Authorize this session's episode telemetry for its whole
+                // lifetime, including the terminal event emitted after the
+                // active-meeting identity has moved on during stop/discard.
+                micEpisodeTelemetryGate.authorize(meetingID)
                 meetingSession.onMicHealthChanged = { [weak self] snapshot in
                     let warningMessage = snapshot.warningMessage
                     micHealthWarningLock.lock()
@@ -5402,13 +5563,86 @@ final class MuesliController: NSObject {
                         guard let self,
                               self.activeMeetingID == meetingID || self.meetingStartMeetingID == meetingID else { return }
                         self.updateActiveMeetingAudioWarning(meetingID: meetingID, health: snapshot)
-                        if warningMessage != nil {
+                    }
+                }
+                // Episode-level telemetry replaces per-flap error events:
+                // exactly one degraded/recovered signal pair per degradation
+                // episode, and an error only when the meeting ends unrecovered.
+                meetingSession.onMicHealthUserMuted = { [weak self] in
+                    Task { @MainActor in
+                        guard let self, self.micEpisodeTelemetryGate.allows(meetingID) else { return }
+                        TelemetryDeck.signal(MeetingMicHealthEpisodeKind.userMuted.rawValue, parameters: [:])
+                    }
+                }
+                meetingSession.onSystemAudioHealthEpisode = { [weak self] event in
+                    Task { @MainActor in
+                        guard let self, self.micEpisodeTelemetryGate.allows(meetingID) else { return }
+                        let parameters: [String: String] = [
+                            "reason": event.reason,
+                            "duration_ms": String(Int(event.durationSeconds * 1000)),
+                            "recovery_attempts": String(event.recoveryAttempts),
+                        ]
+                        switch event.kind {
+                        case .degraded, .recovered:
+                            TelemetryDeck.signal(event.kind.rawValue, parameters: parameters)
+                        case .unrecovered:
+                            TelemetryDeck.signal(event.kind.rawValue, parameters: parameters)
+                            self.recordDiagnosticIncident(
+                                kind: .meetingSystemAudioCaptureFailed,
+                                severity: .warning,
+                                stage: .meetingSystemAudioCapture,
+                                promptUser: false
+                            )
+                        }
+                    }
+                }
+                meetingSession.onMicHealthEpisode = { [weak self] event in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        // Terminal events legitimately arrive while the meeting
+                        // is stopping: stopMeetingRecording clears
+                        // activeMeetingID before MeetingSession.stop() runs, so
+                        // also accept the most recently stopped meeting.
+                        guard self.micEpisodeTelemetryGate.allows(meetingID) else { return }
+                        var parameters: [String: String] = [
+                            "episode_id": event.episodeID.uuidString,
+                            "reason": event.reason,
+                            "state": event.state,
+                            "duration_ms": String(Int(event.durationSeconds * 1000)),
+                            "flap_count": String(event.flapCount),
+                            "recovery_attempts": String(event.recoveryAttempts),
+                            "handoff_promotions": String(event.handoffPromotions),
+                            "recovery_credited": String(event.recoveryCredited),
+                        ]
+                        if let outcome = event.lastHandoffOutcome {
+                            parameters["last_handoff_outcome"] = outcome.rawValue
+                        }
+                        if let recorderKind = event.context.recorderKind {
+                            parameters["recorder_kind"] = recorderKind
+                        }
+                        if let routeCategory = event.context.routeCategory {
+                            parameters["route_category"] = routeCategory
+                        }
+                        if let resolved = event.context.selectedInputResolved {
+                            parameters["selected_input_resolved"] = String(resolved)
+                        }
+                        switch event.kind {
+                        case .degraded, .recovered:
+                            TelemetryDeck.signal(event.kind.rawValue, parameters: parameters)
+                        case .unrecovered:
+                            // Rich episode signal with full classification, plus
+                            // the legacy error incident for dashboard continuity.
+                            TelemetryDeck.signal(event.kind.rawValue, parameters: parameters)
                             self.recordDiagnosticIncident(
                                 kind: .meetingMicrophoneCaptureFailed,
                                 severity: .warning,
                                 stage: .meetingMicrophoneCapture,
                                 promptUser: false
                             )
+                        case .userMuted:
+                            // Emitted via onMicHealthUserMuted, not the episode
+                            // stream; nothing to do here.
+                            break
                         }
                     }
                 }
@@ -5642,6 +5876,7 @@ final class MuesliController: NSObject {
             disarmMeetingAutoStop()
             indicator.setMeetingRecording(false, config: config)
             if let meetingID = activeMeetingID {
+                micEpisodeTelemetryGate.authorize(meetingID)
                 activeMeetingID = nil
                 if activeMeetingAudioWarning?.meetingID == meetingID {
                     activeMeetingAudioWarning = nil
@@ -5657,6 +5892,9 @@ final class MuesliController: NSObject {
         self.activeMeetingSession = nil
         indicator.setMeetingRecording(false, config: config)
         if let meetingID = activeMeetingID {
+            // Preserve identity for episode terminal telemetry emitted by the
+            // discarding session (it hops to the main actor asynchronously).
+            micEpisodeTelemetryGate.authorize(meetingID)
             activeMeetingID = nil
             if activeMeetingAudioWarning?.meetingID == meetingID {
                 activeMeetingAudioWarning = nil
@@ -5940,6 +6178,9 @@ final class MuesliController: NSObject {
 
         // Unblock new recordings immediately — transcription runs in the background
         activeMeetingSession = nil
+        if let activeMeetingID {
+            micEpisodeTelemetryGate.authorize(activeMeetingID)
+        }
         activeMeetingID = nil
         if let liveMeetingID, activeMeetingAudioWarning?.meetingID == liveMeetingID {
             activeMeetingAudioWarning = nil
@@ -7097,6 +7338,7 @@ final class MuesliController: NSObject {
                     backend: self.selectedBackend,
                     cohereLanguage: self.config.resolvedCohereLanguage,
                     indicASRLanguage: self.config.resolvedIndicASRLanguage,
+                    whisperLanguage: self.config.resolvedWhisperLanguage,
                     enablePostProcessor: false,
                     customWords: self.serializedCustomWords(),
                     appContext: nil
@@ -8250,6 +8492,7 @@ final class MuesliController: NSObject {
         let transcriptionBackend = isTestMode ? (dictationTestBackend ?? selectedBackend) : selectedBackend
         let transcriptionLanguage = isTestMode ? (dictationTestCohereLanguage ?? config.resolvedCohereLanguage) : config.resolvedCohereLanguage
         let indicTranscriptionLanguage = config.resolvedIndicASRLanguage
+        let whisperTranscriptionLanguage = config.resolvedWhisperLanguage
         let capturedContext = capturedDictationContext
         let promptContext = capturedContext.map { DictationContextCapture.formatForPrompt($0) }
         let correctionTargetApp = capturedDictationCorrectionTargetApp
@@ -8271,6 +8514,7 @@ final class MuesliController: NSObject {
                     backend: transcriptionBackend,
                     cohereLanguage: transcriptionLanguage,
                     indicASRLanguage: indicTranscriptionLanguage,
+                    whisperLanguage: whisperTranscriptionLanguage,
                     enablePostProcessor: enableTranscriptCleanup,
                     customWords: self.serializedCustomWords(),
                     appContext: promptContext

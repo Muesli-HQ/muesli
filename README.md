@@ -45,7 +45,7 @@ Live transcription is off by default. Download Parakeet Realtime EOU or Nemotron
 ## Features
 
 - **Native macOS architecture** — Swift, AppKit, and SwiftUI app code with in-process CoreML/ANE, Metal, and LiteRT-LM inference.
-- **Multiple ASR models** — Parakeet TDT and Nemotron 3.5 (Neural Engine), Cohere Transcribe 2B (mixed precision CoreML), Whisper Tiny/Small/Medium/Large Turbo (CoreML/ANE via WhisperKit), Qwen3 ASR, SenseVoice Small, Indic ASR, and experimental Gemma 4 E2B.
+- **Multiple ASR models** — Parakeet TDT and Nemotron 3.5 (Neural Engine), Cohere Transcribe 2B (mixed precision CoreML), multilingual Whisper Tiny/Small/Large Turbo (CoreML/ANE via WhisperKit), Qwen3 ASR, SenseVoice Small, Indic ASR, and experimental Gemma 4 E2B.
 - **Hold-to-talk & hands-free** — Hold hotkey for quick dictation, or double-tap for sustained recording.
 - **Meeting recording** — Captures mic + system audio (including Bluetooth/AirPods) with a CoreAudio process tap by default and ScreenCaptureKit fallback. System audio from Zoom, Teams, and other call clients stays on the Others side of the transcript.
 - **Live meeting transcript** — Choose Nemotron 3.5 for one multilingual live-and-final transcript, or Parakeet Realtime EOU for an English live preview paired with a separate final meeting model.
@@ -165,7 +165,7 @@ The CLI is designed for coding agents such as Codex and Claude Code. It exposes 
 
 - `muesli-cli spec`
 - `muesli-cli info`
-- `muesli-cli transcribe <file> [--format text|json|markdown] [--model parakeet-v3|parakeet-v2] [--summarize] [--save-meeting] [--title TITLE] [--output PATH]`
+- `muesli-cli transcribe <file> [--format text|json|markdown] [--model parakeet-v3|parakeet-v2|parakeet-eou-320ms|sensevoice|qwen3-asr|nemotron35|whisper-tiny|whisper-tiny-english|whisper-small|whisper-small-english|whisper-medium-english|whisper-large-turbo] [--dictionary PATH] [--summarize] [--save-meeting] [--title TITLE] [--output PATH]`
 - `muesli-cli meetings list [--limit N] [--folder-id ID]`
 - `muesli-cli meetings get <id>`
 - `muesli-cli meetings update-notes <id> (--stdin | --file <path>)`
@@ -224,6 +224,28 @@ Save the import into Muesli as `source = audio_import`:
 ```bash
 muesli-cli transcribe interview.wav --save-meeting --title "Customer Interview"
 ```
+
+### Dictionary import and export
+
+The app's **Dictionary** tab supports importing and exporting the personal dictionary as JSON. Import merges entries by match word, updates an existing match when the imported definition differs, and appends new words. Export produces the same portable format accepted by `muesli-cli --dictionary`:
+
+```json
+[
+  {
+    "word": "museli",
+    "replacement": "muesli",
+    "matching_threshold": 0.85
+  }
+]
+```
+
+The CLI also accepts an app `config.json` directly when it contains a `custom_words` array:
+
+```bash
+muesli-cli transcribe interview.wav --dictionary ~/Library/Application\ Support/Muesli/config.json
+```
+
+`parakeet-eou-320ms` is available for batch file transcription. The CLI chunks the audio internally and returns the completed transcript; it does not expose streaming partials for file transcription.
 
 Direct app-bundle fallback path:
 
@@ -310,16 +332,40 @@ Important meeting fields:
 | Qwen3 ASR | FluidAudio | CoreML / Neural Engine | ~1.3 GB | 52 languages | ~2-3s |
 | Indic ASR | CoreML | RNNT | ~618 MB | 7 Indian languages | Experimental |
 | Gemma 4 E2B | LiteRT-LM | Metal GPU decoder + CPU audio encoder | ~2.6 GB | Multilingual | Experimental |
-| Whisper Tiny English | WhisperKit | CoreML / Neural Engine | ~153 MB | English only | Fastest setup |
-| Whisper Small | WhisperKit | CoreML / Neural Engine | ~250 MB | English only | ~1-2s |
-| Whisper Medium | WhisperKit | CoreML / Neural Engine | ~1.5 GB | English only | ~2-3s |
-| Whisper Large Turbo | WhisperKit | CoreML / Neural Engine | ~626 MB | Multilingual | ~2-4s |
+| Whisper Tiny Multilingual | WhisperKit | CoreML / Neural Engine | ~153 MB | Multilingual | Fastest Whisper option |
+| Whisper Tiny English | WhisperKit | CoreML / Neural Engine | ~153 MB | English only | Fastest English Whisper option |
+| Whisper Small Multilingual | WhisperKit | CoreML / Neural Engine | ~250 MB | Multilingual | ~1-2s |
+| Whisper Small English | WhisperKit | CoreML / Neural Engine | ~250 MB | English only | ~1-2s |
+| Whisper Medium English | WhisperKit | CoreML / Neural Engine | ~1.5 GB | English only | Slower, more accurate English option |
+| Whisper Large Turbo Multilingual | WhisperKit | CoreML / Neural Engine | ~626 MB | Multilingual | ~2-4s |
+
+Whisper's Tiny and Small sizes are available as either multilingual or
+English-only downloads. The multilingual variants auto-detect the spoken
+language by default and also let you pin a language; the English variants stay
+focused on English and therefore do not show a language control. Medium English
+is available when English accuracy matters more than download size and speed,
+while Large Turbo is the strongest multilingual choice for accents, background
+noise, and mixed-language audio. Every variant can be downloaded, deleted, and
+downloaded again from the Models tab.
+
+The app and `muesli-cli` share Nemotron 3.5's model cache at
+`~/.cache/muesli/models/nemotron35-multilingual-2240ms`; downloading it in one
+surface makes it available to the other without a second copy.
 
 Cohere Transcribe is a 2B parameter model (#1 on Open ASR Leaderboard) running in mixed precision — FP16 FastConformer encoder on the Neural Engine with INT8 quantized decoders. Includes VAD-gated silence detection to prevent hallucination. Best for high-accuracy multilingual dictation.
 
 Gemma 4 E2B is an experimental multimodal LiteRT-LM backend for direct transcription or on-device transcript cleanup. It is not an ASR-tuned model, so assistant-style outputs are rejected and Parakeet remains the recommended transcription backend. Gemma cannot be selected for ASR and cleanup at the same time.
 
-Meeting echo cancellation uses the bundled LocalVQE `localvqe-v1.2-1.3M-f32.gguf` model by default, so users do not need to download an AEC model before their first meeting transcription. DTLN remains available as the fallback AEC path.
+Meeting echo cancellation uses LocalVQE by default. Release builds ship the
+bundled `localvqe-v1.2-1.3M-f32.gguf` model plus the LocalVQE shared libraries,
+so users do not need to download an AEC model before their first meeting
+transcription. DTLN remains available as the fallback AEC path when LocalVQE
+cannot load.
+
+Source/dev builds need the LocalVQE runtime built once with
+`./scripts/build_localvqe.sh` (the model is committed; the dylibs under
+`native/MuesliNative/LocalVQE/lib/` are not). Without that step, packaging
+warns and the app falls back to DTLN. See `CONTRIBUTING.md`.
 
 Models download on demand from HuggingFace. Manage them from the **Models** tab in the dashboard.
 
