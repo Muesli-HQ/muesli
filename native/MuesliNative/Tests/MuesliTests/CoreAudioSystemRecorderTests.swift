@@ -41,11 +41,30 @@ struct CoreAudioSystemRecorderTests {
     @Test("rebuild retry policy backs off then exhausts")
     func rebuildRetryPolicyBackoff() {
         let policy = RebuildRetryPolicy.default
-        #expect(policy.nextDelay(afterFailures: 0) == 0.5)
-        #expect(policy.nextDelay(afterFailures: 1) == 1.5)
-        #expect(policy.nextDelay(afterFailures: 2) == 3.5)
-        #expect(policy.nextDelay(afterFailures: 3) == nil)
+        #expect(policy.nextDelay(afterFailures: 0) == 2)
+        #expect(policy.nextDelay(afterFailures: 1) == 5)
+        #expect(policy.nextDelay(afterFailures: 2) == nil)
         #expect(policy.nextDelay(afterFailures: 10) == nil)
+    }
+
+    @Test("route notifications debounce into a single rebuild once churn settles")
+    func routeChangeDebouncesRebuild() async throws {
+        let recorder = CoreAudioSystemRecorder()
+        recorder.testing_setRecording(true)
+        var attempts = 0
+        recorder.createAndStartForTesting = { attempts += 1 }
+
+        CoreAudioSystemRecorder.routeSettleDelay = 0.05
+        defer { CoreAudioSystemRecorder.routeSettleDelay = 1.5 }
+
+        // A BT transition emits several notifications; each resets the settle
+        // timer, so only one rebuild should run after they stop.
+        recorder.restartTapForDefaultOutputDeviceChange()
+        recorder.restartTapForDefaultOutputDeviceChange()
+        recorder.restartTapForDefaultOutputDeviceChange()
+        try await waitForCondition { attempts == 1 }
+        try await Task.sleep(for: .milliseconds(120))
+        #expect(attempts == 1)
     }
 
     @Test("CoreAudio tap backend supports heartbeat monitoring; SCK fallback does not")

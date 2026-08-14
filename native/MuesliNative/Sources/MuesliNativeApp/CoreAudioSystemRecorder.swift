@@ -52,13 +52,15 @@ extension SystemAudioCapturing {
 }
 
 /// Bounded backoff for tap rebuilds after route-change/health failures.
-/// The observed failure mode (tapCreationFailed mid-route-churn) is transient,
-/// so a short schedule covers the churn window; after the schedule is
-/// exhausted the failure is terminal for this episode.
+/// The observed failure mode (tapCreationFailed mid-route-churn) is transient
+/// but Bluetooth transitions take seconds to settle on the daemon, so the
+/// schedule is deliberately sparse; after the schedule is exhausted the
+/// failure is terminal for this episode (the watchdog's slower cooldown
+/// retries continue past it).
 struct RebuildRetryPolicy: Equatable {
     let delays: [TimeInterval]
 
-    static let `default` = RebuildRetryPolicy(delays: [0.5, 1.5, 3.5])
+    static let `default` = RebuildRetryPolicy(delays: [2, 5])
 
     /// Delay before the next attempt after `failures` consecutive failures,
     /// or nil when the budget is exhausted.
@@ -111,9 +113,13 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
     var captureIsDead: Bool { captureDeadFlag.load(ordering: .relaxed) }
     private var rebuildRetryWorkItem: DispatchWorkItem?
     private var rebuildRetryCount = 0
-    /// Backoff after the initial failure: ~5.5s of route-churn coverage.
+    /// Backoff after the initial failure: sparse, because BT route churn takes
+    /// seconds to settle on the daemon (measured live).
     /// (var so tests can inject a fast schedule)
     static var rebuildRetryPolicy = RebuildRetryPolicy.default
+    /// Settle debounce for route-change rebuilds: how long after the last
+    /// route notification before the rebuild fires.
+    static var routeSettleDelay: TimeInterval = 1.5
     /// Test seam for the rebuild path (HAL create+start is not unit-testable).
     var createAndStartForTesting: (() throws -> Void)?
     private(set) var isRecording: Bool {
@@ -833,13 +839,22 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
         defaultOutputDeviceListenerBlock = nil
     }
 
-    private func restartTapForDefaultOutputDeviceChange() {
+    func restartTapForDefaultOutputDeviceChange() {
         guard isRecording else { return }
-        // A newer route change supersedes any pending retry.
+        // Debounce the churn: a Bluetooth route transition emits several
+        // default-output notifications over multiple seconds while the daemon
+        // negotiates, and rebuilding mid-churn reliably fails with
+        // tapCreationFailed(0) (measured live on macOS 26.5.2). The old tap
+        // keeps capturing during the settle window; once notifications stop
+        // for routeSettleDelay we rebuild exactly once.
         rebuildRetryWorkItem?.cancel()
         rebuildRetryCount = 0
-        fputs("[system-audio] default output device changed; rebuilding tap\n", stderr)
-        attemptTapRebuild(reason: "route_change")
+        fputs("[system-audio] default output device changed; settling before rebuild\n", stderr)
+        let item = DispatchWorkItem { [weak self] in
+            self?.attemptTapRebuild(reason: "route_change")
+        }
+        rebuildRetryWorkItem = item
+        processingQueue.asyncAfter(deadline: .now() + Self.routeSettleDelay, execute: item)
     }
 
     /// Serialized on processingQueue. A failed rebuild retries on a bounded
