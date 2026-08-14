@@ -11,6 +11,7 @@ struct ShortcutsView: View {
     @State private var dictationShortcutMessage: String?
     @State private var computerUseShortcutMessage: String?
     @State private var meetingRecordingShortcutMessage: String?
+    @State private var cotypistShortcutMessage: String?
 
     var body: some View {
         ScrollView {
@@ -29,6 +30,8 @@ struct ShortcutsView: View {
 
                 meetingRecordingShortcutSection
 
+                cotypistShortcutSection
+
                 doubleTapSection
 
                 resetButton
@@ -45,6 +48,7 @@ struct ShortcutsView: View {
         case dictation
         case computerUse
         case meetingRecording
+        case cotypist
     }
 
     private var dictationShortcutSection: some View {
@@ -190,6 +194,51 @@ struct ShortcutsView: View {
         )
     }
 
+    private var cotypistShortcutSection: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                    Text("Cotypist (Experimental)")
+                        .font(MuesliTheme.headline())
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                    Text("Request a local inline continuation; Tab accepts and Escape dismisses")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
+                Spacer()
+                Toggle("", isOn: Binding(
+                    get: { appState.config.enableCotypist },
+                    set: { newValue in
+                        let result = controller.updateCotypistEnabled(newValue)
+                        cotypistShortcutMessage = result.message
+                    }
+                ))
+                .toggleStyle(.switch)
+                .tint(MuesliTheme.accent)
+                .labelsHidden()
+            }
+
+            Divider().background(MuesliTheme.surfaceBorder)
+
+            HStack(spacing: MuesliTheme.spacing12) {
+                hotkeyBadge(appState.config.cotypistHotkey)
+                changeButton(for: .cotypist)
+                Spacer()
+            }
+
+            if let cotypistShortcutMessage {
+                shortcutMessage(cotypistShortcutMessage)
+            }
+        }
+        .padding(MuesliTheme.spacing16)
+        .background(MuesliTheme.backgroundRaised)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+        .overlay(
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
+                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+        )
+    }
+
     private func hotkeyBadge(_ hotkey: HotkeyConfig) -> some View {
         Text(hotkey.displayLabel)
             .font(.system(size: 12, weight: .medium, design: .rounded))
@@ -234,6 +283,8 @@ struct ShortcutsView: View {
             return appState.config.computerUseHotkey
         case .meetingRecording:
             return appState.config.meetingRecordingHotkey
+        case .cotypist:
+            return appState.config.cotypistHotkey
         }
     }
 
@@ -303,7 +354,7 @@ struct ShortcutsView: View {
 
     private func recordingPrompt(for target: ShortcutTarget) -> String {
         switch target {
-        case .meetingRecording:
+        case .meetingRecording, .cotypist:
             return "Press a key or modifier..."
         case .dictation, .computerUse:
             return "Press a modifier key..."
@@ -348,6 +399,7 @@ struct ShortcutsView: View {
             dictationShortcutMessage = nil
             computerUseShortcutMessage = nil
             meetingRecordingShortcutMessage = nil
+            cotypistShortcutMessage = nil
         } label: {
             Text("Reset to Defaults")
                 .font(MuesliTheme.body())
@@ -360,6 +412,8 @@ struct ShortcutsView: View {
                 && !appState.config.enableComputerUseHotkey
                 && appState.config.meetingRecordingHotkey == .meetingRecordingDefault
                 && !appState.config.enableMeetingRecordingHotkey
+                && appState.config.cotypistHotkey == .cotypistDefault
+                && !appState.config.enableCotypist
                 && appState.config.hotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds
                 && appState.config.computerUseHotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds
                 && appState.config.meetingRecordingHotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultMeetingThresholdMilliseconds
@@ -380,7 +434,7 @@ struct ShortcutsView: View {
                 let mods = HotkeyConfig.supportedCombinationModifiers(from: event.modifierFlags)
                 let hasModifiers = mods.contains(.command) || mods.contains(.control)
                     || mods.contains(.option)
-                guard target == .meetingRecording,
+                guard (target == .meetingRecording || target == .cotypist),
                       hasModifiers,
                       HotkeyConfig.letterLabel(for: event.keyCode) != nil else {
                     return event
@@ -422,6 +476,8 @@ struct ShortcutsView: View {
             result = controller.updateComputerUseHotkey(config)
         case .meetingRecording:
             result = controller.updateMeetingRecordingHotkey(config)
+        case .cotypist:
+            result = controller.updateCotypistHotkey(config)
         }
         setShortcutMessage(result.message, for: target)
         stopRecording()
@@ -435,13 +491,16 @@ struct ShortcutsView: View {
         switch target {
         case .dictation:
             dictationShortcutMessage = message
-            if message == nil { computerUseShortcutMessage = nil; meetingRecordingShortcutMessage = nil }
+            if message == nil { computerUseShortcutMessage = nil; meetingRecordingShortcutMessage = nil; cotypistShortcutMessage = nil }
         case .computerUse:
             computerUseShortcutMessage = message
-            if message == nil { dictationShortcutMessage = nil; meetingRecordingShortcutMessage = nil }
+            if message == nil { dictationShortcutMessage = nil; meetingRecordingShortcutMessage = nil; cotypistShortcutMessage = nil }
         case .meetingRecording:
             meetingRecordingShortcutMessage = message
-            if message == nil { dictationShortcutMessage = nil; computerUseShortcutMessage = nil }
+            if message == nil { dictationShortcutMessage = nil; computerUseShortcutMessage = nil; cotypistShortcutMessage = nil }
+        case .cotypist:
+            cotypistShortcutMessage = message
+            if message == nil { dictationShortcutMessage = nil; computerUseShortcutMessage = nil; meetingRecordingShortcutMessage = nil }
         }
     }
 

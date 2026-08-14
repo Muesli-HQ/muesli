@@ -53,7 +53,7 @@ enum ModelsCategory: String, CaseIterable, Identifiable {
         switch self {
         case .dictation: return "Dictation"
         case .streaming: return "Live Meetings"
-        case .postProcessing: return "Cleanup"
+        case .postProcessing: return "Local Language Models"
         }
     }
 }

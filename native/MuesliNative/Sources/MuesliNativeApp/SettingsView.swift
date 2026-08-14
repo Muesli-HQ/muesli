@@ -80,6 +80,7 @@ struct SettingsView: View {
     @State private var isLoadingOpenRouterFreeModels = false
     @State private var openRouterFreeModelsError: String?
     @State private var hasRefreshedMeetingCalendarSources = false
+    @State private var cotypistStatusMessage: String?
 
     init(appState: AppState, controller: MuesliController) {
         self.appState = appState
@@ -479,7 +480,7 @@ struct SettingsView: View {
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-            .frame(width: 760)
+            .frame(width: 860)
             Spacer()
         }
     }
@@ -524,6 +525,48 @@ struct SettingsView: View {
             }
 
             permissionsSection
+
+            settingsSection("Experimental") {
+                settingsRow(
+                    "Cotypist",
+                    description: "Suggest a private, local continuation in the focused text field. Suggestions appear after a short pause; Tab accepts and Escape dismisses."
+                ) {
+                    settingsSwitch(isOn: appState.config.enableCotypist) { enabled in
+                        cotypistStatusMessage = controller.updateCotypistEnabled(enabled).message
+                    }
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow(
+                    "Ambient suggestions",
+                    description: "Watch ordinary text edits without consuming them. Turn this off to use the Cotypist shortcut only."
+                ) {
+                    settingsSwitch(isOn: appState.config.enableCotypistAmbient) { enabled in
+                        controller.updateConfig { $0.enableCotypistAmbient = enabled }
+                    }
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow(
+                    "Cotypist model",
+                    description: appState.config.resolvedCotypistModel.detail
+                ) {
+                    Picker("Cotypist model", selection: Binding(
+                        get: { appState.config.resolvedCotypistModel },
+                        set: { model in
+                            cotypistStatusMessage = controller.selectCotypistModel(model).message
+                        }
+                    )) {
+                        ForEach(CotypistModelOption.allCases) { model in
+                            Text(model.isDownloaded ? model.label : "\(model.label) — Download")
+                                .tag(model)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                }
+                if let cotypistStatusMessage {
+                    settingsDescription(cotypistStatusMessage)
+                }
+            }
 
             settingsSection("Data") {
                 HStack(spacing: MuesliTheme.spacing12) {

@@ -45,7 +45,7 @@ final class DictionarySuggestionPromptController: NSObject {
         let topGutter: CGFloat = closeButtonSize / 2 + 1
         let size = NSSize(width: cardWidth + cardX, height: cardHeight + topGutter)
         let frame = Self.frame(for: size, anchorFrame: anchorFrame)
-        let panel = DictionarySuggestionPanel(
+        let panel = NonactivatingOverlayPanel(
             contentRect: frame,
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
@@ -256,12 +256,6 @@ final class DictionarySuggestionPromptController: NSObject {
         y = min(max(y, screenFrame.minY + 12), screenFrame.maxY - size.height - 12)
         return NSRect(x: x, y: y, width: size.width, height: size.height)
     }
-}
-
-@MainActor
-private final class DictionarySuggestionPanel: NSPanel {
-    override var canBecomeKey: Bool { false }
-    override var canBecomeMain: Bool { false }
 }
 
 @MainActor

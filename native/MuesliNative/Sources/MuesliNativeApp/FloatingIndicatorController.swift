@@ -1347,15 +1347,7 @@ final class FloatingIndicatorController: NSObject {
         size: NSSize,
         offsetFromTarget: Bool
     ) -> NSRect {
-        let screen = NSScreen.screens.first { screen in
-            let convertedY = screen.frame.maxY - point.y
-            return point.x >= screen.frame.minX
-                && point.x <= screen.frame.maxX
-                && convertedY >= screen.frame.minY
-                && convertedY <= screen.frame.maxY
-        } ?? NSScreen.main
-
-        guard let screen else {
+        guard let converted = AccessibilityScreenGeometry.appKitPoint(forQuartzPoint: point) else {
             return NSRect(
                 x: point.x - size.width / 2,
                 y: point.y - size.height / 2,
@@ -1364,7 +1356,7 @@ final class FloatingIndicatorController: NSObject {
             )
         }
 
-        let appKitPoint = CGPoint(x: point.x, y: screen.frame.maxY - point.y)
+        let appKitPoint = converted.point
         let xOffset: CGFloat = offsetFromTarget ? 14 : 0
         let yOffset: CGFloat = offsetFromTarget ? 14 : 0
         let proposed = NSRect(
@@ -1373,7 +1365,7 @@ final class FloatingIndicatorController: NSObject {
             width: size.width,
             height: size.height
         )
-        let bounds = screen.visibleFrame.insetBy(dx: 4, dy: 4)
+        let bounds = converted.screen.visibleFrame.insetBy(dx: 4, dy: 4)
         return NSRect(
             x: min(max(proposed.minX, bounds.minX), bounds.maxX - size.width),
             y: min(max(proposed.minY, bounds.minY), bounds.maxY - size.height),

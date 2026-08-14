@@ -53,6 +53,11 @@ struct ModelsView: View {
     @State private var downloadedPostProcModels: Set<String> = []
     @State private var downloadTasksPostProc: [String: Task<Void, Never>] = [:]
     @State private var postProcModelToDelete: PostProcessorOption?
+    @State private var isCotypistTextFIMDownloaded = false
+    @State private var isDownloadingCotypistTextFIM = false
+    @State private var cotypistTextFIMDownloadProgress = 0.0
+    @State private var cotypistTextFIMDownloadTask: Task<Void, Never>?
+    @State private var showDeleteCotypistTextFIMConfirmation = false
 
     init(appState: AppState, controller: MuesliController) {
         self.appState = appState
@@ -72,7 +77,7 @@ struct ModelsView: View {
                         .font(MuesliTheme.title1())
                         .foregroundStyle(MuesliTheme.textPrimary)
 
-                    Text("Choose the transcription and cleanup models that fit how you speak and work.")
+                    Text("Download and manage models for dictation, streaming, and local language features.")
                         .font(MuesliTheme.body())
                         .foregroundStyle(MuesliTheme.textSecondary)
 
@@ -101,6 +106,7 @@ struct ModelsView: View {
         .onAppear {
             checkDownloadedModels()
             checkDownloadedPostProcModels()
+            isCotypistTextFIMDownloaded = CotypistTextFIMModelStore.isAvailableLocally()
             isLiveCaptionModelDownloaded = MeetingLiveCaptionModelStore.isDownloaded()
             syncSelectionsFromActiveBackend()
             checkNemotron35Update()
@@ -125,6 +131,17 @@ struct ModelsView: View {
             }
         } message: {
             Text("The downloaded model files will be removed from this Mac. You can download the model again later.")
+        }
+        .alert(
+            "Delete \"\(CotypistTextFIMModelStore.label)\"?",
+            isPresented: $showDeleteCotypistTextFIMConfirmation
+        ) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) {
+                deleteCotypistTextFIMModel()
+            }
+        } message: {
+            Text("The local Cotypist checkpoint will be removed from this Mac. You can download it again later.")
         }
         .alert(
             "Delete \"\(postProcModelToDelete?.label ?? "")\"?",
@@ -570,13 +587,13 @@ struct ModelsView: View {
     private var postProcessorSection: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                Text("CLEANUP")
+                Text("LOCAL LANGUAGE MODELS")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(MuesliTheme.textTertiary)
                     .textCase(.uppercase)
                     .padding(.leading, 2)
 
-                Text("Optional cleanup after transcription. Use it to remove filler words, follow spoken corrections, format lists, and fix obvious dictation errors.")
+                Text("Download and manage private on-device models used for dictation cleanup and experimental Cotypist continuations.")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(MuesliTheme.textSecondary)
                     .padding(.leading, 2)
@@ -585,12 +602,130 @@ struct ModelsView: View {
 
             VStack(spacing: MuesliTheme.spacing12) {
                 gemmaCleanupModelCard
+                cotypistTextFIMModelCard
 
                 ForEach(PostProcessorOption.all) { option in
                     postProcModelCard(option)
                 }
             }
         }
+    }
+
+    private var cotypistTextFIMModelCard: some View {
+        let model = CotypistModelOption.qwen35TextFIM
+        let isSelected = appState.config.resolvedCotypistModel == model && isCotypistTextFIMDownloaded
+        let isActive = isSelected && appState.config.enableCotypist
+
+        return VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+            HStack(alignment: .top, spacing: MuesliTheme.spacing12) {
+                brandLogo("qwen-logo")
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                    HStack(spacing: MuesliTheme.spacing8) {
+                        Text(CotypistTextFIMModelStore.label)
+                            .font(MuesliTheme.headline())
+                            .foregroundStyle(MuesliTheme.textPrimary)
+                        Text(CotypistTextFIMModelStore.sizeLabel)
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                        Text("Experimental")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(MuesliTheme.accent)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(MuesliTheme.accentSubtle)
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
+
+                    Text("Pretrained Qwen3.5 Base checkpoint for fast inline Cotypist completions. It uses native FIM inference rather than a chat prompt.")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+
+                    Link("Hugging Face · \(CotypistTextFIMModelStore.licenseLabel)", destination: CotypistTextFIMModelStore.sourceURL)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                }
+                Spacer()
+
+                if isActive {
+                    Text("Cotypist Active")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(MuesliTheme.success)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(MuesliTheme.success.opacity(0.15))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                } else if isSelected || isCotypistTextFIMDownloaded {
+                    Text(isSelected ? "Selected" : "Downloaded")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(MuesliTheme.surfacePrimary)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
+            }
+
+            if isDownloadingCotypistTextFIM {
+                VStack(alignment: .leading, spacing: 4) {
+                    ProgressView(value: cotypistTextFIMDownloadProgress)
+                        .tint(MuesliTheme.accent)
+                    Text("\(Int(cotypistTextFIMDownloadProgress * 100))% downloading...")
+                        .font(.system(size: 11))
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                }
+            }
+
+            HStack(spacing: MuesliTheme.spacing8) {
+                if isDownloadingCotypistTextFIM {
+                    Button("Cancel") { cancelCotypistTextFIMDownload() }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                        .padding(.horizontal, MuesliTheme.spacing12)
+                        .padding(.vertical, 4)
+                        .background(MuesliTheme.surfacePrimary)
+                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                } else if isCotypistTextFIMDownloaded {
+                    if !isSelected {
+                        Button("Use for Cotypist") {
+                            _ = controller.selectCotypistModel(model)
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(MuesliTheme.accent)
+                        .padding(.horizontal, MuesliTheme.spacing12)
+                        .padding(.vertical, 4)
+                        .background(MuesliTheme.accentSubtle)
+                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                    }
+                    Button {
+                        showDeleteCotypistTextFIMConfirmation = true
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.red.opacity(0.6))
+                            .frame(width: 20, height: 20)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Button("Download") { startCotypistTextFIMDownload() }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(MuesliTheme.accent)
+                        .padding(.horizontal, MuesliTheme.spacing12)
+                        .padding(.vertical, 4)
+                        .background(MuesliTheme.accentSubtle)
+                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                }
+            }
+        }
+        .padding(MuesliTheme.spacing16)
+        .background(MuesliTheme.backgroundRaised)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+        .overlay(
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
+                .strokeBorder(isSelected ? MuesliTheme.accent.opacity(0.5) : MuesliTheme.surfaceBorder, lineWidth: isSelected ? 1.5 : 1)
+        )
     }
 
     private var gemmaCleanupModelCard: some View {
@@ -1270,6 +1405,83 @@ struct ModelsView: View {
                 .strokeBorder(MuesliTheme.surfaceBorder.opacity(0.5), lineWidth: 1)
         )
         .opacity(0.6)
+    }
+
+    // MARK: - Cotypist Actions
+
+    private func startCotypistTextFIMDownload() {
+        withAnimation {
+            isDownloadingCotypistTextFIM = true
+            cotypistTextFIMDownloadProgress = 0.02
+        }
+
+        let task = Task {
+            do {
+                try FileManager.default.createDirectory(
+                    at: CotypistTextFIMModelStore.cacheDirectory,
+                    withIntermediateDirectories: true
+                )
+                let manifest = ModelDownloadManifest(
+                    id: CotypistTextFIMModelStore.id,
+                    version: "main",
+                    files: [
+                        ModelDownloadFile(
+                            relativePath: CotypistTextFIMModelStore.filename,
+                            remoteURL: CotypistTextFIMModelStore.downloadURL
+                        ),
+                    ],
+                    maximumConcurrency: 1
+                )
+                try await ModelDownloadCoordinator.shared.download(manifest, to: CotypistTextFIMModelStore.cacheDirectory) { snapshot in
+                    DispatchQueue.main.async {
+                        cotypistTextFIMDownloadProgress = max(snapshot.fractionCompleted ?? 0.02, 0.02)
+                    }
+                }
+                try Task.checkCancellation()
+                try validateGGUFHeader(at: CotypistTextFIMModelStore.modelURL)
+                await MainActor.run {
+                    withAnimation {
+                        isDownloadingCotypistTextFIM = false
+                        isCotypistTextFIMDownloaded = true
+                        cotypistTextFIMDownloadProgress = 0
+                        cotypistTextFIMDownloadTask = nil
+                    }
+                }
+            } catch {
+                let isCancelled = error is CancellationError || (error as? URLError)?.code == .cancelled
+                await MainActor.run {
+                    withAnimation {
+                        isDownloadingCotypistTextFIM = false
+                        cotypistTextFIMDownloadProgress = 0
+                        cotypistTextFIMDownloadTask = nil
+                    }
+                }
+                if !isCancelled {
+                    fputs("[muesli-native] Cotypist model download failed: \(error)\n", stderr)
+                }
+            }
+        }
+        cotypistTextFIMDownloadTask = task
+    }
+
+    private func cancelCotypistTextFIMDownload() {
+        cotypistTextFIMDownloadTask?.cancel()
+        Task {
+            await ModelDownloadCoordinator.shared.cancel(modelID: CotypistTextFIMModelStore.id)
+        }
+        withAnimation {
+            isDownloadingCotypistTextFIM = false
+            cotypistTextFIMDownloadProgress = 0
+            cotypistTextFIMDownloadTask = nil
+        }
+    }
+
+    private func deleteCotypistTextFIMModel() {
+        if appState.config.resolvedCotypistModel == .qwen35TextFIM {
+            _ = controller.selectCotypistModel(.gemma4E2B)
+        }
+        try? FileManager.default.removeItem(at: CotypistTextFIMModelStore.cacheDirectory)
+        isCotypistTextFIMDownloaded = false
     }
 
     // MARK: - Post-Processor Actions
