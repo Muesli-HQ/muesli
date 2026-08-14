@@ -56,6 +56,11 @@ final class MeetingSystemAudioWatchdog {
     var isCaptureActive: () -> Bool = { false }
     /// While true (meeting paused), ticks are ignored entirely.
     var isPaused: () -> Bool = { false }
+    /// While true (a route transition is still settling), ticks are ignored:
+    /// the old tap's heartbeat stalling mid-transition is expected, and firing
+    /// a recovery rebuild into daemon churn reliably fails and amplifies it
+    /// (measured live on macOS 26.5.2).
+    var isRouteSettling: () -> Bool = { false }
     /// The mic tracker's last raw-mic callback time, for the blindness bridge.
     var lastMicCallbackAt: () -> Date? = { nil }
     /// Rebuild request; returns whether a rebuild was actually started.
@@ -118,7 +123,7 @@ final class MeetingSystemAudioWatchdog {
 
         lock.lock()
         if !finished {
-            if isPaused() {
+            if isPaused() || isRouteSettling() {
                 lock.unlock()
                 return
             }

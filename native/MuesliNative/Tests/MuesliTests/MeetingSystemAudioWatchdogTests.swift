@@ -152,6 +152,27 @@ struct MeetingSystemAudioWatchdogTests {
         #expect(harness.recoveryRequests.isEmpty)
     }
 
+    @Test("route transitions suppress stall evaluation while settling")
+    func routeSettlingSuppressesEvaluation() {
+        let harness = Harness()
+        var settling = false
+        harness.watchdog.isRouteSettling = { settling }
+        harness.aliveTick()
+
+        settling = true
+        harness.stalledTick()
+        harness.stalledTick()
+        harness.stalledTick()
+        #expect(harness.events.isEmpty)
+        #expect(harness.recoveryRequests.isEmpty)
+
+        settling = false
+        harness.stalledTick()
+        harness.stalledTick()
+        #expect(harness.events.map(\.kind) == [.degraded])
+        #expect(harness.recoveryRequests.count == 1)
+    }
+
     @Test("mic blindness bridge fires once when the tap is dead and mic callbacks are stale")
     func micBlindnessBridgeFiresOnce() {
         let harness = Harness()

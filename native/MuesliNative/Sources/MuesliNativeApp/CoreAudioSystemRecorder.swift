@@ -32,6 +32,10 @@ protocol SystemAudioCapturing: AnyObject {
     /// Whether this backend advances captureHeartbeat during capture. Backends
     /// without a heartbeat (SCK) must be excluded from stall monitoring.
     var supportsHeartbeatMonitoring: Bool { get }
+    /// True while a route transition is still settling (recent notification).
+    /// The watchdog skips stall evaluation in this window: the old tap's
+    /// heartbeat stalling mid-transition is expected, not a dead graph.
+    var isRouteSettling: Bool { get }
     /// Health-driven rebuild: tear down and recreate the capture graph with
     /// the same bounded retry policy used for route changes. Returns whether a
     /// rebuild was actually started. Default no-op (false) for backends without
@@ -44,6 +48,7 @@ extension SystemAudioCapturing {
     var captureHeartbeat: UInt64 { 0 }
     var isRebuilding: Bool { false }
     var supportsHeartbeatMonitoring: Bool { false }
+    var isRouteSettling: Bool { false }
     var onCaptureFailure: ((Error) -> Void)? {
         get { nil }
         set {}
@@ -120,6 +125,18 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
     /// Settle debounce for route-change rebuilds: how long after the last
     /// route notification before the rebuild fires.
     static var routeSettleDelay: TimeInterval = 1.5
+    /// Last default-output route notification (ms since epoch; 0 = never).
+    /// Read across queues via atomics; written from processingQueue.
+    private let lastRouteChangeAtMs = ManagedAtomic<Int64>(0)
+    /// True while a route transition is still settling (recent notification).
+    /// The watchdog skips stall evaluation in this window: the old tap's
+    /// heartbeat stalling mid-transition is expected, not a dead graph.
+    var isRouteSettling: Bool {
+        let lastRoute = lastRouteChangeAtMs.load(ordering: .relaxed)
+        guard lastRoute != 0 else { return false }
+        let elapsedMs = Date().timeIntervalSince1970 * 1000 - Double(lastRoute)
+        return elapsedMs < (Self.routeSettleDelay * 1000 + 2000)
+    }
     /// Test seam for the rebuild path (HAL create+start is not unit-testable).
     var createAndStartForTesting: (() throws -> Void)?
     private(set) var isRecording: Bool {
@@ -839,22 +856,38 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
         defaultOutputDeviceListenerBlock = nil
     }
 
-    func restartTapForDefaultOutputDeviceChange() {
-        guard isRecording else { return }
-        // Debounce the churn: a Bluetooth route transition emits several
-        // default-output notifications over multiple seconds while the daemon
-        // negotiates, and rebuilding mid-churn reliably fails with
-        // tapCreationFailed(0) (measured live on macOS 26.5.2). The old tap
-        // keeps capturing during the settle window; once notifications stop
-        // for routeSettleDelay we rebuild exactly once.
+    /// All rebuild triggers (route-change listener, watchdog health recovery)
+    /// funnel through this single settle-aware scheduler: any pending rebuild
+    /// is superseded, and the attempt fires only once the daemon has been
+    /// quiet for routeSettleDelay after the last route notification. During
+    /// that window the previous tap keeps capturing.
+    private func scheduleTapRebuild(reason: String) {
         rebuildRetryWorkItem?.cancel()
-        rebuildRetryCount = 0
-        fputs("[system-audio] default output device changed; settling before rebuild\n", stderr)
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let lastRoute = lastRouteChangeAtMs.load(ordering: .relaxed)
+        let settleMs = Int64(Self.routeSettleDelay * 1000)
+        let deferMs = lastRoute == 0 ? 0 : max(0, settleMs - (nowMs - lastRoute))
+        if deferMs > 0 {
+            fputs("[system-audio] rebuild deferred \(deferMs)ms for route settle (reason=\(reason))\n", stderr)
+        }
         let item = DispatchWorkItem { [weak self] in
-            self?.attemptTapRebuild(reason: "route_change")
+            guard let self else { return }
+            self.rebuildRetryCount = 0
+            self.attemptTapRebuild(reason: reason)
         }
         rebuildRetryWorkItem = item
-        processingQueue.asyncAfter(deadline: .now() + Self.routeSettleDelay, execute: item)
+        processingQueue.asyncAfter(deadline: .now() + Double(deferMs) / 1000, execute: item)
+    }
+
+    func restartTapForDefaultOutputDeviceChange() {
+        guard isRecording else { return }
+        // Record every notification: a Bluetooth transition emits several over
+        // multiple seconds while the daemon negotiates, and rebuilding
+        // mid-churn reliably fails with tapCreationFailed(0) (measured live on
+        // macOS 26.5.2). The rebuild fires once, after the notifications stop.
+        lastRouteChangeAtMs.store(Int64(Date().timeIntervalSince1970 * 1000), ordering: .relaxed)
+        fputs("[system-audio] default output device changed; settling before rebuild\n", stderr)
+        scheduleTapRebuild(reason: "route_change")
     }
 
     /// Serialized on processingQueue. A failed rebuild retries on a bounded
@@ -908,18 +941,16 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
     }
 
     /// Health-driven rebuild entry point (watchdog: IO heartbeat stalled while
-    /// recording). Same serialized retry policy as route-change rebuilds.
-    /// Also accepted from the capture-dead terminal state: the graph is torn
-    /// down there and a rebuild is precisely the recovery.
+    /// recording). Shares the route-settle gate with the route-change path:
+    /// during a transition the old tap's stall is expected, so the rebuild
+    /// waits for the churn to settle instead of piling onto the daemon.
     @discardableResult
     func rebuildForHealthRecovery(reason: String) -> Bool {
         guard isRecording, !isPaused else { return false }
         fputs("[system-audio] health-triggered tap rebuild requested: \(reason)\n", stderr)
         processingQueue.async { [weak self] in
             guard let self, self.isRecording else { return }
-            self.rebuildRetryWorkItem?.cancel()
-            self.rebuildRetryCount = 0
-            self.attemptTapRebuild(reason: "health_recovery: \(reason)")
+            self.scheduleTapRebuild(reason: "health_recovery: \(reason)")
         }
         return true
     }

@@ -293,6 +293,9 @@ final class MeetingSession {
         systemAudioWatchdog.isPaused = { [weak systemAudioRecorder] in
             systemAudioRecorder?.isPaused ?? false
         }
+        systemAudioWatchdog.isRouteSettling = { [weak systemAudioRecorder] in
+            systemAudioRecorder?.isRouteSettling ?? false
+        }
         systemAudioWatchdog.lastMicCallbackAt = { [weak self] in
             self?.micHealthTracker.snapshot().lastRawMicCallbackAt
         }

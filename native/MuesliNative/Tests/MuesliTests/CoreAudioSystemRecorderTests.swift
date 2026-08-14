@@ -67,6 +67,26 @@ struct CoreAudioSystemRecorderTests {
         #expect(attempts == 1)
     }
 
+    @Test("health recovery requested during route churn defers until settle, sharing one slot")
+    func healthRecoveryDefersDuringRouteSettle() async throws {
+        let recorder = CoreAudioSystemRecorder()
+        recorder.testing_setRecording(true)
+        var attempts = 0
+        recorder.createAndStartForTesting = { attempts += 1 }
+
+        CoreAudioSystemRecorder.routeSettleDelay = 0.08
+        defer { CoreAudioSystemRecorder.routeSettleDelay = 1.5 }
+
+        // Route notification lands, then the watchdog's health rebuild fires
+        // inside the settle window: one shared slot, one attempt total.
+        recorder.restartTapForDefaultOutputDeviceChange()
+        #expect(recorder.rebuildForHealthRecovery(reason: "test"))
+        #expect(attempts == 0) // deferred, not immediate
+        try await waitForCondition { attempts == 1 }
+        try await Task.sleep(for: .milliseconds(120))
+        #expect(attempts == 1)
+    }
+
     @Test("CoreAudio tap backend supports heartbeat monitoring; SCK fallback does not")
     func heartbeatCapabilityByBackend() {
         #expect(CoreAudioSystemRecorder().supportsHeartbeatMonitoring)
