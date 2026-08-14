@@ -438,10 +438,12 @@ final class MuesliController: NSObject {
     private var pendingResumePriorTranscript: [Int64: String] = [:]
     private var iCloudSyncTask: Task<Void, Never>?
     private var ckSyncEngine: MuesliCKSyncEngine?
+    private var ckSyncEngineLifecycleID = UUID()
     private var ckSyncEngineCancellationTask: Task<Void, Never>?
     private var ckSyncEngineCancellationGeneration = 0
     private var iCloudSyncGeneration = 0
     private var iCloudSyncDebounceTask: Task<Void, Never>?
+    private var pendingICloudSyncRequests = MuesliCKSyncRequestQueue()
     private var iCloudSubscriptionTask: Task<Void, Never>?
     private var hasEnsuredICloudSubscription = false
     private var bridgeActivationPending = false
@@ -680,7 +682,7 @@ final class MuesliController: NSObject {
         if config.iCloudSyncEnabled {
             if MuesliICloudSyncEngine.hasRequiredEntitlement {
                 enableICloudPersistentSync()
-                scheduleICloudSync(delay: 0.5, userInitiated: false)
+                scheduleICloudSync(intent: .manual, delay: 0.5, userInitiated: false)
             } else {
                 disableICloudSyncForUnavailableEntitlement()
             }
@@ -1384,7 +1386,7 @@ final class MuesliController: NSObject {
         syncDictationRecorderWarmup(intent: .idlePrewarm(.configChange))
         if !wasICloudSyncEnabled && config.iCloudSyncEnabled {
             enableICloudPersistentSync()
-            scheduleICloudSync(delay: 0.2, userInitiated: false)
+            scheduleICloudSync(intent: .manual, delay: 0.2, userInitiated: false)
         } else if wasICloudSyncEnabled && !config.iCloudSyncEnabled {
             disableICloudSyncRuntimeState()
         }
@@ -1580,7 +1582,7 @@ final class MuesliController: NSObject {
     }
 
     func performICloudSync() {
-        startICloudSync(userInitiated: true)
+        scheduleICloudSync(intent: .manual, delay: 0, userInitiated: true)
     }
 
     func setICloudSyncEnabledFromSettings(_ enabled: Bool) {
@@ -1667,7 +1669,7 @@ final class MuesliController: NSObject {
                   || MuesliCKSyncEngine.isSyncNotification(userInfo)) else {
             return
         }
-        scheduleICloudSync(delay: 0.2, userInitiated: false)
+        scheduleICloudSync(intent: .incoming, delay: 0.2, userInitiated: false)
     }
 
     private func installICloudPersistentSyncObservers() {
@@ -1679,6 +1681,7 @@ final class MuesliController: NSObject {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.scheduleICloudSync(
+                    intent: .incoming,
                     delay: 0.5,
                     userInitiated: false,
                     bridgeDiscoveryTriggered: true
@@ -1692,6 +1695,7 @@ final class MuesliController: NSObject {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.scheduleICloudSync(
+                    intent: .incoming,
                     delay: 0.5,
                     userInitiated: false,
                     bridgeDiscoveryTriggered: true
@@ -1737,10 +1741,11 @@ final class MuesliController: NSObject {
             }
             return
         }
-        scheduleICloudSync(delay: 2.0, userInitiated: false)
+        scheduleICloudSync(intent: .outgoing, delay: 0, userInitiated: false)
     }
 
     private func scheduleICloudSync(
+        intent: MuesliCKSyncIntent,
         delay: TimeInterval,
         userInitiated: Bool,
         bridgeDiscoveryTriggered: Bool = false
@@ -1754,6 +1759,13 @@ final class MuesliController: NSObject {
         if bridgeDiscoveryTriggered {
             bridgeDiscoveryPending = true
         }
+        pendingICloudSyncRequests.enqueue(intent: intent, userInitiated: userInitiated)
+        guard iCloudSyncTask == nil else {
+            if bridgeDiscoveryTriggered {
+                bridgeDiscoveryFollowUpPending = true
+            }
+            return
+        }
         iCloudSyncDebounceTask?.cancel()
         let milliseconds = max(Int(delay * 1_000), 0)
         iCloudSyncDebounceTask = Task { [weak self] in
@@ -1763,12 +1775,13 @@ final class MuesliController: NSObject {
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 self?.iCloudSyncDebounceTask = nil
-                self?.startICloudSync(userInitiated: userInitiated)
+                self?.startICloudSync()
             }
         }
     }
 
-    private func startICloudSync(userInitiated: Bool) {
+    private func startICloudSync() {
+        let userInitiated = pendingICloudSyncRequests.isUserInitiated
         guard config.iCloudSyncEnabled else {
             if userInitiated {
                 appState.iCloudSyncStatus = "Turn on iCloud sync first."
@@ -1793,6 +1806,8 @@ final class MuesliController: NSObject {
             }
             return
         }
+        guard let request = pendingICloudSyncRequests.consume() else { return }
+        let intent = request.intent
         if userInitiated {
             iCloudSyncDebounceTask?.cancel()
             iCloudSyncDebounceTask = nil
@@ -1818,9 +1833,20 @@ final class MuesliController: NSObject {
                     bridgeDiscoveryTriggered: bridgeDiscoveryTriggeredAtStart,
                     hasKnownCompanionDevice: hasKnownCompanionDeviceAtStart
                 )
-                let result = try await syncEngine.sync(
-                    forceBridgeDeviceRefresh: forceBridgeDeviceRefresh
-                )
+                let result: ICloudSyncResult
+                if intent == .manual {
+                    result = try await syncEngine.syncManually(
+                        forceBridgeDeviceRefresh: forceBridgeDeviceRefresh
+                    )
+                } else if intent == .outgoing {
+                    result = try await syncEngine.sendLocalChanges(
+                        forceBridgeDeviceRefresh: forceBridgeDeviceRefresh
+                    )
+                } else {
+                    result = try await syncEngine.fetchRemoteChanges(
+                        forceBridgeDeviceRefresh: forceBridgeDeviceRefresh
+                    )
+                }
                 do {
                     _ = try store.purgeSoftDeletedTextRecords()
                 } catch {
@@ -1857,10 +1883,23 @@ final class MuesliController: NSObject {
                     self.refreshUI()
                     let shouldRunBridgeDiscoveryFollowUp = self.bridgeDiscoveryFollowUpPending
                     self.bridgeDiscoveryFollowUpPending = false
-                    if result.hasPendingUploads || shouldRunBridgeDiscoveryFollowUp {
+                    if result.hasPendingUploads && intent.contains(.outgoing) {
+                        self.pendingICloudSyncRequests.enqueue(
+                            intent: .outgoing,
+                            userInitiated: false
+                        )
+                    }
+                    if shouldRunBridgeDiscoveryFollowUp {
+                        self.pendingICloudSyncRequests.enqueue(
+                            intent: .incoming,
+                            userInitiated: false
+                        )
+                    }
+                    if let followUp = self.pendingICloudSyncRequests.consume() {
                         self.scheduleICloudSync(
+                            intent: followUp.intent,
                             delay: 0.2,
-                            userInitiated: false,
+                            userInitiated: followUp.userInitiated,
                             bridgeDiscoveryTriggered: shouldRunBridgeDiscoveryFollowUp
                         )
                     }
@@ -1870,18 +1909,28 @@ final class MuesliController: NSObject {
                     guard let self, self.iCloudSyncGeneration == generation else { return }
                     self.iCloudSyncTask = nil
                     self.appState.isICloudSyncInProgress = false
+                    let shouldRunBridgeDiscoveryFollowUp = self.bridgeDiscoveryFollowUpPending
                     self.bridgeDiscoveryFollowUpPending = false
                     if self.bridgeActivationPending {
                         self.bridgeActivationPending = false
                         self.appState.isICloudBridgeActivationPending = false
                     }
                     self.refreshICloudBridgeStateForConfig()
+                    if let followUp = self.pendingICloudSyncRequests.consume() {
+                        self.scheduleICloudSync(
+                            intent: followUp.intent,
+                            delay: 0.2,
+                            userInitiated: followUp.userInitiated,
+                            bridgeDiscoveryTriggered: shouldRunBridgeDiscoveryFollowUp
+                        )
+                    }
                 }
             } catch {
                 await MainActor.run {
                     guard let self, self.iCloudSyncGeneration == generation else { return }
                     self.iCloudSyncTask = nil
                     self.appState.isICloudSyncInProgress = false
+                    let shouldRunBridgeDiscoveryFollowUp = self.bridgeDiscoveryFollowUpPending
                     self.bridgeDiscoveryFollowUpPending = false
                     let message = error.localizedDescription
                     self.appState.iCloudSyncStatus = "Sync failed: \(message)"
@@ -1899,6 +1948,17 @@ final class MuesliController: NSObject {
                             parameters: ["platform": "macos", "reason": String(describing: type(of: error))]
                         )
                     }
+                    // The request that failed was consumed before the cycle began.
+                    // Only drain intent that arrived while it was running, so a
+                    // transient failure cannot create a hot self-retry loop.
+                    if let followUp = self.pendingICloudSyncRequests.consume() {
+                        self.scheduleICloudSync(
+                            intent: followUp.intent,
+                            delay: 0.2,
+                            userInitiated: followUp.userInitiated,
+                            bridgeDiscoveryTriggered: shouldRunBridgeDiscoveryFollowUp
+                        )
+                    }
                 }
             }
         }
@@ -1908,6 +1968,7 @@ final class MuesliController: NSObject {
         iCloudSyncGeneration += 1
         iCloudSyncTask?.cancel()
         iCloudSyncTask = nil
+        pendingICloudSyncRequests.reset()
         appState.isICloudSyncInProgress = false
         resetBridgeDiscoveryRuntimeState()
         refreshICloudBridgeStateForConfig()
@@ -1915,7 +1976,16 @@ final class MuesliController: NSObject {
 
     private func resolvedCKSyncEngine() -> MuesliCKSyncEngine {
         if let ckSyncEngine { return ckSyncEngine }
-        let created = MuesliCKSyncEngine(store: dictationStore)
+        let lifecycleID = UUID()
+        ckSyncEngineLifecycleID = lifecycleID
+        let created = MuesliCKSyncEngine(
+            store: dictationStore,
+            bridgeRefreshDidFinish: { [weak self, lifecycleID] in
+                guard let self, self.ckSyncEngineLifecycleID == lifecycleID else { return }
+                self.refreshICloudBridgeDeviceState()
+                self.refreshICloudBridgeStateForConfig()
+            }
+        )
         ckSyncEngine = created
         return created
     }
@@ -1924,6 +1994,7 @@ final class MuesliController: NSObject {
         guard let retiredEngine = ckSyncEngine else {
             return ckSyncEngineCancellationTask
         }
+        ckSyncEngineLifecycleID = UUID()
         ckSyncEngine = nil
         let previousCancellationTask = ckSyncEngineCancellationTask
         ckSyncEngineCancellationGeneration += 1
