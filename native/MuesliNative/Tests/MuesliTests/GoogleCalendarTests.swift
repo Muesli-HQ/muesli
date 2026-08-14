@@ -286,10 +286,10 @@ struct GoogleCalendarTests {
     func cachedDetectionIgnoresRecentlyEndedEvents() {
         let now = date("2026-04-10T10:08:00Z")
         let events = [
-            UnifiedCalendarEvent(id: "ended", title: "Already done", startDate: date("2026-04-10T09:50:00Z"), endDate: date("2026-04-10T10:00:00Z"), isAllDay: false, source: .eventKit),
+            UnifiedCalendarEvent(id: "ended", title: "Already done", startDate: date("2026-04-10T09:50:00Z"), endDate: date("2026-04-10T10:00:00Z"), isAllDay: false, source: .eventKit, meetingURL: URL(string: "https://zoom.us/j/123456789")!),
         ]
 
-        let selected = selectCurrentOrNearbyCachedCalendarEvent(from: events, now: now)
+        let selected = selectCurrentOrNearbyCachedCalendarEvent(from: events, hiddenEventIDs: [], now: now)
         #expect(selected == nil)
     }
 
@@ -297,11 +297,11 @@ struct GoogleCalendarTests {
     func cachedDetectionPrefersActiveEvent() {
         let now = date("2026-04-10T10:02:00Z")
         let events = [
-            UnifiedCalendarEvent(id: "upcoming", title: "Next call", startDate: date("2026-04-10T10:04:00Z"), endDate: date("2026-04-10T10:30:00Z"), isAllDay: false, source: .googleCalendar),
-            UnifiedCalendarEvent(id: "active", title: "Current call", startDate: date("2026-04-10T09:55:00Z"), endDate: date("2026-04-10T10:20:00Z"), isAllDay: false, source: .eventKit),
+            UnifiedCalendarEvent(id: "upcoming", title: "Next call", startDate: date("2026-04-10T10:04:00Z"), endDate: date("2026-04-10T10:30:00Z"), isAllDay: false, source: .googleCalendar, meetingURL: URL(string: "https://zoom.us/j/123456789")!),
+            UnifiedCalendarEvent(id: "active", title: "Current call", startDate: date("2026-04-10T09:55:00Z"), endDate: date("2026-04-10T10:20:00Z"), isAllDay: false, source: .eventKit, meetingURL: URL(string: "https://zoom.us/j/123456789")!),
         ]
 
-        let selected = selectCurrentOrNearbyCachedCalendarEvent(from: events, now: now)
+        let selected = selectCurrentOrNearbyCachedCalendarEvent(from: events, hiddenEventIDs: [], now: now)
         #expect(selected?.id == "active")
         #expect(selected?.title == "Current call")
     }
@@ -310,13 +310,50 @@ struct GoogleCalendarTests {
     func cachedDetectionSelectsImminentFutureEvent() {
         let now = date("2026-04-10T10:00:00Z")
         let events = [
-            UnifiedCalendarEvent(id: "later", title: "Later call", startDate: date("2026-04-10T10:20:00Z"), endDate: date("2026-04-10T11:00:00Z"), isAllDay: false, source: .eventKit),
-            UnifiedCalendarEvent(id: "soon", title: "Soon call", startDate: date("2026-04-10T10:03:00Z"), endDate: date("2026-04-10T10:30:00Z"), isAllDay: false, source: .googleCalendar),
+            UnifiedCalendarEvent(id: "later", title: "Later call", startDate: date("2026-04-10T10:20:00Z"), endDate: date("2026-04-10T11:00:00Z"), isAllDay: false, source: .eventKit, meetingURL: URL(string: "https://zoom.us/j/123456789")!),
+            UnifiedCalendarEvent(id: "soon", title: "Soon call", startDate: date("2026-04-10T10:03:00Z"), endDate: date("2026-04-10T10:30:00Z"), isAllDay: false, source: .googleCalendar, meetingURL: URL(string: "https://zoom.us/j/123456789")!),
         ]
 
-        let selected = selectCurrentOrNearbyCachedCalendarEvent(from: events, now: now)
+        let selected = selectCurrentOrNearbyCachedCalendarEvent(from: events, hiddenEventIDs: [], now: now)
         #expect(selected?.id == "soon")
         #expect(selected?.title == "Soon call")
+    }
+
+    @Test("cached meeting detection ignores personal blocks with no meeting link")
+    func cachedDetectionIgnoresLinklessPersonalBlocks() {
+        // Regression: a diary block like "Gym - Pull Calisthenics" used to be handed to the live
+        // detector as if it were a meeting, so personal blocks produced "meeting detected"
+        // prompts titled after them. It is still passed through (it can supply a title), but
+        // must be marked non-joinable so it cannot be sole evidence for a candidate.
+        let now = date("2026-04-10T10:02:00Z")
+        let events = [
+            UnifiedCalendarEvent(id: "gym", title: "Gym - Pull Calisthenics", startDate: date("2026-04-10T09:55:00Z"), endDate: date("2026-04-10T10:45:00Z"), isAllDay: false, source: .eventKit),
+        ]
+
+        let selected = selectCurrentOrNearbyCachedCalendarEvent(from: events, hiddenEventIDs: [], now: now)
+        #expect(selected?.id == "gym")
+        #expect(selected?.isJoinable == false)
+    }
+
+    @Test("cached meeting detection marks linked events joinable")
+    func cachedDetectionMarksLinkedEventsJoinable() {
+        let now = date("2026-04-10T10:02:00Z")
+        let events = [
+            UnifiedCalendarEvent(id: "standup", title: "Standup", startDate: date("2026-04-10T09:55:00Z"), endDate: date("2026-04-10T10:20:00Z"), isAllDay: false, source: .eventKit, meetingURL: URL(string: "https://zoom.us/j/123456789")!),
+        ]
+
+        #expect(selectCurrentOrNearbyCachedCalendarEvent(from: events, hiddenEventIDs: [], now: now)?.isJoinable == true)
+    }
+
+    @Test("cached meeting detection ignores hidden events")
+    func cachedDetectionIgnoresHiddenEvents() {
+        let now = date("2026-04-10T10:02:00Z")
+        let events = [
+            UnifiedCalendarEvent(id: "hidden", title: "Standup", startDate: date("2026-04-10T09:55:00Z"), endDate: date("2026-04-10T10:20:00Z"), isAllDay: false, source: .eventKit, meetingURL: URL(string: "https://zoom.us/j/123456789")!),
+        ]
+
+        #expect(selectCurrentOrNearbyCachedCalendarEvent(from: events, hiddenEventIDs: [], now: now)?.id == "hidden")
+        #expect(selectCurrentOrNearbyCachedCalendarEvent(from: events, hiddenEventIDs: ["hidden"], now: now) == nil)
     }
 
     // MARK: - parseCalendarListEntry

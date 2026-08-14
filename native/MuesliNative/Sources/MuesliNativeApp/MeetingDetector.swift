@@ -28,6 +28,16 @@ struct MeetingSignals {
 struct CalendarEventContext {
     let id: String
     let title: String
+    /// Whether this event looks like a real meeting on its own (has a conference link).
+    /// A link-less diary block can still supply a *title* to a candidate that other evidence
+    /// already justifies, but must not be the sole reason a candidate exists.
+    let isJoinable: Bool
+
+    init(id: String, title: String, isJoinable: Bool = true) {
+        self.id = id
+        self.title = title
+        self.isJoinable = isJoinable
+    }
 }
 
 /// A running application on the system.

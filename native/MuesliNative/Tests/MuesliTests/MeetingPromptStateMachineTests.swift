@@ -226,6 +226,40 @@ struct MeetingPromptStateMachineTests {
         #expect(result.reason == .eligible)
     }
 
+    @Test("recording start suppresses a calendar candidate through the stop and re-detect loop")
+    func recordingStartSuppressesCalendarCandidateAfterStop() {
+        // Regression: markRecordingStarted only consumed "meeting-session:" ids, so accepting a
+        // calendar prompt suppressed nothing and the identical event re-prompted seconds after
+        // the recording stopped.
+        let machine = immediateMachine()
+        let cal = candidate("cal:evt-standup", suppressionID: "cal:evt-standup", evidence: [.micActive, .calendarEvent])
+
+        machine.markShown(cal)
+        #expect(machine.markRecordingStarted(cal, now: now))
+
+        // The stop/re-detect loop fires within seconds; it must not re-prompt.
+        let result = decision(machine, candidate: cal, now: now.addingTimeInterval(30))
+        #expect(result.action == .none)
+        #expect(result.reason == .autoDismissedSuppression)
+    }
+
+    @Test("calendar suppression expires so a later occurrence still prompts")
+    func calendarSuppressionExpiresForLaterOccurrence() {
+        // Calendar ids are not guaranteed unique per occurrence, so this suppression must not be
+        // permanent or tomorrow's instance of a recurring meeting would be silently skipped.
+        let machine = MeetingPromptStateMachine(candidateStabilityDelay: 0, calendarRestartCooldown: 60)
+        let cal = candidate("cal:evt-standup", suppressionID: "cal:evt-standup", evidence: [.micActive, .calendarEvent])
+
+        machine.markShown(cal)
+        machine.markRecordingStarted(cal, now: now)
+
+        #expect(decision(machine, candidate: cal, now: now.addingTimeInterval(30)).action == .none)
+
+        let later = decision(machine, candidate: cal, now: now.addingTimeInterval(90))
+        #expect(later.action == .show)
+        #expect(later.reason == .eligible)
+    }
+
     @Test("recording start does not suppress a genuinely later meeting session")
     func recordingStartDoesNotSuppressLaterMeetingSession() {
         let machine = immediateMachine()

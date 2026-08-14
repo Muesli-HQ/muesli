@@ -170,9 +170,25 @@ struct MeetingAutoStopPolicyTests {
 
         for origin in origins {
             #expect(origin.enablesMeetingAutoStop)
-            #expect(origin.signalLossResponse == .autoStopAfterWarning)
             #expect(origin.signalLossSource(explicitSource: explicitSource, recentSource: recentSource) == explicitSource)
             #expect(origin.signalLossSource(explicitSource: nil, recentSource: recentSource) == recentSource)
+        }
+    }
+
+    @Test("only unattended start origins auto-stop on signal loss")
+    func onlyUnattendedStartOriginsAutoStopOnSignalLoss() {
+        // The user clicked Start on a detected prompt, so that recording is wanted. Losing the
+        // signal usually means the incidental mic holder went away, not that the meeting ended —
+        // silently stopping it produced ~60 second recordings. Warn, do not stop.
+        #expect(MeetingRecordingStartOrigin.detectedPrompt.signalLossResponse == .warnOnly)
+        #expect(MeetingRecordingStartOrigin.manual.signalLossResponse == .none)
+
+        for unattended in [
+            MeetingRecordingStartOrigin.calendarAutoRecord,
+            .scheduledMeetingPrompt,
+            .joinAndRecord,
+        ] {
+            #expect(unattended.signalLossResponse == .autoStopAfterWarning)
         }
     }
 
