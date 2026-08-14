@@ -51,6 +51,7 @@ struct DictationRowView: View {
                             .lineLimit(nil)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
 
                         if let trace = record.computerUseTrace {
                             Text(Self.displayFinalStatus(trace.finalStatus))
@@ -116,15 +117,7 @@ struct DictationRowView: View {
                 isHovered = hovering
             }
         }
-        .onTapGesture {
-            if record.computerUseTrace != nil {
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    isExpanded.toggle()
-                }
-            } else {
-                onCopy()
-            }
-        }
+        .contentShape(Rectangle())
         .alert("Delete Dictation", isPresented: $showDeleteConfirmation) {
             Button("Delete", role: .destructive) { onDelete?() }
             Button("Cancel", role: .cancel) {}
