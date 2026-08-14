@@ -1117,6 +1117,10 @@ final class MeetingSession {
     }
 
     private func startSystemAudioWatchdog() {
+        // Only heartbeat-capable backends can be stall-monitored: the SCK
+        // fallback reports heartbeat 0 permanently and would false-fire
+        // degraded episodes every meeting.
+        guard systemAudioRecorder.supportsHeartbeatMonitoring else { return }
         stopSystemAudioWatchdogTimer()
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "MuesliNative.MeetingSession.systemAudioWatchdog"))
         timer.schedule(deadline: .now() + 1, repeating: 1)

@@ -47,4 +47,77 @@ struct CoreAudioSystemRecorderTests {
         #expect(policy.nextDelay(afterFailures: 3) == nil)
         #expect(policy.nextDelay(afterFailures: 10) == nil)
     }
+
+    @Test("CoreAudio tap backend supports heartbeat monitoring; SCK fallback does not")
+    func heartbeatCapabilityByBackend() {
+        #expect(CoreAudioSystemRecorder().supportsHeartbeatMonitoring)
+        #expect(!SystemAudioRecorder().supportsHeartbeatMonitoring)
+    }
+
+    @Test("failed rebuild retries then succeeds without a terminal failure")
+    func rebuildRetriesThenSucceeds() async throws {
+        let recorder = CoreAudioSystemRecorder()
+        recorder.testing_setRecording(true)
+        var attempts = 0
+        recorder.createAndStartForTesting = {
+            attempts += 1
+            if attempts < 3 { throw NSError(domain: "test", code: 1) }
+        }
+        var failures = 0
+        recorder.onCaptureFailure = { _ in failures += 1 }
+
+        let fast = RebuildRetryPolicy(delays: [0.02, 0.05, 0.05])
+        CoreAudioSystemRecorder.rebuildRetryPolicy = fast
+        defer { CoreAudioSystemRecorder.rebuildRetryPolicy = .default }
+
+        recorder.attemptTapRebuild(reason: "test")
+        try await waitForCondition { attempts == 3 && !recorder.isRebuilding }
+
+        #expect(attempts == 3)
+        #expect(failures == 0)
+        #expect(!recorder.captureIsDead)
+    }
+
+    @Test("exhausted rebuild stays recoverable: watchdog rebuild after terminal failure succeeds")
+    func terminalFailureRemainsRecoverable() async throws {
+        let recorder = CoreAudioSystemRecorder()
+        recorder.testing_setRecording(true)
+        var shouldFail = true
+        var attempts = 0
+        recorder.createAndStartForTesting = {
+            attempts += 1
+            if shouldFail { throw NSError(domain: "test", code: 1) }
+        }
+        var failures = 0
+        recorder.onCaptureFailure = { _ in failures += 1 }
+
+        let fast = RebuildRetryPolicy(delays: [0.02, 0.02, 0.02])
+        CoreAudioSystemRecorder.rebuildRetryPolicy = fast
+        defer { CoreAudioSystemRecorder.rebuildRetryPolicy = .default }
+
+        recorder.attemptTapRebuild(reason: "test")
+        try await waitForCondition { failures == 1 }
+        #expect(recorder.captureIsDead)
+        // Terminal state must remain recoverable (isRecording stays alive).
+        #expect(recorder.rebuildForHealthRecovery(reason: "watchdog"))
+
+        shouldFail = false
+        try await waitForCondition { !recorder.captureIsDead && !recorder.isRebuilding }
+        #expect(attempts >= 4)
+    }
+
+    private func waitForCondition(
+        timeout: Duration = .seconds(5),
+        condition: @escaping () -> Bool
+    ) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while !condition() {
+            guard clock.now < deadline else {
+                Issue.record("Timed out waiting for recorder state")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
 }

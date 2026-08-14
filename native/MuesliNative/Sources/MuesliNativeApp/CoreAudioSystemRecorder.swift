@@ -29,6 +29,9 @@ protocol SystemAudioCapturing: AnyObject {
     /// True while a route-change/health rebuild (including retries) is in
     /// flight; the watchdog treats this as a known-transient stall window.
     var isRebuilding: Bool { get }
+    /// Whether this backend advances captureHeartbeat during capture. Backends
+    /// without a heartbeat (SCK) must be excluded from stall monitoring.
+    var supportsHeartbeatMonitoring: Bool { get }
     /// Health-driven rebuild: tear down and recreate the capture graph with
     /// the same bounded retry policy used for route changes. Returns whether a
     /// rebuild was actually started. Default no-op (false) for backends without
@@ -40,6 +43,7 @@ protocol SystemAudioCapturing: AnyObject {
 extension SystemAudioCapturing {
     var captureHeartbeat: UInt64 { 0 }
     var isRebuilding: Bool { false }
+    var supportsHeartbeatMonitoring: Bool { false }
     var onCaptureFailure: ((Error) -> Void)? {
         get { nil }
         set {}
@@ -98,10 +102,20 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
     /// True while a route-change/health rebuild (including retries) is in
     /// flight; the watchdog treats this as a known-transient stall window.
     private(set) var isRebuilding = false
+    var supportsHeartbeatMonitoring: Bool { true }
+    /// Set when a rebuild exhausts its retry budget. The recorder deliberately
+    /// keeps isRecording/onPCMSamples alive in that state so the watchdog can
+    /// drive a later health-recovery rebuild — flipping them would make the
+    /// terminal state unrecoverable by construction.
+    private let captureDeadFlag = ManagedAtomic(false)
+    var captureIsDead: Bool { captureDeadFlag.load(ordering: .relaxed) }
     private var rebuildRetryWorkItem: DispatchWorkItem?
     private var rebuildRetryCount = 0
     /// Backoff after the initial failure: ~5.5s of route-churn coverage.
-    private static let rebuildRetryPolicy = RebuildRetryPolicy.default
+    /// (var so tests can inject a fast schedule)
+    static var rebuildRetryPolicy = RebuildRetryPolicy.default
+    /// Test seam for the rebuild path (HAL create+start is not unit-testable).
+    var createAndStartForTesting: (() throws -> Void)?
     private(set) var isRecording: Bool {
         get { recordingFlag.load(ordering: .acquiring) }
         set { recordingFlag.store(newValue, ordering: .releasing) }
@@ -197,6 +211,7 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
         guard isRecording || outputFile != nil || outputURL != nil else { return nil }
         isRecording = false
         isPaused = false
+        captureDeadFlag.store(false, ordering: .releasing)
 
         removeDefaultOutputDeviceListener()
         // A rebuild retry pending on processingQueue must not fire after
@@ -831,7 +846,9 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
     /// backoff — the observed failure mode (tapCreationFailed mid-route-churn)
     /// is transient — and only after the budget is exhausted does capture go
     /// terminal, reporting via onCaptureFailure instead of dying silently.
-    private func attemptTapRebuild(reason: String) {
+    /// Terminal exhaustion keeps isRecording/onPCMSamples alive (captureDead
+    /// marks the state) so a watchdog-driven rebuild can still recover it.
+    func attemptTapRebuild(reason: String) {
         guard isRecording else { return }
         isRebuilding = true
         let attempt = rebuildRetryCount + 1
@@ -842,10 +859,15 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
             return
         }
         do {
-            try createTapAndAggregateDevice()
-            try setupAndStartAudioDevice()
+            if let override = createAndStartForTesting {
+                try override()
+            } else {
+                try createTapAndAggregateDevice()
+                try setupAndStartAudioDevice()
+            }
             isRebuilding = false
             rebuildRetryCount = 0
+            captureDeadFlag.store(false, ordering: .releasing)
             fputs("[system-audio] CoreAudio tap capture restarted (reason=\(reason), attempt=\(attempt))\n", stderr)
         } catch {
             teardownTapAndAudioDevice()
@@ -860,10 +882,11 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
             } else {
                 isRebuilding = false
                 rebuildRetryCount = 0
-                isRecording = false
-                isPaused = false
-                onPCMSamples = nil
-                fputs("[system-audio] tap rebuild exhausted retries; capture is dead (reason=\(reason)): \(error)\n", stderr)
+                // Capture is dead, but stay in a recoverable state: the
+                // watchdog's rebuild path (or a later route change) must be
+                // able to recreate the graph for the rest of the meeting.
+                captureDeadFlag.store(true, ordering: .releasing)
+                fputs("[system-audio] tap rebuild exhausted retries; capture dead but recoverable (reason=\(reason)): \(error)\n", stderr)
                 onCaptureFailure?(error)
             }
         }
@@ -871,6 +894,8 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
 
     /// Health-driven rebuild entry point (watchdog: IO heartbeat stalled while
     /// recording). Same serialized retry policy as route-change rebuilds.
+    /// Also accepted from the capture-dead terminal state: the graph is torn
+    /// down there and a rebuild is precisely the recovery.
     @discardableResult
     func rebuildForHealthRecovery(reason: String) -> Bool {
         guard isRecording, !isPaused else { return false }
@@ -882,6 +907,11 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
             self.attemptTapRebuild(reason: "health_recovery: \(reason)")
         }
         return true
+    }
+
+    /// Test-only: drive the recording flag without a real HAL session.
+    func testing_setRecording(_ value: Bool) {
+        isRecording = value
     }
 
     // MARK: - Helpers
