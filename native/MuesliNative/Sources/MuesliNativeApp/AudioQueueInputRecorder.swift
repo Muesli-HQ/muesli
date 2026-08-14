@@ -133,21 +133,35 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
             emitLatency("audio_queue_stop_begin")
             AudioQueueStop(queueToStop, false)
             // Bounded wait for the drain (3-buffer ring of 32ms buffers drains
-            // in well under 100ms); force-stop if the queue ever wedges.
+            // in well under 100ms); bail out immediately if a successor
+            // start() took over the queue (generation bumped), and force-stop
+            // only while this capture still owns the queue.
             var waitedMs = 0
             while isQueueRunning(queueToStop), waitedMs < 500 {
+                let superseded = queueLock.withLock { captureGeneration != generationToFinish }
+                if superseded { break }
                 usleep(10_000)
                 waitedMs += 10
             }
-            if isQueueRunning(queueToStop) {
+            let ownsQueue = queueLock.withLock {
+                captureGeneration == generationToFinish && isDraining
+            }
+            if ownsQueue, isQueueRunning(queueToStop) {
                 AudioQueueStop(queueToStop, true)
             }
             emitLatency("audio_queue_stop_end")
         }
 
         queueLock.lock()
-        isDraining = false
+        let stillOwner = captureGeneration == generationToFinish
+        if stillOwner {
+            isDraining = false
+        }
         queueLock.unlock()
+        // A successor start() superseded this capture mid-drain: it owns the
+        // queue and has already replaced the file state, so there is nothing
+        // left to finalize for the abandoned capture.
+        guard stillOwner else { return nil }
 
         emitLatency("audio_queue_processing_drain_begin")
         processingQueue.sync {}
@@ -175,7 +189,10 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         var running: UInt32 = 0
         var size = UInt32(MemoryLayout<UInt32>.size)
         let status = AudioQueueGetProperty(queue, kAudioQueueProperty_IsRunning, &running, &size)
-        return status == noErr && running != 0
+        // Treat a query failure as "still running": the wait loop is bounded
+        // (500ms), and assuming stopped on failure would silently skip the
+        // drain that preserves the final word's tail.
+        return status != noErr || running != 0
     }
 
     func cancel() {
