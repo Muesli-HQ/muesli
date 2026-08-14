@@ -30,8 +30,17 @@ private enum ManualNotesSaveStatus {
 // reference and never reads liveMeetingTranscript in its own body.
 private struct LiveTranscriptSection: View {
     let appState: AppState
+    let transcriptPrefix: String
+
     var body: some View {
-        LiveTranscriptView(transcript: appState.liveMeetingTranscript)
+        LiveTranscriptView(
+            transcript: MeetingResumePolicy.combinedResumeTranscript(
+                prior: transcriptPrefix,
+                new: appState.liveMeetingTranscript
+            ),
+            partialYou: appState.liveMeetingPartialYou,
+            partialOthers: appState.liveMeetingPartialOthers
+        )
     }
 }
 
@@ -68,6 +77,7 @@ struct MeetingDetailView: View {
     @State private var showFolderPopover = false
     @State private var showNewFolderPrompt = false
     @State private var newFolderName = ""
+    @State private var threadContext: MeetingThreadContext?
 
     init(
         meeting: MeetingRecord?,
@@ -103,11 +113,17 @@ struct MeetingDetailView: View {
                     content(for: meeting)
                 }
                 .background(MuesliTheme.backgroundBase)
+                .onAppear {
+                    threadContext = controller.meetingThreadContext(for: meeting.id)
+                }
                 .onChange(of: meeting.id) { _, _ in
                     syncLocalState(with: meeting)
                 }
                 .onChange(of: meeting.status) { _, _ in
                     syncLocalState(with: meeting)
+                }
+                .onChange(of: appState.meetingNotesFocusRequest) { _, _ in
+                    recordingMode = .notes
                 }
                 .onChange(of: meeting.manualNotes) { _, _ in
                     syncManualNotesState(with: meeting)
@@ -204,6 +220,8 @@ struct MeetingDetailView: View {
                     }
 
                     folderPill(for: meeting)
+
+                    threadBreadcrumb
                 }
 
                 Spacer(minLength: MuesliTheme.spacing16)
@@ -244,27 +262,44 @@ struct MeetingDetailView: View {
         if showsManualNotesEditor(for: meeting) {
             if meeting.status == .recording {
                 let isManualNotesEditable = canEditManualNotes(for: meeting)
+                let persistedNotes = Self.notesContent(for: meeting)
+                let hasPersistedNotes = !meeting.formattedNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || !meeting.rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ZStack {
                     VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
-                        manualNotesToolbar(for: meeting)
-                            .disabled(!isManualNotesEditable)
-                        MarkdownRichTextEditor(
-                            text: $editableManualNotes,
-                            command: $manualEditorCommand,
-                            shouldFocus: isManualNotesEditable,
-                            isEditable: isManualNotesEditable,
-                            onTextChange: { notes in
-                                guard isManualNotesEditable else { return }
-                                saveManualNotes(meetingID: meeting.id, notes: notes)
-                            }
-                        )
-                        .frame(maxWidth: 980, maxHeight: .infinity, alignment: .topLeading)
-                        .background(MuesliTheme.backgroundBase)
-                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-                        )
+                        if hasPersistedNotes {
+                            MeetingNotesView(markdown: persistedNotes)
+                                .frame(maxWidth: 980, maxHeight: .infinity, alignment: .topLeading)
+                                .background(MuesliTheme.backgroundBase)
+                                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                                        .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                                )
+                        }
+
+                        VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+                            manualNotesToolbar(for: meeting)
+                                .disabled(!isManualNotesEditable)
+                            MarkdownRichTextEditor(
+                                text: $editableManualNotes,
+                                command: $manualEditorCommand,
+                                shouldFocus: isManualNotesEditable,
+                                isEditable: isManualNotesEditable,
+                                onTextChange: { notes in
+                                    guard isManualNotesEditable else { return }
+                                    saveManualNotes(meetingID: meeting.id, notes: notes)
+                                }
+                            )
+                            .background(MuesliTheme.backgroundBase)
+                            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                            )
+                            .frame(maxHeight: hasPersistedNotes ? 260 : .infinity)
+                        }
+                        .frame(maxWidth: 980, maxHeight: hasPersistedNotes ? nil : .infinity, alignment: .topLeading)
                     }
                     .padding(.horizontal, 40)
                     .padding(.top, 12)
@@ -274,7 +309,7 @@ struct MeetingDetailView: View {
                     .allowsHitTesting(recordingMode == .notes)
                     .accessibilityHidden(recordingMode != .notes)
 
-                    LiveTranscriptSection(appState: appState)
+                    LiveTranscriptSection(appState: appState, transcriptPrefix: meeting.rawTranscript)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .opacity(recordingMode == .live ? 1 : 0)
                         .allowsHitTesting(recordingMode == .live)
@@ -417,6 +452,7 @@ struct MeetingDetailView: View {
     private func headerActions(for meeting: MeetingRecord, appliedTemplate: MeetingTemplateSnapshot) -> some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: MuesliTheme.spacing8) {
+                resumeChooserIfAvailable(for: meeting)
                 templateMenu(for: meeting, appliedTemplate: appliedTemplate)
                 exportMenu(for: meeting)
                 summaryAction(for: meeting)
@@ -426,6 +462,7 @@ struct MeetingDetailView: View {
 
             VStack(alignment: .trailing, spacing: MuesliTheme.spacing8) {
                 HStack(spacing: MuesliTheme.spacing8) {
+                    resumeChooserIfAvailable(for: meeting)
                     templateMenu(for: meeting, appliedTemplate: appliedTemplate)
                     exportMenu(for: meeting)
                     summaryAction(for: meeting)
@@ -744,6 +781,21 @@ struct MeetingDetailView: View {
         }
     }
 
+    /// The resume control only makes sense on a finished meeting when no other
+    /// recording/editing workflow is active.
+    @ViewBuilder
+    private func resumeChooserIfAvailable(for meeting: MeetingRecord) -> some View {
+        if controller.canResumeFinishedMeeting(meeting),
+           !appState.isMeetingRecording,
+           !appState.isMeetingStarting,
+           !isEditingNotes,
+           !isEditingTranscript,
+           !isSummarizing,
+           !isRetranscribing {
+            resumeRecordingButton(for: meeting)
+        }
+    }
+
     @ViewBuilder
     private func meetingPreparationControlGroup(for meeting: MeetingRecord) -> some View {
         ViewThatFits(in: .horizontal) {
@@ -957,6 +1009,63 @@ struct MeetingDetailView: View {
         .help(isPaused ? "Resume recording" : "Pause recording")
     }
 
+    /// Shown on a finished meeting when no recording is active. A split control:
+    /// the left segment resumes recording into this meeting artifact; the right
+    /// chevron opens a menu that also offers starting a linked follow-up meeting.
+    /// (Not `Menu(primaryAction:)` — with a plain custom label on macOS the
+    /// chevron segment doesn't render, leaving the menu unreachable.)
+    @ViewBuilder
+    private func resumeRecordingButton(for meeting: MeetingRecord) -> some View {
+        HStack(spacing: 1) {
+            Button {
+                controller.resumeFinishedMeeting(meetingID: meeting.id)
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "record.circle")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text("Resume")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundStyle(MuesliTheme.backgroundBase)
+                .padding(.horizontal, MuesliTheme.spacing12)
+                .padding(.vertical, 7)
+                .background(MuesliTheme.accent)
+            }
+            .buttonStyle(.plain)
+            .help("Resume recording")
+
+            Menu {
+                Button {
+                    controller.resumeFinishedMeeting(meetingID: meeting.id)
+                } label: {
+                    Label("Resume recording", systemImage: "record.circle")
+                }
+                Button {
+                    controller.startFollowUpMeeting(fromMeetingID: meeting.id)
+                } label: {
+                    Label("Start a follow-up", systemImage: "arrow.turn.down.right")
+                }
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(MuesliTheme.backgroundBase)
+                    .padding(.horizontal, 8)
+                    .frame(maxHeight: .infinity)
+                    .background(MuesliTheme.accent)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize(horizontal: true, vertical: false)
+            .help("Resume recording, or start a follow-up meeting")
+        }
+        .fixedSize()
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        .overlay(
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                .strokeBorder(MuesliTheme.accent.opacity(0.35), lineWidth: 1)
+        )
+    }
+
     private var stopRecordingButton: some View {
         Button {
             if let meeting {
@@ -1000,6 +1109,69 @@ struct MeetingDetailView: View {
         .padding(.vertical, 4)
         .background(MuesliTheme.accentSubtle)
         .clipShape(Capsule())
+    }
+
+    /// Breadcrumb strip shown when this meeting is part of a follow-up thread:
+    /// a link to the direct predecessor, total thread size, and direct follow-ups
+    /// in chronological order. Root meetings show no predecessor link.
+    @ViewBuilder
+    private var threadBreadcrumb: some View {
+        if let threadContext {
+            VStack(alignment: .leading, spacing: 4) {
+                if let predecessor = threadContext.predecessor {
+                    threadLink(
+                        icon: "arrow.turn.left.up",
+                        text: "Follow-up to: \(predecessor.title) \u{00B7} \(MeetingBrowserLogic.formatStartTime(predecessor.startTime))",
+                        targetID: predecessor.id
+                    )
+                }
+                Text("Thread \u{00B7} \(threadContext.count) meetings")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                switch threadContext.successors.count {
+                case 0:
+                    EmptyView()
+                case 1:
+                    if let successor = threadContext.successors.first {
+                        threadLink(
+                            icon: "arrow.turn.left.down",
+                            text: "Followed by: \(successor.title) \u{00B7} \(MeetingBrowserLogic.formatStartTime(successor.startTime))",
+                            targetID: successor.id
+                        )
+                    }
+                default:
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Follow-ups (\(threadContext.successors.count))")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                        ForEach(threadContext.successors) { successor in
+                            threadLink(
+                                icon: "arrow.turn.left.down",
+                                text: "\(successor.title) \u{00B7} \(MeetingBrowserLogic.formatStartTime(successor.startTime))",
+                                targetID: successor.id
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func threadLink(icon: String, text: String, targetID: Int64) -> some View {
+        Button {
+            controller.showMeetingDocument(id: targetID)
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 9, weight: .semibold))
+                Text(text)
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(MuesliTheme.accent)
+        }
+        .buttonStyle(.plain)
+        .help("Open this meeting")
     }
 
     @ViewBuilder
@@ -1378,6 +1550,7 @@ struct MeetingDetailView: View {
         let previousMeetingID = loadedMeetingID
         let meetingChanged = previousMeetingID != meeting?.id
         loadedMeetingID = meeting?.id
+        threadContext = meeting.flatMap { controller.meetingThreadContext(for: $0.id) }
         editableTitle = meeting?.title ?? ""
         if meetingChanged || !isEditingNotes {
             editableNotes = meeting.map { Self.notesContent(for: $0) } ?? ""
@@ -1590,7 +1763,7 @@ struct TranscriptChatMessage: Identifiable, Equatable {
         speaker?.localizedCaseInsensitiveCompare("You") == .orderedSame
     }
 
-    static func messages(from transcript: String) -> [TranscriptChatMessage] {
+    static func messages(from transcript: String, startingAt firstID: Int = 0) -> [TranscriptChatMessage] {
         let normalized = transcript.replacingOccurrences(of: "\r\n", with: "\n")
         let rawLines = normalized
             .split(separator: "\n", omittingEmptySubsequences: false)
@@ -1600,7 +1773,7 @@ struct TranscriptChatMessage: Identifiable, Equatable {
         for rawLine in rawLines {
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !line.isEmpty else { continue }
-            let parsed = parseLine(line, id: messages.count)
+            let parsed = parseLine(line, id: firstID + messages.count)
             messages.append(parsed)
         }
 

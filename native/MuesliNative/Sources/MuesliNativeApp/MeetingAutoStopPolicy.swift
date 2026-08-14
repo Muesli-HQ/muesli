@@ -1,5 +1,75 @@
 import Foundation
 
+enum MeetingRecordingStartOrigin: Equatable {
+    case manual
+    case detectedPrompt
+    case calendarAutoRecord
+    case scheduledMeetingPrompt
+    case joinAndRecord
+
+    var enablesMeetingAutoStop: Bool {
+        switch self {
+        case .manual:
+            return false
+        case .detectedPrompt, .calendarAutoRecord, .scheduledMeetingPrompt, .joinAndRecord:
+            return true
+        }
+    }
+
+    var signalLossResponse: MeetingSignalLossResponse {
+        enablesMeetingAutoStop ? .autoStopAfterWarning : .none
+    }
+
+    func signalLossSource(
+        explicitSource: MeetingAutoStopSource?,
+        recentSource: @autoclosure () -> MeetingAutoStopSource?
+    ) -> MeetingAutoStopSource? {
+        switch self {
+        case .manual:
+            return nil
+        case .detectedPrompt, .calendarAutoRecord, .scheduledMeetingPrompt, .joinAndRecord:
+            return explicitSource ?? recentSource()
+        }
+    }
+}
+
+enum MeetingSignalLossResponse: Equatable {
+    case none
+    case warnOnly
+    case autoStopAfterWarning
+}
+
+struct MeetingSignalLossPromptState: Equatable {
+    private(set) var isPromptSuppressed = false
+    private(set) var isDismissedForRecording = false
+
+    var canPresentPrompt: Bool {
+        !isPromptSuppressed && !isDismissedForRecording
+    }
+
+    mutating func resetForRecording() {
+        isPromptSuppressed = false
+        isDismissedForRecording = false
+    }
+
+    mutating func markPromptPresented() {
+        isPromptSuppressed = true
+    }
+
+    mutating func markSourceRecovered() {
+        isPromptSuppressed = false
+    }
+
+    mutating func markDismissedByUser() {
+        isPromptSuppressed = true
+        isDismissedForRecording = true
+    }
+
+    mutating func markAutoDismissed() {
+        isPromptSuppressed = true
+    }
+}
+
 struct MeetingAutoStopSource: Equatable {
     let candidateID: String?
     let suppressionID: String?

@@ -13,7 +13,10 @@ struct MeetingHookIntegrationTests {
         let spy = MeetingHookDispatcherSpy()
         let controller = makeController(store: store, dispatcher: spy)
 
-        let persistence = try controller.persistCompletedMeetingResultAndDispatchHook(makeMeetingResult())
+        let persistence = try controller.persistCompletedMeetingResultAndDispatchHook(
+            makeMeetingResult(),
+            preparedRecordingSave: .none
+        )
 
         #expect(spy.invocations.count == 1)
         #expect(spy.invocations.first?.meetingID == persistence.meetingID)
@@ -26,7 +29,10 @@ struct MeetingHookIntegrationTests {
         let spy = MeetingHookDispatcherSpy()
         let controller = makeController(store: store, dispatcher: spy)
 
-        let persistence = try controller.persistCompletedMeetingResultAndDispatchHook(makeMeetingResult(calendarEventID: "event-123"))
+        let persistence = try controller.persistCompletedMeetingResultAndDispatchHook(
+            makeMeetingResult(calendarEventID: "event-123"),
+            preparedRecordingSave: .none
+        )
 
         let invocation = try #require(spy.invocations.first)
         #expect(invocation.meetingID == persistence.meetingID)
@@ -40,7 +46,10 @@ struct MeetingHookIntegrationTests {
         let controller = makeController(store: store, dispatcher: spy)
         let result = makeMeetingResult()
 
-        _ = try controller.persistCompletedMeetingResultAndDispatchHook(result)
+        _ = try controller.persistCompletedMeetingResultAndDispatchHook(
+            result,
+            preparedRecordingSave: .none
+        )
 
         let invocation = try #require(spy.invocations.first)
         #expect(invocation.completedAt == result.endTime)
@@ -58,13 +67,16 @@ struct MeetingHookIntegrationTests {
             $0.meetingHookTimeoutSeconds = 1
         }
 
-        let persistence = try controller.persistCompletedMeetingResultAndDispatchHook(makeMeetingResult())
+        let persistence = try controller.persistCompletedMeetingResultAndDispatchHook(
+            makeMeetingResult(),
+            preparedRecordingSave: .none
+        )
 
         #expect(try store.meeting(id: persistence.meetingID) != nil)
     }
 
-    @Test("no hook runs when meeting persistence fails")
-    func noHookRunsWhenPersistenceFails() throws {
+    @Test("duplicate calendar metadata does not block persistence or hooks")
+    func duplicateCalendarMetadataDoesNotBlockPersistence() throws {
         let store = try makeStore()
         let spy = MeetingHookDispatcherSpy()
         let controller = makeController(store: store, dispatcher: spy)
@@ -80,12 +92,55 @@ struct MeetingHookIntegrationTests {
             systemAudioPath: nil
         )
 
-        #expect(throws: Error.self) {
-            try controller.persistCompletedMeetingResultAndDispatchHook(
-                makeMeetingResult(calendarEventID: "duplicate-event")
-            )
+        let persistence = try controller.persistCompletedMeetingResultAndDispatchHook(
+            makeMeetingResult(calendarEventID: "duplicate-event"),
+            preparedRecordingSave: .none
+        )
+
+        #expect(try store.meeting(id: persistence.meetingID) != nil)
+        #expect(try store.recentMeetings(limit: 10).count == 2)
+        #expect(spy.invocations.count == 1)
+    }
+
+    @Test("imported audio meeting dispatches one hook event after persistence succeeds")
+    func importedMeetingDispatchesHook() throws {
+        let store = try makeStore()
+        let spy = MeetingHookDispatcherSpy()
+        let controller = makeController(store: store, dispatcher: spy)
+        let endTime = Date(timeIntervalSince1970: 1_713_961_500)
+        var meetingExistedAtDispatch = false
+        spy.onDispatch = { invocation in
+            meetingExistedAtDispatch = (try? store.meeting(id: invocation.meetingID)) != nil
         }
-        #expect(spy.invocations.isEmpty)
+
+        let meetingID = try controller.persistImportedAudioMeeting(
+            title: "Imported Call Recording",
+            calendarEventID: nil,
+            startTime: endTime.addingTimeInterval(-300),
+            endTime: endTime,
+            rawTranscript: "Speaker 1: Discussed the imported call.",
+            formattedNotes: "## Summary\nImported recording.",
+            micAudioPath: nil,
+            systemAudioPath: nil,
+            savedRecordingPath: nil,
+            selectedTemplateID: nil,
+            selectedTemplateName: nil,
+            selectedTemplateKind: nil,
+            selectedTemplatePrompt: nil
+        )
+
+        #expect(spy.invocations.count == 1)
+        #expect(spy.invocations.first?.meetingID == meetingID)
+        #expect(spy.invocations.first?.completedAt == endTime)
+        #expect(meetingExistedAtDispatch)
+
+        let record = try #require(try store.meeting(id: meetingID))
+        #expect(record.title == "Imported Call Recording")
+        #expect(record.startTime == "2024-04-24T12:20:00Z")
+        #expect(record.durationSeconds == 300)
+        #expect(record.rawTranscript == "Speaker 1: Discussed the imported call.")
+        #expect(record.formattedNotes == "## Summary\nImported recording.")
+        #expect(record.source == .audioImport)
     }
 
     private func makeController(store: DictationStore, dispatcher: MeetingHookDispatching) -> MuesliController {
@@ -144,8 +199,11 @@ private final class MeetingHookDispatcherSpy: MeetingHookDispatching {
     }
 
     private(set) var invocations: [Invocation] = []
+    var onDispatch: ((Invocation) -> Void)?
 
     func dispatchCompletedMeetingHook(meetingID: Int64, completedAt: Date, config: AppConfig) {
-        invocations.append(Invocation(meetingID: meetingID, completedAt: completedAt, config: config))
+        let invocation = Invocation(meetingID: meetingID, completedAt: completedAt, config: config)
+        invocations.append(invocation)
+        onDispatch?(invocation)
     }
 }

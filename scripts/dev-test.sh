@@ -25,6 +25,7 @@ set -euo pipefail
 #   MUESLI_CODESIGN_TIMESTAMP=none ./scripts/dev-test.sh --cloud-entitlements
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/muesli_telemetry_channels.sh"
 
 usage() {
   cat <<'EOF'
@@ -134,6 +135,8 @@ BUILD_ENV=(
   MUESLI_SUPPORT_DIR_NAME="$DEV_APP_NAME"
   MUESLI_DISPLAY_NAME="$DEV_APP_NAME"
   MUESLI_SPARKLE_FEED_URL=""
+  MUESLI_TELEMETRYDECK_APP_ID="$MUESLI_TELEMETRYDECK_DEV_APP_ID"
+  MUESLI_TELEMETRY_CHANNEL="dev"
 )
 if [[ -n "$LANE" ]]; then
   BUILD_ENV+=(MUESLI_EXECUTABLE_NAME="$DEV_APP_NAME")

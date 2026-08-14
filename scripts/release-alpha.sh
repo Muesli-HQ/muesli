@@ -25,6 +25,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 source "$ROOT/scripts/muesli_spm_cache.sh"
+source "$ROOT/scripts/muesli_telemetry_channels.sh"
 PACKAGE_DIR="$ROOT/native/MuesliNative"
 SWIFTPM_SCRATCH_PATH=""
 SWIFT_TEST_ARGS=(--package-path "$PACKAGE_DIR")
@@ -149,6 +150,8 @@ ALPHA_BUILD_ENV=(
   MUESLI_DISPLAY_NAME=MuesliCanary
   MUESLI_SUPPORT_DIR_NAME=MuesliCanary
   MUESLI_SPARKLE_FEED_URL=""
+  MUESLI_TELEMETRYDECK_APP_ID="$MUESLI_TELEMETRYDECK_DEV_APP_ID"
+  MUESLI_TELEMETRY_CHANNEL="canary"
 )
 echo "y" | env "${ALPHA_BUILD_ENV[@]}" "$ROOT/scripts/build_native_app.sh" > /dev/null
 echo "  Installed to $APP_DIR"

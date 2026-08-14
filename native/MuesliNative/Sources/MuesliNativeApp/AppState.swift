@@ -4,12 +4,58 @@ import MuesliCore
 
 enum DashboardTab: String, CaseIterable {
     case dictations
+    case insights
     case meetings
     case dictionary
     case models
     case shortcuts
     case settings
     case about
+}
+
+enum InsightsSection: String, CaseIterable, Sendable {
+    case streak
+    case words
+    case pace
+    case meetings
+}
+
+enum SettingsPane: String, CaseIterable, Identifiable {
+    case general
+    case sync
+    case dictation
+    case computerUse
+    case meetings
+    case appearance
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .general: return "General"
+        case .sync: return "Sync"
+        case .dictation: return "Dictation"
+        case .computerUse: return "Computer Use"
+        case .meetings: return "Meetings"
+        case .appearance: return "Appearance"
+        }
+    }
+}
+
+enum ModelsCategory: String, CaseIterable, Identifiable {
+    case dictation
+    case streaming
+    case postProcessing
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .dictation: return "Dictation"
+        case .streaming: return "Live Meetings"
+        case .postProcessing: return "Cleanup"
+        }
+    }
 }
 
 enum MeetingsNavigationState: Equatable {
@@ -64,6 +110,7 @@ final class AppState {
     var folders: [MeetingFolder] = []
     var selectedFolderID: Int64?  // nil = "All Meetings"
     var meetingsNavigationState: MeetingsNavigationState = .browser
+    var meetingNotesFocusRequest = 0
     var isMeetingTemplatesManagerPresented: Bool = false
     var dictationStats: DictationStats = DictationStats(
         totalWords: 0, totalSessions: 0, averageWordsPerSession: 0,
@@ -75,6 +122,7 @@ final class AppState {
     var selectedBackend: BackendOption = .whisper
     var selectedMeetingTranscriptionBackend: BackendOption = .whisper
     var selectedMeetingSummaryBackend: MeetingSummaryBackendOption = .chatGPT
+    var selectedPostProcessorBackend: TranscriptCleanupBackendOption = .local
     var activePostProcessor: PostProcessorOption = PostProcessorOption.defaultOption
     var config: AppConfig = AppConfig()
     var launchAtLoginRegistrationState: LaunchAtLoginRegistrationState = .disabled
@@ -86,6 +134,10 @@ final class AppState {
     var meetingStartStatus: String?
     var liveMeetingTranscript: String = ""
     var liveMeetingTranscriptOwnerID: Int64? = nil
+    /// Provisional streaming tails for the live transcript view, one per
+    /// source; owner-gated by `liveMeetingTranscriptOwnerID` like the transcript.
+    var liveMeetingPartialYou: String = ""
+    var liveMeetingPartialOthers: String = ""
     var activeMeetingAudioWarning: ActiveMeetingAudioWarning?
     var dictationState: DictationState = .idle
     var isVoiceNoteRecording: Bool = false
@@ -123,6 +175,7 @@ final class AppState {
     var iCloudLastSyncSummary: String?
     var iCloudLastSyncedAt: Date?
     var contributionMilestonePrompt: ContributionMilestonePrompt?
+    var pendingDiagnosticIncident: DiagnosticIncident?
     var modelPreparationTitle: String?
     var modelPreparationDetail: String?
     var modelPreparationProgress: Double?
@@ -133,7 +186,9 @@ final class AppState {
     var dictationPageSize: Int = 50
     var dictationFromDate: String? = nil
     var dictationToDate: String? = nil
+    var dictationOriginFilter: RecordOriginFilter = .all
     var hasMoreDictations: Bool = true
+    var meetingOriginFilter: RecordOriginFilter = .all
 
     // Search
     var searchQuery: String = ""
@@ -144,6 +199,12 @@ final class AppState {
 
     // Navigation
     var selectedTab: DashboardTab = .dictations
+    var insightsInitialSection: InsightsSection = .words
+    var selectedSettingsPane: SettingsPane = .general
+    var selectedModelsCategory: ModelsCategory = .dictation
+    var pendingFeatureTourInvitation: FeatureTour?
+    var activeFeatureTour: FeatureTour?
+    var featureTourStepIndex: Int = 0
 
     // Computed
     var selectedMeeting: MeetingRecord? {

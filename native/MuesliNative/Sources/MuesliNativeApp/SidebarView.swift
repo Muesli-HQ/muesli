@@ -111,6 +111,7 @@ struct SidebarView: View {
             Spacer()
 
             modelPreparationStatus
+            spreadTheWordSection
             sidebarItem(tab: .settings, icon: "gearshape", label: "Settings")
             sidebarItem(tab: .about, icon: "info.circle", label: "About", updateCTA: pendingUpdateCTA)
             darkModeToggle
@@ -283,6 +284,7 @@ struct SidebarView: View {
             )
             .contentShape(Rectangle())
             .padding(.horizontal, sidebarRowOuterPadding)
+            .featureTourTarget(.meetingsSidebar)
 
             if meetingsExpanded {
                 let folderTree = folderTreePresentation
@@ -403,6 +405,80 @@ struct SidebarView: View {
             )
             .padding(.horizontal, sidebarRowOuterPadding)
             .padding(.bottom, MuesliTheme.spacing4)
+        }
+    }
+
+    @ViewBuilder
+    private var spreadTheWordSection: some View {
+        let wordMilestone = ContributionSocialShare.completedWordMilestone(
+            totalWords: appState.dictationStats.totalWords
+        )
+        if wordMilestone != nil {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Spread the Word")
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .padding(.horizontal, sidebarRowHorizontalPadding)
+                    .padding(.bottom, 2)
+
+                socialShareRow(
+                    imageName: "x-logo",
+                    fallbackIcon: "bubble.left.and.bubble.right.fill",
+                    label: "Tweet about Muesli",
+                    action: { controller.openContributionSidebarShare(.tweetAboutMuesli) }
+                )
+                socialShareRow(
+                    imageName: "linkedin-logo",
+                    fallbackIcon: "person.crop.square.fill",
+                    label: "Post on LinkedIn",
+                    action: { controller.openContributionSidebarShare(.postOnLinkedIn) }
+                )
+            }
+            .padding(.horizontal, sidebarRowOuterPadding)
+            .padding(.bottom, MuesliTheme.spacing8)
+        }
+    }
+
+    @ViewBuilder
+    private func socialShareRow(
+        imageName: String,
+        fallbackIcon: String,
+        label: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: MuesliTheme.spacing12) {
+                socialLogo(imageName: imageName, fallbackIcon: fallbackIcon)
+                    .frame(width: sidebarIconColumnWidth, height: sidebarIconColumnWidth, alignment: .center)
+                Text(label)
+                    .font(MuesliTheme.callout())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, sidebarRowHorizontalPadding)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(label)
+    }
+
+    @ViewBuilder
+    private func socialLogo(imageName: String, fallbackIcon: String) -> some View {
+        if let url = Bundle.main.url(forResource: imageName, withExtension: "png"),
+           let image = NSImage(contentsOf: url) {
+            Image(nsImage: image)
+                .resizable()
+                .renderingMode(.template)
+                .scaledToFit()
+                .frame(width: 15, height: 15)
+                .foregroundStyle(MuesliTheme.textTertiary)
+        } else {
+            Image(systemName: fallbackIcon)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(MuesliTheme.textTertiary)
         }
     }
 

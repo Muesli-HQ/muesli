@@ -15,6 +15,7 @@ set -euo pipefail
 #   ./scripts/canary-test.sh --no-seed
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/muesli_telemetry_channels.sh"
 CANARY_SUPPORT_DIR="${MUESLI_CANARY_SUPPORT_DIR:-$HOME/Library/Application Support/MuesliCanary}"
 CANARY_APP="${MUESLI_CANARY_APP_PATH:-/Applications/MuesliCanary.app}"
 CANARY_MODEL_CACHE="${MUESLI_CANARY_CACHE_DIR:-$HOME/.cache/muesli/models/canary-qwen-2.5b-coreml-int8}"
@@ -162,6 +163,8 @@ MUESLI_BUNDLE_ID=com.muesli.canary \
 MUESLI_SUPPORT_DIR_NAME=MuesliCanary \
 MUESLI_DISPLAY_NAME="MuesliCanary" \
 MUESLI_SPARKLE_FEED_URL="" \
+MUESLI_TELEMETRYDECK_APP_ID="$MUESLI_TELEMETRYDECK_DEV_APP_ID" \
+MUESLI_TELEMETRY_CHANNEL="canary" \
 "$ROOT/scripts/build_native_app.sh" debug
 
 log ""

@@ -323,8 +323,9 @@ final class DictationAudioSessionManager: @unchecked Sendable {
     }
 
     func stop() {
+        let requestedSessionID = detachSessionHint()
         queue.async { [self] in
-            let sessionID = self.stateStorage.sessionID
+            let sessionID = self.stateStorage.sessionID ?? requestedSessionID
             guard sessionID != nil else {
                 self.restoreSessionAudioState(completion: nil)
                 return
@@ -335,7 +336,6 @@ final class DictationAudioSessionManager: @unchecked Sendable {
             self.activeRecorderRunID = nil
             self.recorder.preferredInputDeviceID = nil
             self.stateStorage = .idle
-            self.clearSessionHint(sessionID)
             self.emit(.stopped(sessionID, wavURL: wavURL))
             self.restoreSessionAudioState {
                 self.emit(.audioRestored(sessionID))
@@ -344,16 +344,15 @@ final class DictationAudioSessionManager: @unchecked Sendable {
     }
 
     func cancel(reason: String) {
+        let requestedSessionID = detachSessionHint(clearExternalSession: true)
         queue.async { [self] in
-            let sessionID = self.stateStorage.sessionID
+            let sessionID = self.stateStorage.sessionID ?? requestedSessionID
             self.recorder.keepsAudioGraphWarm = false
             self.recorder.cancel()
             self.activeRecorderRunID = nil
             self.recorder.preferredInputDeviceID = nil
             self.stateStorage = .idle
             self.externalSessionActive = false
-            self.clearSessionHint(sessionID)
-            self.setExternalSessionHint(false)
             self.restoreSessionAudioState()
             self.emitLatency("cancelled:\(reason)")
             self.emit(.cancelled(sessionID, reason: reason))
@@ -412,6 +411,17 @@ final class DictationAudioSessionManager: @unchecked Sendable {
         }
     }
 
+    private func detachSessionHint(clearExternalSession: Bool = false) -> UUID? {
+        sessionHintLock.withLock {
+            let detachedSessionID = sessionHint
+            sessionHint = nil
+            if clearExternalSession {
+                externalSessionHint = false
+            }
+            return detachedSessionID
+        }
+    }
+
     private func sessionHintMatches(_ sessionID: UUID) -> Bool {
         sessionHintLock.withLock {
             self.sessionHint == sessionID
@@ -439,17 +449,29 @@ final class DictationAudioSessionManager: @unchecked Sendable {
         }
         routeSnapshot = makeRouteSnapshot(refreshInput: false)
         emitLatency("route_refresh:\(intent.debugName) \(routeSnapshot.debugDescription)")
+        if intent == .idlePrewarm(.routeChange) {
+            // Persistent-graph policy: route changes are telemetry-only. The
+            // warm capture graph is bound to a fixed input device and is
+            // indifferent to output-route churn, so there is nothing to
+            // rebuild here. Rebuilds happen only at start() after a proven
+            // failure or a device-selection change.
+            emitLatency("route_refresh_ignored:\(intent.debugName)")
+            return
+        }
         guard stateStorage == .idle, !externalSessionActive else { return }
-        if let skipReason = idleWarmupSkipReason(route: routeSnapshot, canWarmUp: canWarmUp) {
-            recorder.keepsAudioGraphWarm = false
-            recorder.coolDown()
+        if let skipReason = idleWarmupSkipReason(
+            route: routeSnapshot,
+            canWarmUp: canWarmUp
+        ) {
             emitLatency("warmup_skipped:\(intent.debugName):\(skipReason)")
             fputs("[dictation-session] warmup skipped intent=\(intent.debugName) reason=\(skipReason) \(routeSnapshot.debugDescription)\n", stderr)
             return
         }
         recorder.keepsAudioGraphWarm = true
-        recorder.coolDown()
         do {
+            // No coolDown before warming: warmUp() is idempotent per bound
+            // device, so an already-warm graph is reused. Disposal stays
+            // reserved for proven failure / explicit cancellation paths.
             emitLatency("engine_prepare_begin:warmup:\(intent.debugName)")
             try recorder.warmUp(preferredInputDeviceID: routeSnapshot.preferredInputDeviceID)
             emitLatency("engine_prepare_end:warmup:\(intent.debugName)")
@@ -460,7 +482,10 @@ final class DictationAudioSessionManager: @unchecked Sendable {
         }
     }
 
-    private func idleWarmupSkipReason(route: RouteSnapshot, canWarmUp: Bool) -> String? {
+    private func idleWarmupSkipReason(
+        route: RouteSnapshot,
+        canWarmUp: Bool
+    ) -> String? {
         guard canWarmUp else { return "not_allowed" }
         switch route.routeKind {
         case .speakerLike:

@@ -120,6 +120,14 @@ final class FallbackStreamingDictationRecorder: StreamingDictationRecording, Str
         wireCallbacks()
     }
 
+    func invalidateForTeardown() {
+        // Deliberately not under `lock`: start() holds `lock` across a
+        // potentially blocking child start(), and teardown invalidation must
+        // land during that window. `primary` and `fallback` are immutable.
+        primary.invalidateForTeardown()
+        fallback.invalidateForTeardown()
+    }
+
     func pause() {
         lock.lock()
         let recorder = activeRecorderLocked()

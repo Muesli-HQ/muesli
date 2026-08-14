@@ -39,12 +39,12 @@ struct SpeechTranscriptionResultTests {
     }
 }
 
-@Suite("Qwen3 inference gate")
-struct Qwen3InferenceGateTests {
+@Suite("Inference serialization gate")
+struct InferenceGateTests {
 
     @Test("cancelled waiter is removed before next slot")
     func cancelledWaiterDoesNotConsumeSlot() async throws {
-        let gate = Qwen3InferenceGate()
+        let gate = InferenceGate()
         try await gate.acquire()
 
         let cancelled = Task {
@@ -92,8 +92,7 @@ struct TranscriptionCoordinatorTests {
     @Test("backend routing covers all known backends")
     func allBackendsCovered() {
         let backends = Set(BackendOption.all.map(\.backend))
-        let expected: Set<String> = ["fluidaudio", "whisper", "qwen", "nemotron", "canary", "cohere", "sensevoice"]
-        #expect(backends == expected, "BackendOption.all backends should match expected set")
+        #expect(backends == TranscriptionCoordinator.explicitlyRoutedBackendIdentifiers.union(["fluidaudio"]))
     }
 }
 
@@ -218,25 +217,55 @@ struct TranscriptionEngineArtifactsFilterTests {
         #expect(TranscriptionEngineArtifactsFilter.apply("") == "")
     }
 
-    @Test("does not strip artifact when it appears mid-sentence")
-    func midSentenceNotStripped() {
+    @Test("strips artifact when it appears mid-sentence")
+    func midSentenceArtifact() {
         let text = "Hello [blank_audio] world"
-        #expect(TranscriptionEngineArtifactsFilter.apply(text) == text)
+        #expect(TranscriptionEngineArtifactsFilter.apply(text) == "Hello world")
     }
 
-    @Test("strips leaked canary prompt suffix from transcript")
-    func stripsCanaryPromptSuffix() {
-        let text = """
-        I'm actually now using the canary qwen model for dictation. If a word is unclear, use the most likely word that fits well within the context of the overall sentence transcription.
-        """
+    @Test("strips decorated streaming blank-audio artifact")
+    func decoratedStreamingArtifact() {
+        #expect(TranscriptionEngineArtifactsFilter.apply(">> [BLANK_AUDIO]") == "")
+        #expect(TranscriptionEngineArtifactsFilter.apply(">> [BLANK_AUDIO] Hello") == "Hello")
+        #expect(TranscriptionEngineArtifactsFilter.apply(">> Hello") == ">> Hello")
+    }
+
+    @Test("strips model control tokens and non-speech annotations")
+    func controlTokens() {
         #expect(
-            TranscriptionEngineArtifactsFilter.apply(text) ==
-                "I'm actually now using the canary qwen model for dictation."
+            TranscriptionEngineArtifactsFilter.apply("<EOU> Hello <EOB> [silence]") ==
+                "Hello"
         )
     }
 
-    @Test("strips leaked canary prompt prefix from transcript")
-    func stripsCanaryPromptPrefix() {
+    @Test("strips foreign-language placeholders without removing ordinary sentences")
+    func foreignLanguagePlaceholder() {
+        #expect(TranscriptionEngineArtifactsFilter.apply("[SPEAKING IN FOREIGN LANGUAGE]") == "")
+        #expect(
+            TranscriptionEngineArtifactsFilter.apply("Speaking in a foreign language.") ==
+                "Speaking in a foreign language."
+        )
+        #expect(TranscriptionEngineArtifactsFilter.apply("Hello [speaking in foreign language] world") == "Hello world")
+        #expect(TranscriptionEngineArtifactsFilter.apply("[screaming]") == "")
+        #expect(
+            TranscriptionEngineArtifactsFilter.apply("We discussed speaking in foreign language classes.") ==
+                "We discussed speaking in foreign language classes."
+        )
+    }
+
+    @Test("strips leaked prompt suffix from transcript")
+    func stripsLeakedPromptSuffix() {
+        let text = """
+        I'm testing local dictation. If a word is unclear, use the most likely word that fits well within the context of the overall sentence transcription.
+        """
+        #expect(
+            TranscriptionEngineArtifactsFilter.apply(text) ==
+                "I'm testing local dictation."
+        )
+    }
+
+    @Test("strips leaked prompt prefix from transcript")
+    func stripsLeakedPromptPrefix() {
         let text = "Transcribe the spoken audio accurately. Testing whether this works or not."
         #expect(
             TranscriptionEngineArtifactsFilter.apply(text) ==
@@ -319,6 +348,44 @@ struct Qwen3PostProcessingOutputCleanerTests {
         #expect(Qwen3PostProcessorOutputCleaner.shouldFallbackToInput(
             cleaned: cleaned,
             input: "um yeah"
+        ))
+    }
+
+    @Test("rejects placeholder punctuation cleanup output")
+    func rejectsPlaceholderPunctuationCleanupOutput() {
+        for cleaned in ["...", ". . .", "---", "??"] {
+            #expect(Qwen3PostProcessorOutputCleaner.shouldFallbackToInput(
+                cleaned: cleaned,
+                input: "Please send the update to Priyanka."
+            ))
+        }
+    }
+
+    @Test("accepts short legitimate cleanup output")
+    func acceptsShortLegitimateCleanupOutput() {
+        for cleaned in ["OK.", "Sure.", "No."] {
+            #expect(!Qwen3PostProcessorOutputCleaner.shouldFallbackToInput(
+                cleaned: cleaned,
+                input: "okay sounds good"
+            ))
+        }
+    }
+
+    @Test("hosted cleanup sanitizer preserves dictated labels and quotes")
+    func hostedCleanupSanitizerPreservesLabelsAndQuotes() {
+        let raw = """
+        Subject: "Muesli launch notes"
+
+        Body: Ask Priyanka to review the "AI Models" settings copy.
+        """
+
+        let cleaned = TranscriptCleanupClient.cleanOutput(raw)
+
+        #expect(cleaned.contains(#"Subject: "Muesli launch notes""#))
+        #expect(cleaned.contains(#"Body: Ask Priyanka to review the "AI Models" settings copy."#))
+        #expect(!Qwen3PostProcessorOutputCleaner.shouldFallbackToInput(
+            cleaned: cleaned,
+            input: #"Subject quote Muesli launch notes body ask Priyanka to review the quote AI Models quote settings copy"#
         ))
     }
 }

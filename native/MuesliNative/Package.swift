@@ -38,12 +38,14 @@ let package = Package(
                 "MuesliCore",
                 .product(name: "FluidAudio", package: "FluidAudio"),
                 .product(name: "LLM", package: "LLM.swift"),
+                .target(name: "CLiteRTLM_mac", condition: .when(platforms: [.macOS])),
                 .product(name: "WhisperKit", package: "WhisperKit"),
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "TelemetryDeck", package: "SwiftSDK"),
                 .product(name: "Atomics", package: "swift-atomics"),
                 .product(name: "DTLNAecCoreML", package: "dtln-aec-coreml"),
                 .product(name: "DTLNAec512", package: "dtln-aec-coreml"),
+                "AudioGraphExceptionBridge",
                 "LocalVQEBridge",
             ],
             path: "Sources/MuesliNativeApp",
@@ -60,17 +62,32 @@ let package = Package(
                 "MuesliCore",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "FluidAudio", package: "FluidAudio"),
+                .product(name: "WhisperKit", package: "WhisperKit"),
             ],
             path: "Sources/MuesliCLI"
+        ),
+        .target(
+            name: "AudioGraphExceptionBridge",
+            path: "Sources/AudioGraphExceptionBridge",
+            publicHeadersPath: "include",
+            linkerSettings: [
+                .linkedFramework("AudioToolbox"),
+                .linkedFramework("AVFAudio"),
+            ]
         ),
         .target(
             name: "LocalVQEBridge",
             path: "Sources/LocalVQEBridge",
             publicHeadersPath: "include"
         ),
+        .binaryTarget(
+            name: "CLiteRTLM_mac",
+            url: "https://github.com/google-ai-edge/LiteRT-LM/releases/download/v0.13.1/CLiteRTLM_mac.xcframework.zip",
+            checksum: "ec9ffe230dc39117a7fc8933b1cc15910454027fee6d3041534ab7cf17313981"
+        ),
         .testTarget(
             name: "MuesliTests",
-            dependencies: ["MuesliNativeApp", "MuesliCore", "MuesliCLI", "LocalVQEBridge"],
+            dependencies: ["MuesliNativeApp", "MuesliCore", "MuesliCLI", "AudioGraphExceptionBridge", "LocalVQEBridge"],
             path: "Tests/MuesliTests",
             linkerSettings: [
                 .linkedLibrary("sqlite3"),

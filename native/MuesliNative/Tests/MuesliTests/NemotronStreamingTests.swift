@@ -1,61 +1,7 @@
 import Testing
 import Foundation
 import CoreAudio
-import CoreML
 @testable import MuesliNativeApp
-
-@Suite("NemotronStreamState")
-struct NemotronStreamStateTests {
-
-    @available(macOS 15, *)
-    @Test("makeStreamState creates zero-initialized state")
-    func makeStreamStateZeroInit() async throws {
-        let transcriber = NemotronStreamingTranscriber()
-        // Models aren't loaded, so makeStreamState should still create valid arrays
-        let state = try await transcriber.makeStreamState()
-
-        // Verify shapes
-        #expect(state.cacheChannel.shape == [1, 24, 70, 1024])
-        #expect(state.cacheTime.shape == [1, 24, 1024, 8])
-        #expect(state.cacheLen.shape == [1])
-        #expect(state.hState.shape == [2, 1, 640])
-        #expect(state.cState.shape == [2, 1, 640])
-
-        // Verify initial token state
-        #expect(state.lastToken == 0)
-        #expect(state.allTokens.isEmpty)
-
-        // Verify cache is zero
-        #expect(state.cacheLen[0].intValue == 0)
-    }
-
-    @available(macOS 15, *)
-    @Test("makeStreamState creates independent states")
-    func independentStates() async throws {
-        let transcriber = NemotronStreamingTranscriber()
-        var state1 = try await transcriber.makeStreamState()
-        let state2 = try await transcriber.makeStreamState()
-
-        // Mutating one shouldn't affect the other
-        state1.lastToken = 42
-        state1.allTokens.append(99)
-
-        #expect(state2.lastToken == 0)
-        #expect(state2.allTokens.isEmpty)
-    }
-
-    @available(macOS 15, *)
-    @Test("transcribeChunk throws when models not loaded")
-    func chunkThrowsWithoutModels() async throws {
-        let transcriber = NemotronStreamingTranscriber()
-        var state = try await transcriber.makeStreamState()
-        let samples = [Float](repeating: 0, count: 8960)
-
-        await #expect(throws: (any Error).self) {
-            try await transcriber.transcribeChunk(samples: samples, state: &state)
-        }
-    }
-}
 
 @Suite("StreamingDictationController")
 struct StreamingDictationControllerTests {
@@ -63,14 +9,14 @@ struct StreamingDictationControllerTests {
     @available(macOS 15, *)
     @Test("controller initializes without crash")
     func initDoesNotCrash() {
-        let transcriber = NemotronStreamingTranscriber()
+        let transcriber = ImmediateStreamingTranscriber()
         let _ = StreamingDictationController(transcriber: transcriber)
     }
 
     @available(macOS 15, *)
     @Test("stop returns empty string when not started")
     func stopWithoutStart() async {
-        let transcriber = NemotronStreamingTranscriber()
+        let transcriber = ImmediateStreamingTranscriber()
         let controller = StreamingDictationController(transcriber: transcriber)
         let result = await stop(controller)
         #expect(result.isEmpty)
@@ -79,7 +25,7 @@ struct StreamingDictationControllerTests {
     @available(macOS 15, *)
     @Test("failed mic start resets active state")
     func failedMicStartResetsActiveState() {
-        let transcriber = NemotronStreamingTranscriber()
+        let transcriber = ImmediateStreamingTranscriber()
         let recorder = FailingStreamingDictationRecorder()
         let controller = StreamingDictationController(
             transcriber: transcriber,
@@ -95,7 +41,7 @@ struct StreamingDictationControllerTests {
     @available(macOS 15, *)
     @Test("stream state failure cancels mic session and permits retry")
     func streamStateFailureCancelsMicSessionAndPermitsRetry() async {
-        let transcriber = FailingNemotronStreamingTranscriber()
+        let transcriber = FailingStreamingTranscriber()
         let recorder = InspectableStreamingDictationRecorder()
         let failures = FailureCounter()
         let controller = StreamingDictationController(
@@ -126,7 +72,7 @@ struct StreamingDictationControllerTests {
     @available(macOS 15, *)
     @Test("start prepares routed input before mic capture")
     func startPreparesRoutedInputBeforeMicCapture() {
-        let transcriber = FailingNemotronStreamingTranscriber()
+        let transcriber = FailingStreamingTranscriber()
         let recorder = InspectableStreamingDictationRecorder()
         let controller = StreamingDictationController(
             transcriber: transcriber,
@@ -143,9 +89,24 @@ struct StreamingDictationControllerTests {
     }
 
     @available(macOS 15, *)
+    @Test("currentPower reflects streaming recorder level")
+    func currentPowerReflectsStreamingRecorderLevel() {
+        let transcriber = ImmediateStreamingTranscriber()
+        let recorder = InspectableStreamingDictationRecorder()
+        let controller = StreamingDictationController(
+            transcriber: transcriber,
+            recorder: recorder
+        )
+
+        recorder.power = -27
+
+        #expect(controller.currentPower() == -27)
+    }
+
+    @available(macOS 15, *)
     @Test("stop waits for pending stream state before draining queued audio")
     func stopWaitsForPendingStreamStateBeforeDrainingQueuedAudio() async {
-        let transcriber = DelayedNemotronStreamingTranscriber()
+        let transcriber = DelayedStreamingTranscriber()
         let recorder = InspectableStreamingDictationRecorder()
         let controller = StreamingDictationController(
             transcriber: transcriber,
@@ -168,7 +129,7 @@ struct StreamingDictationControllerTests {
     @available(macOS 15, *)
     @Test("concurrent stops share one drain and transcript")
     func concurrentStopsShareOneDrainAndTranscript() async {
-        let transcriber = DelayedNemotronStreamingTranscriber()
+        let transcriber = DelayedStreamingTranscriber()
         let recorder = InspectableStreamingDictationRecorder()
         let controller = StreamingDictationController(
             transcriber: transcriber,
@@ -193,7 +154,7 @@ struct StreamingDictationControllerTests {
     @available(macOS 15, *)
     @Test("start during stop does not drop pending stop completion")
     func startDuringStopDoesNotDropPendingStopCompletion() async {
-        let transcriber = DelayedNemotronStreamingTranscriber()
+        let transcriber = DelayedStreamingTranscriber()
         let recorder = InspectableStreamingDictationRecorder()
         let controller = StreamingDictationController(
             transcriber: transcriber,
@@ -219,7 +180,7 @@ struct StreamingDictationControllerTests {
     @available(macOS 15, *)
     @Test("stop removes unused recorder WAV output")
     func stopRemovesUnusedRecorderWavOutput() async throws {
-        let transcriber = DelayedNemotronStreamingTranscriber()
+        let transcriber = DelayedStreamingTranscriber()
         let recorder = InspectableStreamingDictationRecorder()
         let controller = StreamingDictationController(
             transcriber: transcriber,
@@ -242,7 +203,7 @@ struct StreamingDictationControllerTests {
     @available(macOS 15, *)
     @Test("chunk transcription failure cancels mic session and permits retry")
     func chunkTranscriptionFailureCancelsMicSessionAndPermitsRetry() async {
-        let transcriber = ThrowingChunkNemotronStreamingTranscriber()
+        let transcriber = ThrowingChunkStreamingTranscriber()
         let recorder = InspectableStreamingDictationRecorder()
         let failures = FailureCounter()
         let controller = StreamingDictationController(
@@ -255,7 +216,7 @@ struct StreamingDictationControllerTests {
 
         #expect(controller.start() == true)
         recorder.emit(samples: [Float](repeating: 0.2, count: 8960))
-        try? await Task.sleep(for: .milliseconds(50))
+        #expect(await waitUntil { recorder.cancelCalls == 1 && failures.value == 1 })
 
         #expect(await transcriber.transcribeCalls == 1)
         #expect(recorder.cancelCalls == 1)
@@ -267,7 +228,7 @@ struct StreamingDictationControllerTests {
     @available(macOS 15, *)
     @Test("recorder failure cancels streaming session and permits retry")
     func recorderFailureCancelsStreamingSessionAndPermitsRetry() async {
-        let transcriber = ImmediateNemotronStreamingTranscriber()
+        let transcriber = ImmediateStreamingTranscriber()
         let recorder = InspectableStreamingDictationRecorder()
         let failures = FailureCounter()
         let controller = StreamingDictationController(
@@ -293,7 +254,7 @@ struct StreamingDictationControllerTests {
     @available(macOS 15, *)
     @Test("recorder failure after stop begins does not fail stopping session")
     func recorderFailureAfterStopBeginsDoesNotFailStoppingSession() async {
-        let transcriber = DelayedNemotronStreamingTranscriber()
+        let transcriber = DelayedStreamingTranscriber()
         let recorder = InspectableStreamingDictationRecorder()
         let failures = FailureCounter()
         let controller = StreamingDictationController(
@@ -322,7 +283,7 @@ struct StreamingDictationControllerTests {
     @available(macOS 15, *)
     @Test("stop completes when stream state initialization stalls")
     func stopCompletesWhenStreamStateInitializationStalls() async {
-        let transcriber = HangingNemotronStreamingTranscriber()
+        let transcriber = HangingStreamingTranscriber()
         let recorder = InspectableStreamingDictationRecorder()
         let controller = StreamingDictationController(
             transcriber: transcriber,
@@ -344,7 +305,7 @@ struct StreamingDictationControllerTests {
     @available(macOS 15, *)
     @Test("stop completes when stream state initialization ignores cancellation")
     func stopCompletesWhenStreamStateInitializationIgnoresCancellation() async {
-        let transcriber = CancellationIgnoringNemotronStreamingTranscriber()
+        let transcriber = CancellationIgnoringStreamingTranscriber()
         let recorder = InspectableStreamingDictationRecorder()
         let controller = StreamingDictationController(
             transcriber: transcriber,
@@ -367,7 +328,7 @@ struct StreamingDictationControllerTests {
     @available(macOS 15, *)
     @Test("stop waits for cold stream state and drains final queued chunk")
     func stopWaitsForColdStreamStateAndDrainsFinalQueuedChunk() async {
-        let transcriber = DelayedNemotronStreamingTranscriber()
+        let transcriber = DelayedStreamingTranscriber()
         let recorder = InspectableStreamingDictationRecorder()
         let controller = StreamingDictationController(
             transcriber: transcriber,
@@ -377,6 +338,30 @@ struct StreamingDictationControllerTests {
 
         #expect(controller.start() == true)
         recorder.emit(samples: [Float](repeating: 0.2, count: 8960))
+
+        async let stoppedText = stop(controller)
+        try? await Task.sleep(for: .milliseconds(1_100))
+        await transcriber.releaseState()
+
+        let text = await stoppedText
+        #expect(text == " hello")
+        #expect(await transcriber.transcribeCalls == 1)
+    }
+
+    @available(macOS 15, *)
+    @Test("stop drains final queued chunk with Nemotron 3.5 chunk size")
+    func stopDrainsFinalQueuedChunkWithNemotron35ChunkSize() async {
+        let transcriber = DelayedStreamingTranscriber()
+        let recorder = InspectableStreamingDictationRecorder()
+        let controller = StreamingDictationController(
+            transcriber: transcriber,
+            recorder: recorder,
+            stopStreamStateTimeout: 2.0,
+            chunkSamples: 35_840
+        )
+
+        #expect(controller.start() == true)
+        recorder.emit(samples: [Float](repeating: 0.2, count: 35_840))
 
         async let stoppedText = stop(controller)
         try? await Task.sleep(for: .milliseconds(1_100))
@@ -419,17 +404,17 @@ private final class FailingStreamingDictationRecorder: StreamingDictationRecordi
 }
 
 @available(macOS 15, *)
-private final class FailingNemotronStreamingTranscriber: NemotronStreamingTranscribing {
+private final class FailingStreamingTranscriber: NemotronStreamingTranscribing {
     var makeStateCalls = 0
 
-    func makeStreamState() async throws -> NemotronStreamingTranscriber.StreamState {
+    func makeStreamState() async throws -> RNNTStreamState {
         makeStateCalls += 1
-        throw NSError(domain: "FailingNemotronStreamingTranscriber", code: 1)
+        throw NSError(domain: "FailingStreamingTranscriber", code: 1)
     }
 
     func transcribeChunk(
         samples: [Float],
-        state: inout NemotronStreamingTranscriber.StreamState
+        state: inout RNNTStreamState
     ) async throws -> String {
         ""
     }
@@ -446,6 +431,7 @@ private final class InspectableStreamingDictationRecorder: StreamingDictationRec
     var preparedPreferredInputDeviceID: AudioObjectID?
     var startedPreferredInputDeviceID: AudioObjectID?
     var stopURL: URL?
+    var power: Float = -160
 
     func prepare() throws {
         prepareCalls += 1
@@ -471,23 +457,23 @@ private final class InspectableStreamingDictationRecorder: StreamingDictationRec
     }
 
     func currentPower() -> Float {
-        -160
+        power
     }
 }
 
 @available(macOS 15, *)
-private actor DelayedNemotronStreamingTranscriber: NemotronStreamingTranscribing {
+private actor DelayedStreamingTranscriber: NemotronStreamingTranscribing {
     private var continuation: CheckedContinuation<Void, Never>?
     private var released = false
     private(set) var transcribeCalls = 0
 
-    func makeStreamState() async throws -> NemotronStreamingTranscriber.StreamState {
+    func makeStreamState() async throws -> RNNTStreamState {
         if !released {
             await withCheckedContinuation { continuation in
                 self.continuation = continuation
             }
         }
-        return try await NemotronStreamingTranscriber().makeStreamState()
+        return try makeTestNemotronStreamState()
     }
 
     func releaseState() {
@@ -500,7 +486,7 @@ private actor DelayedNemotronStreamingTranscriber: NemotronStreamingTranscribing
 
     func transcribeChunk(
         samples: [Float],
-        state: inout NemotronStreamingTranscriber.StreamState
+        state: inout RNNTStreamState
     ) async throws -> String {
         transcribeCalls += 1
         return " hello"
@@ -508,52 +494,39 @@ private actor DelayedNemotronStreamingTranscriber: NemotronStreamingTranscribing
 }
 
 @available(macOS 15, *)
-private actor ImmediateNemotronStreamingTranscriber: NemotronStreamingTranscribing {
-    func makeStreamState() async throws -> NemotronStreamingTranscriber.StreamState {
-        let cacheChannel = try MLMultiArray(shape: [1, 24, 70, 1024], dataType: .float32)
-        let cacheTime = try MLMultiArray(shape: [1, 24, 1024, 8], dataType: .float32)
-        let cacheLen = try MLMultiArray(shape: [1], dataType: .int32)
-        let hState = try MLMultiArray(shape: [2, 1, 640], dataType: .float32)
-        let cState = try MLMultiArray(shape: [2, 1, 640], dataType: .float32)
-        return NemotronStreamingTranscriber.StreamState(
-            cacheChannel: cacheChannel,
-            cacheTime: cacheTime,
-            cacheLen: cacheLen,
-            hState: hState,
-            cState: cState,
-            lastToken: 0,
-            allTokens: []
-        )
+private actor ImmediateStreamingTranscriber: NemotronStreamingTranscribing {
+    func makeStreamState() async throws -> RNNTStreamState {
+        try makeTestNemotronStreamState()
     }
 
     func transcribeChunk(
         samples: [Float],
-        state: inout NemotronStreamingTranscriber.StreamState
+        state: inout RNNTStreamState
     ) async throws -> String {
         ""
     }
 }
 
 @available(macOS 15, *)
-private actor ThrowingChunkNemotronStreamingTranscriber: NemotronStreamingTranscribing {
+private actor ThrowingChunkStreamingTranscriber: NemotronStreamingTranscribing {
     private(set) var transcribeCalls = 0
 
-    func makeStreamState() async throws -> NemotronStreamingTranscriber.StreamState {
-        try await NemotronStreamingTranscriber().makeStreamState()
+    func makeStreamState() async throws -> RNNTStreamState {
+        try makeTestNemotronStreamState()
     }
 
     func transcribeChunk(
         samples: [Float],
-        state: inout NemotronStreamingTranscriber.StreamState
+        state: inout RNNTStreamState
     ) async throws -> String {
         transcribeCalls += 1
-        throw NSError(domain: "ThrowingChunkNemotronStreamingTranscriber", code: 1)
+        throw NSError(domain: "ThrowingChunkStreamingTranscriber", code: 1)
     }
 }
 
 @available(macOS 15, *)
-private final class HangingNemotronStreamingTranscriber: NemotronStreamingTranscribing {
-    func makeStreamState() async throws -> NemotronStreamingTranscriber.StreamState {
+private final class HangingStreamingTranscriber: NemotronStreamingTranscribing {
+    func makeStreamState() async throws -> RNNTStreamState {
         while true {
             try Task.checkCancellation()
             try await Task.sleep(for: .milliseconds(100))
@@ -562,24 +535,24 @@ private final class HangingNemotronStreamingTranscriber: NemotronStreamingTransc
 
     func transcribeChunk(
         samples: [Float],
-        state: inout NemotronStreamingTranscriber.StreamState
+        state: inout RNNTStreamState
     ) async throws -> String {
         "should not be reached"
     }
 }
 
 @available(macOS 15, *)
-private actor CancellationIgnoringNemotronStreamingTranscriber: NemotronStreamingTranscribing {
+private actor CancellationIgnoringStreamingTranscriber: NemotronStreamingTranscribing {
     private var continuation: CheckedContinuation<Void, Never>?
     private var released = false
 
-    func makeStreamState() async throws -> NemotronStreamingTranscriber.StreamState {
+    func makeStreamState() async throws -> RNNTStreamState {
         if !released {
             await withCheckedContinuation { continuation in
                 self.continuation = continuation
             }
         }
-        return try await NemotronStreamingTranscriber().makeStreamState()
+        return try makeTestNemotronStreamState()
     }
 
     func releaseState() {
@@ -592,7 +565,7 @@ private actor CancellationIgnoringNemotronStreamingTranscriber: NemotronStreamin
 
     func transcribeChunk(
         samples: [Float],
-        state: inout NemotronStreamingTranscriber.StreamState
+        state: inout RNNTStreamState
     ) async throws -> String {
         "should not be reached"
     }
@@ -725,7 +698,7 @@ struct StreamingDictationControllerLifecycleTests {
     @available(macOS 15, *)
     @Test("double stop is safe")
     func doubleStop() async {
-        let transcriber = NemotronStreamingTranscriber()
+        let transcriber = ImmediateStreamingTranscriber()
         let controller = StreamingDictationController(transcriber: transcriber)
         let result1 = await stop(controller)
         let result2 = await stop(controller)
@@ -736,7 +709,7 @@ struct StreamingDictationControllerLifecycleTests {
     @available(macOS 15, *)
     @Test("warmup does not crash without loaded models")
     func warmupWithoutModels() {
-        let transcriber = NemotronStreamingTranscriber()
+        let transcriber = ImmediateStreamingTranscriber()
         let controller = StreamingDictationController(transcriber: transcriber)
         // warmup should handle errors gracefully
         controller.warmup()
@@ -752,53 +725,40 @@ private func stop(_ controller: StreamingDictationController) async -> String {
     }
 }
 
-@Suite("Nemotron backend metadata")
-struct NemotronBackendMetadataTests {
-
-    @Test("nemotron label contains Experimental")
-    func experimentalLabel() {
-        #expect(BackendOption.nemotronStreaming.label.contains("Experimental"))
+private func waitUntil(
+    timeout: TimeInterval = 2.0,
+    _ condition: @escaping @Sendable () -> Bool
+) async -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        if condition() { return true }
+        try? await Task.sleep(for: .milliseconds(10))
     }
-
-    @Test("nemotron description warns about limitations")
-    func descriptionWarnings() {
-        let desc = BackendOption.nemotronStreaming.description
-        #expect(desc.contains("Experimental"))
-        #expect(desc.contains("Handsfree"))
-        #expect(desc.contains("punctuation") || desc.contains("No punctuation"))
-    }
-
-    @Test("nemotron is not recommended")
-    func notRecommended() {
-        #expect(!BackendOption.nemotronStreaming.recommended)
-    }
-
-    @Test("nemotron backend identifier is nemotron")
-    func backendId() {
-        #expect(BackendOption.nemotronStreaming.backend == "nemotron")
-    }
+    return condition()
 }
 
-@Suite("Nemotron hold-to-talk block policy")
-struct NemotronHoldToTalkPolicyTests {
+private func makeTestNemotronStreamState() throws -> RNNTStreamState {
+    try nemotronMakeStreamState(
+        config: NemotronRNNTConfig(
+            chunkSamples: 35840,
+            cacheChannelFrames: 42,
+            totalMelFrames: 233,
+            encoderDim: 1024,
+            decoderHiddenSize: 640,
+            blankTokenId: 13087,
+            promptId: 101,
+            stripAngleBracketTags: true
+        )
+    )
+}
 
-    @Test("nemotron is the only backend blocked from hold-to-talk")
-    func onlyNemotronIsBlocked() {
-        // MuesliController.handleStart() checks `selectedBackend.backend == "nemotron"`
-        // to intercept hold-to-talk and route users to handsfree mode instead.
-        let blocked = BackendOption.all.filter { $0.backend == "nemotron" }
-        #expect(blocked.count == 1)
-        #expect(blocked[0] == .nemotronStreaming)
-    }
+@Suite("Nemotron dictation mode policy")
+struct NemotronDictationModePolicyTests {
 
-    @Test("all non-nemotron backends are allowed in hold-to-talk")
-    func nonNemotronBackendsAllowHoldToTalk() {
-        let allowed = BackendOption.all.filter { $0.backend != "nemotron" }
-        for backend in allowed {
-            #expect(backend.backend != "nemotron",
-                    "\(backend.label) should not be blocked from hold-to-talk")
-        }
-        #expect(allowed.count == BackendOption.all.count - 1)
+    @Test("Nemotron 3.5 is the only streaming dictation backend")
+    func onlyNemotron35Streams() {
+        let streaming = BackendOption.all.filter(\.isStreamingDictationBackend)
+        #expect(streaming == [.nemotron35Multilingual])
     }
 
     @MainActor
@@ -809,7 +769,7 @@ struct NemotronHoldToTalkPolicyTests {
         let indicator = FloatingIndicatorController(configStore: configStore)
         // First setState creates the panel so subsequent calls are correctly sequenced
         indicator.setState(.idle, config: config)
-        indicator.showWarning("Double-tap for Nemotron handsfree mode", icon: "⚡", duration: 0.01)
+        indicator.showWarning("test warning", icon: "⚡", duration: 0.01)
         indicator.close()
     }
 
@@ -829,15 +789,199 @@ struct NemotronHoldToTalkPolicyTests {
     }
 }
 
-@Suite("TranscriptionCoordinator Nemotron accessor")
-struct TranscriptionCoordinatorNemotronTests {
+@Suite("Nemotron35 backend")
+struct Nemotron35StreamStateTests {
 
     @available(macOS 15, *)
-    @Test("getNemotronTranscriber returns valid instance via lazy init")
-    func nemotronLazyInit() async {
-        let coordinator = TranscriptionCoordinator()
-        let transcriber = await coordinator.getNemotronTranscriber()
-        let state = try? await transcriber.makeStreamState()
-        #expect(state != nil)
+    @Test("makeStreamState uses the 3.5 multilingual cache shapes")
+    func makeStreamStateShapes() async throws {
+        let transcriber = Nemotron35StreamingTranscriber()
+        let state = try await transcriber.makeStreamState()
+
+        // 3.5 att_context left = 42 (EN backend uses 70)
+        #expect(state.cacheChannel.shape == [1, 24, 42, 1024])
+        #expect(state.cacheTime.shape == [1, 24, 1024, 8])
+        #expect(state.cacheLen.shape == [1])
+        #expect(state.hState.shape == [2, 1, 640])
+        #expect(state.cState.shape == [2, 1, 640])
+        #expect(state.lastToken == 0)
+        #expect(state.allTokens.isEmpty)
+        #expect(state.cacheLen[0].intValue == 0)
+    }
+
+    @available(macOS 15, *)
+    @Test("transcribeChunk throws when models not loaded")
+    func chunkThrowsWithoutModels() async throws {
+        let transcriber = Nemotron35StreamingTranscriber()
+        var state = try await transcriber.makeStreamState()
+        let samples = [Float](repeating: 0, count: transcriber.chunkSamples)
+
+        await #expect(throws: (any Error).self) {
+            try await transcriber.transcribeChunk(samples: samples, state: &state)
+        }
+    }
+
+    @available(macOS 15, *)
+    @Test("chunkSamples matches the 2240ms tier")
+    func chunkSamplesTier() {
+        let transcriber = Nemotron35StreamingTranscriber()
+        #expect(transcriber.chunkSamples == 35840)  // 2240ms * 16kHz
+    }
+
+    @available(macOS 15, *)
+    @Test("3.5 transcriber conforms to the streaming protocol and drives the controller")
+    func conformsToStreamingProtocol() {
+        let transcriber = Nemotron35StreamingTranscriber()
+        // Protocol-typed init + chunkSamples override compiles and constructs.
+        let _: NemotronStreamingTranscribing = transcriber
+        let _ = StreamingDictationController(
+            transcriber: transcriber as NemotronStreamingTranscribing,
+            chunkSamples: 35840
+        )
+    }
+}
+
+@Suite("Nemotron35 backend metadata")
+struct Nemotron35BackendMetadataTests {
+
+    @Test("nemotron35 description explains live usage and limitations")
+    func descriptionWarnings() {
+        let desc = BackendOption.nemotron35Multilingual.description
+        #expect(!BackendOption.nemotron35Multilingual.label.contains("Experimental"))
+        #expect(!desc.contains("Experimental"))
+        #expect(desc.contains("hold-to-talk"))
+        #expect(desc.contains("hands-free"))
+        #expect(desc.contains("Hindi"))
+        #expect(desc.contains("punctuation"))
+        #expect(desc.contains("does not go back to correct"))
+    }
+
+    @Test("nemotron35 backend identifier is nemotron35")
+    func backendId() {
+        #expect(BackendOption.nemotron35Multilingual.backend == "nemotron35")
+    }
+}
+
+@Suite("Nemotron35 language selection")
+struct Nemotron35LanguageTests {
+
+    @Test("prompt ids match the model's prompt_dictionary")
+    func promptIds() {
+        #expect(Nemotron35Language.auto.promptId == 101)
+        #expect(Nemotron35Language.english.promptId == 0)
+        #expect(Nemotron35Language.hindi.promptId == 6)
+        #expect(Nemotron35Language.spanish.promptId == 3)
+        #expect(Nemotron35Language.chinese.promptId == 4)
+        #expect(Nemotron35Language.japanese.promptId == 10)
+    }
+
+    @Test("default is auto-detect")
+    func defaultIsAuto() {
+        #expect(Nemotron35Language.defaultLanguage == .auto)
+        #expect(Nemotron35Language.defaultLanguage.promptId == 101)
+    }
+
+    @Test("resolved falls back to auto for unknown/nil")
+    func resolvedFallback() {
+        #expect(Nemotron35Language.resolved("hi") == .hindi)
+        #expect(Nemotron35Language.resolved(nil) == .auto)
+        #expect(Nemotron35Language.resolved("not-a-language") == .auto)
+        #expect(Nemotron35Language.resolvedCode("hi") == "hi")
+        #expect(Nemotron35Language.resolvedCode(nil) == "auto")
+    }
+
+    @Test("every language has a non-empty label and is unique by prompt id sense")
+    func labelsAndCoverage() {
+        var promptIds: Set<Int32> = []
+        for lang in Nemotron35Language.allCases {
+            #expect(!lang.label.isEmpty)
+            #expect(promptIds.insert(lang.promptId).inserted, "Duplicate prompt id \(lang.promptId) for \(lang)")
+        }
+        // Hindi requires the multilingual track — it must be offered.
+        #expect(Nemotron35Language.allCases.contains(.hindi))
+    }
+
+    @Test("config persists the selected language via snake_case key")
+    func configRoundTrip() throws {
+        var cfg = AppConfig()
+        cfg.nemotron35Language = Nemotron35Language.hindi.rawValue
+        let data = try JSONEncoder().encode(cfg)
+        let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(json["nemotron35_language"] as? String == "hi")
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+        #expect(decoded.resolvedNemotron35Language == .hindi)
+    }
+
+    @Test("missing language config falls back to auto-detect")
+    func configMissingLanguageDefaultsToAuto() throws {
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+        #expect(decoded.resolvedNemotron35Language == .auto)
+        #expect(decoded.nemotron35Language == Nemotron35Language.auto.rawValue)
+    }
+}
+
+@Suite("WhisperKitLanguage")
+struct WhisperKitLanguageTests {
+
+    @Test("default is auto-detect")
+    func defaultIsAuto() {
+        #expect(WhisperKitLanguage.defaultLanguage == .auto)
+        #expect(WhisperKitLanguage.defaultLanguage.rawValue == "auto")
+    }
+
+    @Test("resolved falls back to auto for unknown/nil")
+    func resolvedFallback() {
+        #expect(WhisperKitLanguage.resolved("de") == .german)
+        #expect(WhisperKitLanguage.resolved(nil) == .auto)
+        #expect(WhisperKitLanguage.resolved("not-a-language") == .auto)
+        #expect(WhisperKitLanguage.resolvedCode("de") == "de")
+        #expect(WhisperKitLanguage.resolvedCode(nil) == "auto")
+        #expect(WhisperKitLanguage.resolved(" DE ") == .german)
+    }
+
+    @Test("every language has a non-empty unique label")
+    func labelsAndCoverage() {
+        var labels: Set<String> = []
+        for lang in WhisperKitLanguage.allCases {
+            #expect(!lang.label.isEmpty)
+            #expect(labels.insert(lang.label).inserted, "Duplicate label \(lang.label) for \(lang)")
+        }
+        #expect(WhisperKitLanguage.allCases.contains(.auto))
+        #expect(WhisperKitLanguage.allCases.contains(.german))
+    }
+
+    @Test("config persists the selected language via snake_case key")
+    func configRoundTrip() throws {
+        var cfg = AppConfig()
+        cfg.whisperLanguage = WhisperKitLanguage.german.rawValue
+        let data = try JSONEncoder().encode(cfg)
+        let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(json["whisper_language"] as? String == "de")
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+        #expect(decoded.resolvedWhisperLanguage == .german)
+    }
+
+    @Test("missing language config falls back to auto-detect")
+    func configMissingLanguageDefaultsToAuto() throws {
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+        #expect(decoded.resolvedWhisperLanguage == .auto)
+        #expect(decoded.whisperLanguage == WhisperKitLanguage.auto.rawValue)
+    }
+
+    @Test("english-only models ignore pinned and auto language preferences")
+    func englishOnlyModelsIgnoreLanguagePreference() {
+        #expect(WhisperKitLanguage.isEnglishOnlyModel("tiny.en"))
+        #expect(WhisperKitLanguage.isEnglishOnlyModel("small.en"))
+        #expect(WhisperKitLanguage.isEnglishOnlyModel("medium.en"))
+        #expect(!WhisperKitLanguage.isEnglishOnlyModel("tiny"))
+        #expect(!WhisperKitLanguage.isEnglishOnlyModel("small"))
+        #expect(!WhisperKitLanguage.isEnglishOnlyModel("large-v3-v20240930_626MB"))
+
+        #expect(WhisperKitLanguage.preferenceForLoadedModel(.german, modelName: "tiny.en") == nil)
+        #expect(WhisperKitLanguage.preferenceForLoadedModel(.auto, modelName: "small.en") == nil)
+        #expect(WhisperKitLanguage.preferenceForLoadedModel(.german, modelName: "tiny") == .german)
+        #expect(WhisperKitLanguage.preferenceForLoadedModel(.auto, modelName: "small") == .auto)
+        #expect(WhisperKitLanguage.preferenceForLoadedModel(.german, modelName: "large-v3-v20240930_626MB") == .german)
+        #expect(WhisperKitLanguage.preferenceForLoadedModel(.auto, modelName: "large-v3-v20240930_626MB") == .auto)
     }
 }

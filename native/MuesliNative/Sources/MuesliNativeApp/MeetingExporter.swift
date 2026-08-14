@@ -2,10 +2,48 @@ import AppKit
 import UniformTypeIdentifiers
 import MuesliCore
 
-enum MeetingExportContent {
+enum MeetingExportContent: String, CaseIterable {
     case notes
     case transcript
-    case fullMeeting
+    case fullMeeting = "full_meeting"
+
+    var displayName: String {
+        switch self {
+        case .notes: return "Notes"
+        case .transcript: return "Transcript"
+        case .fullMeeting: return "Full Meeting"
+        }
+    }
+
+    static func resolved(_ rawValue: String) -> MeetingExportContent {
+        MeetingExportContent(rawValue: rawValue) ?? .notes
+    }
+}
+
+enum MeetingAutoExportFileFormat: String, CaseIterable {
+    case markdown
+    case pdf
+    case markdownAndPDF = "markdown_and_pdf"
+
+    var displayName: String {
+        switch self {
+        case .markdown: return "Markdown"
+        case .pdf: return "PDF"
+        case .markdownAndPDF: return "Markdown and PDF"
+        }
+    }
+
+    var includesMarkdown: Bool {
+        self == .markdown || self == .markdownAndPDF
+    }
+
+    var includesPDF: Bool {
+        self == .pdf || self == .markdownAndPDF
+    }
+
+    static func resolved(_ rawValue: String) -> MeetingAutoExportFileFormat {
+        MeetingAutoExportFileFormat(rawValue: rawValue) ?? .markdown
+    }
 }
 
 struct MeetingExporter {
@@ -28,7 +66,12 @@ struct MeetingExporter {
 
             presentSavePanel(panel) { url in
                 if formatPicker.selectedFormat == .pdf {
-                    writePDF(attributed: buildAttributedString(from: markdown), to: url)
+                    do {
+                        try writePDF(attributed: buildAttributedString(from: markdown), to: url)
+                        NSWorkspace.shared.open(url)
+                    } catch {
+                        showError("Export Failed", error.localizedDescription)
+                    }
                 } else {
                     writeMarkdown(markdown, to: url)
                 }
@@ -98,7 +141,7 @@ struct MeetingExporter {
         }
     }
 
-    private static func writePDF(attributed: NSAttributedString, to url: URL) {
+    static func writePDF(attributed: NSAttributedString, to url: URL) throws {
         let pageWidth: CGFloat = 612   // US Letter
         let pageHeight: CGFloat = 792
         let margin: CGFloat = 72       // 1 inch
@@ -131,10 +174,8 @@ struct MeetingExporter {
         printOp.showsPrintPanel = false
         printOp.showsProgressPanel = false
 
-        if printOp.run() {
-            NSWorkspace.shared.open(url)
-        } else {
-            showError("Export Failed", "Could not generate the PDF document.")
+        guard printOp.run() else {
+            throw CocoaError(.fileWriteUnknown)
         }
     }
 
@@ -314,7 +355,11 @@ struct MeetingExporter {
 
     // MARK: - Helpers
 
-    static func suggestedFilename(meeting: MeetingRecord, content: MeetingExportContent) -> String {
+    static func suggestedFilename(
+        meeting: MeetingRecord,
+        content: MeetingExportContent,
+        fileExtension: String = "pdf"
+    ) -> String {
         let sanitized = String(
             meeting.title
                 .components(separatedBy: CharacterSet.alphanumerics.inverted)
@@ -330,7 +375,7 @@ struct MeetingExporter {
         case .transcript: suffix = "-transcript"
         case .fullMeeting: suffix = ""
         }
-        return "\(stem)\(suffix).pdf"
+        return "\(stem)\(suffix).\(fileExtension)"
     }
 
     private static func formatExportDate(_ raw: String) -> String {

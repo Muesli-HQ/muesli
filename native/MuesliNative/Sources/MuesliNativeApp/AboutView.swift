@@ -3,9 +3,12 @@ import MuesliCore
 
 struct AboutView: View {
     let appState: AppState
+    let onOpenManualDiagnosticReport: () -> Void
+    let onSetAutomaticDiagnosticIssuePrompts: (Bool) -> Void
 
     private let githubURL = "https://github.com/Muesli-HQ/muesli"
     private let donateURL = "https://buymeacoffee.com/phequals7"
+    private let actionButtonWidth: CGFloat = 136
 
     private var version: String {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.0"
@@ -62,6 +65,7 @@ struct AboutView: View {
                             .foregroundStyle(.white)
                             .padding(.horizontal, MuesliTheme.spacing20)
                             .padding(.vertical, MuesliTheme.spacing8)
+                            .frame(width: actionButtonWidth)
                             .background(MuesliTheme.success)
                             .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                         }
@@ -71,9 +75,30 @@ struct AboutView: View {
                     Divider().background(MuesliTheme.surfaceBorder)
 
                     aboutRow("Source Code") {
-                        actionButton("View on GitHub", icon: "arrow.up.right.square") {
+                        actionButton("GitHub", icon: "arrow.up.right.square") {
                             if let url = URL(string: githubURL) { NSWorkspace.shared.open(url) }
                         }
+                    }
+
+                    Divider().background(MuesliTheme.surfaceBorder)
+
+                    aboutRow("Report a Problem") {
+                        actionButton("Open Report", icon: "exclamationmark.bubble") {
+                            onOpenManualDiagnosticReport()
+                        }
+                    }
+
+                    Divider().background(MuesliTheme.surfaceBorder)
+
+                    aboutRow("Automatic issue reporting prompts") {
+                        Toggle("Auto reporting", isOn: Binding(
+                            get: { appState.config.enableAutomaticDiagnosticIssuePrompts },
+                            set: onSetAutomaticDiagnosticIssuePrompts
+                        ))
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                        .help("Suggest an anonymized GitHub issue after an app error")
+                        .accessibilityLabel("Automatic issue reporting prompts")
                     }
                 }
 
@@ -306,6 +331,7 @@ struct AboutView: View {
             .foregroundStyle(MuesliTheme.textPrimary)
             .padding(.horizontal, MuesliTheme.spacing16)
             .padding(.vertical, MuesliTheme.spacing8)
+            .frame(width: actionButtonWidth)
             .background(MuesliTheme.surfacePrimary)
             .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
             .overlay(

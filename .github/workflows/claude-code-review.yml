@@ -11,7 +11,39 @@ on:
     #   - "src/**/*.jsx"
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      review_worthy: ${{ steps.classify.outputs.review_worthy }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify changed files
+        id: classify
+        run: |
+          if ! FILES=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"); then
+            FILES=""
+          fi
+          echo "Changed files:"
+          printf '%s\n' "$FILES"
+          if ! printf '%s\n' "$FILES" | ./scripts/classify_changed_files.sh; then
+            echo "::warning::Changed-file classifier failed; running Claude review as a fail-open fallback."
+            echo "review_worthy=true" >> "$GITHUB_OUTPUT"
+          fi
+
   claude-review:
+    needs: changes
+    # Fork PRs never receive the id-token permission, so the action's OIDC
+    # exchange fails; skip cleanly instead of reporting a spurious failure.
+    if: github.event.pull_request.head.repo.full_name == github.repository && needs.changes.outputs.review_worthy == 'true'
+
     # Optional: Filter by PR author
     # if: |
     #   github.event.pull_request.user.login == 'external-contributor' ||
@@ -32,6 +64,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Run Claude Code Review
         id: claude-review

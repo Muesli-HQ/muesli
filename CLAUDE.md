@@ -12,7 +12,7 @@ Local-first macOS app for **dictation** and **meeting transcription** on Apple S
 - **Meeting transcription:** Captures mic (You) + system audio (Others) → VAD-driven chunking → speaker diarization → AI-powered meeting notes
 - **Meeting export:** Export notes or transcript as PDF (paginated US Letter) or Markdown via `MeetingExporter.swift`
 - **Screen context:** Accessibility API captures app name + text around cursor for dictation context-awareness (opt-in, off by default)
-- **8 ASR models:** Parakeet v3/v2, Whisper Small/Medium/Large Turbo, Qwen3 ASR, Nemotron Streaming, SenseVoice Small
+- **11 ASR models:** Parakeet v3/v2, Whisper Tiny/Small/Medium/Large Turbo, Cohere Transcribe, Nemotron 3.5 Multilingual, SenseVoice Small, Qwen3 ASR, Indic ASR
 - **3 summarization backends:** OpenAI API key, OpenRouter API key, ChatGPT OAuth (subscription-based)
 - **Camera-based meeting detection:** Requires mic + camera + recognized meeting app (camera alone won't trigger)
 - **Join & Record:** Extract meeting URLs from calendar events (Zoom, Meet, Teams, Webex, Chime, FaceTime), split button with "Join & Record" / "Join Only" / "Record Only", platform icons in notifications
@@ -90,7 +90,7 @@ Each lane installs a separate app bundle under `/Applications/`, keeps a separat
 
 ### Tests
 ```bash
-swift test --package-path native/MuesliNative    # 396 tests across 65 suites
+swift test --package-path native/MuesliNative    # 1,148 @Test declarations across 120 suites
 ```
 
 ### Onboarding testing
@@ -247,7 +247,7 @@ Event-driven architecture for meeting notifications:
 
 ## Known Limitations
 
-- **Nemotron Streaming:** English-only, best for 10s+ utterances (handsfree mode). Short dictations produce poor results.
+- **Nemotron 3.5 Multilingual (`nemotron35`):** Supported local Nemotron ASR backend. Ships the FluidInference `multilingual/2240ms` variant (~665 MB, vocab 13087, blank 13087). Multilingual incl. Hindi/Chinese/Japanese + 100+ locales via `prompt_id`. In-app **language picker** (`Nemotron35Language` enum → `prompt_id`; config key `nemotron35_language`, default `auto`=101): the controller pushes the selected prompt id to the coordinator (`setNemotron35PromptId`), which applies it to the actor on load/select. Picker UI lives in the Models tab card (mirrors the Cohere language card). A **model-update check** records the HF repo commit sha at download (`<cache>/.revision`) and surfaces an "Update" affordance in the Models tab when the repo's `main` advances (never auto-downloads). Native punctuation (in-vocab). Append-only/no corrections, weak on very short dictations. 2240ms chunk latency (35840 samples). Cache shape `[1,24,42,1024]`. Uses shared `RNNTStreamState` helpers through the `NemotronStreamingTranscribing` protocol; `StreamingDictationController` takes a `chunkSamples` override. Model cached at `~/.cache/muesli/models/nemotron35-multilingual-2240ms/`. Offered in onboarding under "Other models". **Dictation modes:** hold-to-talk uses the normal record→transcribe-file path (`transcribeWithNemotron35`); double-tap uses live streaming (`StreamingDictationController`). `handleStart` allows hold-to-talk; prepare/arm pre-warm stays skipped for streaming backends (`isStreamingDictationBackend`) so the double-tap detection window stays clean.
 - **Qwen3 ASR:** 2-3s latency (autoregressive decoder). First run after launch has ~30s CoreML compilation warmup.
 - **ChatGPT OAuth:** Uses reverse-engineered WHAM API. Could break if OpenAI changes the API.
 - **Speaker diarization:** Post-processing only. Runs after meeting stops.

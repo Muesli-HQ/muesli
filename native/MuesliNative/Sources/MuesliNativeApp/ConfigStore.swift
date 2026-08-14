@@ -6,9 +6,8 @@ final class ConfigStore {
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
-    init() {
-        let supportURL = AppIdentity.supportDirectoryURL
-        self.configURL = supportURL.appendingPathComponent("config.json")
+    init(supportDirectory: URL = AppIdentity.supportDirectoryURL) {
+        self.configURL = supportDirectory.appendingPathComponent("config.json")
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     }
 
@@ -36,6 +35,10 @@ final class ConfigStore {
 
     func configPath() -> URL {
         configURL
+    }
+
+    func supportDirectory() -> URL {
+        configURL.deletingLastPathComponent()
     }
 
     private func ensureDirectory() {

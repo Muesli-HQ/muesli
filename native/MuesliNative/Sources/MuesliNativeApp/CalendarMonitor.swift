@@ -7,6 +7,7 @@ struct UpcomingMeetingEvent {
     let id: String
     let title: String
     let startDate: Date
+    var calendarOccurrence: CalendarOccurrenceReference? = nil
     var meetingURL: URL? = nil
 }
 
@@ -67,6 +68,17 @@ final class CalendarMonitor {
         removeObserver()
     }
 
+    var canConfirmMissingEvents: Bool {
+        switch EKEventStore.authorizationStatus(for: .event) {
+        case .fullAccess, .authorized:
+            return true
+        case .notDetermined, .restricted, .denied, .writeOnly:
+            return false
+        @unknown default:
+            return false
+        }
+    }
+
     private func registerForChanges(token: Int) {
         guard changeObserver == nil else { return }
         guard case .requesting(let activeToken) = state, activeToken == token else { return }
@@ -100,10 +112,16 @@ final class CalendarMonitor {
             guard !event.isAllDay else { continue }
             guard let startDate = event.startDate, let endDate = event.endDate else { continue }
             if startDate <= now && endDate > now {
+                let eventID = event.eventIdentifier ?? ""
                 return UpcomingMeetingEvent(
-                    id: event.eventIdentifier ?? "",
+                    id: eventID,
                     title: event.title ?? "Meeting",
                     startDate: startDate,
+                    calendarOccurrence: Self.occurrenceReference(
+                        for: event,
+                        eventID: eventID,
+                        startDate: startDate
+                    ),
                     meetingURL: Self.extractMeetingURL(from: event)
                 )
             }
@@ -140,36 +158,65 @@ final class CalendarMonitor {
         return nearby
     }
 
-    /// Returns upcoming timed events from the local macOS calendar (EventKit) for the next N days.
+    /// Returns upcoming timed events from the local macOS calendar (EventKit) for the selected calendar-day window.
     /// All-day events are excluded — they're not useful for meeting recording.
     /// Events from calendars listed in `disabledCalendarIDs` are filtered out.
-    func upcomingEvents(daysAhead: Int = 7, disabledCalendarIDs: Set<String> = []) -> [UnifiedCalendarEvent] {
+    func upcomingEvents(
+        daysAhead: Int = UpcomingMeetingsWindow.defaultDayCount,
+        disabledCalendarIDs: Set<String> = [],
+        now: Date = Date()
+    ) -> [UnifiedCalendarEvent] {
         // Create a fresh EKEventStore each time to avoid stale cache.
         // EKEventStore instances cache calendar data and don't automatically
         // reflect external changes (e.g., events moved in Google Calendar).
         // Uses a local instance to avoid racing with currentEvent()/currentOrNearbyEvent().
         let freshStore = EKEventStore()
-        let now = Date()
-        guard let future = Calendar.current.date(byAdding: .day, value: daysAhead, to: now) else { return [] }
+        guard let future = UpcomingMeetingsWindow.endDate(from: now, dayCount: daysAhead) else { return [] }
         let predicate = freshStore.predicateForEvents(withStart: now, end: future, calendars: nil)
         let events = freshStore.events(matching: predicate)
         let unified: [UnifiedCalendarEvent] = events.compactMap { event in
             guard let startDate = event.startDate, let endDate = event.endDate else { return nil }
             guard !event.isAllDay else { return nil }
+            let eventID = event.eventIdentifier ?? UUID().uuidString
             return UnifiedCalendarEvent(
-                id: event.eventIdentifier ?? UUID().uuidString,
+                id: eventID,
                 title: event.title ?? "Meeting",
                 startDate: startDate,
                 endDate: endDate,
                 isAllDay: false,
                 source: .eventKit,
                 calendarID: event.calendar?.calendarIdentifier,
+                calendarOccurrence: Self.occurrenceReference(
+                    for: event,
+                    eventID: eventID,
+                    startDate: startDate
+                ),
                 meetingURL: Self.extractMeetingURL(from: event)
             )
         }
         return UnifiedCalendarEvent
             .filter(unified, disabledCalendarIDs: disabledCalendarIDs)
+            .filter { $0.endDate > now && $0.startDate < future }
             .sorted { $0.startDate < $1.startDate }
+    }
+
+    static func occurrenceReference(
+        for event: EKEvent,
+        eventID: String,
+        startDate: Date
+    ) -> CalendarOccurrenceReference {
+        let isRecurring = event.hasRecurrenceRules || event.isDetached
+        return CalendarOccurrenceReference(
+            provider: .eventKit,
+            calendarID: event.calendar?.calendarIdentifier,
+            eventID: eventID,
+            seriesID: isRecurring
+                ? (event.calendarItemExternalIdentifier ?? eventID)
+                : nil,
+            originalStartTime: isRecurring
+                ? (event.occurrenceDate ?? startDate)
+                : startDate
+        )
     }
 
     /// Enumerate every event calendar EventKit exposes — iCloud, On-My-Mac,

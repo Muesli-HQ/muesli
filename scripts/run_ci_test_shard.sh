@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-shard="${1:-}"
+list_filters=false
+if [[ "${1:-}" == "--list-filters" ]]; then
+  list_filters=true
+  shard="${2:-}"
+else
+  shard="${1:-}"
+fi
 
 if [[ -z "${shard}" ]]; then
-  echo "usage: $0 <core|dictation-transcription|meetings>" >&2
+  echo "usage: $0 [--list-filters] <core|dictation-transcription|meetings>" >&2
   exit 2
 fi
 
@@ -13,6 +19,7 @@ case "${shard}" in
     filters=(
       ConfigStoreTests
       DictationStoreTests
+      MuesliCKSyncEngineTests
       MuesliCLITests
       ChatGPTAuthTests
       ChatGPTTokenStorageTests
@@ -24,50 +31,68 @@ case "${shard}" in
       CGPointCodableTests
       UpdateFailureGuidanceTests
       WordCountTests
+      CustomWordDictionaryTests
+      ModelDownloadCoordinatorTests
+      IndicASRBackendTests
     )
     ;;
   dictation-transcription)
     filters=(
-      WhisperCppTranscriberTests
       FluidAudioTranscriberTests
-      NemotronStreamingTranscriberTests
       BackendCoverageTests
-      CanaryQwenBackendTests
       FillerWordFilterTests
       JaroWinklerTests
       CustomWordMatcherApplyTests
-      NemotronStreamStateTests
       StreamingDictationControllerTests
       DeltaPasteTests
       TranscriptAccumulationTests
       StreamingDictationControllerLifecycleTests
-      NemotronBackendMetadataTests
-      NemotronHoldToTalkPolicyTests
-      TranscriptionCoordinatorNemotronTests
+      NemotronDictationModePolicyTests
+      Nemotron35StreamStateTests
+      Nemotron35BackendMetadataTests
+      Nemotron35LanguageTests
+      WhisperKitLanguageTests
       SpeechSegmentTests
       SpeechTranscriptionResultTests
       TranscriptionCoordinatorTests
       TranscriptionEngineArtifactsFilterTests
+      DiarizerRuntimePolicyTests
+      DiarizerPreloadDiagnosticsTests
+      DiarizerPreloadCoordinationTests
       PasteControllerTests
       BackendOptionTests
       SummaryModelPresetTests
       HotkeyMonitorTests
+      InteractiveAudioSessionOwnershipTests
       DictationStateTests
       HotkeyConfigTests
       DictationStateIdleTests
+      DictationCorrectionMonitorTests
+      Nemotron35ModelStoreTests
     )
     ;;
   meetings)
     filters=(
+      AudioGraphExceptionBridgeTests
+      DiagnosticIncidentTests
+      DictationAudioRouteControllerTests
       MeetingDetectorTests
       MeetingRecordingWriterTests
+      MeetingResumePolicyTests
+      MeetingStreamingPartialSessionTests
+      MeetingFollowUpPolicyTests
+      MeetingFollowUpThreadTests
+      MeetingFollowUpSummaryPromptTests
       MeetingSummaryClientTests
       MeetingsNavigationTests
       MeetingBrowserLogicTests
+      MeetingNotesInlineMarkdownTests
       TranscriptFormatterTests
       MeetingSummaryBackendTests
       MeetingResummarizationPolicyTests
       MeetingTemplateResolutionTests
+      MeetingTemplatesDefaultFallbackTests
+      RouteAwareMeetingMicRecorderTests
       DisabledCalendarFilterTests
       GoogleCalendarTests
     )
@@ -78,7 +103,15 @@ case "${shard}" in
     ;;
 esac
 
+if [[ "${list_filters}" == true ]]; then
+  printf '%s\n' "${filters[@]}"
+  exit 0
+fi
+
 args=(--package-path native/MuesliNative)
+if [[ -n "${MUESLI_SWIFTPM_SCRATCH_PATH:-}" ]]; then
+  args+=(--scratch-path "${MUESLI_SWIFTPM_SCRATCH_PATH}")
+fi
 for filter in "${filters[@]}"; do
   args+=(--filter "${filter}")
 done

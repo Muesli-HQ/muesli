@@ -121,11 +121,9 @@ final class RouteAwareDictationRecorder: DictationAudioRecording {
         lifecycleQueue.sync {
             lock.lock()
             let activeRecorder = activeRecorderLocked()
-            let inactiveRecorder = inactiveRecorderLocked()
             lock.unlock()
-            let url = activeRecorder.stop()
-            inactiveRecorder.cancel()
-            return url
+            // Keep both slot graphs warm across dictations; only IO stops.
+            return activeRecorder.stop()
         }
     }
 
@@ -184,17 +182,17 @@ final class RouteAwareDictationRecorder: DictationAudioRecording {
     private func selectRecorder(preferredInputDeviceID: AudioObjectID?) -> DictationAudioRecording {
         lock.lock()
         let nextKind: ActiveRecorderKind = preferredInputDeviceID == nil ? .systemDefault : .appScoped
-        let inactiveRecorderToCancel = nextKind == activeRecorderKindStorage ? nil : activeRecorderLocked()
         preferredInputDeviceIDStorage = preferredInputDeviceID
         activeRecorderKindStorage = nextKind
         let selectedRecorder = activeRecorderLocked()
         let keepsAudioGraphWarm = keepsAudioGraphWarmStorage
         lock.unlock()
 
+        // The previously active slot is intentionally left warm: its prepared
+        // graph stays valid for its bound device and costs nothing while idle.
         selectedRecorder.preferredInputDeviceID = preferredInputDeviceID
         selectedRecorder.keepsAudioGraphWarm = keepsAudioGraphWarm
         emitRecorderSelection(kind: nextKind, recorder: selectedRecorder, preferredInputDeviceID: preferredInputDeviceID)
-        inactiveRecorderToCancel?.cancel()
         return selectedRecorder
     }
 
@@ -215,25 +213,12 @@ final class RouteAwareDictationRecorder: DictationAudioRecording {
         recorder(for: activeRecorderKindStorage)
     }
 
-    private func inactiveRecorderLocked() -> DictationAudioRecording {
-        inactiveRecorder(for: activeRecorderKindStorage)
-    }
-
     private func recorder(for kind: ActiveRecorderKind) -> DictationAudioRecording {
         switch kind {
         case .systemDefault:
             return systemDefaultRecorder
         case .appScoped:
             return appScopedRecorder
-        }
-    }
-
-    private func inactiveRecorder(for kind: ActiveRecorderKind) -> DictationAudioRecording {
-        switch kind {
-        case .systemDefault:
-            return appScopedRecorder
-        case .appScoped:
-            return systemDefaultRecorder
         }
     }
 }

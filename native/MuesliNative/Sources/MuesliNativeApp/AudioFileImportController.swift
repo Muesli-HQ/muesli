@@ -159,7 +159,8 @@ enum AudioFileImportController {
         try await transcriptionCoordinator.preloadRequired(
             backend: backend,
             enablePostProcessor: false,
-            includeMeetingHelpers: true
+            includeMeetingHelpers: true,
+            meetingHelperTrigger: .audioImport
         )
 
         try Task.checkCancellation()
@@ -185,7 +186,9 @@ enum AudioFileImportController {
         let transcription = try await transcriptionCoordinator.transcribeMeeting(
             at: wavURL,
             backend: backend,
-            cohereLanguage: config.resolvedCohereLanguage
+            cohereLanguage: config.resolvedCohereLanguage,
+            indicASRLanguage: config.resolvedIndicASRLanguage,
+            whisperLanguage: config.resolvedWhisperLanguage
         )
         let rawTranscript = transcription.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !rawTranscript.isEmpty else {

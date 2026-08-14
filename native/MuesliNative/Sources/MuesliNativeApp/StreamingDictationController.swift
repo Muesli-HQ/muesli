@@ -2,8 +2,8 @@ import Foundation
 import CoreAudio
 import os
 
-/// Merges real-time mic recording with Nemotron chunk-by-chunk transcription.
-/// Text appears at the cursor as the user speaks (~560ms per chunk).
+/// Merges real-time mic recording with Nemotron 3.5 chunk-by-chunk transcription.
+/// Text appears at the cursor as the user speaks.
 ///
 /// Usage:
 ///   let controller = StreamingDictationController(transcriber: nemotron)
@@ -13,31 +13,11 @@ import os
 ///   controller.stop { finalText in /* persist final text */ }
 @available(macOS 15, *)
 protocol NemotronStreamingTranscribing: AnyObject {
-    func makeStreamState() async throws -> NemotronStreamingTranscriber.StreamState
+    func makeStreamState() async throws -> RNNTStreamState
     func transcribeChunk(
         samples: [Float],
-        state: inout NemotronStreamingTranscriber.StreamState
+        state: inout RNNTStreamState
     ) async throws -> String
-}
-
-@available(macOS 15, *)
-private final class NemotronStreamingTranscriberAdapter: NemotronStreamingTranscribing {
-    private let transcriber: NemotronStreamingTranscriber
-
-    init(_ transcriber: NemotronStreamingTranscriber) {
-        self.transcriber = transcriber
-    }
-
-    func makeStreamState() async throws -> NemotronStreamingTranscriber.StreamState {
-        try await transcriber.makeStreamState()
-    }
-
-    func transcribeChunk(
-        samples: [Float],
-        state: inout NemotronStreamingTranscriber.StreamState
-    ) async throws -> String {
-        try await transcriber.transcribeChunk(samples: samples, state: &state)
-    }
 }
 
 @available(macOS 15, *)
@@ -59,7 +39,7 @@ final class StreamingDictationController {
 
     private let transcriber: NemotronStreamingTranscribing
     private let recorder: StreamingDictationRecording
-    private var streamState: NemotronStreamingTranscriber.StreamState?
+    private var streamState: RNNTStreamState?
     private let streamLock = OSAllocatedUnfairLock()
     private var sampleBuffer: [Float] = []
     private let bufferLock = OSAllocatedUnfairLock()
@@ -78,32 +58,33 @@ final class StreamingDictationController {
     private var activeSessionID: UUID?
     private var stoppingSessionID: UUID?
     private var streamStateTask: Task<Void, Never>?
-    private let chunkSamples = 8960  // 560ms at 16kHz
+    private let chunkSamples: Int  // 35840 for Nemotron 3.5's 2240ms tier
     private let stopStreamStateTimeout: TimeInterval
-    private static let stopDrainTimeout: TimeInterval = 1.0
-
-    init(
-        transcriber: NemotronStreamingTranscriber,
-        preferredInputDeviceID: AudioObjectID? = nil,
-        recorder: StreamingDictationRecording = StreamingMicRecorder(),
-        stopStreamStateTimeout: TimeInterval = 1.0
-    ) {
-        self.transcriber = NemotronStreamingTranscriberAdapter(transcriber)
-        self.recorder = recorder
-        self.stopStreamStateTimeout = stopStreamStateTimeout
-        recorder.preferredInputDeviceID = preferredInputDeviceID
-    }
+    private let stopDrainTimeout: TimeInterval
 
     init(
         transcriber: NemotronStreamingTranscribing,
         preferredInputDeviceID: AudioObjectID? = nil,
-        recorder: StreamingDictationRecording = StreamingMicRecorder(),
-        stopStreamStateTimeout: TimeInterval = 1.0
+        recorder: StreamingDictationRecording = FallbackStreamingDictationRecorder(
+            primary: AudioQueueInputRecorder(directoryName: "muesli-native-dictation-streaming"),
+            fallback: StreamingMicRecorder(directoryName: "muesli-native-dictation-streaming")
+        ),
+        stopStreamStateTimeout: TimeInterval = 1.0,
+        stopDrainTimeout: TimeInterval? = nil,
+        chunkSamples: Int = 8960
     ) {
+        precondition(chunkSamples > 0, "StreamingDictationController chunkSamples must be positive")
         self.transcriber = transcriber
         self.recorder = recorder
         self.stopStreamStateTimeout = stopStreamStateTimeout
+        self.stopDrainTimeout = stopDrainTimeout ?? Self.defaultStopDrainTimeout(chunkSamples: chunkSamples)
+        self.chunkSamples = chunkSamples
         recorder.preferredInputDeviceID = preferredInputDeviceID
+    }
+
+    private static func defaultStopDrainTimeout(chunkSamples: Int) -> TimeInterval {
+        let chunkDuration = Double(chunkSamples) / 16_000.0
+        return max(1.0, chunkDuration + 0.25)
     }
 
     /// Pre-warm the ANE so first real chunk is fast. Call this early (e.g., on backend select).
@@ -271,7 +252,7 @@ final class StreamingDictationController {
                 return
             }
             self.startDrainIfNeeded(sessionID: sessionID)
-            await self.waitForDrain(sessionID: sessionID, timeout: Self.stopDrainTimeout)
+            await self.waitForDrain(sessionID: sessionID, timeout: self.stopDrainTimeout)
             let transcript = self.finishStoppedSession(sessionID: sessionID)
             self.completeStop(sessionID: sessionID, with: transcript)
         }
@@ -279,6 +260,10 @@ final class StreamingDictationController {
 
     func cancel() {
         resetActiveSession(cancelRecorder: true)
+    }
+
+    func currentPower() -> Float {
+        recorder.currentPower()
     }
 
     private func failActiveSession(sessionID: UUID, error: Error) {

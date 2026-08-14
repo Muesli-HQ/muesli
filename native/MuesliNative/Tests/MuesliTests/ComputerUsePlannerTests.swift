@@ -385,10 +385,38 @@ struct ComputerUsePlannerModelTests {
         config.chatGPTModel = "gpt-5.4-mini"
 
         #expect(ComputerUsePlannerClient.plannerModel(for: config) == ComputerUsePlannerClient.defaultModel)
+        #expect(ComputerUsePlannerClient.defaultModel == "gpt-5.6-sol")
 
         config.computerUsePlannerModel = "gpt-5.4"
 
         #expect(ComputerUsePlannerClient.plannerModel(for: config) == "gpt-5.4")
+    }
+
+    @Test("uses fixed High reasoning for every GPT-5.6 planner tier")
+    func usesHighReasoningForGPT56Family() {
+        for model in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+            let body = ComputerUsePlannerClient.requestBody(
+                systemPrompt: "System",
+                userPrompt: "User",
+                imageDataURL: nil,
+                model: model
+            )
+            let reasoning = body["reasoning"] as? [String: String]
+
+            #expect(reasoning?["effort"] == "high")
+        }
+    }
+
+    @Test("keeps GPT-5.4 Mini available without changing its reasoning behavior")
+    func preservesGPT54MiniReasoning() {
+        let body = ComputerUsePlannerClient.requestBody(
+            systemPrompt: "System",
+            userPrompt: "User",
+            imageDataURL: nil,
+            model: "gpt-5.4-mini"
+        )
+
+        #expect(body["reasoning"] == nil)
     }
 }
 

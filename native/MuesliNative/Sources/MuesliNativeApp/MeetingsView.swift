@@ -28,6 +28,11 @@ enum MeetingBrowserSort: Hashable {
     }
 }
 
+struct MeetingBrowserPresentation {
+    let meetings: [MeetingRecord]
+    let meetingIDsWithFollowUps: Set<Int64>
+}
+
 enum MeetingBrowserLogic {
     static func availableFilters(
         for meetings: [MeetingRecord],
@@ -56,10 +61,36 @@ enum MeetingBrowserLogic {
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> [MeetingRecord] {
-        let threshold = threshold(for: filter, now: now, calendar: calendar)
-        let filtered = meetings.filter { isAfterThreshold($0, threshold: threshold) }
+        presentation(
+            from: meetings,
+            filter: filter,
+            sort: sort,
+            now: now,
+            calendar: calendar
+        ).meetings
+    }
 
-        return filtered.sorted { lhs, rhs in
+    static func presentation(
+        from meetings: [MeetingRecord],
+        filter: MeetingBrowserFilter,
+        sort: MeetingBrowserSort,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> MeetingBrowserPresentation {
+        let threshold = threshold(for: filter, now: now, calendar: calendar)
+        var meetingIDsWithFollowUps = Set<Int64>()
+        var filtered: [MeetingRecord] = []
+
+        for meeting in meetings {
+            if let followUpToID = meeting.followUpToID {
+                meetingIDsWithFollowUps.insert(followUpToID)
+            }
+            if isAfterThreshold(meeting, threshold: threshold) {
+                filtered.append(meeting)
+            }
+        }
+
+        let sorted = filtered.sorted { lhs, rhs in
             let lhsDate = parseDate(lhs.startTime) ?? .distantPast
             let rhsDate = parseDate(rhs.startTime) ?? .distantPast
             switch sort {
@@ -69,6 +100,11 @@ enum MeetingBrowserLogic {
                 return lhsDate < rhsDate
             }
         }
+
+        return MeetingBrowserPresentation(
+            meetings: sorted,
+            meetingIDsWithFollowUps: meetingIDsWithFollowUps
+        )
     }
 
     private static func threshold(
@@ -164,8 +200,8 @@ struct MeetingsView: View {
         appState.meetingRows
     }
 
-    private var filteredMeetings: [MeetingRecord] {
-        MeetingBrowserLogic.filteredMeetings(
+    private var browserPresentation: MeetingBrowserPresentation {
+        MeetingBrowserLogic.presentation(
             from: scopedMeetings,
             filter: selectedFilter,
             sort: selectedSort
@@ -222,6 +258,7 @@ struct MeetingsView: View {
     @ViewBuilder
     private var browserView: some View {
         ScrollView {
+            let presentation = browserPresentation
             VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
                 if !appState.upcomingCalendarEvents.isEmpty {
                     comingUpSection
@@ -238,16 +275,17 @@ struct MeetingsView: View {
                     activeMeetingBanner(activeLiveMeeting)
                 }
 
-                browserHeader
+                browserHeader(meetingCount: presentation.meetings.count)
 
-                if filteredMeetings.isEmpty {
+                if presentation.meetings.isEmpty {
                     emptyState
                 } else {
                     LazyVStack(spacing: MuesliTheme.spacing12) {
-                        ForEach(filteredMeetings) { meeting in
+                        ForEach(presentation.meetings) { meeting in
                             MeetingListItemView(
                                 record: meeting,
                                 isSelected: appState.selectedMeetingID == meeting.id,
+                                hasFollowUps: presentation.meetingIDsWithFollowUps.contains(meeting.id),
                                 folders: appState.folders,
                                 onSelect: { controller.showMeetingDocument(id: meeting.id) },
                                 onMove: { folderID in
@@ -499,7 +537,7 @@ struct MeetingsView: View {
     private func hideEventButton(_ event: UnifiedCalendarEvent) -> some View {
         Button {
             withAnimation(.easeOut(duration: 0.2)) {
-                controller.hideCalendarEvent(event.id)
+                controller.hideCalendarEvent(event)
             }
         } label: {
             Image(systemName: "xmark")
@@ -512,7 +550,7 @@ struct MeetingsView: View {
     }
 
     @ViewBuilder
-    private var browserHeader: some View {
+    private func browserHeader(meetingCount: Int) -> some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .top, spacing: MuesliTheme.spacing16) {
@@ -530,7 +568,12 @@ struct MeetingsView: View {
                 }
             }
 
-            browserHeaderMeta
+            browserHeaderMeta(meetingCount: meetingCount)
+
+            RecordOriginPicker(selection: Binding(
+                get: { appState.meetingOriginFilter },
+                set: { controller.filterMeetings(origin: $0) }
+            ))
         }
     }
 
@@ -543,9 +586,9 @@ struct MeetingsView: View {
     }
 
     @ViewBuilder
-    private var browserHeaderMeta: some View {
+    private func browserHeaderMeta(meetingCount: Int) -> some View {
         HStack(spacing: MuesliTheme.spacing8) {
-            Text("\(filteredMeetings.count) meeting\(filteredMeetings.count == 1 ? "" : "s")")
+            Text("\(meetingCount) meeting\(meetingCount == 1 ? "" : "s")")
                 .font(MuesliTheme.callout())
                 .foregroundStyle(MuesliTheme.textSecondary)
                 .fixedSize()
@@ -815,15 +858,11 @@ struct MeetingsView: View {
                 .font(.system(size: 30, weight: .thin))
                 .foregroundStyle(MuesliTheme.textTertiary)
 
-            Text(appState.selectedFolderID == nil ? "No meetings yet" : "No meetings in this folder")
+            Text(emptyStateTitle)
                 .font(MuesliTheme.title3())
                 .foregroundStyle(MuesliTheme.textSecondary)
 
-            Text(
-                appState.selectedFolderID == nil
-                    ? "Start a recording from the menu bar to create your first meeting note."
-                    : "Choose another folder or move a meeting here from the browser."
-            )
+            Text(emptyStateInstruction)
             .font(MuesliTheme.callout())
             .foregroundStyle(MuesliTheme.textTertiary)
             .frame(maxWidth: 320, alignment: .leading)
@@ -836,5 +875,25 @@ struct MeetingsView: View {
             RoundedRectangle(cornerRadius: MuesliTheme.cornerXL)
                 .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
         )
+    }
+
+    private var emptyStateTitle: String {
+        switch appState.meetingOriginFilter {
+        case .thisMac:
+            return "No meetings from this Mac"
+        case .fromIPhone:
+            return "No meetings from iPhone"
+        case .all:
+            return appState.selectedFolderID == nil ? "No meetings yet" : "No meetings in this folder"
+        }
+    }
+
+    private var emptyStateInstruction: String {
+        if appState.meetingOriginFilter != .all || selectedFilter != .all {
+            return "Try another source, time range, or folder."
+        }
+        return appState.selectedFolderID == nil
+            ? "Start a recording from the menu bar to create your first meeting note."
+            : "Choose another folder or move a meeting here from the browser."
     }
 }

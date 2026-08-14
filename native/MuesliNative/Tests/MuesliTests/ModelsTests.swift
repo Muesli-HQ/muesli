@@ -1,6 +1,8 @@
 import Testing
+import Accelerate
 import AppKit
 import Foundation
+import FluidAudio
 import MuesliCore
 @testable import MuesliNativeApp
 
@@ -24,7 +26,7 @@ struct BackendOptionTests {
 
     @Test("backend field is one of the known backends")
     func knownBackends() {
-        let known: Set<String> = ["fluidaudio", "whisper", "qwen", "nemotron", "canary", "cohere", "sensevoice"]
+        let known: Set<String> = ["fluidaudio", "whisper", "qwen", "nemotron35", "cohere", "indicasr", "sensevoice", "gemma4-litert"]
         for option in BackendOption.all {
             #expect(known.contains(option.backend), "Unknown backend: \(option.backend)")
         }
@@ -38,15 +40,23 @@ struct BackendOptionTests {
 
     @Test("Whisper models use whisper backend")
     func whisperBackend() {
+        #expect(BackendOption.whisperTiny.backend == "whisper")
+        #expect(BackendOption.whisperTinyEnglish.backend == "whisper")
         #expect(BackendOption.whisperSmall.backend == "whisper")
-        #expect(BackendOption.whisperMedium.backend == "whisper")
+        #expect(BackendOption.whisperSmallEnglish.backend == "whisper")
+        #expect(BackendOption.whisperMediumEnglish.backend == "whisper")
         #expect(BackendOption.whisperLargeTurbo.backend == "whisper")
     }
 
-    @Test("Nemotron uses nemotron backend")
-    func nemotronBackend() {
-        #expect(BackendOption.nemotronStreaming.backend == "nemotron")
-        #expect(BackendOption.nemotronStreaming.model.contains("nemotron"))
+    @Test("Nemotron 3.5 uses nemotron35 backend")
+    func nemotron35Backend() {
+        #expect(BackendOption.nemotron35Multilingual.backend == "nemotron35")
+        #expect(BackendOption.nemotron35Multilingual.model.contains("Nemotron-3.5"))
+        #expect(!BackendOption.nemotron35Multilingual.label.contains("Experimental"))
+        #expect(!BackendOption.nemotron35Multilingual.recommended)
+        #expect(!BackendOption.experimental.contains(.nemotron35Multilingual))
+        #expect(BackendOption.streaming == [.nemotron35Multilingual])
+        #expect(BackendOption.all.contains(.nemotron35Multilingual))
     }
 
     @Test("whisper alias points to parakeetMultilingual")
@@ -58,14 +68,145 @@ struct BackendOptionTests {
     func allContainsAll() {
         #expect(BackendOption.all.contains(.parakeetMultilingual))
         #expect(BackendOption.all.contains(.parakeetEnglish))
+        #expect(BackendOption.all.contains(.whisperTiny))
+        #expect(BackendOption.all.contains(.whisperTinyEnglish))
         #expect(BackendOption.all.contains(.whisperSmall))
-        #expect(BackendOption.all.contains(.whisperMedium))
+        #expect(BackendOption.all.contains(.whisperSmallEnglish))
+        #expect(BackendOption.all.contains(.whisperMediumEnglish))
         #expect(BackendOption.all.contains(.whisperLargeTurbo))
         #expect(BackendOption.all.contains(.qwen3Asr))
-        #expect(BackendOption.all.contains(.canaryQwen))
         #expect(BackendOption.all.contains(.cohereTranscribe))
+        #expect(BackendOption.all.contains(.indicASR))
         #expect(BackendOption.all.contains(.senseVoiceSmall))
-        #expect(BackendOption.all.contains(.nemotronStreaming))
+        #expect(BackendOption.all.contains(.nemotron35Multilingual))
+        #expect(BackendOption.all.contains(.gemma4E2BLiteRT))
+    }
+
+    @Test("Qwen ASR is a standard dictation model")
+    func qwenAsrIsNotExperimental() {
+        #expect(BackendOption.all.contains(.qwen3Asr))
+        #expect(!BackendOption.experimental.contains(.qwen3Asr))
+        #expect(BackendOption.qwen3Asr.description.contains("52 languages"))
+        #expect(BackendOption.qwen3Asr.description.contains("2–3 second"))
+    }
+
+    @Test("model descriptions explain usage without implementation jargon")
+    func modelDescriptionsAreProductFacing() {
+        let implementationTerms = ["INT8", "CoreML", "ANE", "RNNT", "FluidAudio", "LiteRT-LM", "quantized", "GGUF"]
+        for option in BackendOption.all {
+            for term in implementationTerms {
+                #expect(!option.description.contains(term), "\(option.label) description exposes \(term)")
+            }
+        }
+        for option in PostProcessorOption.all {
+            for term in implementationTerms {
+                #expect(!option.description.contains(term), "\(option.label) description exposes \(term)")
+            }
+        }
+    }
+
+    @Test("Qwen ASR cache names preserve current runtime and legacy cleanup paths")
+    func qwenAsrCacheDirectoryNamesMatchFluidAudio() {
+        // FluidAudio Repo.folderName default strips "-coreml" from the repo slug,
+        // so downloads land in qwen3-asr-0.6b/{int8,f32} (issue #380).
+        #expect(Qwen3AsrModelStore.cacheDirectoryNames.first == "qwen3-asr-0.6b")
+        #expect(Qwen3AsrModelStore.cacheDirectoryNames.contains("qwen3-asr-0.6b-coreml"))
+    }
+
+    @Test("Qwen ASR readiness matches the complete managed INT8 runtime directory")
+    func qwenAsrReadinessMatchesManagedRuntimeDirectory() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory
+            .appendingPathComponent("muesli-qwen-asr-path-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: root) }
+
+        func installRequiredArtifacts(in directory: URL) throws {
+            for relativePath in [
+                "qwen3_asr_audio_encoder_v2.mlmodelc/coremldata.bin",
+                "qwen3_asr_audio_encoder_v2.mlmodelc/weights/weight.bin",
+                "qwen3_asr_decoder_stateful.mlmodelc/coremldata.bin",
+                "qwen3_asr_decoder_stateful.mlmodelc/weights/weight.bin",
+                "qwen3_asr_embeddings.bin",
+                "vocab.json",
+            ] {
+                let url = directory.appendingPathComponent(relativePath)
+                try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data([0x01]).write(to: url)
+            }
+        }
+
+        #expect(!Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
+
+        let legacyDirectory = root
+            .appendingPathComponent("qwen3-asr-0.6b-coreml/int8", isDirectory: true)
+        try installRequiredArtifacts(in: legacyDirectory)
+        #expect(!Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
+
+        let managedDirectory = ManagedASRModelPlans.qwen3ASRInt8(modelsRoot: root).cacheDirectory
+        try installRequiredArtifacts(in: managedDirectory)
+        let managedPlan = ManagedASRModelPlans.qwen3ASRInt8(modelsRoot: root)
+        #expect(Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
+        let installedPaths = [
+            "qwen3_asr_audio_encoder_v2.mlmodelc/coremldata.bin",
+            "qwen3_asr_audio_encoder_v2.mlmodelc/weights/weight.bin",
+            "qwen3_asr_decoder_stateful.mlmodelc/coremldata.bin",
+            "qwen3_asr_decoder_stateful.mlmodelc/weights/weight.bin",
+            "qwen3_asr_embeddings.bin",
+            "vocab.json",
+        ]
+        let installedManifest = ModelDownloadManifest(
+            id: managedPlan.modelID,
+            version: "test-install",
+            files: installedPaths.map { relativePath in
+                ModelDownloadFile(
+                    relativePath: relativePath,
+                    remoteURL: URL(string: "https://example.com/model")!,
+                    expectedByteCount: 1
+                )
+            }
+        )
+        try managedPlan.recordSuccessfulInstallation(installedManifest)
+        #expect(Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
+
+        let completionMarker = managedDirectory
+            .appendingPathComponent(".muesli-managed-model-complete.json")
+        try Data("not-json".utf8).write(to: completionMarker)
+        #expect(!Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
+
+        try managedPlan.recordSuccessfulInstallation(installedManifest)
+        try fm.removeItem(at: managedDirectory.appendingPathComponent("vocab.json"))
+        #expect(!Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
+
+        try Qwen3AsrModelStore.deleteModelFiles(from: root, fileManager: fm)
+        #expect(!fm.fileExists(atPath: root.appendingPathComponent("qwen3-asr-0.6b").path))
+        #expect(!fm.fileExists(atPath: root.appendingPathComponent("qwen3-asr-0.6b-coreml").path))
+    }
+
+    @Test("Qwen ASR warmup publishes readiness only for the current uncancelled load")
+    func qwenAsrWarmupReadinessGate() throws {
+        try Qwen3AsrWarmupReadiness.validate(isCancelled: false, isCurrent: true)
+        #expect(throws: CancellationError.self) {
+            try Qwen3AsrWarmupReadiness.validate(isCancelled: true, isCurrent: true)
+        }
+        #expect(throws: CancellationError.self) {
+            try Qwen3AsrWarmupReadiness.validate(isCancelled: false, isCurrent: false)
+        }
+    }
+
+    @Test("Parakeet deletion unloads only the matching runtime variant")
+    func parakeetDeletionUnloadPolicy() {
+        #expect(FluidAudioUnloadPolicy.shouldUnload(
+            loadedVersion: .v2,
+            deletingVersion: .v2
+        ))
+        #expect(!FluidAudioUnloadPolicy.shouldUnload(
+            loadedVersion: .v3,
+            deletingVersion: .v2
+        ))
+        #expect(!FluidAudioUnloadPolicy.shouldUnload(
+            loadedVersion: nil,
+            deletingVersion: .v3
+        ))
     }
 
     @Test("Cohere uses cohere backend")
@@ -74,11 +215,83 @@ struct BackendOptionTests {
         #expect(BackendOption.cohereTranscribe.model.contains("cohere"))
     }
 
-    @Test("SenseVoice uses native FluidAudio CoreML model")
+    @Test("Indic ASR uses indicasr backend")
+    func indicASRBackend() {
+        #expect(BackendOption.indicASR.backend == "indicasr")
+        #expect(BackendOption.indicASR.model.contains("indic-conformer"))
+    }
+
+    @Test("Indic ASR chunk merge deduplicates Indic overlap")
+    func indicASRChunkMergeDeduplicatesIndicOverlap() {
+        let result = IndicASRTranscriptMerger.mergeOverlappingTranscripts([
+            "मैं हिंदी में बोल सकता हूँ",
+            "बोल सकता हूँ और तमिल भी",
+            "தமிழ் கூட பேச முடியும்",
+            "பேச முடியும் இப்போ",
+        ])
+
+        #expect(result == "मैं हिंदी में बोल सकता हूँ और तमिल भी தமிழ் கூட பேச முடியும் இப்போ")
+    }
+
+    @Test("Indic ASR chunk merge preserves non-overlapping text")
+    func indicASRChunkMergePreservesNonOverlappingText() {
+        let result = IndicASRTranscriptMerger.mergeOverlappingTranscripts([
+            "நான் தமிழ் பேசுகிறேன்",
+            "यह नया वाक्य है",
+        ])
+
+        #expect(result == "நான் தமிழ் பேசுகிறேன் यह नया वाक्य है")
+    }
+
+    @Test("Indic ASR mel transpose uses row-major vDSP parameter order")
+    func indicASRMelTransposeParameterOrder() {
+        let rows = 2
+        let columns = 3
+        let frameMajor: [Float] = [
+            1, 2, 3,
+            4, 5, 6,
+        ]
+        let expectedColumnMajorTranspose: [Float] = [
+            1, 4,
+            2, 5,
+            3, 6,
+        ]
+
+        var actual = [Float](repeating: 0, count: frameMajor.count)
+        vDSP_mtrans(
+            frameMajor, 1,
+            &actual, 1,
+            vDSP_Length(columns),
+            vDSP_Length(rows)
+        )
+        #expect(actual == expectedColumnMajorTranspose)
+
+        var swapped = [Float](repeating: 0, count: frameMajor.count)
+        vDSP_mtrans(
+            frameMajor, 1,
+            &swapped, 1,
+            vDSP_Length(rows),
+            vDSP_Length(columns)
+        )
+        #expect(swapped != expectedColumnMajorTranspose)
+    }
+
+    @Test("SenseVoice uses the native speech model")
     func senseVoiceBackend() {
         #expect(BackendOption.senseVoiceSmall.backend == "sensevoice")
         #expect(BackendOption.senseVoiceSmall.model == "FluidInference/sensevoice-small-coreml")
-        #expect(BackendOption.senseVoiceSmall.description.contains("FluidAudio"))
+    }
+
+    @Test("Gemma 4 E2B remains an experimental managed model")
+    func gemma4LiteRTBackend() {
+        #expect(BackendOption.gemma4E2BLiteRT.backend == "gemma4-litert")
+        #expect(BackendOption.gemma4E2BLiteRT.model == Gemma4LiteRTModelStore.repoID)
+        #expect(BackendOption.gemma4E2BLiteRT.label == "Gemma 4 E2B")
+        #expect(BackendOption.gemma4E2BLiteRT.sizeLabel == "~2.6 GB")
+        #expect(BackendOption.gemma4E2BLiteRT.description.contains("research preview"))
+        #expect(BackendOption.gemma4E2BLiteRT.description.contains("macOS 15"))
+        #expect(BackendOption.experimental.contains(.gemma4E2BLiteRT))
+        #expect(!BackendOption.onboarding.contains(.gemma4E2BLiteRT))
     }
 
     @Test("Cohere is not in experimental list")
@@ -86,21 +299,85 @@ struct BackendOptionTests {
         #expect(!BackendOption.experimental.contains(.cohereTranscribe))
     }
 
-    @Test("onboarding model choices exclude experimental models")
-    func onboardingModelsExcludeExperimentalOptions() {
-        #expect(BackendOption.onboarding == [.parakeetMultilingual, .whisperTinyEnglish, .whisperSmall, .cohereTranscribe])
+    @Test("onboarding offers the conservative models plus Nemotron 3.5")
+    func onboardingModelChoices() {
+        #expect(BackendOption.onboarding == [.parakeetMultilingual, .whisperTiny, .whisperSmall, .cohereTranscribe, .nemotron35Multilingual])
         for option in BackendOption.experimental {
             #expect(!BackendOption.onboarding.contains(option))
         }
+        #expect(BackendOption.onboarding.contains(.nemotron35Multilingual))
+    }
+
+    @Test("only Nemotron backends use streaming dictation")
+    func streamingDictationBackends() {
+        let streaming = BackendOption.all.filter(\.isStreamingDictationBackend)
+        #expect(streaming == [.nemotron35Multilingual])
+    }
+
+    @Test("streaming dictation models are excluded from meeting transcription")
+    func streamingDictationModelsAreExcludedFromMeetingTranscription() {
+        #expect(!BackendOption.nemotron35Multilingual.supportsMeetingTranscription)
+        #expect(BackendOption.parakeetMultilingual.supportsMeetingTranscription)
+        #expect(BackendOption.whisperLargeTurbo.supportsMeetingTranscription)
+        #expect(!BackendOption.downloadedMeetingTranscription.contains(.nemotron35Multilingual))
+    }
+
+    @Test("only multilingual Whisper models expose language selection")
+    func whisperLanguageSelectionAvailability() {
+        #expect(BackendOption.whisperTiny.supportsWhisperLanguageSelection)
+        #expect(BackendOption.whisperSmall.supportsWhisperLanguageSelection)
+        #expect(BackendOption.whisperLargeTurbo.supportsWhisperLanguageSelection)
+        #expect(!BackendOption.whisperTinyEnglish.supportsWhisperLanguageSelection)
+        #expect(!BackendOption.whisperSmallEnglish.supportsWhisperLanguageSelection)
+        #expect(!BackendOption.whisperMediumEnglish.supportsWhisperLanguageSelection)
+        #expect(!BackendOption.parakeetMultilingual.supportsWhisperLanguageSelection)
     }
 
     @Test("Whisper models use WhisperKit CoreML identifiers")
     func whisperKitModels() {
         // WhisperKit models use short variant names, not ggml- prefixed binaries
+        #expect(BackendOption.whisperTiny.model == "tiny")
         #expect(BackendOption.whisperTinyEnglish.model == "tiny.en")
-        #expect(BackendOption.whisperSmall.model == "small.en")
-        #expect(BackendOption.whisperMedium.model == "medium.en")
+        #expect(BackendOption.whisperSmall.model == "small")
+        #expect(BackendOption.whisperSmallEnglish.model == "small.en")
+        #expect(BackendOption.whisperMediumEnglish.model == "medium.en")
         #expect(BackendOption.whisperLargeTurbo.model.contains("large"))
+    }
+
+    @Test("English-only and multilingual Whisper checkpoints are always in the catalog")
+    func whisperCatalogIncludesEveryVariant() {
+        #expect(BackendOption.whisperFamily == [
+            .whisperTiny, .whisperTinyEnglish,
+            .whisperSmall, .whisperSmallEnglish,
+            .whisperMediumEnglish, .whisperLargeTurbo,
+        ])
+        #expect(BackendOption.resolve(backend: "whisper", model: "tiny.en") == .whisperTinyEnglish)
+        #expect(BackendOption.resolve(backend: "whisper", model: "small.en") == .whisperSmallEnglish)
+        #expect(BackendOption.resolve(backend: "whisper", model: "medium.en") == .whisperMediumEnglish)
+    }
+
+    @Test("resolveDownloaded falls back when an English-only selection is not downloaded")
+    func resolveDownloadedFallsBackForMissingEnglishWhisperSelection() {
+        let resolved = BackendOption.resolveDownloaded(
+            backend: "whisper",
+            model: "small.en",
+            fallback: .parakeetMultilingual,
+            downloadedOptions: [.parakeetMultilingual, .whisperSmall]
+        )
+
+        #expect(resolved == .parakeetMultilingual)
+    }
+
+    @Test("resolveDownloaded keeps an installed English-only Whisper selection")
+    func resolveDownloadedKeepsEnglishWhisperSelection() {
+        let resolved = BackendOption.resolveDownloaded(
+            backend: "whisper",
+            model: "small.en",
+            fallback: .parakeetMultilingual,
+            downloadedOptions: [.parakeetMultilingual, .whisperSmallEnglish]
+        )
+
+        #expect(resolved == .whisperSmallEnglish)
     }
 
     @Test("resolveDownloaded keeps selected downloaded meeting model")
@@ -252,16 +529,86 @@ struct PostProcessorOptionTests {
     }
 }
 
+@Suite("TranscriptCleanupBackendOption")
+struct TranscriptCleanupBackendOptionTests {
+
+    @Test("Gemma cleanup is unavailable only for Gemma dictation")
+    func gemmaCleanupCompatibility() {
+        #expect(!TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: .gemma4E2BLiteRT))
+
+        for backend in BackendOption.all where backend != .gemma4E2BLiteRT {
+            #expect(TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: backend))
+        }
+    }
+
+    @Test("Other cleanup backends remain available for Gemma dictation")
+    func otherCleanupBackendsRemainCompatible() {
+        for backend in TranscriptCleanupBackendOption.all where backend != .gemma4LiteRT {
+            #expect(backend.isCompatible(with: .gemma4E2BLiteRT))
+        }
+    }
+
+    @Test("Available cleanup options exclude only conflicting Gemma cleanup")
+    func availableOptionsExcludeGemmaConflict() {
+        let available = TranscriptCleanupBackendOption.available(for: .gemma4E2BLiteRT)
+
+        #expect(!available.contains(.gemma4LiteRT))
+        #expect(available.count == TranscriptCleanupBackendOption.all.count - 1)
+    }
+}
+
 @Suite("SummaryModelPreset")
 struct SummaryModelPresetTests {
 
     @Test("OpenAI presets have valid model IDs")
     func openAIModels() {
         #expect(!SummaryModelPreset.openAIModels.isEmpty)
+        #expect(SummaryModelPreset.openAIModels.first?.id == "gpt-5.4-mini")
+        #expect(SummaryModelPreset.openAIModels.contains { $0.id == "gpt-5.6-sol" })
+        #expect(SummaryModelPreset.openAIModels.contains { $0.id == "gpt-5.6-terra" })
+        #expect(SummaryModelPreset.openAIModels.contains { $0.id == "gpt-5.6-luna" })
+        #expect(!SummaryModelPreset.openAIModels.contains { $0.id == "gpt-5.5" })
+        #expect(SummaryModelPreset.openAIModels.contains { $0.id == "chat-latest" })
         for preset in SummaryModelPreset.openAIModels {
             #expect(!preset.id.isEmpty)
             #expect(!preset.label.isEmpty)
         }
+    }
+
+    @Test("ChatGPT presets include supported fast options")
+    func chatGPTModels() {
+        #expect(!SummaryModelPreset.chatGPTModels.isEmpty)
+        #expect(SummaryModelPreset.chatGPTModels.first?.id == "gpt-5.4-mini")
+        #expect(SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.6-sol" })
+        #expect(SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.6-terra" })
+        #expect(SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.6-luna" })
+        #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.5" })
+        #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.4-nano" })
+        #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "chat-latest" })
+        #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.4" })
+        #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-5.2" })
+        #expect(!SummaryModelPreset.chatGPTModels.contains { $0.id == "gpt-4o" })
+        for preset in SummaryModelPreset.chatGPTModels {
+            #expect(!preset.id.isEmpty)
+            #expect(!preset.label.isEmpty)
+        }
+    }
+
+    @Test("ChatGPT transcript cleanup uses GPT-5.6 Terra by default")
+    func chatGPTTranscriptCleanupModels() {
+        let presets = SummaryModelPreset.chatGPTTranscriptCleanupModels
+        #expect(presets.first?.id == "gpt-5.6-terra")
+        #expect(presets.first?.label.contains("default") == true)
+        #expect(Set(presets.map(\.id)) == Set([
+            "gpt-5.4-mini",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+        ]))
+
+        let backend = TranscriptCleanupBackendOption.hosted(.chatGPT)
+        #expect(TranscriptCleanupClient.defaultModel(for: backend) == "gpt-5.6-terra")
+        #expect(TranscriptCleanupClient.configuredModel(for: backend, config: AppConfig()) == "gpt-5.6-terra")
     }
 
     @Test("OpenRouter presets have valid model IDs")
@@ -273,14 +620,26 @@ struct SummaryModelPresetTests {
         }
     }
 
-    @Test("Computer use planner presets include GPT-5.5 default")
+    @Test("Computer use planner presets use GPT-5.6 Sol by default")
     func computerUsePlannerModels() {
-        #expect(SummaryModelPreset.computerUsePlannerModels.first?.id == "gpt-5.5")
+        #expect(SummaryModelPreset.computerUsePlannerModels.first?.id == "gpt-5.6-sol")
+        #expect(SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-5.6-terra" })
+        #expect(SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-5.6-luna" })
         #expect(SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-5.4-mini" })
+        #expect(!SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-5.5" })
         for preset in SummaryModelPreset.computerUsePlannerModels {
             #expect(!preset.id.isEmpty)
             #expect(!preset.label.isEmpty)
         }
+    }
+
+    @Test("GPT-5.6 family uses fixed High reasoning")
+    func gpt56ReasoningEffort() {
+        #expect(SummaryModelPreset.reasoningEffort(for: "gpt-5.6-sol") == "high")
+        #expect(SummaryModelPreset.reasoningEffort(for: "gpt-5.6-terra") == "high")
+        #expect(SummaryModelPreset.reasoningEffort(for: "gpt-5.6-luna") == "high")
+        #expect(SummaryModelPreset.reasoningEffort(for: "gpt-5.4-mini") == nil)
+        #expect(SummaryModelPreset.reasoningEffort(for: "gpt-5.5") == nil)
     }
 
     @Test("model menu includes custom configured model")
@@ -420,7 +779,10 @@ struct AppConfigTests {
         let config = AppConfig()
         #expect(config.sttBackend == BackendOption.whisper.backend)
         #expect(config.sttModel == BackendOption.whisper.model)
+        #expect(config.meetingInputDeviceUID == nil)
         #expect(config.cohereLanguage == CohereTranscribeLanguage.defaultLanguage.rawValue)
+        #expect(config.indicASRLanguage == IndicASRLanguage.defaultLanguage.rawValue)
+        #expect(config.whisperLanguage == WhisperKitLanguage.defaultLanguage.rawValue)
         #expect(config.meetingTranscriptionBackend == BackendOption.whisper.backend)
         #expect(config.meetingTranscriptionModel == BackendOption.whisper.model)
         #expect(config.meetingSummaryBackend == "chatgpt")
@@ -431,7 +793,10 @@ struct AppConfigTests {
         #expect(config.showMeetingDetectionNotification == true)
         #expect(config.mutedMeetingDetectionAppBundleIDs.isEmpty)
         #expect(config.openAIAPIKey.isEmpty)
+        #expect(config.meetingRecordingFileFormat == MeetingRecordingFileFormat.m4a.rawValue)
+        #expect(config.resolvedMeetingRecordingFileFormat == .m4a)
         #expect(config.openRouterAPIKey.isEmpty)
+        #expect(config.meetingSummaryRetryCount == MeetingSummaryRetryPolicy.defaultRetryCount)
         #expect(config.ollamaURL == "http://localhost:11434")
         #expect(config.ollamaModel == "qwen3.5")
         #expect(config.lmStudioURL == "http://localhost:1234")
@@ -440,6 +805,20 @@ struct AppConfigTests {
         #expect(config.customLLMAPIKey.isEmpty)
         #expect(config.customLLMModel.isEmpty)
         #expect(config.customLLMFormat == "openai")
+        #expect(config.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
+        #expect(config.postProcessorChatGPTModel.isEmpty)
+        #expect(config.postProcessorOpenAIModel.isEmpty)
+        #expect(config.postProcessorOpenRouterModel.isEmpty)
+        #expect(config.postProcessorOllamaModel.isEmpty)
+        #expect(config.postProcessorLMStudioModel.isEmpty)
+        #expect(config.postProcessorCustomLLMModel.isEmpty)
+        #expect(config.activeTranscriptCleanupPromptId == TranscriptCleanupPrompts.defaultID)
+        #expect(config.customTranscriptCleanupPrompts.isEmpty)
+        #expect(config.enableScreenContext == false)
+        #expect(config.enableDictationOCRContext == false)
+        #expect(config.enableLiveStreamingPartials == false)
+        #expect(config.resolvedMeetingLiveCaptionBackend == .parakeetRealtimeEOU)
+        #expect(config.showMeetingTranscriptOnIndicatorHover == true)
         #expect(config.dictationHotkey == .default)
         #expect(config.computerUseHotkey == .computerUseDefault)
         #expect(config.enableComputerUseHotkey == false)
@@ -459,10 +838,134 @@ struct AppConfigTests {
         #expect(config.meetingHookEnabled == false)
         #expect(config.meetingHookPath.isEmpty)
         #expect(config.meetingHookTimeoutSeconds == 30)
+        #expect(config.autoExportMarkdownEnabled == false)
+        #expect(config.autoExportMarkdownFolderPath.isEmpty)
+        #expect(config.autoExportMarkdownContent == MeetingExportContent.notes.rawValue)
+        #expect(config.resolvedAutoExportMarkdownContent == .notes)
+        #expect(config.autoExportFileFormat == MeetingAutoExportFileFormat.markdown.rawValue)
+        #expect(config.resolvedAutoExportFileFormat == .markdown)
         #expect(config.contributionPromptNextWordCount == nil)
         #expect(config.contributionPromptNextMeetingCount == nil)
         #expect(config.contributionGitHubStarClicked == false)
         #expect(config.contributionBuyMeCoffeeClicked == false)
+        #expect(config.contributionTweetClicked == false)
+        #expect(config.contributionLinkedInClicked == false)
+        #expect(config.upcomingMeetingsDayCount == UpcomingMeetingsWindow.defaultDayCount)
+        #expect(config.hiddenCalendarEventSourceHints.isEmpty)
+    }
+
+    @Test("LM Studio cleanup readiness requires model and valid URL")
+    func lmStudioCleanupReadinessRequiresModelAndValidURL() {
+        let backend = TranscriptCleanupBackendOption.hosted(.lmStudio)
+        var config = AppConfig()
+        config.postProcessorLMStudioModel = "local-cleanup-model"
+        config.lmStudioURL = "not a url"
+
+        #expect(!TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+
+        config.lmStudioURL = "http://localhost:1234"
+
+        #expect(TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+    }
+
+    @Test("Ollama cleanup readiness requires valid URL")
+    func ollamaCleanupReadinessRequiresValidURL() {
+        let backend = TranscriptCleanupBackendOption.hosted(.ollama)
+        var config = AppConfig()
+
+        #expect(TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+
+        config.ollamaURL = "not a url"
+
+        #expect(!TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+
+        config.ollamaURL = "http://localhost:11434"
+
+        #expect(TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+    }
+
+    @Test("Custom LLM cleanup readiness requires model and explicit valid URL")
+    func customLLMCleanupReadinessRequiresModelAndExplicitValidURL() {
+        let backend = TranscriptCleanupBackendOption.hosted(.customLLM)
+        var config = AppConfig()
+        config.postProcessorCustomLLMModel = "cleanup-model"
+
+        #expect(!TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+
+        config.customLLMURL = "not a url"
+
+        #expect(!TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+
+        config.customLLMURL = "http://localhost:8080"
+
+        #expect(TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+
+        config.customLLMFormat = CustomLLMFormat.anthropic.rawValue
+        config.customLLMAPIKey = ""
+
+        #expect(!TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+
+        config.customLLMAPIKey = "sk-ant-test"
+
+        #expect(TranscriptCleanupClient.hasRequiredSettings(
+            for: backend,
+            config: config,
+            isChatGPTAuthenticated: false
+        ))
+    }
+
+    @Test("OpenRouter cleanup key falls back to environment")
+    func openRouterCleanupKeyFallsBackToEnvironment() {
+        var config = AppConfig()
+        config.openRouterAPIKey = ""
+
+        #expect(TranscriptCleanupClient.resolvedOpenRouterAPIKey(
+            config: config,
+            environment: ["OPENROUTER_API_KEY": "sk-or-env"]
+        ) == "sk-or-env")
+
+        config.openRouterAPIKey = " sk-or-config "
+
+        #expect(TranscriptCleanupClient.resolvedOpenRouterAPIKey(
+            config: config,
+            environment: ["OPENROUTER_API_KEY": "sk-or-env"]
+        ) == "sk-or-config")
     }
 
     @Test("JSON encode/decode round-trip")
@@ -473,8 +976,10 @@ struct AppConfigTests {
         config.hasCompletedOnboarding = true
         config.onboardingUseCase = OnboardingUseCase.dictationAndMeetings.rawValue
         config.cohereLanguage = CohereTranscribeLanguage.german.rawValue
+        config.indicASRLanguage = IndicASRLanguage.tamil.rawValue
         config.defaultMeetingTemplateID = "weekly-team-meeting"
         config.meetingRecordingSavePolicy = .always
+        config.meetingRecordingFileFormat = MeetingRecordingFileFormat.wav.rawValue
         config.customMeetingTemplates = [
             CustomMeetingTemplate(
                 id: "tmpl_123",
@@ -486,6 +991,10 @@ struct AppConfigTests {
         config.meetingHookEnabled = true
         config.meetingHookPath = "/tmp/meeting-hook.sh"
         config.meetingHookTimeoutSeconds = 45
+        config.autoExportMarkdownEnabled = true
+        config.autoExportMarkdownFolderPath = "/tmp/muesli-auto-export"
+        config.autoExportMarkdownContent = MeetingExportContent.fullMeeting.rawValue
+        config.autoExportFileFormat = MeetingAutoExportFileFormat.markdownAndPDF.rawValue
         config.showScheduledMeetingNotifications = false
         config.scheduledMeetingNotificationLeadTime = .threeMinutes
         config.showMeetingDetectionNotification = false
@@ -504,10 +1013,41 @@ struct AppConfigTests {
         config.customLLMAPIKey = "custom-key"
         config.customLLMModel = "custom-model"
         config.customLLMFormat = "anthropic"
+        config.meetingSummaryRetryCount = 5
+        config.postProcessorBackend = TranscriptCleanupBackendOption.hosted(.openRouter).backend
+        config.postProcessorChatGPTModel = "gpt-5.4-mini"
+        config.postProcessorOpenAIModel = "gpt-5.4-mini"
+        config.postProcessorOpenRouterModel = "openrouter/test-model"
+        config.postProcessorOllamaModel = "qwen3.5"
+        config.postProcessorLMStudioModel = "lmstudio-loaded"
+        config.postProcessorCustomLLMModel = "custom-cleanup"
+        config.activeTranscriptCleanupPromptId = "cleanup_custom_1"
+        config.customTranscriptCleanupPrompts = [
+            CustomTranscriptCleanupPrompt(
+                id: "cleanup_custom_1",
+                name: "Strict Dictation",
+                prompt: "Preserve labels and quotes."
+            )
+        ]
+        config.postProcessorSystemPrompt = "Preserve labels and quotes."
+        config.enableScreenContext = true
+        config.enableDictationOCRContext = true
+        config.enableLiveStreamingPartials = true
+        config.meetingInputDeviceUID = "meeting-mic"
+        config.enableAutomaticDiagnosticIssuePrompts = true
+        config.meetingLiveCaptionBackend = MeetingLiveCaptionBackend.nemotron35.rawValue
+        config.showMeetingTranscriptOnIndicatorHover = false
         config.contributionPromptNextWordCount = 31_000
         config.contributionPromptNextMeetingCount = 75
         config.contributionGitHubStarClicked = true
         config.contributionBuyMeCoffeeClicked = false
+        config.contributionTweetClicked = true
+        config.contributionLinkedInClicked = false
+        config.upcomingMeetingsDayCount = UpcomingMeetingsWindow.today.dayCount
+        config.hiddenCalendarEventSourceHints = [
+            "ek-event-1": UnifiedCalendarEvent.CalendarSource.eventKit.rawValue,
+            "google-event-1": UnifiedCalendarEvent.CalendarSource.googleCalendar.rawValue,
+        ]
 
         let data = try JSONEncoder().encode(config)
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
@@ -517,14 +1057,23 @@ struct AppConfigTests {
         #expect(decoded.hasCompletedOnboarding == true)
         #expect(decoded.resolvedOnboardingUseCase == .dictationAndMeetings)
         #expect(decoded.cohereLanguage == CohereTranscribeLanguage.german.rawValue)
+        #expect(decoded.indicASRLanguage == IndicASRLanguage.tamil.rawValue)
         #expect(decoded.defaultMeetingTemplateID == "weekly-team-meeting")
         #expect(decoded.meetingRecordingSavePolicy == .always)
+        #expect(decoded.meetingRecordingFileFormat == MeetingRecordingFileFormat.wav.rawValue)
+        #expect(decoded.resolvedMeetingRecordingFileFormat == .wav)
         #expect(decoded.customMeetingTemplates.count == 1)
         #expect(decoded.customMeetingTemplates.first?.name == "Customer Follow-Up")
         #expect(decoded.customMeetingTemplates.first?.icon == "dollarsign.circle")
         #expect(decoded.meetingHookEnabled == true)
         #expect(decoded.meetingHookPath == "/tmp/meeting-hook.sh")
         #expect(decoded.meetingHookTimeoutSeconds == 45)
+        #expect(decoded.autoExportMarkdownEnabled == true)
+        #expect(decoded.autoExportMarkdownFolderPath == "/tmp/muesli-auto-export")
+        #expect(decoded.autoExportMarkdownContent == MeetingExportContent.fullMeeting.rawValue)
+        #expect(decoded.resolvedAutoExportMarkdownContent == .fullMeeting)
+        #expect(decoded.autoExportFileFormat == MeetingAutoExportFileFormat.markdownAndPDF.rawValue)
+        #expect(decoded.resolvedAutoExportFileFormat == .markdownAndPDF)
         #expect(decoded.showScheduledMeetingNotifications == false)
         #expect(decoded.scheduledMeetingNotificationLeadTime == .threeMinutes)
         #expect(decoded.showMeetingDetectionNotification == false)
@@ -545,10 +1094,40 @@ struct AppConfigTests {
         #expect(decoded.customLLMAPIKey == "custom-key")
         #expect(decoded.customLLMModel == "custom-model")
         #expect(decoded.customLLMFormat == "anthropic")
+        #expect(decoded.meetingSummaryRetryCount == 5)
+        #expect(decoded.postProcessorBackend == "openrouter")
+        #expect(decoded.postProcessorChatGPTModel == "gpt-5.4-mini")
+        #expect(decoded.postProcessorOpenAIModel == "gpt-5.4-mini")
+        #expect(decoded.postProcessorOpenRouterModel == "openrouter/test-model")
+        #expect(decoded.postProcessorOllamaModel == "qwen3.5")
+        #expect(decoded.postProcessorLMStudioModel == "lmstudio-loaded")
+        #expect(decoded.postProcessorCustomLLMModel == "custom-cleanup")
+        #expect(decoded.activeTranscriptCleanupPromptId == "cleanup_custom_1")
+        #expect(decoded.customTranscriptCleanupPrompts.count == 1)
+        #expect(decoded.customTranscriptCleanupPrompts.first?.name == "Strict Dictation")
+        #expect(decoded.postProcessorSystemPrompt == "Preserve labels and quotes.")
+        #expect(decoded.enableScreenContext == true)
+        #expect(decoded.enableDictationOCRContext == true)
+        #expect(decoded.enableLiveStreamingPartials == true)
+        #expect(decoded.meetingInputDeviceUID == "meeting-mic")
+        #expect(decoded.enableAutomaticDiagnosticIssuePrompts == true)
+        #expect(decoded.resolvedMeetingLiveCaptionBackend == .nemotron35)
+        #expect(decoded.showMeetingTranscriptOnIndicatorHover == false)
         #expect(decoded.contributionPromptNextWordCount == 31_000)
         #expect(decoded.contributionPromptNextMeetingCount == 75)
         #expect(decoded.contributionGitHubStarClicked == true)
         #expect(decoded.contributionBuyMeCoffeeClicked == false)
+        #expect(decoded.contributionTweetClicked == true)
+        #expect(decoded.contributionLinkedInClicked == false)
+        #expect(decoded.upcomingMeetingsDayCount == UpcomingMeetingsWindow.today.dayCount)
+        #expect(decoded.hiddenCalendarEventSourceHints == config.hiddenCalendarEventSourceHints)
+    }
+
+    @Test("Automatic diagnostic issue prompts default off when absent")
+    func automaticDiagnosticIssuePromptsDefaultOffWhenAbsent() throws {
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+
+        #expect(decoded.enableAutomaticDiagnosticIssuePrompts == false)
     }
 
     @Test("JSON coding keys use snake_case")
@@ -571,6 +1150,8 @@ struct AppConfigTests {
         #expect(json["computer_use_hotkey_trigger_threshold_ms"] != nil)
         #expect(json["meeting_recording_hotkey_trigger_threshold_ms"] != nil)
         #expect(json["cohere_language"] != nil)
+        #expect(json["indic_asr_language"] != nil)
+        #expect(json["whisper_language"] != nil)
         #expect(json["meeting_transcription_backend"] != nil)
         #expect(json["meeting_transcription_model"] != nil)
         #expect(json["indicator_anchor"] != nil)
@@ -579,6 +1160,7 @@ struct AppConfigTests {
         #expect(json["user_name"] != nil)
         #expect(json["default_meeting_template_id"] != nil)
         #expect(json["meeting_recording_save_policy"] != nil)
+        #expect(json["meeting_recording_file_format"] != nil)
         #expect(json["show_scheduled_meeting_notifications"] != nil)
         #expect(json["show_meeting_detection_notification"] != nil)
         #expect(json["muted_meeting_detection_app_bundle_ids"] != nil)
@@ -586,16 +1168,51 @@ struct AppConfigTests {
         #expect(json["meeting_hook_enabled"] != nil)
         #expect(json["meeting_hook_path"] != nil)
         #expect(json["meeting_hook_timeout_seconds"] != nil)
+        #expect(json["auto_export_markdown_enabled"] != nil)
+        #expect(json["auto_export_markdown_folder_path"] != nil)
+        #expect(json["auto_export_markdown_content"] != nil)
+        #expect(json["auto_export_file_format"] != nil)
         #expect(json["contribution_prompt_next_word_count"] != nil)
         #expect(json["contribution_prompt_next_meeting_count"] != nil)
         #expect(json["contribution_github_star_clicked"] != nil)
         #expect(json["contribution_buy_me_coffee_clicked"] != nil)
+        #expect(json["contribution_tweet_clicked"] != nil)
+        #expect(json["contribution_linkedin_clicked"] != nil)
         #expect(json["lmstudio_url"] != nil)
         #expect(json["lmstudio_model"] != nil)
         #expect(json["custom_llm_url"] != nil)
         #expect(json["custom_llm_api_key"] != nil)
         #expect(json["custom_llm_model"] != nil)
         #expect(json["custom_llm_format"] != nil)
+        #expect(json["meeting_summary_retry_count"] != nil)
+        #expect(json["post_processor_backend"] != nil)
+        #expect(json["post_processor_chatgpt_model"] != nil)
+        #expect(json["post_processor_openai_model"] != nil)
+        #expect(json["post_processor_openrouter_model"] != nil)
+        #expect(json["post_processor_ollama_model"] != nil)
+        #expect(json["post_processor_lmstudio_model"] != nil)
+        #expect(json["post_processor_custom_llm_model"] != nil)
+        #expect(json["active_transcript_cleanup_prompt_id"] != nil)
+        #expect(json["custom_transcript_cleanup_prompts"] != nil)
+        #expect(json["enable_screen_context"] != nil)
+        #expect(json["enable_dictation_ocr_context"] != nil)
+        #expect(json["enable_live_streaming_partials"] != nil)
+        #expect(json["show_meeting_transcript_on_indicator_hover"] != nil)
+    }
+
+    @Test("decodes screen context flags from snake_case")
+    func decodesScreenContextFlagsFromSnakeCase() throws {
+        let json = """
+        {
+            "enable_screen_context": true,
+            "enable_dictation_ocr_context": true
+        }
+        """
+        let data = json.data(using: .utf8)!
+        let config = try JSONDecoder().decode(AppConfig.self, from: data)
+
+        #expect(config.enableScreenContext == true)
+        #expect(config.enableDictationOCRContext == true)
     }
 
     @Test("decodes with missing fields using defaults")
@@ -607,10 +1224,16 @@ struct AppConfigTests {
         #expect(config.openAIAPIKey.isEmpty)
         #expect(config.showFloatingIndicator == true)
         #expect(config.resolvedCohereLanguage == .english)
+        #expect(config.resolvedIndicASRLanguage == .defaultLanguage)
+        #expect(config.resolvedWhisperLanguage == .auto)
         #expect(config.hasCompletedOnboarding == false)
         #expect(config.resolvedOnboardingUseCase == .dictation)
         #expect(config.defaultMeetingTemplateID == MeetingTemplates.autoID)
+        #expect(config.upcomingMeetingsDayCount == UpcomingMeetingsWindow.threeDays.dayCount)
+        #expect(config.hiddenCalendarEventSourceHints.isEmpty)
         #expect(config.meetingRecordingSavePolicy == .never)
+        #expect(config.meetingRecordingFileFormat == MeetingRecordingFileFormat.m4a.rawValue)
+        #expect(config.resolvedMeetingRecordingFileFormat == .m4a)
         #expect(config.showScheduledMeetingNotifications == true)
         #expect(config.showMeetingDetectionNotification == true)
         #expect(config.mutedMeetingDetectionAppBundleIDs.isEmpty)
@@ -627,12 +1250,188 @@ struct AppConfigTests {
         #expect(config.meetingHookEnabled == false)
         #expect(config.meetingHookPath.isEmpty)
         #expect(config.meetingHookTimeoutSeconds == 30)
+        #expect(config.autoExportMarkdownEnabled == false)
+        #expect(config.autoExportMarkdownFolderPath.isEmpty)
+        #expect(config.autoExportMarkdownContent == MeetingExportContent.notes.rawValue)
+        #expect(config.resolvedAutoExportMarkdownContent == .notes)
+        #expect(config.autoExportFileFormat == MeetingAutoExportFileFormat.markdown.rawValue)
+        #expect(config.resolvedAutoExportFileFormat == .markdown)
         #expect(config.lmStudioURL == "http://localhost:1234")
         #expect(config.lmStudioModel.isEmpty)
         #expect(config.customLLMURL.isEmpty)
         #expect(config.customLLMAPIKey.isEmpty)
         #expect(config.customLLMModel.isEmpty)
         #expect(config.customLLMFormat == "openai")
+        #expect(config.meetingSummaryRetryCount == MeetingSummaryRetryPolicy.defaultRetryCount)
+        #expect(config.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
+        #expect(config.activeTranscriptCleanupPromptId == TranscriptCleanupPrompts.defaultID)
+        #expect(config.customTranscriptCleanupPrompts.isEmpty)
+        #expect(config.enableScreenContext == false)
+        #expect(config.enableDictationOCRContext == false)
+        #expect(config.enableLiveStreamingPartials == false)
+        #expect(config.resolvedMeetingLiveCaptionBackend == .parakeetRealtimeEOU)
+        #expect(config.showMeetingTranscriptOnIndicatorHover == true)
+    }
+
+    @Test("legacy meeting config preserves its transcription model and leaves streaming off")
+    func legacyMeetingConfigPreservesTranscriptionModel() throws {
+        let json = """
+        {
+          "stt_backend": "fluidaudio",
+          "stt_model": "FluidInference/parakeet-tdt-0.6b-v3-coreml",
+          "has_completed_onboarding": true,
+          "onboarding_use_case": "meetings"
+        }
+        """
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.sttBackend == BackendOption.parakeetMultilingual.backend)
+        #expect(config.sttModel == BackendOption.parakeetMultilingual.model)
+        #expect(config.meetingTranscriptionBackend == BackendOption.parakeetMultilingual.backend)
+        #expect(config.meetingTranscriptionModel == BackendOption.parakeetMultilingual.model)
+        #expect(config.enableLiveStreamingPartials == false)
+    }
+
+    @Test("meeting summary retry count is clamped on decode")
+    func meetingSummaryRetryCountIsClampedOnDecode() throws {
+        let negativeConfig = try JSONDecoder().decode(
+            AppConfig.self,
+            from: Data(#"{"meeting_summary_retry_count": -3}"#.utf8)
+        )
+        let excessiveConfig = try JSONDecoder().decode(
+            AppConfig.self,
+            from: Data(#"{"meeting_summary_retry_count": 99}"#.utf8)
+        )
+
+        #expect(negativeConfig.meetingSummaryRetryCount == 0)
+        #expect(excessiveConfig.meetingSummaryRetryCount == MeetingSummaryRetryPolicy.maximumRetryCount)
+    }
+
+    @Test("unknown cleanup backend resolves to local")
+    func unknownCleanupBackendResolvesToLocal() throws {
+        let json = """
+        {
+          "post_processor_backend": "future_provider"
+        }
+        """
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
+        #expect(TranscriptCleanupBackendOption.resolved(config.postProcessorBackend) == .local)
+    }
+
+    @Test("missing cleanup prompt preset falls back to built-in default")
+    func missingCleanupPromptPresetFallsBackToDefault() throws {
+        let json = """
+        {
+          "active_transcript_cleanup_prompt_id": "deleted-preset",
+          "post_processor_system_prompt": "Legacy user-edited cleanup prompt"
+        }
+        """
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.activeTranscriptCleanupPromptId == TranscriptCleanupPrompts.defaultID)
+        #expect(config.postProcessorSystemPrompt == PostProcessorOption.defaultSystemPrompt)
+        #expect(
+            TranscriptCleanupPrompts
+                .resolve(id: config.activeTranscriptCleanupPromptId, custom: config.customTranscriptCleanupPrompts)
+                .prompt == PostProcessorOption.defaultSystemPrompt
+        )
+    }
+
+    @Test("default cleanup prompt explains app context")
+    func defaultCleanupPromptExplainsAppContext() {
+        #expect(PostProcessorOption.defaultSystemPrompt.contains("<APP-CONTEXT>"))
+        #expect(PostProcessorOption.defaultSystemPrompt.contains("OCR screen text"))
+        #expect(PostProcessorOption.defaultSystemPrompt.contains("Never copy app context into the output"))
+    }
+
+    @Test("dictation app context prompt includes OCR text")
+    func dictationAppContextPromptIncludesOCRText() {
+        let ocrText = String(repeating: "a", count: 3_200) + "tail"
+        let context = DictationContext(
+            appName: "Notes",
+            bundleID: "com.apple.Notes",
+            documentContext: "Project Apollo",
+            selectedText: "Mercury",
+            url: "https://example.com",
+            ocrText: ocrText
+        )
+        let prompt = DictationContextCapture.formatForPrompt(context)
+
+        #expect(prompt.contains("App: Notes (https://example.com)"))
+        #expect(prompt.contains("Document context: Project Apollo"))
+        #expect(prompt.contains("Selected text: Mercury"))
+        #expect(prompt.contains("OCR screen text: "))
+        #expect(prompt.contains("tail"))
+    }
+
+    @Test("post processor input caps app context")
+    func postProcessorInputCapsAppContext() {
+        let prompt = Qwen3PostProcessorConfig.formatInput(
+            "hello",
+            appContext: String(repeating: "a", count: 20),
+            maxAppContextCharacters: 5
+        )
+
+        #expect(prompt.contains("<APP-CONTEXT>\naaaaa\n</APP-CONTEXT>"))
+        #expect(prompt.contains("<USER-INPUT>\nhello\n</USER-INPUT>"))
+    }
+
+    @Test("hosted cleanup augments custom prompts when app context is present")
+    func hostedCleanupAugmentsCustomPromptsWhenAppContextIsPresent() {
+        let prompt = TranscriptCleanupClient.systemPromptWithAppContextGuidance(
+            "Preserve the user's words.",
+            appContext: "App: Notes"
+        )
+
+        #expect(prompt.contains("Preserve the user's words."))
+        #expect(prompt.contains("<APP-CONTEXT>"))
+        #expect(prompt.contains("OCR screen text"))
+    }
+
+    @Test("hosted cleanup does not duplicate app context guidance")
+    func hostedCleanupDoesNotDuplicateAppContextGuidance() {
+        let prompt = TranscriptCleanupClient.systemPromptWithAppContextGuidance(
+            PostProcessorOption.defaultSystemPrompt,
+            appContext: "App: Notes"
+        )
+
+        #expect(prompt == PostProcessorOption.defaultSystemPrompt)
+    }
+
+    @Test("unsupported ChatGPT model selections fall back to default")
+    func unsupportedChatGPTModelSelectionsFallBackToDefault() throws {
+        let json = """
+        {
+          "chatgpt_model": "chat-latest",
+          "post_processor_chatgpt_model": "gpt-5.4-nano"
+        }
+        """
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.chatGPTModel.isEmpty)
+        #expect(config.postProcessorChatGPTModel.isEmpty)
+    }
+
+    @Test("stored GPT-5.5 selections migrate to GPT-5.6 Sol")
+    func storedGPT55SelectionsMigrateToSol() throws {
+        let json = """
+        {
+          "computer_use_planner_model": "gpt-5.5",
+          "openai_model": "gpt-5.5",
+          "chatgpt_model": "gpt-5.5",
+          "post_processor_openai_model": "gpt-5.5",
+          "post_processor_chatgpt_model": "gpt-5.5"
+        }
+        """
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.computerUsePlannerModel == "gpt-5.6-sol")
+        #expect(config.openAIModel == "gpt-5.6-sol")
+        #expect(config.chatGPTModel == "gpt-5.6-sol")
+        #expect(config.postProcessorOpenAIModel == "gpt-5.6-sol")
+        #expect(config.postProcessorChatGPTModel == "gpt-5.6-sol")
     }
 
     @Test("legacy completed onboarding enables meetings when use case is missing")
@@ -874,6 +1673,24 @@ struct AppConfigTests {
 
         #expect(config.meetingTranscriptionBackend == "whisper")
         #expect(config.meetingTranscriptionModel == "ggml-medium.en")
+    }
+
+    @Test("English-only Whisper selections keep their exact model identities")
+    func englishOnlyWhisperSelectionsKeepExactModels() throws {
+        let json = """
+        {
+          "stt_backend": "whisper",
+          "stt_model": "tiny.en",
+          "meeting_transcription_backend": "whisper",
+          "meeting_transcription_model": "small.en",
+          "whisper_model": "medium.en"
+        }
+        """
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.sttModel == BackendOption.whisperTinyEnglish.model)
+        #expect(config.meetingTranscriptionModel == BackendOption.whisperSmallEnglish.model)
+        #expect(config.whisperModel == BackendOption.whisperMediumEnglish.model)
     }
 
     @Test("indicator anchor falls back to custom when legacy origin exists")

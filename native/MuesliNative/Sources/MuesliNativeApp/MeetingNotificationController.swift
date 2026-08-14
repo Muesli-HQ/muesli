@@ -25,6 +25,29 @@ final class MeetingNotificationController {
 
     private static let dismissDuration: TimeInterval = 15
 
+    static func singleActionTextWidth(
+        cardWidth: CGFloat,
+        textX: CGFloat,
+        buttonWidth: CGFloat = 110,
+        trailingInset: CGFloat = 12,
+        spacing: CGFloat = 8
+    ) -> CGFloat {
+        max(0, cardWidth - trailingInset - buttonWidth - spacing - textX)
+    }
+
+    static func singleActionCardWidth(
+        requiredTextWidth: CGFloat,
+        textX: CGFloat,
+        buttonWidth: CGFloat = 110,
+        trailingInset: CGFloat = 12,
+        spacing: CGFloat = 8,
+        minimumWidth: CGFloat = 344,
+        maximumWidth: CGFloat = 420
+    ) -> CGFloat {
+        let requiredWidth = ceil(textX + requiredTextWidth + spacing + buttonWidth + trailingInset)
+        return min(maximumWidth, max(minimumWidth, requiredWidth))
+    }
+
     @discardableResult
     func show(
         promptID: String? = nil,
@@ -56,8 +79,25 @@ final class MeetingNotificationController {
 
         let hasJoinButton = meetingURL != nil && onJoinAndRecord != nil
         let platform = explicitPlatform ?? meetingURL.flatMap { MeetingPlatform.detect(from: $0) }
+        let platformIcon = platform?.loadIcon()
+        let iconSize: CGFloat = 26
+        let textX: CGFloat = platformIcon == nil ? 14 : 14 + iconSize + 9
+        let titleFont = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        let subtitleFont = NSFont.systemFont(ofSize: 11)
 
-        let cardWidth: CGFloat = 344
+        let minimumCardWidth: CGFloat = 344
+        let cardWidth: CGFloat
+        if hasJoinButton {
+            cardWidth = minimumCardWidth
+        } else {
+            let titleWidth = (title as NSString).size(withAttributes: [.font: titleFont]).width
+            let subtitleWidth = (subtitle as NSString).size(withAttributes: [.font: subtitleFont]).width
+            cardWidth = Self.singleActionCardWidth(
+                requiredTextWidth: max(titleWidth, subtitleWidth),
+                textX: textX,
+                minimumWidth: minimumCardWidth
+            )
+        }
         let cardHeight: CGFloat = 60
         let closeButtonSize: CGFloat = 22
         let cardX = closeButtonSize / 2 + 1
@@ -137,28 +177,23 @@ final class MeetingNotificationController {
         contentView.hoverFrames = [cardView.frame, dismissButton.frame]
 
         // Platform icon + text layout
-        let textX: CGFloat
-        if let platform, let icon = platform.loadIcon() {
-            let iconSize: CGFloat = 26
+        if let icon = platformIcon {
             let iconView = NSImageView(image: icon)
             iconView.imageScaling = .scaleProportionallyUpOrDown
             iconView.frame = NSRect(x: 14, y: (cardHeight - iconSize) / 2 + 1, width: iconSize, height: iconSize)
             cardView.addSubview(iconView)
-            textX = 14 + iconSize + 9
-        } else {
-            textX = 14
         }
 
         // Title label
         let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        titleLabel.font = titleFont
         titleLabel.textColor = .white
         titleLabel.frame = NSRect(x: textX, y: 32, width: 144, height: 18)
         cardView.addSubview(titleLabel)
 
         // Subtitle label
         let subtitleLabel = NSTextField(labelWithString: subtitle)
-        subtitleLabel.font = .systemFont(ofSize: 11)
+        subtitleLabel.font = subtitleFont
         subtitleLabel.textColor = NSColor.white.withAlphaComponent(0.55)
         subtitleLabel.frame = NSRect(x: textX, y: 14, width: 144, height: 16)
         cardView.addSubview(subtitleLabel)
@@ -202,9 +237,15 @@ final class MeetingNotificationController {
             cardView.addSubview(chevronButton)
         } else {
             // Single "Start Recording" button
+            let buttonWidth: CGFloat = 110
+            let buttonX = cardWidth - buttonWidth - 12
+            let textWidth = Self.singleActionTextWidth(cardWidth: cardWidth, textX: textX, buttonWidth: buttonWidth)
+            titleLabel.frame.size.width = textWidth
+            subtitleLabel.frame.size.width = textWidth
+
             let startButton = NSButton(title: actionLabel, target: self, action: #selector(handleStartRecording))
             startButton.font = .systemFont(ofSize: 12, weight: .medium)
-            startButton.frame = NSRect(x: cardWidth - 122, y: 15, width: 110, height: 30)
+            startButton.frame = NSRect(x: buttonX, y: 15, width: buttonWidth, height: 30)
             startButton.wantsLayer = true
             startButton.layer?.backgroundColor = NSColor(red: 0.2, green: 0.5, blue: 1.0, alpha: 1.0).cgColor
             startButton.layer?.cornerRadius = 6

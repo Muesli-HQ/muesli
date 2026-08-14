@@ -4,6 +4,7 @@ import MuesliCore
 struct MeetingListItemView: View {
     let record: MeetingRecord
     let isSelected: Bool
+    let hasFollowUps: Bool
     let folders: [MeetingFolder]
     private let folderByID: [Int64: MeetingFolder]
     private let folderIDsWithChildren: Set<Int64>
@@ -20,6 +21,7 @@ struct MeetingListItemView: View {
     init(
         record: MeetingRecord,
         isSelected: Bool,
+        hasFollowUps: Bool,
         folders: [MeetingFolder],
         onSelect: @escaping () -> Void,
         onMove: @escaping (Int64?) -> Void,
@@ -28,6 +30,7 @@ struct MeetingListItemView: View {
     ) {
         self.record = record
         self.isSelected = isSelected
+        self.hasFollowUps = hasFollowUps
         self.folders = folders
         self.folderByID = Dictionary(uniqueKeysWithValues: folders.map { ($0.id, $0) })
         self.folderIDsWithChildren = Set(folders.compactMap(\.parentID))
@@ -62,6 +65,7 @@ struct MeetingListItemView: View {
                 Spacer(minLength: 4)
 
                 HStack(spacing: 6) {
+                    relationshipIndicators
                     if !folders.isEmpty {
                         folderMenuButton
                     }
@@ -129,6 +133,35 @@ struct MeetingListItemView: View {
     }
 
     // MARK: - Folder menu button
+
+    @ViewBuilder
+    private var relationshipIndicators: some View {
+        if record.followUpToID != nil || hasFollowUps {
+            HStack(spacing: 4) {
+                if record.followUpToID != nil {
+                    relationshipIcon(
+                        "arrow.turn.down.right",
+                        help: "Follow-up meeting"
+                    )
+                }
+                if hasFollowUps {
+                    relationshipIcon(
+                        "arrow.triangle.branch",
+                        help: "Has follow-up meetings"
+                    )
+                }
+            }
+        }
+    }
+
+    private func relationshipIcon(_ systemName: String, help: String) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(MuesliTheme.accent.opacity(0.9))
+            .frame(width: 24, height: 24)
+            .help(help)
+            .accessibilityLabel(help)
+    }
 
     private func folderBreadcrumb(_ folder: MeetingFolder) -> String {
         var parts: [String] = [folder.name]
