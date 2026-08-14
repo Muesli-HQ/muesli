@@ -191,7 +191,10 @@ struct RouteAwareMeetingMicRecorderTests {
         try await waitUntil { samples == [[8, 9]] }
 
         #expect(samples == [[8, 9]])
-        #expect(failed.stopCalls == 1)
+        // The retired child is stopped on the async cleanup queue after
+        // promotion; wait for it rather than asserting synchronously (flakes
+        // under CI load otherwise).
+        try await waitUntil { failed.stopCalls == 1 }
     }
 
     @Test("same route can retry after a terminal recovery failure")

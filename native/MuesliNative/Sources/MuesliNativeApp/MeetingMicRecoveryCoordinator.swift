@@ -131,6 +131,15 @@ final class MeetingMicRecoveryCoordinator {
     /// Fired at most once per meeting when confirmed degradation is classified
     /// as user-muted input. Runs after the coordinator lock is released.
     var onUserMuted: (() -> Void)?
+    /// While true (a route transition is still settling), recovery dispatches
+    /// are deferred: a handoff attempted mid-churn reliably fails its
+    /// first-buffer window and piles candidate graphs onto a busy daemon
+    /// (measured live during BT connects on macOS 26.5.2).
+    var isRouteSettling: () -> Bool = { false }
+    /// Scheduler for deferred recovery dispatch; injectable for tests.
+    var scheduleAfter: (TimeInterval, @escaping () -> Void) -> Void = { delay, work in
+        DispatchQueue.global().asyncAfter(deadline: .now() + delay, execute: work)
+    }
 
     private let policy: Policy
     private let now: () -> Date
@@ -292,6 +301,46 @@ final class MeetingMicRecoveryCoordinator {
         }
     }
 
+    /// Open an episode from an external detector (e.g. the system-audio
+    /// watchdog noticing mic callbacks stalled while the tap is dead — the
+    /// health tracker's own precondition is blind in that state). Shares the
+    /// same episode lifecycle: no-op when an episode is already open or the
+    /// meeting has finished.
+    func noteExternalDegradation(reason: String) {
+        var pendingEpisode: Episode?
+        var recoveryToDispatch: (token: UUID, reason: String)?
+
+        lock.lock()
+        if !finished, episode == nil {
+            let timestamp = now()
+            var newEpisode = Episode(
+                id: UUID(),
+                startedAt: timestamp,
+                initialReason: reason,
+                initialState: .micCallbacksMissing,
+                flapCount: 0,
+                recoveryAttempts: 0,
+                lastAttemptAt: nil,
+                pendingRecoveryToken: nil,
+                handoffPromotions: 0,
+                lastHandoffOutcome: nil,
+                healthySince: nil
+            )
+            pendingEpisode = newEpisode
+            recoveryToDispatch = reserveRecoveryLocked(&newEpisode, at: timestamp)
+            episode = newEpisode
+        }
+        let dispatch = recoveryToDispatch
+        lock.unlock()
+
+        if let pendingEpisode {
+            onEpisodeEvent?(makeEvent(.degraded, episode: pendingEpisode, duration: 0))
+        }
+        if let dispatch {
+            dispatchRecovery(dispatch)
+        }
+    }
+
     /// Record the outcome of a recovery handoff (called by the recorder layer).
     /// A promotion during an open episode marks the recovery as creditable if
     /// healthy delivery follows.
@@ -385,7 +434,15 @@ final class MeetingMicRecoveryCoordinator {
 
     /// Runs outside the lock. Revalidates the reservation token immediately
     /// before dispatch: an episode that closed or moved on invalidates it.
+    /// Defers while a route transition is settling — a handoff mid-churn
+    /// reliably fails its first-buffer window.
     private func dispatchRecovery(_ reservation: (token: UUID, reason: String)) {
+        if isRouteSettling() {
+            scheduleAfter(1) { [weak self] in
+                self?.dispatchRecovery(reservation)
+            }
+            return
+        }
         lock.lock()
         guard !finished,
               let active = episode,

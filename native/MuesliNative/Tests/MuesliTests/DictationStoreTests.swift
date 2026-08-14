@@ -156,7 +156,39 @@ struct DictationStoreTests {
         #expect(try store.cloudSyncStateData(forKey: "development-private") == Data("other".utf8))
     }
 
-    @Test("CloudKit system fields survive local edits and account reset")
+    @Test("CloudKit account scope is a first-writer-wins boundary")
+    func cloudSyncAccountScopeCannotBeReassigned() throws {
+        let store = try makeStore()
+
+        #expect(try store.claimCloudSyncAccountScope("scope-a", forKey: "account-owner"))
+        #expect(try store.claimCloudSyncAccountScope("scope-a", forKey: "account-owner"))
+        #expect(try !store.claimCloudSyncAccountScope("scope-b", forKey: "account-owner"))
+        #expect(try store.cloudSyncStateData(forKey: "account-owner") == Data("scope-a".utf8))
+    }
+
+    @Test("account verification ignores local-only rows and includes cloud-backed rows")
+    func accountVerificationUsesOnlyCloudBackedRecordNames() throws {
+        let store = try makeStore()
+        _ = try store.insertDictation(
+            text: "Local-only text",
+            durationSeconds: 1,
+            startedAt: Date().addingTimeInterval(-1),
+            endedAt: Date()
+        )
+        let local = try #require(try store.textRecordsNeedingSync().first)
+        #expect(try store.textRecordNamesRequiringAccountVerification().isEmpty)
+
+        #expect(try store.markTextRecordSynced(
+            kind: local.kind,
+            recordName: local.id,
+            changeTag: "server-tag",
+            systemFields: Data([0x01]),
+            recordUpdatedAt: local.updatedAt
+        ))
+        #expect(try store.textRecordNamesRequiringAccountVerification() == Set([local.id]))
+    }
+
+    @Test("same-account zone recreation clears obsolete metadata and preserves local edits")
     func cloudSystemFieldsLifecycle() throws {
         let store = try makeStore()
         let endedAt = Date(timeIntervalSince1970: 1_770_000_000)
@@ -200,7 +232,7 @@ struct DictationStoreTests {
         #expect(dirty.cloudChangeTag == "server-v2")
         #expect(dirty.cloudSystemFields == newerSystemFields)
 
-        try store.resetTextRecordCloudMetadataForAccountChange()
+        try store.resetTextRecordCloudMetadataForZoneRecreation()
         let reset = try #require(try store.textRecordsNeedingSync().first { $0.id == outbound.id })
         #expect(reset.text == "Newer local text")
         #expect(reset.cloudChangeTag == nil)
@@ -1310,6 +1342,35 @@ struct DictationStoreTests {
         #expect(cloud["text"] as? String == "Updated local text")
     }
 
+    @Test("sync cloud record rejects system fields from a different zone")
+    func syncCloudRecordRejectsForeignZoneSystemFields() throws {
+        let updatedAt = Date(timeIntervalSince1970: 1_770_000_000)
+        let recordName = "dictation-legacy-default-zone"
+        let legacyRecord = CKRecord(
+            recordType: MuesliICloudSyncEngine.Schema.textRecordType,
+            recordID: CKRecord.ID(recordName: recordName)
+        )
+        let legacySystemFields = try #require(
+            MuesliICloudSyncEngine.encodedSystemFields(for: legacyRecord)
+        )
+
+        let cloud = MuesliICloudSyncEngine.syncZoneCloudRecord(from: SyncTextRecord(
+            id: recordName,
+            kind: .dictation,
+            text: "Migrated into the custom zone",
+            source: "macos",
+            createdAt: updatedAt.addingTimeInterval(-60),
+            updatedAt: updatedAt,
+            durationSeconds: 2,
+            wordCount: 5,
+            cloudSystemFields: legacySystemFields
+        ))
+
+        #expect(cloud.recordID.zoneID == MuesliICloudSyncEngine.Schema.syncZoneID)
+        #expect(cloud.recordID.recordName == recordName)
+        #expect(cloud !== legacyRecord)
+    }
+
     @Test("dirty upload resolution applies newer fetched remote")
     func dirtyUploadResolutionAppliesNewerFetchedRemote() throws {
         let localUpdatedAt = Date(timeIntervalSince1970: 1_770_000_000)
@@ -2131,6 +2192,30 @@ struct DictationStoreTests {
         #expect(stats.totalWords == 5)
         #expect(stats.totalSessions == 2)
         #expect(stats.averageWPM > 0)
+    }
+
+    @Test("dictation WPM excludes words without a measured duration")
+    func dictationWPMExcludesUntimedWords() throws {
+        let store = try makeStore()
+        let now = Date()
+        try store.insertDictation(
+            text: "one two",
+            durationSeconds: 60,
+            startedAt: now.addingTimeInterval(-60),
+            endedAt: now
+        )
+        try store.insertDictation(
+            text: "three four five",
+            durationSeconds: 0,
+            startedAt: now,
+            endedAt: now
+        )
+
+        let stats = try store.dictationStats()
+
+        #expect(stats.totalWords == 5)
+        #expect(stats.totalSessions == 2)
+        #expect(stats.averageWPM == 2)
     }
 
     @Test("dictation streaks ignore deleted records")
