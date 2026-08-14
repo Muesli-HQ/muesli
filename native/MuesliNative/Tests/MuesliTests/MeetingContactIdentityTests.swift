@@ -51,7 +51,7 @@ struct MeetingContactIdentityTests {
 
     @Test("falls back to an unnamed label")
     func unnamed() {
-        #expect(MeetingContactIdentity.displayName(for: CNMutableContact()) == "Unnamed contact")
+        #expect(MeetingContactIdentity.displayName(for: CNMutableContact()) == MeetingContactIdentity.unnamedFallback)
     }
 
     @Test("prefers the strongest available identity")

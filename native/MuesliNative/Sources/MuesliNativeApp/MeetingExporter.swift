@@ -83,6 +83,29 @@ struct MeetingExporter {
         }
     }
 
+    /// Flattens a Contacts display name into a single Markdown metadata token.
+    /// Apple Contacts can store embedded newlines and emphasis markers; those must
+    /// not split the `People` line or steal inline `**` parsing from the PDF path.
+    static func sanitizedExportDisplayName(_ name: String) -> String {
+        let collapsed = name
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+        guard !collapsed.isEmpty else { return "" }
+
+        var escaped = ""
+        escaped.reserveCapacity(collapsed.count)
+        for character in collapsed {
+            switch character {
+            case "*", "_", "`", "[", "]", "#", "\\":
+                escaped.append("\\")
+                escaped.append(character)
+            default:
+                escaped.append(character)
+            }
+        }
+        return escaped
+    }
+
     // MARK: - Markdown composition
 
     static func buildMarkdown(
@@ -100,8 +123,11 @@ struct MeetingExporter {
         if let name = meeting.selectedTemplateName, !name.isEmpty {
             parts.append("**Template:** \(name)")
         }
-        if !participants.isEmpty {
-            parts.append("**People:** \(participants.map(\.displayName).joined(separator: ", "))")
+        let people = participants
+            .map { sanitizedExportDisplayName($0.displayName) }
+            .filter { !$0.isEmpty }
+        if !people.isEmpty {
+            parts.append("**People:** \(people.joined(separator: ", "))")
         }
         parts.append("")
         parts.append("---")

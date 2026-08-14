@@ -60,17 +60,19 @@ struct MeetingParticipantsView: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("People in this meeting")
         .task(id: meetingID) {
-            reload()
+            await reload()
         }
         .onDisappear {
             statusDismissTask?.cancel()
         }
         .sheet(isPresented: $isNewContactPresented) {
             NewMeetingContactView { contact in
-                attach(
-                    contactIdentifier: contact.identifier,
-                    displayName: contact.displayName
-                )
+                Task { @MainActor in
+                    await attach(
+                        contactIdentifier: contact.identifier,
+                        displayName: contact.displayName
+                    )
+                }
             }
         }
         .alert("Couldn't Update People", isPresented: errorBinding) {
@@ -123,9 +125,11 @@ struct MeetingParticipantsView: View {
         )
     }
 
-    private func reload() {
+    private func reload() async {
         do {
-            participants = try controller.meetingParticipants(meetingID: meetingID)
+            participants = try await DictationStore.withTransientLockRetry {
+                try controller.meetingParticipants(meetingID: meetingID)
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -136,18 +140,20 @@ struct MeetingParticipantsView: View {
     private func attach(_ contact: CNContact) {
         Task { @MainActor in
             let displayName = await MeetingContactStore().resolveDisplayName(for: contact)
-            attach(contactIdentifier: contact.identifier, displayName: displayName)
+            await attach(contactIdentifier: contact.identifier, displayName: displayName)
         }
     }
 
-    private func attach(contactIdentifier: String, displayName: String) {
+    private func attach(contactIdentifier: String, displayName: String) async {
         do {
-            let added = try controller.attachMeetingParticipant(
-                meetingID: meetingID,
-                contactIdentifier: contactIdentifier,
-                displayName: displayName
-            )
-            reload()
+            let added = try await DictationStore.withTransientLockRetry {
+                try controller.attachMeetingParticipant(
+                    meetingID: meetingID,
+                    contactIdentifier: contactIdentifier,
+                    displayName: displayName
+                )
+            }
+            await reload()
             if !added {
                 showStatus("\(displayName) is already on this meeting.")
             }
@@ -157,14 +163,18 @@ struct MeetingParticipantsView: View {
     }
 
     private func remove(_ participant: MeetingParticipant) {
-        do {
-            try controller.removeMeetingParticipant(
-                meetingID: meetingID,
-                contactIdentifier: participant.contactIdentifier
-            )
-            reload()
-        } catch {
-            errorMessage = error.localizedDescription
+        Task { @MainActor in
+            do {
+                try await DictationStore.withTransientLockRetry {
+                    try controller.removeMeetingParticipant(
+                        meetingID: meetingID,
+                        contactIdentifier: participant.contactIdentifier
+                    )
+                }
+                await reload()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 

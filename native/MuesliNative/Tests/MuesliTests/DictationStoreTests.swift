@@ -3681,6 +3681,41 @@ struct DictationStoreTests {
         #expect(DictationStore.isTransientLockFailure(DictationStoreError.meetingNotFound(id: 1)) == false)
     }
 
+    @Test("transient lock retry succeeds after SQLITE_BUSY")
+    func transientLockRetrySucceedsAfterBusy() async throws {
+        let busy = storeError(code: SQLITE_BUSY)
+        var attempts = 0
+
+        let value = try await DictationStore.withTransientLockRetry(delays: [.zero, .zero]) {
+            attempts += 1
+            if attempts < 3 {
+                throw busy
+            }
+            return "ok"
+        }
+
+        #expect(value == "ok")
+        #expect(attempts == 3)
+    }
+
+    @Test("transient lock retry does not retry a deterministic fault")
+    func transientLockRetrySkipsDeterministicFaults() async {
+        var attempts = 0
+
+        do {
+            _ = try await DictationStore.withTransientLockRetry(delays: [.zero]) {
+                attempts += 1
+                throw DictationStoreError.meetingNotFound(id: 1)
+            }
+            Issue.record("expected meetingNotFound")
+        } catch DictationStoreError.meetingNotFound(let id) {
+            #expect(id == 1)
+        } catch {
+            Issue.record("unexpected error \(error)")
+        }
+        #expect(attempts == 1)
+    }
+
     private func storeError(code: Int32) -> NSError {
         NSError(domain: DictationStore.errorDomain, code: Int(code))
     }

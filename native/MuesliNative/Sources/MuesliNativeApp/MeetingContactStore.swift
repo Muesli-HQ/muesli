@@ -113,22 +113,24 @@ struct MeetingContactStore {
     /// Derives a display name for a picker-vended contact.
     ///
     /// `CNContactPicker` is an out-of-process remote view service, so the contact it
-    /// hands back only carries the keys that service fetched. When the name keys are
-    /// missing, `MeetingContactIdentity` would silently degrade to "Unnamed contact",
-    /// so re-fetch by identifier instead. Note `displayedKeys` cannot be used to force
-    /// the key set: per CNContactPicker.h, providing keys switches the picker to
-    /// selecting *values* rather than contacts.
+    /// hands back only carries the keys that service fetched. Name-descriptor keys can
+    /// be marked available while still empty — this app's own "New Contact…" flow
+    /// allows email-or-phone-only people — so the fast path is the resolved name, not
+    /// key availability. When that name is the unnamed fallback, re-fetch by identifier
+    /// to pick up nickname, organization, email, or phone. Note `displayedKeys` cannot
+    /// be used to force the key set: per CNContactPicker.h, providing keys switches
+    /// the picker to selecting *values* rather than contacts.
     ///
     /// The re-fetch is deliberately skipped unless access is already granted — a
     /// permission prompt must never fire merely to render a name.
     func resolveDisplayName(for contact: CNContact) async -> String {
-        let nameDescriptor = CNContactFormatter.descriptorForRequiredKeys(for: .fullName)
-        if contact.areKeysAvailable([nameDescriptor]) {
-            return MeetingContactIdentity.displayName(for: contact)
+        let resolved = MeetingContactIdentity.displayName(for: contact)
+        if !MeetingContactIdentity.isUnnamedFallback(resolved) {
+            return resolved
         }
         guard authorizationStatus() == .authorized,
               !contact.identifier.isEmpty else {
-            return MeetingContactIdentity.displayName(for: contact)
+            return resolved
         }
 
         let identifier = contact.identifier

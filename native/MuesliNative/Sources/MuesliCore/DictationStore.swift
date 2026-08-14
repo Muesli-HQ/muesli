@@ -54,6 +54,35 @@ public final class DictationStore {
         }
     }
 
+    /// Backoff between lock-contention retries. Sized to outlast a transcript
+    /// checkpoint flush without stalling a caller that can afford to wait.
+    public static let transientLockRetryDelays: [Duration] = [
+        .milliseconds(200),
+        .milliseconds(600),
+        .milliseconds(1500),
+    ]
+
+    /// Retries `operation` when it raises a transient SQLite lock, then rethrows
+    /// any remaining error. Callers that must not block a one-shot artifact should
+    /// catch the final failure themselves.
+    public static func withTransientLockRetry<T>(
+        delays: [Duration] = transientLockRetryDelays,
+        operation: () throws -> T
+    ) async throws -> T {
+        var attempt = 0
+        while true {
+            do {
+                return try operation()
+            } catch {
+                guard attempt < delays.count, isTransientLockFailure(error) else {
+                    throw error
+                }
+                try await Task.sleep(for: delays[attempt])
+                attempt += 1
+            }
+        }
+    }
+
     private static let iso8601Formatter = ISO8601DateFormatter()
     private static let iso8601FormatterLock = NSLock()
 

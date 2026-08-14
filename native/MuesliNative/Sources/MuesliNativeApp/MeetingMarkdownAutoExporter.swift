@@ -74,15 +74,6 @@ final class MeetingMarkdownAutoExporter: MeetingMarkdownAutoExporting {
 
     // MARK: - Participants
 
-    /// Backoff between participant lookup attempts. Sized to outlast a transcript
-    /// checkpoint flush — which can still be draining when a meeting ends — without
-    /// holding a background export for a noticeable stretch.
-    private static let participantRetryDelays: [Duration] = [
-        .milliseconds(200),
-        .milliseconds(600),
-        .milliseconds(1500),
-    ]
-
     /// Resolves the participant snapshot for an export, retrying lock contention.
     ///
     /// An automatic export is written exactly once and never revisited, so a single
@@ -99,7 +90,7 @@ final class MeetingMarkdownAutoExporter: MeetingMarkdownAutoExporting {
             do {
                 return try load()
             } catch {
-                guard attempt < Self.participantRetryDelays.count,
+                guard attempt < DictationStore.transientLockRetryDelays.count,
                       DictationStore.isTransientLockFailure(error) else {
                     recordParticipantLookupFailure(
                         meetingID: meetingID,
@@ -108,7 +99,7 @@ final class MeetingMarkdownAutoExporter: MeetingMarkdownAutoExporting {
                     )
                     return []
                 }
-                try? await Task.sleep(for: Self.participantRetryDelays[attempt])
+                try? await Task.sleep(for: DictationStore.transientLockRetryDelays[attempt])
                 attempt += 1
             }
         }

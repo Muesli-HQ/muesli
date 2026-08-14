@@ -11,6 +11,7 @@ private final class FakeContactWriter: MeetingContactWriting, @unchecked Sendabl
     var fetchError: Error?
     var saveError: Error?
     private(set) var savedRequestCount = 0
+    private(set) var fetchCount = 0
     private(set) var lastRequestedKeys: [CNKeyDescriptor] = []
 
     func requestContactsAccess() async throws -> Bool {
@@ -22,6 +23,7 @@ private final class FakeContactWriter: MeetingContactWriting, @unchecked Sendabl
 
     func fetchContacts(matching predicate: NSPredicate, keysToFetch keys: [CNKeyDescriptor]) throws -> [CNContact] {
         lastRequestedKeys = keys
+        fetchCount += 1
         if let fetchError {
             throw fetchError
         }
@@ -159,6 +161,27 @@ struct MeetingContactStoreTests {
         let store = MeetingContactStore(store: writer, authorizationStatus: { .authorized })
 
         #expect(await store.resolveDisplayName(for: contact) == "Alice Example")
+        #expect(writer.fetchCount == 0)
+    }
+
+    @Test("re-fetches when name keys are present but the resolved name is unnamed")
+    func resolveDisplayNameRefetchesWhenNameIsUnnamed() async {
+        // CNContactPicker can vend a contact whose name descriptor keys are available
+        // and empty — the same shape this app's New Contact form allows. Falling back
+        // on key availability would skip the refetch and stick on "Unnamed contact"
+        // even when email or phone is in the address book.
+        let pickerContact = CNMutableContact()
+        let stored = CNMutableContact()
+        stored.emailAddresses = [
+            CNLabeledValue(label: CNLabelWork, value: "alice@example.test" as NSString),
+        ]
+
+        let writer = FakeContactWriter()
+        writer.matches = [stored]
+        let store = MeetingContactStore(store: writer, authorizationStatus: { .authorized })
+
+        #expect(await store.resolveDisplayName(for: pickerContact) == "alice@example.test")
+        #expect(writer.fetchCount == 1)
     }
 
     @Test("never re-fetches a name while access is undetermined")
@@ -168,6 +191,7 @@ struct MeetingContactStoreTests {
         let writer = FakeContactWriter()
         let store = MeetingContactStore(store: writer, authorizationStatus: { .notDetermined })
 
-        #expect(await store.resolveDisplayName(for: CNMutableContact()) == "Unnamed contact")
+        #expect(await store.resolveDisplayName(for: CNMutableContact()) == MeetingContactIdentity.unnamedFallback)
+        #expect(writer.fetchCount == 0)
     }
 }

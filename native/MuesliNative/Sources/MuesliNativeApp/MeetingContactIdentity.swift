@@ -2,6 +2,8 @@ import Contacts
 import Foundation
 
 enum MeetingContactIdentity {
+    static let unnamedFallback = "Unnamed contact"
+
     static func displayName(for contact: CNContact) -> String {
         let nameDescriptor = CNContactFormatter.descriptorForRequiredKeys(for: .fullName)
         let fullName = contact.areKeysAvailable([nameDescriptor])
@@ -22,7 +24,11 @@ enum MeetingContactIdentity {
                 return trimmed
             }
         }
-        return "Unnamed contact"
+        return unnamedFallback
+    }
+
+    static func isUnnamedFallback(_ name: String) -> Bool {
+        name == unnamedFallback
     }
 }
 
