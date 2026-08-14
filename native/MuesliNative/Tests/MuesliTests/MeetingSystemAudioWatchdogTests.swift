@@ -194,4 +194,40 @@ struct MeetingSystemAudioWatchdogTests {
         harness.stalledTick()
         #expect(harness.micBridgeReasons.isEmpty)
     }
+
+    @Test("capture failure while paused opens no episode and requests nothing")
+    func captureFailureWhilePausedIsIgnored() {
+        let harness = Harness()
+        harness.paused = true
+        harness.watchdog.noteCaptureFailure(reason: "rebuild_exhausted: tapCreationFailed")
+        #expect(harness.events.isEmpty)
+        #expect(harness.recoveryRequests.isEmpty)
+        #expect(!harness.watchdog.hasActiveEpisode)
+    }
+
+    @Test("a rejected recovery request refunds the attempt but keeps back-pressure")
+    func rejectedRecoveryKeepsCooldown() {
+        let harness = Harness(policy: .init(
+            stallThreshold: 2,
+            recoveredAfterTicks: 2,
+            attemptCooldown: 5,
+            maxAttemptsPerEpisode: 3
+        ))
+        var requestCount = 0
+        harness.watchdog.recoveryRequest = { _ in
+            requestCount += 1
+            return false // rejected (paused / rebuild in flight)
+        }
+
+        harness.aliveTick()
+        harness.stalledTick()
+        harness.stalledTick() // episode confirmed → dispatch → rejected
+        #expect(requestCount == 1)
+
+        harness.stalledTick() // inside cooldown: nothing
+        #expect(requestCount == 1)
+
+        for _ in 0..<4 { harness.stalledTick() } // cooldown elapses → one more
+        #expect(requestCount == 2)
+    }
 }

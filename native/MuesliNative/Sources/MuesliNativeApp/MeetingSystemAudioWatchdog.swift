@@ -86,12 +86,13 @@ final class MeetingSystemAudioWatchdog {
     }
 
     /// Called by the recorder when a rebuild exhausts its retry budget — the
-    /// tap is dead regardless of heartbeat state.
+    /// tap is dead regardless of heartbeat state. Ignored while paused: a
+    /// rejected recovery request must not open an episode or burn budget.
     func noteCaptureFailure(reason: String) {
         var eventToEmit: MeetingSystemAudioHealthEvent?
         var recoveryReason: String?
         lock.lock()
-        if !finished, episode == nil {
+        if !finished, !isPaused(), episode == nil {
             var newEpisode = openEpisodeLocked(reason: reason, at: now())
             eventToEmit = MeetingSystemAudioHealthEvent(
                 kind: .degraded,
@@ -111,8 +112,22 @@ final class MeetingSystemAudioWatchdog {
             onEpisodeEvent?(eventToEmit)
         }
         if let recoveryReason {
-            _ = recoveryRequest(recoveryReason)
+            let initiated = recoveryRequest(recoveryReason)
+            if !initiated {
+                refundAttemptLocked(reason: recoveryReason)
+            }
         }
+    }
+
+    /// Roll back the attempt count for a rejected request while keeping its
+    /// cooldown timestamp for back-pressure.
+    private func refundAttemptLocked(reason: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var active = episode, active.initialReason == reason,
+              active.recoveryAttempts > 0 else { return }
+        active.recoveryAttempts -= 1
+        episode = active
     }
 
     /// One health evaluation. Called by MeetingSession's timer.
@@ -207,7 +222,13 @@ final class MeetingSystemAudioWatchdog {
             onEpisodeEvent?(eventToEmit)
         }
         if let recoveryReason {
-            _ = recoveryRequest(recoveryReason)
+            // A rejection (paused / rebuild in flight) must not burn the
+            // attempt budget; the cooldown timestamp stands either way so a
+            // refused request still has back-pressure.
+            let initiated = recoveryRequest(recoveryReason)
+            if !initiated {
+                refundAttemptLocked(reason: recoveryReason)
+            }
         }
         if let micBridgeReason {
             onMicBlindnessDegradation?(micBridgeReason)
