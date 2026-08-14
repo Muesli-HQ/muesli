@@ -605,6 +605,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         guard transition.completed else { return }
         onRawPCMSamplesStorage?(firstSamples)
         onHandoffOutcome?(.promoted)
+        fputs("[meeting-mic] handoff promoted: replacement is now capturing\n", stderr)
         retireAfterHandoffAsync(transition.old)
     }
 
