@@ -325,6 +325,22 @@ struct MeetingMicRecoveryCoordinatorTests {
         #expect(harness.recoveryRequests.isEmpty)
     }
 
+    @Test("recovery dispatch defers while a route transition is settling")
+    func recoveryDefersWhileRouteSettles() {
+        let harness = Harness()
+        var settling = true
+        harness.coordinator.isRouteSettling = { settling }
+        var deferredWork: (() -> Void)?
+        harness.coordinator.scheduleAfter = { _, work in deferredWork = work }
+
+        harness.systemActive(seconds: 4) // episode starts; recovery reserved
+        #expect(harness.recoveryRequests.isEmpty) // deferred, not dispatched
+
+        settling = false
+        deferredWork?() // settle window elapsed
+        #expect(harness.recoveryRequests.count == 1)
+    }
+
     @Test("transient recovery refusals are throttled by the cooldown, not per-snapshot")
     func transientRefusalsRespectCooldown() {
         // Simulates a handoff already pending: the recorder declines (false)

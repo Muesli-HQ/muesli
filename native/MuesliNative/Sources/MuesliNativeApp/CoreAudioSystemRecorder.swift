@@ -221,6 +221,10 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
         do {
             try createTapAndAggregateDevice()
             try setupAndStartAudioDevice()
+            // The listener is record-only: it timestamps route transitions so
+            // the watchdog and mic recovery can defer stall diagnosis until
+            // the daemon settles. It never rebuilds — the tap is a global
+            // process mix and rides route changes untouched (proven live).
             installDefaultOutputDeviceListener()
             fputs("[system-audio] CoreAudio tap capture started\n", stderr)
         } catch {
@@ -879,15 +883,17 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
         processingQueue.asyncAfter(deadline: .now() + Double(deferMs) / 1000, execute: item)
     }
 
+    /// Called from the default-output listener. The tap is a global process
+    /// mix — upstream of any output device — so route changes need NO rebuild
+    /// (proven live: the tap rode an AirPods connect/case cycle untouched).
+    /// The listener is retained only to timestamp transitions: the watchdog
+    /// and the mic recovery coordinator use it to defer stall diagnosis until
+    /// the daemon has settled, since the old tap's heartbeat gap during a
+    /// transition is expected, not a dead graph.
     func restartTapForDefaultOutputDeviceChange() {
         guard isRecording else { return }
-        // Record every notification: a Bluetooth transition emits several over
-        // multiple seconds while the daemon negotiates, and rebuilding
-        // mid-churn reliably fails with tapCreationFailed(0) (measured live on
-        // macOS 26.5.2). The rebuild fires once, after the notifications stop.
         lastRouteChangeAtMs.store(Int64(Date().timeIntervalSince1970 * 1000), ordering: .relaxed)
-        fputs("[system-audio] default output device changed; settling before rebuild\n", stderr)
-        scheduleTapRebuild(reason: "route_change")
+        fputs("[system-audio] default output device changed (no rebuild; tap is route-independent)\n", stderr)
     }
 
     /// Serialized on processingQueue. A failed rebuild retries on a bounded

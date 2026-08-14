@@ -131,6 +131,15 @@ final class MeetingMicRecoveryCoordinator {
     /// Fired at most once per meeting when confirmed degradation is classified
     /// as user-muted input. Runs after the coordinator lock is released.
     var onUserMuted: (() -> Void)?
+    /// While true (a route transition is still settling), recovery dispatches
+    /// are deferred: a handoff attempted mid-churn reliably fails its
+    /// first-buffer window and piles candidate graphs onto a busy daemon
+    /// (measured live during BT connects on macOS 26.5.2).
+    var isRouteSettling: () -> Bool = { false }
+    /// Scheduler for deferred recovery dispatch; injectable for tests.
+    var scheduleAfter: (TimeInterval, @escaping () -> Void) -> Void = { delay, work in
+        DispatchQueue.global().asyncAfter(deadline: .now() + delay, execute: work)
+    }
 
     private let policy: Policy
     private let now: () -> Date
@@ -425,7 +434,15 @@ final class MeetingMicRecoveryCoordinator {
 
     /// Runs outside the lock. Revalidates the reservation token immediately
     /// before dispatch: an episode that closed or moved on invalidates it.
+    /// Defers while a route transition is settling — a handoff mid-churn
+    /// reliably fails its first-buffer window.
     private func dispatchRecovery(_ reservation: (token: UUID, reason: String)) {
+        if isRouteSettling() {
+            scheduleAfter(1) { [weak self] in
+                self?.dispatchRecovery(reservation)
+            }
+            return
+        }
         lock.lock()
         guard !finished,
               let active = episode,

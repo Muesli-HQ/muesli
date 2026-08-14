@@ -261,6 +261,12 @@ final class MeetingSession {
             guard let meetingMicRecorder else { return .unavailable }
             return meetingMicRecorder.requestSameRouteRecovery(reason: reason)
         }
+        // Recovery handoffs mid-transition reliably fail their first-buffer
+        // window; defer them until the daemon settles (same signal the tap
+        // watchdog uses — BT transitions move input and output together).
+        micRecoveryCoordinator.isRouteSettling = { [weak systemAudioRecorder] in
+            systemAudioRecorder?.isRouteSettling ?? false
+        }
         micRecoveryCoordinator.onEpisodeEvent = { [weak self] event in
             self?.onMicHealthEpisode?(event)
         }

@@ -245,7 +245,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
             label: "com.muesli.route-aware-meeting-mic-recorder-cleanup",
             attributes: .concurrent
         ),
-        handoffTimeout: TimeInterval = 2,
+        handoffTimeout: TimeInterval = 5,
         handoffTimeoutScheduler: HandoffTimeoutScheduler? = nil
     ) {
         self.seededSystemDefaultRecorder = systemDefaultRecorder

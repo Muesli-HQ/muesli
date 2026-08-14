@@ -47,8 +47,8 @@ struct CoreAudioSystemRecorderTests {
         #expect(policy.nextDelay(afterFailures: 10) == nil)
     }
 
-    @Test("route notifications debounce into a single rebuild once churn settles")
-    func routeChangeDebouncesRebuild() async throws {
+    @Test("route notifications never rebuild; they only timestamp the transition")
+    func routeChangeIsRecordOnly() async throws {
         let recorder = CoreAudioSystemRecorder()
         recorder.testing_setRecording(true)
         var attempts = 0
@@ -57,14 +57,14 @@ struct CoreAudioSystemRecorderTests {
         CoreAudioSystemRecorder.routeSettleDelay = 0.05
         defer { CoreAudioSystemRecorder.routeSettleDelay = 1.5 }
 
-        // A BT transition emits several notifications; each resets the settle
-        // timer, so only one rebuild should run after they stop.
+        #expect(!recorder.isRouteSettling)
         recorder.restartTapForDefaultOutputDeviceChange()
         recorder.restartTapForDefaultOutputDeviceChange()
-        recorder.restartTapForDefaultOutputDeviceChange()
-        try await waitForCondition { attempts == 1 }
-        try await Task.sleep(for: .milliseconds(120))
-        #expect(attempts == 1)
+        #expect(recorder.isRouteSettling)
+
+        // The tap is route-independent (global process mix): no rebuild ever.
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(attempts == 0)
     }
 
     @Test("health recovery requested during route churn defers until settle, sharing one slot")
