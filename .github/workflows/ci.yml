@@ -76,6 +76,9 @@ jobs:
       - name: Test CI test shard assignments
         run: ./scripts/test_ci_test_shards.sh
 
+      - name: Test LocalVQE runtime validation
+        run: ./scripts/test_localvqe_runtime_validation.sh
+
   # Release build — validate the app product compiles in release mode
   build_release:
     needs: changes
@@ -123,7 +126,17 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Cache LocalVQE runtime build
+        uses: actions/cache@v4
+        with:
+          path: |
+            native/MuesliNative/LocalVQE/lib
+            /tmp/LocalVQE
+          key: localvqe-${{ runner.os }}-${{ hashFiles('scripts/build_localvqe.sh') }}
+
       - name: Verify packaged CLI bundle
+        # Builds LocalVQE when missing, then asserts the packaged app includes
+        # a complete LocalVQE runtime + the committed GGUF model.
         run: ./scripts/test_packaged_cli.sh
 
   # Sparkle appcast/update metadata smoke test — catches broken release URLs,

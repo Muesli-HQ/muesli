@@ -46,11 +46,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     func setCountdownOverride(_ text: String?) {
         countdownOverride = text
-        if let text {
-            statusItem.button?.title = text
-        } else {
-            updateMenuBarTitle()
-        }
+        updateMenuBarTitle()
     }
 
     func refreshIcon() {
@@ -59,36 +55,37 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     func updateMenuBarTitle() {
+        let detail: String?
         if let countdownOverride {
-            statusItem.button?.title = countdownOverride
-            return
-        }
-        guard controller.config.showNextMeetingInMenuBar else {
-            statusItem.button?.title = ""
-            return
-        }
+            detail = countdownOverride
+        } else if controller.config.showNextMeetingInMenuBar {
+            let now = Date()
+            let hidden = controller.appState.hiddenCalendarEventIDs
+            let endOfToday = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: now)) ?? now
+            let nextEvent = controller.appState.upcomingCalendarEvents
+                .filter { !$0.isAllDay && $0.startDate > now && $0.startDate < endOfToday && !hidden.contains($0.id) }
+                .sorted { $0.startDate < $1.startDate }
+                .first
 
-        let now = Date()
-        let hidden = controller.appState.hiddenCalendarEventIDs
-        let endOfToday = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: now)) ?? now
-        let nextEvent = controller.appState.upcomingCalendarEvents
-            .filter { !$0.isAllDay && $0.startDate > now && $0.startDate < endOfToday && !hidden.contains($0.id) }
-            .sorted { $0.startDate < $1.startDate }
-            .first
-
-        if let event = nextEvent {
-            let minutesUntil = Int(ceil(event.startDate.timeIntervalSince(now) / 60))
-            let truncatedTitle = event.title.count > 20
-                ? String(event.title.prefix(18)) + "…"
-                : event.title
-            if minutesUntil <= 60 {
-                statusItem.button?.title = " \(truncatedTitle) · \(formatTimeUntil(minutesUntil))"
+            if let event = nextEvent {
+                let minutesUntil = Int(ceil(event.startDate.timeIntervalSince(now) / 60))
+                let truncatedTitle = event.title.count > 20
+                    ? String(event.title.prefix(18)) + "…"
+                    : event.title
+                detail = minutesUntil <= 60
+                    ? "\(truncatedTitle) · \(formatTimeUntil(minutesUntil))"
+                    : truncatedTitle
             } else {
-                statusItem.button?.title = " \(truncatedTitle)"
+                detail = nil
             }
         } else {
-            statusItem.button?.title = ""
+            detail = nil
         }
+        statusItem.button?.attributedTitle = MenuBarIconRenderer.statusTitle(
+            hotkey: controller.config.dictationHotkey,
+            showsHotkey: controller.config.showHotkeyInMenuBar,
+            detail: detail
+        )
     }
 
     private func build() {

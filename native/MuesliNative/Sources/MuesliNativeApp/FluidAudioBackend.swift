@@ -21,50 +21,40 @@ actor FluidAudioTranscriber {
 
     /// Downloads models (if needed) and initializes the ASR manager.
     /// - Parameter version: .v3 for multilingual (25 langs), .v2 for English-only
-    func loadModels(version: AsrModelVersion = .v3, progress: ((Double, String?) -> Void)? = nil) async throws {
+    func loadModels(
+        version: AsrModelVersion = .v3,
+        progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
+    ) async throws {
         if loadedVersion == version, asrManager != nil { return }
 
         fputs("[fluidaudio] downloading/loading models (version: \(version))...\n", stderr)
-        let estimatedTotalBytes: Int64 = 450 * 1_000_000
-        let rateEstimator = DownloadRateEstimator()
-        let totalText = Self.formatMegabytes(estimatedTotalBytes)
-        let models = try await AsrModels.downloadAndLoad(version: version) { downloadProgress in
-            let fraction = downloadProgress.fractionCompleted
-            let estimatedDownloadFraction = min(max(fraction / 0.5, 0), 1)
-            let estimatedBytes = Int64(Double(estimatedTotalBytes) * estimatedDownloadFraction)
-            let bytesPerSecond = rateEstimator.bytesPerSecond(for: estimatedBytes)
-            let status: String
-            switch downloadProgress.phase {
-            case .listing:
-                status = "0 MB of \(totalText)"
-            case .downloading(_, _):
-                let completedText = Self.formatMegabytes(estimatedBytes)
-                if bytesPerSecond > 0 {
-                    let rateText = Self.formatMegabytes(Int64(bytesPerSecond))
-                    status = "\(completedText) of \(totalText) • \(rateText)/s"
-                } else {
-                    status = "\(completedText) of \(totalText)"
-                }
-            case .compiling(_):
-                status = "Compiling model..."
-            }
-            DispatchQueue.main.async {
-                progress?(fraction, status)
-            }
+        let plan = version == .v2 ? ManagedASRModelPlans.parakeetV2() : ManagedASRModelPlans.parakeetV3()
+        let manager = try await ManagedASRModelDownloader.loadValidated(
+            plan,
+            progress: progress,
+            progressSnapshot: progressSnapshot
+        ) { modelDirectory in
+            let preparing = ModelDownloadProgress.preparing(
+                modelID: plan.modelID,
+                message: "Loading Parakeet into Core ML..."
+            )
+            progress?(0.95, preparing.message)
+            progressSnapshot?(preparing)
+            let models = try await AsrModels.load(from: modelDirectory, version: version)
+            let manager = AsrManager(config: .default)
+            try await manager.loadModels(models)
+            return manager
         }
-        let manager = AsrManager(config: .default)
-        try await manager.loadModels(models)
         self.asrManager = manager
         self.loadedVersion = version
+        let preparing = ModelDownloadProgress.preparing(
+            modelID: plan.modelID,
+            message: "Loading Parakeet into Core ML..."
+        )
+        progress?(1, nil)
+        progressSnapshot?(preparing.replacing(phase: .ready, message: "Model ready"))
         fputs("[fluidaudio] models ready\n", stderr)
-    }
-
-    private static func formatMegabytes(_ bytes: Int64) -> String {
-        let megabytes = Double(bytes) / 1_000_000
-        if megabytes >= 100 {
-            return "\(Int(megabytes.rounded())) MB"
-        }
-        return String(format: "%.1f MB", megabytes)
     }
 
     /// Transcribe a WAV file URL directly.
@@ -78,19 +68,21 @@ actor FluidAudioTranscriber {
         asrManager = nil
         loadedVersion = nil
     }
+
+    func shutdown(ifLoadedVersion version: AsrModelVersion) {
+        guard FluidAudioUnloadPolicy.shouldUnload(
+            loadedVersion: loadedVersion,
+            deletingVersion: version
+        ) else { return }
+        shutdown()
+    }
 }
 
-private final class DownloadRateEstimator {
-    private var downloadStartedAt: Date?
-
-    func bytesPerSecond(for estimatedBytes: Int64) -> Double {
-        guard estimatedBytes > 0 else { return 0 }
-        let now = Date()
-        if downloadStartedAt == nil {
-            downloadStartedAt = now
-            return 0
-        }
-        let elapsed = max(now.timeIntervalSince(downloadStartedAt ?? now), 1.0)
-        return Double(estimatedBytes) / elapsed
+enum FluidAudioUnloadPolicy {
+    static func shouldUnload(
+        loadedVersion: AsrModelVersion?,
+        deletingVersion: AsrModelVersion
+    ) -> Bool {
+        loadedVersion == deletingVersion
     }
 }

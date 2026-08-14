@@ -2,6 +2,7 @@ import Testing
 import Accelerate
 import AppKit
 import Foundation
+import FluidAudio
 import MuesliCore
 @testable import MuesliNativeApp
 
@@ -39,8 +40,11 @@ struct BackendOptionTests {
 
     @Test("Whisper models use whisper backend")
     func whisperBackend() {
+        #expect(BackendOption.whisperTiny.backend == "whisper")
+        #expect(BackendOption.whisperTinyEnglish.backend == "whisper")
         #expect(BackendOption.whisperSmall.backend == "whisper")
-        #expect(BackendOption.whisperMedium.backend == "whisper")
+        #expect(BackendOption.whisperSmallEnglish.backend == "whisper")
+        #expect(BackendOption.whisperMediumEnglish.backend == "whisper")
         #expect(BackendOption.whisperLargeTurbo.backend == "whisper")
     }
 
@@ -64,8 +68,11 @@ struct BackendOptionTests {
     func allContainsAll() {
         #expect(BackendOption.all.contains(.parakeetMultilingual))
         #expect(BackendOption.all.contains(.parakeetEnglish))
+        #expect(BackendOption.all.contains(.whisperTiny))
+        #expect(BackendOption.all.contains(.whisperTinyEnglish))
         #expect(BackendOption.all.contains(.whisperSmall))
-        #expect(BackendOption.all.contains(.whisperMedium))
+        #expect(BackendOption.all.contains(.whisperSmallEnglish))
+        #expect(BackendOption.all.contains(.whisperMediumEnglish))
         #expect(BackendOption.all.contains(.whisperLargeTurbo))
         #expect(BackendOption.all.contains(.qwen3Asr))
         #expect(BackendOption.all.contains(.cohereTranscribe))
@@ -73,6 +80,133 @@ struct BackendOptionTests {
         #expect(BackendOption.all.contains(.senseVoiceSmall))
         #expect(BackendOption.all.contains(.nemotron35Multilingual))
         #expect(BackendOption.all.contains(.gemma4E2BLiteRT))
+    }
+
+    @Test("Qwen ASR is a standard dictation model")
+    func qwenAsrIsNotExperimental() {
+        #expect(BackendOption.all.contains(.qwen3Asr))
+        #expect(!BackendOption.experimental.contains(.qwen3Asr))
+        #expect(BackendOption.qwen3Asr.description.contains("52 languages"))
+        #expect(BackendOption.qwen3Asr.description.contains("2–3 second"))
+    }
+
+    @Test("model descriptions explain usage without implementation jargon")
+    func modelDescriptionsAreProductFacing() {
+        let implementationTerms = ["INT8", "CoreML", "ANE", "RNNT", "FluidAudio", "LiteRT-LM", "quantized", "GGUF"]
+        for option in BackendOption.all {
+            for term in implementationTerms {
+                #expect(!option.description.contains(term), "\(option.label) description exposes \(term)")
+            }
+        }
+        for option in PostProcessorOption.all {
+            for term in implementationTerms {
+                #expect(!option.description.contains(term), "\(option.label) description exposes \(term)")
+            }
+        }
+    }
+
+    @Test("Qwen ASR cache names preserve current runtime and legacy cleanup paths")
+    func qwenAsrCacheDirectoryNamesMatchFluidAudio() {
+        // FluidAudio Repo.folderName default strips "-coreml" from the repo slug,
+        // so downloads land in qwen3-asr-0.6b/{int8,f32} (issue #380).
+        #expect(Qwen3AsrModelStore.cacheDirectoryNames.first == "qwen3-asr-0.6b")
+        #expect(Qwen3AsrModelStore.cacheDirectoryNames.contains("qwen3-asr-0.6b-coreml"))
+    }
+
+    @Test("Qwen ASR readiness matches the complete managed INT8 runtime directory")
+    func qwenAsrReadinessMatchesManagedRuntimeDirectory() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory
+            .appendingPathComponent("muesli-qwen-asr-path-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: root) }
+
+        func installRequiredArtifacts(in directory: URL) throws {
+            for relativePath in [
+                "qwen3_asr_audio_encoder_v2.mlmodelc/coremldata.bin",
+                "qwen3_asr_audio_encoder_v2.mlmodelc/weights/weight.bin",
+                "qwen3_asr_decoder_stateful.mlmodelc/coremldata.bin",
+                "qwen3_asr_decoder_stateful.mlmodelc/weights/weight.bin",
+                "qwen3_asr_embeddings.bin",
+                "vocab.json",
+            ] {
+                let url = directory.appendingPathComponent(relativePath)
+                try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data([0x01]).write(to: url)
+            }
+        }
+
+        #expect(!Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
+
+        let legacyDirectory = root
+            .appendingPathComponent("qwen3-asr-0.6b-coreml/int8", isDirectory: true)
+        try installRequiredArtifacts(in: legacyDirectory)
+        #expect(!Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
+
+        let managedDirectory = ManagedASRModelPlans.qwen3ASRInt8(modelsRoot: root).cacheDirectory
+        try installRequiredArtifacts(in: managedDirectory)
+        let managedPlan = ManagedASRModelPlans.qwen3ASRInt8(modelsRoot: root)
+        #expect(Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
+        let installedPaths = [
+            "qwen3_asr_audio_encoder_v2.mlmodelc/coremldata.bin",
+            "qwen3_asr_audio_encoder_v2.mlmodelc/weights/weight.bin",
+            "qwen3_asr_decoder_stateful.mlmodelc/coremldata.bin",
+            "qwen3_asr_decoder_stateful.mlmodelc/weights/weight.bin",
+            "qwen3_asr_embeddings.bin",
+            "vocab.json",
+        ]
+        let installedManifest = ModelDownloadManifest(
+            id: managedPlan.modelID,
+            version: "test-install",
+            files: installedPaths.map { relativePath in
+                ModelDownloadFile(
+                    relativePath: relativePath,
+                    remoteURL: URL(string: "https://example.com/model")!,
+                    expectedByteCount: 1
+                )
+            }
+        )
+        try managedPlan.recordSuccessfulInstallation(installedManifest)
+        #expect(Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
+
+        let completionMarker = managedDirectory
+            .appendingPathComponent(".muesli-managed-model-complete.json")
+        try Data("not-json".utf8).write(to: completionMarker)
+        #expect(!Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
+
+        try managedPlan.recordSuccessfulInstallation(installedManifest)
+        try fm.removeItem(at: managedDirectory.appendingPathComponent("vocab.json"))
+        #expect(!Qwen3AsrModelStore.isModelDownloaded(in: root, fileManager: fm))
+
+        try Qwen3AsrModelStore.deleteModelFiles(from: root, fileManager: fm)
+        #expect(!fm.fileExists(atPath: root.appendingPathComponent("qwen3-asr-0.6b").path))
+        #expect(!fm.fileExists(atPath: root.appendingPathComponent("qwen3-asr-0.6b-coreml").path))
+    }
+
+    @Test("Qwen ASR warmup publishes readiness only for the current uncancelled load")
+    func qwenAsrWarmupReadinessGate() throws {
+        try Qwen3AsrWarmupReadiness.validate(isCancelled: false, isCurrent: true)
+        #expect(throws: CancellationError.self) {
+            try Qwen3AsrWarmupReadiness.validate(isCancelled: true, isCurrent: true)
+        }
+        #expect(throws: CancellationError.self) {
+            try Qwen3AsrWarmupReadiness.validate(isCancelled: false, isCurrent: false)
+        }
+    }
+
+    @Test("Parakeet deletion unloads only the matching runtime variant")
+    func parakeetDeletionUnloadPolicy() {
+        #expect(FluidAudioUnloadPolicy.shouldUnload(
+            loadedVersion: .v2,
+            deletingVersion: .v2
+        ))
+        #expect(!FluidAudioUnloadPolicy.shouldUnload(
+            loadedVersion: .v3,
+            deletingVersion: .v2
+        ))
+        #expect(!FluidAudioUnloadPolicy.shouldUnload(
+            loadedVersion: nil,
+            deletingVersion: .v3
+        ))
     }
 
     @Test("Cohere uses cohere backend")
@@ -142,23 +276,20 @@ struct BackendOptionTests {
         #expect(swapped != expectedColumnMajorTranspose)
     }
 
-    @Test("SenseVoice uses native FluidAudio CoreML model")
+    @Test("SenseVoice uses the native speech model")
     func senseVoiceBackend() {
         #expect(BackendOption.senseVoiceSmall.backend == "sensevoice")
         #expect(BackendOption.senseVoiceSmall.model == "FluidInference/sensevoice-small-coreml")
-        #expect(BackendOption.senseVoiceSmall.description.contains("FluidAudio"))
     }
 
-    @Test("Gemma 4 E2B uses LiteRT-LM as an experimental managed model")
+    @Test("Gemma 4 E2B remains an experimental managed model")
     func gemma4LiteRTBackend() {
         #expect(BackendOption.gemma4E2BLiteRT.backend == "gemma4-litert")
         #expect(BackendOption.gemma4E2BLiteRT.model == Gemma4LiteRTModelStore.repoID)
         #expect(BackendOption.gemma4E2BLiteRT.label == "Gemma 4 E2B")
         #expect(BackendOption.gemma4E2BLiteRT.sizeLabel == "~2.6 GB")
-        #expect(BackendOption.gemma4E2BLiteRT.description.contains("LiteRT-LM"))
-        #expect(BackendOption.gemma4E2BLiteRT.description.contains("Downloads managed local weights"))
-        #expect(BackendOption.gemma4E2BLiteRT.description.contains("ASR-tuned Gemma artifact"))
-        #expect(BackendOption.gemma4E2BLiteRT.description.contains("chat-style outputs fail closed"))
+        #expect(BackendOption.gemma4E2BLiteRT.description.contains("research preview"))
+        #expect(BackendOption.gemma4E2BLiteRT.description.contains("macOS 15"))
         #expect(BackendOption.experimental.contains(.gemma4E2BLiteRT))
         #expect(!BackendOption.onboarding.contains(.gemma4E2BLiteRT))
     }
@@ -170,7 +301,7 @@ struct BackendOptionTests {
 
     @Test("onboarding offers the conservative models plus Nemotron 3.5")
     func onboardingModelChoices() {
-        #expect(BackendOption.onboarding == [.parakeetMultilingual, .whisperTinyEnglish, .whisperSmall, .cohereTranscribe, .nemotron35Multilingual])
+        #expect(BackendOption.onboarding == [.parakeetMultilingual, .whisperTiny, .whisperSmall, .cohereTranscribe, .nemotron35Multilingual])
         for option in BackendOption.experimental {
             #expect(!BackendOption.onboarding.contains(option))
         }
@@ -191,13 +322,62 @@ struct BackendOptionTests {
         #expect(!BackendOption.downloadedMeetingTranscription.contains(.nemotron35Multilingual))
     }
 
+    @Test("only multilingual Whisper models expose language selection")
+    func whisperLanguageSelectionAvailability() {
+        #expect(BackendOption.whisperTiny.supportsWhisperLanguageSelection)
+        #expect(BackendOption.whisperSmall.supportsWhisperLanguageSelection)
+        #expect(BackendOption.whisperLargeTurbo.supportsWhisperLanguageSelection)
+        #expect(!BackendOption.whisperTinyEnglish.supportsWhisperLanguageSelection)
+        #expect(!BackendOption.whisperSmallEnglish.supportsWhisperLanguageSelection)
+        #expect(!BackendOption.whisperMediumEnglish.supportsWhisperLanguageSelection)
+        #expect(!BackendOption.parakeetMultilingual.supportsWhisperLanguageSelection)
+    }
+
     @Test("Whisper models use WhisperKit CoreML identifiers")
     func whisperKitModels() {
         // WhisperKit models use short variant names, not ggml- prefixed binaries
+        #expect(BackendOption.whisperTiny.model == "tiny")
         #expect(BackendOption.whisperTinyEnglish.model == "tiny.en")
-        #expect(BackendOption.whisperSmall.model == "small.en")
-        #expect(BackendOption.whisperMedium.model == "medium.en")
+        #expect(BackendOption.whisperSmall.model == "small")
+        #expect(BackendOption.whisperSmallEnglish.model == "small.en")
+        #expect(BackendOption.whisperMediumEnglish.model == "medium.en")
         #expect(BackendOption.whisperLargeTurbo.model.contains("large"))
+    }
+
+    @Test("English-only and multilingual Whisper checkpoints are always in the catalog")
+    func whisperCatalogIncludesEveryVariant() {
+        #expect(BackendOption.whisperFamily == [
+            .whisperTiny, .whisperTinyEnglish,
+            .whisperSmall, .whisperSmallEnglish,
+            .whisperMediumEnglish, .whisperLargeTurbo,
+        ])
+        #expect(BackendOption.resolve(backend: "whisper", model: "tiny.en") == .whisperTinyEnglish)
+        #expect(BackendOption.resolve(backend: "whisper", model: "small.en") == .whisperSmallEnglish)
+        #expect(BackendOption.resolve(backend: "whisper", model: "medium.en") == .whisperMediumEnglish)
+    }
+
+    @Test("resolveDownloaded falls back when an English-only selection is not downloaded")
+    func resolveDownloadedFallsBackForMissingEnglishWhisperSelection() {
+        let resolved = BackendOption.resolveDownloaded(
+            backend: "whisper",
+            model: "small.en",
+            fallback: .parakeetMultilingual,
+            downloadedOptions: [.parakeetMultilingual, .whisperSmall]
+        )
+
+        #expect(resolved == .parakeetMultilingual)
+    }
+
+    @Test("resolveDownloaded keeps an installed English-only Whisper selection")
+    func resolveDownloadedKeepsEnglishWhisperSelection() {
+        let resolved = BackendOption.resolveDownloaded(
+            backend: "whisper",
+            model: "small.en",
+            fallback: .parakeetMultilingual,
+            downloadedOptions: [.parakeetMultilingual, .whisperSmallEnglish]
+        )
+
+        #expect(resolved == .whisperSmallEnglish)
     }
 
     @Test("resolveDownloaded keeps selected downloaded meeting model")
@@ -602,6 +782,7 @@ struct AppConfigTests {
         #expect(config.meetingInputDeviceUID == nil)
         #expect(config.cohereLanguage == CohereTranscribeLanguage.defaultLanguage.rawValue)
         #expect(config.indicASRLanguage == IndicASRLanguage.defaultLanguage.rawValue)
+        #expect(config.whisperLanguage == WhisperKitLanguage.defaultLanguage.rawValue)
         #expect(config.meetingTranscriptionBackend == BackendOption.whisper.backend)
         #expect(config.meetingTranscriptionModel == BackendOption.whisper.model)
         #expect(config.meetingSummaryBackend == "chatgpt")
@@ -970,6 +1151,7 @@ struct AppConfigTests {
         #expect(json["meeting_recording_hotkey_trigger_threshold_ms"] != nil)
         #expect(json["cohere_language"] != nil)
         #expect(json["indic_asr_language"] != nil)
+        #expect(json["whisper_language"] != nil)
         #expect(json["meeting_transcription_backend"] != nil)
         #expect(json["meeting_transcription_model"] != nil)
         #expect(json["indicator_anchor"] != nil)
@@ -1043,6 +1225,7 @@ struct AppConfigTests {
         #expect(config.showFloatingIndicator == true)
         #expect(config.resolvedCohereLanguage == .english)
         #expect(config.resolvedIndicASRLanguage == .defaultLanguage)
+        #expect(config.resolvedWhisperLanguage == .auto)
         #expect(config.hasCompletedOnboarding == false)
         #expect(config.resolvedOnboardingUseCase == .dictation)
         #expect(config.defaultMeetingTemplateID == MeetingTemplates.autoID)
@@ -1490,6 +1673,24 @@ struct AppConfigTests {
 
         #expect(config.meetingTranscriptionBackend == "whisper")
         #expect(config.meetingTranscriptionModel == "ggml-medium.en")
+    }
+
+    @Test("English-only Whisper selections keep their exact model identities")
+    func englishOnlyWhisperSelectionsKeepExactModels() throws {
+        let json = """
+        {
+          "stt_backend": "whisper",
+          "stt_model": "tiny.en",
+          "meeting_transcription_backend": "whisper",
+          "meeting_transcription_model": "small.en",
+          "whisper_model": "medium.en"
+        }
+        """
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.sttModel == BackendOption.whisperTinyEnglish.model)
+        #expect(config.meetingTranscriptionModel == BackendOption.whisperSmallEnglish.model)
+        #expect(config.whisperModel == BackendOption.whisperMediumEnglish.model)
     }
 
     @Test("indicator anchor falls back to custom when legacy origin exists")

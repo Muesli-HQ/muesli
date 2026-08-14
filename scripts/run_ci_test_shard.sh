@@ -19,6 +19,7 @@ case "${shard}" in
     filters=(
       ConfigStoreTests
       DictationStoreTests
+      MuesliCKSyncEngineTests
       MuesliCLITests
       ChatGPTAuthTests
       ChatGPTTokenStorageTests
@@ -50,6 +51,7 @@ case "${shard}" in
       Nemotron35StreamStateTests
       Nemotron35BackendMetadataTests
       Nemotron35LanguageTests
+      WhisperKitLanguageTests
       SpeechSegmentTests
       SpeechTranscriptionResultTests
       TranscriptionCoordinatorTests
@@ -84,6 +86,7 @@ case "${shard}" in
       MeetingSummaryClientTests
       MeetingsNavigationTests
       MeetingBrowserLogicTests
+      MeetingNotesInlineMarkdownTests
       TranscriptFormatterTests
       MeetingSummaryBackendTests
       MeetingResummarizationPolicyTests

@@ -70,6 +70,31 @@ struct FeatureTourTests {
         #expect(calloutFrame.maxY <= container.height - 20)
     }
 
+    @Test("dashboard presentation waits for its first ordered layout")
+    func dashboardPresentationReadiness() {
+        var readiness = DashboardPresentationReadiness<String>()
+
+        let queuedBeforeReady = readiness.enqueue("feature tour")
+        let firstLayoutRequest = readiness.requestInitialLayout()
+        let duplicateLayoutRequest = readiness.requestInitialLayout()
+        #expect(queuedBeforeReady == [])
+        #expect(firstLayoutRequest)
+        #expect(!duplicateLayoutRequest)
+
+        readiness.cancelInitialLayout()
+        let retriedLayoutRequest = readiness.requestInitialLayout()
+        #expect(!readiness.isReady)
+        #expect(retriedLayoutRequest)
+
+        let firstLayoutActions = readiness.completeInitialLayout()
+        let readyLayoutRequest = readiness.requestInitialLayout()
+        let immediateActions = readiness.enqueue("future tour")
+        #expect(firstLayoutActions == ["feature tour"])
+        #expect(readiness.isReady)
+        #expect(!readyLayoutRequest)
+        #expect(immediateActions == ["future tour"])
+    }
+
     @Test("existing users without legacy version markers see the first feature tour")
     func legacyUpgrade() {
         #expect(FeatureTourPresentationPolicy.shouldPresentAutomatically(
@@ -140,7 +165,7 @@ struct FeatureTourTests {
 
         let streamingStep = tour.steps.first { $0.target == .streamingModels }
         #expect(streamingStep?.message.contains("Nemotron 3.5") == true)
-        #expect(streamingStep?.message.contains("Parakeet Realtime") == true)
+        #expect(streamingStep?.message.contains("Parakeet Live Captions") == true)
         #expect(streamingStep?.target.modelsCategory == .streaming)
 
         let experimentalStep = tour.steps.last

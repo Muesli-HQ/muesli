@@ -123,6 +123,17 @@ actor TranscriptionCoordinator {
         }
     }
 
+    func unloadFluidAudioTranscriber(ifLoadedVersion version: AsrModelVersion) async {
+        await fluidTranscriber.shutdown(ifLoadedVersion: version)
+    }
+
+    func unloadQwen3Transcriber() async {
+        if #available(macOS 15, *), let transcriber = _qwen3Transcriber as? Qwen3AsrTranscriber {
+            await transcriber.shutdown()
+            _qwen3Transcriber = nil
+        }
+    }
+
     @available(macOS 15, *)
     private var qwen3Transcriber: Qwen3AsrTranscriber {
         if _qwen3Transcriber == nil {
@@ -290,15 +301,29 @@ actor TranscriptionCoordinator {
         switch backend.backend {
         case "fluidaudio":
             let version: AsrModelVersion = backend.model.contains("v2") ? .v2 : .v3
-            try await fluidTranscriber.loadModels(version: version, progress: progress)
+            try await fluidTranscriber.loadModels(
+                version: version,
+                progress: progress,
+                progressSnapshot: progressSnapshot
+            )
         case "whisper":
-            try await whisperTranscriber.loadModel(modelName: backend.model, progress: progress)
+            try await whisperTranscriber.loadModel(
+                modelName: backend.model,
+                progress: progress,
+                progressSnapshot: progressSnapshot
+            )
             // Warmup ANE/GPU so first dictation doesn't pay CoreML compilation cost
             fputs("[muesli-native] WhisperKit warmup: running silent audio for CoreML compilation...\n", stderr)
-            progress?(0.9, "Warming up model...")
+            let warming = ModelDownloadProgress.preparing(
+                modelID: backend.model,
+                message: "Warming up model..."
+            )
+            progress?(0.9, warming.message)
+            progressSnapshot?(warming)
             try await whisperTranscriber.warmup()
             fputs("[muesli-native] WhisperKit warmup complete\n", stderr)
             progress?(1.0, nil)
+            progressSnapshot?(warming.replacing(phase: .ready, message: "Model ready"))
         case "nemotron35":
             if #available(macOS 15, *) {
                 let transcriber = try await getLoadedNemotron35Transcriber(progress: progress, progressSnapshot: progressSnapshot)
@@ -315,7 +340,10 @@ actor TranscriptionCoordinator {
             }
         case "qwen":
             if #available(macOS 15, *) {
-                try await qwen3Transcriber.loadModels(progress: progress)
+                try await qwen3Transcriber.loadModels(
+                    progress: progress,
+                    progressSnapshot: progressSnapshot
+                )
             } else {
                 throw NSError(domain: "MuesliTranscriptionRuntime", code: 2, userInfo: [
                     NSLocalizedDescriptionKey: "Qwen3 ASR requires macOS 15 or later.",
@@ -338,7 +366,10 @@ actor TranscriptionCoordinator {
                 ])
             }
         case "sensevoice":
-            try await senseVoiceTranscriber.loadModels(progress: progress)
+            try await senseVoiceTranscriber.loadModels(
+                progress: progress,
+                progressSnapshot: progressSnapshot
+            )
         case "gemma4-litert":
             if #available(macOS 15, *) {
                 try await gemma4LiteRTTranscriber.prepare(progress: progress, progressSnapshot: progressSnapshot)
@@ -595,6 +626,7 @@ actor TranscriptionCoordinator {
         backend: BackendOption,
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
         indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage,
+        whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
         enablePostProcessor: Bool = false,
         customWords: [[String: Any]] = [],
         appContext: String? = nil
@@ -614,7 +646,13 @@ actor TranscriptionCoordinator {
                 fputs("[muesli-native] VAD check failed, transcribing anyway: \(error)\n", stderr)
             }
         }
-        var result = try await route(url: url, backend: backend, cohereLanguage: cohereLanguage, indicASRLanguage: indicASRLanguage)
+        var result = try await route(
+            url: url,
+            backend: backend,
+            cohereLanguage: cohereLanguage,
+            indicASRLanguage: indicASRLanguage,
+            whisperLanguage: whisperLanguage
+        )
         result = removeArtifacts(result)
         if !result.text.isEmpty {
             Qwen3PostProcessorLogging.logVerbose("Dictation raw transcript after artifact cleanup: \(result.text)")
@@ -637,17 +675,25 @@ actor TranscriptionCoordinator {
         at url: URL,
         backend: BackendOption,
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
-        indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage
+        indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage,
+        whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage
     ) async throws -> SpeechTranscriptionResult {
         // Meetings intentionally skip Qwen/custom-word post-processing. Keep deterministic artifact/filler cleanup only.
-        cleanMeetingTranscript(try await route(url: url, backend: backend, cohereLanguage: cohereLanguage, indicASRLanguage: indicASRLanguage))
+        cleanMeetingTranscript(try await route(
+            url: url,
+            backend: backend,
+            cohereLanguage: cohereLanguage,
+            indicASRLanguage: indicASRLanguage,
+            whisperLanguage: whisperLanguage
+        ))
     }
 
     func transcribeMeetingChunk(
         at url: URL,
         backend: BackendOption,
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
-        indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage
+        indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage,
+        whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage
     ) async throws -> SpeechTranscriptionResult {
         // Meeting chunks intentionally skip Qwen/custom-word post-processing for reconciliation.
         // Run VAD to skip silent chunks (prevents hallucinations)
@@ -663,7 +709,13 @@ actor TranscriptionCoordinator {
                 fputs("[muesli-native] VAD check failed, transcribing anyway: \(error)\n", stderr)
             }
         }
-        return cleanMeetingTranscript(try await route(url: url, backend: backend, cohereLanguage: cohereLanguage, indicASRLanguage: indicASRLanguage))
+        return cleanMeetingTranscript(try await route(
+            url: url,
+            backend: backend,
+            cohereLanguage: cohereLanguage,
+            indicASRLanguage: indicASRLanguage,
+            whisperLanguage: whisperLanguage
+        ))
     }
 
     func diarizeSystemAudio(at url: URL) async throws -> DiarizationResult? {
@@ -987,11 +1039,15 @@ actor TranscriptionCoordinator {
         url: URL,
         backend: BackendOption,
         cohereLanguage: CohereTranscribeLanguage,
-        indicASRLanguage: IndicASRLanguage
+        indicASRLanguage: IndicASRLanguage,
+        whisperLanguage: WhisperKitLanguage
     ) async throws -> SpeechTranscriptionResult {
         switch backend.backend {
         case "whisper":
-            return try await transcribeWithWhisperKit(url: url)
+            let language = backend.supportsWhisperLanguageSelection
+                ? whisperLanguage
+                : WhisperKitLanguage.defaultLanguage
+            return try await transcribeWithWhisperKit(url: url, language: language)
         case "nemotron35":
             return try await transcribeWithNemotron35(url: url)
         case "qwen":
@@ -1027,9 +1083,12 @@ actor TranscriptionCoordinator {
 
     // MARK: - WhisperKit (Whisper on ANE/GPU via CoreML)
 
-    private func transcribeWithWhisperKit(url: URL) async throws -> SpeechTranscriptionResult {
+    private func transcribeWithWhisperKit(
+        url: URL,
+        language: WhisperKitLanguage
+    ) async throws -> SpeechTranscriptionResult {
         fputs("[muesli-native] transcribing with WhisperKit: \(url.lastPathComponent)\n", stderr)
-        let result = try await whisperTranscriber.transcribe(wavURL: url)
+        let result = try await whisperTranscriber.transcribe(wavURL: url, language: language)
         fputs("[muesli-native] WhisperKit result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         return SpeechTranscriptionResult(

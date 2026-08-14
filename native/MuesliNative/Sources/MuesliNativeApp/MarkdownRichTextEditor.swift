@@ -1,6 +1,12 @@
 import AppKit
 import SwiftUI
 
+private extension NSAttributedString.Key {
+    static let muesliMarkdownStrong = NSAttributedString.Key("com.muesli.markdown.strong")
+    static let muesliMarkdownEmphasis = NSAttributedString.Key("com.muesli.markdown.emphasis")
+    static let muesliMarkdownCode = NSAttributedString.Key("com.muesli.markdown.code")
+}
+
 struct MarkdownEditorCommand: Equatable {
     enum Kind: Equatable {
         case heading
@@ -71,12 +77,7 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
             context.coordinator.apply(markdown: text, to: textView)
         }
         if let command {
-            context.coordinator.perform(command.kind, in: textView)
-            DispatchQueue.main.async {
-                if self.command?.id == command.id {
-                    self.command = nil
-                }
-            }
+            context.coordinator.schedule(command, in: textView)
         }
         if shouldFocus, !context.coordinator.didFocus {
             DispatchQueue.main.async {
@@ -100,6 +101,7 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
         private var lastBindingMarkdown = ""
         private var pendingLocalMarkdown: String?
         private var bindingPublishWorkItem: DispatchWorkItem?
+        private var scheduledCommandID: UUID?
 
         private let bodyFont = NSFont.systemFont(ofSize: 16)
         private let boldFont = NSFont.boldSystemFont(ofSize: 16)
@@ -115,6 +117,7 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard !isApplying, let textView = notification.object as? NSTextView else { return }
+            applyInlineFormattingIfNeeded(in: textView)
             let markdown = markdownForLiveEdit(from: textView)
             currentMarkdown = markdown
             pendingLocalMarkdown = markdown
@@ -154,12 +157,30 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
             usesMarkdownStyling = Self.markdownNeedsRichRendering(markdown)
             textView.textStorage?.setAttributedString(attributedString(from: markdown))
             textView.typingAttributes = bodyAttributes()
-            textView.selectedRanges = selectedRanges.clamped(to: textView.string.count)
+            textView.selectedRanges = selectedRanges.clamped(to: (textView.string as NSString).length)
             currentMarkdown = markdown
             lastBindingMarkdown = markdown
             pendingLocalMarkdown = nil
             isApplying = false
             textView.needsDisplay = true
+        }
+
+        /// AppKit editor mutations publish SwiftUI bindings, so they cannot run
+        /// synchronously from `updateNSView`. Queue each toolbar command once
+        /// and restore the selection captured when SwiftUI delivered it.
+        func schedule(_ command: MarkdownEditorCommand, in textView: NSTextView) {
+            guard scheduledCommandID != command.id else { return }
+            scheduledCommandID = command.id
+            let selectedRanges = textView.selectedRanges
+
+            DispatchQueue.main.async { [weak self, weak textView] in
+                guard let self, let textView else { return }
+                textView.selectedRanges = selectedRanges.clamped(to: (textView.string as NSString).length)
+                self.perform(command.kind, in: textView)
+                if self.command?.id == command.id {
+                    self.command = nil
+                }
+            }
         }
 
         func perform(_ command: MarkdownEditorCommand.Kind, in textView: NSTextView) {
@@ -180,7 +201,6 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
             onTextChange?(markdown)
             publishBinding(markdown)
             textView.needsDisplay = true
-            self.command = nil
             DispatchQueue.main.async { [weak textView] in
                 guard let textView else { return }
                 textView.window?.makeFirstResponder(textView)
@@ -225,13 +245,73 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
             let result = NSMutableAttributedString()
             let lines = markdown.components(separatedBy: .newlines)
             for (index, rawLine) in lines.enumerated() {
-                let parsed = parseLine(rawLine)
-                result.append(attributedLine(from: parsed.displayText, attributes: parsed.attributes))
+                result.append(renderedLine(from: rawLine))
                 if index < lines.count - 1 {
                     result.append(NSAttributedString(string: "\n", attributes: bodyAttributes()))
                 }
             }
             return result
+        }
+
+        private func renderedLine(from markdown: String) -> NSAttributedString {
+            let parsed = parseLine(markdown)
+            // Keep an empty typed heading marker until the user enters its
+            // first character. An empty attributed string cannot carry the
+            // heading font, so stripping "# " here would strand the caret at
+            // the start of an unstyled paragraph.
+            if markdown == "# " {
+                return NSAttributedString(string: markdown, attributes: bodyAttributes())
+            }
+            return inlineAttributedString(from: parsed.displayText, attributes: parsed.attributes)
+        }
+
+        /// Re-renders only the paragraph containing the caret. The stored
+        /// binding remains Markdown while the NSTextView contains the visible
+        /// WYSIWYG text, so typing a closing delimiter can immediately promote
+        /// the completed span without reparsing the whole document.
+        private func applyInlineFormattingIfNeeded(in textView: NSTextView) {
+            guard let storage = textView.textStorage, storage.length > 0 else { return }
+
+            let selection = textView.selectedRange()
+            let full = storage.string as NSString
+            let paragraph = full.paragraphRange(for: NSRange(
+                location: min(selection.location, full.length),
+                length: 0
+            ))
+            let displayRange = NSRange(
+                location: paragraph.location,
+                length: paragraph.length > 0 && paragraph.upperBound <= full.length
+                    && full.character(at: paragraph.upperBound - 1) == 10
+                    ? paragraph.length - 1
+                    : paragraph.length
+            )
+            guard displayRange.location + displayRange.length <= storage.length else { return }
+
+            let markdown = markdownLine(from: storage, range: displayRange)
+            let rendered = renderedLine(from: markdown)
+            let current = storage.attributedSubstring(from: displayRange)
+            usesMarkdownStyling = usesMarkdownStyling || Self.markdownNeedsRichRendering(markdown)
+
+            guard !current.isEqual(to: rendered) else { return }
+
+            let localSelectionLocation = max(0, selection.location - displayRange.location)
+            let localSelectionEnd = max(
+                localSelectionLocation,
+                selection.location + selection.length - displayRange.location
+            )
+            isApplying = true
+            storage.replaceCharacters(in: displayRange, with: rendered)
+            isApplying = false
+
+            // Most edits occur at the caret. Clamping against the rendered
+            // line keeps the caret at the end after delimiters disappear and
+            // preserves ordinary mid-line edits without a full text reset.
+            let newLocation = displayRange.location + min(localSelectionLocation, rendered.length)
+            let newEnd = displayRange.location + min(localSelectionEnd, rendered.length)
+            textView.setSelectedRange(NSRange(
+                location: newLocation,
+                length: max(0, newEnd - newLocation)
+            ))
         }
 
         private func markdownForLiveEdit(from textView: NSTextView) -> String {
@@ -254,7 +334,9 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
                         || line.hasPrefix("- [ ] ")
                         || line.hasPrefix("- [x] ")
                         || line.hasPrefix("- [X] ")
-                        || line.contains("**")
+                        || line.contains("*")
+                        || line.contains("`")
+                        || line.contains("[")
                 }
         }
 
@@ -281,26 +363,42 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
             return (line, bodyAttributes())
         }
 
-        private func attributedLine(
-            from line: String,
+        private func inlineAttributedString(
+            from markdown: String,
             attributes: [NSAttributedString.Key: Any]
         ) -> NSAttributedString {
             let result = NSMutableAttributedString()
-            var cursor = line.startIndex
-            while cursor < line.endIndex {
-                guard let opening = line.range(of: "**", range: cursor..<line.endIndex),
-                      let closing = line.range(of: "**", range: opening.upperBound..<line.endIndex)
-                else {
-                    append(String(line[cursor..<line.endIndex]), to: result, attributes: attributes)
-                    break
-                }
+            let parsed = MarkdownInlineParser.parse(markdown)
+            let baseFont = attributes[.font] as? NSFont ?? bodyFont
 
-                append(String(line[cursor..<opening.lowerBound]), to: result, attributes: attributes)
-                var boldAttributes = attributes
-                let baseFont = attributes[.font] as? NSFont ?? bodyFont
-                boldAttributes[.font] = boldVersion(of: baseFont)
-                append(String(line[opening.upperBound..<closing.lowerBound]), to: result, attributes: boldAttributes)
-                cursor = closing.upperBound
+            for run in parsed.runs {
+                let text = String(parsed[run.range].characters)
+                guard !text.isEmpty else { continue }
+
+                var runAttributes = attributes
+                var font = baseFont
+                let intent = run.inlinePresentationIntent
+                let isStrong = intent?.contains(.stronglyEmphasized) == true
+                let isEmphasized = intent?.contains(.emphasized) == true
+                let isCode = intent?.contains(.code) == true
+
+                if isCode {
+                    font = NSFont.monospacedSystemFont(ofSize: font.pointSize, weight: .regular)
+                    runAttributes[.muesliMarkdownCode] = true
+                }
+                if isEmphasized {
+                    font = italicVersion(of: font)
+                    runAttributes[.muesliMarkdownEmphasis] = true
+                }
+                if isStrong {
+                    font = boldVersion(of: font)
+                    runAttributes[.muesliMarkdownStrong] = true
+                }
+                runAttributes[.font] = font
+                if let link = run.link {
+                    runAttributes[.link] = link
+                }
+                append(text, to: result, attributes: runAttributes)
             }
             return result
         }
@@ -462,14 +560,32 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
         private func markdownInline(from storage: NSTextStorage, contentRange: NSRange) -> String {
             guard contentRange.length > 0 else { return "" }
             var output = ""
+            let isHeading = lineIsHeading(storage: storage, range: contentRange)
             storage.enumerateAttributes(in: contentRange) { attrs, range, _ in
                 let substring = (storage.string as NSString).substring(with: range)
                 let font = attrs[.font] as? NSFont ?? bodyFont
-                if isBold(font), !lineIsHeading(storage: storage, range: contentRange) {
-                    output += "**\(substring)**"
-                } else {
-                    output += substring
+                let isStrong = attrs[.muesliMarkdownStrong] as? Bool == true
+                    || (!isHeading && isBold(font))
+                let isEmphasized = attrs[.muesliMarkdownEmphasis] as? Bool == true
+                let isCode = attrs[.muesliMarkdownCode] as? Bool == true
+
+                var rendered = substring
+                if isCode {
+                    rendered = "`\(rendered)`"
+                } else if isStrong && isEmphasized {
+                    rendered = "***\(rendered)***"
+                } else if isStrong {
+                    rendered = "**\(rendered)**"
+                } else if isEmphasized {
+                    rendered = "*\(rendered)*"
                 }
+
+                if let link = attrs[.link] as? URL {
+                    rendered = "[\(rendered)](\(link.absoluteString))"
+                } else if let link = attrs[.link] as? String {
+                    rendered = "[\(rendered)](\(link))"
+                }
+                output += rendered
             }
             return output
         }
@@ -503,6 +619,10 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
 
         private func regularVersion(of font: NSFont) -> NSFont {
             NSFontManager.shared.convert(font, toNotHaveTrait: .boldFontMask)
+        }
+
+        private func italicVersion(of font: NSFont) -> NSFont {
+            NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
         }
 
         private func paragraphStyle(spacing: CGFloat, lineHeightMultiple: CGFloat) -> NSParagraphStyle {

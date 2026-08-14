@@ -58,7 +58,7 @@ struct MeetingNotesView: View {
                     .font(MuesliTheme.body())
                     .foregroundStyle(MuesliTheme.textTertiary)
                     .frame(width: 22, alignment: .trailing)
-                Text(numbered.text)
+                Text(Self.inline(numbered.text))
                     .font(MuesliTheme.body())
                     .foregroundStyle(MuesliTheme.textSecondary)
                     .lineSpacing(3)
@@ -66,13 +66,8 @@ struct MeetingNotesView: View {
             }
             .padding(.leading, CGFloat(indentLevel) * MuesliTheme.spacing20)
             .frame(maxWidth: .infinity, alignment: .leading)
-        } else if line.hasPrefix("**") && line.hasSuffix("**") {
-            Text(String(line.dropFirst(2).dropLast(2)))
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(MuesliTheme.textPrimary)
-                .frame(maxWidth: .infinity, alignment: .leading)
         } else {
-            Text(line)
+            Text(Self.inline(line))
                 .font(MuesliTheme.body())
                 .foregroundStyle(MuesliTheme.textPrimary)
                 .lineSpacing(3)
@@ -100,7 +95,7 @@ struct MeetingNotesView: View {
                     .offset(y: -2)
                     .frame(width: 14, alignment: .center)
             }
-            Text(text)
+            Text(Self.inline(text))
                 .font(MuesliTheme.body())
                 .foregroundStyle(MuesliTheme.textSecondary)
                 .lineSpacing(3)
@@ -108,6 +103,16 @@ struct MeetingNotesView: View {
         }
         .padding(.leading, CGFloat(indentLevel) * MuesliTheme.spacing20)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Renders inline markdown — bold, italic, code, links — within one line.
+    ///
+    /// Block structure (headings, lists, checkboxes) is matched by
+    /// `markdownLine`, so parsing is inline-only: a stray `#` or `-` in body
+    /// text stays literal instead of being re-read as a block marker. Text that
+    /// fails to parse falls back to itself, so notes always render.
+    static func inline(_ text: String) -> AttributedString {
+        MarkdownInlineParser.parse(text)
     }
 
     private static func indentLevel(for line: String) -> Int {

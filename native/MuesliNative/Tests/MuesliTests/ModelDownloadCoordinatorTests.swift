@@ -3,7 +3,7 @@ import Testing
 import MuesliCore
 
 private final class DownloadTestTracker: @unchecked Sendable {
-    private let lock = NSLock()
+    private let lock = NSCondition()
     private var active = 0
     private(set) var maximumActive = 0
     private(set) var requestCount = 0
@@ -13,6 +13,7 @@ private final class DownloadTestTracker: @unchecked Sendable {
         active += 1
         requestCount += 1
         maximumActive = max(maximumActive, active)
+        lock.broadcast()
         lock.unlock()
     }
 
@@ -20,6 +21,16 @@ private final class DownloadTestTracker: @unchecked Sendable {
         lock.lock()
         active = max(0, active - 1)
         lock.unlock()
+    }
+
+    func waitUntilRequestStarts(timeout: TimeInterval = 2) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let deadline = Date().addingTimeInterval(timeout)
+        while requestCount == 0 {
+            guard lock.wait(until: deadline) else { return false }
+        }
+        return true
     }
 }
 
@@ -31,6 +42,12 @@ private final class DownloadResponseSequence: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         value += 1
+        return value
+    }
+
+    var current: Int {
+        lock.lock()
+        defer { lock.unlock() }
         return value
     }
 }
@@ -297,6 +314,386 @@ struct ModelDownloadCoordinatorTests {
         let error = ModelDownloadError.stalled("encoder/weights.bin")
         #expect(error.localizedDescription.contains("encoder/weights.bin"))
         #expect(error.localizedDescription.contains("stalled"))
+    }
+
+    @Test("Hugging Face trees become size-aware filtered manifests")
+    func huggingFaceTreeResolution() async throws {
+        let tracker = DownloadTestTracker()
+        let firstPage = try JSONSerialization.data(withJSONObject: [
+            [
+                "type": "file",
+                "path": "int8/Encoder.mlmodelc/coremldata.bin",
+                "size": 7,
+                "oid": "encoder-oid",
+            ],
+            [
+                "type": "file",
+                "path": "int8/ignored.txt",
+                "size": 100,
+                "oid": "ignored-oid",
+            ],
+        ])
+        let secondPage = try JSONSerialization.data(withJSONObject: [[
+            "type": "file",
+            "path": "int8/Decoder.mlmodelc/coremldata.bin",
+            "size": 9,
+            "oid": "decoder-oid",
+        ]])
+        ModelDownloadTestURLProtocol.install { request in
+            let isSecondPage = request.url.flatMap {
+                URLComponents(url: $0, resolvingAgainstBaseURL: false)
+            }?.queryItems?.contains(URLQueryItem(name: "cursor", value: "next")) == true
+            let data: Data
+            let headers: [String: String]
+            if isSecondPage {
+                data = secondPage
+                headers = [:]
+            } else {
+                #expect(request.url?.path.hasSuffix("/tree/main/int8") == true)
+                #expect(request.url?.query?.contains("recursive=true") == true)
+                data = firstPage
+                headers = [
+                    "Link": "</api/models/acme/asr/tree/main/int8?cursor=next>; rel=\"next\""
+                ]
+            }
+            return ModelDownloadTestURLProtocol.Response(
+                data: data,
+                headers: headers,
+                tracker: tracker
+            )
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let resolver = HuggingFaceModelManifestResolver(configuration: makeSessionConfiguration())
+        let manifest = try await resolver.resolve(
+            modelID: "acme/asr",
+            repository: "acme/asr",
+            selections: [HuggingFaceModelSelection(
+                remoteDirectory: "int8",
+                includedPaths: ["Encoder.mlmodelc", "Decoder.mlmodelc"]
+            )]
+        )
+
+        #expect(tracker.requestCount == 2)
+        #expect(manifest.files.map(\.relativePath) == [
+            "Decoder.mlmodelc/coremldata.bin",
+            "Encoder.mlmodelc/coremldata.bin",
+        ])
+        #expect(manifest.totalExpectedByteCount == 16)
+        #expect(manifest.files[0].remoteURL.absoluteString.contains("/acme/asr/resolve/main/int8/Decoder.mlmodelc/coremldata.bin"))
+        #expect(manifest.version.hasPrefix("main-"))
+    }
+
+    @Test("Hugging Face pagination rejects cross-host next links")
+    func huggingFacePaginationRejectsCrossHostLinks() async throws {
+        let tracker = DownloadTestTracker()
+        let page = try JSONSerialization.data(withJSONObject: [[
+            "type": "file",
+            "path": "int8/Encoder.mlmodelc/coremldata.bin",
+            "size": 7,
+            "oid": "encoder-oid",
+        ]])
+        ModelDownloadTestURLProtocol.install { _ in
+            ModelDownloadTestURLProtocol.Response(
+                data: page,
+                headers: ["Link": "<https://example.com/steal-token>; rel=\"next\""],
+                tracker: tracker
+            )
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let resolver = HuggingFaceModelManifestResolver(configuration: makeSessionConfiguration())
+        await #expect(throws: HuggingFaceModelManifestError.self) {
+            try await resolver.resolve(
+                modelID: "acme/asr",
+                repository: "acme/asr",
+                selections: [HuggingFaceModelSelection(remoteDirectory: "int8")]
+            )
+        }
+        #expect(tracker.requestCount == 1)
+    }
+
+    @Test("managed ASR plans require complete compiled artifacts")
+    func managedASRPlanCompleteness() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let plan = ManagedASRModelPlans.qwen3ASRInt8(modelsRoot: root)
+        #expect(plan.cacheDirectory.standardizedFileURL.path.hasPrefix(root.standardizedFileURL.path + "/"))
+
+        try FileManager.default.createDirectory(
+            at: plan.cacheDirectory.appendingPathComponent("qwen3_asr_audio_encoder_v2.mlmodelc"),
+            withIntermediateDirectories: true
+        )
+        #expect(!plan.isComplete())
+
+        for relativePath in [
+            "qwen3_asr_audio_encoder_v2.mlmodelc/coremldata.bin",
+            "qwen3_asr_audio_encoder_v2.mlmodelc/weights/weight.bin",
+            "qwen3_asr_decoder_stateful.mlmodelc/coremldata.bin",
+            "qwen3_asr_decoder_stateful.mlmodelc/weights/weight.bin",
+            "qwen3_asr_embeddings.bin",
+            "vocab.json",
+        ] {
+            let url = plan.cacheDirectory.appendingPathComponent(relativePath)
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data([0x01]).write(to: url)
+        }
+
+        #expect(!plan.isComplete())
+        #expect(plan.isAvailableLocally())
+        let partialState = plan.cacheDirectory.appendingPathComponent(".muesli-download-state.json")
+        try Data("{}".utf8).write(to: partialState)
+        #expect(!plan.isAvailableLocally())
+        try FileManager.default.removeItem(at: partialState)
+        let partialFile = plan.cacheDirectory.appendingPathComponent("pending.bin.part")
+        try Data([0x01]).write(to: partialFile)
+        #expect(!plan.isAvailableLocally())
+        try FileManager.default.removeItem(at: partialFile)
+
+        try plan.recordValidatedLegacyInstallationIfNeeded()
+        #expect(plan.isComplete())
+
+        try FileManager.default.removeItem(
+            at: plan.cacheDirectory.appendingPathComponent(
+                "qwen3_asr_audio_encoder_v2.mlmodelc/weights/weight.bin"
+            )
+        )
+        #expect(!plan.isComplete())
+        #expect(!plan.isAvailableLocally())
+        #expect(plan.modelID == "FluidInference/qwen3-asr-0.6b-coreml")
+        #expect(plan.cacheDirectory.path.hasSuffix("qwen3-asr-0.6b/int8"))
+        #expect(plan.selections.count == 1)
+        #expect(plan.selections[0].remoteDirectory == "int8")
+        #expect(plan.selections[0].includedPaths.contains("vocab.json"))
+
+        let whisper = ManagedASRModelPlans.whisperKit(modelName: "tiny", downloadRoot: root)
+        #expect(whisper.selections[0].includedPaths.contains("AudioEncoder.mlmodelc"))
+        #expect(whisper.selections[0].includedPaths.contains("config.json"))
+        #expect(whisper.selections[0].includedPaths.contains("generation_config.json"))
+        #expect(!whisper.selections[0].includedPaths.contains("AudioEncoder.mlpackage"))
+    }
+
+    @Test("English-only Whisper checkpoints use their exact downloadable cache identities")
+    func englishWhisperCheckpointAvailability() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        for modelName in ["tiny.en", "small.en", "medium.en"] {
+            let plan = ManagedASRModelPlans.whisperKit(modelName: modelName, downloadRoot: root)
+            #expect(plan.modelID == modelName)
+            #expect(plan.cacheDirectory.lastPathComponent == "openai_whisper-\(modelName)")
+            #expect(plan.selections[0].remoteDirectory == "openai_whisper-\(modelName)")
+
+            for model in ["MelSpectrogram.mlmodelc", "AudioEncoder.mlmodelc", "TextDecoder.mlmodelc"] {
+                for artifact in ["coremldata.bin", "weights/weight.bin"] {
+                    let url = plan.cacheDirectory
+                        .appendingPathComponent(model, isDirectory: true)
+                        .appendingPathComponent(artifact)
+                    try FileManager.default.createDirectory(
+                        at: url.deletingLastPathComponent(),
+                        withIntermediateDirectories: true
+                    )
+                    try Data([0x01]).write(to: url)
+                }
+            }
+            try Data("{}".utf8).write(
+                to: plan.cacheDirectory.appendingPathComponent("config.json")
+            )
+            try Data("{}".utf8).write(
+                to: plan.cacheDirectory.appendingPathComponent("generation_config.json")
+            )
+
+            #expect(plan.isAvailableLocally())
+        }
+
+        let incompleteSmall = ManagedASRModelPlans.whisperKit(
+            modelName: "small.en",
+            downloadRoot: root
+        )
+        try FileManager.default.removeItem(
+            at: incompleteSmall.cacheDirectory
+                .appendingPathComponent("AudioEncoder.mlmodelc/weights/weight.bin")
+        )
+        #expect(!incompleteSmall.isAvailableLocally())
+    }
+
+    @Test("legacy ASR installs stay available without manifest discovery")
+    func legacyASRInstallSkipsNetworkResolution() async throws {
+        let tracker = DownloadTestTracker()
+        ModelDownloadTestURLProtocol.install { _ in
+            Issue.record("Legacy installation unexpectedly requested the network")
+            return ModelDownloadTestURLProtocol.Response(tracker: tracker)
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let plan = ManagedASRModelPlans.qwen3ASRInt8(modelsRoot: root)
+        for relativePath in [
+            "qwen3_asr_audio_encoder_v2.mlmodelc/coremldata.bin",
+            "qwen3_asr_audio_encoder_v2.mlmodelc/weights/weight.bin",
+            "qwen3_asr_decoder_stateful.mlmodelc/coremldata.bin",
+            "qwen3_asr_decoder_stateful.mlmodelc/weights/weight.bin",
+            "qwen3_asr_embeddings.bin",
+            "vocab.json",
+        ] {
+            let url = plan.cacheDirectory.appendingPathComponent(relativePath)
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data([0x01]).write(to: url)
+        }
+
+        let resolver = HuggingFaceModelManifestResolver(configuration: makeSessionConfiguration())
+        let directory = try await ManagedASRModelDownloader.downloadIfNeeded(
+            plan,
+            resolver: resolver,
+            coordinator: makeCoordinator()
+        )
+        #expect(directory == plan.cacheDirectory)
+        #expect(tracker.requestCount == 0)
+        #expect(!plan.isComplete())
+        #expect(plan.isAvailableLocally())
+    }
+
+    @Test("invalid legacy ASR installs are replaced after runtime validation fails")
+    func invalidLegacyASRInstallIsRepaired() async throws {
+        let tracker = DownloadTestTracker()
+        let tree = try JSONSerialization.data(withJSONObject: [[
+            "type": "file",
+            "path": "model.bin",
+            "size": 4,
+            "oid": "model-oid",
+        ]])
+        ModelDownloadTestURLProtocol.install { request in
+            let data = request.url?.path.contains("/resolve/") == true
+                ? Data("good".utf8)
+                : tree
+            return ModelDownloadTestURLProtocol.Response(data: data, tracker: tracker)
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let plan = ManagedASRModelPlan(
+            modelID: "legacy-repair",
+            repository: "acme/asr",
+            cacheDirectory: root.appendingPathComponent("model", isDirectory: true),
+            selections: [HuggingFaceModelSelection(includedPaths: ["model.bin"])],
+            requiredArtifactAlternatives: [["model.bin"]]
+        )
+        try FileManager.default.createDirectory(at: plan.cacheDirectory, withIntermediateDirectories: true)
+        try Data("bad".utf8).write(to: plan.cacheDirectory.appendingPathComponent("model.bin"))
+        #expect(plan.requiresRuntimeValidation())
+
+        let attempts = DownloadResponseSequence()
+        let value = try await ManagedASRModelDownloader.loadValidated(
+            plan,
+            resolver: HuggingFaceModelManifestResolver(configuration: makeSessionConfiguration()),
+            coordinator: makeCoordinator()
+        ) { directory in
+            let data = try Data(contentsOf: directory.appendingPathComponent("model.bin"))
+            guard data == Data("good".utf8) else {
+                _ = attempts.next()
+                throw NSError(domain: "LegacyRuntimeValidation", code: 1)
+            }
+            _ = attempts.next()
+            return String(decoding: data, as: UTF8.self)
+        }
+
+        #expect(value == "good")
+        #expect(attempts.current == 2)
+        #expect(tracker.requestCount == 2)
+        #expect(plan.isComplete())
+    }
+
+    @Test("cancelled legacy validation preserves the offline cache")
+    func cancelledLegacyValidationPreservesCache() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let plan = ManagedASRModelPlan(
+            modelID: "legacy-validation-cancel",
+            repository: "acme/asr",
+            cacheDirectory: root.appendingPathComponent("model", isDirectory: true),
+            selections: [HuggingFaceModelSelection(includedPaths: ["model.bin"])],
+            requiredArtifactAlternatives: [["model.bin"]]
+        )
+        try FileManager.default.createDirectory(at: plan.cacheDirectory, withIntermediateDirectories: true)
+        let modelURL = plan.cacheDirectory.appendingPathComponent("model.bin")
+        try Data("legacy".utf8).write(to: modelURL)
+
+        await #expect(throws: CancellationError.self) {
+            try await ManagedASRModelDownloader.loadValidated(plan) { _ in
+                throw CancellationError()
+            }
+        }
+
+        #expect(FileManager.default.fileExists(atPath: modelURL.path))
+        #expect(plan.requiresRuntimeValidation())
+    }
+
+    @Test("managed ASR deletion cancels manifest discovery and blocks replacement work")
+    func managedASRDeletionOwnsManifestDiscovery() async throws {
+        let tracker = DownloadTestTracker()
+        let page = try JSONSerialization.data(withJSONObject: [[
+            "type": "file",
+            "path": "model.bin",
+            "size": 1,
+            "oid": String(repeating: "x", count: 64 * 1024),
+        ]])
+        ModelDownloadTestURLProtocol.install { _ in
+            ModelDownloadTestURLProtocol.Response(
+                data: page,
+                chunkSize: 128,
+                delay: 0.002,
+                tracker: tracker
+            )
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let plan = ManagedASRModelPlan(
+            modelID: "managed-resolve-cancel",
+            repository: "acme/asr",
+            cacheDirectory: root.appendingPathComponent("model", isDirectory: true),
+            selections: [HuggingFaceModelSelection(includedPaths: ["model.bin"])],
+            requiredArtifactAlternatives: [["model.bin"]]
+        )
+        let resolver = HuggingFaceModelManifestResolver(configuration: makeSessionConfiguration())
+        let coordinator = makeCoordinator()
+        let task = Task {
+            try await ManagedASRModelDownloader.downloadIfNeeded(
+                plan,
+                resolver: resolver,
+                coordinator: coordinator
+            )
+        }
+        #expect(tracker.waitUntilRequestStarts())
+
+        let deletionToken = await ManagedASRModelDownloader.beginDeletion(
+            modelID: plan.modelID,
+            coordinator: coordinator
+        )
+        do {
+            _ = try await task.value
+            Issue.record("Manifest discovery unexpectedly completed after deletion began")
+        } catch {
+            #expect(error is CancellationError || (error as? URLError)?.code == .cancelled)
+        }
+        await #expect(throws: CancellationError.self) {
+            try await ManagedASRModelDownloader.downloadIfNeeded(
+                plan,
+                resolver: resolver,
+                coordinator: coordinator
+            )
+        }
+        await ManagedASRModelDownloader.endDeletion(deletionToken)
+        #expect(!FileManager.default.fileExists(atPath: plan.cacheDirectory.path))
     }
 
     @Test("downloads multiple files with bounded concurrency")
@@ -709,13 +1106,15 @@ struct ModelDownloadCoordinatorTests {
         #expect(tracker.requestCount == 6)
     }
 
-    @Test("cancellation preserves the partial file and does not finalize it")
+    @Test("cancel and wait preserves the partial file and finishes before deletion")
     func cancellationPreservesPartialFile() async throws {
+        let tracker = DownloadTestTracker()
         ModelDownloadTestURLProtocol.install { _ in
             ModelDownloadTestURLProtocol.Response(
                 data: Data(repeating: 0x43, count: 512 * 1024),
                 chunkSize: 4 * 1024,
-                delay: 0.01
+                delay: 0.01,
+                tracker: tracker
             )
         }
         defer { ModelDownloadTestURLProtocol.uninstall() }
@@ -730,8 +1129,15 @@ struct ModelDownloadCoordinatorTests {
             maximumConcurrency: 1
         )
         let task = Task { try await coordinator.download(manifest, to: directory) }
-        try await Task.sleep(for: .milliseconds(60))
-        await coordinator.cancel(modelID: manifest.id)
+        #expect(tracker.waitUntilRequestStarts())
+        let partURL = directory.appendingPathComponent("model.bin.part")
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !FileManager.default.fileExists(atPath: partURL.path),
+              ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(FileManager.default.fileExists(atPath: partURL.path))
+        await coordinator.cancelAndWait(modelID: manifest.id)
         do {
             try await task.value
             Issue.record("Cancellation unexpectedly completed")
@@ -739,18 +1145,23 @@ struct ModelDownloadCoordinatorTests {
             // Expected.
         }
 
-        let partURL = directory.appendingPathComponent("model.bin.part")
         #expect(FileManager.default.fileExists(atPath: partURL.path))
         #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("model.bin").path))
+        try FileManager.default.removeItem(at: partURL)
+        #expect(!FileManager.default.fileExists(atPath: partURL.path))
     }
 
     private func makeCoordinator() -> ModelDownloadCoordinator {
+        ModelDownloadCoordinator(configuration: makeSessionConfiguration())
+    }
+
+    private func makeSessionConfiguration() -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [ModelDownloadTestURLProtocol.self]
         configuration.waitsForConnectivity = false
         configuration.timeoutIntervalForRequest = 5
         configuration.timeoutIntervalForResource = 30
-        return ModelDownloadCoordinator(configuration: configuration)
+        return configuration
     }
 
     private func makeTemporaryDirectory() throws -> URL {

@@ -210,6 +210,63 @@ struct MeetingNeuralAecTests {
         #expect(processor.processedFrameCount == 2)
     }
 
+    @Test("diagnostics report active processor and frame size")
+    func diagnosticsReportActiveProcessorAndFrameSize() {
+        let localVQE = MeetingNeuralAec(preloadedProcessor: PassthroughAecProcessor(name: "localvqe", frameSize: 256))
+        #expect(localVQE.diagnosticsSnapshot.processor == "localvqe")
+        #expect(localVQE.diagnosticsSnapshot.frameSize == 256)
+        #expect(localVQE.diagnosticsSnapshot.ready)
+
+        let dtln = MeetingNeuralAec(preloadedProcessor: PassthroughAecProcessor(name: "dtln", frameSize: 512))
+        #expect(dtln.diagnosticsSnapshot.processor == "dtln")
+        #expect(dtln.diagnosticsSnapshot.frameSize == 512)
+
+        let unloaded = MeetingNeuralAec()
+        #expect(unloaded.diagnosticsSnapshot.processor == nil)
+        #expect(unloaded.diagnosticsSnapshot.frameSize == 0)
+        #expect(unloaded.diagnosticsSnapshot.ready == false)
+    }
+
+    @Test("diagnostics decode legacy payload without processor metadata")
+    func diagnosticsDecodeLegacyPayloadWithoutProcessorMetadata() throws {
+        let legacyPayload = Data("""
+        {
+          "ready": true,
+          "processedFrames": 12,
+          "fullReferenceFrames": 10,
+          "partialReferenceFrames": 1,
+          "missingReferenceFrames": 1,
+          "systemSamplesReceived": 4096,
+          "micSamplesReceived": 4096,
+          "bufferedSystemSamples": 256,
+          "bufferedMicSamples": 0,
+          "currentDelayMs": 0,
+          "delayHistory": [],
+          "delaySkipHistory": []
+        }
+        """.utf8)
+
+        let snapshot = try JSONDecoder().decode(MeetingAecDiagnosticsSnapshot.self, from: legacyPayload)
+
+        #expect(snapshot.processor == nil)
+        #expect(snapshot.frameSize == 0)
+        #expect(snapshot.processedFrames == 12)
+    }
+
+    @Test("diagnostics processor metadata round trips")
+    func diagnosticsProcessorMetadataRoundTrips() throws {
+        let original = MeetingNeuralAec(
+            preloadedProcessor: PassthroughAecProcessor(name: "localvqe", frameSize: 256)
+        ).diagnosticsSnapshot
+
+        let encoded = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(MeetingAecDiagnosticsSnapshot.self, from: encoded)
+
+        #expect(decoded.processor == "localvqe")
+        #expect(decoded.frameSize == 256)
+        #expect(decoded.ready)
+    }
+
     @Test("delay estimator reports missing mic candidate windows")
     func delayEstimatorReportsMissingMicCandidateWindows() throws {
         let estimator = MeetingAecDelayEstimator()
