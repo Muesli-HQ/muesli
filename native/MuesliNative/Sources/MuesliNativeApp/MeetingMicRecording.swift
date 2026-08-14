@@ -245,7 +245,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
             label: "com.muesli.route-aware-meeting-mic-recorder-cleanup",
             attributes: .concurrent
         ),
-        handoffTimeout: TimeInterval = 2,
+        handoffTimeout: TimeInterval = 5,
         handoffTimeoutScheduler: HandoffTimeoutScheduler? = nil
     ) {
         self.seededSystemDefaultRecorder = systemDefaultRecorder
@@ -605,6 +605,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         guard transition.completed else { return }
         onRawPCMSamplesStorage?(firstSamples)
         onHandoffOutcome?(.promoted)
+        fputs("[meeting-mic] handoff promoted: replacement is now capturing\n", stderr)
         retireAfterHandoffAsync(transition.old)
     }
 

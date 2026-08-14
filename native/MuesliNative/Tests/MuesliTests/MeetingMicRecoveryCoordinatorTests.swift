@@ -294,6 +294,53 @@ struct MeetingMicRecoveryCoordinatorTests {
         #expect(harness.events.first?.recoveryAttempts == 0) // measured at episode start
     }
 
+    @Test("external degradation opens an episode and drives recovery")
+    func externalDegradationOpensEpisode() {
+        let harness = Harness()
+        harness.coordinator.noteExternalDegradation(reason: "mic_callbacks_stale_while_system_tap_dead")
+
+        #expect(harness.events.map(\.kind) == [.degraded])
+        #expect(harness.events.first?.reason == "mic_callbacks_stale_while_system_tap_dead")
+        #expect(harness.recoveryRequests.count == 1)
+        #expect(harness.coordinator.hasActiveEpisode)
+    }
+
+    @Test("external degradation while an episode is open does not double-open")
+    func externalDegradationWhileOpenIsIgnored() {
+        let harness = Harness()
+        harness.systemActive(seconds: 4) // tracker-driven episode open
+        harness.coordinator.noteExternalDegradation(reason: "mic_callbacks_stale_while_system_tap_dead")
+
+        #expect(harness.events.map(\.kind) == [.degraded])
+        #expect(harness.recoveryRequests.count == 1)
+    }
+
+    @Test("external degradation after finishMeeting is ignored")
+    func externalDegradationAfterFinishIsIgnored() {
+        let harness = Harness()
+        harness.coordinator.finishMeeting()
+        harness.coordinator.noteExternalDegradation(reason: "mic_callbacks_stale_while_system_tap_dead")
+
+        #expect(harness.events.isEmpty)
+        #expect(harness.recoveryRequests.isEmpty)
+    }
+
+    @Test("recovery dispatch defers while a route transition is settling")
+    func recoveryDefersWhileRouteSettles() {
+        let harness = Harness()
+        var settling = true
+        harness.coordinator.isRouteSettling = { settling }
+        var deferredWork: (() -> Void)?
+        harness.coordinator.scheduleAfter = { _, work in deferredWork = work }
+
+        harness.systemActive(seconds: 4) // episode starts; recovery reserved
+        #expect(harness.recoveryRequests.isEmpty) // deferred, not dispatched
+
+        settling = false
+        deferredWork?() // settle window elapsed
+        #expect(harness.recoveryRequests.count == 1)
+    }
+
     @Test("transient recovery refusals are throttled by the cooldown, not per-snapshot")
     func transientRefusalsRespectCooldown() {
         // Simulates a handoff already pending: the recorder declines (false)

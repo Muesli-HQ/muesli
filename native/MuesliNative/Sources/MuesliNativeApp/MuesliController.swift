@@ -5574,6 +5574,28 @@ final class MuesliController: NSObject {
                         TelemetryDeck.signal(MeetingMicHealthEpisodeKind.userMuted.rawValue, parameters: [:])
                     }
                 }
+                meetingSession.onSystemAudioHealthEpisode = { [weak self] event in
+                    Task { @MainActor in
+                        guard let self, self.micEpisodeTelemetryGate.allows(meetingID) else { return }
+                        let parameters: [String: String] = [
+                            "reason": event.reason,
+                            "duration_ms": String(Int(event.durationSeconds * 1000)),
+                            "recovery_attempts": String(event.recoveryAttempts),
+                        ]
+                        switch event.kind {
+                        case .degraded, .recovered:
+                            TelemetryDeck.signal(event.kind.rawValue, parameters: parameters)
+                        case .unrecovered:
+                            TelemetryDeck.signal(event.kind.rawValue, parameters: parameters)
+                            self.recordDiagnosticIncident(
+                                kind: .meetingSystemAudioCaptureFailed,
+                                severity: .warning,
+                                stage: .meetingSystemAudioCapture,
+                                promptUser: false
+                            )
+                        }
+                    }
+                }
                 meetingSession.onMicHealthEpisode = { [weak self] event in
                     Task { @MainActor in
                         guard let self else { return }
