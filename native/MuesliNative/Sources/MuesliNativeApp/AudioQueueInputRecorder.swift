@@ -134,8 +134,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
             AudioQueueStop(queueToStop, false)
             // Bounded wait for the drain (3-buffer ring of 32ms buffers drains
             // in well under 100ms); bail out immediately if a successor
-            // start() took over the queue (generation bumped), and force-stop
-            // only while this capture still owns the queue.
+            // start() took over the queue (generation bumped).
             var waitedMs = 0
             while isQueueRunning(queueToStop), waitedMs < 500 {
                 let superseded = queueLock.withLock { captureGeneration != generationToFinish }
@@ -143,43 +142,55 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
                 usleep(10_000)
                 waitedMs += 10
             }
-            let ownsQueue = queueLock.withLock {
-                captureGeneration == generationToFinish && isDraining
-            }
+            // Force-stop a wedged drain only while this capture still owns
+            // the queue. start() holds queueLock across its entire setup
+            // (including AudioQueueStart), so checking + stopping under
+            // queueLock cannot interleave with a successor capture.
+            queueLock.lock()
+            let ownsQueue = captureGeneration == generationToFinish && isDraining
             if ownsQueue, isQueueRunning(queueToStop) {
                 AudioQueueStop(queueToStop, true)
+            }
+            if ownsQueue {
+                isDraining = false
+            }
+            queueLock.unlock()
+            guard ownsQueue else {
+                emitLatency("audio_queue_stop_end")
+                return nil
             }
             emitLatency("audio_queue_stop_end")
         }
 
-        queueLock.lock()
-        let stillOwner = captureGeneration == generationToFinish
-        if stillOwner {
-            isDraining = false
-        }
-        queueLock.unlock()
-        // A successor start() superseded this capture mid-drain: it owns the
-        // queue and has already replaced the file state, so there is nothing
-        // left to finalize for the abandoned capture.
-        guard stillOwner else { return nil }
-
+        // Drain the processing closures for this generation BEFORE the
+        // generation bump below — otherwise the drained tail buffers (the
+        // final word) would be dropped by the generation check.
         emitLatency("audio_queue_processing_drain_begin")
         processingQueue.sync {}
         emitLatency("audio_queue_processing_drain_end")
 
+        // Ownership re-check, generation bump, and file-state transfer are a
+        // single atomic section under queueLock: start() performs its own
+        // state install + generation bump under the same lock, so a successor
+        // either runs entirely before this section (check fails, we return
+        // nil and never touch its file) or entirely after (it sees the bumped
+        // generation and a fresh state).
         queueLock.lock()
-        if captureGeneration == generationToFinish {
-            captureGeneration &+= 1
+        guard captureGeneration == generationToFinish else {
+            queueLock.unlock()
+            return nil
         }
+        isDraining = false
         isPaused = false
-        queueLock.unlock()
-
-        emitLatency("audio_queue_finalize_begin")
+        captureGeneration &+= 1
         let finalState = stateLock.withLock { state -> FileState in
             let old = state
             state = FileState()
             return old
         }
+        queueLock.unlock()
+
+        emitLatency("audio_queue_finalize_begin")
         let url = finalizeFile(finalState)
         emitLatency("audio_queue_finalize_end")
         return url
