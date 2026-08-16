@@ -93,7 +93,7 @@ struct TranscriptionWorkSchedulerTests {
             try await scheduler.acquire(.background)
             await scheduler.release(.background)
         }
-        try await Task.sleep(for: .milliseconds(10))
+        try await waitForSchedulerWaiterCount(scheduler, priority: .background, count: 1)
         #expect(await scheduler.queuedWaiterCount(.background) == 1)
 
         try await scheduler.acquire(.foreground)
@@ -109,6 +109,53 @@ struct TranscriptionWorkSchedulerTests {
         await scheduler.release(.background)
     }
 
+    @Test("foreground work blocks new meeting jobs until it finishes")
+    func foregroundBlocksNewBackgroundWork() async throws {
+        let scheduler = TranscriptionWorkScheduler()
+        try await scheduler.acquire(.foreground)
+
+        let background = Task {
+            try await scheduler.acquire(.background)
+            await scheduler.release(.background)
+        }
+        try await waitForSchedulerWaiterCount(scheduler, priority: .background, count: 1)
+        #expect(await scheduler.queuedWaiterCount(.background) == 1)
+
+        await scheduler.release(.foreground)
+        try await background.value
+        #expect(await scheduler.queuedWaiterCount(.background) == 0)
+    }
+
+    @Test("foreground release fills every available meeting slot")
+    func foregroundReleaseAdmitsAllAvailableBackgroundWork() async throws {
+        let scheduler = TranscriptionWorkScheduler()
+        let started = TranscriptionLifecycleTestCounter()
+        let allowCompletion = TranscriptionLifecycleTestLatch()
+        try await scheduler.acquire(.foreground)
+
+        let firstBackground = Task {
+            try await scheduler.acquire(.background)
+            await started.increment()
+            await allowCompletion.wait()
+            await scheduler.release(.background)
+        }
+        let secondBackground = Task {
+            try await scheduler.acquire(.background)
+            await started.increment()
+            await allowCompletion.wait()
+            await scheduler.release(.background)
+        }
+        try await waitForSchedulerWaiterCount(scheduler, priority: .background, count: 2)
+
+        await scheduler.release(.foreground)
+        try await waitForCounter(started, value: 2)
+        #expect(await started.value == 2)
+
+        await allowCompletion.signal()
+        try await firstBackground.value
+        try await secondBackground.value
+    }
+
     @Test("cancelled meeting work leaves no queued scheduler job")
     func cancelledBackgroundWaiterIsRemoved() async throws {
         let scheduler = TranscriptionWorkScheduler()
@@ -119,7 +166,7 @@ struct TranscriptionWorkSchedulerTests {
             try await scheduler.acquire(.background)
             await scheduler.release(.background)
         }
-        try await Task.sleep(for: .milliseconds(10))
+        try await waitForSchedulerWaiterCount(scheduler, priority: .background, count: 1)
         #expect(await scheduler.queuedWaiterCount(.background) == 1)
 
         cancelled.cancel()
@@ -135,6 +182,29 @@ struct TranscriptionWorkSchedulerTests {
         #expect(await scheduler.queuedWaiterCount(.background) == 0)
         await scheduler.release(.background)
         await scheduler.release(.background)
+    }
+
+    private func waitForSchedulerWaiterCount(
+        _ scheduler: TranscriptionWorkScheduler,
+        priority: TranscriptionWorkPriority,
+        count: Int
+    ) async throws {
+        for _ in 0..<200 {
+            if await scheduler.queuedWaiterCount(priority) == count { return }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        Issue.record("Scheduler did not reach \(count) queued waiters")
+    }
+
+    private func waitForCounter(
+        _ counter: TranscriptionLifecycleTestCounter,
+        value: Int
+    ) async throws {
+        for _ in 0..<200 {
+            if await counter.value == value { return }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        Issue.record("Counter did not reach \(value)")
     }
 }
 

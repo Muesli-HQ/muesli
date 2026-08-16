@@ -98,7 +98,8 @@ enum TranscriptionWorkPriority {
 }
 
 /// Bounds concurrent ASR work while preserving the meeting pipeline's mic/system
-/// parallelism and a third slot for latency-sensitive dictation.
+/// parallelism and a third slot for latency-sensitive dictation. Existing meeting
+/// jobs continue during dictation; new background jobs wait until it finishes.
 actor TranscriptionWorkScheduler {
     private struct Waiter {
         let id: UUID
@@ -194,7 +195,7 @@ actor TranscriptionWorkScheduler {
             markStarted(.foreground)
             foregroundWaiters.removeFirst().continuation.resume(returning: true)
         }
-        if canStart(.background), !backgroundWaiters.isEmpty {
+        while canStart(.background), !backgroundWaiters.isEmpty {
             markStarted(.background)
             backgroundWaiters.removeFirst().continuation.resume(returning: true)
         }

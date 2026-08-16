@@ -7770,6 +7770,7 @@ final class MuesliController: NSObject {
             beginDictationLatencyTrace(reason: "prepare")
         }
         markDictationLatency("prepare_requested")
+        invalidateDictationTranscriptionForegroundOwnership()
         guard !isStreamingDictationBackend else {
             return
         }
@@ -7789,6 +7790,7 @@ final class MuesliController: NSObject {
         if dictationLatencyTraceID == nil {
             beginDictationLatencyTrace(reason: "hotkey")
         }
+        invalidateDictationTranscriptionForegroundOwnership()
         if !isStreamingDictationBackend {
             setState(.preparing)
             meetingMonitor.suppressWhileActive()
