@@ -83,24 +83,30 @@ struct InteractiveAudioSessionOwnership: Equatable {
 enum DictationStartAdmissionPolicy {
     static func allowsStart(
         dictationState: DictationState,
-        meetingProcessingStage: MeetingProcessingStage?
+        isMeetingAudioProcessing: Bool
     ) -> Bool {
         dictationState != .transcribing
-            && (meetingProcessingStage?.allowsDictation ?? true)
+            && !isMeetingAudioProcessing
     }
 
     static func shouldIgnoreCleanupAfterBlockedStart(
         hasStartedRecording: Bool,
         isStreaming: Bool,
         dictationState: DictationState,
-        meetingProcessingStage: MeetingProcessingStage?
+        isMeetingAudioProcessing: Bool
     ) -> Bool {
         !hasStartedRecording
             && !isStreaming
             && !allowsStart(
                 dictationState: dictationState,
-                meetingProcessingStage: meetingProcessingStage
+                isMeetingAudioProcessing: isMeetingAudioProcessing
             )
+    }
+}
+
+enum MeetingProcessingAdmissionPolicy {
+    static func blocksDictation(stages: [MeetingProcessingStage]) -> Bool {
+        stages.contains { !$0.allowsDictation }
     }
 }
 
@@ -448,7 +454,7 @@ final class MuesliController: NSObject {
     private var isPresentingMeetingTerminationConfirmation = false
     private var isTerminatingAfterMeetingConfirmation = false
     private var backgroundMeetingProcessingCount = 0
-    private var meetingProcessingStage: MeetingProcessingStage?
+    private var meetingProcessingStages: [UUID: MeetingProcessingStage] = [:]
     private var pendingMeetingCompletionNotification: PendingMeetingCompletionNotification?
     private var contributionMilestonePromptDismissedThisLaunch = false
     private var contributionMilestonePromptSeenIDsThisLaunch: Set<String> = []
@@ -6197,15 +6203,16 @@ final class MuesliController: NSObject {
             syncAppState()
         }
         indicator.setMeetingRecording(false, config: config)
-        setMeetingProcessingStage(.transcribingAudio)
-        let processingGeneration = backgroundMeetingProcessingCount + 1
+        let processingID = UUID()
+        setMeetingProcessingStage(.transcribingAudio, processingID: processingID)
         sessionToStop.onProgress = { [weak self] stage in
             Task { @MainActor [weak self] in
-                guard let self,
-                      !self.isMeetingRecording(),
-                      !self.isStartingMeetingRecording,
-                      self.backgroundMeetingProcessingCount == processingGeneration else { return }
-                self.setMeetingProcessingStage(stage)
+                guard let self, self.meetingProcessingStages[processingID] != nil else { return }
+                self.setMeetingProcessingStage(
+                    stage,
+                    processingID: processingID,
+                    updatePresentation: !self.isMeetingRecording() && !self.isStartingMeetingRecording
+                )
             }
         }
 
@@ -6284,10 +6291,8 @@ final class MuesliController: NSObject {
                 }
             }
             await MainActor.run {
+                self.removeMeetingProcessing(processingID: processingID)
                 self.backgroundMeetingProcessingCount -= 1
-                if self.backgroundMeetingProcessingCount == 0 {
-                    self.meetingProcessingStage = nil
-                }
                 if let failedLiveMeetingID {
                     self.resolveLiveMeetingAfterStopFailure(id: failedLiveMeetingID)
                 } else if let liveMeetingID {
@@ -6860,10 +6865,16 @@ final class MuesliController: NSObject {
         dictationState != .idle || dictationStartedAt != nil || computerUseCommandStartedAt != nil || isNemotron35Streaming
     }
 
+    private var isMeetingAudioProcessing: Bool {
+        MeetingProcessingAdmissionPolicy.blocksDictation(
+            stages: Array(meetingProcessingStages.values)
+        )
+    }
+
     private var canBeginDictationInteraction: Bool {
         DictationStartAdmissionPolicy.allowsStart(
             dictationState: dictationState,
-            meetingProcessingStage: meetingProcessingStage
+            isMeetingAudioProcessing: isMeetingAudioProcessing
         )
     }
 
@@ -6872,7 +6883,7 @@ final class MuesliController: NSObject {
             hasStartedRecording: dictationStartedAt != nil,
             isStreaming: isNemotron35Streaming,
             dictationState: dictationState,
-            meetingProcessingStage: meetingProcessingStage
+            isMeetingAudioProcessing: isMeetingAudioProcessing
         )
     }
 
@@ -7254,16 +7265,34 @@ final class MuesliController: NSObject {
     }
 
     @MainActor
-    private func setMeetingProcessingStage(_ stage: MeetingProcessingStage) {
-        let wasBlockingDictation = meetingProcessingStage?.allowsDictation == false
-        meetingProcessingStage = stage
+    private func setMeetingProcessingStage(
+        _ stage: MeetingProcessingStage,
+        processingID: UUID,
+        updatePresentation: Bool = true
+    ) {
+        let wasBlockingDictation = isMeetingAudioProcessing
+        meetingProcessingStages[processingID] = stage
 
-        if wasBlockingDictation, stage.allowsDictation {
+        if wasBlockingDictation, !isMeetingAudioProcessing {
             syncDictationRecorderWarmup(intent: .idlePrewarm(.meetingStateChanged))
         }
-        if stage.allowsDictation, isDictationActivityInProgress {
-            return
+        guard updatePresentation else { return }
+        let presentationStage = meetingProcessingStages.values.first(where: { !$0.allowsDictation }) ?? stage
+        presentMeetingProcessingStage(presentationStage)
+    }
+
+    @MainActor
+    private func removeMeetingProcessing(processingID: UUID) {
+        let wasBlockingDictation = isMeetingAudioProcessing
+        meetingProcessingStages[processingID] = nil
+        if wasBlockingDictation, !isMeetingAudioProcessing {
+            syncDictationRecorderWarmup(intent: .idlePrewarm(.meetingStateChanged))
         }
+    }
+
+    @MainActor
+    private func presentMeetingProcessingStage(_ stage: MeetingProcessingStage) {
+        if stage.allowsDictation, isDictationActivityInProgress { return }
 
         switch stage {
         case .transcribingAudio:
@@ -7487,7 +7516,7 @@ final class MuesliController: NSObject {
     private var canPrepareComputerUseCommand: Bool {
         !isMeetingRecording()
             && !isDictationTestMode
-            && meetingProcessingStage?.allowsDictation != false
+            && !isMeetingAudioProcessing
             && dictationStartedAt == nil
             && computerUseCommandStartedAt == nil
             && pendingComputerUseStopSessionID == nil
@@ -7500,7 +7529,7 @@ final class MuesliController: NSObject {
     private var canStartComputerUseCommand: Bool {
         !isMeetingRecording()
             && !isDictationTestMode
-            && meetingProcessingStage?.allowsDictation != false
+            && !isMeetingAudioProcessing
             && dictationStartedAt == nil
             && computerUseCommandStartedAt == nil
             && pendingComputerUseStopSessionID == nil
@@ -7857,7 +7886,7 @@ final class MuesliController: NSObject {
             && config.resolvedOnboardingUseCase.includesPushToTalk
             && AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
             && dictationState == .idle
-            && meetingProcessingStage?.allowsDictation != false
+            && !isMeetingAudioProcessing
             && computerUseCommandStartedAt == nil
             && !isMeetingRecording()
             && !isStartingMeetingRecording

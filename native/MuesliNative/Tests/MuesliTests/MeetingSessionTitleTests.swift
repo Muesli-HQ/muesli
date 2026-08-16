@@ -19,7 +19,7 @@ struct MeetingProcessingStageTests {
     func activeDictationTranscriptionStaysBlocked() {
         #expect(!DictationStartAdmissionPolicy.allowsStart(
             dictationState: .transcribing,
-            meetingProcessingStage: .generatingTitle
+            isMeetingAudioProcessing: false
         ))
     }
 
@@ -27,11 +27,11 @@ struct MeetingProcessingStageTests {
     func admissionFollowsMeetingAudioProcessingBoundary() {
         #expect(!DictationStartAdmissionPolicy.allowsStart(
             dictationState: .idle,
-            meetingProcessingStage: .transcribingAudio
+            isMeetingAudioProcessing: true
         ))
         #expect(DictationStartAdmissionPolicy.allowsStart(
             dictationState: .idle,
-            meetingProcessingStage: .summarizingNotes
+            isMeetingAudioProcessing: false
         ))
     }
 
@@ -41,26 +41,42 @@ struct MeetingProcessingStageTests {
             hasStartedRecording: false,
             isStreaming: false,
             dictationState: .transcribing,
-            meetingProcessingStage: .generatingTitle
+            isMeetingAudioProcessing: false
         ))
         #expect(DictationStartAdmissionPolicy.shouldIgnoreCleanupAfterBlockedStart(
             hasStartedRecording: false,
             isStreaming: false,
             dictationState: .idle,
-            meetingProcessingStage: .transcribingAudio
+            isMeetingAudioProcessing: true
         ))
         #expect(!DictationStartAdmissionPolicy.shouldIgnoreCleanupAfterBlockedStart(
             hasStartedRecording: false,
             isStreaming: false,
             dictationState: .preparing,
-            meetingProcessingStage: nil
+            isMeetingAudioProcessing: false
         ))
         #expect(!DictationStartAdmissionPolicy.shouldIgnoreCleanupAfterBlockedStart(
             hasStartedRecording: true,
             isStreaming: false,
             dictationState: .recording,
-            meetingProcessingStage: nil
+            isMeetingAudioProcessing: false
         ))
+    }
+
+    @Test("any blocking meeting keeps dictation blocked across arbitrary overlap")
+    func arbitraryMeetingOverlapStaysBlocked() {
+        #expect(MeetingProcessingAdmissionPolicy.blocksDictation(stages: [
+            .generatingTitle,
+            .summarizingNotes,
+            .transcribingAudio,
+            .generatingTitle,
+        ]))
+        #expect(!MeetingProcessingAdmissionPolicy.blocksDictation(stages: [
+            .generatingTitle,
+            .summarizingNotes,
+            .generatingTitle,
+            .summarizingNotes,
+        ]))
     }
 }
 
