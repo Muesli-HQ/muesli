@@ -90,6 +90,35 @@ struct PasteControllerTests {
         _ = await waitForClipboardString(in: pasteboard, expected: "original")
     }
 
+    @Test("paste reports the application snapshotted at Cmd+V dispatch")
+    func pasteReportsApplicationAtCommandDispatch() async {
+        let pasteboard = makePasteboard()
+        let expectedApplication = NSRunningApplication.current
+
+        let result = await withCheckedContinuation { continuation in
+            var events: [String] = []
+            PasteController.paste(
+                text: "dictated text",
+                pasteboard: pasteboard,
+                targetApplicationProvider: {
+                    events.append("snapshot")
+                    return expectedApplication
+                },
+                simulatePasteAction: {
+                    events.append("command")
+                },
+                onPasteDispatched: { application in
+                    events.append("callback")
+                    continuation.resume(returning: (events, application?.processIdentifier))
+                }
+            )
+        }
+
+        #expect(result.0 == ["snapshot", "command", "callback"])
+        #expect(result.1 == expectedApplication.processIdentifier)
+        _ = await waitForClipboardString(in: pasteboard, expected: nil)
+    }
+
     @Test("paste restores clipboard after delay")
     func pasteRestoresClipboard() async throws {
         let pasteboard = makePasteboard()

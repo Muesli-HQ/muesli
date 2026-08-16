@@ -41,7 +41,11 @@ enum PasteController {
     static func paste(
         text: String,
         pasteboard: NSPasteboard = .general,
-        simulatePasteAction: @escaping () -> Void = PasteController.simulatePaste
+        targetApplicationProvider: @escaping @MainActor () -> NSRunningApplication? = {
+            NSWorkspace.shared.frontmostApplication
+        },
+        simulatePasteAction: @escaping @MainActor () -> Void = PasteController.simulatePaste,
+        onPasteDispatched: @escaping @MainActor (NSRunningApplication?) -> Void = { _ in }
     ) {
         guard !text.isEmpty else { return }
 
@@ -53,7 +57,11 @@ enum PasteController {
         let pasteChangeCount = pasteboard.changeCount
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            // Snapshot immediately before Cmd+V so attribution and the paste event
+            // refer to the same frontmost application.
+            let targetApplication = targetApplicationProvider()
             simulatePasteAction()
+            onPasteDispatched(targetApplication)
 
             // Restore the original clipboard contents after the receiving app has consumed the paste.
             DispatchQueue.main.asyncAfter(deadline: .now() + clipboardRestoreDelay) {

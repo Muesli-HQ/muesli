@@ -8309,13 +8309,18 @@ final class MuesliController: NSObject {
         capturedDictationCorrectionTargetApp = nil
     }
 
-    private func currentExternalDictationTargetApp() -> DictationCorrectionTargetApp? {
-        let frontmostApplication = NSWorkspace.shared.frontmostApplication
+    private func externalDictationTargetApp(
+        from frontmostApplication: NSRunningApplication?
+    ) -> DictationCorrectionTargetApp? {
         return DictationCorrectionTargetApp(
             app: frontmostApplication == NSRunningApplication.current
                 ? lastExternalApp
                 : frontmostApplication
         )
+    }
+
+    private func currentExternalDictationTargetApp() -> DictationCorrectionTargetApp? {
+        externalDictationTargetApp(from: NSWorkspace.shared.frontmostApplication)
     }
 
     private func captureDictationCorrectionTargetApp() {
@@ -8711,6 +8716,51 @@ final class MuesliController: NSObject {
         syncDictationRecorderWarmup(intent: .idlePrewarm(.backendRecovery))
     }
 
+    private func completeStandardDictation(
+        text: String,
+        duration: TimeInterval,
+        appContext: String,
+        startedAt: Date,
+        outputMode: DictationOutputMode,
+        targetApp: DictationCorrectionTargetApp?
+    ) {
+        _ = try? dictationStore.insertDictation(
+            text: text,
+            durationSeconds: duration,
+            appContext: appContext,
+            targetAppName: targetApp?.appName,
+            targetAppBundleID: targetApp?.bundleID,
+            startedAt: startedAt,
+            endedAt: Date()
+        )
+        scheduleICloudSyncAfterLocalChange()
+        clearCapturedDictationSessionContext()
+        statusBarController?.refresh()
+        historyWindowController?.reload()
+        syncAppState()
+        if outputMode == .paste, config.enableDictionaryCorrectionPrompts {
+            // Dictionary correction prompts are an explicit opt-in
+            // screen-context feature: they briefly read focused app
+            // text via Accessibility after dictation, then stop when
+            // the bounded edit monitor session ends.
+            dictationCorrectionMonitor.start(
+                originalText: text,
+                appContext: appContext,
+                targetApp: targetApp
+            ) { [weak self] suggestion in
+                self?.addDictionarySuggestion(suggestion)
+            }
+        }
+        resetDictationOutputMode()
+        setState(.idle)
+        meetingMonitor.resumeAfterCooldown()
+        syncDictationRecorderWarmup(intent: .postDictation(.transcriptionComplete))
+        TelemetryDeck.signal("dictation.completed", parameters: [
+            "backend": selectedBackend.backend,
+            "paste_method": outputMode.pasteMethod,
+        ])
+    }
+
     private func finishStandardDictationStop(wavURL stoppedWavURL: URL?, startedAt: Date) {
         markDictationLatency("stop_finished")
         guard let wavURL = stoppedWavURL else {
@@ -8805,54 +8855,34 @@ final class MuesliController: NSObject {
                     }
                     return
                 }
-                let shouldPersistTargetApp = DictationAttributionPolicy.shouldPersist(
-                    isPasteOutput: outputMode == .paste,
-                    source: "dictation",
-                    text: text
-                )
-                // Resolve at finalization so the app receiving the completed paste is authoritative.
-                let targetApp = shouldPersistTargetApp
-                    ? self.currentExternalDictationTargetApp() ?? startingTargetApp
-                    : nil
-                _ = try? self.dictationStore.insertDictation(
-                    text: text,
-                    durationSeconds: duration,
-                    appContext: storageContext,
-                    targetAppName: targetApp?.appName,
-                    targetAppBundleID: targetApp?.bundleID,
-                    startedAt: startedAt,
-                    endedAt: Date()
-                )
                 await MainActor.run {
-                    self.scheduleICloudSyncAfterLocalChange()
-                    self.clearCapturedDictationSessionContext()
-                    self.statusBarController?.refresh()
-                    self.historyWindowController?.reload()
-                    self.syncAppState()
-                    if outputMode != .voiceNote {
-                        PasteController.paste(text: text)
-                        if self.config.enableDictionaryCorrectionPrompts {
-                            // Dictionary correction prompts are an explicit opt-in
-                            // screen-context feature: they briefly read focused app
-                            // text via Accessibility after dictation, then stop when
-                            // the bounded edit monitor session ends.
-                            self.dictationCorrectionMonitor.start(
-                                originalText: text,
-                                appContext: storageContext,
-                                targetApp: targetApp
-                            ) { [weak self] suggestion in
-                                self?.addDictionarySuggestion(suggestion)
+                    if outputMode == .paste {
+                        PasteController.paste(
+                            text: text,
+                            onPasteDispatched: { [weak self] targetApplication in
+                                guard let self else { return }
+                                let targetApp = self.externalDictationTargetApp(from: targetApplication)
+                                    ?? startingTargetApp
+                                self.completeStandardDictation(
+                                    text: text,
+                                    duration: duration,
+                                    appContext: storageContext,
+                                    startedAt: startedAt,
+                                    outputMode: outputMode,
+                                    targetApp: targetApp
+                                )
                             }
-                        }
+                        )
+                    } else {
+                        self.completeStandardDictation(
+                            text: text,
+                            duration: duration,
+                            appContext: storageContext,
+                            startedAt: startedAt,
+                            outputMode: outputMode,
+                            targetApp: nil
+                        )
                     }
-                    self.resetDictationOutputMode()
-                    self.setState(.idle)
-                    self.meetingMonitor.resumeAfterCooldown()
-                    self.syncDictationRecorderWarmup(intent: .postDictation(.transcriptionComplete))
-                    TelemetryDeck.signal("dictation.completed", parameters: [
-                        "backend": self.selectedBackend.backend,
-                        "paste_method": outputMode.pasteMethod,
-                    ])
                 }
             } catch is CancellationError {
                 fputs("[muesli-native] test dictation cancelled\n", stderr)
