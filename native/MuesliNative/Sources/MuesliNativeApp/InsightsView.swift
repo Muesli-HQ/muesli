@@ -5,6 +5,7 @@ struct InsightsView: View {
     let initialSection: InsightsSection
     let loadSnapshot: (InsightsRange) async throws -> InsightsSnapshot
     let onBack: () -> Void
+    let backLabel: String
 
     @State private var range: InsightsRange = .twelveMonths
     @State private var metric: InsightsMetric
@@ -18,11 +19,13 @@ struct InsightsView: View {
     init(
         initialSection: InsightsSection,
         loadSnapshot: @escaping (InsightsRange) async throws -> InsightsSnapshot,
-        onBack: @escaping () -> Void
+        onBack: @escaping () -> Void,
+        backLabel: String
     ) {
         self.initialSection = initialSection
         self.loadSnapshot = loadSnapshot
         self.onBack = onBack
+        self.backLabel = backLabel
         _metric = State(initialValue: initialSection == .meetings ? .meetings : .words)
     }
 
@@ -86,7 +89,7 @@ struct InsightsView: View {
     private var headerIdentity: some View {
         HStack(spacing: 16) {
             Button(action: onBack) {
-                Label("Back to Dictations", systemImage: "chevron.left")
+                Label(backLabel, systemImage: "chevron.left")
             }
             .buttonStyle(.plain)
             .font(.system(size: 13, weight: .semibold))

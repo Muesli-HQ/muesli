@@ -3315,4 +3315,338 @@ struct DictationStoreTests {
         #expect(lower.count == 1)
         #expect(mixed.count == 1)
     }
+
+    @Test("dictation target app migration backfills legacy context exactly once")
+    func targetAppLegacyMigration() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-target-app-legacy-\(UUID().uuidString).db")
+        var db: OpaquePointer?
+        #expect(sqlite3_open(url.path, &db) == SQLITE_OK)
+        let legacySQL = """
+        CREATE TABLE dictations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            duration_seconds REAL,
+            raw_text TEXT NOT NULL,
+            app_context TEXT,
+            word_count INTEGER NOT NULL DEFAULT 0,
+            source TEXT NOT NULL DEFAULT 'dictation'
+        );
+        INSERT INTO dictations (
+            timestamp, duration_seconds, raw_text, app_context, word_count, source
+        ) VALUES (
+            '2026-08-01T10:00:00Z', 2, 'Historical dictation', 'Notes|com.apple.Notes', 2, 'dictation'
+        );
+        INSERT INTO dictations (
+            timestamp, duration_seconds, raw_text, app_context, word_count, source
+        ) VALUES
+            ('2026-08-01T09:00:00Z', 2, 'Malformed context', 'Not structured', 2, 'dictation'),
+            ('2026-08-01T08:00:00Z', 2, 'iPhone context', 'Mail|com.apple.mobilemail', 2, 'ios'),
+            ('2026-08-01T07:00:00Z', 2, 'CUA context', 'Safari|com.apple.Safari', 2, 'cua');
+        """
+        #expect(sqlite3_exec(db, legacySQL, nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(db)
+
+        let store = DictationStore(databaseURL: url)
+        try store.migrateIfNeeded()
+
+        #expect(sqlite3_open(url.path, &db) == SQLITE_OK)
+        #expect(sqlite3_exec(
+            db,
+            """
+            INSERT INTO dictations (
+                timestamp, duration_seconds, raw_text, app_context, word_count, source
+            ) VALUES (
+                '2026-08-02T10:00:00Z', 2, 'Added after migration', 'TextEdit|com.apple.TextEdit', 3, 'dictation'
+            );
+            """,
+            nil,
+            nil,
+            nil
+        ) == SQLITE_OK)
+        sqlite3_close(db)
+
+        try store.migrateIfNeeded()
+
+        let rows = try store.recentDictations(limit: 10)
+        let historical = try #require(rows.first { $0.rawText == "Historical dictation" })
+        #expect(historical.appContext == "Notes|com.apple.Notes")
+        #expect(historical.targetAppName == "Notes")
+        #expect(historical.targetAppBundleID == "com.apple.Notes")
+
+        let addedAfterMigration = try #require(rows.first { $0.rawText == "Added after migration" })
+        #expect(addedAfterMigration.targetAppName == nil)
+        #expect(addedAfterMigration.targetAppBundleID == nil)
+
+        for excludedText in ["Malformed context", "iPhone context", "CUA context"] {
+            let excluded = try #require(rows.first { $0.rawText == excludedText })
+            #expect(excluded.targetAppName == nil)
+            #expect(excluded.targetAppBundleID == nil)
+        }
+    }
+
+    @Test("dictation target app metadata inserts and reads back")
+    func targetAppInsertReadback() throws {
+        let store = try makeStore()
+        let endedAt = Date(timeIntervalSince1970: 1_776_000_000)
+        let id = try store.insertDictation(
+            text: "Attributed text",
+            durationSeconds: 2,
+            appContext: "cleanup context",
+            targetAppName: "Notes",
+            targetAppBundleID: "com.apple.Notes",
+            startedAt: endedAt.addingTimeInterval(-2),
+            endedAt: endedAt
+        )
+
+        let row = try #require(try store.dictation(id: id))
+        #expect(row.appContext == "cleanup context")
+        #expect(row.targetAppName == "Notes")
+        #expect(row.targetAppBundleID == "com.apple.Notes")
+    }
+
+    @Test("destination app filters rows stats and timeline before pagination")
+    func targetApplicationFiltering() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_776_000_000)
+        let notes = DictationTargetApplication(name: "Notes", bundleID: "com.apple.Notes")
+        let textEdit = DictationTargetApplication(name: "TextEdit", bundleID: "com.apple.TextEdit")
+
+        _ = try store.insertDictation(
+            text: "Notes has three words",
+            durationSeconds: 2,
+            targetAppName: notes.name,
+            targetAppBundleID: notes.bundleID,
+            startedAt: now.addingTimeInterval(-2),
+            endedAt: now
+        )
+        _ = try store.insertDictation(
+            text: "TextEdit row",
+            durationSeconds: 4,
+            targetAppName: textEdit.name,
+            targetAppBundleID: textEdit.bundleID,
+            startedAt: now.addingTimeInterval(8),
+            endedAt: now.addingTimeInterval(12)
+        )
+        _ = try store.insertMeeting(
+            title: "Newer meeting",
+            calendarEventID: nil,
+            startTime: now.addingTimeInterval(20),
+            endTime: now.addingTimeInterval(30),
+            rawTranscript: "Meeting transcript",
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+
+        let applications = try store.dictationTargetApplications()
+        #expect(applications.map(\.id) == [notes.id, textEdit.id])
+
+        let rows = try store.recentDictations(limit: 1, targetApplication: notes)
+        #expect(rows.map(\.rawText) == ["Notes has three words"])
+
+        let stats = try store.dictationStats(targetApplication: notes)
+        #expect(stats.totalSessions == 1)
+        #expect(stats.totalWords == 4)
+        #expect(stats.averageWPM == 120)
+
+        let timeline = try store.timelineEntries(limit: 1, targetApplication: notes)
+        #expect(timeline.count == 1)
+        guard case .dictation(let record) = timeline[0] else {
+            Issue.record("Expected app-filtered timeline to contain only dictations")
+            return
+        }
+        #expect(record.rawText == "Notes has three words")
+    }
+
+    @Test("timeline combines record kinds with deterministic chronology and offsets")
+    func timelineChronologyAndOffsets() throws {
+        let store = try makeStore()
+        let tiedAt = Date(timeIntervalSince1970: 1_776_000_000)
+        let olderAt = tiedAt.addingTimeInterval(-60)
+        let olderDictationID = try store.insertDictation(
+            text: "Older",
+            durationSeconds: 1,
+            startedAt: olderAt.addingTimeInterval(-1),
+            endedAt: olderAt
+        )
+        let meetingID = try store.insertMeeting(
+            title: "Tied meeting",
+            calendarEventID: nil,
+            startTime: tiedAt,
+            endTime: tiedAt.addingTimeInterval(60),
+            rawTranscript: "Meeting transcript",
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+        let dictationID = try store.insertDictation(
+            text: "Tied dictation",
+            durationSeconds: 1,
+            startedAt: tiedAt.addingTimeInterval(-1),
+            endedAt: tiedAt
+        )
+
+        #expect(try store.timelineEntries(limit: 10).map(\.id) == [
+            "dictation:\(dictationID)",
+            "meeting:\(meetingID)",
+            "dictation:\(olderDictationID)",
+        ])
+        #expect(try store.timelineEntries(limit: 1, offset: 1).map(\.id) == ["meeting:\(meetingID)"])
+    }
+
+    @Test("timeline applies origin and date filters before pagination and excludes tombstones")
+    func timelineFiltersBeforePagination() throws {
+        let store = try makeStore()
+        let base = Date(timeIntervalSince1970: 1_776_000_000)
+        let macMeetingID = try store.insertMeeting(
+            title: "Mac meeting",
+            calendarEventID: nil,
+            startTime: base,
+            endTime: base.addingTimeInterval(30),
+            rawTranscript: "Mac",
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+        _ = try store.insertDictation(
+            text: "Newer iPhone text",
+            durationSeconds: 1,
+            source: "ios",
+            startedAt: base.addingTimeInterval(59),
+            endedAt: base.addingTimeInterval(60)
+        )
+        let deletedID = try store.insertDictation(
+            text: "Deleted Mac text",
+            durationSeconds: 1,
+            startedAt: base.addingTimeInterval(119),
+            endedAt: base.addingTimeInterval(120)
+        )
+        try store.deleteDictation(id: deletedID)
+
+        let formatter = ISO8601DateFormatter()
+        let macOnly = try store.timelineEntries(
+            limit: 1,
+            fromDate: formatter.string(from: base.addingTimeInterval(-1)),
+            toDate: formatter.string(from: base.addingTimeInterval(90)),
+            origin: .thisMac
+        )
+        #expect(macOnly.map(\.id) == ["meeting:\(macMeetingID)"])
+        #expect(!(try store.timelineEntries(limit: 10).map(\.id).contains("dictation:\(deletedID)")))
+    }
+
+    @Test("timeline includes every visible meeting status")
+    func timelineIncludesEveryMeetingStatus() throws {
+        let store = try makeStore()
+        let base = Date(timeIntervalSince1970: 1_776_000_000)
+        var expectedStatuses = Set<String>()
+        for (index, status) in [
+            MeetingStatus.recording,
+            .processing,
+            .completed,
+            .noteOnly,
+            .failed,
+        ].enumerated() {
+            let start = base.addingTimeInterval(Double(index * 60))
+            let id = try store.insertMeeting(
+                title: status.rawValue,
+                calendarEventID: nil,
+                startTime: start,
+                endTime: start.addingTimeInterval(30),
+                rawTranscript: "Transcript",
+                formattedNotes: "",
+                micAudioPath: nil,
+                systemAudioPath: nil
+            )
+            try store.updateMeetingStatus(id: id, status: status)
+            expectedStatuses.insert(status.rawValue)
+        }
+
+        let actualStatuses: Set<String> = Set(try store.timelineEntries(limit: 20).compactMap { entry -> String? in
+            guard case .meeting(let meeting) = entry else { return nil }
+            return meeting.status.rawValue
+        })
+        #expect(actualStatuses == expectedStatuses)
+    }
+
+    @Test("dictation stats consistently apply origin and date filters")
+    func filteredDictationStats() throws {
+        let store = try makeStore()
+        let now = Date()
+        _ = try store.insertDictation(
+            text: "two words",
+            durationSeconds: 60,
+            startedAt: now.addingTimeInterval(-60),
+            endedAt: now
+        )
+        _ = try store.insertDictation(
+            text: "three phone words",
+            durationSeconds: 60,
+            source: "ios",
+            startedAt: now.addingTimeInterval(-60),
+            endedAt: now
+        )
+        _ = try store.insertDictation(
+            text: "old words are excluded",
+            durationSeconds: 60,
+            startedAt: now.addingTimeInterval(-86_460),
+            endedAt: now.addingTimeInterval(-86_400)
+        )
+
+        let formatter = ISO8601DateFormatter()
+        let macRecent = try store.dictationStats(
+            fromDate: formatter.string(from: now.addingTimeInterval(-3_600)),
+            origin: .thisMac
+        )
+        #expect(macRecent.totalSessions == 1)
+        #expect(macRecent.totalWords == 2)
+        #expect(macRecent.averageWPM == 2)
+
+        let iPhone = try store.dictationStats(origin: .fromIPhone)
+        #expect(iPhone.totalSessions == 1)
+        #expect(iPhone.totalWords == 3)
+        #expect(iPhone.averageWPM == 3)
+    }
+
+    @Test("target app metadata stays local across sync export import and remote updates")
+    func targetAppMetadataIsLocalOnly() throws {
+        let sourceStore = try makeStore()
+        let importedStore = try makeStore()
+        let endedAt = Date(timeIntervalSince1970: 1_776_000_000)
+        let localID = try sourceStore.insertDictation(
+            text: "Local attributed text",
+            durationSeconds: 2,
+            targetAppName: "Notes",
+            targetAppBundleID: "com.apple.Notes",
+            startedAt: endedAt.addingTimeInterval(-2),
+            endedAt: endedAt
+        )
+        let outbound = try #require(try sourceStore.textRecordsNeedingSync().first { $0.kind == .dictation })
+        let encoded = String(decoding: try JSONEncoder().encode(outbound), as: UTF8.self)
+        #expect(!encoded.contains("targetApp"))
+        #expect(try importedStore.upsertSyncedTextRecord(outbound))
+        let imported = try #require(try importedStore.recentDictations(limit: 1).first)
+        #expect(imported.targetAppName == nil)
+        #expect(imported.targetAppBundleID == nil)
+
+        let remoteUpdate = SyncTextRecord(
+            id: outbound.id,
+            kind: .dictation,
+            text: "Remote text update",
+            source: outbound.source,
+            localSource: outbound.localSource,
+            createdAt: outbound.createdAt,
+            updatedAt: outbound.updatedAt.addingTimeInterval(60),
+            startedAt: outbound.startedAt,
+            endedAt: outbound.endedAt,
+            durationSeconds: outbound.durationSeconds,
+            wordCount: 3,
+            cloudChangeTag: "new-tag"
+        )
+        #expect(try sourceStore.upsertSyncedTextRecord(remoteUpdate))
+        let updatedLocal = try #require(try sourceStore.dictation(id: localID))
+        #expect(updatedLocal.rawText == "Remote text update")
+        #expect(updatedLocal.targetAppName == "Notes")
+        #expect(updatedLocal.targetAppBundleID == "com.apple.Notes")
+    }
 }

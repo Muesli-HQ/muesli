@@ -49,6 +49,7 @@ case "${shard}" in
       DeltaPasteTests
       TranscriptAccumulationTests
       StreamingDictationControllerLifecycleTests
+      DictationAttributionPolicyTests
       NemotronDictationModePolicyTests
       Nemotron35StreamStateTests
       Nemotron35BackendMetadataTests

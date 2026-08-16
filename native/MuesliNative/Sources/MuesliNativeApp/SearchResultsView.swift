@@ -175,6 +175,14 @@ private struct SearchDictationRow: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
+            if let targetAppName = record.targetAppName {
+                TargetApplicationIconView(
+                    appName: targetAppName,
+                    bundleIdentifier: record.targetAppBundleID,
+                    size: 18
+                )
+            }
+
             HStack(spacing: 8) {
                 if record.computerUseTrace != nil, let onCopyTrace {
                     Button(action: onCopyTrace) {
