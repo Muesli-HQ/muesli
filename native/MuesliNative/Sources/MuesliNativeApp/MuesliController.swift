@@ -8309,12 +8309,17 @@ final class MuesliController: NSObject {
         capturedDictationCorrectionTargetApp = nil
     }
 
-    private func captureDictationCorrectionTargetApp() {
-        capturedDictationCorrectionTargetApp = DictationCorrectionTargetApp(
-            app: NSWorkspace.shared.frontmostApplication == NSRunningApplication.current
+    private func currentExternalDictationTargetApp() -> DictationCorrectionTargetApp? {
+        let frontmostApplication = NSWorkspace.shared.frontmostApplication
+        return DictationCorrectionTargetApp(
+            app: frontmostApplication == NSRunningApplication.current
                 ? lastExternalApp
-                : NSWorkspace.shared.frontmostApplication
+                : frontmostApplication
         )
+    }
+
+    private func captureDictationCorrectionTargetApp() {
+        capturedDictationCorrectionTargetApp = currentExternalDictationTargetApp()
     }
 
     private func handleStart() {
@@ -8675,7 +8680,10 @@ final class MuesliController: NSObject {
             source: "dictation",
             text: cleaned
         )
-        let targetApp = shouldPersistTargetApp ? capturedDictationCorrectionTargetApp : nil
+        // If focus moved during streaming, attribute the completed session to the app active at stop.
+        let targetApp = shouldPersistTargetApp
+            ? currentExternalDictationTargetApp() ?? capturedDictationCorrectionTargetApp
+            : nil
 
         if !config.maraudersMapUnlocked { checkMaraudersMapActivation(cleaned) }
 
@@ -8742,9 +8750,9 @@ final class MuesliController: NSObject {
         let whisperTranscriptionLanguage = config.resolvedWhisperLanguage
         let capturedContext = capturedDictationContext
         let promptContext = capturedContext.map { DictationContextCapture.formatForPrompt($0) }
-        let correctionTargetApp = capturedDictationCorrectionTargetApp
+        let startingTargetApp = capturedDictationCorrectionTargetApp
         let storageContext = capturedContext.map { DictationContextCapture.formatForStorage($0) }
-            ?? correctionTargetApp?.appContext
+            ?? startingTargetApp?.appContext
             ?? ""
         let task = Task { [weak self] in
             guard let self else { return }
@@ -8802,12 +8810,16 @@ final class MuesliController: NSObject {
                     source: "dictation",
                     text: text
                 )
+                // Resolve at finalization so the app receiving the completed paste is authoritative.
+                let targetApp = shouldPersistTargetApp
+                    ? self.currentExternalDictationTargetApp() ?? startingTargetApp
+                    : nil
                 _ = try? self.dictationStore.insertDictation(
                     text: text,
                     durationSeconds: duration,
                     appContext: storageContext,
-                    targetAppName: shouldPersistTargetApp ? correctionTargetApp?.appName : nil,
-                    targetAppBundleID: shouldPersistTargetApp ? correctionTargetApp?.bundleID : nil,
+                    targetAppName: targetApp?.appName,
+                    targetAppBundleID: targetApp?.bundleID,
                     startedAt: startedAt,
                     endedAt: Date()
                 )
@@ -8827,7 +8839,7 @@ final class MuesliController: NSObject {
                             self.dictationCorrectionMonitor.start(
                                 originalText: text,
                                 appContext: storageContext,
-                                targetApp: correctionTargetApp
+                                targetApp: targetApp
                             ) { [weak self] suggestion in
                                 self?.addDictionarySuggestion(suggestion)
                             }
