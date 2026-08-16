@@ -8859,6 +8859,7 @@ final class MuesliController: NSObject {
                     if outputMode == .paste {
                         PasteController.paste(
                             text: text,
+                            requireStagedClipboardOwnership: true,
                             onPasteFinished: { [weak self] targetApplication in
                                 guard let self else { return }
                                 let targetApp = self.externalDictationTargetApp(from: targetApplication)

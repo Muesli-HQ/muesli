@@ -120,6 +120,72 @@ struct PasteControllerTests {
         _ = await waitForClipboardString(in: pasteboard, expected: nil)
     }
 
+    @Test("dictation paste skips Cmd+V and attribution after clipboard ownership changes")
+    func dictationPasteSkipsDispatchAfterClipboardOwnershipChanges() async throws {
+        let pasteboard = makePasteboard()
+        pasteboard.clearContents()
+        pasteboard.setString("original", forType: .string)
+
+        let events = await withCheckedContinuation { continuation in
+            var events: [String] = []
+            PasteController.paste(
+                text: "dictated text",
+                pasteboard: pasteboard,
+                requireStagedClipboardOwnership: true,
+                targetApplicationProvider: {
+                    events.append("snapshot")
+                    pasteboard.clearContents()
+                    pasteboard.setString("user-copied-during-delay", forType: .string)
+                    return NSRunningApplication.current
+                },
+                simulatePasteAction: {
+                    events.append("command")
+                    return true
+                },
+                onPasteFinished: { application in
+                    events.append(application == nil ? "unattributed" : "attributed")
+                    continuation.resume(returning: events)
+                }
+            )
+        }
+
+        #expect(events == ["snapshot", "unattributed"])
+        try await Task.sleep(nanoseconds: 700_000_000)
+        #expect(pasteboard.string(forType: .string) == "user-copied-during-delay")
+    }
+
+    @Test("shared paste remains ungated unless clipboard ownership is required")
+    func sharedPasteRemainsUngatedByDefault() async {
+        let pasteboard = makePasteboard()
+        pasteboard.clearContents()
+        pasteboard.setString("original", forType: .string)
+
+        let events = await withCheckedContinuation { continuation in
+            var events: [String] = []
+            PasteController.paste(
+                text: "pasted text",
+                pasteboard: pasteboard,
+                targetApplicationProvider: {
+                    events.append("snapshot")
+                    pasteboard.clearContents()
+                    pasteboard.setString("newer-clipboard-content", forType: .string)
+                    return NSRunningApplication.current
+                },
+                simulatePasteAction: {
+                    events.append("command")
+                    return true
+                },
+                onPasteFinished: { _ in
+                    events.append("callback")
+                    continuation.resume(returning: events)
+                }
+            )
+        }
+
+        #expect(events == ["snapshot", "command", "callback"])
+        #expect(pasteboard.string(forType: .string) == "newer-clipboard-content")
+    }
+
     @Test("paste completes without attribution when Cmd+V setup fails")
     func pasteFailureRemainsUnattributed() async {
         let pasteboard = makePasteboard()

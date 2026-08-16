@@ -39,10 +39,12 @@ enum PasteController {
     /// If the clipboard cannot be saved (e.g. lazy-provided data), falls back to a simple
     /// paste without restoration.
     /// For nonempty text, completion receives the target app only when the keyboard events
-    /// were posted; event-setup failure completes with `nil` attribution.
+    /// were posted. When staged-clipboard ownership is required, a failed write or intervening
+    /// clipboard change also completes with `nil` attribution and skips Cmd+V.
     static func paste(
         text: String,
         pasteboard: NSPasteboard = .general,
+        requireStagedClipboardOwnership: Bool = false,
         targetApplicationProvider: @escaping @MainActor () -> NSRunningApplication? = {
             NSWorkspace.shared.frontmostApplication
         },
@@ -54,14 +56,29 @@ enum PasteController {
         // Save current clipboard contents (all types) so we can restore after paste.
         let savedItems = saveClipboard(pasteboard)
 
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        let clearedChangeCount = pasteboard.clearContents()
+        let didStageText = pasteboard.setString(text, forType: .string)
         let pasteChangeCount = pasteboard.changeCount
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             // Snapshot immediately before Cmd+V so attribution and the paste event
             // refer to the same frontmost application.
             let targetApplication = targetApplicationProvider()
+            if requireStagedClipboardOwnership {
+                guard didStageText else {
+                    // Restore only when Muesli still owns the cleared pasteboard. If another
+                    // app wrote to it, preserving that newer content takes precedence.
+                    if pasteboard.changeCount == clearedChangeCount {
+                        restoreClipboard(pasteboard, from: savedItems)
+                    }
+                    onPasteFinished(nil)
+                    return
+                }
+                guard pasteboard.changeCount == pasteChangeCount else {
+                    onPasteFinished(nil)
+                    return
+                }
+            }
             let didDispatchPaste = simulatePasteAction()
             onPasteFinished(didDispatchPaste ? targetApplication : nil)
 
