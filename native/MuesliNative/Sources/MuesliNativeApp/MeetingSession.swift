@@ -149,10 +149,6 @@ enum MeetingProcessingStage {
             true
         }
     }
-
-    func releasesDictation(after previousStage: MeetingProcessingStage?) -> Bool {
-        previousStage?.allowsDictation == false && allowsDictation
-    }
 }
 
 private enum MeetingTranscriptRecoveryResult {

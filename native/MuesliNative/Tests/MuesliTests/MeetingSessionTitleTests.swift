@@ -15,11 +15,24 @@ struct MeetingProcessingStageTests {
         #expect(MeetingProcessingStage.summarizingNotes.allowsDictation)
     }
 
-    @Test("dictation is released only when audio processing finishes")
-    func releasesDictationAtPostTranscriptionBoundary() {
-        #expect(MeetingProcessingStage.generatingTitle.releasesDictation(after: .transcribingAudio))
-        #expect(!MeetingProcessingStage.summarizingNotes.releasesDictation(after: .generatingTitle))
-        #expect(!MeetingProcessingStage.transcribingAudio.releasesDictation(after: nil))
+    @Test("active dictation transcription cannot be replaced by meeting progress")
+    func activeDictationTranscriptionStaysBlocked() {
+        #expect(!DictationStartAdmissionPolicy.allowsStart(
+            dictationState: .transcribing,
+            meetingProcessingStage: .generatingTitle
+        ))
+    }
+
+    @Test("dictation admission follows meeting audio processing boundary")
+    func admissionFollowsMeetingAudioProcessingBoundary() {
+        #expect(!DictationStartAdmissionPolicy.allowsStart(
+            dictationState: .idle,
+            meetingProcessingStage: .transcribingAudio
+        ))
+        #expect(DictationStartAdmissionPolicy.allowsStart(
+            dictationState: .idle,
+            meetingProcessingStage: .summarizingNotes
+        ))
     }
 }
 

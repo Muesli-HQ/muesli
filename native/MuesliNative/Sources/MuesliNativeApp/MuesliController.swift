@@ -80,6 +80,16 @@ struct InteractiveAudioSessionOwnership: Equatable {
     }
 }
 
+enum DictationStartAdmissionPolicy {
+    static func allowsStart(
+        dictationState: DictationState,
+        meetingProcessingStage: MeetingProcessingStage?
+    ) -> Bool {
+        dictationState != .transcribing
+            && (meetingProcessingStage?.allowsDictation ?? true)
+    }
+}
+
 struct MeetingResummarizationPlan: Equatable {
     let promptTitle: String
     let persistedTitle: String
@@ -6173,9 +6183,7 @@ final class MuesliController: NSObject {
             syncAppState()
         }
         indicator.setMeetingRecording(false, config: config)
-        indicator.setTranscribingTitle("Transcribing", config: config)
-        meetingProcessingStage = .transcribingAudio
-        setState(.transcribing)
+        setMeetingProcessingStage(.transcribingAudio)
         let processingGeneration = backgroundMeetingProcessingCount + 1
         sessionToStop.onProgress = { [weak self] stage in
             Task { @MainActor [weak self] in
@@ -6276,8 +6284,11 @@ final class MuesliController: NSObject {
                     && !self.isStartingMeetingRecording
                     && self.backgroundMeetingProcessingCount == 0
                     && !self.isDictationActivityInProgress {
-                    self.setState(.idle)
+                    self.statusBarController?.setStatus("Idle")
                     self.statusBarController?.refresh()
+                    if !self.isDictationTestMode {
+                        self.indicator.setState(.idle, config: self.config)
+                    }
                 }
                 self.endMeetingActivity()
                 self.historyWindowController?.reload()
@@ -6835,6 +6846,13 @@ final class MuesliController: NSObject {
         dictationState != .idle || dictationStartedAt != nil || computerUseCommandStartedAt != nil || isNemotron35Streaming
     }
 
+    private var canBeginDictationInteraction: Bool {
+        DictationStartAdmissionPolicy.allowsStart(
+            dictationState: dictationState,
+            meetingProcessingStage: meetingProcessingStage
+        )
+    }
+
     private func configureComputerUseHotkeyMonitor() {
         guard config.enableComputerUseHotkey else {
             computerUseHotkeyMonitor.stop()
@@ -7214,11 +7232,10 @@ final class MuesliController: NSObject {
 
     @MainActor
     private func setMeetingProcessingStage(_ stage: MeetingProcessingStage) {
-        let releasesDictation = stage.releasesDictation(after: meetingProcessingStage)
+        let wasBlockingDictation = meetingProcessingStage?.allowsDictation == false
         meetingProcessingStage = stage
 
-        if releasesDictation, dictationState == .transcribing {
-            setState(.idle)
+        if wasBlockingDictation, stage.allowsDictation {
             syncDictationRecorderWarmup(intent: .idlePrewarm(.meetingStateChanged))
         }
         if stage.allowsDictation, isDictationActivityInProgress {
@@ -7239,9 +7256,13 @@ final class MuesliController: NSObject {
 
     @MainActor
     private func setMeetingProcessingStatus(_ status: String) {
+        guard !isDictationActivityInProgress else { return }
         statusBarController?.setStatus(status)
         statusBarController?.refresh()
-        indicator.setTranscribingTitle(status, config: config)
+        if !isDictationTestMode {
+            indicator.setTranscribingTitle(status, config: config)
+            indicator.setState(.transcribing, config: config)
+        }
     }
 
     private func handleComputerUsePrepare() {
@@ -7443,6 +7464,7 @@ final class MuesliController: NSObject {
     private var canPrepareComputerUseCommand: Bool {
         !isMeetingRecording()
             && !isDictationTestMode
+            && meetingProcessingStage?.allowsDictation != false
             && dictationStartedAt == nil
             && computerUseCommandStartedAt == nil
             && pendingComputerUseStopSessionID == nil
@@ -7455,6 +7477,7 @@ final class MuesliController: NSObject {
     private var canStartComputerUseCommand: Bool {
         !isMeetingRecording()
             && !isDictationTestMode
+            && meetingProcessingStage?.allowsDictation != false
             && dictationStartedAt == nil
             && computerUseCommandStartedAt == nil
             && pendingComputerUseStopSessionID == nil
@@ -7752,6 +7775,7 @@ final class MuesliController: NSObject {
 
     private func handlePrepare() {
         if shouldRejectDictationForComputerUseActivity() { return }
+        guard canBeginDictationInteraction else { return }
         guard ensureDictationBackendReady() else { return }
         if isMeetingRecording() { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
@@ -7773,6 +7797,7 @@ final class MuesliController: NSObject {
 
     private func handleArm() {
         if shouldRejectDictationForComputerUseActivity() { return }
+        guard canBeginDictationInteraction else { return }
         guard ensureDictationBackendReady() else { return }
         if isMeetingRecording() { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
@@ -7809,6 +7834,7 @@ final class MuesliController: NSObject {
             && config.resolvedOnboardingUseCase.includesPushToTalk
             && AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
             && dictationState == .idle
+            && meetingProcessingStage?.allowsDictation != false
             && computerUseCommandStartedAt == nil
             && !isMeetingRecording()
             && !isStartingMeetingRecording
@@ -8119,6 +8145,7 @@ final class MuesliController: NSObject {
 
     private func handleStart() {
         if shouldRejectDictationForComputerUseActivity() { return }
+        guard canBeginDictationInteraction else { return }
         guard ensureDictationBackendReady() else { return }
         if isMeetingRecording() { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
@@ -8295,6 +8322,7 @@ final class MuesliController: NSObject {
 
     private func handleToggleStart(outputMode: DictationOutputMode? = nil) {
         if shouldRejectDictationForComputerUseActivity() { return }
+        guard canBeginDictationInteraction else { return }
         guard ensureDictationBackendReady() else { return }
         if isMeetingRecording() { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
@@ -8361,6 +8389,12 @@ final class MuesliController: NSObject {
             return
         }
         if shouldIgnoreDictationCleanupForComputerUseActivity() { return }
+        if dictationStartedAt == nil,
+           !isNemotron35Streaming,
+           !canBeginDictationInteraction {
+            fputs("[muesli-native] ignoring dictation stop because start was blocked\n", stderr)
+            return
+        }
         fputs("[muesli-native] stop\n", stderr)
         let startedAt = dictationStartedAt ?? Date()
         dictationStartedAt = nil
