@@ -38,14 +38,16 @@ enum PasteController {
     /// Flow: save clipboard → write text → Cmd+V → restore clipboard after delay.
     /// If the clipboard cannot be saved (e.g. lazy-provided data), falls back to a simple
     /// paste without restoration.
+    /// For nonempty text, completion receives the target app only when the keyboard events
+    /// were posted; event-setup failure completes with `nil` attribution.
     static func paste(
         text: String,
         pasteboard: NSPasteboard = .general,
         targetApplicationProvider: @escaping @MainActor () -> NSRunningApplication? = {
             NSWorkspace.shared.frontmostApplication
         },
-        simulatePasteAction: @escaping @MainActor () -> Void = PasteController.simulatePaste,
-        onPasteDispatched: @escaping @MainActor (NSRunningApplication?) -> Void = { _ in }
+        simulatePasteAction: @escaping @MainActor () -> Bool = PasteController.simulatePaste,
+        onPasteFinished: @escaping @MainActor (NSRunningApplication?) -> Void = { _ in }
     ) {
         guard !text.isEmpty else { return }
 
@@ -60,8 +62,8 @@ enum PasteController {
             // Snapshot immediately before Cmd+V so attribution and the paste event
             // refer to the same frontmost application.
             let targetApplication = targetApplicationProvider()
-            simulatePasteAction()
-            onPasteDispatched(targetApplication)
+            let didDispatchPaste = simulatePasteAction()
+            onPasteFinished(didDispatchPaste ? targetApplication : nil)
 
             // Restore the original clipboard contents after the receiving app has consumed the paste.
             DispatchQueue.main.asyncAfter(deadline: .now() + clipboardRestoreDelay) {
@@ -95,18 +97,23 @@ enum PasteController {
 
     // MARK: - Private
 
-    private static func simulatePaste() {
+    private static func simulatePaste() -> Bool {
         guard let source = CGEventSource(stateID: .combinedSessionState) else {
             fputs("[muesli-native] failed to create event source for paste\n", stderr)
-            return
+            return false
         }
         let keyCode: CGKeyCode = 9 // V
-        let commandDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true)
-        commandDown?.flags = .maskCommand
-        let commandUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
-        commandUp?.flags = .maskCommand
-        commandDown?.post(tap: .cghidEventTap)
-        commandUp?.post(tap: .cghidEventTap)
+        guard let commandDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true),
+              let commandUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
+        else {
+            fputs("[muesli-native] failed to create keyboard events for paste\n", stderr)
+            return false
+        }
+        commandDown.flags = .maskCommand
+        commandUp.flags = .maskCommand
+        commandDown.post(tap: .cghidEventTap)
+        commandUp.post(tap: .cghidEventTap)
+        return true
     }
 
     private static func postPhysicalKey(source: CGEventSource, keyCode: CGKeyCode, flags: CGEventFlags) {

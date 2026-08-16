@@ -8859,10 +8859,9 @@ final class MuesliController: NSObject {
                     if outputMode == .paste {
                         PasteController.paste(
                             text: text,
-                            onPasteDispatched: { [weak self] targetApplication in
+                            onPasteFinished: { [weak self] targetApplication in
                                 guard let self else { return }
                                 let targetApp = self.externalDictationTargetApp(from: targetApplication)
-                                    ?? startingTargetApp
                                 self.completeStandardDictation(
                                     text: text,
                                     duration: duration,
