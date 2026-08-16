@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import os
 
 enum CotypistState: Equatable, Sendable {
     case idle
@@ -86,6 +87,99 @@ struct CotypistTypingEvent: Equatable, Sendable {
     }
 }
 
+/// The ambient experience deliberately has a small, learnable trigger surface:
+/// finish a word or thought with whitespace or punctuation, then pause. The
+/// focused-text prefix is inspected after the target app handles the key event,
+/// so this works with different keyboard layouts without decoding hardware keys.
+struct CotypistAmbientSuggestionPolicy: Sendable {
+    static let idleDelay = Duration.milliseconds(750)
+    private static let boundaryPunctuation = CharacterSet(
+        charactersIn: ".,;:!?)]}\"'…’”"
+    )
+
+    static func isEligible(prefix: String) -> Bool {
+        guard let lastCharacter = prefix.last else { return false }
+        return lastCharacter.unicodeScalars.contains { scalar in
+            CharacterSet.whitespacesAndNewlines.contains(scalar)
+                || boundaryPunctuation.contains(scalar)
+        }
+    }
+}
+
+/// A small process-memory cache. Suggestions never leave the running app and
+/// expire quickly. Besides exact matches, a completion can be reused when the
+/// user types its beginning and the focused suffix still matches.
+struct CotypistCompletionCache {
+    private struct Entry {
+        let fingerprint: FocusedTextFingerprint
+        let model: CotypistModelOption
+        let completion: CotypistCompletion
+        let createdAt: Date
+    }
+
+    private let timeToLive: TimeInterval
+    private let capacity: Int
+    private var entries: [Entry] = []
+
+    init(timeToLive: TimeInterval = 45, capacity: Int = 8) {
+        self.timeToLive = max(0, timeToLive)
+        self.capacity = max(1, capacity)
+    }
+
+    mutating func completion(
+        for context: FocusedTextContext,
+        model: CotypistModelOption,
+        now: Date = Date()
+    ) -> CotypistCompletion? {
+        removeExpiredEntries(at: now)
+        for entry in entries.reversed() where entry.model == model {
+            if entry.fingerprint == context.fingerprint {
+                return entry.completion
+            }
+            guard entry.fingerprint.processID == context.fingerprint.processID,
+                  entry.fingerprint.elementIdentifier == context.fingerprint.elementIdentifier,
+                  entry.fingerprint.suffix == context.fingerprint.suffix,
+                  context.fingerprint.prefix.hasPrefix(entry.fingerprint.prefix) else { continue }
+
+            let consumedCount = context.fingerprint.prefix.count - entry.fingerprint.prefix.count
+            guard consumedCount > 0 else { continue }
+            let consumed = String(context.fingerprint.prefix.suffix(consumedCount))
+            guard entry.completion.text.hasPrefix(consumed) else { continue }
+            let remainder = String(entry.completion.text.dropFirst(consumed.count))
+            guard !remainder.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            return CotypistCompletion(text: remainder, quality: entry.completion.quality)
+        }
+        return nil
+    }
+
+    mutating func store(
+        _ completion: CotypistCompletion,
+        for context: FocusedTextContext,
+        model: CotypistModelOption,
+        now: Date = Date()
+    ) {
+        removeExpiredEntries(at: now)
+        entries.removeAll { $0.model == model && $0.fingerprint == context.fingerprint }
+        entries.append(Entry(
+            fingerprint: context.fingerprint,
+            model: model,
+            completion: completion,
+            createdAt: now
+        ))
+        if entries.count > capacity {
+            entries.removeFirst(entries.count - capacity)
+        }
+    }
+
+    mutating func removeAll() {
+        entries.removeAll(keepingCapacity: false)
+    }
+
+    private mutating func removeExpiredEntries(at now: Date) {
+        entries.removeAll { now.timeIntervalSince($0.createdAt) > timeToLive }
+    }
+}
+
 enum CotypistEventAction: Equatable, Sendable {
     case pass
     case passAndInvalidate
@@ -101,6 +195,7 @@ struct CotypistEventPolicy: Sendable {
     static let escapeKeyCode: UInt16 = 53
 
     var isEnabled = false
+    var isAmbientWaiting = false
     var isGenerating = false
     var isPreviewing = false
     var invocationKeyCode: UInt16 = 8
@@ -110,12 +205,14 @@ struct CotypistEventPolicy: Sendable {
 
     init(
         isEnabled: Bool = false,
+        isAmbientWaiting: Bool = false,
         isGenerating: Bool = false,
         isPreviewing: Bool = false,
         invocationKeyCode: UInt16 = 8,
         invocationModifiers: CotypistEventModifiers = [.control, .option]
     ) {
         self.isEnabled = isEnabled
+        self.isAmbientWaiting = isAmbientWaiting
         self.isGenerating = isGenerating
         self.isPreviewing = isPreviewing
         self.invocationKeyCode = invocationKeyCode
@@ -132,21 +229,30 @@ struct CotypistEventPolicy: Sendable {
         case .flagsChanged:
             return .pass
         case .mouseDown, .scroll:
-            return (isGenerating || isPreviewing) ? .passAndInvalidate : .pass
+            return (isAmbientWaiting || isGenerating || isPreviewing) ? .passAndInvalidate : .pass
         case .keyDown(let keyCode, let modifiers, let isRepeat):
             if isEnabled, keyCode == invocationKeyCode, modifiers == invocationModifiers {
                 consumedKeyUps.insert(keyCode)
+                if isGenerating || isPreviewing {
+                    return .consumeAndAccept
+                }
                 return isRepeat ? .consume : .consumeAndInvoke
             }
             if (isGenerating || isPreviewing), keyCode == Self.escapeKeyCode, modifiers.isEmpty {
                 consumedKeyUps.insert(keyCode)
                 return .consumeAndCancel
             }
-            if isPreviewing, keyCode == Self.tabKeyCode, modifiers.isEmpty {
+            // Consume acceptance while generation is pending as well as while
+            // the preview is visible. The coordinator queues the acceptance and
+            // inserts once the result is ready, preventing submit-on-Tab hosts
+            // such as Codex from receiving the original key event.
+            if (isGenerating || isPreviewing),
+               keyCode == Self.tabKeyCode,
+               modifiers.intersection([.command, .control, .shift]).isEmpty {
                 consumedKeyUps.insert(keyCode)
                 return .consumeAndAccept
             }
-            return (isGenerating || isPreviewing) ? .passAndInvalidate : .pass
+            return (isAmbientWaiting || isGenerating || isPreviewing) ? .passAndInvalidate : .pass
         }
     }
 }
@@ -154,6 +260,7 @@ struct CotypistEventPolicy: Sendable {
 final class CotypistEventTap: @unchecked Sendable {
     struct Snapshot {
         var policy = CotypistEventPolicy()
+        var previewHitFrame: CGRect?
     }
 
     var onInvoke: (@Sendable () -> Void)?
@@ -166,6 +273,14 @@ final class CotypistEventTap: @unchecked Sendable {
     private var snapshot = Snapshot()
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
+    private var eventThread: Thread?
+    private var eventRunLoop: CFRunLoop?
+
+    private static let logger = Logger(subsystem: "com.muesli.native", category: "CotypistInput")
+    private static let diagnosticsQueue = DispatchQueue(
+        label: "com.muesli.cotypist.input-diagnostics",
+        qos: .utility
+    )
 
     deinit { stop() }
 
@@ -182,6 +297,18 @@ final class CotypistEventTap: @unchecked Sendable {
         lock.unlock()
     }
 
+    func updateAmbientWaiting(_ isWaiting: Bool) {
+        lock.lock()
+        snapshot.policy.isAmbientWaiting = isWaiting
+        lock.unlock()
+    }
+
+    func updatePreviewHitFrame(_ frame: CGRect?) {
+        lock.lock()
+        snapshot.previewHitFrame = frame
+        lock.unlock()
+    }
+
     @discardableResult
     func start() -> Bool {
         guard tap == nil else { return true }
@@ -189,28 +316,76 @@ final class CotypistEventTap: @unchecked Sendable {
             CGEventType.keyDown, .keyUp, .flagsChanged,
             .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel,
         ].reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << $1.rawValue) }
-        guard let newTap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .defaultTap,
-            eventsOfInterest: mask,
-            callback: Self.callback,
-            userInfo: Unmanaged.passUnretained(self).toOpaque()
-        ) else { return false }
+        let userInfo = Unmanaged.passUnretained(self).toOpaque()
+        // Prefer the HID stream so acceptance keys are removed before hosts
+        // with submit-on-Tab behavior (for example Codex) see them. Keep the
+        // session stream as a compatibility fallback for environments where a
+        // HID tap is unavailable.
+        var selectedLocation: CGEventTapLocation?
+        var newTap: CFMachPort?
+        for location in [CGEventTapLocation.cghidEventTap, .cgSessionEventTap] {
+            guard let candidate = CGEvent.tapCreate(
+                tap: location,
+                place: .headInsertEventTap,
+                options: .defaultTap,
+                eventsOfInterest: mask,
+                callback: Self.callback,
+                userInfo: userInfo
+            ) else { continue }
+            selectedLocation = location
+            newTap = candidate
+            break
+        }
+        guard let newTap else { return false }
         let newSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, newTap, 0)
+        let ready = DispatchSemaphore(value: 0)
         tap = newTap
         source = newSource
-        CFRunLoopAddSource(CFRunLoopGetMain(), newSource, .commonModes)
-        CGEvent.tapEnable(tap: newTap, enable: true)
-        return true
+        let thread = Thread { [weak self] in
+            let runLoop = CFRunLoopGetCurrent()
+            self?.lock.lock()
+            self?.eventRunLoop = runLoop
+            self?.lock.unlock()
+
+            CFRunLoopAddSource(runLoop, newSource, .commonModes)
+            CGEvent.tapEnable(tap: newTap, enable: true)
+            ready.signal()
+            CFRunLoopRun()
+            CFRunLoopRemoveSource(runLoop, newSource, .commonModes)
+        }
+        thread.name = "Muesli Cotypist Input"
+        thread.qualityOfService = .userInteractive
+        eventThread = thread
+        thread.start()
+
+        let started = ready.wait(timeout: .now() + 1) == .success
+        let location = selectedLocation == .cghidEventTap ? "hid" : "session"
+        Self.diagnosticsQueue.async {
+            Self.logger.notice(
+                "tap start location=\(location, privacy: .public) ready=\(started, privacy: .public) trusted=\(CGPreflightListenEventAccess(), privacy: .public)"
+            )
+        }
+        if !started {
+            stop()
+        }
+        return started
     }
 
     func stop() {
-        guard let tap else { return }
-        CGEvent.tapEnable(tap: tap, enable: false)
-        if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
+        lock.lock()
+        let existingTap = tap
+        let existingRunLoop = eventRunLoop
+        eventRunLoop = nil
+        lock.unlock()
+        guard let existingTap else { return }
+        CGEvent.tapEnable(tap: existingTap, enable: false)
+        if let existingRunLoop {
+            CFRunLoopStop(existingRunLoop)
+            CFRunLoopWakeUp(existingRunLoop)
+        }
         self.source = nil
         self.tap = nil
+        self.eventThread = nil
     }
 
     private static let callback: CGEventTapCallBack = { _, type, event, userInfo in
@@ -243,12 +418,28 @@ final class CotypistEventTap: @unchecked Sendable {
         }
 
         lock.lock()
-        let action = snapshot.policy.handle(input)
+        let isPreviewPanelMouseDown = input == .mouseDown
+            && snapshot.policy.isPreviewing
+            && snapshot.previewHitFrame?.contains(event.location) == true
+        let action = isPreviewPanelMouseDown ? .pass : snapshot.policy.handle(input)
         let typingEvent = CotypistTypingEvent(input: input)
         let shouldObserveTyping = snapshot.policy.isEnabled
             && (action == .pass || action == .passAndInvalidate)
             && typingEvent?.isLikelyTextEdit == true
+        let isGenerating = snapshot.policy.isGenerating
+        let isPreviewing = snapshot.policy.isPreviewing
         lock.unlock()
+
+        if case .keyDown(let keyCode, let modifiers, _) = input,
+           keyCode == CotypistEventPolicy.tabKeyCode {
+            let actionLabel = Self.diagnosticLabel(for: action)
+            let modifierValue = modifiers.rawValue
+            Self.diagnosticsQueue.async {
+                Self.logger.notice(
+                    "tab action=\(actionLabel, privacy: .public) generating=\(isGenerating, privacy: .public) previewing=\(isPreviewing, privacy: .public) modifiers=\(modifierValue, privacy: .public)"
+                )
+            }
+        }
 
         switch action {
         case .pass:
@@ -279,8 +470,26 @@ final class CotypistEventTap: @unchecked Sendable {
             DispatchQueue.main.async { [weak self] in self?.onCancel?() }
             return nil
         case .recoverTap:
-            if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+            lock.lock()
+            let existingTap = tap
+            lock.unlock()
+            if let existingTap { CGEvent.tapEnable(tap: existingTap, enable: true) }
+            Self.diagnosticsQueue.async {
+                Self.logger.error("tap recovered after system disable")
+            }
             return Unmanaged.passUnretained(event)
+        }
+    }
+
+    private static func diagnosticLabel(for action: CotypistEventAction) -> String {
+        switch action {
+        case .pass: "pass"
+        case .passAndInvalidate: "pass-invalidate"
+        case .consume: "consume"
+        case .consumeAndInvoke: "invoke"
+        case .consumeAndAccept: "accept"
+        case .consumeAndCancel: "cancel"
+        case .recoverTap: "recover"
         }
     }
 }
@@ -441,10 +650,101 @@ enum CotypistOverlayPlacement {
     }
 }
 
+struct CotypistCapsuleLayout: Equatable {
+    let size: CGSize
+    let textRect: CGRect
+    let keycapRect: CGRect?
+    let requiredTextSize: CGSize
+
+    var displaysCompleteText: Bool {
+        requiredTextSize.width <= textRect.width + 1
+            && requiredTextSize.height <= textRect.height + 1
+    }
+}
+
+enum CotypistPreviewLayout {
+    private static let keycapWidth: CGFloat = 68
+    private static let horizontalInset: CGFloat = 10
+    private static let verticalInset: CGFloat = 6
+    private static let keycapGap: CGFloat = 6
+
+    static func displayText(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "\r\n", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+    }
+
+    static func capsule(
+        text: String,
+        font: NSFont,
+        isLoading: Bool,
+        maxWidth: CGFloat
+    ) -> CotypistCapsuleLayout {
+        let visibleText = displayText(text)
+        let boundedMaximumWidth = max(1, maxWidth)
+        let minimumWidth = min(isLoading ? 108 : 120, boundedMaximumWidth)
+        let reservedTrailingWidth = isLoading ? 0 : keycapWidth + keycapGap
+        let chromeWidth = (horizontalInset * 2) + reservedTrailingWidth
+        let naturalTextWidth = ceil((visibleText as NSString).size(withAttributes: [.font: font]).width)
+        let width = min(max(naturalTextWidth + chromeWidth, minimumWidth), boundedMaximumWidth)
+        let textWidth = max(1, width - chromeWidth)
+
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineBreakMode = .byWordWrapping
+        let requiredBounds = (visibleText as NSString).boundingRect(
+            with: CGSize(width: textWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: font, .paragraphStyle: paragraphStyle]
+        )
+        let lineHeight = ceil(font.ascender - font.descender + font.leading)
+        let requiredTextSize = CGSize(
+            width: min(textWidth, ceil(requiredBounds.width)),
+            height: max(lineHeight, ceil(requiredBounds.height))
+        )
+        let height = max(requiredTextSize.height + (verticalInset * 2), 28)
+        let size = CGSize(width: width, height: height)
+        let textRect = CGRect(
+            x: horizontalInset,
+            y: verticalInset,
+            width: textWidth,
+            height: requiredTextSize.height
+        )
+        let keycapRect = isLoading ? nil : CGRect(
+            x: width - keycapWidth - 8,
+            y: (height - 20) / 2,
+            width: keycapWidth,
+            height: 20
+        )
+        return CotypistCapsuleLayout(
+            size: size,
+            textRect: textRect,
+            keycapRect: keycapRect,
+            requiredTextSize: requiredTextSize
+        )
+    }
+}
+
 @MainActor
 final class CotypistPreviewPanel {
     private let panel: NonactivatingOverlayPanel
     private let previewView: CotypistPreviewView
+    var onAccept: (() -> Void)?
+
+    /// Quartz screen coordinates use a top-left origin, while AppKit window
+    /// frames use a bottom-left origin. The event tap uses this converted frame
+    /// to avoid invalidating a preview when its own card is clicked.
+    var quartzHitFrame: CGRect? {
+        guard panel.isVisible,
+              let primaryScreenMaxY = NSScreen.screens.first?.frame.maxY,
+              primaryScreenMaxY.isFinite else { return nil }
+        return CGRect(
+            x: panel.frame.minX,
+            y: primaryScreenMaxY - panel.frame.maxY,
+            width: panel.frame.width,
+            height: panel.frame.height
+        )
+    }
 
     init() {
         previewView = CotypistPreviewView(frame: CGRect(x: 0, y: 0, width: 120, height: 28))
@@ -456,9 +756,10 @@ final class CotypistPreviewPanel {
         )
         panel.backgroundColor = .clear
         panel.isOpaque = false
-        panel.ignoresMouseEvents = true
+        panel.ignoresMouseEvents = false
         panel.level = .statusBar
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        previewView.onAccept = { [weak self] in self?.onAccept?() }
         panel.contentView = previewView
     }
 
@@ -494,6 +795,13 @@ final class CotypistPreviewPanel {
             primaryScreenMaxY: screens.first?.frame.maxY ?? 0
         ) : nil
 
+        // Inline ghost text must never hide an accepted tail. If the complete
+        // continuation does not fit beside the caret, use the capsule, which
+        // can widen or wrap while remaining non-modal.
+        if let ghostFrame = frame, !previewView.displaysCompleteText(in: ghostFrame.size) {
+            frame = nil
+        }
+
         if frame == nil {
             mode = .capsule
             font = Self.font(for: context.presentationStyle, mode: mode)
@@ -504,7 +812,7 @@ final class CotypistPreviewPanel {
                 quality: quality
             )
             previewView.configure(text: text, mode: mode, font: font, textColor: textColor, isLoading: isLoading)
-            size = previewView.preferredSize(maxWidth: 430)
+            size = previewView.preferredSize(maxWidth: Self.maximumCapsuleWidth(for: context, screens: screens))
             frame = CotypistOverlayPlacement.frame(
                 caretBounds: context.caretBounds,
                 elementBounds: context.elementBounds,
@@ -534,6 +842,33 @@ final class CotypistPreviewPanel {
 
     func hide() {
         panel.orderOut(nil)
+    }
+
+    private static func maximumCapsuleWidth(
+        for context: FocusedTextContext,
+        screens: [NSScreen]
+    ) -> CGFloat {
+        let screenFrames = screens.map(\.frame)
+        let primaryScreenMaxY = screens.first?.frame.maxY ?? 0
+        let candidateBounds = [context.caretBounds, context.elementBounds].compactMap { $0 }
+        for bounds in candidateBounds where bounds.origin.x.isFinite
+            && bounds.origin.y.isFinite
+            && bounds.width.isFinite
+            && bounds.height.isFinite
+            && (bounds.width > 0 || bounds.height > 0) {
+            let anchor = CGPoint(x: bounds.midX, y: bounds.midY)
+            if let converted = AccessibilityScreenGeometry.appKitPoint(
+                forQuartzPoint: anchor,
+                screenFrames: screenFrames,
+                primaryScreenMaxY: primaryScreenMaxY,
+                tolerance: 8
+            ), screens.indices.contains(converted.screenIndex) {
+                return min(760, max(120, screens[converted.screenIndex].visibleFrame.width - 8))
+            }
+        }
+
+        let fallbackScreen = screens.first(where: { $0.visibleFrame.contains(NSEvent.mouseLocation) }) ?? screens.first
+        return min(760, max(120, (fallbackScreen?.visibleFrame.width ?? 760) - 8))
     }
 
     private static func font(
@@ -576,6 +911,7 @@ private final class CotypistPreviewView: NSView {
     private var font = NSFont.systemFont(ofSize: 13)
     private var textColor = NSColor.labelColor
     private var isLoading = false
+    var onAccept: (() -> Void)?
 
     override var isFlipped: Bool { true }
     override var isOpaque: Bool { false }
@@ -595,6 +931,18 @@ private final class CotypistPreviewView: NSView {
         needsDisplay = true
     }
 
+    override func mouseDown(with event: NSEvent) {
+        guard !isLoading else { return }
+        onAccept?()
+    }
+
+    /// Keep model line breaks in the accepted completion, but flatten them for
+    /// presentation. Any additional visual lines are wrapping only, never
+    /// hidden or synthetic characters.
+    private var singleLineText: String {
+        CotypistPreviewLayout.displayText(text)
+    }
+
     func preferredSize(maxWidth: CGFloat) -> CGSize {
         let attributes: [NSAttributedString.Key: Any] = [.font: font]
         if mode == .ghost {
@@ -602,18 +950,27 @@ private final class CotypistPreviewView: NSView {
             let lineHeight = ceil(font.ascender - font.descender + font.leading)
             return CGSize(width: min(max(measured + 2, 1), maxWidth), height: max(lineHeight, 16))
         }
+        return CotypistPreviewLayout.capsule(
+            text: singleLineText,
+            font: font,
+            isLoading: isLoading,
+            maxWidth: maxWidth
+        ).size
+    }
 
-        let keycapWidth: CGFloat = isLoading ? 0 : 38
-        let horizontalInsets: CGFloat = 20
-        let textLimit = max(80, maxWidth - horizontalInsets - keycapWidth)
-        let measured = (text as NSString).boundingRect(
-            with: CGSize(width: textLimit, height: 58),
-            options: [.usesLineFragmentOrigin, .usesFontLeading, .truncatesLastVisibleLine],
-            attributes: attributes
-        )
-        let width = min(max(ceil(measured.width) + horizontalInsets + keycapWidth, isLoading ? 108 : 120), maxWidth)
-        let height = min(max(ceil(measured.height) + 12, 28), 70)
-        return CGSize(width: width, height: height)
+    func displaysCompleteText(in size: CGSize) -> Bool {
+        switch mode {
+        case .ghost:
+            let measured = ceil((text as NSString).size(withAttributes: [.font: font]).width)
+            return measured <= size.width + 1
+        case .capsule:
+            return CotypistPreviewLayout.capsule(
+                text: singleLineText,
+                font: font,
+                isLoading: isLoading,
+                maxWidth: size.width
+            ).displaysCompleteText
+        }
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -644,28 +1001,33 @@ private final class CotypistPreviewView: NSView {
         background.lineWidth = 1
         background.stroke()
 
-        let keycapWidth: CGFloat = isLoading ? 0 : 32
-        let textRect = CGRect(
-            x: 10,
-            y: 6,
-            width: max(1, bounds.width - 20 - (isLoading ? 0 : keycapWidth + 6)),
-            height: max(1, bounds.height - 12)
+        let layout = CotypistPreviewLayout.capsule(
+            text: singleLineText,
+            font: font,
+            isLoading: isLoading,
+            maxWidth: bounds.width
         )
-        (text as NSString).draw(
-            with: textRect,
-            options: [.usesLineFragmentOrigin, .usesFontLeading, .truncatesLastVisibleLine],
-            attributes: [.font: font, .foregroundColor: textColor]
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineBreakMode = .byWordWrapping
+        (singleLineText as NSString).draw(
+            with: layout.textRect,
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [
+                .font: font,
+                .foregroundColor: textColor,
+                .paragraphStyle: paragraphStyle,
+            ]
         )
 
         guard !isLoading else { return }
-        let keycapRect = CGRect(x: bounds.maxX - keycapWidth - 8, y: (bounds.height - 20) / 2, width: keycapWidth, height: 20)
+        guard let keycapRect = layout.keycapRect else { return }
         let keycap = NSBezierPath(roundedRect: keycapRect, xRadius: 5, yRadius: 5)
         NSColor.controlBackgroundColor.withAlphaComponent(0.88).setFill()
         keycap.fill()
         NSColor.separatorColor.withAlphaComponent(0.7).setStroke()
         keycap.lineWidth = 1
         keycap.stroke()
-        let keycapText = "Tab" as NSString
+        let keycapText = "Tab / ⌥Tab" as NSString
         let keycapFont = NSFont.systemFont(ofSize: 10, weight: .semibold)
         let textSize = keycapText.size(withAttributes: [.font: keycapFont])
         keycapText.draw(
@@ -683,9 +1045,10 @@ private extension FocusedTextColor {
 
 @MainActor
 final class CotypistCoordinator {
-    private static let loadingPresentationDelay = Duration.milliseconds(250)
-    private static let ambientDebounce = Duration.milliseconds(280)
+    private static let loadingPresentationDelay = Duration.milliseconds(300)
     private static let ambientInsertionSuppression: TimeInterval = 0.8
+    private static let ambientMissSuppression: TimeInterval = 1.5
+    private static let logger = Logger(subsystem: "com.muesli.native", category: "CotypistInput")
 
     private enum Trigger: Sendable {
         case manual
@@ -701,6 +1064,8 @@ final class CotypistCoordinator {
     private var loadingTask: Task<Void, Never>?
     private var ambientTask: Task<Void, Never>?
     private var ambientSuppressedUntil = Date.distantPast
+    private var completionCache = CotypistCompletionCache()
+    private var acceptWhenReady = false
     private var requestID: UUID?
     private var requestTrigger: Trigger?
     private var previewContext: FocusedTextContext?
@@ -716,9 +1081,10 @@ final class CotypistCoordinator {
     ) {
         self.transcriptionRuntime = transcriptionRuntime
         self.contextService = contextService
+        previewPanel.onAccept = { [weak self] in self?.accept() }
         eventTap.onInvoke = { [weak self] in Task { @MainActor in self?.invoke() } }
         eventTap.onAccept = { [weak self] in Task { @MainActor in self?.accept() } }
-        eventTap.onCancel = { [weak self] in Task { @MainActor in self?.cancel() } }
+        eventTap.onCancel = { [weak self] in Task { @MainActor in self?.dismiss() } }
         eventTap.onInvalidate = { [weak self] in Task { @MainActor in self?.cancel() } }
         eventTap.onTyping = { [weak self] event in
             Task { @MainActor in self?.handleTyping(event) }
@@ -727,8 +1093,19 @@ final class CotypistCoordinator {
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil,
             queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in self?.cancel() }
+        ) { [weak self] notification in
+            let activatedApplication = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            let activatedProcessID = activatedApplication?.processIdentifier
+            Task { @MainActor in
+                guard let self else { return }
+                // A preview-panel click may briefly activate Muesli itself, and
+                // acceptance may activate the original target app again. Neither
+                // transition means the user's text context became stale.
+                if activatedProcessID == ProcessInfo.processInfo.processIdentifier || self.state == .accepting {
+                    return
+                }
+                self.cancel()
+            }
         }
     }
 
@@ -745,12 +1122,14 @@ final class CotypistCoordinator {
         if !config.enableCotypist || !config.enableCotypistAmbient {
             ambientTask?.cancel()
             ambientTask = nil
+            eventTap.updateAmbientWaiting(false)
             if requestTrigger == .ambient {
                 cancel()
             }
         }
 
         guard config.enableCotypist else {
+            completionCache.removeAll()
             eventTap.stop()
             cancel()
             if wasEnabled {
@@ -764,7 +1143,8 @@ final class CotypistCoordinator {
         }
         if previousModel != config.resolvedCotypistModel || !wasEnabled {
             cancel()
-            Task { [model = config.resolvedCotypistModel] in
+            completionCache.removeAll()
+            Task(priority: .userInitiated) { [model = config.resolvedCotypistModel] in
                 try? await transcriptionRuntime.prepareCotypist(model: model)
             }
         }
@@ -773,6 +1153,7 @@ final class CotypistCoordinator {
     func shutdown() {
         eventTap.stop()
         cancel()
+        completionCache.removeAll()
         Task { await transcriptionRuntime.unloadCotypist() }
     }
 
@@ -780,15 +1161,17 @@ final class CotypistCoordinator {
         invoke(trigger: .manual)
     }
 
-    private func invoke(trigger: Trigger) {
+    private func invoke(trigger: Trigger, prefetchedContext: FocusedTextContext? = nil) {
         guard config.enableCotypist, config.resolvedCotypistModel.isDownloaded else { return }
         ambientTask?.cancel()
         ambientTask = nil
+        eventTap.updateAmbientWaiting(false)
         requestTask?.cancel()
         loadingTask?.cancel()
-        previewPanel.hide()
+        hidePreviewPanel()
+        acceptWhenReady = false
         let excluded = Set(config.cotypistExcludedBundleIDs)
-        guard let context = contextService.capture(excludedBundleIDs: excluded) else {
+        guard let context = prefetchedContext ?? contextService.capture(excludedBundleIDs: excluded) else {
             if trigger == .manual {
                 fail("No supported text field at the cursor")
             } else {
@@ -797,20 +1180,34 @@ final class CotypistCoordinator {
             return
         }
 
+        if case .ambient = trigger,
+           let completion = completionCache.completion(
+               for: context,
+               model: config.resolvedCotypistModel
+           ) {
+            requestID = nil
+            requestTrigger = nil
+            previewContext = context
+            state = .previewing(completion)
+            previewPanel.show(text: completion.text, context: context, quality: completion.quality)
+            eventTap.updatePreviewHitFrame(previewPanel.quartzHitFrame)
+            return
+        }
+
         let id = UUID()
         requestID = id
         requestTrigger = trigger
         previewContext = nil
         state = .generating
-        if trigger == .manual {
-            loadingTask = Task { [weak self] in
-                do {
-                    try await Task.sleep(for: Self.loadingPresentationDelay)
-                    guard let self, requestID == id, state.isGenerating else { return }
-                    previewPanel.show(text: "Completing…", context: context, isLoading: true)
-                } catch {
-                    return
-                }
+        loadingTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: Self.loadingPresentationDelay)
+                guard let self, requestID == id, state.isGenerating else { return }
+                let loadingText = if case .manual = trigger { "Completing…" } else { "…" }
+                previewPanel.show(text: loadingText, context: context, isLoading: true)
+                eventTap.updatePreviewHitFrame(previewPanel.quartzHitFrame)
+            } catch {
+                return
             }
         }
         let request = CotypistCompletionRequest(context: context, model: config.resolvedCotypistModel)
@@ -829,16 +1226,33 @@ final class CotypistCoordinator {
                 loadingTask = nil
                 requestTrigger = nil
                 previewContext = fresh
+                completionCache.store(
+                    completion,
+                    for: fresh,
+                    model: request.model
+                )
                 state = .previewing(completion)
                 previewPanel.show(
                     text: completion.text,
                     context: fresh,
                     quality: completion.quality
                 )
+                eventTap.updatePreviewHitFrame(previewPanel.quartzHitFrame)
+                if acceptWhenReady {
+                    accept()
+                }
             } catch is CancellationError {
                 if requestID == id { resetUI() }
             } catch CotypistCompletionError.noSuggestion {
-                if requestID == id { resetUI() }
+                if requestID == id {
+                    suppressAmbientAfterMiss(trigger)
+                    resetUI()
+                }
+            } catch CotypistCompletionError.invalidOutput {
+                if requestID == id {
+                    suppressAmbientAfterMiss(trigger)
+                    resetUI()
+                }
             } catch {
                 if requestID == id {
                     if trigger == .manual {
@@ -852,9 +1266,19 @@ final class CotypistCoordinator {
     }
 
     func accept() {
-        guard case .previewing(let completion) = state, let expected = previewContext else { return }
+        if state.isGenerating {
+            acceptWhenReady = true
+            Self.logger.notice("accept queued while generation is pending")
+            return
+        }
+        guard case .previewing(let completion) = state, let expected = previewContext else {
+            Self.logger.notice("accept ignored because no preview is active")
+            return
+        }
+        Self.logger.notice("accept started from active preview")
+        acceptWhenReady = false
         state = .accepting
-        previewPanel.hide()
+        hidePreviewPanel()
         loadingTask?.cancel()
         loadingTask = nil
         requestTask?.cancel()
@@ -863,22 +1287,88 @@ final class CotypistCoordinator {
         requestTrigger = nil
         previewContext = nil
 
-        let fresh = contextService.capture(excludedBundleIDs: Set(config.cotypistExcludedBundleIDs))
-        guard fresh?.fingerprint == expected.fingerprint else {
-            state = .idle
+        // A click on the non-activating preview panel can briefly make Muesli the
+        // frontmost process, even though the target field remains focused in the
+        // other app. Restore that app before revalidating and typing so a click is
+        // equivalent to Tab acceptance. The fingerprint is still checked on every
+        // attempt; we never insert into a field that changed while the preview was
+        // visible.
+        finishAcceptance(completion: completion, expected: expected, attemptsRemaining: 3)
+    }
+
+    private func finishAcceptance(
+        completion: CotypistCompletion,
+        expected: FocusedTextContext,
+        attemptsRemaining: Int
+    ) {
+        let targetApplication = NSRunningApplication(processIdentifier: expected.processID)
+        let frontmostProcessID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        if frontmostProcessID != expected.processID {
+            Self.logger.notice("accept waiting for target application activation")
+            _ = targetApplication?.activate(options: [])
+            guard attemptsRemaining > 0 else {
+                Self.logger.error("accept failed because target application did not activate")
+                state = .idle
+                return
+            }
+            scheduleAcceptanceRetry(
+                completion: completion,
+                expected: expected,
+                attemptsRemaining: attemptsRemaining - 1
+            )
             return
         }
+
+        let fresh = contextService.capture(excludedBundleIDs: Set(config.cotypistExcludedBundleIDs))
+        guard fresh?.fingerprint == expected.fingerprint else {
+            Self.logger.notice("accept waiting for focused-text revalidation")
+            guard attemptsRemaining > 0 else {
+                Self.logger.error("accept failed focused-text revalidation")
+                state = .idle
+                return
+            }
+            scheduleAcceptanceRetry(
+                completion: completion,
+                expected: expected,
+                attemptsRemaining: attemptsRemaining - 1
+            )
+            return
+        }
+
         state = .idle
         ambientSuppressedUntil = Date().addingTimeInterval(Self.ambientInsertionSuppression)
         ambientTask?.cancel()
         ambientTask = nil
-        PasteController.typeText(completion.text)
+        eventTap.updateAmbientWaiting(false)
+        let insertedWithAccessibility = contextService.insertText(completion.text, into: expected)
+        Self.logger.notice("accept insertion accessibility=\(insertedWithAccessibility, privacy: .public)")
+        if !insertedWithAccessibility {
+            Self.logger.notice("accept falling back to synthetic text events")
+            PasteController.typeText(completion.text)
+        }
+    }
+
+    private func scheduleAcceptanceRetry(
+        completion: CotypistCompletion,
+        expected: FocusedTextContext,
+        attemptsRemaining: Int
+    ) {
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(60))
+            guard let self, state == .accepting else { return }
+            finishAcceptance(
+                completion: completion,
+                expected: expected,
+                attemptsRemaining: attemptsRemaining
+            )
+        }
     }
 
     func cancel() {
         let hadActiveRequest = requestTask != nil || state != .idle
         ambientTask?.cancel()
         ambientTask = nil
+        eventTap.updateAmbientWaiting(false)
         loadingTask?.cancel()
         loadingTask = nil
         requestTask?.cancel()
@@ -886,35 +1376,54 @@ final class CotypistCoordinator {
         requestID = nil
         requestTrigger = nil
         previewContext = nil
+        acceptWhenReady = false
         resetUI()
         if hadActiveRequest {
             Task { await transcriptionRuntime.cancelCotypistCompletion() }
         }
     }
 
+    private func dismiss() {
+        if state.isGenerating || state.isPreviewing {
+            ambientSuppressedUntil = Date().addingTimeInterval(Self.ambientMissSuppression)
+        }
+        cancel()
+    }
+
     private func handleTyping(_ event: CotypistTypingEvent) {
         guard config.enableCotypist,
-              config.enableCotypistAmbient,
-              event.isLikelyTextEdit,
-              Date() >= ambientSuppressedUntil else { return }
+              event.isLikelyTextEdit else { return }
 
         ambientTask?.cancel()
         ambientTask = nil
+        eventTap.updateAmbientWaiting(false)
         if state.isGenerating || state.isPreviewing {
             cancel()
         }
+        guard config.enableCotypistAmbient,
+              Date() >= ambientSuppressedUntil else { return }
 
         ambientTask = Task { [weak self] in
             do {
-                try await Task.sleep(for: Self.ambientDebounce)
+                try await Task.sleep(for: CotypistAmbientSuggestionPolicy.idleDelay)
                 guard !Task.isCancelled else { return }
                 guard let self else { return }
                 self.ambientTask = nil
-                self.invoke(trigger: .ambient)
+                self.eventTap.updateAmbientWaiting(false)
+                let excluded = Set(self.config.cotypistExcludedBundleIDs)
+                guard let context = self.contextService.capture(excludedBundleIDs: excluded),
+                      CotypistAmbientSuggestionPolicy.isEligible(prefix: context.prefix) else { return }
+                self.invoke(trigger: .ambient, prefetchedContext: context)
             } catch {
                 return
             }
         }
+        eventTap.updateAmbientWaiting(true)
+    }
+
+    private func suppressAmbientAfterMiss(_ trigger: Trigger) {
+        guard case .ambient = trigger else { return }
+        ambientSuppressedUntil = Date().addingTimeInterval(Self.ambientMissSuppression)
     }
 
     private func fail(_ message: String) {
@@ -925,8 +1434,9 @@ final class CotypistCoordinator {
         requestID = nil
         requestTrigger = nil
         previewContext = nil
+        acceptWhenReady = false
         state = .failed(message)
-        previewPanel.hide()
+        hidePreviewPanel()
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(1.2))
             guard let self, case .failed = state else { return }
@@ -937,7 +1447,17 @@ final class CotypistCoordinator {
     private func resetUI() {
         loadingTask?.cancel()
         loadingTask = nil
-        previewPanel.hide()
+        requestTask = nil
+        requestID = nil
+        requestTrigger = nil
+        previewContext = nil
+        acceptWhenReady = false
+        hidePreviewPanel()
         state = .idle
+    }
+
+    private func hidePreviewPanel() {
+        previewPanel.hide()
+        eventTap.updatePreviewHitFrame(nil)
     }
 }

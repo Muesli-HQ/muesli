@@ -326,6 +326,12 @@ actor Gemma4LiteRTTranscriber {
         }
     }
 
+    /// Run a single-token local request after engine creation so LiteRT compiles
+    /// the text conversation path before the first visible Cotypist preview.
+    func warmup(_ request: CotypistCompletionRequest) async throws {
+        _ = try await completeText(request)
+    }
+
     private func loadEngine(
         progress: ((Double, String?) -> Void)?,
         progressSnapshot: ModelDownloadProgressHandler?,

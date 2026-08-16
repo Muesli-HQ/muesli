@@ -91,6 +91,16 @@ protocol FocusedTextReading {
     func readFocusedText(maxPrefixCharacters: Int, maxSuffixCharacters: Int) -> FocusedTextRawSnapshot?
 }
 
+protocol FocusedTextWriting {
+    func insertText(
+        _ text: String,
+        processID: pid_t,
+        elementIdentifier: UInt,
+        bundleID: String,
+        selection: FocusedTextRange
+    ) -> Bool
+}
+
 enum FocusedTextFallbackReader {
     static func boundedSegments(
         fullText: String,
@@ -119,15 +129,18 @@ struct FocusedTextContextService {
     private let reader: any FocusedTextReading
     private let currentProcessID: pid_t
     private let currentBundleID: String
+    private let writer: any FocusedTextWriting
 
     init(
         reader: any FocusedTextReading = SystemFocusedTextReader(),
         currentProcessID: pid_t = ProcessInfo.processInfo.processIdentifier,
-        currentBundleID: String = Bundle.main.bundleIdentifier ?? ""
+        currentBundleID: String = Bundle.main.bundleIdentifier ?? "",
+        writer: any FocusedTextWriting = SystemFocusedTextWriter()
     ) {
         self.reader = reader
         self.currentProcessID = currentProcessID
         self.currentBundleID = currentBundleID
+        self.writer = writer
     }
 
     func capture(excludedBundleIDs: Set<String>) -> FocusedTextContext? {
@@ -181,6 +194,109 @@ struct FocusedTextContextService {
             maxPrefixCharacters: maxPrefixCharacters,
             maxSuffixCharacters: maxSuffixCharacters
         )
+    }
+
+    /// Inserts into the exact focused element that was revalidated immediately
+    /// before acceptance. Accessibility insertion avoids sending an app-owned
+    /// Tab/Return event and works in many custom web editors that ignore
+    /// synthesized per-character keyboard events.
+    func insertText(_ text: String, into context: FocusedTextContext) -> Bool {
+        guard !text.isEmpty else { return false }
+        return writer.insertText(
+            text,
+            processID: context.processID,
+            elementIdentifier: context.fingerprint.elementIdentifier,
+            bundleID: context.bundleID,
+            selection: context.selection
+        )
+    }
+}
+
+struct SystemFocusedTextWriter: FocusedTextWriting {
+    /// These hosts expose `AXSelectedText` as writable and return success while
+    /// silently discarding the value. Let the coordinator use physical text
+    /// events instead of mistaking that no-op for a completed insertion.
+    private static let syntheticOnlyBundleIDs: Set<String> = [
+        "com.openai.codex",
+    ]
+
+    static func shouldAttemptAccessibilityInsertion(bundleID: String) -> Bool {
+        !syntheticOnlyBundleIDs.contains(bundleID.lowercased())
+    }
+
+    static func selectionConfirmsInsertion(
+        text: String,
+        before: FocusedTextRange,
+        after: FocusedTextRange?
+    ) -> Bool {
+        guard !text.isEmpty, before.length == 0, let after, after.length == 0 else { return false }
+        return after.location == before.location + (text as NSString).length
+    }
+
+    func insertText(
+        _ text: String,
+        processID: pid_t,
+        elementIdentifier: UInt,
+        bundleID: String,
+        selection: FocusedTextRange
+    ) -> Bool {
+        guard AXIsProcessTrusted(),
+              !text.isEmpty,
+              Self.shouldAttemptAccessibilityInsertion(bundleID: bundleID),
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == processID else { return false }
+
+        let axApp = AXUIElementCreateApplication(processID)
+        var rawElement: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            axApp,
+            kAXFocusedUIElementAttribute as CFString,
+            &rawElement
+        ) == .success,
+        let rawElement,
+        CFGetTypeID(rawElement) == AXUIElementGetTypeID() else { return false }
+
+        let element = rawElement as! AXUIElement
+        guard CFHash(element) == elementIdentifier,
+              Self.selectedTextRange(of: element) == selection else { return false }
+
+        guard AXUIElementSetAttributeValue(
+            element,
+            kAXSelectedTextAttribute as CFString,
+            text as CFString
+        ) == .success else { return false }
+
+        // AX setters are synchronous for native controls, but some bridged
+        // editors publish their updated caret on the next run-loop turn. Retry
+        // briefly before declaring the write a no-op so the fallback cannot
+        // duplicate text that was genuinely inserted.
+        for retry in 0 ..< 3 {
+            if Self.selectionConfirmsInsertion(
+                text: text,
+                before: selection,
+                after: Self.selectedTextRange(of: element)
+            ) {
+                return true
+            }
+            if retry < 2 { Thread.sleep(forTimeInterval: 0.008) }
+        }
+        return false
+    }
+
+    private static func selectedTextRange(of element: AXUIElement) -> FocusedTextRange? {
+        var rawValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            &rawValue
+        ) == .success,
+        let rawValue,
+        CFGetTypeID(rawValue) == AXValueGetTypeID() else { return nil }
+
+        var range = CFRange()
+        guard AXValueGetValue(rawValue as! AXValue, .cfRange, &range),
+              range.location >= 0,
+              range.length >= 0 else { return nil }
+        return FocusedTextRange(location: range.location, length: range.length)
     }
 }
 

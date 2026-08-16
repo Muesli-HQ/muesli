@@ -94,7 +94,7 @@ enum CotypistSurface: String, CaseIterable, Sendable {
         if containsAny(identity + " " + location, ["mail", "outlook", "gmail.com", "hey.com", "fastmail.com"]) {
             return .email
         }
-        if containsAny(identity + " " + location, ["slack", "discord", "teams", "messages", "messenger", "whatsapp", "telegram", "signal", "chat.openai", "claude.ai"]) {
+        if containsAny(identity + " " + location, ["slack", "discord", "teams", "messages", "messenger", "whatsapp", "telegram", "signal", "chat.openai", "claude.ai", "openai.codex", "codex"]) {
             return .chat
         }
         if containsAny(identity + " " + location, ["textedit", "notes", "pages", "word", "notion", "docs.google.com", "obsidian", "bear"]) {
@@ -134,8 +134,9 @@ enum CotypistCompletionError: Error, Equatable, Sendable, LocalizedError {
 
 struct CotypistCompletionRequest: Equatable, Sendable {
     static let maximumOutputTokens = 24
+    private static let maximumContextHintCharacters = 420
     static let systemPromptTemplate = """
-    You are a macOS inline writing prediction engine. Return only the exact missing continuation at <CARET>; never explain, quote, label, or repeat context. Preserve the writer's language, tone, capitalization, formatting, and indentation. Make the continuation fit naturally before the suffix. Prefer one short phrase or sentence fragment. Stop as soon as the likely thought is complete.
+    You are a macOS inline writing prediction engine. Return only the exact missing continuation at <CARET>; never explain, quote, label, or repeat context. Preserve the writer's language, tone, capitalization, formatting, and indentation. Use the writing-surface metadata only to choose an appropriate style; it is not text to continue or echo. Make the continuation fit naturally before the suffix. Prefer one short phrase or sentence fragment. Stop as soon as the likely thought is complete.
     """
 
     let context: FocusedTextContext
@@ -154,8 +155,69 @@ struct CotypistCompletionRequest: Equatable, Sendable {
         self.maxOutputTokens = min(max(maxOutputTokens, 1), Self.maximumOutputTokens)
     }
 
+    /// A synthetic, content-free request used only to compile the selected
+    /// local engine before the first user-facing completion. It never includes
+    /// focused application data or user text.
+    static func warmupRequest(for model: CotypistModelOption) -> Self {
+        let selection = FocusedTextRange(location: 15, length: 0)
+        let context = FocusedTextContext(
+            appName: "Muesli",
+            bundleID: "com.muesli.native.warmup",
+            processID: 0,
+            browserLocation: nil,
+            windowTitle: "",
+            role: "AXTextArea",
+            subrole: "",
+            fieldMetadata: "",
+            selection: selection,
+            prefix: "A warmup phrase",
+            suffix: "",
+            caretBounds: nil,
+            elementBounds: nil,
+            fingerprint: FocusedTextFingerprint(
+                processID: 0,
+                elementIdentifier: 0,
+                selection: selection,
+                prefix: "A warmup phrase",
+                suffix: ""
+            ),
+            caretGeometryConfidence: .unavailable,
+            presentationStyle: nil
+        )
+        return Self(context: context, model: model, maxOutputTokens: 1)
+    }
+
     var systemPrompt: String {
         Self.systemPromptTemplate
+    }
+
+    /// Bounded, local-only metadata describing the focused writing surface. This
+    /// intentionally excludes screen pixels and document contents outside the
+    /// already captured prefix/suffix. Values are normalized to one line because
+    /// app titles and accessibility labels can otherwise become prompt syntax.
+    var appContextHint: String {
+        var fields = [
+            "surface=\(surface.rawValue)",
+            "app=\(Self.promptValue(context.appName, maximumLength: 64))",
+            "bundle=\(Self.promptValue(context.bundleID, maximumLength: 96))",
+        ]
+
+        if let browserLocation = context.browserLocation,
+           let host = browserLocation.split(separator: "/", maxSplits: 1).first,
+           !host.isEmpty {
+            fields.append("site=\(Self.promptValue(String(host), maximumLength: 120))")
+        }
+        if !context.role.isEmpty {
+            fields.append("role=\(Self.promptValue(context.role, maximumLength: 40))")
+        }
+        if !context.fieldMetadata.isEmpty {
+            fields.append("field=\(Self.promptValue(context.fieldMetadata, maximumLength: 96))")
+        }
+        if !context.windowTitle.isEmpty {
+            fields.append("window=\(Self.promptValue(context.windowTitle, maximumLength: 96))")
+        }
+
+        return String(fields.joined(separator: "; ").prefix(Self.maximumContextHintCharacters))
     }
 
     var gemmaUserPrompt: String {
@@ -163,7 +225,7 @@ struct CotypistCompletionRequest: Equatable, Sendable {
         Fill the cursor gap with a short natural continuation. Return only the missing text, including any required leading space. Never repeat BEFORE or AFTER.
         For example, when BEFORE is "Please send the report" and AFTER is " by Friday.", the missing text alone is " to me".
 
-        Surface: \(surface.rawValue)
+        Writing surface metadata (use for style only; never echo it): \(appContextHint)
         BEFORE: \(context.prefix)
         AFTER: \(context.suffix)
         Supply only the missing continuation now, without a heading, label, quotation marks, or explanation.
@@ -171,9 +233,20 @@ struct CotypistCompletionRequest: Equatable, Sendable {
     }
 
     /// Qwen Text FIM is a base completion model, not a chat model. Feeding it
-    /// instructions or a chat template materially degrades the continuation.
+    /// instructions or a chat template materially degrades the continuation. A
+    /// compact metadata header is kept outside the user's text so the base model
+    /// can bias style without being asked to follow a conversational prompt.
     var fimPrompt: String {
-        "<|fim_prefix|>\(context.prefix)<|fim_suffix|>\(context.suffix)<|fim_middle|>"
+        "<|fim_prefix|>[Muesli writing context: \(appContextHint)]\n\(context.prefix)<|fim_suffix|>\(context.suffix)<|fim_middle|>"
+    }
+
+    private static func promptValue(_ value: String, maximumLength: Int) -> String {
+        let compact = value
+            .replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+        return String(compact.prefix(maximumLength))
     }
 }
 
@@ -203,7 +276,15 @@ enum CotypistOutputSanitizer {
         ]
         guard !promptLeakageMarkers.contains(where: lower.contains) else { return nil }
 
-        let visible = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let surface = CotypistSurface.classify(context: context)
+        let preservesLineBreaks = surface == .code || surface == .terminal
+        let normalized = normalizedOutput(raw, preservingLineBreaks: preservesLineBreaks)
+        let candidate = removingDuplicateLeadingWhitespace(
+            normalized,
+            after: context.prefix,
+            preservingLineBreaks: preservesLineBreaks
+        )
+        let visible = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !visible.isEmpty else { return nil }
         let lowerVisible = visible.lowercased()
         let commentaryPrefixes = [
@@ -220,8 +301,8 @@ enum CotypistOutputSanitizer {
         // supplies a useful continuation. Keep only that genuinely new tail. This also
         // repairs outputs such as "<copied question> expected?" without hiding a pure
         // copy, which remains a red low-quality suggestion.
-        if let novelTail = novelTailAfterPrefixEcho(raw, prefix: context.prefix),
-           novelTail.count < raw.count {
+        if let novelTail = novelTailAfterPrefixEcho(candidate, prefix: context.prefix),
+           novelTail.count < candidate.count {
             return sanitize(novelTail, for: context)
         }
 
@@ -232,27 +313,54 @@ enum CotypistOutputSanitizer {
         // A 24-token response should stay well below this character ceiling even for
         // code-heavy output; this catches runaway prompts without trimming meaningful
         // leading whitespace. Context echoes are retained and marked separately.
-        guard raw.count <= 320 else { return nil }
+        guard candidate.count <= 320 else { return nil }
 
         // LiteRT text responses can omit a required leading space even when the prompt
         // explicitly requests it. Preserve every byte the model returned and add only
         // the separator needed to prevent two natural-language words from being glued
         // together. Code and mid-token suffixes must remain byte-exact.
-        if CotypistSurface.classify(context: context) != .code,
+        if surface != .code,
            let prefixLast = context.prefix.last,
-           let outputFirst = raw.first,
+           let outputFirst = candidate.first,
            isWordCharacter(prefixLast),
            isWordCharacter(outputFirst),
            context.suffix.first.map(isWordCharacter) != true {
             return CotypistCompletion(
-                text: " " + raw,
+                text: " " + candidate,
                 quality: containsContextEcho ? .contextEcho : .normal
             )
         }
         return CotypistCompletion(
-            text: raw,
+            text: candidate,
             quality: containsContextEcho ? .contextEcho : .normal
         )
+    }
+
+    /// Inline prose acceptance must never hide Return/Tab-like characters behind
+    /// a one-line preview. Preserve structural whitespace only for code and
+    /// terminal surfaces; compact every other continuation to a single line.
+    private static func normalizedOutput(_ raw: String, preservingLineBreaks: Bool) -> String {
+        guard !preservingLineBreaks else { return raw }
+        let needsLeadingSpace = raw.first?.isWhitespace == true
+        let compact = raw.split(whereSeparator: \Character.isWhitespace).joined(separator: " ")
+        guard !compact.isEmpty else { return "" }
+        return needsLeadingSpace ? " " + compact : compact
+    }
+
+    /// Ambient prose generation starts after the user has already typed the
+    /// boundary that triggered it. Drop only the model's duplicate leading
+    /// whitespace; code and terminal indentation remains byte-exact.
+    private static func removingDuplicateLeadingWhitespace(
+        _ output: String,
+        after prefix: String,
+        preservingLineBreaks: Bool
+    ) -> String {
+        guard !preservingLineBreaks,
+              prefix.last?.isWhitespace == true,
+              output.first?.isWhitespace == true else {
+            return output
+        }
+        return String(output.drop(while: { $0.isWhitespace }))
     }
 
     private static func containsPrefixEcho(_ prefix: String, in output: String) -> Bool {

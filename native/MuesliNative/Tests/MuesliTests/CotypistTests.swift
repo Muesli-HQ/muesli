@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import MuesliNativeApp
@@ -96,6 +97,7 @@ struct CotypistConfigurationTests {
             ("com.microsoft.VSCode", "Visual Studio Code", nil, "editor", CotypistSurface.code),
             ("com.apple.Terminal", "Terminal", nil, "shell", CotypistSurface.terminal),
             ("com.google.Chrome", "Chrome", "google.com/search", "Search", CotypistSurface.search),
+            ("com.openai.codex", "Codex", nil, "Prompt", CotypistSurface.chat),
             ("com.example.app", "Example", nil, "body", CotypistSurface.generic),
         ]
     )
@@ -130,25 +132,55 @@ struct CotypistConfigurationTests {
 
     @Test("prompt requests only a bounded missing continuation")
     func promptAndTokenLimit() {
-        let context = makeContext(prefix: "Please send the revised proposal", suffix: " before Friday.")
+        let context = makeContext(
+            appName: "Mail",
+            bundleID: "com.apple.mail",
+            browserLocation: nil,
+            windowTitle: "Inbox",
+            role: "AXTextArea",
+            fieldMetadata: "Compose",
+            prefix: "Please send the revised proposal",
+            suffix: " before Friday."
+        )
         let request = CotypistCompletionRequest(context: context, model: .gemma4E2B, maxOutputTokens: 500)
 
         #expect(request.maxOutputTokens == 24)
         #expect(request.systemPrompt.contains("Return only the exact missing continuation"))
         #expect(request.gemmaUserPrompt.contains("Return only the missing text"))
+        #expect(request.gemmaUserPrompt.contains("surface=email"))
+        #expect(request.gemmaUserPrompt.contains("app=Mail"))
+        #expect(request.gemmaUserPrompt.contains("field=Compose"))
         #expect(request.gemmaUserPrompt.contains("BEFORE: Please send the revised proposal"))
         #expect(request.gemmaUserPrompt.contains("AFTER:  before Friday."))
         #expect(!request.systemPrompt.contains("transcrib"))
+
+        let warmup = CotypistCompletionRequest.warmupRequest(for: .gemma4E2B)
+        #expect(warmup.maxOutputTokens == 1)
+        #expect(warmup.context.appName == "Muesli")
+        #expect(warmup.context.prefix == "A warmup phrase")
     }
 
-    @Test("Qwen uses the checkpoint's raw FIM sequence without chat instructions")
+    @Test("Qwen keeps native FIM tokens while receiving bounded app context")
     func qwenFIMPrompt() {
-        let context = makeContext(prefix: "Please send the revised proposal", suffix: " before Friday.")
+        let context = makeContext(
+            appName: "Google Chrome",
+            bundleID: "com.google.Chrome",
+            browserLocation: "docs.google.com/document/d/private-document-id",
+            windowTitle: "Project notes",
+            role: "AXTextArea",
+            fieldMetadata: "Body",
+            prefix: "Please send the revised proposal",
+            suffix: " before Friday."
+        )
         let request = CotypistCompletionRequest(context: context, model: .qwen35TextFIM, maxOutputTokens: 500)
 
         #expect(request.maxOutputTokens == 24)
-        #expect(request.fimPrompt == "<|fim_prefix|>Please send the revised proposal<|fim_suffix|> before Friday.<|fim_middle|>")
-        #expect(!request.fimPrompt.contains("Surface:"))
+        #expect(request.fimPrompt.hasPrefix("<|fim_prefix|>[Muesli writing context: "))
+        #expect(request.fimPrompt.contains("surface=document"))
+        #expect(request.fimPrompt.contains("app=Google Chrome"))
+        #expect(request.fimPrompt.contains("site=docs.google.com"))
+        #expect(!request.fimPrompt.contains("private-document-id"))
+        #expect(request.fimPrompt.contains("Please send the revised proposal<|fim_suffix|> before Friday.<|fim_middle|>"))
         #expect(!request.fimPrompt.contains("Return only"))
         #expect(CotypistTextFIMModelStore.modelURL.path.contains("cotypist-qwen35-0.8b-base-fim"))
         #expect(CotypistTextFIMModelStore.modelURL.lastPathComponent == "Qwen3.5-0.8B-Base-Q4_0.gguf")
@@ -160,6 +192,8 @@ struct CotypistConfigurationTests {
     @Test("sanitizer preserves whitespace, rejects malformed output, and flags context echoes")
     func sanitizer() {
         let context = makeContext(
+            appName: "Xcode",
+            bundleID: "com.apple.dt.Xcode",
             prefix: "func load() {\n    let response = client.",
             suffix: "\n}"
         )
@@ -185,6 +219,40 @@ struct CotypistConfigurationTests {
             text: " continue tomorrow",
             quality: .normal
         ))
+        let proseSpaceBoundaryContext = makeContext(prefix: "We can ", suffix: "")
+        #expect(CotypistOutputSanitizer.sanitize(
+            " continue tomorrow",
+            for: proseSpaceBoundaryContext
+        ) == CotypistCompletion(
+            text: "continue tomorrow",
+            quality: .normal
+        ))
+        #expect(CotypistOutputSanitizer.sanitize(
+            "continue tomorrow",
+            for: proseSpaceBoundaryContext
+        ) == CotypistCompletion(
+            text: "continue tomorrow",
+            quality: .normal
+        ))
+        let proseNewlineBoundaryContext = makeContext(prefix: "We can\n", suffix: "")
+        #expect(CotypistOutputSanitizer.sanitize(
+            "\n  continue tomorrow",
+            for: proseNewlineBoundaryContext
+        ) == CotypistCompletion(
+            text: "continue tomorrow",
+            quality: .normal
+        ))
+        let codexContext = makeContext(
+            appName: "Codex",
+            bundleID: "com.openai.codex",
+            fieldMetadata: "Prompt",
+            prefix: "I hope",
+            suffix: ""
+        )
+        #expect(CotypistOutputSanitizer.sanitize("\n  this works\nwithout submitting\n", for: codexContext) == CotypistCompletion(
+            text: " this works without submitting",
+            quality: .normal
+        ))
         let codeContext = makeContext(
             appName: "Xcode",
             bundleID: "com.apple.dt.Xcode",
@@ -193,6 +261,19 @@ struct CotypistConfigurationTests {
         )
         #expect(CotypistOutputSanitizer.sanitize("ponse", for: codeContext) == CotypistCompletion(
             text: "ponse",
+            quality: .normal
+        ))
+        let indentedCodeContext = makeContext(
+            appName: "Xcode",
+            bundleID: "com.apple.dt.Xcode",
+            prefix: "if ready {\n",
+            suffix: "\n}"
+        )
+        #expect(CotypistOutputSanitizer.sanitize(
+            "    run()",
+            for: indentedCodeContext
+        ) == CotypistCompletion(
+            text: "    run()",
             quality: .normal
         ))
 
@@ -348,6 +429,43 @@ struct FocusedTextContextTests {
         #expect(original.fingerprint != otherApp.fingerprint)
     }
 
+    @Test("insertion targets the exact revalidated focused element")
+    func focusedInsertion() throws {
+        let raw = makeRawSnapshot(processID: 84, elementIdentifier: 19)
+        let writer = StubFocusedTextWriter(result: true)
+        let service = FocusedTextContextService(
+            reader: StubFocusedTextReader(snapshot: raw),
+            currentProcessID: 999,
+            currentBundleID: "com.muesli.test",
+            writer: writer
+        )
+        let context = try #require(service.capture(excludedBundleIDs: []))
+
+        #expect(service.insertText(" continuation", into: context))
+        #expect(writer.insertedText == " continuation")
+        #expect(writer.processID == 84)
+        #expect(writer.elementIdentifier == 19)
+        #expect(writer.bundleID == raw.bundleID)
+        #expect(writer.selection == raw.selection)
+    }
+
+    @Test("AX insertion detects no-op writers and bypasses Codex")
+    func accessibilityInsertionVerification() {
+        let selection = FocusedTextRange(location: 12, length: 0)
+        #expect(SystemFocusedTextWriter.selectionConfirmsInsertion(
+            text: " hello",
+            before: selection,
+            after: FocusedTextRange(location: 18, length: 0)
+        ))
+        #expect(!SystemFocusedTextWriter.selectionConfirmsInsertion(
+            text: " hello",
+            before: selection,
+            after: selection
+        ))
+        #expect(!SystemFocusedTextWriter.shouldAttemptAccessibilityInsertion(bundleID: "com.openai.codex"))
+        #expect(SystemFocusedTextWriter.shouldAttemptAccessibilityInsertion(bundleID: "com.apple.TextEdit"))
+    }
+
     private func capture(_ raw: FocusedTextRawSnapshot) -> FocusedTextContext? {
         FocusedTextContextService(
             reader: StubFocusedTextReader(snapshot: raw),
@@ -359,6 +477,43 @@ struct FocusedTextContextTests {
 
 @Suite("Cotypist event tap policy")
 struct CotypistEventPolicyTests {
+    @Test("ambient suggestions require a natural writing boundary")
+    func ambientNaturalBoundaries() {
+        #expect(CotypistAmbientSuggestionPolicy.isEligible(prefix: "Please continue "))
+        #expect(CotypistAmbientSuggestionPolicy.isEligible(prefix: "Please continue."))
+        #expect(CotypistAmbientSuggestionPolicy.isEligible(prefix: "Please continue,"))
+        #expect(CotypistAmbientSuggestionPolicy.isEligible(prefix: "Please continue\n"))
+        #expect(CotypistAmbientSuggestionPolicy.isEligible(prefix: "Ready?"))
+        #expect(!CotypistAmbientSuggestionPolicy.isEligible(prefix: "Please continue"))
+        #expect(!CotypistAmbientSuggestionPolicy.isEligible(prefix: "snake_case_"))
+        #expect(!CotypistAmbientSuggestionPolicy.isEligible(prefix: "well-"))
+        #expect(!CotypistAmbientSuggestionPolicy.isEligible(prefix: "👍"))
+        #expect(!CotypistAmbientSuggestionPolicy.isEligible(prefix: ""))
+    }
+
+    @Test("ambient cache is ephemeral, expires, and reuses a compatible tail")
+    func ambientCacheReuse() throws {
+        let start = Date(timeIntervalSince1970: 100)
+        let original = makeContext(prefix: "Please send", suffix: "")
+        let completion = CotypistCompletion(text: " the report tomorrow", quality: .normal)
+        var cache = CotypistCompletionCache(timeToLive: 30, capacity: 2)
+        cache.store(completion, for: original, model: .qwen35TextFIM, now: start)
+
+        #expect(cache.completion(for: original, model: .qwen35TextFIM, now: start) == completion)
+        let advanced = makeContext(prefix: "Please send the ", suffix: "")
+        #expect(cache.completion(
+            for: advanced,
+            model: .qwen35TextFIM,
+            now: start.addingTimeInterval(1)
+        ) == CotypistCompletion(text: "report tomorrow", quality: .normal))
+        #expect(cache.completion(for: original, model: .gemma4E2B, now: start) == nil)
+        #expect(cache.completion(
+            for: original,
+            model: .qwen35TextFIM,
+            now: start.addingTimeInterval(31)
+        ) == nil)
+    }
+
     @Test("ambient typing observes printable edits without consuming them")
     func ambientTypingClassification() {
         #expect(CotypistTypingEvent(keyCode: 0).isLikelyTextEdit)
@@ -372,7 +527,7 @@ struct CotypistEventPolicyTests {
         #expect(!CotypistTypingEvent(keyCode: 0, isRepeat: true).isLikelyTextEdit)
     }
 
-    @Test("invocation consumes repeats and matching key-up")
+    @Test("invocation consumes repeats, accepts a preview, and pairs key-up")
     func invocationPairing() {
         var policy = CotypistEventPolicy(isEnabled: true)
         let modifiers: CotypistEventModifiers = [.control, .option]
@@ -381,20 +536,39 @@ struct CotypistEventPolicyTests {
         #expect(policy.handle(.keyDown(keyCode: 8, modifiers: modifiers, isRepeat: true)) == .consume)
         #expect(policy.handle(.keyUp(keyCode: 8)) == .consume)
         #expect(policy.handle(.keyUp(keyCode: 8)) == .pass)
+
+        var preview = CotypistEventPolicy(isEnabled: true, isPreviewing: true)
+        #expect(preview.handle(.keyDown(keyCode: 8, modifiers: modifiers, isRepeat: false)) == .consumeAndAccept)
+        #expect(preview.handle(.keyUp(keyCode: 8)) == .consume)
     }
 
-    @Test("Tab accepts only an unmodified preview and Escape cancels active work")
+    @Test("Tab and Option-Tab accept or queue while modified Tab still passes through")
     func tabAndEscape() {
         var preview = CotypistEventPolicy(isEnabled: true, isPreviewing: true)
         #expect(preview.handle(.keyDown(keyCode: 48, modifiers: [], isRepeat: false)) == .consumeAndAccept)
         #expect(preview.handle(.keyUp(keyCode: 48)) == .consume)
 
+        var optionTab = CotypistEventPolicy(isEnabled: true, isPreviewing: true)
+        #expect(optionTab.handle(.keyDown(keyCode: 48, modifiers: [.option], isRepeat: false)) == .consumeAndAccept)
+        #expect(optionTab.handle(.keyUp(keyCode: 48)) == .consume)
+
         var modifiedTab = CotypistEventPolicy(isEnabled: true, isPreviewing: true)
         #expect(modifiedTab.handle(.keyDown(keyCode: 48, modifiers: [.shift], isRepeat: false)) == .passAndInvalidate)
 
         var generating = CotypistEventPolicy(isEnabled: true, isGenerating: true)
+        #expect(generating.handle(.keyDown(keyCode: 48, modifiers: [], isRepeat: false)) == .consumeAndAccept)
+        #expect(generating.handle(.keyUp(keyCode: 48)) == .consume)
         #expect(generating.handle(.keyDown(keyCode: 53, modifiers: [], isRepeat: false)) == .consumeAndCancel)
         #expect(generating.handle(.keyUp(keyCode: 53)) == .consume)
+
+        var generatingInvocation = CotypistEventPolicy(isEnabled: true, isGenerating: true)
+        let invocationModifiers: CotypistEventModifiers = [.control, .option]
+        #expect(generatingInvocation.handle(.keyDown(
+            keyCode: 8,
+            modifiers: invocationModifiers,
+            isRepeat: false
+        )) == .consumeAndAccept)
+        #expect(generatingInvocation.handle(.keyUp(keyCode: 8)) == .consume)
     }
 
     @Test("ordinary input passes through while invalidating active results")
@@ -405,6 +579,15 @@ struct CotypistEventPolicyTests {
         #expect(policy.handle(.scroll) == .passAndInvalidate)
         #expect(policy.handle(.flagsChanged) == .pass)
         #expect(policy.handle(.tapDisabled) == .recoverTap)
+    }
+
+    @Test("navigation cancels a pending ambient pause without consuming host input")
+    func pendingAmbientInvalidation() {
+        var policy = CotypistEventPolicy(isEnabled: true, isAmbientWaiting: true)
+        #expect(policy.handle(.keyDown(keyCode: 123, modifiers: [], isRepeat: false)) == .passAndInvalidate)
+        #expect(policy.handle(.keyDown(keyCode: 48, modifiers: [], isRepeat: false)) == .passAndInvalidate)
+        #expect(policy.handle(.mouseDown) == .passAndInvalidate)
+        #expect(policy.handle(.scroll) == .passAndInvalidate)
     }
 }
 
@@ -546,6 +729,22 @@ struct CotypistOverlayPlacementTests {
         ) == .capsule)
     }
 
+    @Test("capsule wraps long continuations without truncating accepted text")
+    func completeCapsuleText() {
+        let text = " the complete continuation remains visible even when the available space beside the caret is narrow"
+        let layout = CotypistPreviewLayout.capsule(
+            text: text,
+            font: .systemFont(ofSize: 13),
+            isLoading: false,
+            maxWidth: 320
+        )
+
+        #expect(layout.size.width <= 320)
+        #expect(layout.size.height > 28)
+        #expect(layout.displaysCompleteText)
+        #expect(CotypistPreviewLayout.displayText("first\nsecond") == "first second")
+    }
+
     @Test("shared AX geometry converts tall secondary displays against the primary origin")
     func sharedScreenGeometry() throws {
         let converted = try #require(AccessibilityScreenGeometry.appKitPoint(
@@ -572,7 +771,7 @@ struct CotypistModelIntegrationTests {
                 ("Mail", "com.apple.mail", "Please send the revised proposal", " before Friday.", .email),
                 ("Slack", "com.tinyspeck.slackmacgap", "I reviewed the latest build and", "", .chat),
                 ("TextEdit", "com.apple.TextEdit", "The overlay appears beside the cursor and", "", .document),
-                ("Codex", "com.openai.codex", "how did you fix", "", .generic),
+                ("Codex", "com.openai.codex", "how did you fix", "", .chat),
             ]
 
             for testCase in cases {
@@ -659,6 +858,34 @@ private final class StubFocusedTextReader: FocusedTextReading {
     }
 }
 
+private final class StubFocusedTextWriter: FocusedTextWriting {
+    let result: Bool
+    private(set) var insertedText: String?
+    private(set) var processID: pid_t?
+    private(set) var elementIdentifier: UInt?
+    private(set) var bundleID: String?
+    private(set) var selection: FocusedTextRange?
+
+    init(result: Bool) {
+        self.result = result
+    }
+
+    func insertText(
+        _ text: String,
+        processID: pid_t,
+        elementIdentifier: UInt,
+        bundleID: String,
+        selection: FocusedTextRange
+    ) -> Bool {
+        insertedText = text
+        self.processID = processID
+        self.elementIdentifier = elementIdentifier
+        self.bundleID = bundleID
+        self.selection = selection
+        return result
+    }
+}
+
 private func makeRawSnapshot(
     bundleID: String = "com.example.editor",
     processID: pid_t = 42,
@@ -699,6 +926,10 @@ private func makeRawSnapshot(
 private func makeContext(
     appName: String = "Editor",
     bundleID: String = "com.example.editor",
+    browserLocation: String? = nil,
+    windowTitle: String = "Document",
+    role: String = "AXTextArea",
+    fieldMetadata: String = "Body",
     prefix: String,
     suffix: String
 ) -> FocusedTextContext {
@@ -714,11 +945,11 @@ private func makeContext(
         appName: appName,
         bundleID: bundleID,
         processID: 42,
-        browserLocation: nil,
-        windowTitle: "Document",
-        role: "AXTextArea",
+        browserLocation: browserLocation,
+        windowTitle: windowTitle,
+        role: role,
         subrole: "",
-        fieldMetadata: "Body",
+        fieldMetadata: fieldMetadata,
         selection: range,
         prefix: prefix,
         suffix: suffix,

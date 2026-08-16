@@ -201,7 +201,7 @@ struct ShortcutsView: View {
                     Text("Cotypist (Experimental)")
                         .font(MuesliTheme.headline())
                         .foregroundStyle(MuesliTheme.textPrimary)
-                    Text("Request a local inline continuation; Tab accepts and Escape dismisses")
+                    Text("Request a local inline continuation; Tab, ⌥Tab, or clicking accepts")
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }

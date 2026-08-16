@@ -72,6 +72,10 @@ actor CotypistTextFIMEngine {
         _ = try loadBot()
     }
 
+    func warmup(_ request: CotypistCompletionRequest) async throws {
+        _ = try await completeText(request)
+    }
+
     func completeText(_ request: CotypistCompletionRequest) async throws -> String {
         try await inferenceGate.acquire()
         do {

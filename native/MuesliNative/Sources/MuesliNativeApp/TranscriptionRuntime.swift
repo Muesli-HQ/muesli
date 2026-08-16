@@ -45,6 +45,7 @@ actor TranscriptionCoordinator {
     private var _qwen3PostProcessor: Any?
     private var _cotypistGemmaEngine: Any?
     private var _cotypistTextFIMEngine: Any?
+    private var preparedCotypistModel: CotypistModelOption?
     private var _cohereTranscriber: Any?
     private var _indicASRTranscriber: Any?
     private var _gemma4LiteRTTranscriber: Any?
@@ -286,6 +287,9 @@ actor TranscriptionCoordinator {
                 NSLocalizedDescriptionKey: "Cotypist requires macOS 15 or later.",
             ])
         }
+        if preparedCotypistModel == model {
+            return
+        }
         switch model {
         case .gemma4E2B:
             if let engine = _cotypistTextFIMEngine as? CotypistTextFIMEngine {
@@ -293,13 +297,16 @@ actor TranscriptionCoordinator {
                 _cotypistTextFIMEngine = nil
             }
             try await cotypistGemmaEngine.prepare()
+            try await cotypistGemmaEngine.warmup(.warmupRequest(for: model))
         case .qwen35TextFIM:
             if let engine = _cotypistGemmaEngine as? Gemma4LiteRTTranscriber {
                 await engine.shutdown()
                 _cotypistGemmaEngine = nil
             }
             try await cotypistTextFIMEngine.prepare()
+            try await cotypistTextFIMEngine.warmup(.warmupRequest(for: model))
         }
+        preparedCotypistModel = model
     }
 
     func completeText(request: CotypistCompletionRequest) async throws -> CotypistCompletion {
@@ -343,6 +350,7 @@ actor TranscriptionCoordinator {
             await engine.shutdown()
         }
         _cotypistTextFIMEngine = nil
+        preparedCotypistModel = nil
     }
 
     func preload(
