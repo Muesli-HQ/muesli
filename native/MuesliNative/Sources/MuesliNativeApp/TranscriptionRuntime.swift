@@ -135,6 +135,14 @@ actor TranscriptionCoordinator {
         }
     }
 
+    func unloadAppleSpeechTranscriber() async {
+        if #available(macOS 26.0, *),
+           let transcriber = _appleSpeechTranscriber as? AppleSpeechAnalyzerTranscriber {
+            await transcriber.releaseReservations()
+            _appleSpeechTranscriber = nil
+        }
+    }
+
     @available(macOS 15, *)
     private var qwen3Transcriber: Qwen3AsrTranscriber {
         if _qwen3Transcriber == nil {

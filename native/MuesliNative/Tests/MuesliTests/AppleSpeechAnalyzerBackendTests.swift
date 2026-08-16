@@ -19,13 +19,88 @@ struct AppleSpeechAnalyzerBackendTests {
     @Test("final segments are normalized and joined")
     func accumulatorBuildsTimestampedTranscript() {
         var accumulator = AppleSpeechTranscriptAccumulator()
-        accumulator.receive(text: "  First segment  ", isFinal: true, start: -1, end: 1)
-        accumulator.receive(text: "Second segment", isFinal: true, start: 1, end: .infinity)
+        accumulator.receive(text: "  First segment ", isFinal: true, start: -1, end: 1)
+        accumulator.receive(text: "Second segment  ", isFinal: true, start: 1, end: .infinity)
 
         #expect(accumulator.text == "First segment Second segment")
         #expect(accumulator.segments.map(\.text) == ["First segment", "Second segment"])
         #expect(accumulator.segments[0].start == 0)
         #expect(accumulator.segments[1].end == 1)
+    }
+
+    @Test("final results preserve Apple punctuation and line breaks")
+    func accumulatorPreservesResultFormatting() {
+        var accumulator = AppleSpeechTranscriptAccumulator()
+        accumulator.receive(text: "Hello", isFinal: true, start: 0, end: 0.5)
+        accumulator.receive(text: ",", isFinal: true, start: 0.5, end: 0.6)
+        accumulator.receive(text: "\nNext line", isFinal: true, start: 0.6, end: 1.5)
+
+        #expect(accumulator.text == "Hello,\nNext line")
+        #expect(accumulator.segments.map(\.text) == ["Hello", ",", "Next line"])
+    }
+
+    @Test("locale resolver uses exact or language-equivalent supported locale")
+    func localeResolverUsesSupportedEquivalent() async throws {
+        let exactResolver = AppleSpeechLocaleResolver { locale in
+            locale.identifier(.bcp47) == "en-IN" ? locale : nil
+        }
+        let exact = try await exactResolver.resolve(Locale(identifier: "en-IN"))
+        #expect(exact.identifier(.bcp47) == "en-IN")
+
+        let languageResolver = AppleSpeechLocaleResolver { locale in
+            locale.language.languageCode?.identifier == "en" && locale.region == nil
+                ? Locale(identifier: "en-US")
+                : nil
+        }
+        let languageEquivalent = try await languageResolver.resolve(Locale(identifier: "en-IN"))
+        #expect(languageEquivalent.identifier(.bcp47) == "en-US")
+    }
+
+    @Test("locale resolver rejects unsupported languages")
+    func localeResolverRejectsUnsupportedLanguage() async {
+        let resolver = AppleSpeechLocaleResolver { _ in nil }
+
+        do {
+            _ = try await resolver.resolve(Locale(identifier: "zz-ZZ"))
+            Issue.record("Expected an unsupported-locale error")
+        } catch AppleSpeechAnalyzerError.unsupportedLocale(let identifier) {
+            #expect(identifier == "zz-ZZ")
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test("concurrent preparation requests share one operation")
+    func preparationRequestsAreCoalesced() async throws {
+        let cache = AppleSpeechPreparationTaskCache()
+        let counter = AppleSpeechTestCounter()
+
+        async let first = cache.value(for: "en-US") {
+            await counter.increment()
+            try await Task.sleep(for: .milliseconds(100))
+            return Locale(identifier: "en-US")
+        }
+        async let second = cache.value(for: "en-US") {
+            await counter.increment()
+            try await Task.sleep(for: .milliseconds(100))
+            return Locale(identifier: "en-US")
+        }
+
+        let locales = try await [first, second]
+        #expect(locales.allSatisfy { $0.identifier(.bcp47) == "en-US" })
+        #expect(await counter.value == 1)
+    }
+
+    @Test("reservation ownership only returns stale owned locales")
+    func reservationOwnershipTracksCleanupCandidates() {
+        var ownership = AppleSpeechReservationOwnership()
+        ownership.record(Locale(identifier: "en-US"))
+        ownership.record(Locale(identifier: "fr-FR"))
+
+        #expect(ownership.locales(excluding: "fr-FR").map { $0.identifier(.bcp47) } == ["en-US"])
+
+        ownership.remove(Locale(identifier: "en-US"))
+        #expect(ownership.locales(excluding: "fr-FR").isEmpty)
     }
 
     @Test("backend is system managed and only catalogued when supported")
@@ -47,5 +122,13 @@ struct AppleSpeechAnalyzerBackendTests {
             #expect(BackendOption.onboardingDefault == .parakeetMultilingual)
             #expect(!BackendOption.onboarding.contains(option))
         }
+    }
+}
+
+private actor AppleSpeechTestCounter {
+    private(set) var value = 0
+
+    func increment() {
+        value += 1
     }
 }

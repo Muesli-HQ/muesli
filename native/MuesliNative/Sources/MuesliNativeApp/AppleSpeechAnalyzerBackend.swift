@@ -5,22 +5,82 @@ import MuesliCore
 import Speech
 
 struct AppleSpeechTranscriptAccumulator: Sendable {
-    private(set) var text = ""
+    private var accumulatedText = ""
     private(set) var segments: [SpeechSegment] = []
+
+    var text: String {
+        accumulatedText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     mutating func receive(text rawText: String, isFinal: Bool, start: Double, end: Double) {
         guard isFinal else { return }
         let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        if !text.isEmpty {
-            text.append(" ")
-        }
-        text.append(trimmed)
+        accumulatedText.append(rawText)
 
         let safeStart = start.isFinite ? max(0, start) : 0
         let safeEnd = end.isFinite ? max(safeStart, end) : safeStart
         segments.append(SpeechSegment(start: safeStart, end: safeEnd, text: trimmed))
+    }
+}
+
+struct AppleSpeechLocaleResolver: Sendable {
+    let supportedLocale: @Sendable (Locale) async -> Locale?
+
+    func resolve(_ requestedLocale: Locale) async throws -> Locale {
+        if let locale = await supportedLocale(requestedLocale) {
+            return locale
+        }
+
+        if let languageCode = requestedLocale.language.languageCode?.identifier,
+           let languageLocale = await supportedLocale(Locale(identifier: languageCode)) {
+            return languageLocale
+        }
+
+        throw AppleSpeechAnalyzerError.unsupportedLocale(requestedLocale.identifier(.bcp47))
+    }
+}
+
+actor AppleSpeechPreparationTaskCache {
+    private var tasks: [String: Task<Locale, Error>] = [:]
+
+    func value(
+        for localeIdentifier: String,
+        operation: @escaping @Sendable () async throws -> Locale
+    ) async throws -> Locale {
+        if let task = tasks[localeIdentifier] {
+            return try await task.value
+        }
+
+        let task = Task { try await operation() }
+        tasks[localeIdentifier] = task
+        do {
+            let locale = try await task.value
+            tasks.removeValue(forKey: localeIdentifier)
+            return locale
+        } catch {
+            tasks.removeValue(forKey: localeIdentifier)
+            throw error
+        }
+    }
+}
+
+struct AppleSpeechReservationOwnership: Sendable {
+    private var localesByIdentifier: [String: Locale] = [:]
+
+    mutating func record(_ locale: Locale) {
+        localesByIdentifier[locale.identifier(.bcp47)] = locale
+    }
+
+    mutating func remove(_ locale: Locale) {
+        localesByIdentifier.removeValue(forKey: locale.identifier(.bcp47))
+    }
+
+    func locales(excluding identifier: String? = nil) -> [Locale] {
+        localesByIdentifier.compactMap { key, locale in
+            key == identifier ? nil : locale
+        }
     }
 }
 
@@ -48,6 +108,13 @@ enum AppleSpeechAnalyzerError: LocalizedError, Sendable {
 }
 
 @available(macOS 26.0, *)
+extension AppleSpeechLocaleResolver {
+    static let live = AppleSpeechLocaleResolver { locale in
+        await SpeechTranscriber.supportedLocale(equivalentTo: locale)
+    }
+}
+
+@available(macOS 26.0, *)
 actor AppleSpeechAnalyzerTranscriber {
     static let modelID = "apple-speech-transcriber"
 
@@ -55,7 +122,14 @@ actor AppleSpeechAnalyzerTranscriber {
         SpeechTranscriber.isAvailable
     }
 
+    private let localeResolver: AppleSpeechLocaleResolver
+    private let preparationTasks = AppleSpeechPreparationTaskCache()
+    private var reservationOwnership = AppleSpeechReservationOwnership()
     private var preparedLocale: Locale?
+
+    init(localeResolver: AppleSpeechLocaleResolver = .live) {
+        self.localeResolver = localeResolver
+    }
 
     func prepare(
         requestedLocale: Locale = .current,
@@ -66,18 +140,34 @@ actor AppleSpeechAnalyzerTranscriber {
             throw AppleSpeechAnalyzerError.unavailable
         }
 
-        let locale = try await resolveLocale(requestedLocale)
+        let locale = try await localeResolver.resolve(requestedLocale)
+        let callbacks = AppleSpeechPreparationCallbacks(
+            progress: progress,
+            progressSnapshot: progressSnapshot
+        )
+        let prepared = try await preparationTasks.value(
+            for: locale.identifier(.bcp47)
+        ) { [self, callbacks] in
+            try await performPrepare(locale: locale, callbacks: callbacks)
+        }
+        callbacks.progress?(1, "Apple Speech ready")
+        callbacks.progressSnapshot?(readySnapshot())
+        return prepared
+    }
+
+    private func performPrepare(
+        locale: Locale,
+        callbacks: AppleSpeechPreparationCallbacks
+    ) async throws -> Locale {
         let transcriber = makeTranscriber(locale: locale)
         let status = await AssetInventory.status(forModules: [transcriber])
 
         if preparedLocale == locale, status == .installed {
-            progress?(1, "Apple Speech ready")
-            progressSnapshot?(readySnapshot())
             return locale
         }
 
-        progress?(0.05, "Preparing Apple Speech for \(locale.localizedString(forIdentifier: locale.identifier) ?? locale.identifier)...")
-        progressSnapshot?(ModelDownloadProgress.preparing(
+        callbacks.progress?(0.05, "Preparing Apple Speech for \(locale.localizedString(forIdentifier: locale.identifier) ?? locale.identifier)...")
+        callbacks.progressSnapshot?(ModelDownloadProgress.preparing(
             modelID: Self.modelID,
             message: "Preparing Apple Speech..."
         ))
@@ -87,12 +177,12 @@ actor AppleSpeechAnalyzerTranscriber {
 
         if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
             let progressBox = AppleSpeechProgressBox(request.progress)
-            let progressTask = Task { [progress, progressSnapshot] in
+            let progressTask = Task { [callbacks] in
                 while !Task.isCancelled && !progressBox.progress.isFinished {
                     let fraction = min(max(progressBox.progress.fractionCompleted, 0), 1)
                     let mappedFraction = 0.1 + (fraction * 0.8)
-                    progress?(mappedFraction, "Downloading Apple Speech...")
-                    progressSnapshot?(downloadSnapshot(fraction: fraction))
+                    callbacks.progress?(mappedFraction, "Downloading Apple Speech...")
+                    callbacks.progressSnapshot?(downloadSnapshot(fraction: fraction))
                     try? await Task.sleep(for: .milliseconds(200))
                 }
             }
@@ -111,10 +201,13 @@ actor AppleSpeechAnalyzerTranscriber {
         }
 
         preparedLocale = locale
-        progress?(1, "Apple Speech ready")
-        progressSnapshot?(readySnapshot())
         fputs("[muesli-native] Apple Speech ready for \(locale.identifier(.bcp47))\n", stderr)
         return locale
+    }
+
+    func releaseReservations() async {
+        await releaseOwnedReservations()
+        preparedLocale = nil
     }
 
     func transcribe(wavURL: URL, requestedLocale: Locale = .current) async throws -> SpeechTranscriptionResult {
@@ -142,50 +235,33 @@ actor AppleSpeechAnalyzerTranscriber {
         let elapsed = CFAbsoluteTimeGetCurrent() - startedAt
         let elapsedText = String(format: "%.3f", elapsed)
         fputs(
-            "[muesli-native] Apple Speech result: \(result.text.prefix(80)) (locale \(locale.identifier(.bcp47)), took \(elapsedText)s)\n",
+            "[muesli-native] Apple Speech completed \(result.text.count) characters in \(elapsedText)s (locale \(locale.identifier(.bcp47)))\n",
             stderr
         )
         return result
     }
 
-    private func resolveLocale(_ requestedLocale: Locale) async throws -> Locale {
-        if let locale = await SpeechTranscriber.supportedLocale(equivalentTo: requestedLocale) {
-            return locale
-        }
-
-        let languageCode = requestedLocale.language.languageCode?.identifier
-        if let languageCode,
-           let languageLocale = await SpeechTranscriber.supportedLocale(
-               equivalentTo: Locale(identifier: languageCode)
-           ) {
-            return languageLocale
-        }
-
-        if let english = await SpeechTranscriber.supportedLocale(
-            equivalentTo: Locale(identifier: "en-US")
-        ) {
-            fputs(
-                "[muesli-native] Apple Speech locale \(requestedLocale.identifier(.bcp47)) unavailable; using \(english.identifier(.bcp47))\n",
-                stderr
-            )
-            return english
-        }
-
-        guard let firstSupported = await SpeechTranscriber.supportedLocales.first else {
-            throw AppleSpeechAnalyzerError.unsupportedLocale(requestedLocale.identifier(.bcp47))
-        }
-        return firstSupported
-    }
-
     private func reserve(locale: Locale) async throws {
+        let localeIdentifier = locale.identifier(.bcp47)
+        await releaseOwnedReservations(except: localeIdentifier)
+
         let reserved = await AssetInventory.reservedLocales
-        if reserved.contains(where: { $0.identifier(.bcp47) == locale.identifier(.bcp47) }) {
+        if reserved.contains(where: { $0.identifier(.bcp47) == localeIdentifier }) {
             return
         }
 
-        guard reserved.count < max(1, AssetInventory.maximumReservedLocales),
+        guard reserved.count < AssetInventory.maximumReservedLocales,
               try await AssetInventory.reserve(locale: locale) else {
             throw AppleSpeechAnalyzerError.reservationUnavailable(AssetInventory.maximumReservedLocales)
+        }
+        reservationOwnership.record(locale)
+    }
+
+    private func releaseOwnedReservations(except localeIdentifier: String? = nil) async {
+        for locale in reservationOwnership.locales(excluding: localeIdentifier) {
+            if await AssetInventory.release(reservedLocale: locale) {
+                reservationOwnership.remove(locale)
+            }
         }
     }
 
@@ -194,7 +270,7 @@ actor AppleSpeechAnalyzerTranscriber {
             locale: locale,
             transcriptionOptions: [],
             reportingOptions: [],
-            attributeOptions: [.audioTimeRange]
+            attributeOptions: []
         )
     }
 
@@ -244,5 +320,18 @@ private final class AppleSpeechProgressBox: @unchecked Sendable {
 
     init(_ progress: Progress) {
         self.progress = progress
+    }
+}
+
+private final class AppleSpeechPreparationCallbacks: @unchecked Sendable {
+    let progress: ((Double, String?) -> Void)?
+    let progressSnapshot: ModelDownloadProgressHandler?
+
+    init(
+        progress: ((Double, String?) -> Void)?,
+        progressSnapshot: ModelDownloadProgressHandler?
+    ) {
+        self.progress = progress
+        self.progressSnapshot = progressSnapshot
     }
 }
