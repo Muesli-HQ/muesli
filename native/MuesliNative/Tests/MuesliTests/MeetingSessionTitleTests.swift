@@ -34,6 +34,34 @@ struct MeetingProcessingStageTests {
             meetingProcessingStage: .summarizingNotes
         ))
     }
+
+    @Test("cleanup from a blocked hotkey start cannot retire active transcription")
+    func blockedStartCleanupIsIgnored() {
+        #expect(DictationStartAdmissionPolicy.shouldIgnoreCleanupAfterBlockedStart(
+            hasStartedRecording: false,
+            isStreaming: false,
+            dictationState: .transcribing,
+            meetingProcessingStage: .generatingTitle
+        ))
+        #expect(DictationStartAdmissionPolicy.shouldIgnoreCleanupAfterBlockedStart(
+            hasStartedRecording: false,
+            isStreaming: false,
+            dictationState: .idle,
+            meetingProcessingStage: .transcribingAudio
+        ))
+        #expect(!DictationStartAdmissionPolicy.shouldIgnoreCleanupAfterBlockedStart(
+            hasStartedRecording: false,
+            isStreaming: false,
+            dictationState: .preparing,
+            meetingProcessingStage: nil
+        ))
+        #expect(!DictationStartAdmissionPolicy.shouldIgnoreCleanupAfterBlockedStart(
+            hasStartedRecording: true,
+            isStreaming: false,
+            dictationState: .recording,
+            meetingProcessingStage: nil
+        ))
+    }
 }
 
 @Suite("Meeting session title selection")

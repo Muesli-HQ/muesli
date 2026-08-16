@@ -88,6 +88,20 @@ enum DictationStartAdmissionPolicy {
         dictationState != .transcribing
             && (meetingProcessingStage?.allowsDictation ?? true)
     }
+
+    static func shouldIgnoreCleanupAfterBlockedStart(
+        hasStartedRecording: Bool,
+        isStreaming: Bool,
+        dictationState: DictationState,
+        meetingProcessingStage: MeetingProcessingStage?
+    ) -> Bool {
+        !hasStartedRecording
+            && !isStreaming
+            && !allowsStart(
+                dictationState: dictationState,
+                meetingProcessingStage: meetingProcessingStage
+            )
+    }
 }
 
 struct MeetingResummarizationPlan: Equatable {
@@ -6853,6 +6867,15 @@ final class MuesliController: NSObject {
         )
     }
 
+    private var shouldIgnoreCleanupAfterBlockedDictationStart: Bool {
+        DictationStartAdmissionPolicy.shouldIgnoreCleanupAfterBlockedStart(
+            hasStartedRecording: dictationStartedAt != nil,
+            isStreaming: isNemotron35Streaming,
+            dictationState: dictationState,
+            meetingProcessingStage: meetingProcessingStage
+        )
+    }
+
     private func configureComputerUseHotkeyMonitor() {
         guard config.enableComputerUseHotkey else {
             computerUseHotkeyMonitor.stop()
@@ -8294,6 +8317,10 @@ final class MuesliController: NSObject {
     private func handleCancel() {
         if isMeetingRecording() { return }
         if shouldIgnoreDictationCleanupForComputerUseActivity() { return }
+        if shouldIgnoreCleanupAfterBlockedDictationStart {
+            fputs("[muesli-native] ignoring dictation cancel because start was blocked\n", stderr)
+            return
+        }
         fputs("[muesli-native] cancel\n", stderr)
         resetDictationOutputMode()
 
@@ -8389,9 +8416,7 @@ final class MuesliController: NSObject {
             return
         }
         if shouldIgnoreDictationCleanupForComputerUseActivity() { return }
-        if dictationStartedAt == nil,
-           !isNemotron35Streaming,
-           !canBeginDictationInteraction {
+        if shouldIgnoreCleanupAfterBlockedDictationStart {
             fputs("[muesli-native] ignoring dictation stop because start was blocked\n", stderr)
             return
         }
