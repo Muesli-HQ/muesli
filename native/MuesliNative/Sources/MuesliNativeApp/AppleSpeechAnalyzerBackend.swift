@@ -25,6 +25,47 @@ struct AppleSpeechTranscriptAccumulator: Sendable {
     }
 }
 
+struct AppleSpeechLanguageOption: Identifiable, Hashable, Sendable {
+    static let systemIdentifier = "system"
+
+    let id: String
+    let label: String
+
+    static func normalize(_ identifier: String?) -> String {
+        let trimmed = identifier?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? systemIdentifier : trimmed
+    }
+
+    static func requestedLocale(for identifier: String) -> Locale {
+        let normalized = normalize(identifier)
+        return normalized == systemIdentifier ? .current : Locale(identifier: normalized)
+    }
+
+    static var system: AppleSpeechLanguageOption {
+        let locale = Locale.current
+        let localeName = locale.localizedString(forIdentifier: locale.identifier) ?? locale.identifier
+        return AppleSpeechLanguageOption(
+            id: systemIdentifier,
+            label: "System Language - \(localeName)"
+        )
+    }
+
+    static func locale(_ locale: Locale) -> AppleSpeechLanguageOption {
+        let identifier = locale.identifier(.bcp47)
+        return AppleSpeechLanguageOption(
+            id: identifier,
+            label: Locale.current.localizedString(forIdentifier: identifier) ?? identifier
+        )
+    }
+}
+
+enum AppleSpeechInitialReservationPolicy {
+    static func localesToRelease(_ reservations: [Locale], keeping locale: Locale) -> [Locale] {
+        let keptIdentifier = locale.identifier(.bcp47)
+        return reservations.filter { $0.identifier(.bcp47) != keptIdentifier }
+    }
+}
+
 struct AppleSpeechLocaleResolver: Sendable {
     let supportedLocale: @Sendable (Locale) async -> Locale?
 
@@ -66,35 +107,6 @@ actor AppleSpeechPreparationTaskCache {
     }
 }
 
-enum AppleSpeechReservationRecovery {
-    static func reserve(
-        maximumReservations: Int,
-        operation: @escaping @Sendable () async throws -> Bool,
-        reservations: @escaping @Sendable () async -> [Locale],
-        release: @escaping @Sendable (Locale) async -> Bool
-    ) async throws {
-        do {
-            _ = try await operation()
-        } catch {
-            let originalError = error
-            let currentReservations = await reservations()
-            guard !currentReservations.isEmpty,
-                  currentReservations.count >= maximumReservations else {
-                throw originalError
-            }
-
-            var releasedReservation = false
-            for locale in currentReservations {
-                if await release(locale) {
-                    releasedReservation = true
-                }
-            }
-            guard releasedReservation else { throw originalError }
-            _ = try await operation()
-        }
-    }
-}
-
 enum AppleSpeechAnalyzerError: LocalizedError, Sendable {
     case unavailable
     case unsupportedLocale(String)
@@ -126,6 +138,20 @@ extension AppleSpeechLocaleResolver {
 }
 
 @available(macOS 26.0, *)
+extension AppleSpeechLanguageOption {
+    static func supportedOptions() async -> [AppleSpeechLanguageOption] {
+        let localeOptions = await SpeechTranscriber.supportedLocales
+            .map(AppleSpeechLanguageOption.locale)
+            .reduce(into: [String: AppleSpeechLanguageOption]()) { options, option in
+                options[option.id] = option
+            }
+            .values
+            .sorted { $0.label.localizedStandardCompare($1.label) == .orderedAscending }
+        return [.system] + localeOptions
+    }
+}
+
+@available(macOS 26.0, *)
 actor AppleSpeechAnalyzerTranscriber {
     static let modelID = "apple-speech-transcriber"
 
@@ -136,6 +162,8 @@ actor AppleSpeechAnalyzerTranscriber {
     private let localeResolver: AppleSpeechLocaleResolver
     private let preparationTasks = AppleSpeechPreparationTaskCache()
     private var preparedLocale: Locale?
+    private var initialReservationReconciliationTask: Task<Void, Never>?
+    private var didReconcileInitialReservations = false
 
     init(localeResolver: AppleSpeechLocaleResolver = .live) {
         self.localeResolver = localeResolver
@@ -182,13 +210,9 @@ actor AppleSpeechAnalyzerTranscriber {
             message: "Preparing Apple Speech..."
         ))
 
+        await reconcileInitialReservations(keeping: locale)
         do {
-            try await AppleSpeechReservationRecovery.reserve(
-                maximumReservations: AssetInventory.maximumReservedLocales,
-                operation: { try await AssetInventory.reserve(locale: locale) },
-                reservations: { await AssetInventory.reservedLocales },
-                release: { await AssetInventory.release(reservedLocale: $0) }
-            )
+            _ = try await AssetInventory.reserve(locale: locale)
         } catch {
             let reservedCount = (await AssetInventory.reservedLocales).count
             if reservedCount >= AssetInventory.maximumReservedLocales {
@@ -226,6 +250,28 @@ actor AppleSpeechAnalyzerTranscriber {
         preparedLocale = locale
         fputs("[muesli-native] Apple Speech ready for \(locale.identifier(.bcp47))\n", stderr)
         return locale
+    }
+
+    private func reconcileInitialReservations(keeping locale: Locale) async {
+        if didReconcileInitialReservations { return }
+        if let task = initialReservationReconciliationTask {
+            await task.value
+            return
+        }
+
+        let task = Task {
+            let reservations = await AssetInventory.reservedLocales
+            for reservedLocale in AppleSpeechInitialReservationPolicy.localesToRelease(
+                reservations,
+                keeping: locale
+            ) {
+                _ = await AssetInventory.release(reservedLocale: reservedLocale)
+            }
+        }
+        initialReservationReconciliationTask = task
+        await task.value
+        didReconcileInitialReservations = true
+        initialReservationReconciliationTask = nil
     }
 
     func releaseReservations() async {

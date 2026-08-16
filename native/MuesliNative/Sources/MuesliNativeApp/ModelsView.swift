@@ -39,6 +39,7 @@ struct ModelsView: View {
     @State private var selectedParakeetModel: String
     @State private var selectedWhisperModel: String
     @State private var showExperimental: Bool
+    @State private var appleSpeechLanguageOptions: [AppleSpeechLanguageOption] = [.system]
     @State private var isLiveCaptionModelDownloaded = false
     @State private var isDownloadingLiveCaptionModel = false
     @State private var isCancellingLiveCaptionModelDownload = false
@@ -104,6 +105,7 @@ struct ModelsView: View {
             isLiveCaptionModelDownloaded = MeetingLiveCaptionModelStore.isDownloaded()
             syncSelectionsFromActiveBackend()
             checkNemotron35Update()
+            loadAppleSpeechLanguageOptions()
         }
         .onChange(of: appState.selectedBackend.model) { _, _ in
             syncSelectionsFromActiveBackend()
@@ -572,6 +574,13 @@ struct ModelsView: View {
         Binding(
             get: { appState.config.resolvedWhisperLanguage },
             set: { controller.selectWhisperLanguage($0) }
+        )
+    }
+
+    private var appleSpeechLanguageSelection: Binding<String> {
+        Binding(
+            get: { appState.config.resolvedAppleSpeechLanguage },
+            set: { controller.selectAppleSpeechLanguage($0) }
         )
     }
 
@@ -1165,6 +1174,24 @@ struct ModelsView: View {
                 }
             }
 
+            if option.backend == BackendOption.appleSpeechAnalyzer.backend {
+                HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
+                    Text("Language")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .frame(width: 64, alignment: .leading)
+
+                    Picker("", selection: appleSpeechLanguageSelection) {
+                        ForEach(appleSpeechLanguageOptions) { language in
+                            Text(language.label).tag(language.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 220, alignment: .leading)
+                }
+            }
+
             if option.supportsWhisperLanguageSelection {
                 HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
                     Text("Language")
@@ -1462,7 +1489,8 @@ struct ModelsView: View {
                 try await controller.transcriptionCoordinator.preloadRequired(
                     backend: option,
                     includeMeetingHelpers: false,
-                    meetingHelperTrigger: .modelLibrary
+                    meetingHelperTrigger: .modelLibrary,
+                    appleSpeechLanguage: appState.config.resolvedAppleSpeechLanguage
                 ) { progress, message in
                     DispatchQueue.main.async {
                         guard downloadGenerations[option.model] == generation else { return }
@@ -1573,6 +1601,23 @@ struct ModelsView: View {
             }
         }
         downloadTasks[option.model] = task
+    }
+
+    private func loadAppleSpeechLanguageOptions() {
+        guard #available(macOS 26.0, *), AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem else {
+            appleSpeechLanguageOptions = [.system]
+            return
+        }
+
+        Task {
+            var options = await AppleSpeechLanguageOption.supportedOptions()
+            let selectedIdentifier = appState.config.resolvedAppleSpeechLanguage
+            if selectedIdentifier != AppleSpeechLanguageOption.systemIdentifier,
+               !options.contains(where: { $0.id == selectedIdentifier }) {
+                options.append(.locale(Locale(identifier: selectedIdentifier)))
+            }
+            appleSpeechLanguageOptions = options
+        }
     }
 
     private func cancelDownload(_ option: BackendOption) {

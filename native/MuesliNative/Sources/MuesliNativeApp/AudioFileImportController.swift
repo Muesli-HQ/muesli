@@ -160,7 +160,8 @@ enum AudioFileImportController {
             backend: backend,
             enablePostProcessor: false,
             includeMeetingHelpers: true,
-            meetingHelperTrigger: .audioImport
+            meetingHelperTrigger: .audioImport,
+            appleSpeechLanguage: config.resolvedAppleSpeechLanguage
         )
 
         try Task.checkCancellation()
@@ -188,7 +189,8 @@ enum AudioFileImportController {
             backend: backend,
             cohereLanguage: config.resolvedCohereLanguage,
             indicASRLanguage: config.resolvedIndicASRLanguage,
-            whisperLanguage: config.resolvedWhisperLanguage
+            whisperLanguage: config.resolvedWhisperLanguage,
+            appleSpeechLanguage: config.resolvedAppleSpeechLanguage
         )
         let rawTranscript = transcription.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !rawTranscript.isEmpty else {

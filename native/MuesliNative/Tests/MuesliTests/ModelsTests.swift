@@ -794,6 +794,7 @@ struct AppConfigTests {
         #expect(config.cohereLanguage == CohereTranscribeLanguage.defaultLanguage.rawValue)
         #expect(config.indicASRLanguage == IndicASRLanguage.defaultLanguage.rawValue)
         #expect(config.whisperLanguage == WhisperKitLanguage.defaultLanguage.rawValue)
+        #expect(config.appleSpeechLanguage == AppleSpeechLanguageOption.systemIdentifier)
         #expect(config.meetingTranscriptionBackend == BackendOption.whisper.backend)
         #expect(config.meetingTranscriptionModel == BackendOption.whisper.model)
         #expect(config.meetingSummaryBackend == "chatgpt")
@@ -988,6 +989,7 @@ struct AppConfigTests {
         config.onboardingUseCase = OnboardingUseCase.dictationAndMeetings.rawValue
         config.cohereLanguage = CohereTranscribeLanguage.german.rawValue
         config.indicASRLanguage = IndicASRLanguage.tamil.rawValue
+        config.appleSpeechLanguage = "en-GB"
         config.defaultMeetingTemplateID = "weekly-team-meeting"
         config.meetingRecordingSavePolicy = .always
         config.meetingRecordingFileFormat = MeetingRecordingFileFormat.wav.rawValue
@@ -1069,6 +1071,7 @@ struct AppConfigTests {
         #expect(decoded.resolvedOnboardingUseCase == .dictationAndMeetings)
         #expect(decoded.cohereLanguage == CohereTranscribeLanguage.german.rawValue)
         #expect(decoded.indicASRLanguage == IndicASRLanguage.tamil.rawValue)
+        #expect(decoded.appleSpeechLanguage == "en-GB")
         #expect(decoded.defaultMeetingTemplateID == "weekly-team-meeting")
         #expect(decoded.meetingRecordingSavePolicy == .always)
         #expect(decoded.meetingRecordingFileFormat == MeetingRecordingFileFormat.wav.rawValue)
@@ -1237,6 +1240,7 @@ struct AppConfigTests {
         #expect(config.resolvedCohereLanguage == .english)
         #expect(config.resolvedIndicASRLanguage == .defaultLanguage)
         #expect(config.resolvedWhisperLanguage == .auto)
+        #expect(config.resolvedAppleSpeechLanguage == AppleSpeechLanguageOption.systemIdentifier)
         #expect(config.hasCompletedOnboarding == false)
         #expect(config.resolvedOnboardingUseCase == .dictation)
         #expect(config.defaultMeetingTemplateID == MeetingTemplates.autoID)

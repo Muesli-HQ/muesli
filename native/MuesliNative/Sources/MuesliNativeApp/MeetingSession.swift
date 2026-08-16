@@ -777,7 +777,8 @@ final class MeetingSession {
                         backend: currentBackend(),
                         cohereLanguage: config.resolvedCohereLanguage,
                         indicASRLanguage: config.resolvedIndicASRLanguage,
-                        whisperLanguage: config.resolvedWhisperLanguage
+                        whisperLanguage: config.resolvedWhisperLanguage,
+                        appleSpeechLanguage: config.resolvedAppleSpeechLanguage
                     )
                     let normalizedSegments = normalizeSystemTranscription(
                         result: result,
@@ -1074,7 +1075,8 @@ final class MeetingSession {
                     backend: backend,
                     cohereLanguage: config.resolvedCohereLanguage,
                     indicASRLanguage: config.resolvedIndicASRLanguage,
-                    whisperLanguage: config.resolvedWhisperLanguage
+                    whisperLanguage: config.resolvedWhisperLanguage,
+                    appleSpeechLanguage: config.resolvedAppleSpeechLanguage
                 )
                 if !result.text.isEmpty {
                     fputs("[meeting] system chunk transcribed: \"\(String(result.text.prefix(60)))...\"\n", stderr)
@@ -1305,7 +1307,8 @@ final class MeetingSession {
                 backend: currentBackend(),
                 cohereLanguage: config.resolvedCohereLanguage,
                 indicASRLanguage: config.resolvedIndicASRLanguage,
-                whisperLanguage: config.resolvedWhisperLanguage
+                whisperLanguage: config.resolvedWhisperLanguage,
+                appleSpeechLanguage: config.resolvedAppleSpeechLanguage
             )
             if !result.text.isEmpty {
                 fputs("[meeting] mic chunk transcribed (raw): \"\(String(result.text.prefix(60)))...\"\n", stderr)
@@ -1413,7 +1416,8 @@ final class MeetingSession {
                         backend: currentBackend(),
                         cohereLanguage: config.resolvedCohereLanguage,
                         indicASRLanguage: config.resolvedIndicASRLanguage,
-                        whisperLanguage: config.resolvedWhisperLanguage
+                        whisperLanguage: config.resolvedWhisperLanguage,
+                        appleSpeechLanguage: config.resolvedAppleSpeechLanguage
                     )
                     repairedSegments.append(contentsOf: normalizeSystemTranscription(
                         result: result,
@@ -1446,7 +1450,8 @@ final class MeetingSession {
                 backend: currentBackend(),
                 cohereLanguage: config.resolvedCohereLanguage,
                 indicASRLanguage: config.resolvedIndicASRLanguage,
-                whisperLanguage: config.resolvedWhisperLanguage
+                whisperLanguage: config.resolvedWhisperLanguage,
+                appleSpeechLanguage: config.resolvedAppleSpeechLanguage
             )
             return normalizeSystemTranscription(
                 result: result,

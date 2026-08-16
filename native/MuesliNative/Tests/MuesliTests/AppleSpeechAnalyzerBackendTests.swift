@@ -117,64 +117,32 @@ struct AppleSpeechAnalyzerBackendTests {
         #expect(await counter.value == 2)
     }
 
-    @Test("reservation limit releases stale app reservations and retries once")
-    func reservationLimitRecoversOnce() async throws {
-        let state = AppleSpeechReservationRecoveryTestState(
-            failuresBeforeSuccess: 1,
-            reservations: [Locale(identifier: "en-US"), Locale(identifier: "fr-FR")]
+    @Test("language preference defaults to the system locale")
+    func languagePreferenceDefaultsToSystemLocale() {
+        #expect(AppleSpeechLanguageOption.normalize(nil) == AppleSpeechLanguageOption.systemIdentifier)
+        #expect(AppleSpeechLanguageOption.normalize("  ") == AppleSpeechLanguageOption.systemIdentifier)
+        #expect(
+            AppleSpeechLanguageOption.requestedLocale(for: AppleSpeechLanguageOption.systemIdentifier)
+                .identifier(.bcp47) == Locale.current.identifier(.bcp47)
         )
-
-        try await AppleSpeechReservationRecovery.reserve(
-            maximumReservations: 2,
-            operation: { try await state.reserve() },
-            reservations: { state.reservations },
-            release: { await state.release($0) }
-        )
-
-        #expect(await state.reservationAttemptCount == 2)
-        #expect(await state.releasedIdentifiers == ["en-US", "fr-FR"])
     }
 
-    @Test("an existing reservation is successful without cleanup")
-    func existingReservationDoesNotRecover() async throws {
-        let state = AppleSpeechReservationRecoveryTestState(
-            failuresBeforeSuccess: 0,
-            reservations: [Locale(identifier: "en-US")],
-            successfulReservationResult: false
+    @Test("language preference preserves an explicit locale")
+    func languagePreferencePreservesExplicitLocale() {
+        #expect(AppleSpeechLanguageOption.normalize(" en-US ") == "en-US")
+        #expect(
+            AppleSpeechLanguageOption.requestedLocale(for: "en-US").identifier(.bcp47) == "en-US"
         )
-
-        try await AppleSpeechReservationRecovery.reserve(
-            maximumReservations: 1,
-            operation: { try await state.reserve() },
-            reservations: { state.reservations },
-            release: { await state.release($0) }
-        )
-
-        #expect(await state.reservationAttemptCount == 1)
-        #expect(await state.releasedIdentifiers.isEmpty)
     }
 
-    @Test("non-capacity failures preserve reservations and do not retry")
-    func nonCapacityFailureDoesNotRecover() async {
-        let state = AppleSpeechReservationRecoveryTestState(
-            failuresBeforeSuccess: 1,
-            reservations: [Locale(identifier: "en-US")]
+    @Test("initial reservation cleanup keeps only the selected locale")
+    func initialReservationCleanupKeepsSelectedLocale() {
+        let releases = AppleSpeechInitialReservationPolicy.localesToRelease(
+            [Locale(identifier: "en-US"), Locale(identifier: "fr-FR"), Locale(identifier: "de-DE")],
+            keeping: Locale(identifier: "fr-FR")
         )
 
-        do {
-            try await AppleSpeechReservationRecovery.reserve(
-                maximumReservations: 2,
-                operation: { try await state.reserve() },
-                reservations: { state.reservations },
-                release: { await state.release($0) }
-            )
-            Issue.record("Expected preparation to fail")
-        } catch AppleSpeechTestError.preparationFailed {
-            #expect(await state.reservationAttemptCount == 1)
-            #expect(await state.releasedIdentifiers.isEmpty)
-        } catch {
-            Issue.record("Unexpected error: \(error)")
-        }
+        #expect(releases.map { $0.identifier(.bcp47) } == ["en-US", "de-DE"])
     }
 
     @Test("backend is system managed and only catalogued when supported")
@@ -224,38 +192,6 @@ private actor AppleSpeechTestCounter {
 
     func increment() {
         value += 1
-    }
-}
-
-private actor AppleSpeechReservationRecoveryTestState {
-    private var remainingFailures: Int
-    let reservations: [Locale]
-    private let successfulReservationResult: Bool
-    private(set) var reservationAttemptCount = 0
-    private(set) var releasedIdentifiers: [String] = []
-
-    init(
-        failuresBeforeSuccess: Int,
-        reservations: [Locale],
-        successfulReservationResult: Bool = true
-    ) {
-        remainingFailures = failuresBeforeSuccess
-        self.reservations = reservations
-        self.successfulReservationResult = successfulReservationResult
-    }
-
-    func reserve() throws -> Bool {
-        reservationAttemptCount += 1
-        if remainingFailures > 0 {
-            remainingFailures -= 1
-            throw AppleSpeechTestError.preparationFailed
-        }
-        return successfulReservationResult
-    }
-
-    func release(_ locale: Locale) -> Bool {
-        releasedIdentifiers.append(locale.identifier(.bcp47))
-        return true
     }
 }
 

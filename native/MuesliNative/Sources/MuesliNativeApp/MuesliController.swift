@@ -796,7 +796,8 @@ final class MuesliController: NSObject {
                     await self.transcriptionCoordinator.preload(
                         backend: self.selectedMeetingTranscriptionBackend,
                         enablePostProcessor: false,
-                        includeMeetingHelpers: false
+                        includeMeetingHelpers: false,
+                        appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage
                     )
                 }
                 await MainActor.run {
@@ -2271,7 +2272,8 @@ final class MuesliController: NSObject {
             try await transcriptionCoordinator.preloadRequired(
                 backend: backend,
                 enablePostProcessor: false,
-                includeMeetingHelpers: false
+                includeMeetingHelpers: false,
+                appleSpeechLanguage: config.resolvedAppleSpeechLanguage
             )
             guard selectedBackend == backend else { return false }
             dictationBackendReadiness = .ready
@@ -2349,7 +2351,8 @@ final class MuesliController: NSObject {
             await self.transcriptionCoordinator.preload(
                 backend: option,
                 enablePostProcessor: false,
-                includeMeetingHelpers: true
+                includeMeetingHelpers: true,
+                appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage
             )
             await MainActor.run {
                 self.statusBarController?.refresh()
@@ -2372,6 +2375,26 @@ final class MuesliController: NSObject {
     func selectWhisperLanguage(_ language: WhisperKitLanguage) {
         updateConfig {
             $0.whisperLanguage = language.rawValue
+        }
+    }
+
+    func selectAppleSpeechLanguage(_ identifier: String) {
+        let normalized = AppleSpeechLanguageOption.normalize(identifier)
+        guard normalized != config.resolvedAppleSpeechLanguage else { return }
+        updateConfig { $0.appleSpeechLanguage = normalized }
+
+        Task { [weak self] in
+            guard let self else { return }
+            await self.transcriptionCoordinator.unloadAppleSpeechTranscriber()
+            let usesAppleSpeech = self.selectedBackend.backend == "apple-speech"
+                || self.selectedMeetingTranscriptionBackend.backend == "apple-speech"
+            guard usesAppleSpeech else { return }
+            await self.transcriptionCoordinator.preload(
+                backend: .appleSpeechAnalyzer,
+                enablePostProcessor: false,
+                includeMeetingHelpers: false,
+                appleSpeechLanguage: normalized
+            )
         }
     }
 
@@ -3679,6 +3702,7 @@ final class MuesliController: NSObject {
             enablePostProcessor: isPostProcessorReady,
             includeMeetingHelpers: onboardingUseCase.includesMeetings,
             meetingHelperTrigger: .onboarding,
+            appleSpeechLanguage: config.resolvedAppleSpeechLanguage,
             progress: { value, status in
                 if wasDownloaded,
                    value < 0.85,
@@ -4204,14 +4228,16 @@ final class MuesliController: NSObject {
                     backend: backend,
                     enablePostProcessor: false,
                     includeMeetingHelpers: true,
-                    meetingHelperTrigger: .retranscription
+                    meetingHelperTrigger: .retranscription,
+                    appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage
                 )
                 let transcription = try await self.transcriptionCoordinator.transcribeMeeting(
                     at: recordingURL,
                     backend: backend,
                     cohereLanguage: self.config.resolvedCohereLanguage,
                     indicASRLanguage: self.config.resolvedIndicASRLanguage,
-                    whisperLanguage: self.config.resolvedWhisperLanguage
+                    whisperLanguage: self.config.resolvedWhisperLanguage,
+                    appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage
                 )
                 let rawTranscript = transcription.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !rawTranscript.isEmpty else {
@@ -5465,7 +5491,8 @@ final class MuesliController: NSObject {
             backend: backend,
             enablePostProcessor: false,
             includeMeetingHelpers: true,
-            meetingHelperTrigger: .meetingStart
+            meetingHelperTrigger: .meetingStart,
+            appleSpeechLanguage: config.resolvedAppleSpeechLanguage
         )
         try Task.checkCancellation()
         try checkMeetingStartStillCurrent(meetingID)
@@ -7440,6 +7467,7 @@ final class MuesliController: NSObject {
                     cohereLanguage: self.config.resolvedCohereLanguage,
                     indicASRLanguage: self.config.resolvedIndicASRLanguage,
                     whisperLanguage: self.config.resolvedWhisperLanguage,
+                    appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage,
                     enablePostProcessor: false,
                     customWords: self.serializedCustomWords(),
                     appContext: nil
@@ -8631,6 +8659,7 @@ final class MuesliController: NSObject {
                     cohereLanguage: transcriptionLanguage,
                     indicASRLanguage: indicTranscriptionLanguage,
                     whisperLanguage: whisperTranscriptionLanguage,
+                    appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage,
                     enablePostProcessor: enableTranscriptCleanup,
                     customWords: self.serializedCustomWords(),
                     appContext: promptContext
