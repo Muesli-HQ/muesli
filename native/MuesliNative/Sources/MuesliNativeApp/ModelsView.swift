@@ -168,6 +168,14 @@ struct ModelsView: View {
     private var selectedCategoryContent: some View {
         switch appState.selectedModelsCategory {
         case .dictation:
+            ForEach(BackendOption.systemManaged, id: \.model) { option in
+                modelCard(
+                    option: option,
+                    logo: logoForBackend(option),
+                    downloadedLabel: "Available"
+                )
+            }
+
             familyCard(
                 title: "Parakeet Family",
                 subtitle: "The most responsive choices for everyday dictation, with multilingual and English-only options.",
@@ -951,7 +959,13 @@ struct ModelsView: View {
 
     @ViewBuilder
     private func brandLogo(_ name: String?) -> some View {
-        if let name,
+        if name == "apple-system-logo" {
+            Image(systemName: "apple.logo")
+                .font(.system(size: 24, weight: .medium))
+                .foregroundStyle(MuesliTheme.textPrimary)
+                .frame(width: 24, height: 24)
+                .padding(.top, 2)
+        } else if let name,
            let url = Bundle.main.url(forResource: name, withExtension: "png")
                 ?? Bundle.main.url(forResource: name, withExtension: "svg"),
            let nsImage = NSImage(contentsOf: url) {
@@ -974,6 +988,7 @@ struct ModelsView: View {
         case "indicasr": return "ai4bharat-logo"
         case "sensevoice": return "qwen-logo"
         case "gemma4-litert": return "google-logo"
+        case "apple-speech": return "apple-system-logo"
         default: return nil
         }
     }
@@ -1020,15 +1035,17 @@ struct ModelsView: View {
                     .help(activationDisabledReason ?? actionTitle)
                 }
 
-                Button {
-                    modelToDelete = option
-                } label: {
-                    Image(systemName: "trash")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.red.opacity(0.6))
-                        .frame(width: 20, height: 20)
+                if !option.isSystemManaged {
+                    Button {
+                        modelToDelete = option
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.red.opacity(0.6))
+                            .frame(width: 20, height: 20)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             } else {
                 Button("Download") {
                     startDownload(option)
@@ -1761,6 +1778,11 @@ struct ModelsView: View {
             return SenseVoiceTranscriber.isModelDownloaded(fileManager: fm)
         case "gemma4-litert":
             return Gemma4LiteRTModelStore.isAvailableLocally(fileManager: fm)
+        case "apple-speech":
+            if #available(macOS 26.0, *) {
+                return AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem
+            }
+            return false
         default:
             return false
         }

@@ -456,7 +456,7 @@ struct BackendCoverageTests {
     @Test("size labels are human-readable")
     func sizeLabelsReadable() {
         for option in BackendOption.all {
-            #expect(option.sizeLabel.contains("MB") || option.sizeLabel.contains("GB"),
+            #expect(option.isSystemManaged || option.sizeLabel.contains("MB") || option.sizeLabel.contains("GB"),
                     "\(option.label) sizeLabel should contain MB or GB: \(option.sizeLabel)")
         }
     }

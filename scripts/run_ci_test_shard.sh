@@ -40,6 +40,7 @@ case "${shard}" in
   dictation-transcription)
     filters=(
       FluidAudioTranscriberTests
+      AppleSpeechAnalyzerBackendTests
       BackendCoverageTests
       FillerWordFilterTests
       JaroWinklerTests
