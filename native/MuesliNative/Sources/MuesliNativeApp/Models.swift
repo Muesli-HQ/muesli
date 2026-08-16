@@ -3,6 +3,13 @@ import Foundation
 import MuesliCore
 
 struct BackendOption: Equatable {
+    struct Catalog {
+        let systemManaged: [BackendOption]
+        let all: [BackendOption]
+        let onboardingDefault: BackendOption
+        let onboarding: [BackendOption]
+    }
+
     let backend: String
     let model: String
     let label: String
@@ -127,6 +134,15 @@ struct BackendOption: Equatable {
         recommended: false
     )
 
+    static let appleSpeechAnalyzer = BackendOption(
+        backend: "apple-speech",
+        model: "apple-speech-transcriber",
+        label: "Apple Speech",
+        sizeLabel: "System managed",
+        description: "Apple's private, on-device speech model for macOS 26. It is designed for dictation, meetings, distant speakers, and long recordings, while macOS manages the language assets and updates.",
+        recommended: false
+    )
+
     // Default alias
     static let whisper = parakeetMultilingual
 
@@ -160,20 +176,56 @@ struct BackendOption: Equatable {
         .nemotron35Multilingual,
     ]
 
-    /// Models available for download and use.
-    static let all: [BackendOption] = {
-        parakeetFamily
+    static func catalog(appleSpeechAvailable: Bool) -> Catalog {
+        let systemManaged: [BackendOption] = appleSpeechAvailable ? [.appleSpeechAnalyzer] : []
+        let all = systemManaged
+            + parakeetFamily
             + [.qwen3Asr]
             + whisperFamily
             + [.cohereTranscribe]
             + streaming
             + experimental
+        let onboardingDefault = systemManaged.first ?? .parakeetMultilingual
+        let onboardingCandidates: [BackendOption] = [
+            onboardingDefault,
+            .parakeetMultilingual,
+            .whisperTiny,
+            .whisperSmall,
+            .cohereTranscribe,
+            .nemotron35Multilingual,
+        ]
+        let onboarding = onboardingCandidates.reduce(into: [BackendOption]()) { options, option in
+            if !options.contains(option) {
+                options.append(option)
+            }
+        }
+
+        return Catalog(
+            systemManaged: systemManaged,
+            all: all,
+            onboardingDefault: onboardingDefault,
+            onboarding: onboarding
+        )
+    }
+
+    private static let currentCatalog: Catalog = {
+        if #available(macOS 26.0, *), AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem {
+            return catalog(appleSpeechAvailable: true)
+        }
+        return catalog(appleSpeechAvailable: false)
     }()
 
-    /// Curated first-run choices shown in onboarding's "Other models" section.
-    /// This is a deliberate hand-picked list, not a derived rule. Experimental models
-    /// are excluded by default.
-    static let onboarding: [BackendOption] = [.parakeetMultilingual, .whisperTiny, .whisperSmall, .cohereTranscribe, .nemotron35Multilingual]
+    static let systemManaged = currentCatalog.systemManaged
+
+    /// Models available for download and use.
+    static let all = currentCatalog.all
+
+    /// The first-run default uses the system-managed backend when the OS exposes it.
+    /// Parakeet remains the deterministic fallback for older or unsupported Macs.
+    static let onboardingDefault = currentCatalog.onboardingDefault
+
+    /// Curated first-run choices. Experimental models are excluded by default.
+    static let onboarding = currentCatalog.onboarding
 
     /// Models coming soon — shown greyed out in the Models tab.
     static let comingSoon: [BackendOption] = []
@@ -200,6 +252,10 @@ struct BackendOption: Equatable {
 
     var supportsMeetingTranscription: Bool {
         !isStreamingDictationBackend
+    }
+
+    var isSystemManaged: Bool {
+        backend == "apple-speech"
     }
 
     /// Multilingual WhisperKit models expose language selection (auto-detect or pinned code).
@@ -247,6 +303,11 @@ struct BackendOption: Equatable {
             return SenseVoiceTranscriber.isModelDownloaded(fileManager: fm)
         case "gemma4-litert":
             return Gemma4LiteRTModelStore.isAvailableLocally()
+        case "apple-speech":
+            if #available(macOS 26.0, *) {
+                return AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem
+            }
+            return false
         default:
             return false
         }

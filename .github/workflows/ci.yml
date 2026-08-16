@@ -85,6 +85,8 @@ jobs:
     if: needs.changes.outputs.full_ci == 'true'
     runs-on: macos-15
     timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -100,6 +102,8 @@ jobs:
     if: needs.changes.outputs.full_ci == 'true'
     runs-on: macos-15
     timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     strategy:
       fail-fast: false
       matrix:
@@ -114,12 +118,37 @@ jobs:
       - name: Run test shard
         run: bash ./scripts/run_ci_test_shard.sh "${{ matrix.shard }}"
 
+  # Compile and exercise Apple Speech on macOS 26. Hosted runners do not
+  # guarantee that SpeechTranscriber language assets are provisioned, so the
+  # catalogue's available/unavailable policy is covered deterministically.
+  apple_speech_macos26:
+    needs: changes
+    if: needs.changes.outputs.full_ci == 'true'
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Test Apple Speech on macOS 26
+        run: |
+          swift test \
+            --package-path native/MuesliNative \
+            --scratch-path "${RUNNER_TEMP}/muesli-apple-speech-macos26" \
+            --filter AppleSpeechAnalyzerBackendTests
+
   # Packaged CLI smoke test — verify the app bundle contains muesli-cli
   cli-smoke:
     needs: changes
     if: needs.changes.outputs.full_ci == 'true'
     runs-on: macos-15
     timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -159,7 +188,7 @@ jobs:
   # This is the only required check in branch protection
   ci-gate:
     if: always()
-    needs: [changes, classifier-tests, build_release, test_shards, cli-smoke, update-flow]
+    needs: [changes, classifier-tests, build_release, test_shards, apple_speech_macos26, cli-smoke, update-flow]
     runs-on: ubuntu-latest
     steps:
       - name: Check result
@@ -168,10 +197,11 @@ jobs:
              [[ "${{ needs.classifier-tests.result }}" == "success" ]] && \
              [[ "${{ needs.build_release.result }}" =~ ^(success|skipped)$ ]] && \
              [[ "${{ needs.test_shards.result }}" =~ ^(success|skipped)$ ]] && \
+             [[ "${{ needs.apple_speech_macos26.result }}" =~ ^(success|skipped)$ ]] && \
              [[ "${{ needs.cli-smoke.result }}" =~ ^(success|skipped)$ ]] && \
              [[ "${{ needs.update-flow.result }}" =~ ^(success|skipped)$ ]]; then
-            echo "CI passed (changes: ${{ needs.changes.result }}, classifier-tests: ${{ needs.classifier-tests.result }}, build_release: ${{ needs.build_release.result }}, test_shards: ${{ needs.test_shards.result }}, cli-smoke: ${{ needs.cli-smoke.result }}, update-flow: ${{ needs.update-flow.result }})"
+            echo "CI passed (changes: ${{ needs.changes.result }}, classifier-tests: ${{ needs.classifier-tests.result }}, build_release: ${{ needs.build_release.result }}, test_shards: ${{ needs.test_shards.result }}, apple_speech_macos26: ${{ needs.apple_speech_macos26.result }}, cli-smoke: ${{ needs.cli-smoke.result }}, update-flow: ${{ needs.update-flow.result }})"
           else
-            echo "CI failed (changes: ${{ needs.changes.result }}, classifier-tests: ${{ needs.classifier-tests.result }}, build_release: ${{ needs.build_release.result }}, test_shards: ${{ needs.test_shards.result }}, cli-smoke: ${{ needs.cli-smoke.result }}, update-flow: ${{ needs.update-flow.result }})"
+            echo "CI failed (changes: ${{ needs.changes.result }}, classifier-tests: ${{ needs.classifier-tests.result }}, build_release: ${{ needs.build_release.result }}, test_shards: ${{ needs.test_shards.result }}, apple_speech_macos26: ${{ needs.apple_speech_macos26.result }}, cli-smoke: ${{ needs.cli-smoke.result }}, update-flow: ${{ needs.update-flow.result }})"
             exit 1
           fi

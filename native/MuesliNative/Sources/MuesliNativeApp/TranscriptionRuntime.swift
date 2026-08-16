@@ -13,6 +13,85 @@ struct SpeechTranscriptionResult: Sendable {
     let segments: [SpeechSegment]
 }
 
+actor AppleSpeechUseLifecycle {
+    typealias Cleanup = @Sendable () async -> Void
+
+    struct Snapshot: Equatable, Sendable {
+        let activeUseCount: Int
+        let hasDeferredCleanup: Bool
+        let isCleaningUp: Bool
+    }
+
+    private struct CleanupOperation {
+        let id: UUID
+        let task: Task<Void, Never>
+    }
+
+    private var activeUseCount = 0
+    private var deferredCleanup: Cleanup?
+    private var cleanupOperation: CleanupOperation?
+
+    func beginUse() async {
+        deferredCleanup = nil
+        activeUseCount += 1
+
+        if let operation = cleanupOperation {
+            await operation.task.value
+            finishCleanupIfCurrent(operation.id)
+        }
+    }
+
+    func endUse() async {
+        precondition(activeUseCount > 0, "Apple Speech use ended without a matching begin")
+        activeUseCount -= 1
+        if activeUseCount == 0 {
+            await runDeferredCleanupIfNeeded()
+        }
+    }
+
+    func requestCleanup(_ cleanup: @escaping Cleanup) async {
+        deferredCleanup = cleanup
+
+        if let operation = cleanupOperation {
+            await operation.task.value
+            finishCleanupIfCurrent(operation.id)
+            if activeUseCount == 0 {
+                await runDeferredCleanupIfNeeded()
+            }
+            return
+        }
+
+        if activeUseCount == 0 {
+            await runDeferredCleanupIfNeeded()
+        }
+    }
+
+    func snapshot() -> Snapshot {
+        Snapshot(
+            activeUseCount: activeUseCount,
+            hasDeferredCleanup: deferredCleanup != nil,
+            isCleaningUp: cleanupOperation != nil
+        )
+    }
+
+    private func runDeferredCleanupIfNeeded() async {
+        guard cleanupOperation == nil, let cleanup = deferredCleanup else { return }
+        deferredCleanup = nil
+
+        let id = UUID()
+        let task = Task { await cleanup() }
+        cleanupOperation = CleanupOperation(id: id, task: task)
+        await task.value
+        finishCleanupIfCurrent(id)
+    }
+
+    private func finishCleanupIfCurrent(_ id: UUID) {
+        if cleanupOperation?.id == id {
+            cleanupOperation = nil
+        }
+    }
+}
+
 actor TranscriptionCoordinator {
     typealias DiarizerModelLoader = @Sendable (DiarizerRuntimePolicy) async throws -> DiarizerModels
     typealias VADLoader = @Sendable () async throws -> VadManager
@@ -35,7 +114,7 @@ actor TranscriptionCoordinator {
     private static let defaultDiarizerLoadOperationTimeout: Duration = .seconds(300)
 
     static let explicitlyRoutedBackendIdentifiers: Set<String> = [
-        "whisper", "nemotron35", "qwen", "cohere", "indicasr", "sensevoice", "gemma4-litert",
+        "whisper", "nemotron35", "qwen", "cohere", "indicasr", "sensevoice", "gemma4-litert", "apple-speech",
     ]
 
     private let fluidTranscriber = FluidAudioTranscriber()
@@ -45,6 +124,8 @@ actor TranscriptionCoordinator {
     private var _cohereTranscriber: Any?
     private var _indicASRTranscriber: Any?
     private var _gemma4LiteRTTranscriber: Any?
+    private var _appleSpeechTranscriber: Any?
+    private let appleSpeechLifecycle = AppleSpeechUseLifecycle()
     private let senseVoiceTranscriber = SenseVoiceTranscriber()
     private var vadManager: VadManager?
     private var diarizerManager: DiarizerManager?
@@ -132,6 +213,23 @@ actor TranscriptionCoordinator {
             await transcriber.shutdown()
             _qwen3Transcriber = nil
         }
+    }
+
+    func unloadAppleSpeechTranscriber() async {
+        if #available(macOS 26.0, *) {
+            await appleSpeechLifecycle.requestCleanup { [weak self] in
+                await self?.releaseAppleSpeechTranscriber()
+            }
+        }
+    }
+
+    @available(macOS 26.0, *)
+    private func releaseAppleSpeechTranscriber() async {
+        guard let transcriber = _appleSpeechTranscriber as? AppleSpeechAnalyzerTranscriber else { return }
+        await transcriber.releaseReservations()
+        guard let current = _appleSpeechTranscriber as? AppleSpeechAnalyzerTranscriber,
+              current === transcriber else { return }
+        _appleSpeechTranscriber = nil
     }
 
     @available(macOS 15, *)
@@ -261,6 +359,49 @@ actor TranscriptionCoordinator {
         return _gemma4LiteRTTranscriber as! Gemma4LiteRTTranscriber
     }
 
+    @available(macOS 26.0, *)
+    private var appleSpeechTranscriber: AppleSpeechAnalyzerTranscriber {
+        if _appleSpeechTranscriber == nil {
+            _appleSpeechTranscriber = AppleSpeechAnalyzerTranscriber()
+        }
+        return _appleSpeechTranscriber as! AppleSpeechAnalyzerTranscriber
+    }
+
+    @available(macOS 26.0, *)
+    private func prepareAppleSpeech(
+        progress: ((Double, String?) -> Void)?,
+        progressSnapshot: ModelDownloadProgressHandler?
+    ) async throws {
+        await appleSpeechLifecycle.beginUse()
+        let transcriber = appleSpeechTranscriber
+        do {
+            try Task.checkCancellation()
+            _ = try await transcriber.prepare(
+                progress: progress,
+                progressSnapshot: progressSnapshot
+            )
+            await appleSpeechLifecycle.endUse()
+        } catch {
+            await appleSpeechLifecycle.endUse()
+            throw error
+        }
+    }
+
+    @available(macOS 26.0, *)
+    private func transcribeWithAppleSpeech(url: URL) async throws -> SpeechTranscriptionResult {
+        await appleSpeechLifecycle.beginUse()
+        let transcriber = appleSpeechTranscriber
+        do {
+            try Task.checkCancellation()
+            let result = try await transcriber.transcribe(wavURL: url)
+            await appleSpeechLifecycle.endUse()
+            return result
+        } catch {
+            await appleSpeechLifecycle.endUse()
+            throw error
+        }
+    }
+
     func preload(
         backend: BackendOption,
         enablePostProcessor: Bool = false,
@@ -377,6 +518,15 @@ actor TranscriptionCoordinator {
                 throw NSError(domain: "MuesliTranscriptionRuntime", code: 7, userInfo: [
                     NSLocalizedDescriptionKey: "Gemma 4 E2B requires macOS 15 or later.",
                 ])
+            }
+        case "apple-speech":
+            if #available(macOS 26.0, *) {
+                try await prepareAppleSpeech(
+                    progress: progress,
+                    progressSnapshot: progressSnapshot
+                )
+            } else {
+                throw AppleSpeechAnalyzerError.unavailable
             }
         default:
             throw NSError(domain: "MuesliTranscriptionRuntime", code: 5, userInfo: [
@@ -1060,6 +1210,11 @@ actor TranscriptionCoordinator {
             return try await transcribeWithSenseVoice(url: url)
         case "gemma4-litert":
             return try await transcribeWithGemma4LiteRT(url: url)
+        case "apple-speech":
+            if #available(macOS 26.0, *) {
+                return try await transcribeWithAppleSpeech(url: url)
+            }
+            throw AppleSpeechAnalyzerError.unavailable
         default:
             return try await transcribeWithFluidAudio(url: url)
         }

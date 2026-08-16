@@ -26,7 +26,7 @@ struct BackendOptionTests {
 
     @Test("backend field is one of the known backends")
     func knownBackends() {
-        let known: Set<String> = ["fluidaudio", "whisper", "qwen", "nemotron35", "cohere", "indicasr", "sensevoice", "gemma4-litert"]
+        let known: Set<String> = ["fluidaudio", "whisper", "qwen", "nemotron35", "cohere", "indicasr", "sensevoice", "gemma4-litert", "apple-speech"]
         for option in BackendOption.all {
             #expect(known.contains(option.backend), "Unknown backend: \(option.backend)")
         }
@@ -299,13 +299,24 @@ struct BackendOptionTests {
         #expect(!BackendOption.experimental.contains(.cohereTranscribe))
     }
 
-    @Test("onboarding offers the conservative models plus Nemotron 3.5")
+    @Test("onboarding defaults to Apple Speech when available and keeps conservative alternatives")
     func onboardingModelChoices() {
-        #expect(BackendOption.onboarding == [.parakeetMultilingual, .whisperTiny, .whisperSmall, .cohereTranscribe, .nemotron35Multilingual])
+        #expect(BackendOption.onboarding.first == BackendOption.onboardingDefault)
+        #expect(BackendOption.onboarding.contains(.parakeetMultilingual))
+        #expect(BackendOption.onboarding.contains(.whisperTiny))
+        #expect(BackendOption.onboarding.contains(.whisperSmall))
+        #expect(BackendOption.onboarding.contains(.cohereTranscribe))
         for option in BackendOption.experimental {
             #expect(!BackendOption.onboarding.contains(option))
         }
         #expect(BackendOption.onboarding.contains(.nemotron35Multilingual))
+        if #available(macOS 26.0, *), AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem {
+            #expect(BackendOption.onboardingDefault == .appleSpeechAnalyzer)
+            #expect(BackendOption.onboarding.contains(.appleSpeechAnalyzer))
+        } else {
+            #expect(BackendOption.onboardingDefault == .parakeetMultilingual)
+            #expect(!BackendOption.onboarding.contains(.appleSpeechAnalyzer))
+        }
     }
 
     @Test("only Nemotron backends use streaming dictation")

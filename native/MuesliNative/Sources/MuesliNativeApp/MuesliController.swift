@@ -1297,6 +1297,8 @@ final class MuesliController: NSObject {
 
     func updateConfig(_ mutate: (inout AppConfig) -> Void) {
         let wasICloudSyncEnabled = config.iCloudSyncEnabled
+        let wasUsingAppleSpeech = selectedBackend.backend == "apple-speech"
+            || selectedMeetingTranscriptionBackend.backend == "apple-speech"
         let previousMeetingInputDeviceUID = config.meetingInputDeviceUID
         let previousHotkeyTriggerThresholdMS = config.hotkeyTriggerThresholdMS
         let previousComputerUseHotkeyTriggerThresholdMS = config.computerUseHotkeyTriggerThresholdMS
@@ -1346,6 +1348,13 @@ final class MuesliController: NSObject {
             config.meetingTranscriptionModel != selectedMeetingTranscriptionBackend.model {
             config.meetingTranscriptionBackend = selectedMeetingTranscriptionBackend.backend
             config.meetingTranscriptionModel = selectedMeetingTranscriptionBackend.model
+        }
+        let isUsingAppleSpeech = selectedBackend.backend == "apple-speech"
+            || selectedMeetingTranscriptionBackend.backend == "apple-speech"
+        if wasUsingAppleSpeech && !isUsingAppleSpeech {
+            Task { [weak self] in
+                await self?.transcriptionCoordinator.unloadAppleSpeechTranscriber()
+            }
         }
         configStore.save(config)
         selectedMeetingSummaryBackend = MeetingSummaryBackendOption.all.first(where: {
