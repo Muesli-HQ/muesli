@@ -10,7 +10,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
     var preferredInputDeviceID: AudioObjectID?
 
     private static let sampleRate: Double = 16_000
-    private static let framesPerBuffer: UInt32 = 4096
+    private static let framesPerBuffer: UInt32 = 512
     private static let bufferCount = 3
 
     private let directoryName: String
@@ -29,6 +29,9 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
     private var preparedInputDeviceID: AudioObjectID?
     private var isPrepared = false
     private var isRunning = false
+    /// True while stop() drains the buffer ring: callbacks keep delivering the
+    /// final buffers (the tail word) but are not re-enqueued.
+    private var isDraining = false
     private var isPaused = false
     private var captureGeneration: UInt64 = 0
 
@@ -75,6 +78,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         let fileState = try createNewFile()
         stateLock.withLock { $0 = fileState }
         isPaused = false
+        isDraining = false
 
         for buffer in buffers {
             let status = AudioQueueEnqueueBuffer(audioQueue, buffer, 0, nil)
@@ -115,42 +119,98 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
             return nil
         }
         isRunning = false
+        // Graceful stop: AudioQueueStop(_, false) delivers the in-flight
+        // buffers (including the partially filled one holding the final word's
+        // tail) before the queue halts, instead of discarding them. The
+        // callback keeps accepting buffers while draining but does not
+        // re-enqueue, so the ring empties and the queue stops itself.
+        isDraining = true
         let generationToFinish = captureGeneration
         let queueToStop = audioQueue
         queueLock.unlock()
 
         if let queueToStop {
             emitLatency("audio_queue_stop_begin")
-            AudioQueueStop(queueToStop, true)
+            AudioQueueStop(queueToStop, false)
+            // Bounded wait for the drain (3-buffer ring of 32ms buffers drains
+            // in well under 100ms); bail out immediately if a successor
+            // start() took over the queue (generation bumped).
+            var waitedMs = 0
+            while isQueueRunning(queueToStop), waitedMs < 500 {
+                let superseded = queueLock.withLock { captureGeneration != generationToFinish }
+                if superseded { break }
+                usleep(10_000)
+                waitedMs += 10
+            }
+            // Force-stop a wedged drain only while this capture still owns
+            // the queue. start() holds queueLock across its entire setup
+            // (including AudioQueueStart), so checking + stopping under
+            // queueLock cannot interleave with a successor capture.
+            queueLock.lock()
+            let ownsQueue = captureGeneration == generationToFinish && isDraining
+            if ownsQueue, isQueueRunning(queueToStop) {
+                AudioQueueStop(queueToStop, true)
+            }
+            if ownsQueue {
+                isDraining = false
+            }
+            queueLock.unlock()
+            guard ownsQueue else {
+                emitLatency("audio_queue_stop_end")
+                return nil
+            }
             emitLatency("audio_queue_stop_end")
         }
 
+        // Drain the processing closures for this generation BEFORE the
+        // generation bump below — otherwise the drained tail buffers (the
+        // final word) would be dropped by the generation check.
         emitLatency("audio_queue_processing_drain_begin")
         processingQueue.sync {}
         emitLatency("audio_queue_processing_drain_end")
 
+        // Ownership re-check, generation bump, and file-state transfer are a
+        // single atomic section under queueLock: start() performs its own
+        // state install + generation bump under the same lock, so a successor
+        // either runs entirely before this section (check fails, we return
+        // nil and never touch its file) or entirely after (it sees the bumped
+        // generation and a fresh state).
         queueLock.lock()
-        if captureGeneration == generationToFinish {
-            captureGeneration &+= 1
+        guard captureGeneration == generationToFinish else {
+            queueLock.unlock()
+            return nil
         }
+        isDraining = false
         isPaused = false
-        queueLock.unlock()
-
-        emitLatency("audio_queue_finalize_begin")
+        captureGeneration &+= 1
         let finalState = stateLock.withLock { state -> FileState in
             let old = state
             state = FileState()
             return old
         }
+        queueLock.unlock()
+
+        emitLatency("audio_queue_finalize_begin")
         let url = finalizeFile(finalState)
         emitLatency("audio_queue_finalize_end")
         return url
+    }
+
+    private func isQueueRunning(_ queue: AudioQueueRef) -> Bool {
+        var running: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let status = AudioQueueGetProperty(queue, kAudioQueueProperty_IsRunning, &running, &size)
+        // Treat a query failure as "still running": the wait loop is bounded
+        // (500ms), and assuming stopped on failure would silently skip the
+        // drain that preserves the final word's tail.
+        return status != noErr || running != 0
     }
 
     func cancel() {
         queueLock.lock()
         isRunning = false
         isPaused = false
+        isDraining = false
         captureGeneration &+= 1
         let queueToDispose = audioQueue
         let callbackUserDataToRelease = queueCallbackUserData
@@ -322,22 +382,30 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
 
     private func handleInputBuffer(queue: AudioQueueRef, buffer: AudioQueueBufferRef) {
         queueLock.lock()
-        let shouldProcess = isRunning
+        let shouldProcess = isRunning || isDraining
+        let draining = isDraining
         let generation = captureGeneration
         queueLock.unlock()
         guard shouldProcess else { return }
 
         let byteCount = Int(buffer.pointee.mAudioDataByteSize)
         guard byteCount > 0 else {
-            AudioQueueEnqueueBuffer(queue, buffer, 0, nil)
+            if !draining {
+                AudioQueueEnqueueBuffer(queue, buffer, 0, nil)
+            }
             return
         }
 
         let audioData = Data(bytes: buffer.pointee.mAudioData, count: byteCount)
-        let enqueueStatus = AudioQueueEnqueueBuffer(queue, buffer, 0, nil)
-        if enqueueStatus != noErr {
-            reportFailure(Self.runtimeError(code: 8, message: "AudioQueueEnqueueBuffer failed: \(enqueueStatus)"))
-            return
+        // While draining, deliver but do not re-enqueue: the ring empties and
+        // the queue stops itself, carrying the final partial buffer (the tail
+        // of the user's last word) into the file first.
+        if !draining {
+            let enqueueStatus = AudioQueueEnqueueBuffer(queue, buffer, 0, nil)
+            if enqueueStatus != noErr {
+                reportFailure(Self.runtimeError(code: 8, message: "AudioQueueEnqueueBuffer failed: \(enqueueStatus)"))
+                return
+            }
         }
 
         processingQueue.async { [weak self] in

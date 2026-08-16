@@ -26,6 +26,7 @@ case "${shard}" in
       FloatingIndicatorVisibilityTests
       IndicatorFrameSizeTests
       OpenAILogoShapeTests
+      StandardMenuShortcutTests
       MeetingChunkCollectorTests
       AppConfigTests
       CGPointCodableTests
