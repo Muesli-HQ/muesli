@@ -13,6 +13,85 @@ struct SpeechTranscriptionResult: Sendable {
     let segments: [SpeechSegment]
 }
 
+actor AppleSpeechUseLifecycle {
+    typealias Cleanup = @Sendable () async -> Void
+
+    struct Snapshot: Equatable, Sendable {
+        let activeUseCount: Int
+        let hasDeferredCleanup: Bool
+        let isCleaningUp: Bool
+    }
+
+    private struct CleanupOperation {
+        let id: UUID
+        let task: Task<Void, Never>
+    }
+
+    private var activeUseCount = 0
+    private var deferredCleanup: Cleanup?
+    private var cleanupOperation: CleanupOperation?
+
+    func beginUse() async {
+        deferredCleanup = nil
+        activeUseCount += 1
+
+        if let operation = cleanupOperation {
+            await operation.task.value
+            finishCleanupIfCurrent(operation.id)
+        }
+    }
+
+    func endUse() async {
+        precondition(activeUseCount > 0, "Apple Speech use ended without a matching begin")
+        activeUseCount -= 1
+        if activeUseCount == 0 {
+            await runDeferredCleanupIfNeeded()
+        }
+    }
+
+    func requestCleanup(_ cleanup: @escaping Cleanup) async {
+        deferredCleanup = cleanup
+
+        if let operation = cleanupOperation {
+            await operation.task.value
+            finishCleanupIfCurrent(operation.id)
+            if activeUseCount == 0 {
+                await runDeferredCleanupIfNeeded()
+            }
+            return
+        }
+
+        if activeUseCount == 0 {
+            await runDeferredCleanupIfNeeded()
+        }
+    }
+
+    func snapshot() -> Snapshot {
+        Snapshot(
+            activeUseCount: activeUseCount,
+            hasDeferredCleanup: deferredCleanup != nil,
+            isCleaningUp: cleanupOperation != nil
+        )
+    }
+
+    private func runDeferredCleanupIfNeeded() async {
+        guard cleanupOperation == nil, let cleanup = deferredCleanup else { return }
+        deferredCleanup = nil
+
+        let id = UUID()
+        let task = Task { await cleanup() }
+        cleanupOperation = CleanupOperation(id: id, task: task)
+        await task.value
+        finishCleanupIfCurrent(id)
+    }
+
+    private func finishCleanupIfCurrent(_ id: UUID) {
+        if cleanupOperation?.id == id {
+            cleanupOperation = nil
+        }
+    }
+}
+
 actor TranscriptionCoordinator {
     typealias DiarizerModelLoader = @Sendable (DiarizerRuntimePolicy) async throws -> DiarizerModels
     typealias VADLoader = @Sendable () async throws -> VadManager
@@ -46,6 +125,7 @@ actor TranscriptionCoordinator {
     private var _indicASRTranscriber: Any?
     private var _gemma4LiteRTTranscriber: Any?
     private var _appleSpeechTranscriber: Any?
+    private let appleSpeechLifecycle = AppleSpeechUseLifecycle()
     private let senseVoiceTranscriber = SenseVoiceTranscriber()
     private var vadManager: VadManager?
     private var diarizerManager: DiarizerManager?
@@ -136,11 +216,20 @@ actor TranscriptionCoordinator {
     }
 
     func unloadAppleSpeechTranscriber() async {
-        if #available(macOS 26.0, *),
-           let transcriber = _appleSpeechTranscriber as? AppleSpeechAnalyzerTranscriber {
-            await transcriber.releaseReservations()
-            _appleSpeechTranscriber = nil
+        if #available(macOS 26.0, *) {
+            await appleSpeechLifecycle.requestCleanup { [weak self] in
+                await self?.releaseAppleSpeechTranscriber()
+            }
         }
+    }
+
+    @available(macOS 26.0, *)
+    private func releaseAppleSpeechTranscriber() async {
+        guard let transcriber = _appleSpeechTranscriber as? AppleSpeechAnalyzerTranscriber else { return }
+        await transcriber.releaseReservations()
+        guard let current = _appleSpeechTranscriber as? AppleSpeechAnalyzerTranscriber,
+              current === transcriber else { return }
+        _appleSpeechTranscriber = nil
     }
 
     @available(macOS 15, *)
@@ -278,6 +367,41 @@ actor TranscriptionCoordinator {
         return _appleSpeechTranscriber as! AppleSpeechAnalyzerTranscriber
     }
 
+    @available(macOS 26.0, *)
+    private func prepareAppleSpeech(
+        progress: ((Double, String?) -> Void)?,
+        progressSnapshot: ModelDownloadProgressHandler?
+    ) async throws {
+        await appleSpeechLifecycle.beginUse()
+        let transcriber = appleSpeechTranscriber
+        do {
+            try Task.checkCancellation()
+            _ = try await transcriber.prepare(
+                progress: progress,
+                progressSnapshot: progressSnapshot
+            )
+            await appleSpeechLifecycle.endUse()
+        } catch {
+            await appleSpeechLifecycle.endUse()
+            throw error
+        }
+    }
+
+    @available(macOS 26.0, *)
+    private func transcribeWithAppleSpeech(url: URL) async throws -> SpeechTranscriptionResult {
+        await appleSpeechLifecycle.beginUse()
+        let transcriber = appleSpeechTranscriber
+        do {
+            try Task.checkCancellation()
+            let result = try await transcriber.transcribe(wavURL: url)
+            await appleSpeechLifecycle.endUse()
+            return result
+        } catch {
+            await appleSpeechLifecycle.endUse()
+            throw error
+        }
+    }
+
     func preload(
         backend: BackendOption,
         enablePostProcessor: Bool = false,
@@ -397,7 +521,7 @@ actor TranscriptionCoordinator {
             }
         case "apple-speech":
             if #available(macOS 26.0, *) {
-                _ = try await appleSpeechTranscriber.prepare(
+                try await prepareAppleSpeech(
                     progress: progress,
                     progressSnapshot: progressSnapshot
                 )
@@ -1088,7 +1212,7 @@ actor TranscriptionCoordinator {
             return try await transcribeWithGemma4LiteRT(url: url)
         case "apple-speech":
             if #available(macOS 26.0, *) {
-                return try await appleSpeechTranscriber.transcribe(wavURL: url)
+                return try await transcribeWithAppleSpeech(url: url)
             }
             throw AppleSpeechAnalyzerError.unavailable
         default:

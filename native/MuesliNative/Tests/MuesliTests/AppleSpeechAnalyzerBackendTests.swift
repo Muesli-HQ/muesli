@@ -91,8 +91,34 @@ struct AppleSpeechAnalyzerBackendTests {
         #expect(await counter.value == 1)
     }
 
-    @Test("reservation ownership only returns stale owned locales")
-    func reservationOwnershipTracksCleanupCandidates() {
+    @Test("failed preparation is removed so a later attempt can retry")
+    func failedPreparationCanRetry() async throws {
+        let cache = AppleSpeechPreparationTaskCache()
+        let counter = AppleSpeechTestCounter()
+
+        do {
+            _ = try await cache.value(for: "en-US") {
+                await counter.increment()
+                throw AppleSpeechTestError.preparationFailed
+            }
+            Issue.record("Expected the first preparation to fail")
+        } catch AppleSpeechTestError.preparationFailed {
+            // Expected path.
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        let locale = try await cache.value(for: "en-US") {
+            await counter.increment()
+            return Locale(identifier: "en-US")
+        }
+
+        #expect(locale.identifier(.bcp47) == "en-US")
+        #expect(await counter.value == 2)
+    }
+
+    @Test("stale reservation cleanup preserves the newer owned locale")
+    func staleReservationCleanupPreservesNewerLocale() {
         var ownership = AppleSpeechReservationOwnership()
         ownership.record(Locale(identifier: "en-US"))
         ownership.record(Locale(identifier: "fr-FR"))
@@ -123,6 +149,23 @@ struct AppleSpeechAnalyzerBackendTests {
             #expect(!BackendOption.onboarding.contains(option))
         }
     }
+
+    @Test("macOS 26 CI exercises the supported Apple Speech catalogue path")
+    func requiredSupportedSystemCoverage() {
+        guard ProcessInfo.processInfo.environment["MUESLI_REQUIRE_APPLE_SPEECH_AVAILABLE"] == "1" else {
+            return
+        }
+
+        guard #available(macOS 26.0, *) else {
+            Issue.record("The supported-system Apple Speech test requires macOS 26")
+            return
+        }
+
+        #expect(AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem)
+        #expect(BackendOption.systemManaged.contains(.appleSpeechAnalyzer))
+        #expect(BackendOption.all.contains(.appleSpeechAnalyzer))
+        #expect(BackendOption.onboardingDefault == .appleSpeechAnalyzer)
+    }
 }
 
 private actor AppleSpeechTestCounter {
@@ -131,4 +174,8 @@ private actor AppleSpeechTestCounter {
     func increment() {
         value += 1
     }
+}
+
+private enum AppleSpeechTestError: Error {
+    case preparationFailed
 }
