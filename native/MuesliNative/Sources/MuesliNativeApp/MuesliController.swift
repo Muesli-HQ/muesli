@@ -8621,6 +8621,12 @@ final class MuesliController: NSObject {
                     )
                     await MainActor.run {
                         self.scheduleICloudSyncAfterLocalChange()
+                        self.statusBarController?.refresh()
+                        if let historyWindowController = self.historyWindowController {
+                            historyWindowController.reload()
+                        } else {
+                            self.syncAppState()
+                        }
                     }
                 }
                 await MainActor.run {
@@ -8640,9 +8646,6 @@ final class MuesliController: NSObject {
                         return
                     }
                     self.clearCapturedDictationSessionContext()
-                    self.statusBarController?.refresh()
-                    self.historyWindowController?.reload()
-                    self.syncAppState()
                     if outputMode != .voiceNote {
                         PasteController.paste(text: text)
                         if self.config.enableDictionaryCorrectionPrompts {
