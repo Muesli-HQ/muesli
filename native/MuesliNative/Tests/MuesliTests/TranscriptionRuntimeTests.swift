@@ -170,6 +170,7 @@ struct TranscriptionWorkSchedulerTests {
         #expect(await scheduler.queuedWaiterCount(.background) == 1)
 
         cancelled.cancel()
+        await scheduler.release(.background)
         do {
             try await cancelled.value
             Issue.record("Cancelled meeting work unexpectedly acquired a scheduler slot")
@@ -181,7 +182,15 @@ struct TranscriptionWorkSchedulerTests {
 
         #expect(await scheduler.queuedWaiterCount(.background) == 0)
         await scheduler.release(.background)
-        await scheduler.release(.background)
+    }
+
+    @Test("waiter cancellation state rejects admission before registration")
+    func cancellationStateRejectsAdmission() {
+        let state = TranscriptionWorkWaiterState()
+        state.cancel()
+
+        #expect(state.isCancelled)
+        #expect(!state.tryAdmit())
     }
 
     private func waitForSchedulerWaiterCount(

@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import MuesliNativeApp
 
@@ -150,6 +151,50 @@ struct DictationTranscriptionForegroundPolicyTests {
             hasPendingStop: false,
             isStreaming: true,
             isPresentationStateEligible: true
+        ))
+    }
+
+    @Test("suppressed completion retires only an otherwise finished transcription")
+    func suppressedCompletionRetiresFinishedTranscription() {
+        #expect(DictationTranscriptionForegroundPolicy.shouldRetireSuppressedResult(
+            isTranscribing: true,
+            hasActiveRecording: false,
+            hasPendingStop: false,
+            isStreaming: false
+        ))
+        #expect(!DictationTranscriptionForegroundPolicy.shouldRetireSuppressedResult(
+            isTranscribing: true,
+            hasActiveRecording: true,
+            hasPendingStop: false,
+            isStreaming: false
+        ))
+        #expect(!DictationTranscriptionForegroundPolicy.shouldRetireSuppressedResult(
+            isTranscribing: false,
+            hasActiveRecording: false,
+            hasPendingStop: false,
+            isStreaming: false
+        ))
+    }
+}
+
+@Suite("Dictation audio session failure policy")
+struct DictationAudioSessionFailurePolicyTests {
+    @Test("handles the controller-owned active session after the manager clears its hint")
+    func handlesActiveSessionFailure() {
+        let activeSessionID = UUID()
+        #expect(DictationAudioSessionFailurePolicy.shouldHandleFailure(
+            failedSessionID: activeSessionID,
+            activeSessionID: activeSessionID,
+            pendingStopSessionID: nil
+        ))
+    }
+
+    @Test("rejects a stale session failure")
+    func rejectsStaleSessionFailure() {
+        #expect(!DictationAudioSessionFailurePolicy.shouldHandleFailure(
+            failedSessionID: UUID(),
+            activeSessionID: UUID(),
+            pendingStopSessionID: nil
         ))
     }
 }

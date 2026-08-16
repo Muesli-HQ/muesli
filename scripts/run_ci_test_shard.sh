@@ -57,6 +57,7 @@ case "${shard}" in
       SpeechSegmentTests
       SpeechTranscriptionResultTests
       TranscriptionWorkSchedulerTests
+      DictationAudioSessionFailurePolicyTests
       TranscriptionCoordinatorTests
       TranscriptionEngineArtifactsFilterTests
       DiarizerRuntimePolicyTests

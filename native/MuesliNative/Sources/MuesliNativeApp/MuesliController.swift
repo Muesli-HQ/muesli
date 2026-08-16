@@ -382,6 +382,7 @@ final class MuesliController: NSObject {
     private var currentDictationOutputMode: DictationOutputMode = .paste
     private var pendingDictationStopStartedAt: Date?
     private var pendingDictationStopSessionID: UUID?
+    private var activeDictationAudioSessionID: UUID?
     private var pendingReleaseSoundSessionID: UUID?
     private var pendingPreparingIndicatorWorkItem: DispatchWorkItem?
     private var activeComputerUseAudioSessionID: UUID?
@@ -5365,6 +5366,10 @@ final class MuesliController: NSObject {
     func cancelMeetingPreparation() {
         guard isStartingMeetingRecording, activeMeetingSession == nil else { return }
 
+        let canceledPreparingSession = preparingMeetingSession
+        preparingMeetingSession = nil
+        canceledPreparingSession?.discard()
+
         if let meetingID = meetingStartMeetingID {
             // Live meeting start cancellation
             canceledMeetingStartIDs.insert(meetingID)
@@ -7779,6 +7784,7 @@ final class MuesliController: NSObject {
             meetingMonitor.refreshState()
             setState(.preparing)
             dictationAudioSessionManager.arm(source: "hotkey_prepare")
+            activeDictationAudioSessionID = dictationAudioSessionManager.currentSessionID
         }
     }
 
@@ -7797,6 +7803,7 @@ final class MuesliController: NSObject {
             meetingMonitor.refreshState()
             if !dictationAudioSessionManager.hasActiveSession {
                 dictationAudioSessionManager.arm(source: "hotkey_arm")
+                activeDictationAudioSessionID = dictationAudioSessionManager.currentSessionID
             }
         }
     }
@@ -7952,16 +7959,22 @@ final class MuesliController: NSObject {
 
     private func handleDictationAudioSessionEvent(_ event: DictationAudioSessionEvent) {
         switch event {
-        case .armed:
-            break
-        case .acquiringAudio:
+        case .armed(let sessionID, _):
+            guard dictationAudioSessionManager.currentSessionID == sessionID
+                || activeDictationAudioSessionID == sessionID else { break }
+            activeDictationAudioSessionID = sessionID
+        case .acquiringAudio(let sessionID):
+            guard activeDictationAudioSessionID == sessionID else { break }
             markDictationLatency("acquiring_audio")
             activateDictationPreparingIndicator()
-        case .streamActive(_, let capturedAt):
+        case .streamActive(let sessionID, let capturedAt):
+            guard activeDictationAudioSessionID == sessionID else { break }
             handleDictationStreamActive(capturedAt: capturedAt)
-        case .speechDetected(_, let capturedAt):
+        case .speechDetected(let sessionID, let capturedAt):
+            guard activeDictationAudioSessionID == sessionID else { break }
             handleDictationSpeechDetected(capturedAt: capturedAt)
-        case .noAudioTimeout:
+        case .noAudioTimeout(let sessionID, _):
+            guard activeDictationAudioSessionID == sessionID else { break }
             statusBarController?.setStatus("Mic waiting for speech")
         case .stopped(let eventSessionID, let wavURL):
             guard pendingDictationStopSessionID == eventSessionID else {
@@ -7981,6 +7994,7 @@ final class MuesliController: NSObject {
             let startedAt = pendingDictationStopStartedAt ?? dictationStartedAt ?? Date()
             pendingDictationStopSessionID = nil
             pendingDictationStopStartedAt = nil
+            activeDictationAudioSessionID = nil
             finishStandardDictationStop(wavURL: wavURL, startedAt: startedAt)
         case .audioRestored(let eventSessionID):
             guard pendingReleaseSoundSessionID == eventSessionID else { break }
@@ -7989,13 +8003,16 @@ final class MuesliController: NSObject {
             // Reuse the insert cue as the hotkey-release cue once ducked audio has
             // been restored; waiting for transcription would make release feedback lag.
             SoundController.playDictationInsert(enabled: shouldPlayDictationLifecycleSounds)
-        case .cancelled:
-            break
+        case .cancelled(let sessionID, _):
+            if sessionID == nil || activeDictationAudioSessionID == sessionID {
+                activeDictationAudioSessionID = nil
+            }
         case .failed(let sessionID, let error):
-            let currentSessionID = dictationAudioSessionManager.currentSessionID
-            guard sessionID == nil
-                || sessionID == currentSessionID
-                || sessionID == pendingDictationStopSessionID else {
+            guard DictationAudioSessionFailurePolicy.shouldHandleFailure(
+                failedSessionID: sessionID,
+                activeSessionID: activeDictationAudioSessionID,
+                pendingStopSessionID: pendingDictationStopSessionID
+            ) else {
                 fputs("[muesli-native] ignoring stale dictation audio failure\n", stderr)
                 break
             }
@@ -8009,6 +8026,7 @@ final class MuesliController: NSObject {
                 )
             }
             resetDictationOutputMode()
+            activeDictationAudioSessionID = nil
             dictationStartedAt = nil
             pendingDictationStopSessionID = nil
             pendingDictationStopStartedAt = nil
@@ -8160,6 +8178,7 @@ final class MuesliController: NSObject {
             duckingEnabled: config.muteSystemAudioDuringDictation,
             mediaPauseEnabled: config.pauseMediaDuringDictation
         )
+        activeDictationAudioSessionID = dictationAudioSessionManager.currentSessionID
     }
 
     @available(macOS 15, *)
@@ -8301,6 +8320,7 @@ final class MuesliController: NSObject {
         }
 
         dictationAudioSessionManager.cancel(reason: "user-cancel")
+        activeDictationAudioSessionID = nil
         clearCapturedDictationSessionContext()
         dictationStartedAt = nil
         pendingDictationStopSessionID = nil
@@ -8359,6 +8379,7 @@ final class MuesliController: NSObject {
             duckingEnabled: config.muteSystemAudioDuringDictation,
             mediaPauseEnabled: config.pauseMediaDuringDictation
         )
+        activeDictationAudioSessionID = dictationAudioSessionManager.currentSessionID
     }
 
     private func handleToggleStop() {
@@ -8446,6 +8467,7 @@ final class MuesliController: NSObject {
         }
 
         dictationStartedAt = nil
+        activeDictationAudioSessionID = nil
         clearCapturedDictationSessionContext()
         pendingDictationStopSessionID = nil
         pendingDictationStopStartedAt = nil
@@ -8569,7 +8591,12 @@ final class MuesliController: NSObject {
 
                 if isTestMode {
                     await MainActor.run {
-                        guard self.applyDictationTranscriptionResultToForeground(taskID) else { return }
+                        guard self.applyDictationTranscriptionResultToForeground(taskID) else {
+                            self.finishSuppressedDictationTranscriptionLifecycle(
+                                intent: .transcriptionComplete
+                            )
+                            return
+                        }
                         self.dictationTestCallback?(text)
                         self.clearCapturedDictationSessionContext()
                         self.resetDictationOutputMode()
@@ -8596,7 +8623,12 @@ final class MuesliController: NSObject {
                     }
                 }
                 await MainActor.run {
-                    guard self.applyDictationTranscriptionResultToForeground(taskID) else { return }
+                    guard self.applyDictationTranscriptionResultToForeground(taskID) else {
+                        self.finishSuppressedDictationTranscriptionLifecycle(
+                            intent: .transcriptionComplete
+                        )
+                        return
+                    }
                     if text.isEmpty {
                         self.clearCapturedDictationSessionContext()
                         self.resetDictationOutputMode()
@@ -8637,7 +8669,12 @@ final class MuesliController: NSObject {
             } catch is CancellationError {
                 fputs("[muesli-native] test dictation cancelled\n", stderr)
                 await MainActor.run {
-                    guard self.applyDictationTranscriptionResultToForeground(taskID) else { return }
+                    guard self.applyDictationTranscriptionResultToForeground(taskID) else {
+                        self.finishSuppressedDictationTranscriptionLifecycle(
+                            intent: .transcriptionCancelled
+                        )
+                        return
+                    }
                     self.clearCapturedDictationSessionContext()
                     self.resetDictationOutputMode()
                     self.setState(.idle)
@@ -8647,7 +8684,12 @@ final class MuesliController: NSObject {
             } catch {
                 fputs("[muesli-native] transcription failed: \(error)\n", stderr)
                 await MainActor.run {
-                    guard self.applyDictationTranscriptionResultToForeground(taskID) else { return }
+                    guard self.applyDictationTranscriptionResultToForeground(taskID) else {
+                        self.finishSuppressedDictationTranscriptionLifecycle(
+                            intent: .transcriptionFailed
+                        )
+                        return
+                    }
                     if self.isDictationTestMode {
                         self.dictationTestFailureCallback?(self.userFacingDictationTestError(error))
                     } else {
@@ -8679,6 +8721,23 @@ final class MuesliController: NSObject {
     private func invalidateDictationTranscriptionForegroundOwnership() {
         dictationTranscriptionTask = nil
         dictationTranscriptionTaskID = nil
+    }
+
+    @MainActor
+    private func finishSuppressedDictationTranscriptionLifecycle(intent: PostDictationTrigger) {
+        guard DictationTranscriptionForegroundPolicy.shouldRetireSuppressedResult(
+            isTranscribing: dictationState == .transcribing,
+            hasActiveRecording: dictationStartedAt != nil,
+            hasPendingStop: pendingDictationStopSessionID != nil,
+            isStreaming: isNemotron35Streaming
+        ) else { return }
+
+        clearCapturedDictationSessionContext()
+        resetDictationOutputMode()
+        dictationState = .idle
+        appState.dictationState = .idle
+        resumeMeetingMonitorAfterForegroundCapture()
+        syncDictationRecorderWarmup(intent: .postDictation(intent))
     }
 
     @MainActor

@@ -37,4 +37,28 @@ enum DictationTranscriptionForegroundPolicy {
             && !isStreaming
             && isPresentationStateEligible
     }
+
+    static func shouldRetireSuppressedResult(
+        isTranscribing: Bool,
+        hasActiveRecording: Bool,
+        hasPendingStop: Bool,
+        isStreaming: Bool
+    ) -> Bool {
+        isTranscribing
+            && !hasActiveRecording
+            && !hasPendingStop
+            && !isStreaming
+    }
+}
+
+enum DictationAudioSessionFailurePolicy {
+    static func shouldHandleFailure(
+        failedSessionID: UUID?,
+        activeSessionID: UUID?,
+        pendingStopSessionID: UUID?
+    ) -> Bool {
+        guard let failedSessionID else { return true }
+        return failedSessionID == activeSessionID
+            || failedSessionID == pendingStopSessionID
+    }
 }
