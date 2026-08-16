@@ -139,6 +139,23 @@ public struct LiveTranscriptCheckpointEntry: Sendable, Equatable {
     }
 }
 
+public struct DictationTargetApplication: Identifiable, Hashable, Sendable {
+    public let name: String
+    public let bundleID: String?
+
+    public init(name: String, bundleID: String?) {
+        self.name = name
+        self.bundleID = bundleID
+    }
+
+    public var id: String {
+        if let bundleID, !bundleID.isEmpty {
+            return "bundle:\(bundleID)"
+        }
+        return "name:\(name.lowercased())"
+    }
+}
+
 public struct DictationRecord: Identifiable, Codable, Sendable {
     public let id: Int64
     public let timestamp: String
@@ -147,6 +164,8 @@ public struct DictationRecord: Identifiable, Codable, Sendable {
     public let appContext: String
     public let wordCount: Int
     public let source: String
+    public let targetAppName: String?
+    public let targetAppBundleID: String?
     public let computerUseTrace: ComputerUseTraceRecord?
 
     public init(
@@ -157,6 +176,8 @@ public struct DictationRecord: Identifiable, Codable, Sendable {
         appContext: String,
         wordCount: Int,
         source: String = "dictation",
+        targetAppName: String? = nil,
+        targetAppBundleID: String? = nil,
         computerUseTrace: ComputerUseTraceRecord? = nil
     ) {
         self.id = id
@@ -166,7 +187,32 @@ public struct DictationRecord: Identifiable, Codable, Sendable {
         self.appContext = appContext
         self.wordCount = wordCount
         self.source = source
+        self.targetAppName = targetAppName
+        self.targetAppBundleID = targetAppBundleID
         self.computerUseTrace = computerUseTrace
+    }
+}
+
+public enum TimelineEntry: Identifiable, Sendable {
+    case dictation(DictationRecord)
+    case meeting(MeetingRecord)
+
+    public var id: String {
+        switch self {
+        case .dictation(let record):
+            return "dictation:\(record.id)"
+        case .meeting(let record):
+            return "meeting:\(record.id)"
+        }
+    }
+
+    public var timestamp: String {
+        switch self {
+        case .dictation(let record):
+            return record.timestamp
+        case .meeting(let record):
+            return record.startTime
+        }
     }
 }
 

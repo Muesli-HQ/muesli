@@ -4,9 +4,21 @@ import MuesliCore
 struct StatsHeaderView: View {
     let dictationStats: DictationStats
     let meetingStats: MeetingStats
+    var showsMeetingStat = true
+    var tracksInsightsFeatureTour = false
     let onSelect: (InsightsSection) -> Void
 
+    @ViewBuilder
     var body: some View {
+        if tracksInsightsFeatureTour {
+            cards
+                .featureTourTarget(.insightsEntry)
+        } else {
+            cards
+        }
+    }
+
+    private var cards: some View {
         HStack(spacing: MuesliTheme.spacing16) {
             StatCard(
                 icon: "flame.fill",
@@ -32,16 +44,17 @@ struct StatsHeaderView: View {
                 accessibilityHint: "Open speaking pace insights",
                 action: { onSelect(.pace) }
             )
-            StatCard(
-                icon: "person.2.fill",
-                iconColor: MuesliTheme.accent,
-                value: "\(meetingStats.totalMeetings)",
-                label: "meetings",
-                accessibilityHint: "Open meeting insights",
-                action: { onSelect(.meetings) }
-            )
+            if showsMeetingStat {
+                StatCard(
+                    icon: "person.2.fill",
+                    iconColor: MuesliTheme.accent,
+                    value: "\(meetingStats.totalMeetings)",
+                    label: "meetings",
+                    accessibilityHint: "Open meeting insights",
+                    action: { onSelect(.meetings) }
+                )
+            }
         }
-        .featureTourTarget(.insightsEntry)
         .padding(.horizontal, MuesliTheme.spacing24)
         .padding(.vertical, MuesliTheme.spacing20)
     }

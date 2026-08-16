@@ -1159,7 +1159,11 @@ struct MeetingDetailView: View {
 
     private func threadLink(icon: String, text: String, targetID: Int64) -> some View {
         Button {
-            controller.showMeetingDocument(id: targetID)
+            if appState.meetingDetailReturnDestination == .timeline {
+                controller.showTimelineMeetingDocument(id: targetID)
+            } else {
+                controller.showMeetingDocument(id: targetID)
+            }
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: icon)

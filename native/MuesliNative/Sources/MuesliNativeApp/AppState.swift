@@ -3,6 +3,7 @@ import Observation
 import MuesliCore
 
 enum DashboardTab: String, CaseIterable {
+    case timeline
     case dictations
     case insights
     case meetings
@@ -63,6 +64,48 @@ enum MeetingsNavigationState: Equatable {
     case document(Int64)
 }
 
+enum MeetingDetailReturnDestination: Equatable {
+    case meetings
+    case timeline
+}
+
+enum HistoryDateFilter: String, CaseIterable, Hashable {
+    case all
+    case last2Days
+    case lastWeek
+    case last2Weeks
+    case lastMonth
+    case last3Months
+
+    var label: String {
+        switch self {
+        case .all: return "All time"
+        case .last2Days: return "Last 2 days"
+        case .lastWeek: return "Last week"
+        case .last2Weeks: return "Last 2 weeks"
+        case .lastMonth: return "Last month"
+        case .last3Months: return "Last 3 months"
+        }
+    }
+
+    func fromDate(relativeTo now: Date = Date(), calendar: Calendar = .current) -> Date? {
+        switch self {
+        case .all:
+            return nil
+        case .last2Days:
+            return calendar.date(byAdding: .day, value: -2, to: now)
+        case .lastWeek:
+            return calendar.date(byAdding: .day, value: -7, to: now)
+        case .last2Weeks:
+            return calendar.date(byAdding: .day, value: -14, to: now)
+        case .lastMonth:
+            return calendar.date(byAdding: .month, value: -1, to: now)
+        case .last3Months:
+            return calendar.date(byAdding: .month, value: -3, to: now)
+        }
+    }
+}
+
 enum SparkleUpdateStatus: Equatable {
     case idle
     case checking
@@ -100,6 +143,7 @@ struct ActiveMeetingAudioWarning: Equatable {
 @Observable
 final class AppState {
     // Dashboard data
+    var timelineRows: [TimelineEntry] = []
     var dictationRows: [DictationRecord] = []
     var meetingRows: [MeetingRecord] = []
     var totalMeetingCount: Int = 0
@@ -110,9 +154,14 @@ final class AppState {
     var folders: [MeetingFolder] = []
     var selectedFolderID: Int64?  // nil = "All Meetings"
     var meetingsNavigationState: MeetingsNavigationState = .browser
+    var meetingDetailReturnDestination: MeetingDetailReturnDestination = .meetings
     var meetingNotesFocusRequest = 0
     var isMeetingTemplatesManagerPresented: Bool = false
     var dictationStats: DictationStats = DictationStats(
+        totalWords: 0, totalSessions: 0, averageWordsPerSession: 0,
+        averageWPM: 0, currentStreakDays: 0, longestStreakDays: 0
+    )
+    var filteredDictationStats: DictationStats = DictationStats(
         totalWords: 0, totalSessions: 0, averageWordsPerSession: 0,
         averageWPM: 0, currentStreakDays: 0, longestStreakDays: 0
     )
@@ -187,8 +236,20 @@ final class AppState {
     var dictationFromDate: String? = nil
     var dictationToDate: String? = nil
     var dictationOriginFilter: RecordOriginFilter = .all
+    var dictationApplicationFilter: DictationTargetApplication?
+    var dictationTargetApplications: [DictationTargetApplication] = []
     var hasMoreDictations: Bool = true
     var meetingOriginFilter: RecordOriginFilter = .all
+
+    // Timeline pagination, filtering, and session navigation state
+    var timelinePageSize: Int = 50
+    var timelineFromDate: String? = nil
+    var timelineToDate: String? = nil
+    var timelineOriginFilter: RecordOriginFilter = .all
+    var timelineApplicationFilter: DictationTargetApplication?
+    var timelineDateFilter: HistoryDateFilter = .all
+    var hasMoreTimelineEntries: Bool = true
+    var timelineScrollAnchor: String?
 
     // Search
     var searchQuery: String = ""
@@ -198,7 +259,11 @@ final class AppState {
     var isSearchActive: Bool { !searchQuery.isEmpty }
 
     // Navigation
-    var selectedTab: DashboardTab = .dictations
+    var selectedTab: DashboardTab = .timeline
+    var insightsReturnTab: DashboardTab = .timeline
+    var insightsBackLabel: String {
+        insightsReturnTab == .dictations ? "Back to Dictations" : "Back to Timeline"
+    }
     var insightsInitialSection: InsightsSection = .words
     var selectedSettingsPane: SettingsPane = .general
     var selectedModelsCategory: ModelsCategory = .dictation

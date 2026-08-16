@@ -919,11 +919,30 @@ final class MuesliController: NSObject {
         )
     }
 
+    private func filteredDictationStats() -> DictationStats {
+        (try? dictationStore.dictationStats(
+            fromDate: appState.dictationFromDate,
+            toDate: appState.dictationToDate,
+            origin: appState.dictationOriginFilter,
+            targetApplication: appState.dictationApplicationFilter
+        )) ?? DictationStats(
+            totalWords: 0,
+            totalSessions: 0,
+            averageWordsPerSession: 0,
+            averageWPM: 0,
+            currentStreakDays: 0,
+            longestStreakDays: 0
+        )
+    }
+
     func meetingStats() -> MeetingStats {
         (try? dictationStore.meetingStats()) ?? MeetingStats(totalWords: 0, totalMeetings: 0, averageWPM: 0)
     }
 
     func openInsights(section: InsightsSection) {
+        if appState.selectedTab == .timeline || appState.selectedTab == .dictations {
+            appState.insightsReturnTab = appState.selectedTab
+        }
         appState.insightsInitialSection = section
         appState.selectedTab = .insights
     }
@@ -1051,7 +1070,7 @@ final class MuesliController: NSObject {
         }
         appState.activeFeatureTour = nil
         appState.featureTourStepIndex = 0
-        appState.selectedTab = .dictations
+        appState.selectedTab = .timeline
     }
 
     private func showFeatureTourStep(_ index: Int, in tour: FeatureTour) {
@@ -1066,7 +1085,7 @@ final class MuesliController: NSObject {
         }
         switch step.target {
         case .insightsEntry:
-            appState.selectedTab = .dictations
+            appState.selectedTab = .timeline
         case .dictionarySuggestions:
             appState.selectedTab = .dictionary
         case .meetingsSidebar:
@@ -1088,7 +1107,7 @@ final class MuesliController: NSObject {
     }
 
     func closeInsights() {
-        appState.selectedTab = .dictations
+        appState.selectedTab = appState.insightsReturnTab
     }
 
     func insightsSnapshot(range: InsightsRange) async throws -> InsightsSnapshot {
@@ -1130,15 +1149,27 @@ final class MuesliController: NSObject {
     }
 
     func syncAppState() {
+        let timelineRows = (try? dictationStore.timelineEntries(
+            limit: appState.timelinePageSize,
+            offset: 0,
+            fromDate: appState.timelineFromDate,
+            toDate: appState.timelineToDate,
+            origin: appState.timelineOriginFilter,
+            targetApplication: appState.timelineApplicationFilter
+        )) ?? []
+        appState.timelineRows = timelineRows
+        appState.hasMoreTimelineEntries = timelineRows.count >= appState.timelinePageSize
         let rows = (try? dictationStore.recentDictations(
             limit: appState.dictationPageSize,
             offset: 0,
             fromDate: appState.dictationFromDate,
             toDate: appState.dictationToDate,
-            origin: appState.dictationOriginFilter
+            origin: appState.dictationOriginFilter,
+            targetApplication: appState.dictationApplicationFilter
         )) ?? []
         appState.dictationRows = rows
         appState.hasMoreDictations = rows.count >= appState.dictationPageSize
+        appState.dictationTargetApplications = (try? dictationStore.dictationTargetApplications()) ?? []
         appState.meetingRows = (try? dictationStore.recentMeetings(
             limit: 200,
             folderID: appState.selectedFolderID,
@@ -1163,6 +1194,7 @@ final class MuesliController: NSObject {
         // Sort folders into a depth-first tree order so children appear beneath parents.
         appState.folders = Self.treeOrderedFolders(allFolders, order: order)
         appState.dictationStats = dictationStats()
+        appState.filteredDictationStats = filteredDictationStats()
         appState.meetingStats = meetingStats()
         refreshContributionMilestonePrompt(
             totalWords: appState.dictationStats.totalWords,
@@ -3970,8 +4002,24 @@ final class MuesliController: NSObject {
         syncAppState()
     }
 
+    func showTimelineHome() {
+        appState.selectedTab = .timeline
+        appState.meetingsNavigationState = .browser
+        appState.selectedMeetingID = nil
+        appState.selectedMeetingRecord = nil
+    }
+
     func showMeetingDocument(id: Int64) {
         appState.selectedTab = .meetings
+        appState.meetingDetailReturnDestination = .meetings
+        appState.selectedMeetingID = id
+        appState.selectedMeetingRecord = meeting(id: id)
+        appState.meetingsNavigationState = .document(id)
+    }
+
+    func showTimelineMeetingDocument(id: Int64) {
+        appState.selectedTab = .timeline
+        appState.meetingDetailReturnDestination = .timeline
         appState.selectedMeetingID = id
         appState.selectedMeetingRecord = meeting(id: id)
         appState.meetingsNavigationState = .document(id)
@@ -4643,10 +4691,51 @@ final class MuesliController: NSObject {
             offset: offset,
             fromDate: appState.dictationFromDate,
             toDate: appState.dictationToDate,
-            origin: appState.dictationOriginFilter
+            origin: appState.dictationOriginFilter,
+            targetApplication: appState.dictationApplicationFilter
         )) ?? []
         appState.dictationRows.append(contentsOf: more)
         appState.hasMoreDictations = more.count >= appState.dictationPageSize
+    }
+
+    func loadMoreTimelineEntries() {
+        guard appState.hasMoreTimelineEntries else { return }
+        let offset = appState.timelineRows.count
+        let more = (try? dictationStore.timelineEntries(
+            limit: appState.timelinePageSize,
+            offset: offset,
+            fromDate: appState.timelineFromDate,
+            toDate: appState.timelineToDate,
+            origin: appState.timelineOriginFilter,
+            targetApplication: appState.timelineApplicationFilter
+        )) ?? []
+        appState.timelineRows.append(contentsOf: more)
+        appState.hasMoreTimelineEntries = more.count >= appState.timelinePageSize
+    }
+
+    func filterTimeline(dateFilter: HistoryDateFilter) {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        appState.timelineDateFilter = dateFilter
+        appState.timelineFromDate = dateFilter.fromDate().map { formatter.string(from: $0) }
+        appState.timelineToDate = nil
+        appState.timelineScrollAnchor = nil
+        syncAppState()
+        appState.timelineScrollAnchor = appState.timelineRows.first?.id
+    }
+
+    func filterTimeline(origin: RecordOriginFilter) {
+        appState.timelineOriginFilter = origin
+        appState.timelineScrollAnchor = nil
+        syncAppState()
+        appState.timelineScrollAnchor = appState.timelineRows.first?.id
+    }
+
+    func filterTimeline(application: DictationTargetApplication?) {
+        appState.timelineApplicationFilter = application
+        appState.timelineScrollAnchor = nil
+        syncAppState()
+        appState.timelineScrollAnchor = appState.timelineRows.first?.id
     }
 
     func filterDictations(from: Date?, to: Date?) {
@@ -4665,6 +4754,11 @@ final class MuesliController: NSObject {
 
     func filterDictations(origin: RecordOriginFilter) {
         appState.dictationOriginFilter = origin
+        syncAppState()
+    }
+
+    func filterDictations(application: DictationTargetApplication?) {
+        appState.dictationApplicationFilter = application
         syncAppState()
     }
 
@@ -8572,9 +8666,16 @@ final class MuesliController: NSObject {
         nemotron35StreamingSessionID = nil
         previousStreamText = ""
         let duration = max(Date().timeIntervalSince(startedAt), 0)
+        let outputMode = currentDictationOutputMode
         fputs("[muesli-native] Nemotron streaming stop, got \(finalText.count) chars\n", stderr)
         let cleaned = FillerWordFilter.apply(finalText)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let shouldPersistTargetApp = DictationAttributionPolicy.shouldPersist(
+            isPasteOutput: outputMode == .paste,
+            source: "dictation",
+            text: cleaned
+        )
+        let targetApp = shouldPersistTargetApp ? capturedDictationCorrectionTargetApp : nil
 
         if !config.maraudersMapUnlocked { checkMaraudersMapActivation(cleaned) }
 
@@ -8582,6 +8683,8 @@ final class MuesliController: NSObject {
             _ = try? dictationStore.insertDictation(
                 text: cleaned,
                 durationSeconds: duration,
+                targetAppName: targetApp?.appName,
+                targetAppBundleID: targetApp?.bundleID,
                 startedAt: startedAt,
                 endedAt: Date()
             )
@@ -8694,10 +8797,17 @@ final class MuesliController: NSObject {
                     }
                     return
                 }
+                let shouldPersistTargetApp = DictationAttributionPolicy.shouldPersist(
+                    isPasteOutput: outputMode == .paste,
+                    source: "dictation",
+                    text: text
+                )
                 _ = try? self.dictationStore.insertDictation(
                     text: text,
                     durationSeconds: duration,
                     appContext: storageContext,
+                    targetAppName: shouldPersistTargetApp ? correctionTargetApp?.appName : nil,
+                    targetAppBundleID: shouldPersistTargetApp ? correctionTargetApp?.bundleID : nil,
                     startedAt: startedAt,
                     endedAt: Date()
                 )

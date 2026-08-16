@@ -61,6 +61,7 @@ struct MeetingsNavigationTests {
     func meetingsDefaultToBrowser() {
         let appState = AppState()
 
+        #expect(appState.selectedTab == .timeline)
         #expect(appState.meetingsNavigationState == .browser)
         #expect(appState.selectedMeeting == nil)
     }
@@ -92,15 +93,22 @@ struct MeetingsNavigationTests {
         }
     }
 
-    @Test("closing insights returns to dictations")
-    func closingInsightsReturnsToDictations() {
+    @Test("closing insights returns to the originating history view")
+    func closingInsightsReturnsToOrigin() {
         let controller = makeController()
         controller.openInsights(section: .meetings)
+        #expect(controller.appState.insightsBackLabel == "Back to Timeline")
 
         controller.closeInsights()
 
-        #expect(controller.appState.selectedTab == .dictations)
+        #expect(controller.appState.selectedTab == .timeline)
         #expect(controller.appState.insightsInitialSection == .meetings)
+
+        controller.appState.selectedTab = .dictations
+        controller.openInsights(section: .words)
+        #expect(controller.appState.insightsBackLabel == "Back to Dictations")
+        controller.closeInsights()
+        #expect(controller.appState.selectedTab == .dictations)
     }
 
     @Test("discard confirmation maps checkbox selections to meeting discard resolutions")
@@ -171,6 +179,85 @@ struct MeetingsNavigationTests {
         #expect(controller.appState.selectedMeetingID == 202)
         #expect(controller.appState.meetingsNavigationState == .document(202))
         #expect(controller.appState.selectedFolderID == 55)
+    }
+
+    @Test("timeline meeting route preserves timeline filters and scroll anchor")
+    func timelineMeetingRoutePreservesTimelineState() throws {
+        let store = try makeStore()
+        let meetingID = try insertMeeting(in: store, title: "Timeline meeting", savedRecordingPath: nil)
+        let controller = makeController(dictationStore: store)
+        controller.appState.timelineOriginFilter = .fromIPhone
+        controller.appState.timelineDateFilter = .lastWeek
+        controller.appState.timelineFromDate = "2026-08-09T00:00:00Z"
+        let notes = DictationTargetApplication(name: "Notes", bundleID: "com.apple.Notes")
+        controller.appState.timelineApplicationFilter = notes
+        controller.appState.timelineScrollAnchor = "dictation:77"
+
+        controller.showTimelineMeetingDocument(id: meetingID)
+
+        #expect(controller.appState.selectedTab == .timeline)
+        #expect(controller.appState.meetingDetailReturnDestination == .timeline)
+        #expect(controller.appState.meetingsNavigationState == .document(meetingID))
+        #expect(controller.appState.timelineOriginFilter == .fromIPhone)
+        #expect(controller.appState.timelineDateFilter == .lastWeek)
+        #expect(controller.appState.timelineFromDate == "2026-08-09T00:00:00Z")
+        #expect(controller.appState.timelineApplicationFilter == notes)
+        #expect(controller.appState.timelineScrollAnchor == "dictation:77")
+
+        controller.showTimelineHome()
+        #expect(controller.appState.meetingsNavigationState == .browser)
+        #expect(controller.appState.selectedMeetingID == nil)
+        #expect(controller.appState.timelineOriginFilter == .fromIPhone)
+        #expect(controller.appState.timelineDateFilter == .lastWeek)
+        #expect(controller.appState.timelineApplicationFilter == notes)
+        #expect(controller.appState.timelineScrollAnchor == "dictation:77")
+    }
+
+    @Test("timeline pagination and filter changes reset to the newest composite anchor")
+    func timelinePaginationAndFilterReset() throws {
+        let store = try makeStore()
+        let base = Date(timeIntervalSince1970: 1_776_000_000)
+        let notes = DictationTargetApplication(name: "Notes", bundleID: "com.apple.Notes")
+        for index in 0..<3 {
+            let endedAt = base.addingTimeInterval(Double(index))
+            _ = try store.insertDictation(
+                text: "Row \(index)",
+                durationSeconds: 1,
+                targetAppName: index == 0 ? notes.name : "TextEdit",
+                targetAppBundleID: index == 0 ? notes.bundleID : "com.apple.TextEdit",
+                startedAt: endedAt.addingTimeInterval(-1),
+                endedAt: endedAt
+            )
+        }
+        let controller = makeController(dictationStore: store)
+        controller.appState.timelinePageSize = 2
+        controller.syncAppState()
+
+        #expect(controller.appState.timelineRows.count == 2)
+        #expect(controller.appState.hasMoreTimelineEntries)
+        controller.loadMoreTimelineEntries()
+        #expect(controller.appState.timelineRows.count == 3)
+        #expect(!controller.appState.hasMoreTimelineEntries)
+
+        controller.appState.timelineScrollAnchor = controller.appState.timelineRows.last?.id
+        controller.filterTimeline(origin: .thisMac)
+        #expect(controller.appState.timelineRows.count == 2)
+        #expect(controller.appState.timelineScrollAnchor == controller.appState.timelineRows.first?.id)
+
+        controller.filterTimeline(dateFilter: .last2Days)
+        #expect(controller.appState.timelineDateFilter == .last2Days)
+        #expect(controller.appState.timelineScrollAnchor == controller.appState.timelineRows.first?.id)
+
+        controller.filterTimeline(dateFilter: .all)
+        controller.filterTimeline(application: notes)
+        #expect(controller.appState.timelineApplicationFilter == notes)
+        #expect(controller.appState.timelineRows.count == 1)
+        #expect(controller.appState.timelineScrollAnchor == controller.appState.timelineRows.first?.id)
+
+        controller.filterDictations(application: notes)
+        #expect(controller.appState.dictationApplicationFilter == notes)
+        #expect(controller.appState.dictationRows.count == 1)
+        #expect(controller.appState.filteredDictationStats.totalSessions == 1)
     }
 
     @Test("showMeetingsHome returns to browser and preserves prior meeting selection")

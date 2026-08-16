@@ -102,6 +102,7 @@ struct SidebarView: View {
             sidebarHeader
             searchBar
 
+            sidebarItem(tab: .timeline, icon: "clock.fill", label: "Timeline")
             sidebarItem(tab: .dictations, icon: "mic.fill", label: "Dictations")
             meetingsSection
             sidebarItem(tab: .dictionary, icon: "character.book.closed", label: "Dictionary")
@@ -487,7 +488,11 @@ struct SidebarView: View {
         let isSelected = appState.selectedTab == tab
         Button {
             withAnimation(.easeInOut(duration: 0.15)) {
-                appState.selectedTab = tab
+                if tab == .timeline {
+                    controller.showTimelineHome()
+                } else {
+                    appState.selectedTab = tab
+                }
             }
         } label: {
             HStack(spacing: MuesliTheme.spacing12) {
