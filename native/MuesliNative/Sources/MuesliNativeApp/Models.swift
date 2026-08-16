@@ -3,6 +3,13 @@ import Foundation
 import MuesliCore
 
 struct BackendOption: Equatable {
+    struct Catalog {
+        let systemManaged: [BackendOption]
+        let all: [BackendOption]
+        let onboardingDefault: BackendOption
+        let onboarding: [BackendOption]
+    }
+
     let backend: String
     let model: String
     let label: String
@@ -158,13 +165,6 @@ struct BackendOption: Equatable {
         recommended: false
     )
 
-    static let systemManaged: [BackendOption] = {
-        if #available(macOS 26.0, *), AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem {
-            return [.appleSpeechAnalyzer]
-        }
-        return []
-    }()
-
     static let experimental: [BackendOption] = [
         .senseVoiceSmall, .indicASR, .gemma4E2BLiteRT,
     ]
@@ -176,34 +176,56 @@ struct BackendOption: Equatable {
         .nemotron35Multilingual,
     ]
 
-    /// Models available for download and use.
-    static let all: [BackendOption] = {
-        systemManaged
+    static func catalog(appleSpeechAvailable: Bool) -> Catalog {
+        let systemManaged: [BackendOption] = appleSpeechAvailable ? [.appleSpeechAnalyzer] : []
+        let all = systemManaged
             + parakeetFamily
             + [.qwen3Asr]
             + whisperFamily
             + [.cohereTranscribe]
             + streaming
             + experimental
+        let onboardingDefault = systemManaged.first ?? .parakeetMultilingual
+        let onboardingCandidates: [BackendOption] = [
+            onboardingDefault,
+            .parakeetMultilingual,
+            .whisperTiny,
+            .whisperSmall,
+            .cohereTranscribe,
+            .nemotron35Multilingual,
+        ]
+        let onboarding = onboardingCandidates.reduce(into: [BackendOption]()) { options, option in
+            if !options.contains(option) {
+                options.append(option)
+            }
+        }
+
+        return Catalog(
+            systemManaged: systemManaged,
+            all: all,
+            onboardingDefault: onboardingDefault,
+            onboarding: onboarding
+        )
+    }
+
+    private static let currentCatalog: Catalog = {
+        if #available(macOS 26.0, *), AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem {
+            return catalog(appleSpeechAvailable: true)
+        }
+        return catalog(appleSpeechAvailable: false)
     }()
+
+    static let systemManaged = currentCatalog.systemManaged
+
+    /// Models available for download and use.
+    static let all = currentCatalog.all
 
     /// The first-run default uses the system-managed backend when the OS exposes it.
     /// Parakeet remains the deterministic fallback for older or unsupported Macs.
-    static let onboardingDefault: BackendOption = systemManaged.first ?? .parakeetMultilingual
+    static let onboardingDefault = currentCatalog.onboardingDefault
 
     /// Curated first-run choices. Experimental models are excluded by default.
-    static let onboarding: [BackendOption] = [
-        onboardingDefault,
-        .parakeetMultilingual,
-        .whisperTiny,
-        .whisperSmall,
-        .cohereTranscribe,
-        .nemotron35Multilingual,
-    ].reduce(into: []) { options, option in
-        if !options.contains(option) {
-            options.append(option)
-        }
-    }
+    static let onboarding = currentCatalog.onboarding
 
     /// Models coming soon — shown greyed out in the Models tab.
     static let comingSoon: [BackendOption] = []

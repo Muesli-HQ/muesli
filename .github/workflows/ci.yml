@@ -118,8 +118,9 @@ jobs:
       - name: Run test shard
         run: bash ./scripts/run_ci_test_shard.sh "${{ matrix.shard }}"
 
-  # Exercise the runtime-supported Apple Speech catalogue path while the
-  # macOS 15 shards continue to verify the older-system fallback behavior.
+  # Compile and exercise Apple Speech on macOS 26. Hosted runners do not
+  # guarantee that SpeechTranscriber language assets are provisioned, so the
+  # catalogue's available/unavailable policy is covered deterministically.
   apple_speech_macos26:
     needs: changes
     if: needs.changes.outputs.full_ci == 'true'
@@ -127,15 +128,18 @@ jobs:
     timeout-minutes: 30
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
-      MUESLI_REQUIRE_APPLE_SPEECH_AVAILABLE: "1"
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      - name: Test Apple Speech supported-system path
-        run: swift test --package-path native/MuesliNative --filter AppleSpeechAnalyzerBackendTests
+      - name: Test Apple Speech on macOS 26
+        run: |
+          swift test \
+            --package-path native/MuesliNative \
+            --scratch-path "${RUNNER_TEMP}/muesli-apple-speech-macos26" \
+            --filter AppleSpeechAnalyzerBackendTests
 
   # Packaged CLI smoke test — verify the app bundle contains muesli-cli
   cli-smoke:

@@ -175,8 +175,12 @@ struct TranscriptionCoordinatorTests {
             await lifecycle.beginUse()
             await useStarted.increment()
         }
-        await Task.yield()
+        for _ in 0..<100 {
+            if (await lifecycle.snapshot()).activeUseCount > 0 { break }
+            await Task.yield()
+        }
 
+        #expect((await lifecycle.snapshot()).activeUseCount == 1)
         #expect(await useStarted.value == 0)
         #expect((await lifecycle.snapshot()).isCleaningUp)
 

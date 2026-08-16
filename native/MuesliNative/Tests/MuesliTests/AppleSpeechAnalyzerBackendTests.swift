@@ -150,21 +150,24 @@ struct AppleSpeechAnalyzerBackendTests {
         }
     }
 
-    @Test("macOS 26 CI exercises the supported Apple Speech catalogue path")
-    func requiredSupportedSystemCoverage() {
-        guard ProcessInfo.processInfo.environment["MUESLI_REQUIRE_APPLE_SPEECH_AVAILABLE"] == "1" else {
-            return
-        }
+    @Test("supported catalogue makes Apple Speech the onboarding default")
+    func supportedCatalogue() {
+        let catalog = BackendOption.catalog(appleSpeechAvailable: true)
 
-        guard #available(macOS 26.0, *) else {
-            Issue.record("The supported-system Apple Speech test requires macOS 26")
-            return
-        }
+        #expect(catalog.systemManaged == [.appleSpeechAnalyzer])
+        #expect(catalog.all.contains(.appleSpeechAnalyzer))
+        #expect(catalog.onboardingDefault == .appleSpeechAnalyzer)
+        #expect(catalog.onboarding.first == .appleSpeechAnalyzer)
+    }
 
-        #expect(AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem)
-        #expect(BackendOption.systemManaged.contains(.appleSpeechAnalyzer))
-        #expect(BackendOption.all.contains(.appleSpeechAnalyzer))
-        #expect(BackendOption.onboardingDefault == .appleSpeechAnalyzer)
+    @Test("unsupported catalogue falls back to Parakeet")
+    func unsupportedCatalogue() {
+        let catalog = BackendOption.catalog(appleSpeechAvailable: false)
+
+        #expect(catalog.systemManaged.isEmpty)
+        #expect(!catalog.all.contains(.appleSpeechAnalyzer))
+        #expect(catalog.onboardingDefault == .parakeetMultilingual)
+        #expect(!catalog.onboarding.contains(.appleSpeechAnalyzer))
     }
 }
 
