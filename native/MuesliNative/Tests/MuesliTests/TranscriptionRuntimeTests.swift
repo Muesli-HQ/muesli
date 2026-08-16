@@ -81,6 +81,63 @@ struct InferenceGateTests {
     }
 }
 
+@Suite("Transcription work scheduler")
+struct TranscriptionWorkSchedulerTests {
+    @Test("foreground work uses capacity reserved from meeting backlog")
+    func foregroundStartsAheadOfQueuedBackgroundWork() async throws {
+        let scheduler = TranscriptionWorkScheduler()
+        try await scheduler.acquire(.background)
+        try await scheduler.acquire(.background)
+
+        let queuedBackground = Task {
+            try await scheduler.acquire(.background)
+            await scheduler.release(.background)
+        }
+        try await Task.sleep(for: .milliseconds(10))
+        #expect(await scheduler.queuedWaiterCount(.background) == 1)
+
+        try await scheduler.acquire(.foreground)
+        #expect(await scheduler.queuedWaiterCount(.foreground) == 0)
+        #expect(await scheduler.queuedWaiterCount(.background) == 1)
+
+        await scheduler.release(.foreground)
+        #expect(await scheduler.queuedWaiterCount(.background) == 1)
+
+        await scheduler.release(.background)
+        try await queuedBackground.value
+        #expect(await scheduler.queuedWaiterCount(.background) == 0)
+        await scheduler.release(.background)
+    }
+
+    @Test("cancelled meeting work leaves no queued scheduler job")
+    func cancelledBackgroundWaiterIsRemoved() async throws {
+        let scheduler = TranscriptionWorkScheduler()
+        try await scheduler.acquire(.background)
+        try await scheduler.acquire(.background)
+
+        let cancelled = Task {
+            try await scheduler.acquire(.background)
+            await scheduler.release(.background)
+        }
+        try await Task.sleep(for: .milliseconds(10))
+        #expect(await scheduler.queuedWaiterCount(.background) == 1)
+
+        cancelled.cancel()
+        do {
+            try await cancelled.value
+            Issue.record("Cancelled meeting work unexpectedly acquired a scheduler slot")
+        } catch is CancellationError {
+            // Expected path.
+        } catch {
+            Issue.record("Cancelled meeting work failed with unexpected error: \(error)")
+        }
+
+        #expect(await scheduler.queuedWaiterCount(.background) == 0)
+        await scheduler.release(.background)
+        await scheduler.release(.background)
+    }
+}
+
 @Suite("TranscriptionCoordinator routing")
 struct TranscriptionCoordinatorTests {
 

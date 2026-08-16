@@ -103,3 +103,53 @@ struct MeetingAudioCapturePolicyTests {
         )
     }
 }
+
+@Suite("Dictation transcription foreground policy")
+struct DictationTranscriptionForegroundPolicyTests {
+    @Test("completed dictation may update foreground when no newer capture owns it")
+    func completedDictationMayUpdateForeground() {
+        #expect(DictationTranscriptionForegroundPolicy.shouldApplyResult(
+            isMeetingCapturingAudio: false,
+            hasActiveRecording: false,
+            hasPendingStop: false,
+            isStreaming: false,
+            isPresentationStateEligible: true
+        ))
+    }
+
+    @Test("meeting capture blocks stale dictation foreground updates")
+    func meetingCaptureBlocksForegroundUpdate() {
+        #expect(!DictationTranscriptionForegroundPolicy.shouldApplyResult(
+            isMeetingCapturingAudio: true,
+            hasActiveRecording: false,
+            hasPendingStop: false,
+            isStreaming: false,
+            isPresentationStateEligible: true
+        ))
+    }
+
+    @Test("newer dictation activity blocks stale foreground updates")
+    func newerDictationActivityBlocksForegroundUpdate() {
+        #expect(!DictationTranscriptionForegroundPolicy.shouldApplyResult(
+            isMeetingCapturingAudio: false,
+            hasActiveRecording: true,
+            hasPendingStop: false,
+            isStreaming: false,
+            isPresentationStateEligible: true
+        ))
+        #expect(!DictationTranscriptionForegroundPolicy.shouldApplyResult(
+            isMeetingCapturingAudio: false,
+            hasActiveRecording: false,
+            hasPendingStop: true,
+            isStreaming: false,
+            isPresentationStateEligible: true
+        ))
+        #expect(!DictationTranscriptionForegroundPolicy.shouldApplyResult(
+            isMeetingCapturingAudio: false,
+            hasActiveRecording: false,
+            hasPendingStop: false,
+            isStreaming: true,
+            isPresentationStateEligible: true
+        ))
+    }
+}

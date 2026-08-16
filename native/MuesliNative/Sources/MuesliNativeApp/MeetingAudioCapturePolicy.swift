@@ -22,3 +22,19 @@ enum MeetingAudioCapturePolicy {
             || backgroundMeetingProcessingCount > 0
     }
 }
+
+enum DictationTranscriptionForegroundPolicy {
+    static func shouldApplyResult(
+        isMeetingCapturingAudio: Bool,
+        hasActiveRecording: Bool,
+        hasPendingStop: Bool,
+        isStreaming: Bool,
+        isPresentationStateEligible: Bool
+    ) -> Bool {
+        !isMeetingCapturingAudio
+            && !hasActiveRecording
+            && !hasPendingStop
+            && !isStreaming
+            && isPresentationStateEligible
+    }
+}

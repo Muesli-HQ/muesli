@@ -92,6 +92,127 @@ actor AppleSpeechUseLifecycle {
     }
 }
 
+enum TranscriptionWorkPriority {
+    case foreground
+    case background
+}
+
+/// Bounds concurrent ASR work while preserving the meeting pipeline's mic/system
+/// parallelism and a third slot for latency-sensitive dictation.
+actor TranscriptionWorkScheduler {
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Bool, Never>
+    }
+
+    private let maximumConcurrentJobs: Int
+    private let maximumConcurrentBackgroundJobs: Int
+    private var activeForegroundJobs = 0
+    private var activeBackgroundJobs = 0
+    private var foregroundWaiters: [Waiter] = []
+    private var backgroundWaiters: [Waiter] = []
+
+    init(maximumConcurrentJobs: Int = 3, maximumConcurrentBackgroundJobs: Int = 2) {
+        let resolvedMaximumConcurrentJobs = max(maximumConcurrentJobs, 1)
+        self.maximumConcurrentJobs = resolvedMaximumConcurrentJobs
+        self.maximumConcurrentBackgroundJobs = min(
+            max(maximumConcurrentBackgroundJobs, 1),
+            resolvedMaximumConcurrentJobs
+        )
+    }
+
+    func acquire(_ priority: TranscriptionWorkPriority) async throws {
+        try Task.checkCancellation()
+        if canStart(priority) {
+            markStarted(priority)
+            return
+        }
+
+        let id = UUID()
+        let acquired = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let waiter = Waiter(id: id, continuation: continuation)
+                switch priority {
+                case .foreground:
+                    foregroundWaiters.append(waiter)
+                case .background:
+                    backgroundWaiters.append(waiter)
+                }
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(id) }
+        }
+        guard acquired else { throw CancellationError() }
+    }
+
+    func release(_ priority: TranscriptionWorkPriority) {
+        switch priority {
+        case .foreground:
+            activeForegroundJobs = max(activeForegroundJobs - 1, 0)
+        case .background:
+            activeBackgroundJobs = max(activeBackgroundJobs - 1, 0)
+        }
+        admitWaiters()
+    }
+
+    func queuedWaiterCount(_ priority: TranscriptionWorkPriority) -> Int {
+        switch priority {
+        case .foreground:
+            foregroundWaiters.count
+        case .background:
+            backgroundWaiters.count
+        }
+    }
+
+    private var activeJobCount: Int {
+        activeForegroundJobs + activeBackgroundJobs
+    }
+
+    private func canStart(_ priority: TranscriptionWorkPriority) -> Bool {
+        guard activeJobCount < maximumConcurrentJobs else { return false }
+        switch priority {
+        case .foreground:
+            return true
+        case .background:
+            return activeForegroundJobs == 0
+                && foregroundWaiters.isEmpty
+                && activeBackgroundJobs < maximumConcurrentBackgroundJobs
+        }
+    }
+
+    private func markStarted(_ priority: TranscriptionWorkPriority) {
+        switch priority {
+        case .foreground:
+            activeForegroundJobs += 1
+        case .background:
+            activeBackgroundJobs += 1
+        }
+    }
+
+    private func admitWaiters() {
+        while canStart(.foreground), !foregroundWaiters.isEmpty {
+            markStarted(.foreground)
+            foregroundWaiters.removeFirst().continuation.resume(returning: true)
+        }
+        if canStart(.background), !backgroundWaiters.isEmpty {
+            markStarted(.background)
+            backgroundWaiters.removeFirst().continuation.resume(returning: true)
+        }
+    }
+
+    private func cancelWaiter(_ id: UUID) {
+        if let index = foregroundWaiters.firstIndex(where: { $0.id == id }) {
+            foregroundWaiters.remove(at: index).continuation.resume(returning: false)
+            admitWaiters()
+            return
+        }
+        if let index = backgroundWaiters.firstIndex(where: { $0.id == id }) {
+            backgroundWaiters.remove(at: index).continuation.resume(returning: false)
+            admitWaiters()
+        }
+    }
+}
+
 actor TranscriptionCoordinator {
     typealias DiarizerModelLoader = @Sendable (DiarizerRuntimePolicy) async throws -> DiarizerModels
     typealias VADLoader = @Sendable () async throws -> VadManager
@@ -127,6 +248,7 @@ actor TranscriptionCoordinator {
     private var _appleSpeechTranscriber: Any?
     private let appleSpeechLifecycle = AppleSpeechUseLifecycle()
     private let senseVoiceTranscriber = SenseVoiceTranscriber()
+    private let workScheduler = TranscriptionWorkScheduler()
     private var vadManager: VadManager?
     private var diarizerManager: DiarizerManager?
     private var isDiarizerLoadInProgress = false
@@ -801,7 +923,8 @@ actor TranscriptionCoordinator {
             backend: backend,
             cohereLanguage: cohereLanguage,
             indicASRLanguage: indicASRLanguage,
-            whisperLanguage: whisperLanguage
+            whisperLanguage: whisperLanguage,
+            priority: .foreground
         )
         result = removeArtifacts(result)
         if !result.text.isEmpty {
@@ -834,7 +957,8 @@ actor TranscriptionCoordinator {
             backend: backend,
             cohereLanguage: cohereLanguage,
             indicASRLanguage: indicASRLanguage,
-            whisperLanguage: whisperLanguage
+            whisperLanguage: whisperLanguage,
+            priority: .background
         ))
     }
 
@@ -864,7 +988,8 @@ actor TranscriptionCoordinator {
             backend: backend,
             cohereLanguage: cohereLanguage,
             indicASRLanguage: indicASRLanguage,
-            whisperLanguage: whisperLanguage
+            whisperLanguage: whisperLanguage,
+            priority: .background
         ))
     }
 
@@ -1186,6 +1311,32 @@ actor TranscriptionCoordinator {
     }
 
     private func route(
+        url: URL,
+        backend: BackendOption,
+        cohereLanguage: CohereTranscribeLanguage,
+        indicASRLanguage: IndicASRLanguage,
+        whisperLanguage: WhisperKitLanguage,
+        priority: TranscriptionWorkPriority
+    ) async throws -> SpeechTranscriptionResult {
+        try await workScheduler.acquire(priority)
+        do {
+            try Task.checkCancellation()
+            let result = try await routeWithoutScheduling(
+                url: url,
+                backend: backend,
+                cohereLanguage: cohereLanguage,
+                indicASRLanguage: indicASRLanguage,
+                whisperLanguage: whisperLanguage
+            )
+            await workScheduler.release(priority)
+            return result
+        } catch {
+            await workScheduler.release(priority)
+            throw error
+        }
+    }
+
+    private func routeWithoutScheduling(
         url: URL,
         backend: BackendOption,
         cohereLanguage: CohereTranscribeLanguage,
