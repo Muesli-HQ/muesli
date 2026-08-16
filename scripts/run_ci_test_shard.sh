@@ -56,8 +56,6 @@ case "${shard}" in
       WhisperKitLanguageTests
       SpeechSegmentTests
       SpeechTranscriptionResultTests
-      TranscriptionWorkSchedulerTests
-      DictationAudioSessionFailurePolicyTests
       TranscriptionCoordinatorTests
       TranscriptionEngineArtifactsFilterTests
       DiarizerRuntimePolicyTests
@@ -81,10 +79,9 @@ case "${shard}" in
       DiagnosticIncidentTests
       DictationAudioRouteControllerTests
       MeetingDetectorTests
+      MeetingProcessingStageTests
       MeetingRecordingWriterTests
       MeetingResumePolicyTests
-      MeetingAudioCapturePolicyTests
-      DictationTranscriptionForegroundPolicyTests
       MeetingStreamingPartialSessionTests
       MeetingFollowUpPolicyTests
       MeetingFollowUpThreadTests

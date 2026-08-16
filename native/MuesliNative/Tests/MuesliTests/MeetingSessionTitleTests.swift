@@ -1,6 +1,28 @@
 import Testing
 @testable import MuesliNativeApp
 
+@Suite("Meeting processing stage")
+struct MeetingProcessingStageTests {
+    @Test("audio processing keeps dictation blocked")
+    func audioProcessingBlocksDictation() {
+        #expect(!MeetingProcessingStage.transcribingAudio.allowsDictation)
+        #expect(!MeetingProcessingStage.cleaningAudio.allowsDictation)
+    }
+
+    @Test("post-transcription processing allows dictation")
+    func postTranscriptionAllowsDictation() {
+        #expect(MeetingProcessingStage.generatingTitle.allowsDictation)
+        #expect(MeetingProcessingStage.summarizingNotes.allowsDictation)
+    }
+
+    @Test("dictation is released only when audio processing finishes")
+    func releasesDictationAtPostTranscriptionBoundary() {
+        #expect(MeetingProcessingStage.generatingTitle.releasesDictation(after: .transcribingAudio))
+        #expect(!MeetingProcessingStage.summarizingNotes.releasesDictation(after: .generatingTitle))
+        #expect(!MeetingProcessingStage.transcribingAudio.releasesDictation(after: nil))
+    }
+}
+
 @Suite("Meeting session title selection")
 struct MeetingSessionTitleTests {
     @Test("calendar event title is used when present")

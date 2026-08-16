@@ -140,6 +140,19 @@ enum MeetingProcessingStage {
     case cleaningAudio
     case generatingTitle
     case summarizingNotes
+
+    var allowsDictation: Bool {
+        switch self {
+        case .transcribingAudio, .cleaningAudio:
+            false
+        case .generatingTitle, .summarizingNotes:
+            true
+        }
+    }
+
+    func releasesDictation(after previousStage: MeetingProcessingStage?) -> Bool {
+        previousStage?.allowsDictation == false && allowsDictation
+    }
 }
 
 private enum MeetingTranscriptRecoveryResult {
