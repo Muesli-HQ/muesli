@@ -166,6 +166,7 @@ struct TimelineView: View {
                                     .id(entry.id)
                             }
                         }
+                        .scrollTargetLayout()
                         .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
                         .overlay(
                             RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
@@ -180,7 +181,6 @@ struct TimelineView: View {
                         .onAppear { controller.loadMoreTimelineEntries() }
                 }
             }
-            .scrollTargetLayout()
             .padding(.horizontal, MuesliTheme.spacing24)
             .padding(.bottom, MuesliTheme.spacing24)
         }
