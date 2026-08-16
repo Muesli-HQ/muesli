@@ -35,7 +35,7 @@ actor TranscriptionCoordinator {
     private static let defaultDiarizerLoadOperationTimeout: Duration = .seconds(300)
 
     static let explicitlyRoutedBackendIdentifiers: Set<String> = [
-        "whisper", "nemotron35", "qwen", "cohere", "indicasr", "sensevoice", "gemma4-litert",
+        "whisper", "nemotron35", "qwen", "cohere", "indicasr", "sensevoice", "gemma4-litert", "apple-speech",
     ]
 
     private let fluidTranscriber = FluidAudioTranscriber()
@@ -45,6 +45,7 @@ actor TranscriptionCoordinator {
     private var _cohereTranscriber: Any?
     private var _indicASRTranscriber: Any?
     private var _gemma4LiteRTTranscriber: Any?
+    private var _appleSpeechTranscriber: Any?
     private let senseVoiceTranscriber = SenseVoiceTranscriber()
     private var vadManager: VadManager?
     private var diarizerManager: DiarizerManager?
@@ -261,6 +262,14 @@ actor TranscriptionCoordinator {
         return _gemma4LiteRTTranscriber as! Gemma4LiteRTTranscriber
     }
 
+    @available(macOS 26.0, *)
+    private var appleSpeechTranscriber: AppleSpeechAnalyzerTranscriber {
+        if _appleSpeechTranscriber == nil {
+            _appleSpeechTranscriber = AppleSpeechAnalyzerTranscriber()
+        }
+        return _appleSpeechTranscriber as! AppleSpeechAnalyzerTranscriber
+    }
+
     func preload(
         backend: BackendOption,
         enablePostProcessor: Bool = false,
@@ -377,6 +386,15 @@ actor TranscriptionCoordinator {
                 throw NSError(domain: "MuesliTranscriptionRuntime", code: 7, userInfo: [
                     NSLocalizedDescriptionKey: "Gemma 4 E2B requires macOS 15 or later.",
                 ])
+            }
+        case "apple-speech":
+            if #available(macOS 26.0, *) {
+                _ = try await appleSpeechTranscriber.prepare(
+                    progress: progress,
+                    progressSnapshot: progressSnapshot
+                )
+            } else {
+                throw AppleSpeechAnalyzerError.unavailable
             }
         default:
             throw NSError(domain: "MuesliTranscriptionRuntime", code: 5, userInfo: [
@@ -1060,6 +1078,11 @@ actor TranscriptionCoordinator {
             return try await transcribeWithSenseVoice(url: url)
         case "gemma4-litert":
             return try await transcribeWithGemma4LiteRT(url: url)
+        case "apple-speech":
+            if #available(macOS 26.0, *) {
+                return try await appleSpeechTranscriber.transcribe(wavURL: url)
+            }
+            throw AppleSpeechAnalyzerError.unavailable
         default:
             return try await transcribeWithFluidAudio(url: url)
         }

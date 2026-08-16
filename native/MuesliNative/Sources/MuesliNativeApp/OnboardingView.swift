@@ -77,13 +77,20 @@ struct OnboardingView: View {
     }
 
     private var onboardingAlternativeModels: [BackendOption] {
-        var options = BackendOption.onboarding.filter { $0 != .parakeetMultilingual }
+        var options = BackendOption.onboarding.filter { $0 != BackendOption.onboardingDefault }
         if BackendOption.onboarding.contains(selectedBackend),
-           selectedBackend != .parakeetMultilingual,
+           selectedBackend != BackendOption.onboardingDefault,
            !options.contains(selectedBackend) {
             options.insert(selectedBackend, at: 0)
         }
         return options
+    }
+
+    private var onboardingModelDescription: String {
+        if BackendOption.onboardingDefault == .appleSpeechAnalyzer {
+            return "Use Apple Speech, or choose another local model to download while you continue setup."
+        }
+        return "Start with a fast local model. Larger models can download while you continue setup."
     }
 
     init(
@@ -91,7 +98,7 @@ struct OnboardingView: View {
         appState: AppState,
         initialStep: Int = 0,
         initialUserName: String = "",
-        initialBackend: BackendOption = .parakeetMultilingual,
+        initialBackend: BackendOption = BackendOption.onboardingDefault,
         initialCohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
         initialHotkey: HotkeyConfig = .default,
         initialSystemAudioRequested: Bool = false,
@@ -128,7 +135,9 @@ struct OnboardingView: View {
         _currentStep = State(initialValue: effectiveInitialStep)
         _userName = State(initialValue: initialUserName)
         _selectedUseCase = State(initialValue: initialUseCase)
-        let sanitizedInitialBackend = BackendOption.onboarding.contains(initialBackend) ? initialBackend : .parakeetMultilingual
+        let sanitizedInitialBackend = BackendOption.onboarding.contains(initialBackend)
+            ? initialBackend
+            : BackendOption.onboardingDefault
         _selectedBackend = State(initialValue: sanitizedInitialBackend)
         _selectedCohereLanguage = State(initialValue: initialCohereLanguage)
         _selectedHotkey = State(initialValue: initialHotkey)
@@ -669,7 +678,7 @@ struct OnboardingView: View {
                     .font(MuesliTheme.title1())
                     .foregroundStyle(MuesliTheme.textPrimary)
 
-                Text("Start with a fast local model.\nLarger models are available after setup.")
+                Text(onboardingModelDescription)
                     .font(MuesliTheme.body())
                     .foregroundStyle(MuesliTheme.textSecondary)
                     .multilineTextAlignment(.center)
@@ -678,7 +687,7 @@ struct OnboardingView: View {
 
             ScrollView {
                 VStack(spacing: MuesliTheme.spacing8) {
-                    modelCard(option: .parakeetMultilingual)
+                    modelCard(option: BackendOption.onboardingDefault)
 
                     Button {
                         withAnimation(.easeInOut(duration: 0.2)) {
@@ -769,7 +778,7 @@ struct OnboardingView: View {
                         Text(option.label)
                             .font(MuesliTheme.headline())
                             .foregroundStyle(MuesliTheme.textPrimary)
-                        if option.recommended {
+                        if option == BackendOption.onboardingDefault {
                             Text("Recommended")
                                 .font(.system(size: 9, weight: .semibold))
                                 .foregroundStyle(.white)

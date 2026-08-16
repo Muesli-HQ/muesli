@@ -127,6 +127,15 @@ struct BackendOption: Equatable {
         recommended: false
     )
 
+    static let appleSpeechAnalyzer = BackendOption(
+        backend: "apple-speech",
+        model: "apple-speech-transcriber",
+        label: "Apple Speech",
+        sizeLabel: "System managed",
+        description: "Apple's private, on-device speech model for macOS 26. It is designed for dictation, meetings, distant speakers, and long recordings, while macOS manages the language assets and updates.",
+        recommended: false
+    )
+
     // Default alias
     static let whisper = parakeetMultilingual
 
@@ -149,6 +158,13 @@ struct BackendOption: Equatable {
         recommended: false
     )
 
+    static let systemManaged: [BackendOption] = {
+        if #available(macOS 26.0, *), AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem {
+            return [.appleSpeechAnalyzer]
+        }
+        return []
+    }()
+
     static let experimental: [BackendOption] = [
         .senseVoiceSmall, .indicASR, .gemma4E2BLiteRT,
     ]
@@ -162,7 +178,8 @@ struct BackendOption: Equatable {
 
     /// Models available for download and use.
     static let all: [BackendOption] = {
-        parakeetFamily
+        systemManaged
+            + parakeetFamily
             + [.qwen3Asr]
             + whisperFamily
             + [.cohereTranscribe]
@@ -170,10 +187,23 @@ struct BackendOption: Equatable {
             + experimental
     }()
 
-    /// Curated first-run choices shown in onboarding's "Other models" section.
-    /// This is a deliberate hand-picked list, not a derived rule. Experimental models
-    /// are excluded by default.
-    static let onboarding: [BackendOption] = [.parakeetMultilingual, .whisperTiny, .whisperSmall, .cohereTranscribe, .nemotron35Multilingual]
+    /// The first-run default uses the system-managed backend when the OS exposes it.
+    /// Parakeet remains the deterministic fallback for older or unsupported Macs.
+    static let onboardingDefault: BackendOption = systemManaged.first ?? .parakeetMultilingual
+
+    /// Curated first-run choices. Experimental models are excluded by default.
+    static let onboarding: [BackendOption] = [
+        onboardingDefault,
+        .parakeetMultilingual,
+        .whisperTiny,
+        .whisperSmall,
+        .cohereTranscribe,
+        .nemotron35Multilingual,
+    ].reduce(into: []) { options, option in
+        if !options.contains(option) {
+            options.append(option)
+        }
+    }
 
     /// Models coming soon — shown greyed out in the Models tab.
     static let comingSoon: [BackendOption] = []
@@ -200,6 +230,10 @@ struct BackendOption: Equatable {
 
     var supportsMeetingTranscription: Bool {
         !isStreamingDictationBackend
+    }
+
+    var isSystemManaged: Bool {
+        backend == "apple-speech"
     }
 
     /// Multilingual WhisperKit models expose language selection (auto-detect or pinned code).
@@ -247,6 +281,11 @@ struct BackendOption: Equatable {
             return SenseVoiceTranscriber.isModelDownloaded(fileManager: fm)
         case "gemma4-litert":
             return Gemma4LiteRTModelStore.isAvailableLocally()
+        case "apple-speech":
+            if #available(macOS 26.0, *) {
+                return AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem
+            }
+            return false
         default:
             return false
         }
