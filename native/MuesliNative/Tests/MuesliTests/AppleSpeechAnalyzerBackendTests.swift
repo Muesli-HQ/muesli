@@ -117,16 +117,64 @@ struct AppleSpeechAnalyzerBackendTests {
         #expect(await counter.value == 2)
     }
 
-    @Test("stale reservation cleanup preserves the newer owned locale")
-    func staleReservationCleanupPreservesNewerLocale() {
-        var ownership = AppleSpeechReservationOwnership()
-        ownership.record(Locale(identifier: "en-US"))
-        ownership.record(Locale(identifier: "fr-FR"))
+    @Test("reservation limit releases stale app reservations and retries once")
+    func reservationLimitRecoversOnce() async throws {
+        let state = AppleSpeechReservationRecoveryTestState(
+            failuresBeforeSuccess: 1,
+            reservations: [Locale(identifier: "en-US"), Locale(identifier: "fr-FR")]
+        )
 
-        #expect(ownership.locales(excluding: "fr-FR").map { $0.identifier(.bcp47) } == ["en-US"])
+        try await AppleSpeechReservationRecovery.reserve(
+            maximumReservations: 2,
+            operation: { try await state.reserve() },
+            reservations: { state.reservations },
+            release: { await state.release($0) }
+        )
 
-        ownership.remove(Locale(identifier: "en-US"))
-        #expect(ownership.locales(excluding: "fr-FR").isEmpty)
+        #expect(await state.reservationAttemptCount == 2)
+        #expect(await state.releasedIdentifiers == ["en-US", "fr-FR"])
+    }
+
+    @Test("an existing reservation is successful without cleanup")
+    func existingReservationDoesNotRecover() async throws {
+        let state = AppleSpeechReservationRecoveryTestState(
+            failuresBeforeSuccess: 0,
+            reservations: [Locale(identifier: "en-US")],
+            successfulReservationResult: false
+        )
+
+        try await AppleSpeechReservationRecovery.reserve(
+            maximumReservations: 1,
+            operation: { try await state.reserve() },
+            reservations: { state.reservations },
+            release: { await state.release($0) }
+        )
+
+        #expect(await state.reservationAttemptCount == 1)
+        #expect(await state.releasedIdentifiers.isEmpty)
+    }
+
+    @Test("non-capacity failures preserve reservations and do not retry")
+    func nonCapacityFailureDoesNotRecover() async {
+        let state = AppleSpeechReservationRecoveryTestState(
+            failuresBeforeSuccess: 1,
+            reservations: [Locale(identifier: "en-US")]
+        )
+
+        do {
+            try await AppleSpeechReservationRecovery.reserve(
+                maximumReservations: 2,
+                operation: { try await state.reserve() },
+                reservations: { state.reservations },
+                release: { await state.release($0) }
+            )
+            Issue.record("Expected preparation to fail")
+        } catch AppleSpeechTestError.preparationFailed {
+            #expect(await state.reservationAttemptCount == 1)
+            #expect(await state.releasedIdentifiers.isEmpty)
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
     }
 
     @Test("backend is system managed and only catalogued when supported")
@@ -176,6 +224,38 @@ private actor AppleSpeechTestCounter {
 
     func increment() {
         value += 1
+    }
+}
+
+private actor AppleSpeechReservationRecoveryTestState {
+    private var remainingFailures: Int
+    let reservations: [Locale]
+    private let successfulReservationResult: Bool
+    private(set) var reservationAttemptCount = 0
+    private(set) var releasedIdentifiers: [String] = []
+
+    init(
+        failuresBeforeSuccess: Int,
+        reservations: [Locale],
+        successfulReservationResult: Bool = true
+    ) {
+        remainingFailures = failuresBeforeSuccess
+        self.reservations = reservations
+        self.successfulReservationResult = successfulReservationResult
+    }
+
+    func reserve() throws -> Bool {
+        reservationAttemptCount += 1
+        if remainingFailures > 0 {
+            remainingFailures -= 1
+            throw AppleSpeechTestError.preparationFailed
+        }
+        return successfulReservationResult
+    }
+
+    func release(_ locale: Locale) -> Bool {
+        releasedIdentifiers.append(locale.identifier(.bcp47))
+        return true
     }
 }
 
