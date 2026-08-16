@@ -369,6 +369,7 @@ actor TranscriptionCoordinator {
 
     @available(macOS 26.0, *)
     private func prepareAppleSpeech(
+        languageIdentifier: String,
         progress: ((Double, String?) -> Void)?,
         progressSnapshot: ModelDownloadProgressHandler?
     ) async throws {
@@ -377,6 +378,7 @@ actor TranscriptionCoordinator {
         do {
             try Task.checkCancellation()
             _ = try await transcriber.prepare(
+                requestedLocale: AppleSpeechLanguageOption.requestedLocale(for: languageIdentifier),
                 progress: progress,
                 progressSnapshot: progressSnapshot
             )
@@ -388,12 +390,18 @@ actor TranscriptionCoordinator {
     }
 
     @available(macOS 26.0, *)
-    private func transcribeWithAppleSpeech(url: URL) async throws -> SpeechTranscriptionResult {
+    private func transcribeWithAppleSpeech(
+        url: URL,
+        languageIdentifier: String
+    ) async throws -> SpeechTranscriptionResult {
         await appleSpeechLifecycle.beginUse()
         let transcriber = appleSpeechTranscriber
         do {
             try Task.checkCancellation()
-            let result = try await transcriber.transcribe(wavURL: url)
+            let result = try await transcriber.transcribe(
+                wavURL: url,
+                requestedLocale: AppleSpeechLanguageOption.requestedLocale(for: languageIdentifier)
+            )
             await appleSpeechLifecycle.endUse()
             return result
         } catch {
@@ -407,6 +415,7 @@ actor TranscriptionCoordinator {
         enablePostProcessor: Bool = false,
         includeMeetingHelpers: Bool = true,
         meetingHelperTrigger: DiarizerPreloadTrigger = .unspecified,
+        appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier,
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async {
@@ -416,6 +425,7 @@ actor TranscriptionCoordinator {
                 enablePostProcessor: enablePostProcessor,
                 includeMeetingHelpers: includeMeetingHelpers,
                 meetingHelperTrigger: meetingHelperTrigger,
+                appleSpeechLanguage: appleSpeechLanguage,
                 progress: progress,
                 progressSnapshot: progressSnapshot
             )
@@ -429,6 +439,7 @@ actor TranscriptionCoordinator {
         enablePostProcessor: Bool = false,
         includeMeetingHelpers: Bool = true,
         meetingHelperTrigger: DiarizerPreloadTrigger = .unspecified,
+        appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier,
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
@@ -522,6 +533,7 @@ actor TranscriptionCoordinator {
         case "apple-speech":
             if #available(macOS 26.0, *) {
                 try await prepareAppleSpeech(
+                    languageIdentifier: appleSpeechLanguage,
                     progress: progress,
                     progressSnapshot: progressSnapshot
                 )
@@ -777,6 +789,7 @@ actor TranscriptionCoordinator {
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
         indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage,
         whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
+        appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier,
         enablePostProcessor: Bool = false,
         customWords: [[String: Any]] = [],
         appContext: String? = nil
@@ -801,7 +814,8 @@ actor TranscriptionCoordinator {
             backend: backend,
             cohereLanguage: cohereLanguage,
             indicASRLanguage: indicASRLanguage,
-            whisperLanguage: whisperLanguage
+            whisperLanguage: whisperLanguage,
+            appleSpeechLanguage: appleSpeechLanguage
         )
         result = removeArtifacts(result)
         if !result.text.isEmpty {
@@ -826,7 +840,8 @@ actor TranscriptionCoordinator {
         backend: BackendOption,
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
         indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage,
-        whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage
+        whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
+        appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier
     ) async throws -> SpeechTranscriptionResult {
         // Meetings intentionally skip Qwen/custom-word post-processing. Keep deterministic artifact/filler cleanup only.
         cleanMeetingTranscript(try await route(
@@ -834,7 +849,8 @@ actor TranscriptionCoordinator {
             backend: backend,
             cohereLanguage: cohereLanguage,
             indicASRLanguage: indicASRLanguage,
-            whisperLanguage: whisperLanguage
+            whisperLanguage: whisperLanguage,
+            appleSpeechLanguage: appleSpeechLanguage
         ))
     }
 
@@ -843,7 +859,8 @@ actor TranscriptionCoordinator {
         backend: BackendOption,
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
         indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage,
-        whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage
+        whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
+        appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier
     ) async throws -> SpeechTranscriptionResult {
         // Meeting chunks intentionally skip Qwen/custom-word post-processing for reconciliation.
         // Run VAD to skip silent chunks (prevents hallucinations)
@@ -864,7 +881,8 @@ actor TranscriptionCoordinator {
             backend: backend,
             cohereLanguage: cohereLanguage,
             indicASRLanguage: indicASRLanguage,
-            whisperLanguage: whisperLanguage
+            whisperLanguage: whisperLanguage,
+            appleSpeechLanguage: appleSpeechLanguage
         ))
     }
 
@@ -1190,7 +1208,8 @@ actor TranscriptionCoordinator {
         backend: BackendOption,
         cohereLanguage: CohereTranscribeLanguage,
         indicASRLanguage: IndicASRLanguage,
-        whisperLanguage: WhisperKitLanguage
+        whisperLanguage: WhisperKitLanguage,
+        appleSpeechLanguage: String
     ) async throws -> SpeechTranscriptionResult {
         switch backend.backend {
         case "whisper":
@@ -1212,7 +1231,10 @@ actor TranscriptionCoordinator {
             return try await transcribeWithGemma4LiteRT(url: url)
         case "apple-speech":
             if #available(macOS 26.0, *) {
-                return try await transcribeWithAppleSpeech(url: url)
+                return try await transcribeWithAppleSpeech(
+                    url: url,
+                    languageIdentifier: appleSpeechLanguage
+                )
             }
             throw AppleSpeechAnalyzerError.unavailable
         default:

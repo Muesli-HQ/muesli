@@ -1141,6 +1141,7 @@ struct AppConfig: Codable {
     var indicASRLanguage: String = IndicASRLanguage.defaultLanguage.rawValue
     var nemotron35Language: String = Nemotron35Language.defaultLanguage.rawValue
     var whisperLanguage: String = WhisperKitLanguage.defaultLanguage.rawValue
+    var appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier
     var meetingTranscriptionBackend: String = BackendOption.whisper.backend
     var meetingTranscriptionModel: String = BackendOption.whisper.model
     var meetingSummaryBackend: String = MeetingSummaryBackendOption.chatGPT.backend
@@ -1264,6 +1265,7 @@ struct AppConfig: Codable {
         case indicASRLanguage = "indic_asr_language"
         case nemotron35Language = "nemotron35_language"
         case whisperLanguage = "whisper_language"
+        case appleSpeechLanguage = "apple_speech_language"
         case meetingTranscriptionBackend = "meeting_transcription_backend"
         case meetingTranscriptionModel = "meeting_transcription_model"
         case meetingSummaryBackend = "meeting_summary_backend"
@@ -1393,6 +1395,7 @@ struct AppConfig: Codable {
         indicASRLanguage = IndicASRLanguage.resolvedCode(try? c.decode(String.self, forKey: .indicASRLanguage))
         nemotron35Language = Nemotron35Language.resolvedCode(try? c.decode(String.self, forKey: .nemotron35Language))
         whisperLanguage = WhisperKitLanguage.resolvedCode(try? c.decode(String.self, forKey: .whisperLanguage))
+        appleSpeechLanguage = AppleSpeechLanguageOption.normalize(try? c.decode(String.self, forKey: .appleSpeechLanguage))
         meetingTranscriptionBackend = (try? c.decode(String.self, forKey: .meetingTranscriptionBackend)) ?? sttBackend
         meetingTranscriptionModel = (try? c.decode(String.self, forKey: .meetingTranscriptionModel)) ?? sttModel
         meetingSummaryBackend = (try? c.decode(String.self, forKey: .meetingSummaryBackend)) ?? defaults.meetingSummaryBackend
@@ -1573,6 +1576,10 @@ struct AppConfig: Codable {
 
     var resolvedWhisperLanguage: WhisperKitLanguage {
         WhisperKitLanguage.resolved(whisperLanguage)
+    }
+
+    var resolvedAppleSpeechLanguage: String {
+        AppleSpeechLanguageOption.normalize(appleSpeechLanguage)
     }
 
     var resolvedMeetingLiveCaptionBackend: MeetingLiveCaptionBackend {

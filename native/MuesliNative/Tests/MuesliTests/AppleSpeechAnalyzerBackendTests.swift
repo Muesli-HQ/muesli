@@ -117,16 +117,32 @@ struct AppleSpeechAnalyzerBackendTests {
         #expect(await counter.value == 2)
     }
 
-    @Test("stale reservation cleanup preserves the newer owned locale")
-    func staleReservationCleanupPreservesNewerLocale() {
-        var ownership = AppleSpeechReservationOwnership()
-        ownership.record(Locale(identifier: "en-US"))
-        ownership.record(Locale(identifier: "fr-FR"))
+    @Test("language preference defaults to the system locale")
+    func languagePreferenceDefaultsToSystemLocale() {
+        #expect(AppleSpeechLanguageOption.normalize(nil) == AppleSpeechLanguageOption.systemIdentifier)
+        #expect(AppleSpeechLanguageOption.normalize("  ") == AppleSpeechLanguageOption.systemIdentifier)
+        #expect(
+            AppleSpeechLanguageOption.requestedLocale(for: AppleSpeechLanguageOption.systemIdentifier)
+                .identifier(.bcp47) == Locale.current.identifier(.bcp47)
+        )
+    }
 
-        #expect(ownership.locales(excluding: "fr-FR").map { $0.identifier(.bcp47) } == ["en-US"])
+    @Test("language preference preserves an explicit locale")
+    func languagePreferencePreservesExplicitLocale() {
+        #expect(AppleSpeechLanguageOption.normalize(" en-US ") == "en-US")
+        #expect(
+            AppleSpeechLanguageOption.requestedLocale(for: "en-US").identifier(.bcp47) == "en-US"
+        )
+    }
 
-        ownership.remove(Locale(identifier: "en-US"))
-        #expect(ownership.locales(excluding: "fr-FR").isEmpty)
+    @Test("initial reservation cleanup keeps only the selected locale")
+    func initialReservationCleanupKeepsSelectedLocale() {
+        let releases = AppleSpeechInitialReservationPolicy.localesToRelease(
+            [Locale(identifier: "en-US"), Locale(identifier: "fr-FR"), Locale(identifier: "de-DE")],
+            keeping: Locale(identifier: "fr-FR")
+        )
+
+        #expect(releases.map { $0.identifier(.bcp47) } == ["en-US", "de-DE"])
     }
 
     @Test("backend is system managed and only catalogued when supported")

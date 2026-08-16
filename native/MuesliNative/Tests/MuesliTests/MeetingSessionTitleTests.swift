@@ -1,6 +1,85 @@
 import Testing
 @testable import MuesliNativeApp
 
+@Suite("Meeting processing stage")
+struct MeetingProcessingStageTests {
+    @Test("audio processing keeps dictation blocked")
+    func audioProcessingBlocksDictation() {
+        #expect(!MeetingProcessingStage.transcribingAudio.allowsDictation)
+        #expect(!MeetingProcessingStage.cleaningAudio.allowsDictation)
+    }
+
+    @Test("post-transcription processing allows dictation")
+    func postTranscriptionAllowsDictation() {
+        #expect(MeetingProcessingStage.generatingTitle.allowsDictation)
+        #expect(MeetingProcessingStage.summarizingNotes.allowsDictation)
+    }
+
+    @Test("active dictation transcription cannot be replaced by meeting progress")
+    func activeDictationTranscriptionStaysBlocked() {
+        #expect(!DictationStartAdmissionPolicy.allowsStart(
+            dictationState: .transcribing,
+            isMeetingAudioProcessing: false
+        ))
+    }
+
+    @Test("dictation admission follows meeting audio processing boundary")
+    func admissionFollowsMeetingAudioProcessingBoundary() {
+        #expect(!DictationStartAdmissionPolicy.allowsStart(
+            dictationState: .idle,
+            isMeetingAudioProcessing: true
+        ))
+        #expect(DictationStartAdmissionPolicy.allowsStart(
+            dictationState: .idle,
+            isMeetingAudioProcessing: false
+        ))
+    }
+
+    @Test("cleanup from a blocked hotkey start cannot retire active transcription")
+    func blockedStartCleanupIsIgnored() {
+        #expect(DictationStartAdmissionPolicy.shouldIgnoreCleanupAfterBlockedStart(
+            hasStartedRecording: false,
+            isStreaming: false,
+            dictationState: .transcribing,
+            isMeetingAudioProcessing: false
+        ))
+        #expect(DictationStartAdmissionPolicy.shouldIgnoreCleanupAfterBlockedStart(
+            hasStartedRecording: false,
+            isStreaming: false,
+            dictationState: .idle,
+            isMeetingAudioProcessing: true
+        ))
+        #expect(!DictationStartAdmissionPolicy.shouldIgnoreCleanupAfterBlockedStart(
+            hasStartedRecording: false,
+            isStreaming: false,
+            dictationState: .preparing,
+            isMeetingAudioProcessing: false
+        ))
+        #expect(!DictationStartAdmissionPolicy.shouldIgnoreCleanupAfterBlockedStart(
+            hasStartedRecording: true,
+            isStreaming: false,
+            dictationState: .recording,
+            isMeetingAudioProcessing: false
+        ))
+    }
+
+    @Test("any blocking meeting keeps dictation blocked across arbitrary overlap")
+    func arbitraryMeetingOverlapStaysBlocked() {
+        #expect(MeetingProcessingAdmissionPolicy.blocksDictation(stages: [
+            .generatingTitle,
+            .summarizingNotes,
+            .transcribingAudio,
+            .generatingTitle,
+        ]))
+        #expect(!MeetingProcessingAdmissionPolicy.blocksDictation(stages: [
+            .generatingTitle,
+            .summarizingNotes,
+            .generatingTitle,
+            .summarizingNotes,
+        ]))
+    }
+}
+
 @Suite("Meeting session title selection")
 struct MeetingSessionTitleTests {
     @Test("calendar event title is used when present")

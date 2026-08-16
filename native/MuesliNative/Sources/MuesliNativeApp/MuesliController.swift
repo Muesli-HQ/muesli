@@ -80,6 +80,36 @@ struct InteractiveAudioSessionOwnership: Equatable {
     }
 }
 
+enum DictationStartAdmissionPolicy {
+    static func allowsStart(
+        dictationState: DictationState,
+        isMeetingAudioProcessing: Bool
+    ) -> Bool {
+        dictationState != .transcribing
+            && !isMeetingAudioProcessing
+    }
+
+    static func shouldIgnoreCleanupAfterBlockedStart(
+        hasStartedRecording: Bool,
+        isStreaming: Bool,
+        dictationState: DictationState,
+        isMeetingAudioProcessing: Bool
+    ) -> Bool {
+        !hasStartedRecording
+            && !isStreaming
+            && !allowsStart(
+                dictationState: dictationState,
+                isMeetingAudioProcessing: isMeetingAudioProcessing
+            )
+    }
+}
+
+enum MeetingProcessingAdmissionPolicy {
+    static func blocksDictation(stages: [MeetingProcessingStage]) -> Bool {
+        stages.contains { !$0.allowsDictation }
+    }
+}
+
 struct MeetingResummarizationPlan: Equatable {
     let promptTitle: String
     let persistedTitle: String
@@ -424,6 +454,7 @@ final class MuesliController: NSObject {
     private var isPresentingMeetingTerminationConfirmation = false
     private var isTerminatingAfterMeetingConfirmation = false
     private var backgroundMeetingProcessingCount = 0
+    private var meetingProcessingStages: [UUID: MeetingProcessingStage] = [:]
     private var pendingMeetingCompletionNotification: PendingMeetingCompletionNotification?
     private var contributionMilestonePromptDismissedThisLaunch = false
     private var contributionMilestonePromptSeenIDsThisLaunch: Set<String> = []
@@ -765,7 +796,8 @@ final class MuesliController: NSObject {
                     await self.transcriptionCoordinator.preload(
                         backend: self.selectedMeetingTranscriptionBackend,
                         enablePostProcessor: false,
-                        includeMeetingHelpers: false
+                        includeMeetingHelpers: false,
+                        appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage
                     )
                 }
                 await MainActor.run {
@@ -2240,7 +2272,8 @@ final class MuesliController: NSObject {
             try await transcriptionCoordinator.preloadRequired(
                 backend: backend,
                 enablePostProcessor: false,
-                includeMeetingHelpers: false
+                includeMeetingHelpers: false,
+                appleSpeechLanguage: config.resolvedAppleSpeechLanguage
             )
             guard selectedBackend == backend else { return false }
             dictationBackendReadiness = .ready
@@ -2318,7 +2351,8 @@ final class MuesliController: NSObject {
             await self.transcriptionCoordinator.preload(
                 backend: option,
                 enablePostProcessor: false,
-                includeMeetingHelpers: true
+                includeMeetingHelpers: true,
+                appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage
             )
             await MainActor.run {
                 self.statusBarController?.refresh()
@@ -2341,6 +2375,26 @@ final class MuesliController: NSObject {
     func selectWhisperLanguage(_ language: WhisperKitLanguage) {
         updateConfig {
             $0.whisperLanguage = language.rawValue
+        }
+    }
+
+    func selectAppleSpeechLanguage(_ identifier: String) {
+        let normalized = AppleSpeechLanguageOption.normalize(identifier)
+        guard normalized != config.resolvedAppleSpeechLanguage else { return }
+        updateConfig { $0.appleSpeechLanguage = normalized }
+
+        Task { [weak self] in
+            guard let self else { return }
+            await self.transcriptionCoordinator.unloadAppleSpeechTranscriber()
+            let usesAppleSpeech = self.selectedBackend.backend == "apple-speech"
+                || self.selectedMeetingTranscriptionBackend.backend == "apple-speech"
+            guard usesAppleSpeech else { return }
+            await self.transcriptionCoordinator.preload(
+                backend: .appleSpeechAnalyzer,
+                enablePostProcessor: false,
+                includeMeetingHelpers: false,
+                appleSpeechLanguage: normalized
+            )
         }
     }
 
@@ -3648,6 +3702,7 @@ final class MuesliController: NSObject {
             enablePostProcessor: isPostProcessorReady,
             includeMeetingHelpers: onboardingUseCase.includesMeetings,
             meetingHelperTrigger: .onboarding,
+            appleSpeechLanguage: config.resolvedAppleSpeechLanguage,
             progress: { value, status in
                 if wasDownloaded,
                    value < 0.85,
@@ -4173,14 +4228,16 @@ final class MuesliController: NSObject {
                     backend: backend,
                     enablePostProcessor: false,
                     includeMeetingHelpers: true,
-                    meetingHelperTrigger: .retranscription
+                    meetingHelperTrigger: .retranscription,
+                    appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage
                 )
                 let transcription = try await self.transcriptionCoordinator.transcribeMeeting(
                     at: recordingURL,
                     backend: backend,
                     cohereLanguage: self.config.resolvedCohereLanguage,
                     indicASRLanguage: self.config.resolvedIndicASRLanguage,
-                    whisperLanguage: self.config.resolvedWhisperLanguage
+                    whisperLanguage: self.config.resolvedWhisperLanguage,
+                    appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage
                 )
                 let rawTranscript = transcription.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !rawTranscript.isEmpty else {
@@ -5434,7 +5491,8 @@ final class MuesliController: NSObject {
             backend: backend,
             enablePostProcessor: false,
             includeMeetingHelpers: true,
-            meetingHelperTrigger: .meetingStart
+            meetingHelperTrigger: .meetingStart,
+            appleSpeechLanguage: config.resolvedAppleSpeechLanguage
         )
         try Task.checkCancellation()
         try checkMeetingStartStillCurrent(meetingID)
@@ -6172,16 +6230,16 @@ final class MuesliController: NSObject {
             syncAppState()
         }
         indicator.setMeetingRecording(false, config: config)
-        indicator.setTranscribingTitle("Transcribing", config: config)
-        setState(.transcribing)
-        let processingGeneration = backgroundMeetingProcessingCount + 1
+        let processingID = UUID()
+        setMeetingProcessingStage(.transcribingAudio, processingID: processingID)
         sessionToStop.onProgress = { [weak self] stage in
             Task { @MainActor [weak self] in
-                guard let self,
-                      !self.isMeetingRecording(),
-                      !self.isStartingMeetingRecording,
-                      self.backgroundMeetingProcessingCount == processingGeneration else { return }
-                self.setMeetingProcessingStage(stage)
+                guard let self, self.meetingProcessingStages[processingID] != nil else { return }
+                self.setMeetingProcessingStage(
+                    stage,
+                    processingID: processingID,
+                    updatePresentation: !self.isMeetingRecording() && !self.isStartingMeetingRecording
+                )
             }
         }
 
@@ -6260,6 +6318,7 @@ final class MuesliController: NSObject {
                 }
             }
             await MainActor.run {
+                self.removeMeetingProcessing(processingID: processingID)
                 self.backgroundMeetingProcessingCount -= 1
                 if let failedLiveMeetingID {
                     self.resolveLiveMeetingAfterStopFailure(id: failedLiveMeetingID)
@@ -6267,9 +6326,15 @@ final class MuesliController: NSObject {
                     // Resume merged + persisted successfully — drop the prior-transcript marker.
                     self.pendingResumePriorTranscript[liveMeetingID] = nil
                 }
-                if !self.isMeetingRecording() && !self.isStartingMeetingRecording && self.backgroundMeetingProcessingCount == 0 {
-                    self.setState(.idle)
+                if !self.isMeetingRecording()
+                    && !self.isStartingMeetingRecording
+                    && self.backgroundMeetingProcessingCount == 0
+                    && !self.isDictationActivityInProgress {
+                    self.statusBarController?.setStatus("Idle")
                     self.statusBarController?.refresh()
+                    if !self.isDictationTestMode {
+                        self.indicator.setState(.idle, config: self.config)
+                    }
                 }
                 self.endMeetingActivity()
                 self.historyWindowController?.reload()
@@ -6827,6 +6892,28 @@ final class MuesliController: NSObject {
         dictationState != .idle || dictationStartedAt != nil || computerUseCommandStartedAt != nil || isNemotron35Streaming
     }
 
+    private var isMeetingAudioProcessing: Bool {
+        MeetingProcessingAdmissionPolicy.blocksDictation(
+            stages: Array(meetingProcessingStages.values)
+        )
+    }
+
+    private var canBeginDictationInteraction: Bool {
+        DictationStartAdmissionPolicy.allowsStart(
+            dictationState: dictationState,
+            isMeetingAudioProcessing: isMeetingAudioProcessing
+        )
+    }
+
+    private var shouldIgnoreCleanupAfterBlockedDictationStart: Bool {
+        DictationStartAdmissionPolicy.shouldIgnoreCleanupAfterBlockedStart(
+            hasStartedRecording: dictationStartedAt != nil,
+            isStreaming: isNemotron35Streaming,
+            dictationState: dictationState,
+            isMeetingAudioProcessing: isMeetingAudioProcessing
+        )
+    }
+
     private func configureComputerUseHotkeyMonitor() {
         guard config.enableComputerUseHotkey else {
             computerUseHotkeyMonitor.stop()
@@ -7205,7 +7292,35 @@ final class MuesliController: NSObject {
     }
 
     @MainActor
-    private func setMeetingProcessingStage(_ stage: MeetingProcessingStage) {
+    private func setMeetingProcessingStage(
+        _ stage: MeetingProcessingStage,
+        processingID: UUID,
+        updatePresentation: Bool = true
+    ) {
+        let wasBlockingDictation = isMeetingAudioProcessing
+        meetingProcessingStages[processingID] = stage
+
+        if wasBlockingDictation, !isMeetingAudioProcessing {
+            syncDictationRecorderWarmup(intent: .idlePrewarm(.meetingStateChanged))
+        }
+        guard updatePresentation else { return }
+        let presentationStage = meetingProcessingStages.values.first(where: { !$0.allowsDictation }) ?? stage
+        presentMeetingProcessingStage(presentationStage)
+    }
+
+    @MainActor
+    private func removeMeetingProcessing(processingID: UUID) {
+        let wasBlockingDictation = isMeetingAudioProcessing
+        meetingProcessingStages[processingID] = nil
+        if wasBlockingDictation, !isMeetingAudioProcessing {
+            syncDictationRecorderWarmup(intent: .idlePrewarm(.meetingStateChanged))
+        }
+    }
+
+    @MainActor
+    private func presentMeetingProcessingStage(_ stage: MeetingProcessingStage) {
+        if stage.allowsDictation, isDictationActivityInProgress { return }
+
         switch stage {
         case .transcribingAudio:
             setMeetingProcessingStatus("Transcribing")
@@ -7220,9 +7335,13 @@ final class MuesliController: NSObject {
 
     @MainActor
     private func setMeetingProcessingStatus(_ status: String) {
+        guard !isDictationActivityInProgress else { return }
         statusBarController?.setStatus(status)
         statusBarController?.refresh()
-        indicator.setTranscribingTitle(status, config: config)
+        if !isDictationTestMode {
+            indicator.setTranscribingTitle(status, config: config)
+            indicator.setState(.transcribing, config: config)
+        }
     }
 
     private func handleComputerUsePrepare() {
@@ -7348,6 +7467,7 @@ final class MuesliController: NSObject {
                     cohereLanguage: self.config.resolvedCohereLanguage,
                     indicASRLanguage: self.config.resolvedIndicASRLanguage,
                     whisperLanguage: self.config.resolvedWhisperLanguage,
+                    appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage,
                     enablePostProcessor: false,
                     customWords: self.serializedCustomWords(),
                     appContext: nil
@@ -7424,6 +7544,7 @@ final class MuesliController: NSObject {
     private var canPrepareComputerUseCommand: Bool {
         !isMeetingRecording()
             && !isDictationTestMode
+            && !isMeetingAudioProcessing
             && dictationStartedAt == nil
             && computerUseCommandStartedAt == nil
             && pendingComputerUseStopSessionID == nil
@@ -7436,6 +7557,7 @@ final class MuesliController: NSObject {
     private var canStartComputerUseCommand: Bool {
         !isMeetingRecording()
             && !isDictationTestMode
+            && !isMeetingAudioProcessing
             && dictationStartedAt == nil
             && computerUseCommandStartedAt == nil
             && pendingComputerUseStopSessionID == nil
@@ -7733,6 +7855,7 @@ final class MuesliController: NSObject {
 
     private func handlePrepare() {
         if shouldRejectDictationForComputerUseActivity() { return }
+        guard canBeginDictationInteraction else { return }
         guard ensureDictationBackendReady() else { return }
         if isMeetingRecording() { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
@@ -7754,6 +7877,7 @@ final class MuesliController: NSObject {
 
     private func handleArm() {
         if shouldRejectDictationForComputerUseActivity() { return }
+        guard canBeginDictationInteraction else { return }
         guard ensureDictationBackendReady() else { return }
         if isMeetingRecording() { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
@@ -7790,6 +7914,7 @@ final class MuesliController: NSObject {
             && config.resolvedOnboardingUseCase.includesPushToTalk
             && AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
             && dictationState == .idle
+            && !isMeetingAudioProcessing
             && computerUseCommandStartedAt == nil
             && !isMeetingRecording()
             && !isStartingMeetingRecording
@@ -8100,6 +8225,7 @@ final class MuesliController: NSObject {
 
     private func handleStart() {
         if shouldRejectDictationForComputerUseActivity() { return }
+        guard canBeginDictationInteraction else { return }
         guard ensureDictationBackendReady() else { return }
         if isMeetingRecording() { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
@@ -8248,6 +8374,10 @@ final class MuesliController: NSObject {
     private func handleCancel() {
         if isMeetingRecording() { return }
         if shouldIgnoreDictationCleanupForComputerUseActivity() { return }
+        if shouldIgnoreCleanupAfterBlockedDictationStart {
+            fputs("[muesli-native] ignoring dictation cancel because start was blocked\n", stderr)
+            return
+        }
         fputs("[muesli-native] cancel\n", stderr)
         resetDictationOutputMode()
 
@@ -8276,6 +8406,7 @@ final class MuesliController: NSObject {
 
     private func handleToggleStart(outputMode: DictationOutputMode? = nil) {
         if shouldRejectDictationForComputerUseActivity() { return }
+        guard canBeginDictationInteraction else { return }
         guard ensureDictationBackendReady() else { return }
         if isMeetingRecording() { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
@@ -8342,6 +8473,10 @@ final class MuesliController: NSObject {
             return
         }
         if shouldIgnoreDictationCleanupForComputerUseActivity() { return }
+        if shouldIgnoreCleanupAfterBlockedDictationStart {
+            fputs("[muesli-native] ignoring dictation stop because start was blocked\n", stderr)
+            return
+        }
         fputs("[muesli-native] stop\n", stderr)
         let startedAt = dictationStartedAt ?? Date()
         dictationStartedAt = nil
@@ -8524,6 +8659,7 @@ final class MuesliController: NSObject {
                     cohereLanguage: transcriptionLanguage,
                     indicASRLanguage: indicTranscriptionLanguage,
                     whisperLanguage: whisperTranscriptionLanguage,
+                    appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage,
                     enablePostProcessor: enableTranscriptCleanup,
                     customWords: self.serializedCustomWords(),
                     appContext: promptContext

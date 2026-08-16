@@ -79,6 +79,7 @@ case "${shard}" in
       DiagnosticIncidentTests
       DictationAudioRouteControllerTests
       MeetingDetectorTests
+      MeetingProcessingStageTests
       MeetingRecordingWriterTests
       MeetingResumePolicyTests
       MeetingStreamingPartialSessionTests
