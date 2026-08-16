@@ -39,12 +39,14 @@ enum DictationTranscriptionForegroundPolicy {
     }
 
     static func shouldRetireSuppressedResult(
+        ownsLifecycle: Bool,
         isTranscribing: Bool,
         hasActiveRecording: Bool,
         hasPendingStop: Bool,
         isStreaming: Bool
     ) -> Bool {
-        isTranscribing
+        ownsLifecycle
+            && isTranscribing
             && !hasActiveRecording
             && !hasPendingStop
             && !isStreaming

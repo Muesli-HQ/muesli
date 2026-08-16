@@ -157,19 +157,43 @@ struct DictationTranscriptionForegroundPolicyTests {
     @Test("suppressed completion retires only an otherwise finished transcription")
     func suppressedCompletionRetiresFinishedTranscription() {
         #expect(DictationTranscriptionForegroundPolicy.shouldRetireSuppressedResult(
+            ownsLifecycle: true,
             isTranscribing: true,
             hasActiveRecording: false,
             hasPendingStop: false,
             isStreaming: false
         ))
         #expect(!DictationTranscriptionForegroundPolicy.shouldRetireSuppressedResult(
+            ownsLifecycle: true,
             isTranscribing: true,
             hasActiveRecording: true,
             hasPendingStop: false,
             isStreaming: false
         ))
         #expect(!DictationTranscriptionForegroundPolicy.shouldRetireSuppressedResult(
+            ownsLifecycle: true,
             isTranscribing: false,
+            hasActiveRecording: false,
+            hasPendingStop: false,
+            isStreaming: false
+        ))
+        #expect(!DictationTranscriptionForegroundPolicy.shouldRetireSuppressedResult(
+            ownsLifecycle: true,
+            isTranscribing: true,
+            hasActiveRecording: false,
+            hasPendingStop: true,
+            isStreaming: false
+        ))
+        #expect(!DictationTranscriptionForegroundPolicy.shouldRetireSuppressedResult(
+            ownsLifecycle: true,
+            isTranscribing: true,
+            hasActiveRecording: false,
+            hasPendingStop: false,
+            isStreaming: true
+        ))
+        #expect(!DictationTranscriptionForegroundPolicy.shouldRetireSuppressedResult(
+            ownsLifecycle: false,
+            isTranscribing: true,
             hasActiveRecording: false,
             hasPendingStop: false,
             isStreaming: false
@@ -194,6 +218,25 @@ struct DictationAudioSessionFailurePolicyTests {
         #expect(!DictationAudioSessionFailurePolicy.shouldHandleFailure(
             failedSessionID: UUID(),
             activeSessionID: UUID(),
+            pendingStopSessionID: nil
+        ))
+    }
+
+    @Test("handles a failure for a session that is stopping")
+    func handlesPendingStopSessionFailure() {
+        let pendingStopSessionID = UUID()
+        #expect(DictationAudioSessionFailurePolicy.shouldHandleFailure(
+            failedSessionID: pendingStopSessionID,
+            activeSessionID: nil,
+            pendingStopSessionID: pendingStopSessionID
+        ))
+    }
+
+    @Test("handles a sessionless failure")
+    func handlesSessionlessFailure() {
+        #expect(DictationAudioSessionFailurePolicy.shouldHandleFailure(
+            failedSessionID: nil,
+            activeSessionID: nil,
             pendingStopSessionID: nil
         ))
     }

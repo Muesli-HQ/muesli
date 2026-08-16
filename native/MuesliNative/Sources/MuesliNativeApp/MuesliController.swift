@@ -393,6 +393,7 @@ final class MuesliController: NSObject {
     private var computerUseCommandTaskID: UUID?
     private var dictationTranscriptionTask: Task<Void, Never>?
     private var dictationTranscriptionTaskID: UUID?
+    private var dictationTranscriptionLifecycleTaskID: UUID?
     private var meetingProcessingStatus: String?
     private var computerUseFloatingStatusWorkItem: DispatchWorkItem?
     private var computerUseLastFloatingStatusAt = Date.distantPast
@@ -8566,6 +8567,7 @@ final class MuesliController: NSObject {
             ?? ""
         let taskID = UUID()
         dictationTranscriptionTaskID = taskID
+        dictationTranscriptionLifecycleTaskID = taskID
         let task = Task { [weak self] in
             guard let self else { return }
             defer {
@@ -8593,6 +8595,7 @@ final class MuesliController: NSObject {
                     await MainActor.run {
                         guard self.applyDictationTranscriptionResultToForeground(taskID) else {
                             self.finishSuppressedDictationTranscriptionLifecycle(
+                                taskID: taskID,
                                 intent: .transcriptionComplete
                             )
                             return
@@ -8625,6 +8628,7 @@ final class MuesliController: NSObject {
                 await MainActor.run {
                     guard self.applyDictationTranscriptionResultToForeground(taskID) else {
                         self.finishSuppressedDictationTranscriptionLifecycle(
+                            taskID: taskID,
                             intent: .transcriptionComplete
                         )
                         return
@@ -8671,6 +8675,7 @@ final class MuesliController: NSObject {
                 await MainActor.run {
                     guard self.applyDictationTranscriptionResultToForeground(taskID) else {
                         self.finishSuppressedDictationTranscriptionLifecycle(
+                            taskID: taskID,
                             intent: .transcriptionCancelled
                         )
                         return
@@ -8686,6 +8691,7 @@ final class MuesliController: NSObject {
                 await MainActor.run {
                     guard self.applyDictationTranscriptionResultToForeground(taskID) else {
                         self.finishSuppressedDictationTranscriptionLifecycle(
+                            taskID: taskID,
                             intent: .transcriptionFailed
                         )
                         return
@@ -8716,6 +8722,7 @@ final class MuesliController: NSObject {
         dictationTranscriptionTask?.cancel()
         dictationTranscriptionTask = nil
         dictationTranscriptionTaskID = nil
+        dictationTranscriptionLifecycleTaskID = nil
     }
 
     private func invalidateDictationTranscriptionForegroundOwnership() {
@@ -8724,8 +8731,16 @@ final class MuesliController: NSObject {
     }
 
     @MainActor
-    private func finishSuppressedDictationTranscriptionLifecycle(intent: PostDictationTrigger) {
+    private func finishSuppressedDictationTranscriptionLifecycle(
+        taskID: UUID,
+        intent: PostDictationTrigger
+    ) {
+        let ownsLifecycle = dictationTranscriptionLifecycleTaskID == taskID
+        if ownsLifecycle {
+            dictationTranscriptionLifecycleTaskID = nil
+        }
         guard DictationTranscriptionForegroundPolicy.shouldRetireSuppressedResult(
+            ownsLifecycle: ownsLifecycle,
             isTranscribing: dictationState == .transcribing,
             hasActiveRecording: dictationStartedAt != nil,
             hasPendingStop: pendingDictationStopSessionID != nil,
@@ -8745,13 +8760,17 @@ final class MuesliController: NSObject {
         guard dictationTranscriptionTaskID == taskID else { return false }
         dictationTranscriptionTask = nil
         dictationTranscriptionTaskID = nil
-        return DictationTranscriptionForegroundPolicy.shouldApplyResult(
+        let shouldApply = DictationTranscriptionForegroundPolicy.shouldApplyResult(
             isMeetingCapturingAudio: isMeetingCapturingAudio,
             hasActiveRecording: dictationStartedAt != nil,
             hasPendingStop: pendingDictationStopSessionID != nil,
             isStreaming: isNemotron35Streaming,
             isPresentationStateEligible: dictationState == .transcribing || dictationState == .idle
         )
+        if shouldApply, dictationTranscriptionLifecycleTaskID == taskID {
+            dictationTranscriptionLifecycleTaskID = nil
+        }
+        return shouldApply
     }
 
     private func userFacingDictationTestError(_ error: Error) -> String {
