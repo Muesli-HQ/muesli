@@ -4989,7 +4989,7 @@ final class MuesliController: NSObject {
         isStartingMeetingRecording = true
         // Keep this after backend normalization and live-meeting creation so
         // a failed meeting start does not silently cancel an active dictation.
-        cancelDictationAudioSessionForMeetingRecordingIfNeeded()
+        prepareInteractiveAudioForMeetingCapture()
         syncDictationRecorderWarmup(intent: .idlePrewarm(.meetingStateChanged))
         meetingStartMeetingID = meetingID
         updateMeetingStartStatus("Meeting transcription will start shortly.")
@@ -5139,7 +5139,7 @@ final class MuesliController: NSObject {
             response: MeetingRecordingStartOrigin.manual.signalLossResponse
         )
         isStartingMeetingRecording = true
-        cancelDictationAudioSessionForMeetingRecordingIfNeeded()
+        prepareInteractiveAudioForMeetingCapture()
         syncDictationRecorderWarmup(intent: .idlePrewarm(.meetingStateChanged))
         meetingStartMeetingID = meetingID
         updateMeetingStartStatus("Resuming meeting recording…")
@@ -8440,6 +8440,13 @@ final class MuesliController: NSObject {
         dictationAudioSessionManager.stop()
     }
 
+    private func prepareInteractiveAudioForMeetingCapture() {
+        // A real meeting capture supersedes an in-flight dictation's right to
+        // paste, but its transcription may finish in the background and save.
+        invalidateDictationTranscriptionForegroundOwnership()
+        cancelDictationAudioSessionForMeetingRecordingIfNeeded()
+    }
+
     private func cancelDictationAudioSessionForMeetingRecordingIfNeeded() {
         let hasComputerUseActivity = interactiveAudioSessionOwnership.computerUseIsActive
         guard dictationAudioSessionManager.hasActiveSession
@@ -8758,10 +8765,13 @@ final class MuesliController: NSObject {
 
     @MainActor
     private func applyDictationTranscriptionResultToForeground(_ taskID: UUID) -> Bool {
-        guard dictationTranscriptionTaskID == taskID else { return false }
-        dictationTranscriptionTask = nil
-        dictationTranscriptionTaskID = nil
+        let ownsForeground = dictationTranscriptionTaskID == taskID
+        if ownsForeground {
+            dictationTranscriptionTask = nil
+            dictationTranscriptionTaskID = nil
+        }
         let shouldApply = DictationTranscriptionForegroundPolicy.shouldApplyResult(
+            ownsForeground: ownsForeground,
             isMeetingCapturingAudio: isMeetingCapturingAudio,
             hasActiveRecording: dictationStartedAt != nil,
             hasPendingStop: pendingDictationStopSessionID != nil,

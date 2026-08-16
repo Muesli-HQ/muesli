@@ -110,6 +110,7 @@ struct DictationTranscriptionForegroundPolicyTests {
     @Test("completed dictation may update foreground when no newer capture owns it")
     func completedDictationMayUpdateForeground() {
         #expect(DictationTranscriptionForegroundPolicy.shouldApplyResult(
+            ownsForeground: true,
             isMeetingCapturingAudio: false,
             hasActiveRecording: false,
             hasPendingStop: false,
@@ -121,6 +122,7 @@ struct DictationTranscriptionForegroundPolicyTests {
     @Test("meeting capture blocks stale dictation foreground updates")
     func meetingCaptureBlocksForegroundUpdate() {
         #expect(!DictationTranscriptionForegroundPolicy.shouldApplyResult(
+            ownsForeground: true,
             isMeetingCapturingAudio: true,
             hasActiveRecording: false,
             hasPendingStop: false,
@@ -132,6 +134,7 @@ struct DictationTranscriptionForegroundPolicyTests {
     @Test("newer dictation activity blocks stale foreground updates")
     func newerDictationActivityBlocksForegroundUpdate() {
         #expect(!DictationTranscriptionForegroundPolicy.shouldApplyResult(
+            ownsForeground: true,
             isMeetingCapturingAudio: false,
             hasActiveRecording: true,
             hasPendingStop: false,
@@ -139,6 +142,7 @@ struct DictationTranscriptionForegroundPolicyTests {
             isPresentationStateEligible: true
         ))
         #expect(!DictationTranscriptionForegroundPolicy.shouldApplyResult(
+            ownsForeground: true,
             isMeetingCapturingAudio: false,
             hasActiveRecording: false,
             hasPendingStop: true,
@@ -146,10 +150,23 @@ struct DictationTranscriptionForegroundPolicyTests {
             isPresentationStateEligible: true
         ))
         #expect(!DictationTranscriptionForegroundPolicy.shouldApplyResult(
+            ownsForeground: true,
             isMeetingCapturingAudio: false,
             hasActiveRecording: false,
             hasPendingStop: false,
             isStreaming: true,
+            isPresentationStateEligible: true
+        ))
+    }
+
+    @Test("meeting start revocation remains effective after capture ends")
+    func revokedMeetingOwnershipBlocksDelayedPaste() {
+        #expect(!DictationTranscriptionForegroundPolicy.shouldApplyResult(
+            ownsForeground: false,
+            isMeetingCapturingAudio: false,
+            hasActiveRecording: false,
+            hasPendingStop: false,
+            isStreaming: false,
             isPresentationStateEligible: true
         ))
     }
