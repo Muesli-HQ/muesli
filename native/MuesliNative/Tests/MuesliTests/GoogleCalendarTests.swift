@@ -67,8 +67,8 @@ struct GoogleCalendarTests {
         #expect(event?.source == .googleCalendar)
     }
 
-    @Test("parses and deduplicates Google Calendar attendees")
-    func parsesAttendees() throws {
+    @Test("does not import people from the unreleased direct Google integration")
+    func directGoogleEventsDoNotCarryPeople() throws {
         let item: [String: Any] = [
             "id": "event-with-people",
             "summary": "Sprint Planning",
@@ -87,8 +87,7 @@ struct GoogleCalendarTests {
 
         let event = try #require(GoogleCalendarClient().parseEvent(item, calendarID: "primary"))
 
-        #expect(event.attendees.map(\.displayName) == ["Alice Example", "Bob Example"])
-        #expect(event.attendees.map(\.emailAddress) == ["alice@example.test", "bob@example.test"])
+        #expect(event.attendees.isEmpty)
     }
 
     @Test("parses all-day event from Google Calendar API response")

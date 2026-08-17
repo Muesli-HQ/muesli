@@ -125,8 +125,9 @@ put a Contacts identifier into CloudKit, telemetry, or export metadata.
 Before an EventKit meeting begins, an initial launch refresh and subsequent
 `EKEventStoreChanged` notifications reconcile the calendar-owned participant
 rows. Manual Contacts remain untouched, and suppression rows preserve explicit
-local removals. This reconciliation is lifecycle/event-driven and is not run by
-the direct Google Calendar fallback timer.
+local removals. This reconciliation is lifecycle/event-driven. The unreleased
+direct Google OAuth integration does not import or persist meeting participants;
+Google calendars exposed through macOS Calendar use this EventKit path.
 
 ### Organization and state
 

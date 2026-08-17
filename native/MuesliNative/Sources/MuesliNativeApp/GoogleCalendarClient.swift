@@ -587,27 +587,6 @@ final class GoogleCalendarClient {
             seriesID: recurringEventID,
             originalStartTime: originalStartTime
         )
-        let attendeeItems = item["attendees"] as? [[String: Any]] ?? []
-        var attendees = attendeeItems.compactMap { attendee -> CalendarAttendee? in
-            guard attendee["resource"] as? Bool != true else { return nil }
-            let emailAddress = attendee["email"] as? String
-            return CalendarAttendee(
-                identifier: emailAddress,
-                displayName: attendee["displayName"] as? String,
-                emailAddress: emailAddress
-            )
-        }
-        if let organizer = item["organizer"] as? [String: Any] {
-            let emailAddress = organizer["email"] as? String
-            if let attendee = CalendarAttendee(
-                identifier: emailAddress,
-                displayName: organizer["displayName"] as? String,
-                emailAddress: emailAddress
-            ) {
-                attendees.insert(attendee, at: 0)
-            }
-        }
-
         return UnifiedCalendarEvent(
             id: id,
             title: summary,
@@ -617,8 +596,7 @@ final class GoogleCalendarClient {
             source: .googleCalendar,
             calendarID: calendarID,
             calendarOccurrence: occurrence,
-            meetingURL: meetingURL,
-            attendees: CalendarAttendee.deduplicated(attendees)
+            meetingURL: meetingURL
         )
     }
 
@@ -643,9 +621,6 @@ final class GoogleCalendarClient {
                 if merged[idx].meetingURL == nil, gEvent.meetingURL != nil {
                     merged[idx].meetingURL = gEvent.meetingURL
                 }
-                merged[idx].attendees = CalendarAttendee.deduplicated(
-                    merged[idx].attendees + gEvent.attendees
-                )
             } else {
                 merged.append(gEvent)
             }
