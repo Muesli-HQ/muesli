@@ -1118,7 +1118,13 @@ final class MuesliController: NSObject {
             clearSearch()
         }
         switch step.target {
-        case .timelineSidebar, .timelineApplications, .timelineFilters:
+        case .timelineSidebar, .timelineFilters:
+            appState.selectedTab = .timeline
+        case .timelineApplications:
+            guard (try? dictationStore.dictationTargetApplications().isEmpty) == false else {
+                completeFeatureTour()
+                return
+            }
             appState.selectedTab = .timeline
         case .appleSpeechCard, .modelLibrary:
             showModels(category: .dictation)
