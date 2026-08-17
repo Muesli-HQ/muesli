@@ -150,6 +150,24 @@ struct FeatureTourTests {
         ))
     }
 
+    @Test("prerelease upgrade at the target version presents only to established users")
+    func prereleaseUpgradeAtTargetVersion() {
+        #expect(FeatureTourPresentationPolicy.shouldPresentAutomatically(
+            currentVersion: "0.8.2-preprod.2",
+            previousVersion: "0.8.2-preprod.1",
+            lastPresentedTourVersion: "0.8.0",
+            hasCompletedOnboarding: true,
+            tour: tour
+        ))
+        #expect(!FeatureTourPresentationPolicy.shouldPresentAutomatically(
+            currentVersion: "0.8.2-preprod.2",
+            previousVersion: "0.8.2-preprod.2",
+            lastPresentedTourVersion: nil,
+            hasCompletedOnboarding: true,
+            tour: tour
+        ))
+    }
+
     @Test("0.8.2 catalog highlights a small set of unique product locations")
     func catalogShape() {
         #expect(tour.version == "0.8.2")
