@@ -714,9 +714,7 @@ final class MuesliController: NSObject {
         statusBarController = StatusBarController(controller: self, runtime: runtime)
         preferencesWindowController = PreferencesWindowController(controller: self)
         historyWindowController = RecentHistoryWindowController(store: dictationStore, controller: self)
-        let latestFeatureTour = FeatureTourCatalog.latest(
-            includeCloudCleanup: chatGPTAuth.isAuthenticated
-        )
+        let latestFeatureTour = latestFeatureTour()
         let automaticFeatureTour = featureTourStore.automaticTour(
             currentVersion: AppIdentity.marketingVersion,
             hasCompletedOnboarding: config.hasCompletedOnboarding,
@@ -975,9 +973,26 @@ final class MuesliController: NSObject {
     }
 
     @objc func showWhatsNew() {
-        let tour = FeatureTourCatalog.latest(includeCloudCleanup: chatGPTAuth.isAuthenticated)
+        let tour = latestFeatureTour()
         guard beginFeatureTour(tour, source: "manual") else { return }
         featureTourStore.markOffered(tour)
+    }
+
+    private func latestFeatureTour() -> FeatureTour {
+        let targetApplications = (try? dictationStore.dictationTargetApplications()) ?? []
+        let latestMeetingID = (try? dictationStore.recentMeetings(limit: 1))?.first?.id
+        return FeatureTourCatalog.latest(
+            includeApplicationFilter: !targetApplications.isEmpty,
+            includeAppleSpeech: Self.includesAppleSpeechInFeatureTour,
+            includeMeetingPeople: latestMeetingID != nil
+        )
+    }
+
+    private static var includesAppleSpeechInFeatureTour: Bool {
+        if #available(macOS 26.0, *) {
+            return AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem
+        }
+        return false
     }
 
     @discardableResult
@@ -999,7 +1014,7 @@ final class MuesliController: NSObject {
             TelemetryDeck.signal("feature_walkthrough.invitation_shown", parameters: [
                 "version": tour.version,
                 "step_count": "\(tour.steps.count)",
-                "includes_cloud_cleanup": "\(tour.steps.contains { $0.target == .cloudCleanupSetting })",
+                "includes_apple_speech": "\(tour.steps.contains { $0.target == .appleSpeechCard })",
             ])
         })
         // The normal startup preload task continues while this invitation and
@@ -1103,6 +1118,16 @@ final class MuesliController: NSObject {
             clearSearch()
         }
         switch step.target {
+        case .timelineSidebar, .timelineFilters:
+            appState.selectedTab = .timeline
+        case .timelineApplications:
+            guard (try? dictationStore.dictationTargetApplications().isEmpty) == false else {
+                completeFeatureTour()
+                return
+            }
+            appState.selectedTab = .timeline
+        case .appleSpeechCard, .modelLibrary:
+            showModels(category: .dictation)
         case .insightsEntry:
             appState.selectedTab = .timeline
         case .dictionarySuggestions:
@@ -1112,6 +1137,12 @@ final class MuesliController: NSObject {
             appState.meetingsNavigationState = .browser
             appState.selectedMeetingID = nil
             appState.selectedMeetingRecord = nil
+        case .meetingPeople:
+            guard let meetingID = (try? dictationStore.recentMeetings(limit: 1))?.first?.id else {
+                completeFeatureTour()
+                return
+            }
+            showMeetingDocument(id: meetingID)
         case .liveCaptionsSetting:
             appState.selectedSettingsPane = .meetings
             appState.selectedTab = .settings

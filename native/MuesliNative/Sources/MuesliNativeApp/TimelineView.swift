@@ -75,6 +75,7 @@ struct TimelineView: View {
                     selection: appState.timelineApplicationFilter,
                     onSelect: { controller.filterTimeline(application: $0) }
                 )
+                .featureTourTarget(.timelineApplications)
             }
             Spacer(minLength: 0)
             dateFilterMenu

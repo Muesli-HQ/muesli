@@ -82,9 +82,9 @@ struct FeatureTourCalloutLayout {
 
     private static func preferredEdges(for target: FeatureTourTarget) -> [FeatureTourCalloutEdge] {
         switch target {
-        case .meetingsSidebar:
+        case .timelineSidebar, .meetingsSidebar:
             return [.trailing, .leading, .below, .above]
-        case .insightsEntry, .liveCaptionsSetting:
+        case .timelineApplications, .appleSpeechCard, .meetingPeople, .timelineFilters, .modelLibrary, .insightsEntry, .liveCaptionsSetting:
             return [.below, .above, .trailing, .leading]
         case .dictionarySuggestions, .cloudCleanupSetting, .streamingModels, .experimentalModels:
             return [.above, .below, .trailing, .leading]
@@ -276,6 +276,10 @@ struct FeatureTourOverlay: View {
                     .font(MuesliTheme.caption())
                     .monospacedDigit()
                     .foregroundStyle(MuesliTheme.textTertiary)
+
+                Button("Skip", action: onDismiss)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(MuesliTheme.textSecondary)
 
                 Spacer()
 
