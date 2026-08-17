@@ -144,6 +144,9 @@ struct MeetingContactIdentityTests {
                 emailAddress: "dana@example.test"
             ) == "Dana Sample"
         )
+        #expect(
+            MeetingContactIdentity.isEmailFallback("personal@example.test")
+        )
     }
 
     @Test("passive name resolution never requests Contacts permission")

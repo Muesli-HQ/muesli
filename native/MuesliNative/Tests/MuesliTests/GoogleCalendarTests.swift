@@ -414,7 +414,7 @@ struct GoogleCalendarTests {
         #expect(event.startDate == date("2026-04-10T15:30:00Z"))
     }
 
-    @Test("calendar placeholders deduplicate one occurrence but allow the next recurrence")
+    @Test("calendar placeholders deduplicate one occurrence, preserve removals, and allow the next recurrence")
     func calendarPlaceholderOccurrenceDeduplication() async throws {
         let databaseURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("muesli-calendar-occurrence-\(UUID().uuidString).db")
@@ -485,9 +485,21 @@ struct GoogleCalendarTests {
         let firstMeeting = try #require(meetings.first(where: {
             $0.calendarOccurrence?.identityKey == firstOccurrence.identityKey
         }))
-        #expect(try await controller.meetingParticipants(meetingID: firstMeeting.id).map(\.displayName) == [
+        let firstMeetingParticipants = try await controller.meetingParticipants(meetingID: firstMeeting.id)
+        #expect(firstMeetingParticipants.map(\.displayName) == [
             "Alice Example",
         ])
+
+        let participant = try #require(firstMeetingParticipants.first)
+        try await controller.removeMeetingParticipant(
+            meetingID: firstMeeting.id,
+            participantIdentifier: participant.participantIdentifier
+        )
+        let folderID = try store.createFolder(name: "Filed calendar meetings")
+        controller.createMeetingFromCalendarEvent(firstEvent, folderID: folderID)
+
+        #expect(try await controller.meetingParticipants(meetingID: firstMeeting.id).isEmpty)
+        #expect(try store.meeting(id: firstMeeting.id)?.folderID == folderID)
     }
 
     @Test("event sync cache resets when upcoming window changes")

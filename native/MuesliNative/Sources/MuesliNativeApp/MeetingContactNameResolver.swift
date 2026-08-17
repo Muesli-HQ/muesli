@@ -4,10 +4,7 @@ import MuesliCore
 enum MeetingContactNameResolver {
     static func enrich(_ participants: [MeetingParticipant]) async -> [MeetingParticipant] {
         let unresolvedEmails = participants.compactMap { participant -> String? in
-            guard MeetingContactIdentity.isEmailFallback(
-                participant.displayName,
-                emailAddress: participant.emailAddress
-            ) else { return nil }
+            guard MeetingContactIdentity.isEmailFallback(participant.displayName) else { return nil }
             return participant.emailAddress
         }
         guard !unresolvedEmails.isEmpty,
@@ -57,7 +54,7 @@ enum MeetingContactNameResolver {
                 continue
             }
             let name = MeetingContactIdentity.displayName(for: contact)
-            guard !MeetingContactIdentity.isEmailFallback(name, emailAddress: email) else {
+            guard !MeetingContactIdentity.isEmailFallback(name) else {
                 continue
             }
             names[email] = name

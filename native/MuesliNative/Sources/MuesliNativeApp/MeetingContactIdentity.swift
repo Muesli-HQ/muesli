@@ -39,14 +39,13 @@ enum MeetingContactIdentity {
         )
     }
 
-    static func isEmailFallback(_ displayName: String, emailAddress: String?) -> Bool {
+    static func isEmailFallback(_ displayName: String) -> Bool {
         let normalizedName = displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let normalizedEmail = emailAddress?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return normalizedName.contains("@") && (normalizedEmail == nil || normalizedName == normalizedEmail)
+        return normalizedName.contains("@")
     }
 
     static func compactDisplayName(_ displayName: String, emailAddress: String?) -> String {
-        guard isEmailFallback(displayName, emailAddress: emailAddress) else {
+        guard isEmailFallback(displayName) else {
             return displayName
         }
         let email = emailAddress ?? displayName

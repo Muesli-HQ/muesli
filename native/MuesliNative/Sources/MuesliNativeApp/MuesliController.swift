@@ -4741,7 +4741,6 @@ final class MuesliController: NSObject {
         // Calendar placeholders are idempotent per occurrence. Recordings are
         // intentionally not: users may record the same occurrence more than once.
         if let existing = try? dictationStore.meetingByCalendarOccurrence(occurrence) {
-            persistCalendarAttendees(event.attendees, meetingID: existing.id)
             if let folderID {
                 try? dictationStore.moveMeeting(id: existing.id, toFolder: folderID)
             }
