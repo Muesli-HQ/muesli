@@ -16,6 +16,7 @@ struct UnifiedCalendarEvent: Identifiable, Equatable {
     var calendarID: String? = nil
     var calendarOccurrence: CalendarOccurrenceReference? = nil
     var meetingURL: URL? = nil
+    var attendees: [CalendarAttendee] = []
 
     enum CalendarSource: String {
         case eventKit

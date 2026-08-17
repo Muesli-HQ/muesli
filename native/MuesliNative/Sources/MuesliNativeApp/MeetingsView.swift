@@ -232,7 +232,8 @@ struct MeetingsView: View {
                     meeting: meeting,
                     controller: controller,
                     appState: appState,
-                    onBack: { controller.showMeetingsHome(folderID: appState.selectedFolderID) }
+                    onBack: { controller.showMeetingsHome(folderID: appState.selectedFolderID) },
+                    backLabel: "Back to Meetings"
                 )
                 .id(meeting.id)
             } else {
@@ -461,7 +462,12 @@ struct MeetingsView: View {
                                    !appState.isMeetingRecording,
                                    !appState.isMeetingStarting {
                                     Button {
-                                        controller.joinAndRecord(title: event.title, meetingURL: meetingURL, endDate: event.endDate)
+                                        controller.joinAndRecord(
+                                            title: event.title,
+                                            meetingURL: meetingURL,
+                                            endDate: event.endDate,
+                                            calendarOccurrence: event.resolvedCalendarOccurrence
+                                        )
                                     } label: {
                                         HStack(spacing: 4) {
                                             Image(systemName: "video.fill")

@@ -466,6 +466,48 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
     }
 }
 
+public struct MeetingParticipant: Identifiable, Equatable, Sendable {
+    public let meetingID: Int64
+    public let participantIdentifier: String
+    public let displayName: String
+    public let emailAddress: String?
+    public let insertionOrder: Int
+
+    public var id: String {
+        "\(meetingID):\(participantIdentifier)"
+    }
+
+    public init(
+        meetingID: Int64,
+        participantIdentifier: String,
+        displayName: String,
+        emailAddress: String? = nil,
+        insertionOrder: Int
+    ) {
+        self.meetingID = meetingID
+        self.participantIdentifier = participantIdentifier
+        self.displayName = displayName
+        self.emailAddress = emailAddress
+        self.insertionOrder = insertionOrder
+    }
+}
+
+public struct MeetingParticipantDraft: Equatable, Sendable {
+    public let participantIdentifier: String
+    public let displayName: String
+    public let emailAddress: String?
+
+    public init(
+        participantIdentifier: String,
+        displayName: String,
+        emailAddress: String? = nil
+    ) {
+        self.participantIdentifier = participantIdentifier
+        self.displayName = displayName
+        self.emailAddress = emailAddress
+    }
+}
+
 public struct MeetingFolder: Identifiable, Codable, Sendable {
     public let id: Int64
     public var name: String

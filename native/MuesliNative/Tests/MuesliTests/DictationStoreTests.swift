@@ -3301,6 +3301,27 @@ struct DictationStoreTests {
         #expect(results.map(\.id).contains(id))
     }
 
+    @Test("searchMeetings matches participant names and emails")
+    func searchMeetingsParticipants() throws {
+        let store = try makeStore()
+        let id = try store.createLiveMeeting(
+            title: "Weekly Sync",
+            calendarEventID: nil,
+            startTime: Date()
+        )
+        try store.attachMeetingParticipant(
+            meetingID: id,
+            participant: MeetingParticipantDraft(
+                participantIdentifier: "calendar:pranav@muesli.works",
+                displayName: "Pranav Hari",
+                emailAddress: "pranav@muesli.works"
+            )
+        )
+
+        #expect(try store.searchMeetings(query: "Pranav Hari").map(\.id) == [id])
+        #expect(try store.searchMeetings(query: "pranav@muesli.works").map(\.id) == [id])
+    }
+
     @Test("search is case-insensitive for ASCII")
     func searchCaseInsensitive() throws {
         let store = try makeStore()

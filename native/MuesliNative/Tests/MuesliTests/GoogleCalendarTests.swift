@@ -67,6 +67,29 @@ struct GoogleCalendarTests {
         #expect(event?.source == .googleCalendar)
     }
 
+    @Test("does not import people from the unreleased direct Google integration")
+    func directGoogleEventsDoNotCarryPeople() throws {
+        let item: [String: Any] = [
+            "id": "event-with-people",
+            "summary": "Sprint Planning",
+            "start": ["dateTime": "2026-04-10T14:00:00Z"],
+            "end": ["dateTime": "2026-04-10T15:00:00Z"],
+            "organizer": [
+                "email": "alice@example.test",
+                "displayName": "Alice Example",
+            ],
+            "attendees": [
+                ["email": "alice@example.test", "displayName": "Alice Example"],
+                ["email": "bob@example.test", "displayName": "Bob Example"],
+                ["email": "room@example.test", "displayName": "Conference Room", "resource": true],
+            ],
+        ]
+
+        let event = try #require(GoogleCalendarClient().parseEvent(item, calendarID: "primary"))
+
+        #expect(event.attendees.isEmpty)
+    }
+
     @Test("parses all-day event from Google Calendar API response")
     func parsesAllDayEvent() {
         let item: [String: Any] = [
@@ -390,8 +413,8 @@ struct GoogleCalendarTests {
         #expect(event.startDate == date("2026-04-10T15:30:00Z"))
     }
 
-    @Test("calendar placeholders deduplicate one occurrence but allow the next recurrence")
-    func calendarPlaceholderOccurrenceDeduplication() throws {
+    @Test("calendar placeholders reconcile before start, preserve removals, and allow the next recurrence")
+    func calendarPlaceholderOccurrenceDeduplication() async throws {
         let databaseURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("muesli-calendar-occurrence-\(UUID().uuidString).db")
         let store = DictationStore(databaseURL: databaseURL)
@@ -413,6 +436,11 @@ struct GoogleCalendarTests {
             seriesID: "shared-series-id",
             originalStartTime: firstStart
         )
+        let attendee = try #require(CalendarAttendee(
+            identifier: "alice@example.test",
+            displayName: "Alice Example",
+            emailAddress: "alice@example.test"
+        ))
         let firstEvent = UnifiedCalendarEvent(
             id: "shared-series-id",
             title: "Daily sync",
@@ -421,7 +449,8 @@ struct GoogleCalendarTests {
             isAllDay: false,
             source: .eventKit,
             calendarID: "work",
-            calendarOccurrence: firstOccurrence
+            calendarOccurrence: firstOccurrence,
+            attendees: [attendee]
         )
         controller.createMeetingFromCalendarEvent(firstEvent, folderID: nil)
         controller.createMeetingFromCalendarEvent(firstEvent, folderID: nil)
@@ -452,6 +481,63 @@ struct GoogleCalendarTests {
             firstOccurrence.identityKey,
             nextOccurrence.identityKey,
         ]))
+        let firstMeeting = try #require(meetings.first(where: {
+            $0.calendarOccurrence?.identityKey == firstOccurrence.identityKey
+        }))
+        let firstMeetingParticipants = try await controller.meetingParticipants(meetingID: firstMeeting.id)
+        #expect(firstMeetingParticipants.map(\.displayName) == [
+            "Alice Example",
+        ])
+
+        let participant = try #require(firstMeetingParticipants.first)
+        try await controller.removeMeetingParticipant(
+            meetingID: firstMeeting.id,
+            participantIdentifier: participant.participantIdentifier
+        )
+        let folderID = try store.createFolder(name: "Filed calendar meetings")
+        controller.createMeetingFromCalendarEvent(firstEvent, folderID: folderID)
+
+        #expect(try await controller.meetingParticipants(meetingID: firstMeeting.id).isEmpty)
+        #expect(try store.meeting(id: firstMeeting.id)?.folderID == folderID)
+
+        let bob = try #require(CalendarAttendee(
+            identifier: "bob@example.test",
+            displayName: "Bob Example",
+            emailAddress: "bob@example.test"
+        ))
+        let refreshedEvent = UnifiedCalendarEvent(
+            id: firstEvent.id,
+            title: firstEvent.title,
+            startDate: firstEvent.startDate,
+            endDate: firstEvent.endDate,
+            isAllDay: false,
+            source: .eventKit,
+            calendarID: firstEvent.calendarID,
+            calendarOccurrence: firstOccurrence,
+            attendees: [attendee, bob]
+        )
+        await controller.reconcilePendingEventKitCalendarAttendees(
+            events: [refreshedEvent],
+            now: firstStart.addingTimeInterval(-60)
+        )
+        #expect(try await controller.meetingParticipants(meetingID: firstMeeting.id).map(\.displayName) == [
+            "Bob Example",
+        ])
+
+        let carol = try #require(CalendarAttendee(
+            identifier: "carol@example.test",
+            displayName: "Carol Example",
+            emailAddress: "carol@example.test"
+        ))
+        var afterStartEvent = refreshedEvent
+        afterStartEvent.attendees = [carol]
+        await controller.reconcilePendingEventKitCalendarAttendees(
+            events: [afterStartEvent],
+            now: firstStart
+        )
+        #expect(try await controller.meetingParticipants(meetingID: firstMeeting.id).map(\.displayName) == [
+            "Bob Example",
+        ])
     }
 
     @Test("event sync cache resets when upcoming window changes")
