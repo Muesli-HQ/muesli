@@ -1,4 +1,3 @@
-import AppKit
 import Contacts
 import MuesliCore
 import SwiftUI
@@ -9,39 +8,76 @@ struct MeetingParticipantsView: View {
 
     @State private var participants: [MeetingParticipant] = []
     @State private var isContactPickerPresented = false
+    @State private var isNewContactPresented = false
+    @State private var isPeoplePopoverPresented = false
     @State private var errorMessage: String?
 
+    private var peopleDescription: String {
+        participants.count == 1 ? "1 person" : "\(participants.count) people"
+    }
+
+    private var firstParticipantName: String? {
+        participants.first.map {
+            MeetingContactIdentity.compactDisplayName(
+                $0.displayName,
+                emailAddress: $0.emailAddress
+            )
+        }
+    }
+
     var body: some View {
-        HStack(alignment: .top, spacing: MuesliTheme.spacing12) {
-            Text("People")
-                .font(MuesliTheme.callout())
-                .foregroundStyle(MuesliTheme.textSecondary)
-                .padding(.top, 5)
+        Button {
+            isPeoplePopoverPresented.toggle()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: participants.isEmpty ? "person.2" : "person.2.fill")
 
-            WordFlowLayout(spacing: MuesliTheme.spacing8) {
-                ForEach(participants) { participant in
-                    participantChip(participant)
-                }
+                if let firstParticipantName {
+                    Text(firstParticipantName)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
 
-                Button {
-                    isContactPickerPresented = true
-                } label: {
-                    Label("Add person", systemImage: "person.badge.plus")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help("Add someone from Apple Contacts")
-                .background {
-                    MeetingContactPicker(isPresented: $isContactPickerPresented) { contact in
-                        Task { await attach(contact) }
+                    if participants.count > 1 {
+                        Text("+\(participants.count - 1)")
+                            .foregroundStyle(MuesliTheme.textTertiary)
                     }
+                } else {
+                    Text("Add people")
                 }
             }
+            .font(MuesliTheme.caption())
+            .foregroundStyle(MuesliTheme.textSecondary)
+            .padding(.horizontal, 10)
+            .frame(height: MeetingHeaderLayout.contextControlHeight)
+            .frame(maxWidth: 220)
+            .background(MuesliTheme.backgroundRaised)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            .overlay {
+                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+            }
         }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("People in this meeting")
+        .buttonStyle(.plain)
+        .fixedSize(horizontal: false, vertical: true)
+        .help(participants.isEmpty ? "Add people to this meeting" : "Show \(peopleDescription)")
+        .accessibilityLabel(
+            participants.isEmpty ? "Add people to this meeting" : "\(peopleDescription) in this meeting"
+        )
+        .popover(isPresented: $isPeoplePopoverPresented, arrowEdge: .bottom) {
+            peoplePopover
+        }
+        .background {
+            MeetingContactPicker(isPresented: $isContactPickerPresented) { contact in
+                Task { await attach(contact) }
+            }
+        }
         .task(id: meetingID) {
             await reload()
+        }
+        .sheet(isPresented: $isNewContactPresented) {
+            NewMeetingContactView { participant in
+                Task { await attach(participant) }
+            }
         }
         .alert("Couldn't Update People", isPresented: errorBinding) {
             Button("OK", role: .cancel) {
@@ -52,35 +88,114 @@ struct MeetingParticipantsView: View {
         }
     }
 
-    private func participantChip(_ participant: MeetingParticipant) -> some View {
-        HStack(spacing: 5) {
-            Image(systemName: "person.fill")
-                .font(.system(size: 9, weight: .semibold))
-            Text(participant.displayName)
-                .lineLimit(1)
+    private var peoplePopover: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+            HStack(spacing: MuesliTheme.spacing8) {
+                Text("People")
+                    .font(MuesliTheme.title3())
+
+                if !participants.isEmpty {
+                    Text(peopleDescription)
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                }
+
+                Spacer()
+
+                addPersonMenu
+            }
+
+            Divider()
+
+            if participants.isEmpty {
+                Text("No one has been added yet.")
+                    .font(MuesliTheme.callout())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, MuesliTheme.spacing8)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                        ForEach(participants) { participant in
+                            participantListRow(participant)
+                        }
+                    }
+                }
+                .frame(maxHeight: 320)
+            }
+        }
+        .padding(MuesliTheme.spacing16)
+        .frame(width: 340)
+    }
+
+    private var addPersonMenu: some View {
+        Menu {
+            Button {
+                chooseExistingContact()
+            } label: {
+                Label("Choose from Contacts…", systemImage: "person.crop.circle.badge.plus")
+            }
+
+            Button {
+                createNewContact()
+            } label: {
+                Label("Create New Contact…", systemImage: "person.badge.plus")
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "person.badge.plus")
+                Text("Add person")
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+            }
+            .font(MuesliTheme.caption())
+            .foregroundStyle(MuesliTheme.textSecondary)
+            .padding(.horizontal, 9)
+            .frame(height: MeetingHeaderLayout.contextControlHeight)
+            .background(MuesliTheme.backgroundRaised)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            .overlay {
+                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Choose or create an Apple contact")
+    }
+
+    private func participantListRow(_ participant: MeetingParticipant) -> some View {
+        let displayName = MeetingContactIdentity.compactDisplayName(
+            participant.displayName,
+            emailAddress: participant.emailAddress
+        )
+        return HStack(spacing: MuesliTheme.spacing8) {
+            Image(systemName: "person.crop.circle.fill")
+                .font(.system(size: 18))
+                .foregroundStyle(MuesliTheme.textTertiary)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(displayName)
+                    .font(MuesliTheme.callout())
+                if let email = participant.emailAddress, email != displayName {
+                    Text(email)
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                }
+            }
+
+            Spacer()
+
             Button {
                 remove(participant)
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 8, weight: .bold))
-                    .padding(3)
-                    .contentShape(Rectangle())
+                    .font(.system(size: 9, weight: .bold))
+                    .frame(width: 24, height: 24)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Remove \(participant.displayName)")
+            .help("Remove \(displayName)")
         }
-        .font(MuesliTheme.caption())
-        .foregroundStyle(MuesliTheme.textSecondary)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .background(MuesliTheme.backgroundRaised)
-        .clipShape(Capsule())
-        .overlay {
-            Capsule()
-                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-        }
-        .help(participant.emailAddress ?? participant.displayName)
-        .accessibilityElement(children: .contain)
     }
 
     private var errorBinding: Binding<Bool> {
@@ -94,19 +209,53 @@ struct MeetingParticipantsView: View {
         )
     }
 
+    private func chooseExistingContact() {
+        isPeoplePopoverPresented = false
+        Task { @MainActor in
+            await Task.yield()
+            isContactPickerPresented = true
+        }
+    }
+
+    private func createNewContact() {
+        isPeoplePopoverPresented = false
+        Task { @MainActor in
+            await Task.yield()
+            isNewContactPresented = true
+        }
+    }
+
     private func reload() async {
         do {
-            participants = try await controller.meetingParticipants(meetingID: meetingID)
+            let storedParticipants = try await controller.meetingParticipants(meetingID: meetingID)
+            let enrichedParticipants = await MeetingContactNameResolver.enrich(storedParticipants)
+            participants = enrichedParticipants
+
+            for (stored, enriched) in zip(storedParticipants, enrichedParticipants)
+            where stored.displayName != enriched.displayName {
+                try? await controller.attachMeetingParticipant(
+                    meetingID: meetingID,
+                    participant: MeetingParticipantDraft(
+                        participantIdentifier: enriched.participantIdentifier,
+                        displayName: enriched.displayName,
+                        emailAddress: enriched.emailAddress
+                    )
+                )
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
     private func attach(_ contact: CNContact) async {
+        await attach(MeetingContactIdentity.participant(for: contact))
+    }
+
+    private func attach(_ participant: MeetingParticipantDraft) async {
         do {
             try await controller.attachMeetingParticipant(
                 meetingID: meetingID,
-                participant: MeetingContactIdentity.participant(for: contact)
+                participant: participant
             )
             await reload()
         } catch {

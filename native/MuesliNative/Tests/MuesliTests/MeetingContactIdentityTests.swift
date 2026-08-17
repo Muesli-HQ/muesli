@@ -114,4 +114,35 @@ struct MeetingContactIdentityTests {
         #expect(participant.displayName == "Dana Sample")
         #expect(participant.emailAddress == "dana@example.test")
     }
+
+    @Test("new contact input requires a name and trims saved fields")
+    func newContactDraftValidation() {
+        var draft = NewMeetingContactDraft()
+        #expect(!draft.canSave)
+
+        draft.givenName = "  Dana "
+        draft.familyName = " Sample\n"
+        draft.emailAddress = " dana@example.test "
+
+        #expect(draft.canSave)
+        #expect(draft.normalizedGivenName == "Dana")
+        #expect(draft.normalizedFamilyName == "Sample")
+        #expect(draft.normalizedEmailAddress == "dana@example.test")
+    }
+
+    @Test("email-only attendees use a compact local-part fallback")
+    func compactEmailFallback() {
+        #expect(
+            MeetingContactIdentity.compactDisplayName(
+                "dana@example.test",
+                emailAddress: "dana@example.test"
+            ) == "dana"
+        )
+        #expect(
+            MeetingContactIdentity.compactDisplayName(
+                "Dana Sample",
+                emailAddress: "dana@example.test"
+            ) == "Dana Sample"
+        )
+    }
 }

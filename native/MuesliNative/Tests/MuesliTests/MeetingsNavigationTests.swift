@@ -179,6 +179,8 @@ struct MeetingsNavigationTests {
         #expect(controller.appState.selectedMeetingID == 202)
         #expect(controller.appState.meetingsNavigationState == .document(202))
         #expect(controller.appState.selectedFolderID == 55)
+        #expect(controller.appState.meetingDetailReturnDestination == .meetings)
+        #expect(controller.appState.meetingDetailReturnDestination.backLabel == "Back to Meetings")
     }
 
     @Test("timeline meeting route preserves timeline filters and scroll anchor")
@@ -197,6 +199,7 @@ struct MeetingsNavigationTests {
 
         #expect(controller.appState.selectedTab == .timeline)
         #expect(controller.appState.meetingDetailReturnDestination == .timeline)
+        #expect(controller.appState.meetingDetailReturnDestination.backLabel == "Back to Timeline")
         #expect(controller.appState.meetingsNavigationState == .document(meetingID))
         #expect(controller.appState.timelineOriginFilter == .fromIPhone)
         #expect(controller.appState.timelineDateFilter == .lastWeek)

@@ -67,6 +67,13 @@ enum MeetingsNavigationState: Equatable {
 enum MeetingDetailReturnDestination: Equatable {
     case meetings
     case timeline
+
+    var backLabel: String {
+        switch self {
+        case .meetings: return "Back to Meetings"
+        case .timeline: return "Back to Timeline"
+        }
+    }
 }
 
 enum HistoryDateFilter: String, CaseIterable, Hashable {

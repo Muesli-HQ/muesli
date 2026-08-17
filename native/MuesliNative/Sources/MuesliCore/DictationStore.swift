@@ -841,7 +841,21 @@ public final class DictationStore {
         let sql = """
         SELECT \(Self.meetingColumns)
         FROM meetings
-        WHERE deleted_at IS NULL AND (title LIKE ? ESCAPE '\\' OR raw_transcript LIKE ? ESCAPE '\\' OR formatted_notes LIKE ? ESCAPE '\\' OR manual_notes LIKE ? ESCAPE '\\')
+        WHERE deleted_at IS NULL AND (
+            title LIKE ? ESCAPE '\\'
+            OR raw_transcript LIKE ? ESCAPE '\\'
+            OR formatted_notes LIKE ? ESCAPE '\\'
+            OR manual_notes LIKE ? ESCAPE '\\'
+            OR EXISTS (
+                SELECT 1
+                FROM meeting_participants
+                WHERE meeting_participants.meeting_id = meetings.id
+                    AND (
+                        meeting_participants.display_name LIKE ? ESCAPE '\\'
+                        OR meeting_participants.email_address LIKE ? ESCAPE '\\'
+                    )
+            )
+        )
         ORDER BY id DESC
         LIMIT ?
         """
@@ -855,7 +869,9 @@ public final class DictationStore {
         sqlite3_bind_text(statement, 2, pattern.utf8String, -1, nil)
         sqlite3_bind_text(statement, 3, pattern.utf8String, -1, nil)
         sqlite3_bind_text(statement, 4, pattern.utf8String, -1, nil)
-        sqlite3_bind_int(statement, 5, Int32(limit))
+        sqlite3_bind_text(statement, 5, pattern.utf8String, -1, nil)
+        sqlite3_bind_text(statement, 6, pattern.utf8String, -1, nil)
+        sqlite3_bind_int(statement, 7, Int32(limit))
 
         var rows: [MeetingRecord] = []
         while sqlite3_step(statement) == SQLITE_ROW {

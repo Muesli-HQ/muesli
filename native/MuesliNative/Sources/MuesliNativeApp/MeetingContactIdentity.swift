@@ -38,4 +38,18 @@ enum MeetingContactIdentity {
             emailAddress: emailAddress
         )
     }
+
+    static func isEmailFallback(_ displayName: String, emailAddress: String?) -> Bool {
+        let normalizedName = displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedEmail = emailAddress?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalizedName.contains("@") && (normalizedEmail == nil || normalizedName == normalizedEmail)
+    }
+
+    static func compactDisplayName(_ displayName: String, emailAddress: String?) -> String {
+        guard isEmailFallback(displayName, emailAddress: emailAddress) else {
+            return displayName
+        }
+        let email = emailAddress ?? displayName
+        return email.split(separator: "@", maxSplits: 1).first.map(String.init) ?? displayName
+    }
 }

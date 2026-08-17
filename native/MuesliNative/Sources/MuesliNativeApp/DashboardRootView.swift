@@ -132,8 +132,7 @@ struct DashboardRootView: View {
                 meeting: appState.selectedMeeting,
                 controller: controller,
                 appState: appState,
-                onBack: { controller.showTimelineHome() },
-                backLabel: "Back to Timeline"
+                onBack: { controller.showTimelineHome() }
             )
             .id(id)
         } else if appState.isSearchActive {
