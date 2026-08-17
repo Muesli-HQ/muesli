@@ -149,6 +149,15 @@ public final class DictationStore {
         CREATE INDEX IF NOT EXISTS idx_meeting_participants_order
             ON meeting_participants(meeting_id, insertion_order);
 
+        -- Explicitly removed calendar attendees stay hidden while EventKit keeps
+        -- the pre-meeting snapshot fresh. Manual Contacts use a different
+        -- identifier namespace and do not need suppression rows.
+        CREATE TABLE IF NOT EXISTS meeting_participant_suppressions (
+            meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+            participant_identifier TEXT NOT NULL,
+            PRIMARY KEY (meeting_id, participant_identifier)
+        );
+
         CREATE TABLE IF NOT EXISTS meeting_transcript_checkpoints (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
@@ -1064,8 +1073,104 @@ public final class DictationStore {
         participants: [MeetingParticipantDraft]
     ) throws {
         guard !participants.isEmpty else { return }
+        let normalizedParticipants = try Self.normalizedMeetingParticipants(participants)
 
-        let normalizedParticipants = try participants.map { participant in
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+
+        try exec("BEGIN IMMEDIATE TRANSACTION", db: db)
+        do {
+            try upsertMeetingParticipants(
+                meetingID: meetingID,
+                participants: normalizedParticipants,
+                db: db
+            )
+            try exec("COMMIT", db: db)
+        } catch {
+            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
+    }
+
+    /// Replaces only the calendar-owned portion of a meeting's local People
+    /// snapshot. Manual Contacts remain untouched, and calendar identities the
+    /// user explicitly removed remain suppressed.
+    public func reconcileCalendarMeetingParticipants(
+        meetingID: Int64,
+        participants: [MeetingParticipantDraft]
+    ) throws {
+        let normalizedParticipants = try Self.normalizedMeetingParticipants(participants)
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+
+        try exec("BEGIN IMMEDIATE TRANSACTION", db: db)
+        do {
+            let suppressions = try meetingParticipantSuppressions(meetingID: meetingID, db: db)
+            let visibleParticipants = normalizedParticipants.filter {
+                !suppressions.contains($0.participantIdentifier)
+            }
+            let visibleIdentifiers = Set(visibleParticipants.map(\.participantIdentifier))
+            let storedCalendarIdentifiers = try calendarMeetingParticipantIdentifiers(
+                meetingID: meetingID,
+                db: db
+            )
+
+            for identifier in storedCalendarIdentifiers.subtracting(visibleIdentifiers) {
+                try deleteMeetingParticipant(
+                    meetingID: meetingID,
+                    participantIdentifier: identifier,
+                    db: db
+                )
+            }
+            try upsertMeetingParticipants(
+                meetingID: meetingID,
+                participants: visibleParticipants,
+                db: db
+            )
+            try exec("COMMIT", db: db)
+        } catch {
+            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
+    }
+
+    public func removeMeetingParticipant(
+        meetingID: Int64,
+        participantIdentifier: String
+    ) throws {
+        let normalizedIdentifier = participantIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedIdentifier.isEmpty else {
+            throw DictationStoreError.invalidParticipantIdentifier
+        }
+
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+
+        try exec("BEGIN IMMEDIATE TRANSACTION", db: db)
+        do {
+            try deleteMeetingParticipant(
+                meetingID: meetingID,
+                participantIdentifier: normalizedIdentifier,
+                db: db
+            )
+            if normalizedIdentifier.hasPrefix("calendar:") {
+                try suppressMeetingParticipant(
+                    meetingID: meetingID,
+                    participantIdentifier: normalizedIdentifier,
+                    db: db
+                )
+            }
+            try exec("COMMIT", db: db)
+        } catch {
+            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
+    }
+
+    private static func normalizedMeetingParticipants(
+        _ participants: [MeetingParticipantDraft]
+    ) throws -> [MeetingParticipantDraft] {
+        try participants.map { participant in
             let participantIdentifier = participant.participantIdentifier
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let displayName = participant.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1078,9 +1183,14 @@ public final class DictationStore {
                 emailAddress: participant.emailAddress
             )
         }
+    }
 
-        let db = try openDatabase()
-        defer { sqlite3_close(db) }
+    private func upsertMeetingParticipants(
+        meetingID: Int64,
+        participants: [MeetingParticipantDraft],
+        db: OpaquePointer?
+    ) throws {
+        guard !participants.isEmpty else { return }
 
         let sql = """
         INSERT INTO meeting_participants
@@ -1108,46 +1218,117 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
 
-        try exec("BEGIN IMMEDIATE TRANSACTION", db: db)
-        do {
-            for participant in normalizedParticipants {
-                sqlite3_reset(statement)
-                sqlite3_clear_bindings(statement)
-                sqlite3_bind_int64(statement, 1, meetingID)
-                sqlite3_bind_text(
-                    statement,
-                    2,
-                    (participant.participantIdentifier as NSString).utf8String,
-                    -1,
-                    nil
-                )
-                sqlite3_bind_text(
-                    statement,
-                    3,
-                    (participant.displayName as NSString).utf8String,
-                    -1,
-                    nil
-                )
-                bindOptionalText(participant.emailAddress, at: 4, statement: statement)
-                sqlite3_bind_int64(statement, 5, meetingID)
-                guard sqlite3_step(statement) == SQLITE_DONE else {
-                    throw lastError(db)
-                }
+        for participant in participants {
+            sqlite3_reset(statement)
+            sqlite3_clear_bindings(statement)
+            sqlite3_bind_int64(statement, 1, meetingID)
+            sqlite3_bind_text(
+                statement,
+                2,
+                (participant.participantIdentifier as NSString).utf8String,
+                -1,
+                nil
+            )
+            sqlite3_bind_text(
+                statement,
+                3,
+                (participant.displayName as NSString).utf8String,
+                -1,
+                nil
+            )
+            bindOptionalText(participant.emailAddress, at: 4, statement: statement)
+            sqlite3_bind_int64(statement, 5, meetingID)
+            guard sqlite3_step(statement) == SQLITE_DONE else {
+                throw lastError(db)
             }
-            try exec("COMMIT", db: db)
-        } catch {
-            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
-            throw error
         }
     }
 
-    public func removeMeetingParticipant(
+    private func calendarMeetingParticipantIdentifiers(
         meetingID: Int64,
-        participantIdentifier: String
-    ) throws {
-        let db = try openDatabase()
-        defer { sqlite3_close(db) }
+        db: OpaquePointer?
+    ) throws -> Set<String> {
+        let sql = """
+        SELECT participant_identifier
+        FROM meeting_participants
+        WHERE meeting_id = ? AND participant_identifier LIKE 'calendar:%'
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, meetingID)
 
+        var identifiers = Set<String>()
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                identifiers.insert(stringColumn(statement, index: 0))
+            case SQLITE_DONE:
+                return identifiers
+            default:
+                throw lastError(db)
+            }
+        }
+    }
+
+    private func meetingParticipantSuppressions(
+        meetingID: Int64,
+        db: OpaquePointer?
+    ) throws -> Set<String> {
+        let sql = """
+        SELECT participant_identifier
+        FROM meeting_participant_suppressions
+        WHERE meeting_id = ?
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, meetingID)
+
+        var identifiers = Set<String>()
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                identifiers.insert(stringColumn(statement, index: 0))
+            case SQLITE_DONE:
+                return identifiers
+            default:
+                throw lastError(db)
+            }
+        }
+    }
+
+    private func suppressMeetingParticipant(
+        meetingID: Int64,
+        participantIdentifier: String,
+        db: OpaquePointer?
+    ) throws {
+        let sql = """
+        INSERT OR IGNORE INTO meeting_participant_suppressions
+            (meeting_id, participant_identifier)
+        VALUES (?, ?)
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, meetingID)
+        sqlite3_bind_text(statement, 2, (participantIdentifier as NSString).utf8String, -1, nil)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
+    }
+
+    private func deleteMeetingParticipant(
+        meetingID: Int64,
+        participantIdentifier: String,
+        db: OpaquePointer?
+    ) throws {
         let sql = """
         DELETE FROM meeting_participants
         WHERE meeting_id = ? AND participant_identifier = ?
@@ -2102,6 +2283,7 @@ public final class DictationStore {
         try exec("DELETE FROM meeting_resume_snapshots", db: db)
         try exec("DELETE FROM meeting_transcript_checkpoints", db: db)
         try exec("DELETE FROM meeting_participants", db: db)
+        try exec("DELETE FROM meeting_participant_suppressions", db: db)
         try exec(
             """
             UPDATE meetings
@@ -2803,15 +2985,18 @@ public final class DictationStore {
     }
 
     private func deleteMeetingParticipants(meetingID: Int64, db: OpaquePointer?) throws {
-        let sql = "DELETE FROM meeting_participants WHERE meeting_id = ?"
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
-            throw lastError(db)
-        }
-        defer { sqlite3_finalize(statement) }
-        sqlite3_bind_int64(statement, 1, meetingID)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
-            throw lastError(db)
+        for table in ["meeting_participants", "meeting_participant_suppressions"] {
+            let sql = "DELETE FROM \(table) WHERE meeting_id = ?"
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+                throw lastError(db)
+            }
+            sqlite3_bind_int64(statement, 1, meetingID)
+            let result = sqlite3_step(statement)
+            sqlite3_finalize(statement)
+            guard result == SQLITE_DONE else {
+                throw lastError(db)
+            }
         }
     }
 

@@ -182,6 +182,17 @@ struct PendingMeetingCompletionNotification {
     let title: String
 }
 
+private struct CalendarParticipantReconciliationSnapshot: Sendable {
+    let occurrence: CalendarOccurrenceReference
+    let startDate: Date
+    let participants: [MeetingParticipantDraft]
+}
+
+private enum CalendarAttendeePersistenceMode: Sendable, Equatable {
+    case attach
+    case reconcile
+}
+
 enum MeetingRetranscriptionError: Error, LocalizedError {
     case controllerUnavailable
     case recordingUnavailable
@@ -403,7 +414,7 @@ final class MuesliController: NSObject {
     private var liveManualNotesLastPersistedValue: [Int64: String] = [:]
     private var liveManualNotesPersistWorkItems: [Int64: DispatchWorkItem] = [:]
     private var calendarAttendeePersistenceTasks: [
-        Int64: (generation: UUID, task: Task<Void, Never>)
+        Int64: (generation: UUID, task: Task<Bool, Never>)
     ] = [:]
     private let liveManualNotesPersistInterval: TimeInterval = 0.75
     private var staleLiveMeetingRecoveryFailures = Set<Int64>()
@@ -868,7 +879,7 @@ final class MuesliController: NSObject {
         let attendeePersistenceTasks = calendarAttendeePersistenceTasks.values.map(\.task)
         calendarAttendeePersistenceTasks.removeAll()
         for task in attendeePersistenceTasks {
-            await task.value
+            _ = await task.value
         }
         calendarMonitor.stop()
         calendarCheckTimer?.invalidate()
@@ -2878,6 +2889,43 @@ final class MuesliController: NSObject {
         return true
     }
 
+    /// Reconciles only EventKit-backed meetings that have not started. This is
+    /// called from EKEventStoreChangedNotification, never from the Google
+    /// Calendar fallback timer, so participant freshness remains event-driven.
+    func reconcilePendingEventKitCalendarAttendees(
+        events: [UnifiedCalendarEvent],
+        now: Date = Date()
+    ) async {
+        let snapshots = events.compactMap { event -> CalendarParticipantReconciliationSnapshot? in
+            guard event.source == .eventKit, event.startDate > now else { return nil }
+            return CalendarParticipantReconciliationSnapshot(
+                occurrence: event.resolvedCalendarOccurrence,
+                startDate: event.startDate,
+                participants: event.attendees.map(\.participantDraft)
+            )
+        }
+        guard !snapshots.isEmpty else { return }
+
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        let matches = await Task.detached(priority: .utility) {
+            let store = DictationStore(databaseURL: databaseURL)
+            return snapshots.compactMap { snapshot -> (Int64, [MeetingParticipantDraft])? in
+                guard snapshot.startDate > now,
+                      let meeting = try? store.meetingByCalendarOccurrence(snapshot.occurrence),
+                      meeting.status != .recording,
+                      meeting.status != .processing else {
+                    return nil
+                }
+                return (meeting.id, snapshot.participants)
+            }
+        }.value
+
+        let activeMeetingIDs = Set([activeMeetingID, meetingStartMeetingID].compactMap { $0 })
+        for (meetingID, participants) in matches where !activeMeetingIDs.contains(meetingID) {
+            persistCalendarParticipants(participants, meetingID: meetingID, mode: .reconcile)
+        }
+    }
+
     func startCalendarMonitoring() {
         // Event-driven: refresh when macOS reports calendar changes.
         // EKEventStoreChangedNotification is delivered via NotificationCenter,
@@ -2888,6 +2936,9 @@ final class MuesliController: NSObject {
                 self.refreshAvailableEventKitCalendars()
                 let refreshed = await self.refreshUpcomingCalendarEvents()
                 guard refreshed else { return }
+                await self.reconcilePendingEventKitCalendarAttendees(
+                    events: self.appState.upcomingCalendarEvents
+                )
                 self.checkUpcomingCalendarNotifications()
                 self.meetingMonitor.refreshState(trigger: .calendarChanged)
             }
@@ -2912,11 +2963,15 @@ final class MuesliController: NSObject {
             }
         }
 
-        // Run first cycle immediately
+        // Run one initial reconciliation so changes made while Muesli was not
+        // running are reflected without waiting for another EventKit change.
         Task { @MainActor in
             self.refreshAvailableEventKitCalendars()
             let refreshed = await self.refreshUpcomingCalendarEvents()
             guard refreshed else { return }
+            await self.reconcilePendingEventKitCalendarAttendees(
+                events: self.appState.upcomingCalendarEvents
+            )
             self.checkUpcomingCalendarNotifications()
             self.meetingMonitor.refreshState(trigger: .calendarChanged)
         }
@@ -4416,43 +4471,72 @@ final class MuesliController: NSObject {
 
     private func persistCalendarAttendees(
         _ attendees: [CalendarAttendee],
-        meetingID: Int64
+        meetingID: Int64,
+        mode: CalendarAttendeePersistenceMode = .attach
     ) {
-        guard !attendees.isEmpty else { return }
+        persistCalendarParticipants(
+            attendees.map(\.participantDraft),
+            meetingID: meetingID,
+            mode: mode
+        )
+    }
+
+    private func persistCalendarParticipants(
+        _ participants: [MeetingParticipantDraft],
+        meetingID: Int64,
+        mode: CalendarAttendeePersistenceMode
+    ) {
+        guard mode == .reconcile || !participants.isEmpty else { return }
 
         let databaseURL = dictationStore.resolvedDatabaseURL
-        let participants = attendees.map(\.participantDraft)
         let previousTask = calendarAttendeePersistenceTasks[meetingID]?.task
         let generation = UUID()
         let task = Task.detached(priority: .utility) {
-            await previousTask?.value
+            _ = await previousTask?.value
             do {
-                try DictationStore(databaseURL: databaseURL).attachMeetingParticipants(
-                    meetingID: meetingID,
-                    participants: participants
-                )
+                let store = DictationStore(databaseURL: databaseURL)
+                switch mode {
+                case .attach:
+                    try store.attachMeetingParticipants(
+                        meetingID: meetingID,
+                        participants: participants
+                    )
+                case .reconcile:
+                    try store.reconcileCalendarMeetingParticipants(
+                        meetingID: meetingID,
+                        participants: participants
+                    )
+                }
+                return true
             } catch {
                 fputs(
                     "[calendar] failed to save attendees for meeting \(meetingID): \(error)\n",
                     stderr
                 )
+                return false
             }
         }
         calendarAttendeePersistenceTasks[meetingID] = (generation, task)
 
         Task { [weak self] in
-            await task.value
+            let didPersist = await task.value
             guard let self,
                   self.calendarAttendeePersistenceTasks[meetingID]?.generation == generation else {
                 return
             }
             self.calendarAttendeePersistenceTasks.removeValue(forKey: meetingID)
+            if didPersist {
+                NotificationCenter.default.post(
+                    name: .meetingParticipantsDidChange,
+                    object: meetingID
+                )
+            }
         }
     }
 
     private func waitForCalendarAttendeePersistence(meetingID: Int64) async {
         while let pending = calendarAttendeePersistenceTasks[meetingID] {
-            await pending.task.value
+            _ = await pending.task.value
             guard let current = calendarAttendeePersistenceTasks[meetingID],
                   current.generation != pending.generation else {
                 return

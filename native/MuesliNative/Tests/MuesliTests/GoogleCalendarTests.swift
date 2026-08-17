@@ -414,7 +414,7 @@ struct GoogleCalendarTests {
         #expect(event.startDate == date("2026-04-10T15:30:00Z"))
     }
 
-    @Test("calendar placeholders deduplicate one occurrence, preserve removals, and allow the next recurrence")
+    @Test("calendar placeholders reconcile before start, preserve removals, and allow the next recurrence")
     func calendarPlaceholderOccurrenceDeduplication() async throws {
         let databaseURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("muesli-calendar-occurrence-\(UUID().uuidString).db")
@@ -500,6 +500,45 @@ struct GoogleCalendarTests {
 
         #expect(try await controller.meetingParticipants(meetingID: firstMeeting.id).isEmpty)
         #expect(try store.meeting(id: firstMeeting.id)?.folderID == folderID)
+
+        let bob = try #require(CalendarAttendee(
+            identifier: "bob@example.test",
+            displayName: "Bob Example",
+            emailAddress: "bob@example.test"
+        ))
+        let refreshedEvent = UnifiedCalendarEvent(
+            id: firstEvent.id,
+            title: firstEvent.title,
+            startDate: firstEvent.startDate,
+            endDate: firstEvent.endDate,
+            isAllDay: false,
+            source: .eventKit,
+            calendarID: firstEvent.calendarID,
+            calendarOccurrence: firstOccurrence,
+            attendees: [attendee, bob]
+        )
+        await controller.reconcilePendingEventKitCalendarAttendees(
+            events: [refreshedEvent],
+            now: firstStart.addingTimeInterval(-60)
+        )
+        #expect(try await controller.meetingParticipants(meetingID: firstMeeting.id).map(\.displayName) == [
+            "Bob Example",
+        ])
+
+        let carol = try #require(CalendarAttendee(
+            identifier: "carol@example.test",
+            displayName: "Carol Example",
+            emailAddress: "carol@example.test"
+        ))
+        var afterStartEvent = refreshedEvent
+        afterStartEvent.attendees = [carol]
+        await controller.reconcilePendingEventKitCalendarAttendees(
+            events: [afterStartEvent],
+            now: firstStart
+        )
+        #expect(try await controller.meetingParticipants(meetingID: firstMeeting.id).map(\.displayName) == [
+            "Bob Example",
+        ])
     }
 
     @Test("event sync cache resets when upcoming window changes")

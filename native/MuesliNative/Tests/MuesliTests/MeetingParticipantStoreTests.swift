@@ -72,6 +72,27 @@ struct MeetingParticipantStoreTests {
             "email_address",
             "insertion_order",
         ])
+
+        var suppressionStatement: OpaquePointer?
+        #expect(sqlite3_prepare_v2(
+            database,
+            "PRAGMA table_info(meeting_participant_suppressions)",
+            -1,
+            &suppressionStatement,
+            nil
+        ) == SQLITE_OK)
+        defer { sqlite3_finalize(suppressionStatement) }
+
+        var suppressionColumns: [String] = []
+        while sqlite3_step(suppressionStatement) == SQLITE_ROW {
+            if let name = sqlite3_column_text(suppressionStatement, 1) {
+                suppressionColumns.append(String(cString: name))
+            }
+        }
+        #expect(suppressionColumns == [
+            "meeting_id",
+            "participant_identifier",
+        ])
     }
 
     @Test("calendar attendee snapshots retain their names and emails")
@@ -183,6 +204,50 @@ struct MeetingParticipantStoreTests {
         #expect(saved[1].emailAddress == "bob@example.test")
     }
 
+    @Test("calendar reconciliation preserves local curation while refreshing the event snapshot")
+    func calendarReconciliationPreservesLocalCuration() throws {
+        let store = try makeStore()
+        let meetingID = try makeMeeting(in: store)
+
+        try store.attachMeetingParticipants(
+            meetingID: meetingID,
+            participants: [
+                participant("calendar:alice@example.test", name: "Alice"),
+                participant("calendar:carol@example.test", name: "Carol"),
+                participant("contact:local-id", name: "Local Person"),
+            ]
+        )
+        try store.removeMeetingParticipant(
+            meetingID: meetingID,
+            participantIdentifier: "calendar:alice@example.test"
+        )
+
+        try store.reconcileCalendarMeetingParticipants(
+            meetingID: meetingID,
+            participants: [
+                participant("calendar:alice@example.test", name: "Alice Renamed"),
+                participant("calendar:carol@example.test", name: "Carol Renamed"),
+                participant("calendar:bob@example.test", name: "Bob"),
+            ]
+        )
+
+        #expect(try store.listMeetingParticipants(meetingID: meetingID).map(\.displayName) == [
+            "Carol Renamed",
+            "Local Person",
+            "Bob",
+        ])
+
+        try store.reconcileCalendarMeetingParticipants(
+            meetingID: meetingID,
+            participants: [
+                participant("calendar:alice@example.test", name: "Alice Renamed Again"),
+            ]
+        )
+        #expect(try store.listMeetingParticipants(meetingID: meetingID).map(\.displayName) == [
+            "Local Person",
+        ])
+    }
+
     @Test("participants cannot be attached to a missing meeting")
     func missingMeetingIsRejected() throws {
         let store = try makeStore()
@@ -203,9 +268,29 @@ struct MeetingParticipantStoreTests {
             meetingID: meetingID,
             participant: participant("calendar:alice", name: "Alice")
         )
+        try store.removeMeetingParticipant(
+            meetingID: meetingID,
+            participantIdentifier: "calendar:alice"
+        )
 
         try store.deleteMeeting(id: meetingID)
 
         #expect(try store.listMeetingParticipants(meetingID: meetingID).isEmpty)
+
+        var database: OpaquePointer?
+        #expect(sqlite3_open(store.databasePath().path, &database) == SQLITE_OK)
+        defer { sqlite3_close(database) }
+        var statement: OpaquePointer?
+        #expect(sqlite3_prepare_v2(
+            database,
+            "SELECT COUNT(*) FROM meeting_participant_suppressions WHERE meeting_id = ?",
+            -1,
+            &statement,
+            nil
+        ) == SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, meetingID)
+        #expect(sqlite3_step(statement) == SQLITE_ROW)
+        #expect(sqlite3_column_int64(statement, 0) == 0)
     }
 }

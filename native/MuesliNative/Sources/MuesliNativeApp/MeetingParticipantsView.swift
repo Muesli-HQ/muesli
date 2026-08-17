@@ -2,6 +2,10 @@ import Contacts
 import MuesliCore
 import SwiftUI
 
+extension Notification.Name {
+    static let meetingParticipantsDidChange = Notification.Name("MuesliMeetingParticipantsDidChange")
+}
+
 struct MeetingParticipantsView: View {
     let meetingID: Int64
     let controller: MuesliController
@@ -73,6 +77,10 @@ struct MeetingParticipantsView: View {
         }
         .task(id: meetingID) {
             await reload()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .meetingParticipantsDidChange)) { notification in
+            guard notification.object as? Int64 == meetingID else { return }
+            Task { await reload() }
         }
         .sheet(isPresented: $isNewContactPresented) {
             NewMeetingContactView { participant in

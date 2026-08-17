@@ -48,6 +48,7 @@ erDiagram
     meeting_folders ||--o{ meetings : "organizes"
     meetings ||--o{ meetings : "has follow-ups"
     meetings ||--o{ meeting_participants : "has local people"
+    meetings ||--o{ meeting_participant_suppressions : "remembers hidden calendar people"
     meetings ||--o{ meeting_transcript_checkpoints : "has live checkpoints"
     meetings ||--o| meeting_resume_snapshots : "has resume safety snapshot"
 
@@ -112,6 +113,7 @@ occurrence can be recorded more than once.
 |---|---|---|---|
 | `computer_use_traces` | Final status, message, and JSON event trace for a CUA dictation | Unique `dictation_id`; cascades with its dictation | Local-only |
 | `meeting_participants` | Calendar-attendee or Apple Contact name/email snapshots | `(meeting_id, participant_identifier)`; cascades with its meeting | Local-only |
+| `meeting_participant_suppressions` | Calendar identities explicitly removed in Muesli, preventing EventKit refreshes from restoring them | `(meeting_id, participant_identifier)`; removed with its meeting | Local-only |
 | `meeting_transcript_checkpoints` | Incremental live transcript recovery segments | `id`; cascades with its meeting | Local-only |
 | `meeting_resume_snapshots` | Safety copy used while resuming a finished meeting | One row per `meeting_id`; cascades with its meeting | Local-only |
 
@@ -119,6 +121,12 @@ Participant identifiers describe provenance and identity, while the stored name
 and email are snapshots. Calendar entries normally use a normalized email-based
 identifier; manually selected Contacts use the local Contacts identifier. Never
 put a Contacts identifier into CloudKit, telemetry, or export metadata.
+
+Before an EventKit meeting begins, an initial launch refresh and subsequent
+`EKEventStoreChanged` notifications reconcile the calendar-owned participant
+rows. Manual Contacts remain untouched, and suppression rows preserve explicit
+local removals. This reconciliation is lifecycle/event-driven and is not run by
+the direct Google Calendar fallback timer.
 
 ### Organization and state
 
