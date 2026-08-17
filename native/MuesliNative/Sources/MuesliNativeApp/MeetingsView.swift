@@ -232,7 +232,8 @@ struct MeetingsView: View {
                     meeting: meeting,
                     controller: controller,
                     appState: appState,
-                    onBack: { controller.showMeetingsHome(folderID: appState.selectedFolderID) }
+                    onBack: { controller.showMeetingsHome(folderID: appState.selectedFolderID) },
+                    backLabel: "Back to Meetings"
                 )
                 .id(meeting.id)
             } else {

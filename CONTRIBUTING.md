@@ -171,6 +171,13 @@ swift test --package-path native/MuesliNative \
   --scratch-path "$HOME/Library/Caches/muesli-spm/test"
 ```
 
+## Database schema
+
+Read the [SQLite database guide](docs/database-schema.md) before changing
+tables, migrations, storage models, direct SQL, or the CloudKit/CLI boundary.
+The guide maps every app-owned table and includes the migration checklist that
+keeps fresh and existing installations compatible.
+
 ## Pull Requests
 
 - Keep changes focused and include tests for behavioral changes.

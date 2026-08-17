@@ -402,6 +402,9 @@ final class MuesliController: NSObject {
     private var liveManualNotesLastPersistedAt: [Int64: Date] = [:]
     private var liveManualNotesLastPersistedValue: [Int64: String] = [:]
     private var liveManualNotesPersistWorkItems: [Int64: DispatchWorkItem] = [:]
+    private var calendarAttendeePersistenceTasks: [
+        Int64: (generation: UUID, task: Task<Void, Never>)
+    ] = [:]
     private let liveManualNotesPersistInterval: TimeInterval = 0.75
     private var staleLiveMeetingRecoveryFailures = Set<Int64>()
     private var dictationState: DictationState = .idle
@@ -862,6 +865,11 @@ final class MuesliController: NSObject {
         activeComputerUseAudioSessionID = nil
         pendingComputerUseStopSessionID = nil
         pendingComputerUseStopStartedAt = nil
+        let attendeePersistenceTasks = calendarAttendeePersistenceTasks.values.map(\.task)
+        calendarAttendeePersistenceTasks.removeAll()
+        for task in attendeePersistenceTasks {
+            await task.value
+        }
         calendarMonitor.stop()
         calendarCheckTimer?.invalidate()
         calendarCheckTimer = nil
@@ -4373,6 +4381,7 @@ final class MuesliController: NSObject {
     // MARK: - Meeting Editing
 
     func meetingParticipants(meetingID: Int64) async throws -> [MeetingParticipant] {
+        await waitForCalendarAttendeePersistence(meetingID: meetingID)
         let databaseURL = dictationStore.resolvedDatabaseURL
         return try await Task.detached(priority: .userInitiated) {
             try DictationStore(databaseURL: databaseURL).listMeetingParticipants(meetingID: meetingID)
@@ -4409,17 +4418,44 @@ final class MuesliController: NSObject {
         _ attendees: [CalendarAttendee],
         meetingID: Int64
     ) {
-        for attendee in attendees {
+        guard !attendees.isEmpty else { return }
+
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        let participants = attendees.map(\.participantDraft)
+        let previousTask = calendarAttendeePersistenceTasks[meetingID]?.task
+        let generation = UUID()
+        let task = Task.detached(priority: .utility) {
+            await previousTask?.value
             do {
-                try dictationStore.attachMeetingParticipant(
+                try DictationStore(databaseURL: databaseURL).attachMeetingParticipants(
                     meetingID: meetingID,
-                    participant: attendee.participantDraft
+                    participants: participants
                 )
             } catch {
                 fputs(
-                    "[calendar] failed to save attendee for meeting \(meetingID): \(error)\n",
+                    "[calendar] failed to save attendees for meeting \(meetingID): \(error)\n",
                     stderr
                 )
+            }
+        }
+        calendarAttendeePersistenceTasks[meetingID] = (generation, task)
+
+        Task { [weak self] in
+            await task.value
+            guard let self,
+                  self.calendarAttendeePersistenceTasks[meetingID]?.generation == generation else {
+                return
+            }
+            self.calendarAttendeePersistenceTasks.removeValue(forKey: meetingID)
+        }
+    }
+
+    private func waitForCalendarAttendeePersistence(meetingID: Int64) async {
+        while let pending = calendarAttendeePersistenceTasks[meetingID] {
+            await pending.task.value
+            guard let current = calendarAttendeePersistenceTasks[meetingID],
+                  current.generation != pending.generation else {
+                return
             }
         }
     }

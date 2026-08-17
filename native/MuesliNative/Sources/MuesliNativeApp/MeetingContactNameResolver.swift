@@ -11,7 +11,9 @@ enum MeetingContactNameResolver {
             return participant.emailAddress
         }
         guard !unresolvedEmails.isEmpty,
-              await canReadContacts() else {
+              canPassivelyReadContacts(
+                  authorizationStatus: CNContactStore.authorizationStatus(for: .contacts)
+              ) else {
             return participants
         }
 
@@ -35,21 +37,8 @@ enum MeetingContactNameResolver {
         }
     }
 
-    private static func canReadContacts() async -> Bool {
-        switch CNContactStore.authorizationStatus(for: .contacts) {
-        case .denied, .restricted:
-            return false
-        default:
-            return (try? await withCheckedThrowingContinuation { continuation in
-                CNContactStore().requestAccess(for: .contacts) { granted, error in
-                    if let error {
-                        continuation.resume(throwing: error)
-                    } else {
-                        continuation.resume(returning: granted)
-                    }
-                }
-            }) ?? false
-        }
+    static func canPassivelyReadContacts(authorizationStatus: CNAuthorizationStatus) -> Bool {
+        authorizationStatus == .authorized
     }
 
     private static func namesByEmail(for emails: [String]) -> [String: String] {

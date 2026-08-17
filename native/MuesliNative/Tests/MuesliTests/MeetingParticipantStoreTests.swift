@@ -156,6 +156,33 @@ struct MeetingParticipantStoreTests {
         #expect(try store.listMeetingParticipants(meetingID: meetingID).map(\.displayName) == ["A"])
     }
 
+    @Test("participant batches preserve order and refresh existing snapshots")
+    func batchInsertAndRefresh() throws {
+        let store = try makeStore()
+        let meetingID = try makeMeeting(in: store)
+
+        try store.attachMeetingParticipants(
+            meetingID: meetingID,
+            participants: [
+                participant("calendar:alice", name: "Alice"),
+                participant("calendar:bob", name: "Bob", email: "bob@example.test"),
+                participant("calendar:carol", name: "Carol"),
+            ]
+        )
+        try store.attachMeetingParticipants(
+            meetingID: meetingID,
+            participants: [
+                participant("calendar:bob", name: "Bob Example"),
+                participant("calendar:dana", name: "Dana"),
+            ]
+        )
+
+        let saved = try store.listMeetingParticipants(meetingID: meetingID)
+        #expect(saved.map(\.displayName) == ["Alice", "Bob Example", "Carol", "Dana"])
+        #expect(saved.map(\.insertionOrder) == [0, 1, 2, 3])
+        #expect(saved[1].emailAddress == "bob@example.test")
+    }
+
     @Test("participants cannot be attached to a missing meeting")
     func missingMeetingIsRejected() throws {
         let store = try makeStore()

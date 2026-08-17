@@ -58,6 +58,7 @@ public final class DictationStore {
     }
 
     public func migrateIfNeeded() throws {
+        // Keep docs/database-schema.md aligned with every schema or sync-boundary change.
         let db = try openDatabase()
         defer { sqlite3_close(db) }
 
@@ -1054,11 +1055,28 @@ public final class DictationStore {
         meetingID: Int64,
         participant: MeetingParticipantDraft
     ) throws {
-        let participantIdentifier = participant.participantIdentifier
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let displayName = participant.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !participantIdentifier.isEmpty, !displayName.isEmpty else {
-            throw DictationStoreError.invalidParticipantIdentifier
+        try attachMeetingParticipants(meetingID: meetingID, participants: [participant])
+    }
+
+    /// Upserts a participant snapshot batch through one connection and transaction.
+    public func attachMeetingParticipants(
+        meetingID: Int64,
+        participants: [MeetingParticipantDraft]
+    ) throws {
+        guard !participants.isEmpty else { return }
+
+        let normalizedParticipants = try participants.map { participant in
+            let participantIdentifier = participant.participantIdentifier
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let displayName = participant.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !participantIdentifier.isEmpty, !displayName.isEmpty else {
+                throw DictationStoreError.invalidParticipantIdentifier
+            }
+            return MeetingParticipantDraft(
+                participantIdentifier: participantIdentifier,
+                displayName: displayName,
+                emailAddress: participant.emailAddress
+            )
         }
 
         let db = try openDatabase()
@@ -1089,13 +1107,37 @@ public final class DictationStore {
             throw lastError(db)
         }
         defer { sqlite3_finalize(statement) }
-        sqlite3_bind_int64(statement, 1, meetingID)
-        sqlite3_bind_text(statement, 2, (participantIdentifier as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(statement, 3, (displayName as NSString).utf8String, -1, nil)
-        bindOptionalText(participant.emailAddress, at: 4, statement: statement)
-        sqlite3_bind_int64(statement, 5, meetingID)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
-            throw lastError(db)
+
+        try exec("BEGIN IMMEDIATE TRANSACTION", db: db)
+        do {
+            for participant in normalizedParticipants {
+                sqlite3_reset(statement)
+                sqlite3_clear_bindings(statement)
+                sqlite3_bind_int64(statement, 1, meetingID)
+                sqlite3_bind_text(
+                    statement,
+                    2,
+                    (participant.participantIdentifier as NSString).utf8String,
+                    -1,
+                    nil
+                )
+                sqlite3_bind_text(
+                    statement,
+                    3,
+                    (participant.displayName as NSString).utf8String,
+                    -1,
+                    nil
+                )
+                bindOptionalText(participant.emailAddress, at: 4, statement: statement)
+                sqlite3_bind_int64(statement, 5, meetingID)
+                guard sqlite3_step(statement) == SQLITE_DONE else {
+                    throw lastError(db)
+                }
+            }
+            try exec("COMMIT", db: db)
+        } catch {
+            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
         }
     }
 

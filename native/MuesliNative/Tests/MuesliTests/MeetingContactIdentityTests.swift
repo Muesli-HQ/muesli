@@ -145,4 +145,12 @@ struct MeetingContactIdentityTests {
             ) == "Dana Sample"
         )
     }
+
+    @Test("passive name resolution never requests Contacts permission")
+    func passiveContactReadAuthorization() {
+        #expect(MeetingContactNameResolver.canPassivelyReadContacts(authorizationStatus: .authorized))
+        #expect(!MeetingContactNameResolver.canPassivelyReadContacts(authorizationStatus: .notDetermined))
+        #expect(!MeetingContactNameResolver.canPassivelyReadContacts(authorizationStatus: .denied))
+        #expect(!MeetingContactNameResolver.canPassivelyReadContacts(authorizationStatus: .restricted))
+    }
 }
