@@ -45,7 +45,7 @@ Live transcription is off by default. Download Parakeet Realtime EOU or Nemotron
 ## Features
 
 - **Native macOS architecture** — Swift, AppKit, and SwiftUI app code with in-process CoreML/ANE, Metal, and LiteRT-LM inference.
-- **Multiple ASR models** — Parakeet TDT and Nemotron 3.5 (Neural Engine), Cohere Transcribe 2B (mixed precision CoreML), multilingual Whisper Tiny/Small/Large Turbo (CoreML/ANE via WhisperKit), Qwen3 ASR, SenseVoice Small, Indic ASR, and experimental Gemma 4 E2B.
+- **Multiple ASR providers** — Apple Speech (system-managed on macOS 26+), Parakeet TDT and Nemotron 3.5 (Neural Engine), Cohere Transcribe 2B (mixed precision CoreML), multilingual Whisper Tiny/Small/Large Turbo (CoreML/ANE via WhisperKit), Qwen3 ASR, SenseVoice Small, Indic ASR, and experimental Gemma 4 E2B.
 - **Hold-to-talk & hands-free** — Hold hotkey for quick dictation, or double-tap for sustained recording.
 - **Meeting recording** — Captures mic + system audio (including Bluetooth/AirPods) with a CoreAudio process tap by default and ScreenCaptureKit fallback. System audio from Zoom, Teams, and other call clients stays on the Others side of the transcript.
 - **Live meeting transcript** — Choose Nemotron 3.5 for one multilingual live-and-final transcript, or Parakeet Realtime EOU for an English live preview paired with a separate final meeting model.
@@ -316,6 +316,8 @@ Important meeting fields:
 - `rawTranscript` is read-only and should be treated as source material.
 - If `notesState` is `missing` or `raw_transcript_fallback`, agents should prefer summarizing from `rawTranscript`.
 - Use `--db-path` or `--support-dir` only when the default Muesli data location is wrong.
+- Read the [SQLite database guide](docs/database-schema.md) before adding tables,
+  columns, migrations, direct queries, or new sync fields.
 
 ---
 
@@ -323,6 +325,7 @@ Important meeting fields:
 
 | Model | Backend | Runtime | Size | Languages | Latency |
 |-------|---------|---------|------|-----------|---------|
+| **Apple Speech** | SpeechAnalyzer / SpeechTranscriber | System-managed | No Muesli model download | System-supported locales | macOS 26+, system dependent |
 | **Parakeet v3** (recommended) | FluidAudio | CoreML / Neural Engine | ~450 MB | 25 languages | ~0.13s |
 | Parakeet v2 | FluidAudio | CoreML / Neural Engine | ~450 MB | English only | ~0.13s |
 | Parakeet Realtime EOU | FluidAudio | CoreML / Neural Engine | ~430 MB | English only | Live preview |
@@ -338,6 +341,11 @@ Important meeting fields:
 | Whisper Small English | WhisperKit | CoreML / Neural Engine | ~250 MB | English only | ~1-2s |
 | Whisper Medium English | WhisperKit | CoreML / Neural Engine | ~1.5 GB | English only | Slower, more accurate English option |
 | Whisper Large Turbo Multilingual | WhisperKit | CoreML / Neural Engine | ~626 MB | Multilingual | ~2-4s |
+
+Apple Speech uses the system `SpeechAnalyzer` and `SpeechTranscriber` APIs on
+macOS 26 and compatible Apple hardware. Its language assets are managed by the
+operating system rather than downloaded into Muesli's model cache; older macOS
+versions continue to use Muesli's downloadable local ASR backends.
 
 Whisper's Tiny and Small sizes are available as either multilingual or
 English-only downloads. The multilingual variants auto-detect the spoken
