@@ -198,7 +198,8 @@ but the resources themselves remain files or platform-managed secrets.
    permission to add it to `SyncTextRecord`, CloudKit, telemetry, exports, or CLI
    JSON.
 7. Add tests for a fresh schema, a representative legacy schema, migration
-   idempotence, nullable historical rows, and read/write behavior.
+   idempotence, nullable historical rows, decoding, default values, round-trip
+   behavior, and read/write behavior.
 8. Update this document and any user-facing model/provider lists affected by
    the change.
 
@@ -212,9 +213,9 @@ Quit the relevant Muesli build first, copy the database plus its `-wal` and
 `-shm` companions when present, and inspect the copy:
 
 ```bash
-sqlite3 /path/to/copied-muesli.db '.tables'
-sqlite3 /path/to/copied-muesli.db '.schema meetings'
-sqlite3 /path/to/copied-muesli.db 'PRAGMA foreign_key_check;'
+sqlite3 "/path/to/copied-muesli.db" '.tables'
+sqlite3 "/path/to/copied-muesli.db" '.schema meetings'
+sqlite3 "/path/to/copied-muesli.db" 'PRAGMA foreign_key_check;'
 ```
 
 Use normal store APIs for mutations. Direct SQL writes bypass sync bookkeeping,
