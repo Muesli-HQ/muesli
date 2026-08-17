@@ -171,9 +171,8 @@ enum FeatureTourPresentationPolicy {
             return false
         }
 
-        if let lastPresentedTourVersion,
-           let lastPresented = MarketingVersion(lastPresentedTourVersion),
-           lastPresented >= target {
+        let lastPresented = lastPresentedTourVersion.flatMap(MarketingVersion.init)
+        if let lastPresented, lastPresented >= target {
             return false
         }
 
@@ -183,7 +182,14 @@ enum FeatureTourPresentationPolicy {
             return true
         }
         guard let previous = MarketingVersion(previousVersion) else { return true }
-        return previous < target
+        if previous < target {
+            return true
+        }
+
+        // Prerelease builds can share a marketing version even when a newer
+        // walkthrough first ships between those builds. A prior tour marker
+        // distinguishes that upgrade from a fresh install at the same version.
+        return previous == target && lastPresented != nil
     }
 }
 
