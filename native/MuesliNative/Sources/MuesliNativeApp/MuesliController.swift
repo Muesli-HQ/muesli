@@ -3006,6 +3006,7 @@ final class MuesliController: NSObject {
                 startMeetingRecording(
                     title: event.title,
                     calendarOccurrence: event.resolvedCalendarOccurrence,
+                    calendarAttendees: event.attendees,
                     openDocument: false,
                     endDate: event.endDate,
                     autoStopSource: event.meetingURL.flatMap { MeetingAutoStopSource(meetingURL: $0) },
@@ -3034,7 +3035,8 @@ final class MuesliController: NSObject {
                 title: event.title,
                 startDate: event.startDate,
                 calendarOccurrence: event.resolvedCalendarOccurrence,
-                meetingURL: event.meetingURL
+                meetingURL: event.meetingURL,
+                attendees: event.attendees
             )
 
             // Show "starts in X min" notification now
@@ -3060,6 +3062,7 @@ final class MuesliController: NSObject {
                         self.showMeetingStartingNowNotification(
                             title: event.title,
                             calendarOccurrence: event.resolvedCalendarOccurrence,
+                            calendarAttendees: event.attendees,
                             meetingURL: event.meetingURL,
                             endDate: event.endDate
                         )
@@ -3075,6 +3078,7 @@ final class MuesliController: NSObject {
     private func showMeetingStartingNowNotification(
         title: String,
         calendarOccurrence: CalendarOccurrenceReference?,
+        calendarAttendees: [CalendarAttendee],
         meetingURL: URL?,
         endDate: Date?
     ) {
@@ -3096,6 +3100,7 @@ final class MuesliController: NSObject {
                 self.startMeetingRecordingFromEntryPoint(
                     title: title,
                     calendarOccurrence: calendarOccurrence,
+                    calendarAttendees: calendarAttendees,
                     endDate: endDate,
                     autoStopSource: autoStopSource,
                     presentation: .backgroundPill,
@@ -3110,6 +3115,7 @@ final class MuesliController: NSObject {
                     meetingURL: meetingURL!,
                     endDate: endDate,
                     calendarOccurrence: calendarOccurrence,
+                    calendarAttendees: calendarAttendees,
                     presentation: .backgroundPill
                 )
             } : nil,
@@ -4366,31 +4372,56 @@ final class MuesliController: NSObject {
 
     // MARK: - Meeting Editing
 
-    func meetingParticipants(meetingID: Int64) throws -> [MeetingParticipant] {
-        try dictationStore.listMeetingParticipants(meetingID: meetingID)
+    func meetingParticipants(meetingID: Int64) async throws -> [MeetingParticipant] {
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        return try await Task.detached(priority: .userInitiated) {
+            try DictationStore(databaseURL: databaseURL).listMeetingParticipants(meetingID: meetingID)
+        }.value
     }
 
-    @discardableResult
     func attachMeetingParticipant(
         meetingID: Int64,
-        contactIdentifier: String,
-        displayName: String
-    ) throws -> Bool {
-        try dictationStore.attachMeetingParticipant(
-            meetingID: meetingID,
-            contactIdentifier: contactIdentifier,
-            displayName: displayName
-        )
+        participant: MeetingParticipantDraft
+    ) async throws {
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        try await Task.detached(priority: .userInitiated) {
+            try DictationStore(databaseURL: databaseURL).attachMeetingParticipant(
+                meetingID: meetingID,
+                participant: participant
+            )
+        }.value
     }
 
     func removeMeetingParticipant(
         meetingID: Int64,
-        contactIdentifier: String
-    ) throws {
-        try dictationStore.removeMeetingParticipant(
-            meetingID: meetingID,
-            contactIdentifier: contactIdentifier
-        )
+        participantIdentifier: String
+    ) async throws {
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        try await Task.detached(priority: .userInitiated) {
+            try DictationStore(databaseURL: databaseURL).removeMeetingParticipant(
+                meetingID: meetingID,
+                participantIdentifier: participantIdentifier
+            )
+        }.value
+    }
+
+    private func persistCalendarAttendees(
+        _ attendees: [CalendarAttendee],
+        meetingID: Int64
+    ) {
+        for attendee in attendees {
+            do {
+                try dictationStore.attachMeetingParticipant(
+                    meetingID: meetingID,
+                    participant: attendee.participantDraft
+                )
+            } catch {
+                fputs(
+                    "[calendar] failed to save attendee for meeting \(meetingID): \(error)\n",
+                    stderr
+                )
+            }
+        }
     }
 
     private func notesContextForResummary(_ meeting: MeetingRecord) -> String? {
@@ -4674,6 +4705,7 @@ final class MuesliController: NSObject {
         // Calendar placeholders are idempotent per occurrence. Recordings are
         // intentionally not: users may record the same occurrence more than once.
         if let existing = try? dictationStore.meetingByCalendarOccurrence(occurrence) {
+            persistCalendarAttendees(event.attendees, meetingID: existing.id)
             if let folderID {
                 try? dictationStore.moveMeeting(id: existing.id, toFolder: folderID)
             }
@@ -4694,6 +4726,7 @@ final class MuesliController: NSObject {
                 systemAudioPath: nil,
                 calendarOccurrence: occurrence
             )
+            persistCalendarAttendees(event.attendees, meetingID: meetingID)
             if let folderID {
                 try? dictationStore.moveMeeting(id: meetingID, toFolder: folderID)
             }
@@ -5044,6 +5077,7 @@ final class MuesliController: NSObject {
             startMeetingRecordingFromEntryPoint(
                 title: payload.title,
                 calendarOccurrence: payload.calendarOccurrence,
+                calendarAttendees: payload.attendees,
                 endDate: payload.endDate,
                 autoStopSource: payload.autoStopSource,
                 startOrigin: .scheduledMeetingPrompt
@@ -5060,6 +5094,7 @@ final class MuesliController: NSObject {
         title: String = "Meeting",
         calendarEventID: String? = nil,
         calendarOccurrence: CalendarOccurrenceReference? = nil,
+        calendarAttendees: [CalendarAttendee] = [],
         endDate: Date? = nil,
         autoStopSource: MeetingAutoStopSource? = nil,
         presentation: MeetingStartPresentation = .foregroundNotes,
@@ -5077,6 +5112,7 @@ final class MuesliController: NSObject {
             title: title,
             calendarEventID: calendarEventID,
             calendarOccurrence: calendarOccurrence,
+            calendarAttendees: calendarAttendees,
             openDocument: presentation.opensMeetingDocument,
             endDate: endDate,
             autoStopSource: autoStopSource,
@@ -5094,6 +5130,7 @@ final class MuesliController: NSObject {
         title: String = "Meeting",
         calendarEventID: String? = nil,
         calendarOccurrence: CalendarOccurrenceReference? = nil,
+        calendarAttendees: [CalendarAttendee] = [],
         openDocument: Bool = false,
         endDate: Date? = nil,
         autoStopSource: MeetingAutoStopSource? = nil,
@@ -5126,6 +5163,7 @@ final class MuesliController: NSObject {
                 followUpToID: followUpToID,
                 calendarOccurrence: calendarOccurrence
             )
+            persistCalendarAttendees(calendarAttendees, meetingID: meetingID)
             activeMeetingID = meetingID
             activeMeetingAudioWarning = nil
             syncAppState()
@@ -5893,12 +5931,14 @@ final class MuesliController: NSObject {
         meetingURL: URL,
         endDate: Date?,
         calendarOccurrence: CalendarOccurrenceReference? = nil,
+        calendarAttendees: [CalendarAttendee] = [],
         presentation: MeetingStartPresentation = .foregroundNotes
     ) {
         NSWorkspace.shared.open(meetingURL)
         startMeetingRecordingFromEntryPoint(
             title: title,
             calendarOccurrence: calendarOccurrence,
+            calendarAttendees: calendarAttendees,
             endDate: endDate,
             autoStopSource: MeetingAutoStopSource(meetingURL: meetingURL),
             presentation: presentation,
@@ -6585,21 +6625,7 @@ final class MuesliController: NSObject {
         if config.autoExportMarkdownEnabled {
             do {
                 if let record = try dictationStore.meeting(id: persistenceResult.meetingID) {
-                    // Hand the exporter a provider rather than a list. This method runs
-                    // on the main actor, and the exporter retries the read on lock
-                    // contention, so the query belongs in its background task. A fresh
-                    // store is built from the database URL there because `DictationStore`
-                    // is not `Sendable` — the same pattern `insightsSnapshot` uses.
-                    let databaseURL = dictationStore.resolvedDatabaseURL
-                    let meetingID = persistenceResult.meetingID
-                    meetingMarkdownAutoExporter.exportIfConfigured(
-                        meeting: record,
-                        loadParticipants: {
-                            try DictationStore(databaseURL: databaseURL)
-                                .listMeetingParticipants(meetingID: meetingID)
-                        },
-                        config: config
-                    )
+                    meetingMarkdownAutoExporter.exportIfConfigured(meeting: record, config: config)
                 } else {
                     meetingMarkdownAutoExporter.recordMeetingLookupFailure(
                         meetingID: persistenceResult.meetingID,
@@ -7383,8 +7409,13 @@ final class MuesliController: NSObject {
             platform: MeetingPlatform(candidate.platform),
             onStartRecording: { [weak self] in
                 guard let self else { return }
+                let calendarEvent = candidate.evidence.contains(.calendarEvent)
+                    ? self.currentOrNearbyCachedCalendarEvent()
+                    : nil
                 if self.startMeetingRecordingFromEntryPoint(
                     title: title,
+                    calendarOccurrence: calendarEvent?.calendarOccurrence,
+                    calendarAttendees: calendarEvent?.attendees ?? [],
                     autoStopSource: MeetingAutoStopSource(candidate: candidate),
                     presentation: .backgroundPill,
                     startOrigin: .detectedPrompt
@@ -9047,6 +9078,7 @@ final class MuesliController: NSObject {
                 self.showMeetingStartingNowNotification(
                     title: event.title,
                     calendarOccurrence: event.resolvedCalendarOccurrence,
+                    calendarAttendees: event.attendees,
                     meetingURL: event.meetingURL,
                     endDate: event.endDate
                 )
@@ -9075,6 +9107,9 @@ final class MuesliController: NSObject {
         let calendarEndDate = calendarEvent?.endDate
         let meetingURL = event.meetingURL ?? calendarEvent?.meetingURL
         let calendarOccurrence = event.calendarOccurrence ?? calendarEvent?.resolvedCalendarOccurrence
+        let calendarAttendees = event.attendees.isEmpty
+            ? (calendarEvent?.attendees ?? [])
+            : event.attendees
         let autoStopSource = meetingURL.flatMap { MeetingAutoStopSource(meetingURL: $0) }
 
         // Show notification panel for calendar events (if not auto-recording)
@@ -9107,6 +9142,7 @@ final class MuesliController: NSObject {
                 self.startMeetingRecordingFromEntryPoint(
                     title: title,
                     calendarOccurrence: calendarOccurrence,
+                    calendarAttendees: calendarAttendees,
                     endDate: calendarEndDate,
                     autoStopSource: autoStopSource,
                     presentation: .backgroundPill,
@@ -9121,6 +9157,7 @@ final class MuesliController: NSObject {
                     meetingURL: meetingURL!,
                     endDate: calendarEndDate,
                     calendarOccurrence: calendarOccurrence,
+                    calendarAttendees: calendarAttendees,
                     presentation: .backgroundPill
                 )
             } : nil,
@@ -9200,9 +9237,21 @@ func selectCurrentOrNearbyCachedCalendarEvent(
         .sorted { $0.startDate < $1.startDate }
 
     if let active = candidates.first(where: { $0.startDate <= now && $0.endDate > now }) {
-        return CalendarEventContext(id: active.id, title: active.title)
+        return CalendarEventContext(
+            id: active.id,
+            title: active.title,
+            calendarOccurrence: active.resolvedCalendarOccurrence,
+            attendees: active.attendees
+        )
     }
 
     return candidates.first(where: { $0.startDate > now })
-        .map { CalendarEventContext(id: $0.id, title: $0.title) }
+        .map {
+            CalendarEventContext(
+                id: $0.id,
+                title: $0.title,
+                calendarOccurrence: $0.resolvedCalendarOccurrence,
+                attendees: $0.attendees
+            )
+        }
 }

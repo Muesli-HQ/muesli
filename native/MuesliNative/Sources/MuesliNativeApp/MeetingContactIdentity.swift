@@ -1,5 +1,6 @@
 import Contacts
 import Foundation
+import MuesliCore
 
 enum MeetingContactIdentity {
     static let unnamedFallback = "Unnamed contact"
@@ -27,56 +28,14 @@ enum MeetingContactIdentity {
         return unnamedFallback
     }
 
-    static func isUnnamedFallback(_ name: String) -> Bool {
-        name == unnamedFallback
-    }
-}
-
-struct NewMeetingContactDraft: Equatable {
-    var givenName = ""
-    var familyName = ""
-    var emailAddress = ""
-    var phoneNumber = ""
-
-    var normalizedGivenName: String {
-        givenName.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    var normalizedFamilyName: String {
-        familyName.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    var normalizedEmailAddress: String {
-        emailAddress.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    var normalizedPhoneNumber: String {
-        phoneNumber.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    var canSave: Bool {
-        !normalizedEmailAddress.isEmpty || !normalizedPhoneNumber.isEmpty
-    }
-
-    func makeContact() -> CNMutableContact? {
-        guard canSave else { return nil }
-
-        let contact = CNMutableContact()
-        contact.givenName = normalizedGivenName
-        contact.familyName = normalizedFamilyName
-        if !normalizedEmailAddress.isEmpty {
-            contact.emailAddresses = [
-                CNLabeledValue(label: CNLabelWork, value: normalizedEmailAddress as NSString),
-            ]
-        }
-        if !normalizedPhoneNumber.isEmpty {
-            contact.phoneNumbers = [
-                CNLabeledValue(
-                    label: CNLabelPhoneNumberMobile,
-                    value: CNPhoneNumber(stringValue: normalizedPhoneNumber)
-                ),
-            ]
-        }
-        return contact
+    static func participant(for contact: CNContact) -> MeetingParticipantDraft {
+        let emailAddress = contact.isKeyAvailable(CNContactEmailAddressesKey)
+            ? contact.emailAddresses.first?.value as String?
+            : nil
+        return MeetingParticipantDraft(
+            participantIdentifier: "contact:\(contact.identifier)",
+            displayName: displayName(for: contact),
+            emailAddress: emailAddress
+        )
     }
 }

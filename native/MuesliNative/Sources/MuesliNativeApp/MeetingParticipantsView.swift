@@ -9,10 +9,7 @@ struct MeetingParticipantsView: View {
 
     @State private var participants: [MeetingParticipant] = []
     @State private var isContactPickerPresented = false
-    @State private var isNewContactPresented = false
     @State private var errorMessage: String?
-    @State private var statusMessage: String?
-    @State private var statusDismissTask: Task<Void, Never>?
 
     var body: some View {
         HStack(alignment: .top, spacing: MuesliTheme.spacing12) {
@@ -21,39 +18,23 @@ struct MeetingParticipantsView: View {
                 .foregroundStyle(MuesliTheme.textSecondary)
                 .padding(.top, 5)
 
-            VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
-                WordFlowLayout(spacing: MuesliTheme.spacing8) {
-                    ForEach(participants) { participant in
-                        participantChip(participant)
-                    }
-
-                    Button {
-                        isContactPickerPresented = true
-                    } label: {
-                        Label("Add person", systemImage: "person.badge.plus")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .help("Attach someone from Contacts to this meeting")
-                    .background {
-                        MeetingContactPicker(isPresented: $isContactPickerPresented) { contact in
-                            attach(contact)
-                        }
-                    }
-
-                    Button("New Contact…") {
-                        isNewContactPresented = true
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(MuesliTheme.textSecondary)
-                    .help("Create a new contact in Apple Contacts and attach them")
+            WordFlowLayout(spacing: MuesliTheme.spacing8) {
+                ForEach(participants) { participant in
+                    participantChip(participant)
                 }
 
-                if let statusMessage {
-                    Text(statusMessage)
-                        .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.textSecondary)
-                        .transition(.opacity)
+                Button {
+                    isContactPickerPresented = true
+                } label: {
+                    Label("Add person", systemImage: "person.badge.plus")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Add someone from Apple Contacts")
+                .background {
+                    MeetingContactPicker(isPresented: $isContactPickerPresented) { contact in
+                        Task { await attach(contact) }
+                    }
                 }
             }
         }
@@ -61,19 +42,6 @@ struct MeetingParticipantsView: View {
         .accessibilityLabel("People in this meeting")
         .task(id: meetingID) {
             await reload()
-        }
-        .onDisappear {
-            statusDismissTask?.cancel()
-        }
-        .sheet(isPresented: $isNewContactPresented) {
-            NewMeetingContactView { contact in
-                Task { @MainActor in
-                    await attach(
-                        contactIdentifier: contact.identifier,
-                        displayName: contact.displayName
-                    )
-                }
-            }
         }
         .alert("Couldn't Update People", isPresented: errorBinding) {
             Button("OK", role: .cancel) {
@@ -111,6 +79,7 @@ struct MeetingParticipantsView: View {
             Capsule()
                 .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
         }
+        .help(participant.emailAddress ?? participant.displayName)
         .accessibilityElement(children: .contain)
     }
 
@@ -127,64 +96,35 @@ struct MeetingParticipantsView: View {
 
     private func reload() async {
         do {
-            participants = try await DictationStore.withTransientLockRetry {
-                try controller.meetingParticipants(meetingID: meetingID)
-            }
+            participants = try await controller.meetingParticipants(meetingID: meetingID)
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    /// Resolves the picker-vended contact's name before storing it — the picker may
-    /// hand back a contact without the name keys fetched.
-    private func attach(_ contact: CNContact) {
-        Task { @MainActor in
-            let displayName = await MeetingContactStore().resolveDisplayName(for: contact)
-            await attach(contactIdentifier: contact.identifier, displayName: displayName)
-        }
-    }
-
-    private func attach(contactIdentifier: String, displayName: String) async {
+    private func attach(_ contact: CNContact) async {
         do {
-            let added = try await DictationStore.withTransientLockRetry {
-                try controller.attachMeetingParticipant(
-                    meetingID: meetingID,
-                    contactIdentifier: contactIdentifier,
-                    displayName: displayName
-                )
-            }
+            try await controller.attachMeetingParticipant(
+                meetingID: meetingID,
+                participant: MeetingContactIdentity.participant(for: contact)
+            )
             await reload()
-            if !added {
-                showStatus("\(displayName) is already on this meeting.")
-            }
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
     private func remove(_ participant: MeetingParticipant) {
-        Task { @MainActor in
+        Task {
             do {
-                try await DictationStore.withTransientLockRetry {
-                    try controller.removeMeetingParticipant(
-                        meetingID: meetingID,
-                        contactIdentifier: participant.contactIdentifier
-                    )
-                }
+                try await controller.removeMeetingParticipant(
+                    meetingID: meetingID,
+                    participantIdentifier: participant.participantIdentifier
+                )
                 await reload()
             } catch {
                 errorMessage = error.localizedDescription
             }
-        }
-    }
-
-    private func showStatus(_ message: String) {
-        statusDismissTask?.cancel()
-        statusMessage = message
-        statusDismissTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
-            guard !Task.isCancelled else { return }
-            statusMessage = nil
         }
     }
 }

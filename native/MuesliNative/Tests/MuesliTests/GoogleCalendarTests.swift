@@ -67,6 +67,30 @@ struct GoogleCalendarTests {
         #expect(event?.source == .googleCalendar)
     }
 
+    @Test("parses and deduplicates Google Calendar attendees")
+    func parsesAttendees() throws {
+        let item: [String: Any] = [
+            "id": "event-with-people",
+            "summary": "Sprint Planning",
+            "start": ["dateTime": "2026-04-10T14:00:00Z"],
+            "end": ["dateTime": "2026-04-10T15:00:00Z"],
+            "organizer": [
+                "email": "alice@example.test",
+                "displayName": "Alice Example",
+            ],
+            "attendees": [
+                ["email": "alice@example.test", "displayName": "Alice Example"],
+                ["email": "bob@example.test", "displayName": "Bob Example"],
+                ["email": "room@example.test", "displayName": "Conference Room", "resource": true],
+            ],
+        ]
+
+        let event = try #require(GoogleCalendarClient().parseEvent(item, calendarID: "primary"))
+
+        #expect(event.attendees.map(\.displayName) == ["Alice Example", "Bob Example"])
+        #expect(event.attendees.map(\.emailAddress) == ["alice@example.test", "bob@example.test"])
+    }
+
     @Test("parses all-day event from Google Calendar API response")
     func parsesAllDayEvent() {
         let item: [String: Any] = [
@@ -413,6 +437,11 @@ struct GoogleCalendarTests {
             seriesID: "shared-series-id",
             originalStartTime: firstStart
         )
+        let attendee = try #require(CalendarAttendee(
+            identifier: "alice@example.test",
+            displayName: "Alice Example",
+            emailAddress: "alice@example.test"
+        ))
         let firstEvent = UnifiedCalendarEvent(
             id: "shared-series-id",
             title: "Daily sync",
@@ -421,7 +450,8 @@ struct GoogleCalendarTests {
             isAllDay: false,
             source: .eventKit,
             calendarID: "work",
-            calendarOccurrence: firstOccurrence
+            calendarOccurrence: firstOccurrence,
+            attendees: [attendee]
         )
         controller.createMeetingFromCalendarEvent(firstEvent, folderID: nil)
         controller.createMeetingFromCalendarEvent(firstEvent, folderID: nil)
@@ -452,6 +482,12 @@ struct GoogleCalendarTests {
             firstOccurrence.identityKey,
             nextOccurrence.identityKey,
         ]))
+        let firstMeeting = try #require(meetings.first(where: {
+            $0.calendarOccurrence?.identityKey == firstOccurrence.identityKey
+        }))
+        #expect(try store.listMeetingParticipants(meetingID: firstMeeting.id).map(\.displayName) == [
+            "Alice Example",
+        ])
     }
 
     @Test("event sync cache resets when upcoming window changes")

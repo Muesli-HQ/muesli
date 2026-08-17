@@ -45,7 +45,6 @@ struct MeetingContactPicker: NSViewRepresentable {
 
             // Deliberately no `displayedKeys`: per CNContactPicker.h, providing keys
             // switches the picker to selecting values rather than whole contacts.
-            // Thin key sets are handled by MeetingContactStore.resolveDisplayName.
             let picker = CNContactPicker()
             picker.delegate = self
             self.picker = picker

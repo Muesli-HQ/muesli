@@ -840,32 +840,18 @@ struct MeetingDetailView: View {
         .help(label)
     }
 
-    /// Export is best-effort on participants: a lookup failure should never block
-    /// exporting the meeting itself.
-    private func exportParticipants(for meeting: MeetingRecord) -> [MeetingParticipant] {
-        (try? controller.meetingParticipants(meetingID: meeting.id)) ?? []
-    }
-
     @ViewBuilder
     private func exportMenu(for meeting: MeetingRecord) -> some View {
         let currentContent: MeetingExportContent = documentMode == .transcript ? .transcript : .notes
         let currentLabel = documentMode == .transcript ? "Export Transcript" : "Export Notes"
         Menu {
             Button {
-                MeetingExporter.export(
-                    meeting: meeting,
-                    content: currentContent,
-                    participants: exportParticipants(for: meeting)
-                )
+                MeetingExporter.export(meeting: meeting, content: currentContent)
             } label: {
                 Label(currentLabel, systemImage: documentMode == .transcript ? "text.quote" : "doc.text")
             }
             Button {
-                MeetingExporter.export(
-                    meeting: meeting,
-                    content: .fullMeeting,
-                    participants: exportParticipants(for: meeting)
-                )
+                MeetingExporter.export(meeting: meeting, content: .fullMeeting)
             } label: {
                 Label("Export Full Meeting", systemImage: "doc.on.doc")
             }

@@ -9,6 +9,7 @@ struct UpcomingMeetingEvent {
     let startDate: Date
     var calendarOccurrence: CalendarOccurrenceReference? = nil
     var meetingURL: URL? = nil
+    var attendees: [CalendarAttendee] = []
 }
 
 /// A calendar exposed by EventKit (iCloud, On-My-Mac, Exchange, an Internet
@@ -122,7 +123,8 @@ final class CalendarMonitor {
                         eventID: eventID,
                         startDate: startDate
                     ),
-                    meetingURL: Self.extractMeetingURL(from: event)
+                    meetingURL: Self.extractMeetingURL(from: event),
+                    attendees: Self.attendees(from: event)
                 )
             }
         }
@@ -144,7 +146,13 @@ final class CalendarMonitor {
             guard let startDate = event.startDate, let endDate = event.endDate else { continue }
             let ctx = CalendarEventContext(
                 id: event.eventIdentifier ?? UUID().uuidString,
-                title: event.title ?? "Meeting"
+                title: event.title ?? "Meeting",
+                calendarOccurrence: Self.occurrenceReference(
+                    for: event,
+                    eventID: event.eventIdentifier ?? "",
+                    startDate: startDate
+                ),
+                attendees: Self.attendees(from: event)
             )
             // Currently active — return immediately
             if startDate <= now && endDate > now {
@@ -191,7 +199,8 @@ final class CalendarMonitor {
                     eventID: eventID,
                     startDate: startDate
                 ),
-                meetingURL: Self.extractMeetingURL(from: event)
+                meetingURL: Self.extractMeetingURL(from: event),
+                attendees: Self.attendees(from: event)
             )
         }
         return UnifiedCalendarEvent
@@ -217,6 +226,20 @@ final class CalendarMonitor {
                 ? (event.occurrenceDate ?? startDate)
                 : startDate
         )
+    }
+
+    private static func attendees(from event: EKEvent) -> [CalendarAttendee] {
+        let participants = [event.organizer].compactMap { $0 } + (event.attendees ?? [])
+        let attendees = participants.compactMap { participant -> CalendarAttendee? in
+            guard participant.participantType != .resource,
+                  participant.participantType != .room else { return nil }
+            return CalendarAttendee(
+                identifier: participant.url.absoluteString,
+                displayName: participant.name,
+                emailAddress: participant.url.absoluteString
+            )
+        }
+        return CalendarAttendee.deduplicated(attendees)
     }
 
     /// Enumerate every event calendar EventKit exposes — iCloud, On-My-Mac,

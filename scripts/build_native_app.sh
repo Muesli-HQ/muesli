@@ -286,7 +286,7 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
   <key>NSCalendarsFullAccessUsageDescription</key>
   <string>$APP_DISPLAY_NAME reads calendar events to help with meeting recordings.</string>
   <key>NSContactsUsageDescription</key>
-  <string>$APP_DISPLAY_NAME uses Contacts to attach people to meeting notes and save new contacts you create.</string>
+  <string>$APP_DISPLAY_NAME lets you add people from Contacts to meeting notes.</string>
   <key>SUFeedURL</key>
   <string>$SPARKLE_FEED_URL</string>
   <key>SUPublicEDKey</key>

@@ -51,13 +51,9 @@ struct MeetingExporter {
     static let mdType = UTType(filenameExtension: "md") ?? .plainText
     static let pdfType = UTType.pdf
 
-    static func export(
-        meeting: MeetingRecord,
-        content: MeetingExportContent,
-        participants: [MeetingParticipant] = []
-    ) {
+    static func export(meeting: MeetingRecord, content: MeetingExportContent) {
         DispatchQueue.main.async {
-            let markdown = buildMarkdown(meeting: meeting, content: content, participants: participants)
+            let markdown = buildMarkdown(meeting: meeting, content: content)
             let filename = suggestedFilename(meeting: meeting, content: content)
 
             let panel = NSSavePanel()
@@ -83,36 +79,9 @@ struct MeetingExporter {
         }
     }
 
-    /// Flattens a Contacts display name into a single Markdown metadata token.
-    /// Apple Contacts can store embedded newlines and emphasis markers; those must
-    /// not split the `People` line or steal inline `**` parsing from the PDF path.
-    static func sanitizedExportDisplayName(_ name: String) -> String {
-        let collapsed = name
-            .split(whereSeparator: \.isWhitespace)
-            .joined(separator: " ")
-        guard !collapsed.isEmpty else { return "" }
-
-        var escaped = ""
-        escaped.reserveCapacity(collapsed.count)
-        for character in collapsed {
-            switch character {
-            case "*", "_", "`", "[", "]", "#", "\\":
-                escaped.append("\\")
-                escaped.append(character)
-            default:
-                escaped.append(character)
-            }
-        }
-        return escaped
-    }
-
     // MARK: - Markdown composition
 
-    static func buildMarkdown(
-        meeting: MeetingRecord,
-        content: MeetingExportContent,
-        participants: [MeetingParticipant] = []
-    ) -> String {
+    static func buildMarkdown(meeting: MeetingRecord, content: MeetingExportContent) -> String {
         var parts: [String] = []
 
         parts.append("# \(meeting.title)")
@@ -122,12 +91,6 @@ struct MeetingExporter {
         parts.append("**Words:** \(meeting.wordCount)")
         if let name = meeting.selectedTemplateName, !name.isEmpty {
             parts.append("**Template:** \(name)")
-        }
-        let people = participants
-            .map { sanitizedExportDisplayName($0.displayName) }
-            .filter { !$0.isEmpty }
-        if !people.isEmpty {
-            parts.append("**People:** \(people.joined(separator: ", "))")
         }
         parts.append("")
         parts.append("---")

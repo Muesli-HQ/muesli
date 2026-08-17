@@ -29,20 +29,6 @@ struct MeetingExporterTests {
         )
     }
 
-    private func makeParticipant(
-        meetingID: Int64 = 1,
-        contactIdentifier: String = "contact-a",
-        displayName: String,
-        insertionOrder: Int = 0
-    ) -> MeetingParticipant {
-        MeetingParticipant(
-            meetingID: meetingID,
-            contactIdentifier: contactIdentifier,
-            displayName: displayName,
-            insertionOrder: insertionOrder
-        )
-    }
-
     // MARK: - Markdown composition
 
     @Test("Notes export includes metadata header and formatted notes")
@@ -108,44 +94,6 @@ struct MeetingExporterTests {
         let md = MeetingExporter.buildMarkdown(meeting: meeting, content: .notes)
 
         #expect(!md.contains("**Template:**"))
-    }
-
-    @Test("People line stays a single metadata field")
-    func peopleLineCollapsesNewlines() {
-        let meeting = makeMeeting()
-        let md = MeetingExporter.buildMarkdown(
-            meeting: meeting,
-            content: .notes,
-            participants: [
-                makeParticipant(displayName: "Alice\n# Injected heading"),
-                makeParticipant(
-                    contactIdentifier: "contact-b",
-                    displayName: "Bob **Lead**",
-                    insertionOrder: 1
-                ),
-            ]
-        )
-
-        let peopleLines = md.split(separator: "\n").filter { $0.hasPrefix("**People:**") }
-        #expect(peopleLines.count == 1)
-        #expect(peopleLines.first.map(String.init) == "**People:** Alice \\# Injected heading, Bob \\*\\*Lead\\*\\*")
-        #expect(!md.contains("\n# Injected heading"))
-    }
-
-    @Test("whitespace-only participant names are omitted from export")
-    func peopleLineOmitsBlankNames() {
-        let meeting = makeMeeting()
-        let md = MeetingExporter.buildMarkdown(
-            meeting: meeting,
-            content: .notes,
-            participants: [
-                makeParticipant(displayName: " \n\t "),
-                makeParticipant(contactIdentifier: "contact-b", displayName: "Dana Sample", insertionOrder: 1),
-            ]
-        )
-
-        #expect(md.contains("**People:** Dana Sample"))
-        #expect(!md.contains("**People:** ,"))
     }
 
     @Test("Duration formats hours correctly")

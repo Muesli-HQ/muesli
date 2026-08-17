@@ -99,49 +99,19 @@ struct MeetingContactIdentityTests {
         #expect(MeetingContactIdentity.displayName(for: contact) == "Nova")
     }
 
-    @Test("draft normalizes values before building a contact")
-    func makeContactNormalizes() {
-        #expect(NewMeetingContactDraft(
-            givenName: "A",
-            familyName: "B",
-            emailAddress: " ",
-            phoneNumber: " "
-        ).makeContact() == nil)
+    @Test("manual participant keeps the contact identity and email")
+    func participantSnapshot() {
+        let contact = CNMutableContact()
+        contact.givenName = "Dana"
+        contact.familyName = "Sample"
+        contact.emailAddresses = [
+            CNLabeledValue(label: CNLabelWork, value: "dana@example.test" as NSString),
+        ]
 
-        let contact = NewMeetingContactDraft(
-            givenName: "  Dana ",
-            familyName: " Sample ",
-            emailAddress: " dana@example.test ",
-            phoneNumber: ""
-        ).makeContact()
+        let participant = MeetingContactIdentity.participant(for: contact)
 
-        #expect(contact?.givenName == "Dana")
-        #expect(contact?.familyName == "Sample")
-        #expect(contact?.emailAddresses.first?.value as String? == "dana@example.test")
-        #expect(contact?.emailAddresses.first?.label == CNLabelWork)
-        // A blank phone must not produce an empty labeled value.
-        #expect(contact?.phoneNumbers.isEmpty == true)
-    }
-
-    @Test("new contacts require a normalized email or phone")
-    func newContactValidation() {
-        #expect(!NewMeetingContactDraft(
-            givenName: "Name",
-            familyName: "Only",
-            emailAddress: "  ",
-            phoneNumber: "\n"
-        ).canSave)
-        #expect(NewMeetingContactDraft(
-            givenName: "Email",
-            familyName: "Contact",
-            emailAddress: " person@example.test ",
-            phoneNumber: ""
-        ).canSave)
-        #expect(NewMeetingContactDraft(
-            givenName: "Phone",
-            familyName: "Contact",
-            emailAddress: "",
-            phoneNumber: " +1 555 0101 "
-        ).canSave)
+        #expect(participant.participantIdentifier.hasPrefix("contact:"))
+        #expect(participant.displayName == "Dana Sample")
+        #expect(participant.emailAddress == "dana@example.test")
     }
 }

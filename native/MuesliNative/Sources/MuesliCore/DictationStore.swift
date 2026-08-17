@@ -4,7 +4,7 @@ import SQLite3
 public enum DictationStoreError: Error, LocalizedError {
     case dictationNotFound(id: Int64)
     case meetingNotFound(id: Int64)
-    case invalidContactIdentifier
+    case invalidParticipantIdentifier
 
     public var errorDescription: String? {
         switch self {
@@ -12,8 +12,8 @@ public enum DictationStoreError: Error, LocalizedError {
             return "Dictation \(id) no longer exists."
         case .meetingNotFound(let id):
             return "Meeting \(id) no longer exists."
-        case .invalidContactIdentifier:
-            return "That contact could not be identified."
+        case .invalidParticipantIdentifier:
+            return "That meeting participant could not be identified."
         }
     }
 }
@@ -27,61 +27,6 @@ public struct MeetingThreadNavigation: Equatable, Sendable {
 public final class DictationStore {
     private static let targetApplicationBackfillMigration = "dictation_target_application_from_app_context_v1"
     public static let defaultTombstoneRetentionInterval: TimeInterval = 30 * 24 * 60 * 60
-
-    /// Domain of the `NSError`s this store raises for raw SQLite faults. The error
-    /// code is the SQLite result code, which is what makes `isTransientLockFailure`
-    /// possible without callers hardcoding the domain string.
-    public static let errorDomain = "MuesliDB"
-
-    /// Reports whether an error raised by this store is lock contention that a retry
-    /// could clear, as opposed to a deterministic fault such as corruption or a
-    /// missing database file.
-    ///
-    /// Every connection sets `sqlite3_busy_timeout`, so a surfaced `SQLITE_BUSY` or
-    /// `SQLITE_LOCKED` already means a writer held the database past that window —
-    /// which a caller that can afford to wait longer may still ride out. Anything
-    /// else will fail identically on the next attempt.
-    public static func isTransientLockFailure(_ error: Error) -> Bool {
-        let error = error as NSError
-        guard error.domain == errorDomain else { return false }
-        // Mask to the primary result code so an extended code (SQLITE_BUSY_SNAPSHOT
-        // and friends, which share the low byte) is not misread as unrecoverable.
-        switch Int32(truncatingIfNeeded: error.code) & 0xFF {
-        case SQLITE_BUSY, SQLITE_LOCKED:
-            return true
-        default:
-            return false
-        }
-    }
-
-    /// Backoff between lock-contention retries. Sized to outlast a transcript
-    /// checkpoint flush without stalling a caller that can afford to wait.
-    public static let transientLockRetryDelays: [Duration] = [
-        .milliseconds(200),
-        .milliseconds(600),
-        .milliseconds(1500),
-    ]
-
-    /// Retries `operation` when it raises a transient SQLite lock, then rethrows
-    /// any remaining error. Callers that must not block a one-shot artifact should
-    /// catch the final failure themselves.
-    public static func withTransientLockRetry<T>(
-        delays: [Duration] = transientLockRetryDelays,
-        operation: () throws -> T
-    ) async throws -> T {
-        var attempt = 0
-        while true {
-            do {
-                return try operation()
-            } catch {
-                guard attempt < delays.count, isTransientLockFailure(error) else {
-                    throw error
-                }
-                try await Task.sleep(for: delays[attempt])
-                attempt += 1
-            }
-        }
-    }
 
     private static let iso8601Formatter = ISO8601DateFormatter()
     private static let iso8601FormatterLock = NSLock()
@@ -190,16 +135,15 @@ public final class DictationStore {
         CREATE INDEX IF NOT EXISTS idx_meetings_start_time ON meetings(start_time DESC);
         CREATE INDEX IF NOT EXISTS idx_meetings_calendar_event_lookup ON meetings(calendar_event_id) WHERE calendar_event_id IS NOT NULL;
 
-        -- Meeting participants are deliberately device-local: they are not carried
-        -- by MuesliICloudSyncEngine and this table has no sync bookkeeping columns.
-        -- Propagating removals across devices needs tombstones, so syncing them
-        -- belongs in a dedicated change rather than a partial retrofit here.
+        -- Calendar attendee snapshots and manually selected people are device-local.
+        -- Contacts identifiers are never sent through Muesli's sync layer.
         CREATE TABLE IF NOT EXISTS meeting_participants (
             meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
-            contact_identifier TEXT NOT NULL,
+            participant_identifier TEXT NOT NULL,
             display_name TEXT NOT NULL,
+            email_address TEXT,
             insertion_order INTEGER NOT NULL,
-            PRIMARY KEY (meeting_id, contact_identifier)
+            PRIMARY KEY (meeting_id, participant_identifier)
         );
         CREATE INDEX IF NOT EXISTS idx_meeting_participants_order
             ON meeting_participants(meeting_id, insertion_order);
@@ -1057,10 +1001,10 @@ public final class DictationStore {
         defer { sqlite3_close(db) }
 
         let sql = """
-        SELECT meeting_id, contact_identifier, display_name, insertion_order
+        SELECT meeting_id, participant_identifier, display_name, email_address, insertion_order
         FROM meeting_participants
         WHERE meeting_id = ?
-        ORDER BY insertion_order, contact_identifier
+        ORDER BY insertion_order, participant_identifier
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -1075,144 +1019,54 @@ public final class DictationStore {
             case SQLITE_ROW:
                 participants.append(MeetingParticipant(
                     meetingID: sqlite3_column_int64(statement, 0),
-                    contactIdentifier: stringColumn(statement, index: 1),
+                    participantIdentifier: stringColumn(statement, index: 1),
                     displayName: stringColumn(statement, index: 2),
-                    insertionOrder: Int(sqlite3_column_int64(statement, 3))
+                    emailAddress: sqlite3_column_type(statement, 3) == SQLITE_NULL
+                        ? nil
+                        : stringColumn(statement, index: 3),
+                    insertionOrder: Int(sqlite3_column_int64(statement, 4))
                 ))
             case SQLITE_DONE:
                 return participants
             default:
-                // Returning the rows gathered so far would hand callers a silently
-                // short participant list. Throwing also lets a SQLITE_BUSY read reach
-                // the auto-exporter's isTransientLockFailure retry instead of baking a
-                // missing "People" line into the exported file.
                 throw lastError(db)
             }
         }
     }
 
-    @discardableResult
     public func attachMeetingParticipant(
         meetingID: Int64,
-        contactIdentifier: String,
-        displayName: String
-    ) throws -> Bool {
-        guard !contactIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw DictationStoreError.invalidContactIdentifier
-        }
-
-        let db = try openDatabase()
-        defer { sqlite3_close(db) }
-        try exec("BEGIN IMMEDIATE", db: db)
-
-        do {
-            var meetingStatement: OpaquePointer?
-            guard sqlite3_prepare_v2(
-                db,
-                "SELECT 1 FROM meetings WHERE id = ? AND deleted_at IS NULL LIMIT 1",
-                -1,
-                &meetingStatement,
-                nil
-            ) == SQLITE_OK else {
-                throw lastError(db)
-            }
-            sqlite3_bind_int64(meetingStatement, 1, meetingID)
-            let meetingStep = sqlite3_step(meetingStatement)
-            sqlite3_finalize(meetingStatement)
-            switch meetingStep {
-            case SQLITE_ROW:
-                break
-            case SQLITE_DONE:
-                throw DictationStoreError.meetingNotFound(id: meetingID)
-            default:
-                // Never collapse a genuine SQLite fault (SQLITE_BUSY, SQLITE_CORRUPT)
-                // into "meeting not found" — that reaches the user as a claim their
-                // meeting no longer exists while it is visibly on screen.
-                throw lastError(db)
-            }
-
-            // Determine newness explicitly: the upsert below reports a row change for
-            // both an insert and a display-name refresh, so sqlite3_changes() cannot
-            // distinguish them.
-            var existingStatement: OpaquePointer?
-            guard sqlite3_prepare_v2(
-                db,
-                """
-                SELECT 1 FROM meeting_participants
-                WHERE meeting_id = ? AND contact_identifier = ?
-                LIMIT 1
-                """,
-                -1,
-                &existingStatement,
-                nil
-            ) == SQLITE_OK else {
-                throw lastError(db)
-            }
-            sqlite3_bind_int64(existingStatement, 1, meetingID)
-            sqlite3_bind_text(existingStatement, 2, (contactIdentifier as NSString).utf8String, -1, nil)
-            let existingStep = sqlite3_step(existingStatement)
-            sqlite3_finalize(existingStatement)
-            let alreadyAttached: Bool
-            switch existingStep {
-            case SQLITE_ROW:
-                alreadyAttached = true
-            case SQLITE_DONE:
-                alreadyAttached = false
-            default:
-                throw lastError(db)
-            }
-
-            // Refresh the stored snapshot on re-add so a contact renamed in
-            // Contacts.app has a recovery path. Scoping the conflict clause to the
-            // primary key keeps real constraint violations throwing.
-            let sql = """
-            INSERT INTO meeting_participants
-                (meeting_id, contact_identifier, display_name, insertion_order)
-            VALUES (
-                ?,
-                ?,
-                ?,
-                COALESCE(
-                    (SELECT MAX(insertion_order) + 1
-                     FROM meeting_participants
-                     WHERE meeting_id = ?),
-                    0
-                )
-            )
-            ON CONFLICT(meeting_id, contact_identifier)
-            DO UPDATE SET display_name = excluded.display_name
-            """
-            var statement: OpaquePointer?
-            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
-                throw lastError(db)
-            }
-            sqlite3_bind_int64(statement, 1, meetingID)
-            sqlite3_bind_text(statement, 2, (contactIdentifier as NSString).utf8String, -1, nil)
-            sqlite3_bind_text(statement, 3, (displayName as NSString).utf8String, -1, nil)
-            sqlite3_bind_int64(statement, 4, meetingID)
-            guard sqlite3_step(statement) == SQLITE_DONE else {
-                sqlite3_finalize(statement)
-                throw lastError(db)
-            }
-            sqlite3_finalize(statement)
-            try exec("COMMIT", db: db)
-            return !alreadyAttached
-        } catch {
-            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
-            throw error
-        }
-    }
-
-    public func removeMeetingParticipant(
-        meetingID: Int64,
-        contactIdentifier: String
+        participant: MeetingParticipantDraft
     ) throws {
+        let participantIdentifier = participant.participantIdentifier
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayName = participant.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !participantIdentifier.isEmpty, !displayName.isEmpty else {
+            throw DictationStoreError.invalidParticipantIdentifier
+        }
+
         let db = try openDatabase()
         defer { sqlite3_close(db) }
 
         let sql = """
-        DELETE FROM meeting_participants
-        WHERE meeting_id = ? AND contact_identifier = ?
+        INSERT INTO meeting_participants
+            (meeting_id, participant_identifier, display_name, email_address, insertion_order)
+        VALUES (
+            ?,
+            ?,
+            ?,
+            ?,
+            COALESCE(
+                (SELECT MAX(insertion_order) + 1
+                 FROM meeting_participants
+                 WHERE meeting_id = ?),
+                0
+            )
+        )
+        ON CONFLICT(meeting_id, participant_identifier)
+        DO UPDATE SET
+            display_name = excluded.display_name,
+            email_address = COALESCE(excluded.email_address, meeting_participants.email_address)
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -1220,7 +1074,33 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, meetingID)
-        sqlite3_bind_text(statement, 2, (contactIdentifier as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 2, (participantIdentifier as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 3, (displayName as NSString).utf8String, -1, nil)
+        bindOptionalText(participant.emailAddress, at: 4, statement: statement)
+        sqlite3_bind_int64(statement, 5, meetingID)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
+    }
+
+    public func removeMeetingParticipant(
+        meetingID: Int64,
+        participantIdentifier: String
+    ) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+
+        let sql = """
+        DELETE FROM meeting_participants
+        WHERE meeting_id = ? AND participant_identifier = ?
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, meetingID)
+        sqlite3_bind_text(statement, 2, (participantIdentifier as NSString).utf8String, -1, nil)
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
@@ -2161,35 +2041,28 @@ public final class DictationStore {
     public func clearMeetings() throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
-        try exec("BEGIN IMMEDIATE", db: db)
-        do {
-            try exec("DELETE FROM meeting_resume_snapshots", db: db)
-            try exec("DELETE FROM meeting_transcript_checkpoints", db: db)
-            try exec("DELETE FROM meeting_participants", db: db)
-            try exec(
-                """
-                UPDATE meetings
-                SET title = 'Deleted Meeting',
-                    raw_transcript = '',
-                    formatted_notes = NULL,
-                    manual_notes = '',
-                    mic_audio_path = NULL,
-                    system_audio_path = NULL,
-                    saved_recording_path = NULL,
-                    word_count = 0,
-                    duration_seconds = 0,
-                    deleted_at = strftime('%s','now'),
-                    updated_at = strftime('%s','now'),
-                    sync_dirty = 1
-                WHERE deleted_at IS NULL
-                """,
-                db: db
-            )
-            try exec("COMMIT", db: db)
-        } catch {
-            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
-            throw error
-        }
+        try exec("DELETE FROM meeting_resume_snapshots", db: db)
+        try exec("DELETE FROM meeting_transcript_checkpoints", db: db)
+        try exec("DELETE FROM meeting_participants", db: db)
+        try exec(
+            """
+            UPDATE meetings
+            SET title = 'Deleted Meeting',
+                raw_transcript = '',
+                formatted_notes = NULL,
+                manual_notes = '',
+                mic_audio_path = NULL,
+                system_audio_path = NULL,
+                saved_recording_path = NULL,
+                word_count = 0,
+                duration_seconds = 0,
+                deleted_at = strftime('%s','now'),
+                updated_at = strftime('%s','now'),
+                sync_dirty = 1
+            WHERE deleted_at IS NULL
+            """,
+            db: db
+        )
     }
 
     public func updateMeeting(id: Int64, title: String, formattedNotes: String) throws {
@@ -4531,7 +4404,7 @@ public final class DictationStore {
 
     private func lastError(_ db: OpaquePointer?) -> NSError {
         NSError(
-            domain: Self.errorDomain,
+            domain: "MuesliDB",
             code: Int(sqlite3_errcode(db)),
             userInfo: [NSLocalizedDescriptionKey: String(cString: sqlite3_errmsg(db))]
         )

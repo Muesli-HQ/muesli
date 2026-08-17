@@ -3,6 +3,48 @@ import MuesliCore
 
 // MARK: - Shared Calendar Event Model
 
+struct CalendarAttendee: Identifiable, Equatable, Sendable {
+    let id: String
+    let displayName: String
+    let emailAddress: String?
+
+    init?(identifier: String?, displayName: String?, emailAddress: String?) {
+        let normalizedEmail = Self.normalizedEmail(emailAddress ?? identifier)
+        let normalizedName = displayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let fallbackIdentifier = identifier?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let resolvedName = normalizedName.isEmpty ? (normalizedEmail ?? "") : normalizedName
+        guard !resolvedName.isEmpty else { return nil }
+
+        let identity = normalizedEmail ?? fallbackIdentifier.lowercased()
+        guard !identity.isEmpty else { return nil }
+        self.id = "calendar:\(identity)"
+        self.displayName = resolvedName
+        self.emailAddress = normalizedEmail
+    }
+
+    var participantDraft: MeetingParticipantDraft {
+        MeetingParticipantDraft(
+            participantIdentifier: id,
+            displayName: displayName,
+            emailAddress: emailAddress
+        )
+    }
+
+    static func deduplicated(_ attendees: [CalendarAttendee]) -> [CalendarAttendee] {
+        var seen = Set<String>()
+        return attendees.filter { seen.insert($0.id).inserted }
+    }
+
+    private static func normalizedEmail(_ candidate: String?) -> String? {
+        var value = candidate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if value.lowercased().hasPrefix("mailto:") {
+            value.removeFirst("mailto:".count)
+        }
+        guard value.contains("@") else { return nil }
+        return value.lowercased()
+    }
+}
+
 struct UnifiedCalendarEvent: Identifiable, Equatable {
     let id: String
     let title: String
@@ -16,6 +58,7 @@ struct UnifiedCalendarEvent: Identifiable, Equatable {
     var calendarID: String? = nil
     var calendarOccurrence: CalendarOccurrenceReference? = nil
     var meetingURL: URL? = nil
+    var attendees: [CalendarAttendee] = []
 
     enum CalendarSource: String {
         case eventKit
@@ -544,6 +587,26 @@ final class GoogleCalendarClient {
             seriesID: recurringEventID,
             originalStartTime: originalStartTime
         )
+        let attendeeItems = item["attendees"] as? [[String: Any]] ?? []
+        var attendees = attendeeItems.compactMap { attendee -> CalendarAttendee? in
+            guard attendee["resource"] as? Bool != true else { return nil }
+            let emailAddress = attendee["email"] as? String
+            return CalendarAttendee(
+                identifier: emailAddress,
+                displayName: attendee["displayName"] as? String,
+                emailAddress: emailAddress
+            )
+        }
+        if let organizer = item["organizer"] as? [String: Any] {
+            let emailAddress = organizer["email"] as? String
+            if let attendee = CalendarAttendee(
+                identifier: emailAddress,
+                displayName: organizer["displayName"] as? String,
+                emailAddress: emailAddress
+            ) {
+                attendees.insert(attendee, at: 0)
+            }
+        }
 
         return UnifiedCalendarEvent(
             id: id,
@@ -554,7 +617,8 @@ final class GoogleCalendarClient {
             source: .googleCalendar,
             calendarID: calendarID,
             calendarOccurrence: occurrence,
-            meetingURL: meetingURL
+            meetingURL: meetingURL,
+            attendees: CalendarAttendee.deduplicated(attendees)
         )
     }
 
@@ -579,6 +643,9 @@ final class GoogleCalendarClient {
                 if merged[idx].meetingURL == nil, gEvent.meetingURL != nil {
                     merged[idx].meetingURL = gEvent.meetingURL
                 }
+                merged[idx].attendees = CalendarAttendee.deduplicated(
+                    merged[idx].attendees + gEvent.attendees
+                )
             } else {
                 merged.append(gEvent)
             }
