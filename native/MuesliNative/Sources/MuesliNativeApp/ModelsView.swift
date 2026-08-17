@@ -84,6 +84,8 @@ struct ModelsView: View {
                     }
                     .pickerStyle(.segmented)
                     .frame(maxWidth: 520)
+                    .id(FeatureTourTarget.modelLibrary.rawValue)
+                    .featureTourTarget(.modelLibrary)
 
                     selectedCategoryContent
                 }
@@ -94,7 +96,10 @@ struct ModelsView: View {
                 revealFeatureTourTargetIfNeeded(using: proxy)
             }
             .onChange(of: activeFeatureTourTarget) { _, target in
-                guard target == .streamingModels || target == .experimentalModels else { return }
+                guard target == .modelLibrary
+                        || target == .appleSpeechCard
+                        || target == .streamingModels
+                        || target == .experimentalModels else { return }
                 revealFeatureTourTargetIfNeeded(using: proxy)
             }
         }
@@ -171,11 +176,16 @@ struct ModelsView: View {
         switch appState.selectedModelsCategory {
         case .dictation:
             ForEach(BackendOption.systemManaged, id: \.model) { option in
+                let featureTourTarget: FeatureTourTarget? = option.backend == BackendOption.appleSpeechAnalyzer.backend
+                    ? .appleSpeechCard
+                    : nil
                 modelCard(
                     option: option,
                     logo: logoForBackend(option),
                     downloadedLabel: "Available"
                 )
+                .id(featureTourTarget?.rawValue ?? option.model)
+                .featureTourTarget(featureTourTarget)
             }
 
             familyCard(
@@ -235,6 +245,12 @@ struct ModelsView: View {
     private func revealFeatureTourTargetIfNeeded(using proxy: ScrollViewProxy) {
         let target: FeatureTourTarget
         switch activeFeatureTourTarget {
+        case .modelLibrary:
+            target = .modelLibrary
+            appState.selectedModelsCategory = .dictation
+        case .appleSpeechCard:
+            target = .appleSpeechCard
+            appState.selectedModelsCategory = .dictation
         case .streamingModels:
             target = .streamingModels
             appState.selectedModelsCategory = .streaming

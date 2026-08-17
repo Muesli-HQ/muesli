@@ -35,6 +35,12 @@ struct MarketingVersion: Comparable, Equatable {
 }
 
 enum FeatureTourTarget: String, Hashable {
+    case timelineSidebar
+    case timelineApplications
+    case appleSpeechCard
+    case meetingPeople
+    case timelineFilters
+    case modelLibrary
     case insightsEntry
     case dictionarySuggestions
     case meetingsSidebar
@@ -45,11 +51,13 @@ enum FeatureTourTarget: String, Hashable {
 
     var modelsCategory: ModelsCategory? {
         switch self {
+        case .modelLibrary, .appleSpeechCard:
+            return .dictation
         case .streamingModels:
             return .streaming
         case .experimentalModels:
             return .dictation
-        case .insightsEntry, .dictionarySuggestions, .meetingsSidebar, .liveCaptionsSetting, .cloudCleanupSetting:
+        case .timelineSidebar, .timelineApplications, .meetingPeople, .timelineFilters, .insightsEntry, .dictionarySuggestions, .meetingsSidebar, .liveCaptionsSetting, .cloudCleanupSetting:
             return nil
         }
     }
@@ -70,7 +78,11 @@ struct FeatureTour: Equatable {
 
     var displayVersion: String {
         guard let marketingVersion = MarketingVersion(version) else { return version }
-        return marketingVersion.components.prefix(2).map(String.init).joined(separator: ".")
+        var components = marketingVersion.components
+        while components.count > 2, components.last == 0 {
+            components.removeLast()
+        }
+        return components.map(String.init).joined(separator: ".")
     }
 }
 
@@ -84,76 +96,63 @@ extension AppState {
 
 enum FeatureTourCatalog {
     static var latest: FeatureTour {
-        latest(includeCloudCleanup: false)
+        latest(
+            includeApplicationFilter: false,
+            includeAppleSpeech: false,
+            includeMeetingPeople: false
+        )
     }
 
-    static func latest(includeCloudCleanup: Bool) -> FeatureTour {
+    static func latest(
+        includeApplicationFilter: Bool,
+        includeAppleSpeech: Bool,
+        includeMeetingPeople: Bool
+    ) -> FeatureTour {
         var steps = [
             FeatureTourStep(
-                id: "insights",
-                eyebrow: "LOCAL INSIGHTS",
-                title: "Your stats now open Insights",
-                message: "Select any stat card to explore private word, meeting, pace, streak, and daily activity trends calculated from your local history.",
-                systemImage: "chart.bar.xaxis",
-                target: .insightsEntry
-            ),
-            FeatureTourStep(
-                id: "dictionary-suggestions",
-                eyebrow: "SMARTER DICTIONARY",
-                title: "Turn corrections into custom words",
-                message: "Dictionary suggestions stay off by default. Turn them on to let Muesli notice corrections after dictation and offer a one-click way to remember names, brands, and domain terms.",
-                systemImage: "text.book.closed.fill",
-                target: .dictionarySuggestions
-            ),
-            FeatureTourStep(
-                id: "meeting-workspace",
-                eyebrow: "MEETING WORKSPACE",
-                title: "Continue work after the call",
-                message: "Open Meetings to see what is coming up, resume a recording, follow detected links, organize folders, and export notes, transcripts, or compressed audio.",
-                systemImage: "person.2.fill",
-                target: .meetingsSidebar
-            ),
-            FeatureTourStep(
-                id: "live-captions",
-                eyebrow: "LIVE MEETING CAPTIONS",
-                title: "Choose how meetings appear live",
-                message: "Live captions remain off by default. Download a supported streaming model, then choose it here to preview speech while a meeting is running.",
-                systemImage: "captions.bubble.fill",
-                target: .liveCaptionsSetting
-            ),
+                id: "timeline",
+                eyebrow: "ONE TIMELINE",
+                title: "Dictations and meetings, together",
+                message: "Timeline puts your recent work in one chronological view. Open it from the sidebar whenever you want to retrace what you dictated or discussed.",
+                systemImage: "clock.arrow.circlepath",
+                target: .timelineSidebar
+            )
         ]
 
-        if includeCloudCleanup {
+        if includeApplicationFilter {
             steps.append(FeatureTourStep(
-                id: "cloud-cleanup",
-                eyebrow: "CLOUD DICTATION CLEANUP",
-                title: "Your ChatGPT connection can refine dictation",
-                message: "Choose ChatGPT as the cleanup backend to remove filler words, format spoken lists, and apply your cleanup preset after local transcription.",
-                systemImage: "wand.and.stars",
-                target: .cloudCleanupSetting
+                id: "timeline-apps",
+                eyebrow: "FILTER BY APP",
+                title: "Find dictations by destination app",
+                message: "Use Apps to narrow Timeline to dictations sent to a specific destination, such as Mail, Notes, or your browser.",
+                systemImage: "square.grid.2x2",
+                target: .timelineApplications
             ))
         }
 
-        steps.append(contentsOf: [
-            FeatureTourStep(
-                id: "streaming-models",
-                eyebrow: "LIVE MODEL OPTIONS",
-                title: "Choose your live transcription engine",
-                message: "The Live Meetings tab offers Nemotron 3.5 when you want one live and saved meeting transcript, or Parakeet Live Captions when a fast English preview matters most.",
-                systemImage: "waveform.badge.mic",
-                target: .streamingModels
-            ),
-            FeatureTourStep(
-                id: "experimental-models",
-                eyebrow: "EXPERIMENTAL MODELS",
-                title: "Try new local dictation backends",
-                message: "Expand Experimental to try SenseVoice, Indic ASR, and Gemma 4. These early models can help with specific languages or evaluation, but may be less consistent.",
-                systemImage: "cpu",
-                target: .experimentalModels
-            )
-        ])
+        if includeAppleSpeech {
+            steps.append(FeatureTourStep(
+                id: "apple-speech",
+                eyebrow: "ON-DEVICE SPEECH",
+                title: "Try Apple's native on-device speech model",
+                message: "On macOS 26, Apple Speech can transcribe without a separate model download. Use your system language or choose another supported language in Models.",
+                systemImage: "apple.logo",
+                target: .appleSpeechCard
+            ))
+        }
 
-        return FeatureTour(version: "0.8.0", steps: steps)
+        if includeMeetingPeople {
+            steps.append(FeatureTourStep(
+                id: "meeting-people",
+                eyebrow: "MEETING ATTENDEES",
+                title: "Meeting attendees are now available!",
+                message: "See organizers and attendees from calendar events, or add people from Apple Contacts directly to a meeting.",
+                systemImage: "person.2.fill",
+                target: .meetingPeople
+            ))
+        }
+
+        return FeatureTour(version: "0.8.2", steps: steps)
     }
 }
 
@@ -179,8 +178,8 @@ enum FeatureTourPresentationPolicy {
         }
 
         guard let previousVersion else {
-            // 0.8 is the first release with this marker. A completed onboarding
-            // identifies an existing pre-0.8 install rather than a fresh install.
+            // A completed onboarding with no version marker identifies an
+            // existing install rather than a fresh install.
             return true
         }
         guard let previous = MarketingVersion(previousVersion) else { return true }

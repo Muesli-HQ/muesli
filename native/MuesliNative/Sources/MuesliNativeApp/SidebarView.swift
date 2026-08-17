@@ -535,6 +535,7 @@ struct SidebarView: View {
         }
         .buttonStyle(.plain)
         .padding(.horizontal, sidebarRowOuterPadding)
+        .featureTourTarget(tab == .timeline ? .timelineSidebar : nil)
     }
 
     @ViewBuilder

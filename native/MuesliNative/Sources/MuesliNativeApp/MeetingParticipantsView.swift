@@ -63,6 +63,7 @@ struct MeetingParticipantsView: View {
         }
         .buttonStyle(.plain)
         .fixedSize(horizontal: false, vertical: true)
+        .featureTourTarget(.meetingPeople)
         .help(participants.isEmpty ? "Add people to this meeting" : "Show \(peopleDescription)")
         .accessibilityLabel(
             participants.isEmpty ? "Add people to this meeting" : "\(peopleDescription) in this meeting"
