@@ -79,7 +79,9 @@ case "${shard}" in
       AudioGraphExceptionBridgeTests
       DiagnosticIncidentTests
       DictationAudioRouteControllerTests
+      MeetingContactIdentityTests
       MeetingDetectorTests
+      MeetingParticipantStoreTests
       MeetingProcessingStageTests
       MeetingRecordingWriterTests
       MeetingResumePolicyTests
