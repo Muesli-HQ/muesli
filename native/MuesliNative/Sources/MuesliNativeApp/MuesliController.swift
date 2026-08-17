@@ -1014,7 +1014,7 @@ final class MuesliController: NSObject {
             TelemetryDeck.signal("feature_walkthrough.invitation_shown", parameters: [
                 "version": tour.version,
                 "step_count": "\(tour.steps.count)",
-                "includes_apple_speech": "\(tour.steps.contains { $0.id == "apple-speech" })",
+                "includes_apple_speech": "\(tour.steps.contains { $0.target == .appleSpeechCard })",
             ])
         })
         // The normal startup preload task continues while this invitation and
@@ -1132,9 +1132,11 @@ final class MuesliController: NSObject {
             appState.selectedMeetingID = nil
             appState.selectedMeetingRecord = nil
         case .meetingPeople:
-            if let meetingID = (try? dictationStore.recentMeetings(limit: 1))?.first?.id {
-                showMeetingDocument(id: meetingID)
+            guard let meetingID = (try? dictationStore.recentMeetings(limit: 1))?.first?.id else {
+                completeFeatureTour()
+                return
             }
+            showMeetingDocument(id: meetingID)
         case .liveCaptionsSetting:
             appState.selectedSettingsPane = .meetings
             appState.selectedTab = .settings
