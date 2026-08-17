@@ -415,7 +415,7 @@ struct GoogleCalendarTests {
     }
 
     @Test("calendar placeholders deduplicate one occurrence but allow the next recurrence")
-    func calendarPlaceholderOccurrenceDeduplication() throws {
+    func calendarPlaceholderOccurrenceDeduplication() async throws {
         let databaseURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("muesli-calendar-occurrence-\(UUID().uuidString).db")
         let store = DictationStore(databaseURL: databaseURL)
@@ -485,7 +485,7 @@ struct GoogleCalendarTests {
         let firstMeeting = try #require(meetings.first(where: {
             $0.calendarOccurrence?.identityKey == firstOccurrence.identityKey
         }))
-        #expect(try store.listMeetingParticipants(meetingID: firstMeeting.id).map(\.displayName) == [
+        #expect(try await controller.meetingParticipants(meetingID: firstMeeting.id).map(\.displayName) == [
             "Alice Example",
         ])
     }
