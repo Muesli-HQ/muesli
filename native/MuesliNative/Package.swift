@@ -8,7 +8,8 @@ let package = Package(
     ],
     products: [
         .library(name: "MuesliCore", targets: ["MuesliCore"]),
-        .executable(name: "MuesliNativeApp", targets: ["MuesliNativeApp"]),
+        .library(name: "MuesliNativeAppCore", targets: ["MuesliNativeApp"]),
+        .executable(name: "MuesliNativeApp", targets: ["MuesliNativeAppShell"]),
         .executable(name: "muesli-cli", targets: ["MuesliCLI"]),
     ],
     dependencies: [
@@ -32,7 +33,7 @@ let package = Package(
                 .linkedLibrary("sqlite3"),
             ]
         ),
-        .executableTarget(
+        .target(
             name: "MuesliNativeApp",
             dependencies: [
                 "MuesliCore",
@@ -49,13 +50,25 @@ let package = Package(
                 "LocalVQEBridge",
             ],
             path: "Sources/MuesliNativeApp",
-            swiftSettings: [
-                .unsafeFlags(["-parse-as-library"]),
-            ],
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
                 .linkedFramework("Contacts"),
                 .linkedFramework("ContactsUI"),
+            ]
+        ),
+        // Thin executable shell: main.swift + App Intents. Kept separate from
+        // the existing MuesliNativeApp module so a genuine Xcode Application
+        // target (see xcodegen project used for release builds) can wrap it
+        // and get App Intents metadata extraction, which only runs for real
+        // Application-type targets, not SwiftPM executables or libraries.
+        .executableTarget(
+            name: "MuesliNativeAppShell",
+            dependencies: [
+                "MuesliNativeApp",
+            ],
+            path: "Sources/MuesliNativeAppShell",
+            swiftSettings: [
+                .unsafeFlags(["-parse-as-library"]),
             ]
         ),
         .executableTarget(

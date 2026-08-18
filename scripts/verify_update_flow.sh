@@ -297,7 +297,13 @@ if [[ -z "$PUBLIC_ED_KEY" ]]; then
 fi
 echo "Bundle metadata OK."
 
+# SwiftPM-built bundles place Sparkle.framework under Contents/MacOS; the
+# xcodebuild path (native/MuesliXcode) stages frameworks under
+# Contents/Frameworks. Accept either layout.
 SPARKLE_FRAMEWORK="$APP_PATH/Contents/MacOS/Sparkle.framework"
+if [[ ! -d "$SPARKLE_FRAMEWORK" ]]; then
+  SPARKLE_FRAMEWORK="$APP_PATH/Contents/Frameworks/Sparkle.framework"
+fi
 if [[ ! -d "$SPARKLE_FRAMEWORK" ]]; then
   echo "ERROR: app bundle is missing Sparkle.framework" >&2
   exit 1

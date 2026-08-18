@@ -30,6 +30,13 @@ PACKAGE_DIR="$ROOT/native/MuesliNative"
 SWIFTPM_SCRATCH_PATH=""
 SWIFT_TEST_ARGS=(--package-path "$PACKAGE_DIR")
 BUILD_ENV=()
+# Pin the compile path to the xcodebuild path (native/MuesliXcode), which is
+# the only path that generates Contents/Resources/Metadata.appintents and
+# therefore the only path where Shortcuts/Siri actions ship. Production/
+# notarized builds must never silently pick up a MUESLI_USE_XCODE_BUILD=0
+# override from the ambient environment; to cut an emergency SwiftPM-only
+# release, edit this pin deliberately. Requires xcodegen on the release host.
+BUILD_ENV+=(MUESLI_USE_XCODE_BUILD=1)
 # The alpha channel is intentionally shared across worktrees. Do not run this
 # script concurrently from multiple worktrees unless you set an isolated
 # MUESLI_SWIFTPM_SCRATCH_PATH or MUESLI_SWIFTPM_SCRATCH_CHANNEL.
@@ -37,6 +44,9 @@ if ! muesli_spm_scratch_disabled; then
   SWIFTPM_SCRATCH_PATH="$(muesli_resolve_spm_scratch_path alpha)"
   SWIFT_TEST_ARGS+=(--scratch-path "$SWIFTPM_SCRATCH_PATH")
   BUILD_ENV+=(MUESLI_SWIFTPM_SCRATCH_PATH="$SWIFTPM_SCRATCH_PATH")
+  # Keep the xcodebuild cache under the same scratch root so an isolated
+  # MUESLI_SWIFTPM_SCRATCH_PATH also isolates concurrent DerivedData.
+  BUILD_ENV+=(MUESLI_XCODEBUILD_DERIVED_DATA="$SWIFTPM_SCRATCH_PATH/xcodebuild")
 else
   BUILD_ENV+=(MUESLI_DISABLE_SWIFTPM_SCRATCH_PATH=1)
 fi

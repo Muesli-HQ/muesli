@@ -316,7 +316,14 @@ private final class DictationLatencyLogWriter: @unchecked Sendable {
 }
 
 @MainActor
-final class MuesliController: NSObject {
+public final class MuesliController: NSObject {
+    /// Weak backreference to the running controller for AppIntents, which are
+    /// instantiated fresh by the system per invocation and have no other way
+    /// to reach in-process state. Set in `start()`, cleared implicitly on dealloc.
+    /// Public (and the handful of members below it) because App Intents live
+    /// in the separate MuesliNativeAppShell executable module, not this library.
+    public static weak var current: MuesliController?
+
     private static let maxDismissedDictionarySuggestionKeys = 200
     private static let maxDictionarySuggestions = 50
     private static let maxDictionarySuggestionPromptQueue = 10
@@ -586,6 +593,7 @@ final class MuesliController: NSObject {
 
     func start() {
         hasStarted = true
+        MuesliController.current = self
         do {
             try dictationStore.migrateIfNeeded()
         } catch {
@@ -5105,7 +5113,7 @@ final class MuesliController: NSObject {
         syncAppState()
     }
 
-    func isMeetingRecording() -> Bool {
+    public func isMeetingRecording() -> Bool {
         activeMeetingSession?.isRecording == true || isStoppingMeetingRecording
     }
 
@@ -8767,12 +8775,13 @@ final class MuesliController: NSObject {
         syncDictationRecorderWarmup(intent: .postDictation(.cancel))
     }
 
-    private func handleToggleStart(outputMode: DictationOutputMode? = nil) {
-        if shouldRejectDictationForComputerUseActivity() { return }
-        guard canBeginDictationInteraction else { return }
-        guard ensureDictationBackendReady() else { return }
-        if isMeetingRecording() { return }
-        if blockDictationForMeetingActivityIfNeeded() { return }
+    @discardableResult
+    private func handleToggleStart(outputMode: DictationOutputMode? = nil) -> Bool {
+        if shouldRejectDictationForComputerUseActivity() { return false }
+        guard canBeginDictationInteraction else { return false }
+        guard ensureDictationBackendReady() else { return false }
+        if isMeetingRecording() { return false }
+        if blockDictationForMeetingActivityIfNeeded() { return false }
         fputs("[muesli-native] toggle dictation start\n", stderr)
         if dictationLatencyTraceID == nil {
             beginDictationLatencyTrace(reason: "toggle")
@@ -8805,7 +8814,7 @@ final class MuesliController: NSObject {
                 startNemotronStreamingAsync(
                     sessionID: sessionID
                 )
-                return
+                return true
             }
         }
 
@@ -8814,6 +8823,7 @@ final class MuesliController: NSObject {
             duckingEnabled: config.muteSystemAudioDuringDictation,
             mediaPauseEnabled: config.pauseMediaDuringDictation
         )
+        return true
     }
 
     private func handleToggleStop() {
@@ -8828,6 +8838,57 @@ final class MuesliController: NSObject {
         } else if dictationState == .idle {
             handleToggleStart(outputMode: .voiceNote)
         }
+    }
+
+    /// Hands-free dictation start for Shortcuts/App Intents. No-op (returns
+    /// false) if dictation is already active or a meeting is recording or
+    /// still starting, mirroring the admission guards the hotkey path uses.
+    @discardableResult
+    public func startDictationForShortcuts() -> Bool {
+        guard config.hasCompletedOnboarding,
+              ensureBasicDictationPermissionsBeforeDashboard(),
+              !isDictationActivityInProgress,
+              !dictationAudioSessionManager.hasActiveSession,
+              canBeginDictationInteraction,
+              !isMeetingRecording(),
+              !isStartingMeetingRecording else { return false }
+        return handleToggleStart()
+    }
+
+    /// Hands-free dictation stop for Shortcuts/App Intents. No-op (returns
+    /// false) if dictation isn't currently active.
+    @discardableResult
+    public func stopDictationForShortcuts() -> Bool {
+        guard dictationStartedAt != nil || dictationAudioSessionManager.hasActiveSession || isNemotron35Streaming else { return false }
+        handleToggleStop()
+        return true
+    }
+
+    /// Meeting recording start for Shortcuts/App Intents. Thin public wrapper
+    /// around `startMeetingRecording` so that method's internal enum-typed
+    /// parameters don't need to become part of the public API surface.
+    @discardableResult
+    public func startMeetingRecordingForShortcuts(title: String = "Meeting") -> Bool {
+        guard config.hasCompletedOnboarding else { return false }
+        return startMeetingRecordingFromEntryPoint(
+            title: title,
+            presentation: .backgroundPill
+        )
+    }
+
+    /// Meeting recording stop for Shortcuts/App Intents. Cancels a pending
+    /// meeting start through the same `cancelMeetingPreparation()` path the
+    /// UI uses, stops an already-active recording, or returns false when no
+    /// meeting is starting or recording.
+    @discardableResult
+    public func stopMeetingRecordingForShortcuts() -> Bool {
+        if isStartingMeetingRecording, activeMeetingSession == nil {
+            cancelMeetingPreparation()
+            return true
+        }
+        guard isMeetingRecording() else { return false }
+        stopMeetingRecording()
+        return true
     }
 
     private func handleStop() {
