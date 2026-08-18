@@ -184,9 +184,11 @@ If launch fails with `No matching profile found`, the embedded profile, bundle I
 
 - [ ] **Push the appcast + download-link metadata branch:**
   ```bash
+  git switch -c codex/release-X.Y.Z-appcast
   git add docs/appcast.xml docs/index.html
+  git add docs/llms.txt
   git commit -m "Update appcast for vX.Y.Z"
-  git push
+  git push -u origin codex/release-X.Y.Z-appcast
   ```
 
 - [ ] **Open the release-metadata PR while the GitHub Release remains a draft.**

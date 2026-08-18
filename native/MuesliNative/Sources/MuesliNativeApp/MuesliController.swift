@@ -8975,15 +8975,27 @@ final class MuesliController: NSObject {
         syncDictationRecorderWarmup(intent: .idlePrewarm(.backendRecovery))
     }
 
-    /// Commits the transcript and releases the user-visible dictation state. Keep this path
-    /// bounded: it runs immediately after Cmd+V and must return before clipboard restoration.
-    private func commitStandardDictation(
+    /// Releases the user-visible dictation state immediately after Cmd+V. Keep this path
+    /// bounded so the main actor remains available for clipboard restoration.
+    private func releaseStandardDictationState() {
+        clearCapturedDictationSessionContext()
+        resetDictationOutputMode()
+        setState(.idle)
+        meetingMonitor.resumeAfterCooldown()
+        syncDictationRecorderWarmup(intent: .postDictation(.transcriptionComplete))
+    }
+
+    /// For paste output, runs only once the pasteboard has either been restored or superseded
+    /// by a newer copy. The dashboard queries and optional Accessibility monitor cannot lengthen
+    /// transcript ownership of the clipboard or the visible Transcribing state.
+    private func finishStandardDictationBookkeeping(
         text: String,
         duration: TimeInterval,
         appContext: String,
         startedAt: Date,
         outputMode: DictationOutputMode,
-        targetApp: DictationCorrectionTargetApp?
+        targetApp: DictationCorrectionTargetApp?,
+        backend: String
     ) {
         _ = try? dictationStore.insertDictation(
             text: text,
@@ -8995,23 +9007,6 @@ final class MuesliController: NSObject {
             endedAt: Date()
         )
         scheduleICloudSyncAfterLocalChange()
-        clearCapturedDictationSessionContext()
-        resetDictationOutputMode()
-        setState(.idle)
-        meetingMonitor.resumeAfterCooldown()
-        syncDictationRecorderWarmup(intent: .postDictation(.transcriptionComplete))
-    }
-
-    /// Runs only once the pasteboard has either been restored or superseded by a newer copy.
-    /// The dashboard queries and optional Accessibility monitor cannot lengthen transcript
-    /// ownership of the clipboard or the visible Transcribing state.
-    private func finishStandardDictationBookkeeping(
-        text: String,
-        appContext: String,
-        outputMode: DictationOutputMode,
-        targetApp: DictationCorrectionTargetApp?,
-        backend: String
-    ) {
         statusBarController?.refresh()
         if let historyWindowController {
             // reload() already calls syncAppState(); do not repeat the full query set.
@@ -9148,14 +9143,7 @@ final class MuesliController: NSObject {
                                 guard let self else { return }
                                 let targetApp = self.externalDictationTargetApp(from: targetApplication)
                                 completionTargetApp = targetApp
-                                self.commitStandardDictation(
-                                    text: text,
-                                    duration: duration,
-                                    appContext: storageContext,
-                                    startedAt: startedAt,
-                                    outputMode: outputMode,
-                                    targetApp: targetApp
-                                )
+                                self.releaseStandardDictationState()
                                 self.markDictationLatency(
                                     "user_visible_completion",
                                     trace: completionLatencyTrace
@@ -9165,7 +9153,9 @@ final class MuesliController: NSObject {
                                 guard let self else { return }
                                 self.finishStandardDictationBookkeeping(
                                     text: text,
+                                    duration: duration,
                                     appContext: storageContext,
+                                    startedAt: startedAt,
                                     outputMode: outputMode,
                                     targetApp: completionTargetApp,
                                     backend: transcriptionBackend.backend
@@ -9183,18 +9173,13 @@ final class MuesliController: NSObject {
                             }
                         )
                     } else {
-                        self.commitStandardDictation(
+                        self.releaseStandardDictationState()
+                        self.markDictationLatency("user_visible_completion", trace: completionLatencyTrace)
+                        self.finishStandardDictationBookkeeping(
                             text: text,
                             duration: duration,
                             appContext: storageContext,
                             startedAt: startedAt,
-                            outputMode: outputMode,
-                            targetApp: nil
-                        )
-                        self.markDictationLatency("user_visible_completion", trace: completionLatencyTrace)
-                        self.finishStandardDictationBookkeeping(
-                            text: text,
-                            appContext: storageContext,
                             outputMode: outputMode,
                             targetApp: nil,
                             backend: transcriptionBackend.backend
