@@ -135,9 +135,12 @@ assert "muesli_require_release_publication_ready" in publication_section
 assert "RELEASE_METADATA_PR_URL" in publication_section
 assert "resume_existing_release_publication()" in stable_release
 assert "Existing release metadata branch found" in stable_release
-assert "Expected exactly one open metadata PR" in stable_release
+assert "Expected zero or one open metadata PR" in stable_release
 assert '--appcast "$metadata_appcast"' in stable_release
 assert '"$ROOT/scripts/verify_signed_cloud_entitlements.sh"' in stable_release
+assert "Existing release metadata or hosted artifact failed update-flow validation" in stable_release
+assert "Existing hosted app failed Production CloudKit entitlement validation" in stable_release
+assert "Recreated missing release metadata PR" in stable_release
 assert "resume_existing_release_publication" in stable_release.split(
     '# --- Step 0: Update version in build script ---',
     maxsplit=1,

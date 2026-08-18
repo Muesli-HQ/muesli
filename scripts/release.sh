@@ -220,14 +220,6 @@ verify_homebrew_autobump() {
 }
 
 resume_existing_release_publication() {
-  if ! git ls-remote --exit-code --heads origin "$RELEASE_METADATA_BRANCH" >/dev/null 2>&1; then
-    if git show-ref --verify --quiet "refs/heads/${RELEASE_METADATA_BRANCH}"; then
-      echo "ERROR: Local release metadata branch exists without its remote counterpart: $RELEASE_METADATA_BRANCH" >&2
-      exit 1
-    fi
-    return 1
-  fi
-
   echo "Existing release metadata branch found; validating the hosted release before resuming publication."
   git fetch origin \
     "refs/heads/${RELEASE_METADATA_BRANCH}:refs/remotes/origin/${RELEASE_METADATA_BRANCH}" \
@@ -241,17 +233,19 @@ resume_existing_release_publication() {
     --state open \
     --json url \
     --jq 'length')
-  if [[ "$metadata_pr_count" != "1" ]]; then
-    echo "ERROR: Expected exactly one open metadata PR for $RELEASE_METADATA_BRANCH; found $metadata_pr_count." >&2
+  if [[ "$metadata_pr_count" != "0" && "$metadata_pr_count" != "1" ]]; then
+    echo "ERROR: Expected zero or one open metadata PR for $RELEASE_METADATA_BRANCH; found $metadata_pr_count." >&2
     exit 1
   fi
-  RELEASE_METADATA_PR_URL=$(gh pr list \
-    --repo Muesli-HQ/muesli \
-    --base main \
-    --head "$RELEASE_METADATA_BRANCH" \
-    --state open \
-    --json url \
-    --jq '.[0].url')
+  if [[ "$metadata_pr_count" == "1" ]]; then
+    RELEASE_METADATA_PR_URL=$(gh pr list \
+      --repo Muesli-HQ/muesli \
+      --base main \
+      --head "$RELEASE_METADATA_BRANCH" \
+      --state open \
+      --json url \
+      --jq '.[0].url')
+  fi
 
   local release_is_draft
   release_is_draft=$(gh release view "$TAG" --json isDraft --jq '.isDraft' 2>/dev/null || true)
@@ -279,26 +273,42 @@ resume_existing_release_publication() {
     fi
   done
 
-  "$ROOT/scripts/verify_update_flow.sh" \
-    --version "$VERSION" \
-    --appcast "$metadata_appcast" \
-    --dmg "$hosted_dmg" \
-    --require-release-notes \
-    --require-notarized
+  if ! "$ROOT/scripts/verify_update_flow.sh" \
+      --version "$VERSION" \
+      --appcast "$metadata_appcast" \
+      --dmg "$hosted_dmg" \
+      --require-release-notes \
+      --require-notarized; then
+    echo "ERROR: Existing release metadata or hosted artifact failed update-flow validation." >&2
+    exit 1
+  fi
 
   HOSTED_MOUNT_POINT=$(hdiutil attach "$hosted_dmg" -nobrowse -readonly 2>&1 | awk -F'\t' '/\/Volumes\// {print $NF; exit}')
   if [[ -z "$HOSTED_MOUNT_POINT" ]]; then
     echo "ERROR: Could not mount hosted DMG while resuming $TAG." >&2
     exit 1
   fi
-  "$ROOT/scripts/verify_signed_cloud_entitlements.sh" \
-    "$HOSTED_MOUNT_POINT/Muesli.app" \
-    Production \
-    com.muesli.app \
-    iCloud.com.mueslihq.muesli \
-    production
+  if ! "$ROOT/scripts/verify_signed_cloud_entitlements.sh" \
+      "$HOSTED_MOUNT_POINT/Muesli.app" \
+      Production \
+      com.muesli.app \
+      iCloud.com.mueslihq.muesli \
+      production; then
+    echo "ERROR: Existing hosted app failed Production CloudKit entitlement validation." >&2
+    exit 1
+  fi
   hdiutil detach "$HOSTED_MOUNT_POINT" -quiet 2>/dev/null
   HOSTED_MOUNT_POINT=""
+
+  if [[ "$metadata_pr_count" == "0" ]]; then
+    RELEASE_METADATA_PR_URL=$(gh pr create \
+      --repo Muesli-HQ/muesli \
+      --base main \
+      --head "$RELEASE_METADATA_BRANCH" \
+      --title "Update release metadata for v${VERSION}" \
+      --body "Publishes the verified v${VERSION} Sparkle appcast entry and aligns the landing-page download metadata with the verified GitHub DMG. The GitHub release was kept as a draft through validation and creation of this PR; the public appcast remains unchanged until this PR is reviewed and merged.")
+    echo "  Recreated missing release metadata PR: $RELEASE_METADATA_PR_URL"
+  fi
 
   RELEASE_METADATA_VALIDATED=1
   muesli_require_release_publication_ready \
@@ -321,8 +331,17 @@ resume_existing_release_publication() {
   return 0
 }
 
-if resume_existing_release_publication; then
+if ! REMOTE_RELEASE_METADATA_REF=$(git ls-remote --heads origin "$RELEASE_METADATA_BRANCH"); then
+  echo "ERROR: Could not query remote release metadata branch $RELEASE_METADATA_BRANCH." >&2
+  exit 1
+fi
+if [[ -n "$REMOTE_RELEASE_METADATA_REF" ]]; then
+  resume_existing_release_publication
   exit 0
+fi
+if git show-ref --verify --quiet "refs/heads/${RELEASE_METADATA_BRANCH}"; then
+  echo "ERROR: Local release metadata branch exists without its remote counterpart: $RELEASE_METADATA_BRANCH" >&2
+  exit 1
 fi
 
 echo "=== Muesli Release v${VERSION} ==="
