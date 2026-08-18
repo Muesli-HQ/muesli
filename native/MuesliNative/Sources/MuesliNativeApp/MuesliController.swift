@@ -8841,17 +8841,17 @@ public final class MuesliController: NSObject {
     }
 
     /// Hands-free dictation start for Shortcuts/App Intents. No-op (returns
-    /// false) if dictation or a meeting is already active, mirroring the
-    /// idempotent guard `toggleVoiceNoteRecording()` uses for its own state check.
+    /// false) if dictation is already active or a meeting is recording or
+    /// still starting, mirroring the admission guards the hotkey path uses.
     @discardableResult
     public func startDictationForShortcuts() -> Bool {
         guard config.hasCompletedOnboarding,
               ensureBasicDictationPermissionsBeforeDashboard(),
-              dictationState == .idle,
-              dictationStartedAt == nil,
+              !isDictationActivityInProgress,
               !dictationAudioSessionManager.hasActiveSession,
-              !isNemotron35Streaming,
-              !isMeetingRecording() else { return false }
+              canBeginDictationInteraction,
+              !isMeetingRecording(),
+              !isStartingMeetingRecording else { return false }
         return handleToggleStart()
     }
 
@@ -8876,11 +8876,19 @@ public final class MuesliController: NSObject {
         )
     }
 
-    /// Meeting recording stop for Shortcuts/App Intents. No-op if no meeting
-    /// is currently recording.
-    public func stopMeetingRecordingForShortcuts() {
-        guard isMeetingRecording() else { return }
+    /// Meeting recording stop for Shortcuts/App Intents. Cancels a pending
+    /// meeting start through the same `cancelMeetingPreparation()` path the
+    /// UI uses, stops an already-active recording, or returns false when no
+    /// meeting is starting or recording.
+    @discardableResult
+    public func stopMeetingRecordingForShortcuts() -> Bool {
+        if isStartingMeetingRecording, activeMeetingSession == nil {
+            cancelMeetingPreparation()
+            return true
+        }
+        guard isMeetingRecording() else { return false }
         stopMeetingRecording()
+        return true
     }
 
     private func handleStop() {

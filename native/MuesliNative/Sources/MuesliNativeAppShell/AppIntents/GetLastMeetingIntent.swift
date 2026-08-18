@@ -8,10 +8,19 @@ struct GetLastMeetingIntent: AppIntent {
 
     func perform() async throws -> some IntentResult & ReturnsValue<String> {
         let store = try MuesliShortcutsStore.open()
-        guard let meeting = try store.recentMeetings(limit: 1).first else {
-            throw MuesliShortcutsError.noMeetings
+        // Skip meetings still recording or being processed: their notes and
+        // transcript are not ready yet, so returning one would yield empty
+        // text. Find the most recent meeting with usable content instead.
+        for meeting in try store.recentMeetings(limit: 10) {
+            switch meeting.status {
+            case .recording, .processing: continue
+            default: break
+            }
+            let notes = meeting.formattedNotes.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !notes.isEmpty { return .result(value: notes) }
+            let transcript = meeting.rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !transcript.isEmpty { return .result(value: transcript) }
         }
-        let notes = meeting.formattedNotes.trimmingCharacters(in: .whitespacesAndNewlines)
-        return .result(value: notes.isEmpty ? meeting.rawTranscript : notes)
+        throw MuesliShortcutsError.noMeetings
     }
 }

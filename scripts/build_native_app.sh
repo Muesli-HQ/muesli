@@ -110,7 +110,15 @@ if [[ "$USE_XCODE_BUILD" == "1" ]]; then
   XCODE_CONFIG="Debug"
   [[ "$BUILD_CONFIG" == "release" ]] && XCODE_CONFIG="Release"
 
-  XCODE_DERIVED_DATA="${MUESLI_XCODEBUILD_DERIVED_DATA:-$(muesli_default_spm_cache_root)/xcodebuild/$BUILD_CONFIG}"
+  # Scope DerivedData like the SwiftPM scratch path: per-worktree for debug
+  # builds and per-app-name so concurrent dev lanes (MuesliDevA/B/C) and the
+  # production build never share an xcodebuild cache directory.
+  if [[ "$BUILD_CONFIG" == "release" ]]; then
+    XCODE_SCRATCH_CHANNEL="release"
+  else
+    XCODE_SCRATCH_CHANNEL="$(muesli_worktree_spm_scratch_channel dev "$ROOT")"
+  fi
+  XCODE_DERIVED_DATA="${MUESLI_XCODEBUILD_DERIVED_DATA:-$(muesli_default_spm_cache_root)/$XCODE_SCRATCH_CHANNEL/xcodebuild/$APP_NAME-$BUILD_CONFIG}"
   mkdir -p "$XCODE_DERIVED_DATA"
 
   echo "Generating Xcode project (xcodegen)..."

@@ -11,9 +11,7 @@ struct StartMeetingIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ReturnsValue<Bool> {
-        guard let controller = MuesliController.current else {
-            throw MuesliShortcutsError.notRunning
-        }
+        let controller = try await MuesliShortcutsRuntime.waitForController()
         let started = controller.startMeetingRecordingForShortcuts(title: meetingTitle)
         return .result(value: started)
     }
