@@ -356,9 +356,7 @@ struct DictionaryView: View {
                 .foregroundStyle(MuesliTheme.textTertiary)
         }
         .frame(maxWidth: .infinity)
-        .padding(.horizontal, MuesliTheme.spacing32)
-            .padding(.top, MuesliTheme.pageTop)
-            .padding(.bottom, MuesliTheme.spacing32)
+        .padding(MuesliTheme.spacing32)
     }
 
     private var columnHeader: some View {
