@@ -1083,6 +1083,10 @@ struct HotkeyConfig: Codable, Equatable {
         combinationModifiers: UInt(NSEvent.ModifierFlags([.command, .shift]).rawValue),
         combinationKeyCode: 15
     )
+    static let sidebarToggleDefault = HotkeyConfig.combination(
+        modifiers: [.command],
+        keyCode: 11
+    )
 
     static func computerUseDefault(avoiding dictationHotkey: HotkeyConfig) -> HotkeyConfig {
         dictationHotkey.keyCode == computerUseDefault.keyCode ? .default : .computerUseDefault
@@ -1129,6 +1133,7 @@ struct AppConfig: Codable {
     var enableComputerUseHotkey: Bool = false
     var meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault
     var enableMeetingRecordingHotkey: Bool = false
+    var sidebarToggleHotkey: HotkeyConfig = .sidebarToggleDefault
     var computerUseHotkeyDefaultDisabledMigrationApplied: Bool = true
     var enableComputerUsePlanner: Bool = true
     var computerUsePlannerModel: String = ""
@@ -1253,6 +1258,7 @@ struct AppConfig: Codable {
         case enableComputerUseHotkey = "enable_computer_use_hotkey"
         case meetingRecordingHotkey = "meeting_recording_hotkey"
         case enableMeetingRecordingHotkey = "enable_meeting_recording_hotkey"
+        case sidebarToggleHotkey = "sidebar_toggle_hotkey"
         case computerUseHotkeyDefaultDisabledMigrationApplied = "computer_use_hotkey_default_disabled_migration_applied"
         case enableComputerUsePlanner = "enable_computer_use_planner"
         case computerUsePlannerModel = "computer_use_planner_model"
@@ -1382,6 +1388,7 @@ struct AppConfig: Codable {
         computerUseHotkeyDefaultDisabledMigrationApplied = true
         meetingRecordingHotkey = (try? c.decode(HotkeyConfig.self, forKey: .meetingRecordingHotkey)) ?? defaults.meetingRecordingHotkey
         enableMeetingRecordingHotkey = (try? c.decode(Bool.self, forKey: .enableMeetingRecordingHotkey)) ?? defaults.enableMeetingRecordingHotkey
+        sidebarToggleHotkey = (try? c.decode(HotkeyConfig.self, forKey: .sidebarToggleHotkey)) ?? defaults.sidebarToggleHotkey
         enableComputerUsePlanner = (try? c.decode(Bool.self, forKey: .enableComputerUsePlanner)) ?? defaults.enableComputerUsePlanner
         computerUsePlannerModel = SummaryModelPreset.migratedFromGPT55(
             (try? c.decode(String.self, forKey: .computerUsePlannerModel)) ?? defaults.computerUsePlannerModel

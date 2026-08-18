@@ -11,6 +11,7 @@ struct ShortcutsView: View {
     @State private var dictationShortcutMessage: String?
     @State private var computerUseShortcutMessage: String?
     @State private var meetingRecordingShortcutMessage: String?
+    @State private var sidebarToggleShortcutMessage: String?
 
     var body: some View {
         ScrollView {
@@ -19,7 +20,7 @@ struct ShortcutsView: View {
                     .font(MuesliTheme.title1())
                     .foregroundStyle(MuesliTheme.textPrimary)
 
-                Text("Choose your preferred shortcuts for dictation and computer use commands.")
+                Text("Choose your preferred shortcuts for recording and navigating Muesli.")
                     .font(MuesliTheme.body())
                     .foregroundStyle(MuesliTheme.textSecondary)
 
@@ -30,6 +31,8 @@ struct ShortcutsView: View {
                 meetingRecordingShortcutSection
 
                 doubleTapSection
+
+                sidebarToggleShortcutSection
 
                 resetButton
             }
@@ -45,6 +48,7 @@ struct ShortcutsView: View {
         case dictation
         case computerUse
         case meetingRecording
+        case sidebarToggle
     }
 
     private var dictationShortcutSection: some View {
@@ -234,6 +238,8 @@ struct ShortcutsView: View {
             return appState.config.computerUseHotkey
         case .meetingRecording:
             return appState.config.meetingRecordingHotkey
+        case .sidebarToggle:
+            return appState.config.sidebarToggleHotkey
         }
     }
 
@@ -305,6 +311,8 @@ struct ShortcutsView: View {
         switch target {
         case .meetingRecording:
             return "Press a key or modifier..."
+        case .sidebarToggle:
+            return "Press a shortcut..."
         case .dictation, .computerUse:
             return "Press a modifier key..."
         }
@@ -342,12 +350,46 @@ struct ShortcutsView: View {
         )
     }
 
+    private var sidebarToggleShortcutSection: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                Text("Toggle Sidebar")
+                    .font(MuesliTheme.headline())
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                Text("Show or hide the navigation sidebar")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+            }
+
+            Divider()
+                .background(MuesliTheme.surfaceBorder)
+
+            HStack(spacing: MuesliTheme.spacing12) {
+                hotkeyBadge(appState.config.sidebarToggleHotkey)
+                changeButton(for: .sidebarToggle)
+                Spacer()
+            }
+
+            if let sidebarToggleShortcutMessage {
+                shortcutMessage(sidebarToggleShortcutMessage)
+            }
+        }
+        .padding(MuesliTheme.spacing16)
+        .background(MuesliTheme.backgroundRaised)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+        .overlay(
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
+                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+        )
+    }
+
     private var resetButton: some View {
         Button {
             controller.resetShortcutDefaults()
             dictationShortcutMessage = nil
             computerUseShortcutMessage = nil
             meetingRecordingShortcutMessage = nil
+            sidebarToggleShortcutMessage = nil
         } label: {
             Text("Reset to Defaults")
                 .font(MuesliTheme.body())
@@ -360,6 +402,7 @@ struct ShortcutsView: View {
                 && !appState.config.enableComputerUseHotkey
                 && appState.config.meetingRecordingHotkey == .meetingRecordingDefault
                 && !appState.config.enableMeetingRecordingHotkey
+                && appState.config.sidebarToggleHotkey == .sidebarToggleDefault
                 && appState.config.hotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds
                 && appState.config.computerUseHotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds
                 && appState.config.meetingRecordingHotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultMeetingThresholdMilliseconds
@@ -380,7 +423,7 @@ struct ShortcutsView: View {
                 let mods = HotkeyConfig.supportedCombinationModifiers(from: event.modifierFlags)
                 let hasModifiers = mods.contains(.command) || mods.contains(.control)
                     || mods.contains(.option)
-                guard target == .meetingRecording,
+                guard target == .meetingRecording || target == .sidebarToggle,
                       hasModifiers,
                       HotkeyConfig.letterLabel(for: event.keyCode) != nil else {
                     return event
@@ -422,6 +465,9 @@ struct ShortcutsView: View {
             result = controller.updateComputerUseHotkey(config)
         case .meetingRecording:
             result = controller.updateMeetingRecordingHotkey(config)
+        case .sidebarToggle:
+            controller.updateConfig { $0.sidebarToggleHotkey = config }
+            result = .updated
         }
         setShortcutMessage(result.message, for: target)
         stopRecording()
@@ -442,6 +488,13 @@ struct ShortcutsView: View {
         case .meetingRecording:
             meetingRecordingShortcutMessage = message
             if message == nil { dictationShortcutMessage = nil; computerUseShortcutMessage = nil }
+        case .sidebarToggle:
+            sidebarToggleShortcutMessage = message
+            if message == nil {
+                dictationShortcutMessage = nil
+                computerUseShortcutMessage = nil
+                meetingRecordingShortcutMessage = nil
+            }
         }
     }
 

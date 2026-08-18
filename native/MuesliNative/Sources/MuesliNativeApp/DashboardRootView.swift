@@ -4,16 +4,28 @@ import MuesliCore
 struct DashboardRootView: View {
     let appState: AppState
     let controller: MuesliController
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var featureTourTargetFrames: [FeatureTourTarget: CGRect] = [:]
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             SidebarView(appState: appState, controller: controller)
+                .toolbar(removing: .sidebarToggle)
                 .navigationSplitViewColumnWidth(min: 240, ideal: 260, max: 300)
         } detail: {
             detailContent
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(MuesliTheme.backgroundBase)
+        }
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button(action: toggleSidebar) {
+                    Image(systemName: "sidebar.left")
+                }
+                .keyboardShortcut(sidebarKeyboardShortcut)
+                .help("Show or hide the sidebar (\(appState.config.sidebarToggleHotkey.displayLabel))")
+                .accessibilityLabel("Toggle Sidebar")
+            }
         }
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 900, minHeight: 600)
@@ -107,6 +119,25 @@ struct DashboardRootView: View {
                 onDismiss: { controller.dismissDiagnosticIncidentPrompt() }
             )
         }
+    }
+
+    private var sidebarKeyboardShortcut: KeyboardShortcut {
+        let configured = appState.config.sidebarToggleHotkey
+        let hotkey = configured.isCombination ? configured : .sidebarToggleDefault
+        let keyCode = hotkey.combinationKeyCode ?? HotkeyConfig.sidebarToggleDefault.combinationKeyCode ?? 11
+        let keyLabel = HotkeyConfig.letterLabel(for: keyCode) ?? "B"
+        let key = KeyEquivalent(Character(keyLabel.lowercased()))
+        let flags = hotkey.resolvedCombinationModifiers ?? [.command]
+        var modifiers: EventModifiers = []
+        if flags.contains(.command) { modifiers.insert(.command) }
+        if flags.contains(.control) { modifiers.insert(.control) }
+        if flags.contains(.option) { modifiers.insert(.option) }
+        if flags.contains(.shift) { modifiers.insert(.shift) }
+        return KeyboardShortcut(key, modifiers: modifiers)
+    }
+
+    private func toggleSidebar() {
+        columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
     }
 
     @ViewBuilder
