@@ -362,7 +362,7 @@ final class CalendarMonitor {
             "https://[a-z0-9.-]*webex\\.com/[^\\s\"<>]+/j\\.php[^\\s\"<>]*",
             "https://[a-z0-9.-]*chime\\.aws/[^\\s\"<>]+",
             "https://facetime\\.apple\\.com/join[^\\s\"<>]*",
-            "https://app\\.slack\\.com/huddle/[A-Z0-9]+/[A-Z0-9]+",
+            "https://app\\.slack\\.com/huddle/[A-Z0-9]+/[A-Z0-9]+[^\\s\"<>]*",
         ]
         return try? NSRegularExpression(pattern: "(\(patterns.joined(separator: "|")))", options: .caseInsensitive)
     }()
@@ -388,7 +388,11 @@ final class CalendarMonitor {
 
     private static func isMeetingURL(_ url: URL) -> Bool {
         guard let host = url.host?.lowercased() else { return false }
-        let meetingHosts = ["zoom.us", "meet.google.com", "teams.microsoft.com", "webex.com", "chime.aws", "facetime.apple.com", "app.slack.com"]
+        // Slack: only huddle URLs are meetings; app.slack.com/client/... etc. are not.
+        if host == "app.slack.com" {
+            return url.path.hasPrefix("/huddle/")
+        }
+        let meetingHosts = ["zoom.us", "meet.google.com", "teams.microsoft.com", "webex.com", "chime.aws", "facetime.apple.com"]
         return meetingHosts.contains(where: { host.hasSuffix($0) })
     }
 
