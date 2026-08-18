@@ -88,6 +88,30 @@ def validate(
     if not isinstance(profile_entitlements, dict):
         fail("embedded provisioning profile has no Entitlements dictionary")
 
+    profile_app_identifier_key = "com.apple.application-identifier"
+    if profile_app_identifier_key not in profile_entitlements:
+        profile_app_identifier_key = "application-identifier"
+    profile_app_identifier = string_value(
+        profile_entitlements, profile_app_identifier_key
+    )
+    if profile_app_identifier != app_identifier:
+        fail("provisioning profile application identifier does not match the signed app")
+
+    profile_team_id = string_value(
+        profile_entitlements, "com.apple.developer.team-identifier"
+    )
+    if profile_team_id != team_id:
+        fail("provisioning profile team identifier does not match the signed app")
+
+    profile_aps = profile_entitlements.get("com.apple.developer.aps-environment")
+    if profile_aps is None:
+        profile_aps = profile_entitlements.get("aps-environment")
+    if profile_aps != expected_aps:
+        fail(
+            f"provisioning profile APNs environment is {profile_aps!r}, "
+            f"expected {expected_aps!r}"
+        )
+
     profile_environments = string_list(profile_entitlements, environment_key)
     if expected_environment not in profile_environments:
         fail("provisioning profile does not permit the expected CloudKit environment")

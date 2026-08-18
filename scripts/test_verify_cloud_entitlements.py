@@ -45,6 +45,9 @@ base_entitlements = {
 }
 base_profile = {
     "Entitlements": {
+        "com.apple.application-identifier": "58W55QJ567.com.muesli.app",
+        "com.apple.developer.team-identifier": "58W55QJ567",
+        "com.apple.developer.aps-environment": "production",
         "com.apple.developer.icloud-container-environment": ["Development", "Production"],
         "com.apple.developer.icloud-container-identifiers": ["iCloud.com.mueslihq.muesli"],
     }
@@ -69,11 +72,34 @@ assert run(missing_environment, base_profile).returncode != 0
 
 wrong_profile = {
     "Entitlements": {
+        "com.apple.application-identifier": "58W55QJ567.com.muesli.app",
+        "com.apple.developer.team-identifier": "58W55QJ567",
+        "com.apple.developer.aps-environment": "production",
         "com.apple.developer.icloud-container-environment": "Development",
         "com.apple.developer.icloud-container-identifiers": ["iCloud.com.mueslihq.muesli"],
     }
 }
 assert run(base_entitlements, wrong_profile).returncode != 0
+
+for key, bad_value in (
+    ("com.apple.application-identifier", "58W55QJ567.com.example.wrong"),
+    ("com.apple.developer.team-identifier", "DIFFERENT01"),
+    ("com.apple.developer.aps-environment", "development"),
+):
+    candidate_profile = {"Entitlements": dict(base_profile["Entitlements"])}
+    candidate_profile["Entitlements"][key] = bad_value
+    result = run(base_entitlements, candidate_profile)
+    assert result.returncode != 0, (key, result.stdout, result.stderr)
+
+for missing_key in (
+    "com.apple.application-identifier",
+    "com.apple.developer.team-identifier",
+    "com.apple.developer.aps-environment",
+):
+    candidate_profile = {"Entitlements": dict(base_profile["Entitlements"])}
+    candidate_profile["Entitlements"].pop(missing_key)
+    result = run(base_entitlements, candidate_profile)
+    assert result.returncode != 0, (missing_key, result.stdout, result.stderr)
 
 stable_release = (ROOT / "scripts" / "release.sh").read_text(encoding="utf-8")
 preprod_release = (ROOT / "scripts" / "release-preprod.sh").read_text(encoding="utf-8")
