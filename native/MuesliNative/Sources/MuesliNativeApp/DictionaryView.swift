@@ -32,7 +32,9 @@ struct DictionaryView: View {
                 }
                 wordList
             }
-            .padding(MuesliTheme.spacing32)
+            .padding(.horizontal, MuesliTheme.spacing32)
+            .padding(.top, MuesliTheme.pageTop)
+            .padding(.bottom, MuesliTheme.spacing32)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(MuesliTheme.backgroundBase)
@@ -354,7 +356,9 @@ struct DictionaryView: View {
                 .foregroundStyle(MuesliTheme.textTertiary)
         }
         .frame(maxWidth: .infinity)
-        .padding(MuesliTheme.spacing32)
+        .padding(.horizontal, MuesliTheme.spacing32)
+            .padding(.top, MuesliTheme.pageTop)
+            .padding(.bottom, MuesliTheme.spacing32)
     }
 
     private var columnHeader: some View {

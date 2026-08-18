@@ -54,6 +54,10 @@ struct DictationsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            PageTitle("Dictations")
+                .padding(.horizontal, MuesliTheme.spacing24)
+                .padding(.top, MuesliTheme.pageTop)
+
             StatsHeaderView(
                 dictationStats: appState.filteredDictationStats,
                 meetingStats: appState.meetingStats,
