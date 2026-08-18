@@ -1192,7 +1192,6 @@ final class MuesliController: NSObject {
         statusBarController?.setStatus("Idle")
         statusBarController?.refresh()
         historyWindowController?.updateBackendLabel()
-        historyWindowController?.applyThemeAppearance()
         historyWindowController?.reload()
         preferencesWindowController?.refresh()
         refreshIndicatorVisibility()
@@ -1502,6 +1501,7 @@ final class MuesliController: NSObject {
         }
         dictationAudioRoutingController.selectedInputDeviceUID = config.dictationInputDeviceUID
         historyWindowController?.updateBackendLabel()
+        historyWindowController?.applyThemeAppearance()
         refreshIndicatorVisibility()
         appState.selectedBackend = selectedBackend
         appState.selectedMeetingTranscriptionBackend = selectedMeetingTranscriptionBackend
