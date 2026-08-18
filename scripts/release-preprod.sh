@@ -54,9 +54,13 @@ APPCAST_PATH="$ROOT/docs/appcast-preprod.xml"
 GENERATE_APPCAST="$(muesli_spm_artifacts_dir "$PACKAGE_DIR" "$SWIFTPM_SCRATCH_PATH")/sparkle/Sparkle/bin/generate_appcast"
 UPDATE_APPCAST_RELEASE_NOTES="$ROOT/scripts/update_appcast_release_notes.py"
 VERIFY_DIR=""
+MOUNT_POINT=""
 HOSTED_MOUNT_POINT=""
 
 cleanup() {
+  if [[ -n "$MOUNT_POINT" ]]; then
+    hdiutil detach "$MOUNT_POINT" -quiet 2>/dev/null || true
+  fi
   if [[ -n "$HOSTED_MOUNT_POINT" ]]; then
     hdiutil detach "$HOSTED_MOUNT_POINT" -quiet 2>/dev/null || true
   fi
@@ -267,6 +271,7 @@ STAPLE_RESULT=$(xcrun stapler validate "$MOUNT_POINT/${APP_NAME}.app" 2>&1)
   iCloud.com.mueslihq.muesli \
   production
 hdiutil detach "$MOUNT_POINT" -quiet 2>/dev/null
+MOUNT_POINT=""
 
 if ! echo "$SPCTL_RESULT" | grep -q "accepted"; then
   echo "  RELEASE ABORTED: App inside DMG rejected by Gatekeeper."

@@ -795,6 +795,65 @@ struct MuesliCKSyncEngineTests {
         #expect(try store.hasTextRecordsNeedingSync())
     }
 
+    @Test("unspecified migration clears in-progress meeting metadata without uploading it")
+    func matchingUnspecifiedOwnerRepairsInProgressMeetingMetadata() async throws {
+        let store = try makeStore()
+        let meetingID = try store.insertMeeting(
+            title: "Private in-progress meeting",
+            calendarEventID: nil,
+            startTime: Date().addingTimeInterval(-60),
+            endTime: Date(),
+            rawTranscript: "Keep the local transcript untouched",
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+        let local = try #require(try store.textRecordsNeedingSync().first)
+        #expect(try store.markTextRecordSynced(
+            kind: local.kind,
+            recordName: local.id,
+            changeTag: "obsolete-unspecified-tag",
+            systemFields: Data([0x04, 0x05]),
+            recordUpdatedAt: local.updatedAt
+        ))
+        try store.updateMeetingStatus(id: meetingID, status: .processing)
+
+        let owner = CKRecord.ID(recordName: "same-private-owner-in-progress")
+        let scope = MuesliCKSyncEngine.accountScope(for: owner)
+        let migration = MuesliCKSyncLegacyScopeMigration(
+            accountScopeKey: "test.unspecified.owner.in-progress",
+            stateKey: "test.unspecified.state.in-progress"
+        )
+        try store.saveCloudSyncStateData(Data(scope.utf8), forKey: migration.accountScopeKey)
+        try store.saveCloudSyncStateData(Data("obsolete-cursor".utf8), forKey: migration.stateKey)
+
+        let state = TestCKSyncPendingState()
+        let coordinator = MuesliCKSyncEngine(
+            store: store,
+            legacyAccountRecordVerifier: { _ in
+                Issue.record("An exact legacy owner match must not query authored records")
+                return []
+            },
+            legacyScopeMigration: migration
+        )
+
+        #expect(try await coordinator.handleAccountChange(currentUser: owner, state: state))
+        #expect(state.pendingRecordZoneChanges.isEmpty)
+        #expect(try store.textRecordsNeedingSync().isEmpty)
+
+        let repaired = try #require(try store.textRecordForSync(recordName: local.id))
+        #expect(repaired.text == "Keep the local transcript untouched")
+        #expect(repaired.meetingStatus == .processing)
+        #expect(repaired.cloudChangeTag == nil)
+        #expect(repaired.cloudSystemFields == nil)
+
+        try store.updateMeetingStatus(id: meetingID, status: .completed)
+        let eligible = try #require(try store.textRecordsNeedingSync().first)
+        #expect(eligible.id == local.id)
+        #expect(eligible.cloudChangeTag == nil)
+        #expect(eligible.cloudSystemFields == nil)
+    }
+
     @Test("mismatched unspecified owner remains blocked and untouched")
     func mismatchedUnspecifiedOwnerDoesNotMigrate() async throws {
         let store = try makeStore()

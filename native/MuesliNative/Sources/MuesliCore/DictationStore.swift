@@ -3643,9 +3643,11 @@ public final class DictationStore {
                 SET cloud_change_tag = NULL,
                     cloud_system_fields = NULL,
                     last_synced_at = NULL,
-                    sync_dirty = 1
+                    sync_dirty = CASE
+                        WHEN meeting_status NOT IN ('recording', 'processing') THEN 1
+                        ELSE sync_dirty
+                    END
                 WHERE cloud_record_name IS NOT NULL
-                  AND meeting_status NOT IN ('recording', 'processing')
                 """,
                 db: db
             )

@@ -63,10 +63,14 @@ HOMEBREW_CASK="${MUESLI_HOMEBREW_CASK:-muesli}"
 SKIP_HOMEBREW_CHECK="${MUESLI_SKIP_HOMEBREW_CHECK:-0}"
 RELEASE_PR_MODE="${MUESLI_RELEASE_PR_MODE:-0}"
 VERIFY_DIR=""
+MOUNT_POINT=""
 HOSTED_MOUNT_POINT=""
 HOMEBREW_CHECK_STATUS="skipped"
 
 cleanup() {
+  if [[ -n "$MOUNT_POINT" ]]; then
+    hdiutil detach "$MOUNT_POINT" -quiet 2>/dev/null || true
+  fi
   if [[ -n "$HOSTED_MOUNT_POINT" ]]; then
     hdiutil detach "$HOSTED_MOUNT_POINT" -quiet 2>/dev/null || true
   fi
@@ -323,6 +327,7 @@ echo "  $STAPLE_RESULT"
   production
 
 hdiutil detach "$MOUNT_POINT" -quiet 2>/dev/null
+MOUNT_POINT=""
 
 if ! echo "$SPCTL_RESULT" | grep -q "accepted"; then
   echo ""
@@ -458,6 +463,7 @@ echo "  $HOSTED_APP_STAPLE_RESULT"
   production
 
 hdiutil detach "$HOSTED_MOUNT_POINT" -quiet 2>/dev/null
+HOSTED_MOUNT_POINT=""
 
 if ! echo "$HOSTED_APP_SPCTL_RESULT" | grep -q "accepted"; then
   echo ""
