@@ -186,6 +186,7 @@ PREPROD_BUILD_ENV=(
   MUESLI_TELEMETRY_CHANNEL="preprod"
   MUESLI_SIGN_IDENTITY="$SIGN_IDENTITY"
   MUESLI_PROVISIONING_PROFILE="$PROVISIONING_PROFILE"
+  MUESLI_ICLOUD_CONTAINER_ENVIRONMENT="Production"
 )
 echo "  Bundle ID: $BUNDLE_ID"
 echo "  Profile:   $PROVISIONING_PROFILE"
@@ -259,6 +260,12 @@ fi
 
 SPCTL_RESULT=$(spctl -a -vv "$MOUNT_POINT/${APP_NAME}.app" 2>&1)
 STAPLE_RESULT=$(xcrun stapler validate "$MOUNT_POINT/${APP_NAME}.app" 2>&1)
+"$ROOT/scripts/verify_signed_cloud_entitlements.sh" \
+  "$MOUNT_POINT/${APP_NAME}.app" \
+  Production \
+  "$BUNDLE_ID" \
+  iCloud.com.mueslihq.muesli \
+  production
 hdiutil detach "$MOUNT_POINT" -quiet 2>/dev/null
 
 if ! echo "$SPCTL_RESULT" | grep -q "accepted"; then
@@ -338,6 +345,12 @@ fi
 
 HOSTED_MOUNT_POINT=$(hdiutil attach "$HOSTED_DMG" -nobrowse 2>&1 | grep "/Volumes" | awk -F'\t' '{print $NF}')
 HOSTED_APP_SPCTL=$(spctl -a -vv "$HOSTED_MOUNT_POINT/${APP_NAME}.app" 2>&1)
+"$ROOT/scripts/verify_signed_cloud_entitlements.sh" \
+  "$HOSTED_MOUNT_POINT/${APP_NAME}.app" \
+  Production \
+  "$BUNDLE_ID" \
+  iCloud.com.mueslihq.muesli \
+  production
 hdiutil detach "$HOSTED_MOUNT_POINT" -quiet 2>/dev/null
 HOSTED_MOUNT_POINT=""
 

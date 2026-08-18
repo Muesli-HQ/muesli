@@ -430,22 +430,43 @@ final class MuesliICloudSyncEngine {
     static var hasRequiredEntitlement: Bool {
         guard
             let task = SecTaskCreateFromSelf(nil),
-            let value = SecTaskCopyValueForEntitlement(
+            let containerValue = SecTaskCopyValueForEntitlement(
                 task,
                 "com.apple.developer.icloud-container-identifiers" as CFString,
                 nil
-            )
+            ),
+            let environmentValue = SecTaskCopyValueForEntitlement(
+                task,
+                "com.apple.developer.icloud-container-environment" as CFString,
+                nil
+            ) as? String
         else {
             return false
         }
 
-        if let containers = value as? [String] {
-            return containers.contains(Schema.containerIdentifier)
+        return hasRequiredCloudEntitlements(
+            containers: containerValue,
+            environment: environmentValue
+        )
+    }
+
+    static func hasRequiredCloudEntitlements(containers: Any, environment: String) -> Bool {
+        let hasContainer: Bool
+        if let containers = containers as? [String] {
+            hasContainer = containers.contains(Schema.containerIdentifier)
+        } else if let container = containers as? String {
+            hasContainer = container == Schema.containerIdentifier
+        } else {
+            hasContainer = false
         }
-        if let container = value as? String {
-            return container == Schema.containerIdentifier
+
+        let normalizedEnvironment = environment
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard normalizedEnvironment == "development" || normalizedEnvironment == "production" else {
+            return false
         }
-        return false
+        return hasContainer
     }
 
     static var cloudKitEnvironmentKeyComponent: String {

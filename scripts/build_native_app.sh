@@ -18,7 +18,7 @@ APP_SUPPORT_DIR_NAME="${MUESLI_SUPPORT_DIR_NAME:-$APP_DISPLAY_NAME}"
 BUNDLE_ID="${MUESLI_BUNDLE_ID:-com.muesli.app}"
 TELEMETRYDECK_APP_ID="${MUESLI_TELEMETRYDECK_APP_ID:-}"
 TELEMETRY_CHANNEL="${MUESLI_TELEMETRY_CHANNEL:-unconfigured}"
-DEFAULT_APP_VERSION="0.8.2"
+DEFAULT_APP_VERSION="0.8.3"
 APP_VERSION="${MUESLI_BUILD_VERSION:-$DEFAULT_APP_VERSION}"
 APP_BUNDLE_VERSION="${MUESLI_BUNDLE_VERSION:-$APP_VERSION}"
 APP_SHORT_VERSION="${MUESLI_SHORT_VERSION:-$APP_VERSION}"
@@ -369,6 +369,7 @@ if [[ "$SKIP_SIGN" != "1" ]]; then
   TEMP_ENTITLEMENTS=""
   APS_ENVIRONMENT="${MUESLI_APS_ENVIRONMENT:-}"
   ICLOUD_CONTAINER_ENVIRONMENT="${MUESLI_ICLOUD_CONTAINER_ENVIRONMENT:-}"
+  ICLOUD_CONTAINER_ID="${MUESLI_ICLOUD_CONTAINER_ID:-iCloud.com.mueslihq.muesli}"
   PROFILE_PLIST=""
   SIGN_TEMP_FILES=()
   cleanup_sign_temp_files() {
@@ -406,6 +407,13 @@ if [[ "$SKIP_SIGN" != "1" ]]; then
         APS_ENVIRONMENT="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:aps-environment' "$PROFILE_PLIST" 2>/dev/null || true)"
       fi
     fi
+
+    if /usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.icloud-container-environment' "$PROFILE_PLIST" >/dev/null 2>&1 \
+      && [[ -z "$ICLOUD_CONTAINER_ENVIRONMENT" ]]; then
+      echo "ERROR: CloudKit provisioning profiles require an explicit MUESLI_ICLOUD_CONTAINER_ENVIRONMENT." >&2
+      echo "Set it to Development or Production; signed builds may not silently use an unspecified environment." >&2
+      exit 1
+    fi
   fi
 
   if [[ -n "$APS_ENVIRONMENT" || -n "$PROFILE_PLIST" ]]; then
@@ -437,6 +445,7 @@ if [[ "$SKIP_SIGN" != "1" ]]; then
           exit 1
           ;;
       esac
+      ICLOUD_CONTAINER_ENVIRONMENT="$value"
       /usr/libexec/PlistBuddy -c "Delete :$key" "$TEMP_ENTITLEMENTS" >/dev/null 2>&1 || true
       /usr/libexec/PlistBuddy -c "Add :$key string $value" "$TEMP_ENTITLEMENTS"
       echo "Using iCloud entitlement: $key=$value"
@@ -476,6 +485,18 @@ if [[ "$SKIP_SIGN" != "1" ]]; then
     exit 1
   fi
   echo "  Deep signature valid."
+  if [[ -n "$ICLOUD_CONTAINER_ENVIRONMENT" ]]; then
+    if [[ -z "$APS_ENVIRONMENT" ]]; then
+      echo "ERROR: CloudKit signed builds require an APNs environment from the profile or MUESLI_APS_ENVIRONMENT." >&2
+      exit 1
+    fi
+    "$ROOT/scripts/verify_signed_cloud_entitlements.sh" \
+      "$APP_DIR" \
+      "$ICLOUD_CONTAINER_ENVIRONMENT" \
+      "$BUNDLE_ID" \
+      "$ICLOUD_CONTAINER_ID" \
+      "$APS_ENVIRONMENT"
+  fi
 else
   # No Developer ID certificate: ad-hoc sign for local dev instead of leaving the
   # bundle with SwiftPM's incoherent per-binary signature. An ad-hoc *bundle* signature

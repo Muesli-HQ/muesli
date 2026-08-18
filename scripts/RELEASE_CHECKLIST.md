@@ -59,6 +59,8 @@ If launch fails with `No matching profile found`, the embedded profile, bundle I
   - Must show CloudKit container `iCloud.com.mueslihq.muesli`
   - Must show CloudKit environment `Production`
   - Must show APNs environment `production` when using the production Developer ID CloudKit profile
+- [ ] Run `scripts/verify_signed_cloud_entitlements.sh` against the built app, the app inside the local DMG, and the app inside the re-downloaded GitHub asset.
+- [ ] Stable and pre-production builds explicitly set `MUESLI_ICLOUD_CONTAINER_ENVIRONMENT=Production`; omission must fail closed.
 
 ## Notarize & Staple (CRITICAL ORDER)
 

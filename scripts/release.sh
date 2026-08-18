@@ -116,12 +116,18 @@ assert_release_branch_contains_origin_main() {
 }
 
 if [[ "$RELEASE_PR_MODE" == "1" ]]; then
-  if [[ -z "$CURRENT_BRANCH" || "$CURRENT_BRANCH" == "main" ]]; then
-    echo "ERROR: MUESLI_RELEASE_PR_MODE=1 requires a dedicated release branch." >&2
-    exit 1
-  fi
-  assert_release_branch_contains_origin_main
-  echo "Release PR mode enabled: metadata will be pushed to ${CURRENT_BRANCH}, not main."
+  echo "ERROR: MUESLI_RELEASE_PR_MODE is no longer allowed to publish stable artifacts." >&2
+  echo "Merge the release code and version PR first, then publish from the current origin/main." >&2
+  exit 1
+fi
+if [[ "$CURRENT_BRANCH" != "main" ]]; then
+  echo "ERROR: Stable releases must be published from main after the release PR is merged." >&2
+  exit 1
+fi
+assert_release_branch_contains_origin_main
+if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
+  echo "ERROR: main must exactly match origin/main before publishing a stable release." >&2
+  exit 1
 fi
 
 if [[ ! -f "$UPDATE_APPCAST_RELEASE_NOTES" ]]; then
@@ -226,6 +232,7 @@ RELEASE_BUILD_ENV=(
   MUESLI_INSTALL_DIR="$INSTALL_DIR"
   MUESLI_PROVISIONING_PROFILE="$PROVISIONING_PROFILE"
   MUESLI_SIGN_IDENTITY="$SIGN_IDENTITY"
+  MUESLI_ICLOUD_CONTAINER_ENVIRONMENT="Production"
   MUESLI_TELEMETRYDECK_APP_ID="$MUESLI_TELEMETRYDECK_PRODUCTION_APP_ID"
   MUESLI_TELEMETRY_CHANNEL="production"
   "${BUILD_ENV[@]}"
@@ -307,6 +314,13 @@ echo "  $SPCTL_RESULT"
 
 STAPLE_RESULT=$(xcrun stapler validate "$MOUNT_POINT/Muesli.app" 2>&1)
 echo "  $STAPLE_RESULT"
+
+"$ROOT/scripts/verify_signed_cloud_entitlements.sh" \
+  "$MOUNT_POINT/Muesli.app" \
+  Production \
+  com.muesli.app \
+  iCloud.com.mueslihq.muesli \
+  production
 
 hdiutil detach "$MOUNT_POINT" -quiet 2>/dev/null
 
@@ -435,6 +449,13 @@ echo "  $HOSTED_APP_SPCTL_RESULT"
 
 HOSTED_APP_STAPLE_RESULT=$(xcrun stapler validate "$HOSTED_MOUNT_POINT/Muesli.app" 2>&1)
 echo "  $HOSTED_APP_STAPLE_RESULT"
+
+"$ROOT/scripts/verify_signed_cloud_entitlements.sh" \
+  "$HOSTED_MOUNT_POINT/Muesli.app" \
+  Production \
+  com.muesli.app \
+  iCloud.com.mueslihq.muesli \
+  production
 
 hdiutil detach "$HOSTED_MOUNT_POINT" -quiet 2>/dev/null
 

@@ -187,6 +187,9 @@ jobs:
       - name: Verify Sparkle update metadata
         run: ./scripts/verify_update_flow.sh --skip-dmg
 
+      - name: Test CloudKit release entitlement contract
+        run: python3 ./scripts/test_verify_cloud_entitlements.py
+
   # Gate job — always runs, always reports a status
   # This is the only required check in branch protection
   ci-gate:
