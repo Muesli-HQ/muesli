@@ -35,6 +35,17 @@ if [[ "$CODESIGN_TIMESTAMP" == "none" ]]; then
   CODESIGN_TIMESTAMP="--timestamp=none"
 fi
 BUNDLE_THIN_ARCH="${MUESLI_BUNDLE_THIN_ARCH:-arm64}"
+# Compile path switch: xcodebuild against native/MuesliXcode (1) vs plain
+# `swift build` (0). Only the xcodebuild path generates
+# Contents/Resources/Metadata.appintents (App Intents metadata extraction
+# runs for real Xcode Application targets, not SwiftPM executables), so all
+# shipped builds — release.sh, release-preprod.sh, release-alpha.sh — pin
+# this to 1, and dev-test.sh defaults to 1. The script-level default stays 0
+# so bare contributor invocations don't require xcodegen; set
+# MUESLI_USE_XCODE_BUILD=1 explicitly when testing Shortcuts by hand.
+USE_XCODE_BUILD="${MUESLI_USE_XCODE_BUILD:-0}"
+XCODE_PROJECT_DIR="$ROOT/native/MuesliXcode"
+XCODE_PRODUCT_NAME="Muesli"
 
 thin_macho_to_bundle_arch() {
   local binary="$1"
@@ -89,14 +100,62 @@ fi
 
 mkdir -p "$DIST_DIR"
 
-set +e
-swift build "${SWIFT_BUILD_ARGS[@]}" --product "$APP_BINARY"
-status=$?
-set -e
+XCODE_APP_DIR=""
+if [[ "$USE_XCODE_BUILD" == "1" ]]; then
+  if ! command -v xcodegen >/dev/null 2>&1; then
+    echo "MUESLI_USE_XCODE_BUILD=1 requires xcodegen. Install with: brew install xcodegen" >&2
+    exit 1
+  fi
 
-if [[ $status -ne 0 ]]; then
-  echo "Swift build failed." >&2
-  exit $status
+  XCODE_CONFIG="Debug"
+  [[ "$BUILD_CONFIG" == "release" ]] && XCODE_CONFIG="Release"
+
+  # Scope DerivedData like the SwiftPM scratch path: per-worktree for debug
+  # builds and per-app-name so concurrent dev lanes (MuesliDevA/B/C) and the
+  # production build never share an xcodebuild cache directory.
+  if [[ "$BUILD_CONFIG" == "release" ]]; then
+    XCODE_SCRATCH_CHANNEL="release"
+  else
+    XCODE_SCRATCH_CHANNEL="$(muesli_worktree_spm_scratch_channel dev "$ROOT")"
+  fi
+  XCODE_DERIVED_DATA="${MUESLI_XCODEBUILD_DERIVED_DATA:-$(muesli_default_spm_cache_root)/$XCODE_SCRATCH_CHANNEL/xcodebuild/$APP_NAME-$BUILD_CONFIG}"
+  mkdir -p "$XCODE_DERIVED_DATA"
+
+  echo "Generating Xcode project (xcodegen)..."
+  (cd "$XCODE_PROJECT_DIR" && xcodegen generate)
+
+  echo "Building app target via xcodebuild ($XCODE_CONFIG)..."
+  set +e
+  xcodebuild build \
+    -project "$XCODE_PROJECT_DIR/MuesliXcode.xcodeproj" \
+    -scheme Muesli \
+    -configuration "$XCODE_CONFIG" \
+    -destination 'platform=macOS' \
+    -skipMacroValidation \
+    -derivedDataPath "$XCODE_DERIVED_DATA"
+  status=$?
+  set -e
+
+  if [[ $status -ne 0 ]]; then
+    echo "xcodebuild failed." >&2
+    exit $status
+  fi
+
+  XCODE_APP_DIR="$XCODE_DERIVED_DATA/Build/Products/$XCODE_CONFIG/$XCODE_PRODUCT_NAME.app"
+  if [[ ! -d "$XCODE_APP_DIR" ]]; then
+    echo "xcodebuild reported success but $XCODE_APP_DIR is missing." >&2
+    exit 1
+  fi
+else
+  set +e
+  swift build "${SWIFT_BUILD_ARGS[@]}" --product "$APP_BINARY"
+  status=$?
+  set -e
+
+  if [[ $status -ne 0 ]]; then
+    echo "Swift build failed." >&2
+    exit $status
+  fi
 fi
 
 set +e
@@ -110,37 +169,76 @@ if [[ $status -ne 0 ]]; then
 fi
 
 BIN_DIR="$(swift build "${SWIFT_BUILD_ARGS[@]}" --show-bin-path)"
-APP_BIN="$BIN_DIR/$APP_BINARY"
 CLI_BIN="$BIN_DIR/$CLI_BINARY"
+if [[ "$USE_XCODE_BUILD" == "1" ]]; then
+  APP_BIN="$XCODE_APP_DIR/Contents/MacOS/$XCODE_PRODUCT_NAME"
+else
+  APP_BIN="$BIN_DIR/$APP_BINARY"
+fi
 
 rm -rf "$STAGED_APP_DIR"
-mkdir -p "$STAGED_APP_DIR/Contents/MacOS" "$STAGED_APP_DIR/Contents/Resources"
+mkdir -p "$STAGED_APP_DIR/Contents/MacOS" "$STAGED_APP_DIR/Contents/Resources" "$STAGED_APP_DIR/Contents/Frameworks"
 
 cp "$APP_BIN" "$STAGED_APP_DIR/Contents/MacOS/$APP_EXECUTABLE_NAME"
 chmod +x "$STAGED_APP_DIR/Contents/MacOS/$APP_EXECUTABLE_NAME"
 cp "$CLI_BIN" "$STAGED_APP_DIR/Contents/MacOS/$CLI_BINARY"
 chmod +x "$STAGED_APP_DIR/Contents/MacOS/$CLI_BINARY"
 
-# Bundle SwiftPM-linked frameworks (rpath is @loader_path, so they go next to the binary)
-for framework in "$BIN_DIR"/*.framework; do
-  [[ -d "$framework" ]] || continue
-  ditto "$framework" "$STAGED_APP_DIR/Contents/MacOS/$(basename "$framework")"
-done
+# In xcodebuild mode, frameworks/dylibs come from $XCODE_APP_DIR/Contents/Frameworks
+# below instead — $BIN_DIR is SwiftPM's shared scratch path and may hold stale
+# artifacts from an earlier non-xcodebuild build, which would otherwise get
+# duplicated alongside the fresh xcodebuild output.
+if [[ "$USE_XCODE_BUILD" != "1" ]]; then
+  # Bundle SwiftPM-linked frameworks (rpath is @loader_path, so they go next to the binary)
+  for framework in "$BIN_DIR"/*.framework; do
+    [[ -d "$framework" ]] || continue
+    ditto "$framework" "$STAGED_APP_DIR/Contents/MacOS/$(basename "$framework")"
+  done
 
-# Bundle SwiftPM-linked loose dynamic libraries, including binary targets that
-# ship as dylibs instead of frameworks.
-for dylib in "$BIN_DIR"/*.dylib; do
-  [[ -f "$dylib" ]] || continue
-  target="$STAGED_APP_DIR/Contents/MacOS/$(basename "$dylib")"
-  cp -RL "$dylib" "$target"
-  thin_macho_to_bundle_arch "$target"
-done
+  # Bundle SwiftPM-linked loose dynamic libraries, including binary targets that
+  # ship as dylibs instead of frameworks.
+  for dylib in "$BIN_DIR"/*.dylib; do
+    [[ -f "$dylib" ]] || continue
+    target="$STAGED_APP_DIR/Contents/MacOS/$(basename "$dylib")"
+    cp -RL "$dylib" "$target"
+    thin_macho_to_bundle_arch "$target"
+  done
+fi
 
-# Bundle SPM resource bundles (CoreML models, privacy manifests, etc.)
-for bundle in "$BIN_DIR"/*.bundle; do
-  [[ -d "$bundle" ]] || continue
-  ditto "$bundle" "$STAGED_APP_DIR/Contents/Resources/$(basename "$bundle")"
-done
+# Bundle SPM resource bundles (CoreML models, privacy manifests, etc.). In
+# xcodebuild mode these come from $XCODE_APP_DIR below instead, for the same
+# staleness reason as the frameworks/dylibs above.
+if [[ "$USE_XCODE_BUILD" != "1" ]]; then
+  for bundle in "$BIN_DIR"/*.bundle; do
+    [[ -d "$bundle" ]] || continue
+    ditto "$bundle" "$STAGED_APP_DIR/Contents/Resources/$(basename "$bundle")"
+  done
+fi
+
+if [[ "$USE_XCODE_BUILD" == "1" ]]; then
+  # xcodebuild embeds package-product frameworks/dylibs in Contents/Frameworks
+  # (not the SwiftPM-style loose Contents/MacOS layout above); project.yml
+  # sets LD_RUNPATH_SEARCH_PATHS to include both locations so the binary
+  # finds them either way.
+  if [[ -d "$XCODE_APP_DIR/Contents/Frameworks" ]]; then
+    ditto "$XCODE_APP_DIR/Contents/Frameworks" "$STAGED_APP_DIR/Contents/Frameworks"
+    while IFS= read -r -d '' binary; do
+      thin_macho_to_bundle_arch "$binary"
+    done < <(find "$STAGED_APP_DIR/Contents/Frameworks" -type f -print0)
+  fi
+  for bundle in "$XCODE_APP_DIR/Contents/Resources"/*.bundle; do
+    [[ -d "$bundle" ]] || continue
+    ditto "$bundle" "$STAGED_APP_DIR/Contents/Resources/$(basename "$bundle")"
+  done
+  # App Intents metadata: what makes the app's Shortcuts/Siri/Spotlight
+  # actions discoverable. Only produced by a real Xcode Application target.
+  if [[ -d "$XCODE_APP_DIR/Contents/Resources/Metadata.appintents" ]]; then
+    ditto "$XCODE_APP_DIR/Contents/Resources/Metadata.appintents" "$STAGED_APP_DIR/Contents/Resources/Metadata.appintents"
+  else
+    echo "xcodebuild succeeded but Metadata.appintents was not produced." >&2
+    exit 1
+  fi
+fi
 
 # Bundle LocalVQE runtime (default meeting AEC). The .gguf model is committed;
 # the shared libraries under LocalVQE/lib/ are gitignored and produced by
@@ -326,7 +424,7 @@ if [[ "$SKIP_SIGN" != "1" ]]; then
   fi
 
   # Sign all bundled frameworks, including nested Sparkle executables.
-  find "$APP_DIR/Contents/MacOS" -maxdepth 1 -name "*.framework" -type d | while read -r framework; do
+  find "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Frameworks" -maxdepth 1 -name "*.framework" -type d | while read -r framework; do
     if [[ "$(basename "$framework")" == "Sparkle.framework" ]]; then
       find "$framework" -type f -perm +111 | while read -r binary; do
         if file "$binary" | grep -q "Mach-O"; then
@@ -351,7 +449,7 @@ if [[ "$SKIP_SIGN" != "1" ]]; then
 
   # Sign loose native runtime libraries. Hardened runtime library validation
   # requires these to have the same Team ID as the app.
-  find "$APP_DIR/Contents/MacOS" -maxdepth 1 \( -name "*.dylib" -o -name "*.so" \) -type f | while read -r library; do
+  find "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Frameworks" -maxdepth 1 \( -name "*.dylib" -o -name "*.so" \) -type f | while read -r library; do
     if file "$library" | grep -q "Mach-O"; then
       codesign --force --options runtime "$CODESIGN_TIMESTAMP" \
         --sign "$SIGN_IDENTITY" \
@@ -523,7 +621,7 @@ else
   fi
   ENTITLEMENTS="${MUESLI_ENTITLEMENTS:-$ROOT/scripts/Muesli.entitlements}"
 
-  find "$APP_DIR/Contents/MacOS" -maxdepth 1 -name "*.framework" -type d | while read -r framework; do
+  find "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Frameworks" -maxdepth 1 -name "*.framework" -type d | while read -r framework; do
     # Sign every nested standalone Mach-O (e.g. Sparkle's Versions/B/Autoupdate),
     # then nested .xpc/.app bundles, then the framework itself — mirroring the
     # Developer-ID path so `codesign --verify --deep --strict` cannot fail on a
@@ -539,7 +637,7 @@ else
     codesign --force --sign "$LOCAL_SIGN_IDENTITY" "$framework"
   done
 
-  find "$APP_DIR/Contents/MacOS" -maxdepth 1 \( -name "*.dylib" -o -name "*.so" \) -type f | while read -r library; do
+  find "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Frameworks" -maxdepth 1 \( -name "*.dylib" -o -name "*.so" \) -type f | while read -r library; do
     if file "$library" | grep -q "Mach-O"; then
       codesign --force --sign "$LOCAL_SIGN_IDENTITY" "$library"
     fi
