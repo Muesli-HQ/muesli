@@ -44,6 +44,9 @@ if ! muesli_spm_scratch_disabled; then
   SWIFTPM_SCRATCH_PATH="$(muesli_resolve_spm_scratch_path preprod)"
   SWIFT_TEST_ARGS+=(--scratch-path "$SWIFTPM_SCRATCH_PATH")
   BUILD_ENV+=(MUESLI_SWIFTPM_SCRATCH_PATH="$SWIFTPM_SCRATCH_PATH")
+  # Keep the xcodebuild cache under the same scratch root so an isolated
+  # MUESLI_SWIFTPM_SCRATCH_PATH also isolates concurrent DerivedData.
+  BUILD_ENV+=(MUESLI_XCODEBUILD_DERIVED_DATA="$SWIFTPM_SCRATCH_PATH/xcodebuild")
 else
   BUILD_ENV+=(MUESLI_DISABLE_SWIFTPM_SCRATCH_PATH=1)
 fi
