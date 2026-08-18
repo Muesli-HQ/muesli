@@ -15,7 +15,7 @@ set -euo pipefail
 #   5. Verify the local DMG and the app inside it
 #   6. Create GitHub release and upload DMG
 #   7. Re-download the hosted DMG from GitHub Releases and verify that exact file
-#   8. Update downstream release surfaces from the verified hosted DMG:
+#   8. Open a PR for downstream release surfaces from the verified hosted DMG:
 #      - GitHub Pages appcast + landing-page metadata
 #      - Official Homebrew cask livecheck/autobump verification
 #
@@ -63,10 +63,14 @@ HOMEBREW_CASK="${MUESLI_HOMEBREW_CASK:-muesli}"
 SKIP_HOMEBREW_CHECK="${MUESLI_SKIP_HOMEBREW_CHECK:-0}"
 RELEASE_PR_MODE="${MUESLI_RELEASE_PR_MODE:-0}"
 VERIFY_DIR=""
+MOUNT_POINT=""
 HOSTED_MOUNT_POINT=""
 HOMEBREW_CHECK_STATUS="skipped"
 
 cleanup() {
+  if [[ -n "$MOUNT_POINT" ]]; then
+    hdiutil detach "$MOUNT_POINT" -quiet 2>/dev/null || true
+  fi
   if [[ -n "$HOSTED_MOUNT_POINT" ]]; then
     hdiutil detach "$HOSTED_MOUNT_POINT" -quiet 2>/dev/null || true
   fi
@@ -116,12 +120,18 @@ assert_release_branch_contains_origin_main() {
 }
 
 if [[ "$RELEASE_PR_MODE" == "1" ]]; then
-  if [[ -z "$CURRENT_BRANCH" || "$CURRENT_BRANCH" == "main" ]]; then
-    echo "ERROR: MUESLI_RELEASE_PR_MODE=1 requires a dedicated release branch." >&2
-    exit 1
-  fi
-  assert_release_branch_contains_origin_main
-  echo "Release PR mode enabled: metadata will be pushed to ${CURRENT_BRANCH}, not main."
+  echo "ERROR: MUESLI_RELEASE_PR_MODE is no longer allowed to publish stable artifacts." >&2
+  echo "Merge the release code and version PR first, then publish from the current origin/main." >&2
+  exit 1
+fi
+if [[ "$CURRENT_BRANCH" != "main" ]]; then
+  echo "ERROR: Stable releases must be published from main after the release PR is merged." >&2
+  exit 1
+fi
+assert_release_branch_contains_origin_main
+if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
+  echo "ERROR: main must exactly match origin/main before publishing a stable release." >&2
+  exit 1
 fi
 
 if [[ ! -f "$UPDATE_APPCAST_RELEASE_NOTES" ]]; then
@@ -148,6 +158,7 @@ fi
 DOWNLOAD_URL="https://github.com/Muesli-HQ/muesli/releases/download/v${VERSION}/Muesli-${VERSION}.dmg"
 TAG="v${VERSION}"
 RELEASE_TITLE="Muesli ${VERSION}"
+RELEASE_METADATA_BRANCH="${MUESLI_RELEASE_METADATA_BRANCH:-codex/release-${VERSION}-appcast}"
 DEFAULT_RELEASE_NOTES_FILE="$ROOT/docs/release-notes/${VERSION}.md"
 RELEASE_NOTES_FILE="${MUESLI_RELEASE_NOTES_FILE:-$DEFAULT_RELEASE_NOTES_FILE}"
 RELEASE_NOTES=""
@@ -178,6 +189,19 @@ Signed, notarized, and stapled by Apple.
 EOF
 )"
   RELEASE_NOTES_ARGS=(--notes "$RELEASE_NOTES")
+fi
+
+if ! git check-ref-format --branch "$RELEASE_METADATA_BRANCH" >/dev/null 2>&1; then
+  echo "ERROR: Invalid release metadata branch: $RELEASE_METADATA_BRANCH" >&2
+  exit 1
+fi
+if git show-ref --verify --quiet "refs/heads/${RELEASE_METADATA_BRANCH}"; then
+  echo "ERROR: Local release metadata branch already exists: $RELEASE_METADATA_BRANCH" >&2
+  exit 1
+fi
+if git ls-remote --exit-code --heads origin "$RELEASE_METADATA_BRANCH" >/dev/null 2>&1; then
+  echo "ERROR: Remote release metadata branch already exists: $RELEASE_METADATA_BRANCH" >&2
+  exit 1
 fi
 
 verify_homebrew_autobump() {
@@ -226,6 +250,7 @@ RELEASE_BUILD_ENV=(
   MUESLI_INSTALL_DIR="$INSTALL_DIR"
   MUESLI_PROVISIONING_PROFILE="$PROVISIONING_PROFILE"
   MUESLI_SIGN_IDENTITY="$SIGN_IDENTITY"
+  MUESLI_ICLOUD_CONTAINER_ENVIRONMENT="Production"
   MUESLI_TELEMETRYDECK_APP_ID="$MUESLI_TELEMETRYDECK_PRODUCTION_APP_ID"
   MUESLI_TELEMETRY_CHANNEL="production"
   "${BUILD_ENV[@]}"
@@ -308,7 +333,15 @@ echo "  $SPCTL_RESULT"
 STAPLE_RESULT=$(xcrun stapler validate "$MOUNT_POINT/Muesli.app" 2>&1)
 echo "  $STAPLE_RESULT"
 
+"$ROOT/scripts/verify_signed_cloud_entitlements.sh" \
+  "$MOUNT_POINT/Muesli.app" \
+  Production \
+  com.muesli.app \
+  iCloud.com.mueslihq.muesli \
+  production
+
 hdiutil detach "$MOUNT_POINT" -quiet 2>/dev/null
+MOUNT_POINT=""
 
 if ! echo "$SPCTL_RESULT" | grep -q "accepted"; then
   echo ""
@@ -436,7 +469,15 @@ echo "  $HOSTED_APP_SPCTL_RESULT"
 HOSTED_APP_STAPLE_RESULT=$(xcrun stapler validate "$HOSTED_MOUNT_POINT/Muesli.app" 2>&1)
 echo "  $HOSTED_APP_STAPLE_RESULT"
 
+"$ROOT/scripts/verify_signed_cloud_entitlements.sh" \
+  "$HOSTED_MOUNT_POINT/Muesli.app" \
+  Production \
+  com.muesli.app \
+  iCloud.com.mueslihq.muesli \
+  production
+
 hdiutil detach "$HOSTED_MOUNT_POINT" -quiet 2>/dev/null
+HOSTED_MOUNT_POINT=""
 
 if ! echo "$HOSTED_APP_SPCTL_RESULT" | grep -q "accepted"; then
   echo ""
@@ -460,8 +501,8 @@ gh release edit "$TAG" \
 RELEASE_URL=$(gh release view "$TAG" --json url -q .url)
 echo "  Release published: $RELEASE_URL"
 
-# --- Step 12: Update appcast and landing-page links after release publication ---
-echo "[12/13] Updating appcast and release metadata..."
+# --- Step 12: Open an appcast/landing metadata PR after release publication ---
+echo "[12/13] Preparing appcast and release metadata PR..."
 GENERATED_APPCAST="$VERIFY_DIR/generated-appcast.xml"
 "$GENERATE_APPCAST" "$OUTPUT_DIR" -o "$GENERATED_APPCAST"
 if [[ "$RELEASE_NOTES_FROM_FILE" == "1" ]]; then
@@ -496,16 +537,18 @@ echo "  Verifying Sparkle update flow metadata..."
 
 git add docs/appcast.xml docs/index.html docs/llms.txt
 if git diff --cached --quiet; then
-  echo "  No docs changes to commit."
+  echo "ERROR: Release metadata did not change for v${VERSION}; refusing to publish an appcast-less release." >&2
+  exit 1
 else
-  git commit -m "Update release metadata for v${VERSION}"
-  if [[ "$RELEASE_PR_MODE" == "1" ]]; then
-    git push origin HEAD
-    echo "  Pushed appcast and landing-page updates to ${CURRENT_BRANCH} for review."
-  else
-    git push origin main
-    echo "  Pushed appcast and landing-page updates to main."
-  fi
+  git switch -c "$RELEASE_METADATA_BRANCH"
+  git commit --signoff -m "Update release metadata for v${VERSION}"
+  git push -u origin "$RELEASE_METADATA_BRANCH"
+  RELEASE_METADATA_PR_URL=$(gh pr create \
+    --base main \
+    --head "$RELEASE_METADATA_BRANCH" \
+    --title "Update release metadata for v${VERSION}" \
+    --body "Publishes the verified v${VERSION} Sparkle appcast entry and aligns the landing-page download metadata with the released GitHub DMG. The public appcast remains unchanged until this PR is reviewed and merged.")
+  echo "  Release metadata PR: $RELEASE_METADATA_PR_URL"
 fi
 
 # --- Step 13: Verify the official Homebrew cask can see the new release ---
@@ -518,9 +561,7 @@ echo "  Version: ${VERSION}"
 echo "  DMG: $DMG_PATH"
 echo "  Release: $RELEASE_URL"
 echo "  Hosted asset verified."
-if [[ "$RELEASE_PR_MODE" == "1" ]]; then
-  echo "  Production appcast publication is pending merge of ${CURRENT_BRANCH}."
-fi
+echo "  Production appcast publication is pending merge of $RELEASE_METADATA_PR_URL."
 if [[ "$HOMEBREW_CHECK_STATUS" == "verified" ]]; then
   echo "  Homebrew cask livecheck verified for ${HOMEBREW_CASK}."
   echo "  Watch Homebrew/homebrew-cask for the BrewTestBot autobump PR."

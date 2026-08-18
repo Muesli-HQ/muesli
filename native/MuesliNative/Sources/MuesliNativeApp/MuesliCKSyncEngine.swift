@@ -108,6 +108,11 @@ enum MuesliCKSyncError: Error {
     case accountChanged
 }
 
+struct MuesliCKSyncLegacyScopeMigration: Sendable, Equatable {
+    let accountScopeKey: String
+    let stateKey: String
+}
+
 /// Owns the single CKSyncEngine instance for Muesli's private text-record zone.
 ///
 /// SQLite's `sync_dirty` flags remain the durable outbox. Before every send we
@@ -120,12 +125,22 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
     static var accountScopeKey: String {
         "cksyncengine.private.MuesliSyncZone.\(MuesliICloudSyncEngine.cloudKitEnvironmentKeyComponent).account-owner.v1"
     }
+    static var productionLegacyScopeMigration: MuesliCKSyncLegacyScopeMigration? {
+        guard MuesliICloudSyncEngine.cloudKitEnvironmentKeyComponent == "production" else {
+            return nil
+        }
+        return MuesliCKSyncLegacyScopeMigration(
+            accountScopeKey: "cksyncengine.private.MuesliSyncZone.unspecified.account-owner.v1",
+            stateKey: "cksyncengine.private.MuesliSyncZone.unspecified.v1"
+        )
+    }
     private static let subscriptionID = "muesli-cksyncengine-private-v1"
     private static let uploadBatchSize = 200
     private static let maximumUploadBatchesPerSync = 50
 
     private let store: DictationStore
     private let legacyAccountRecordVerifier: (@Sendable (Set<String>) async throws -> Set<String>)?
+    private let legacyScopeMigration: MuesliCKSyncLegacyScopeMigration?
     private var container: CKContainer?
     private var preflight: MuesliICloudSyncEngine?
     private var engine: CKSyncEngine?
@@ -153,12 +168,14 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
         store: DictationStore,
         container: CKContainer? = nil,
         legacyAccountRecordVerifier: (@Sendable (Set<String>) async throws -> Set<String>)? = nil,
+        legacyScopeMigration: MuesliCKSyncLegacyScopeMigration? = MuesliCKSyncEngine.productionLegacyScopeMigration,
         bridgeRefreshDidFinish: (@MainActor @Sendable () -> Void)? = nil,
         engineCancellationObserver: @escaping @Sendable () async -> Void = {}
     ) {
         self.store = store
         self.container = container
         self.legacyAccountRecordVerifier = legacyAccountRecordVerifier
+        self.legacyScopeMigration = legacyScopeMigration
         self.bridgeRefreshDidFinish = bridgeRefreshDidFinish
         self.engineCancellationObserver = engineCancellationObserver
     }
@@ -760,6 +777,18 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
                 fputs("[muesli-native] CKSyncEngine account boundary blocked\n", stderr)
             }
             return matches
+        }
+
+        if let legacyScopeMigration,
+           try store.migrateCloudSyncAccountScope(
+               expectedScope: requestedScope,
+               fromKey: legacyScopeMigration.accountScopeKey,
+               legacyStateKey: legacyScopeMigration.stateKey,
+               toKey: Self.accountScopeKey
+           ) {
+            accountBoundaryBlocked = false
+            fputs("[muesli-native] CKSyncEngine repaired legacy environment scope\n", stderr)
+            return true
         }
 
         let legacyRecordNames = try store.textRecordNamesRequiringAccountVerification()

@@ -59,6 +59,21 @@ If launch fails with `No matching profile found`, the embedded profile, bundle I
   - Must show CloudKit container `iCloud.com.mueslihq.muesli`
   - Must show CloudKit environment `Production`
   - Must show APNs environment `production` when using the production Developer ID CloudKit profile
+- [ ] Verify the built app:
+  ```bash
+  scripts/verify_signed_cloud_entitlements.sh /Applications/Muesli.app Production com.muesli.app iCloud.com.mueslihq.muesli production
+  ```
+- [ ] Mount the local DMG, then verify its app:
+  ```bash
+  scripts/verify_signed_cloud_entitlements.sh /Volumes/Muesli/Muesli.app Production com.muesli.app iCloud.com.mueslihq.muesli production
+  ```
+- [ ] Re-download and mount the GitHub release DMG, then verify its app with the same command:
+  ```bash
+  scripts/verify_signed_cloud_entitlements.sh /Volumes/Muesli/Muesli.app Production com.muesli.app iCloud.com.mueslihq.muesli production
+  ```
+- [ ] Stable and pre-production builds explicitly set `MUESLI_ICLOUD_CONTAINER_ENVIRONMENT=Production`; omission must fail closed.
+- [ ] The stable release creates a dedicated `codex/release-<version>-appcast` PR for `docs/appcast.xml`, `docs/index.html`, and `docs/llms.txt`; it must not push those files directly to `main`.
+- [ ] Merge the release metadata PR only after confirming its Sparkle enclosure URL, length, EdDSA signature, version, and release notes match the verified GitHub Release asset.
 
 ## Notarize & Staple (CRITICAL ORDER)
 

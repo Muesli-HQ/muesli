@@ -54,9 +54,13 @@ APPCAST_PATH="$ROOT/docs/appcast-preprod.xml"
 GENERATE_APPCAST="$(muesli_spm_artifacts_dir "$PACKAGE_DIR" "$SWIFTPM_SCRATCH_PATH")/sparkle/Sparkle/bin/generate_appcast"
 UPDATE_APPCAST_RELEASE_NOTES="$ROOT/scripts/update_appcast_release_notes.py"
 VERIFY_DIR=""
+MOUNT_POINT=""
 HOSTED_MOUNT_POINT=""
 
 cleanup() {
+  if [[ -n "$MOUNT_POINT" ]]; then
+    hdiutil detach "$MOUNT_POINT" -quiet 2>/dev/null || true
+  fi
   if [[ -n "$HOSTED_MOUNT_POINT" ]]; then
     hdiutil detach "$HOSTED_MOUNT_POINT" -quiet 2>/dev/null || true
   fi
@@ -186,6 +190,7 @@ PREPROD_BUILD_ENV=(
   MUESLI_TELEMETRY_CHANNEL="preprod"
   MUESLI_SIGN_IDENTITY="$SIGN_IDENTITY"
   MUESLI_PROVISIONING_PROFILE="$PROVISIONING_PROFILE"
+  MUESLI_ICLOUD_CONTAINER_ENVIRONMENT="Production"
 )
 echo "  Bundle ID: $BUNDLE_ID"
 echo "  Profile:   $PROVISIONING_PROFILE"
@@ -259,7 +264,14 @@ fi
 
 SPCTL_RESULT=$(spctl -a -vv "$MOUNT_POINT/${APP_NAME}.app" 2>&1)
 STAPLE_RESULT=$(xcrun stapler validate "$MOUNT_POINT/${APP_NAME}.app" 2>&1)
+"$ROOT/scripts/verify_signed_cloud_entitlements.sh" \
+  "$MOUNT_POINT/${APP_NAME}.app" \
+  Production \
+  "$BUNDLE_ID" \
+  iCloud.com.mueslihq.muesli \
+  production
 hdiutil detach "$MOUNT_POINT" -quiet 2>/dev/null
+MOUNT_POINT=""
 
 if ! echo "$SPCTL_RESULT" | grep -q "accepted"; then
   echo "  RELEASE ABORTED: App inside DMG rejected by Gatekeeper."
@@ -338,6 +350,12 @@ fi
 
 HOSTED_MOUNT_POINT=$(hdiutil attach "$HOSTED_DMG" -nobrowse 2>&1 | grep "/Volumes" | awk -F'\t' '{print $NF}')
 HOSTED_APP_SPCTL=$(spctl -a -vv "$HOSTED_MOUNT_POINT/${APP_NAME}.app" 2>&1)
+"$ROOT/scripts/verify_signed_cloud_entitlements.sh" \
+  "$HOSTED_MOUNT_POINT/${APP_NAME}.app" \
+  Production \
+  "$BUNDLE_ID" \
+  iCloud.com.mueslihq.muesli \
+  production
 hdiutil detach "$HOSTED_MOUNT_POINT" -quiet 2>/dev/null
 HOSTED_MOUNT_POINT=""
 

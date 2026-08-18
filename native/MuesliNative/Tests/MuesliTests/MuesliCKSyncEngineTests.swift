@@ -613,6 +613,31 @@ struct MuesliCKSyncEngineTests {
         #expect(firstScope.hasPrefix("sha256:"))
     }
 
+    @Test("CloudKit runtime requires both the private container and an explicit environment")
+    func cloudEntitlementContractRejectsUnspecifiedEnvironment() {
+        let container = MuesliICloudSyncEngine.Schema.containerIdentifier
+        #expect(MuesliICloudSyncEngine.hasRequiredCloudEntitlements(
+            containers: [container],
+            environment: "Production"
+        ))
+        #expect(MuesliICloudSyncEngine.hasRequiredCloudEntitlements(
+            containers: container,
+            environment: "Development"
+        ))
+        #expect(!MuesliICloudSyncEngine.hasRequiredCloudEntitlements(
+            containers: [container],
+            environment: ""
+        ))
+        #expect(!MuesliICloudSyncEngine.hasRequiredCloudEntitlements(
+            containers: [container],
+            environment: "unspecified"
+        ))
+        #expect(!MuesliICloudSyncEngine.hasRequiredCloudEntitlements(
+            containers: ["iCloud.example.wrong"],
+            environment: "Production"
+        ))
+    }
+
     @Test("legacy provenance requires the exact complete stable-ID set")
     func accountProvenanceRequiresEveryRecord() {
         let required = Set(["stable-a", "stable-b"])
@@ -711,6 +736,172 @@ struct MuesliCKSyncEngineTests {
         #expect(try await coordinator.handleAccountChange(currentUser: owner, state: state))
         #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.accountScopeKey)
             == Data(MuesliCKSyncEngine.accountScope(for: owner).utf8))
+        #expect(state.pendingRecordZoneChanges.isEmpty)
+    }
+
+    @Test("matching unspecified owner safely migrates and requeues for Production")
+    func matchingUnspecifiedOwnerMigratesToProduction() async throws {
+        let store = try makeStore()
+        _ = try store.insertDictation(
+            text: "Keep authored text private during environment repair",
+            durationSeconds: 2,
+            startedAt: Date().addingTimeInterval(-2),
+            endedAt: Date()
+        )
+        let local = try #require(try store.textRecordsNeedingSync().first)
+        #expect(try store.markTextRecordSynced(
+            kind: local.kind,
+            recordName: local.id,
+            changeTag: "existing-production-tag",
+            systemFields: Data([0x01, 0x02]),
+            recordUpdatedAt: local.updatedAt
+        ))
+
+        let owner = CKRecord.ID(recordName: "same-private-owner")
+        let scope = MuesliCKSyncEngine.accountScope(for: owner)
+        let migration = MuesliCKSyncLegacyScopeMigration(
+            accountScopeKey: "test.unspecified.owner",
+            stateKey: "test.unspecified.state"
+        )
+        try store.saveCloudSyncStateData(Data(scope.utf8), forKey: migration.accountScopeKey)
+        try store.saveCloudSyncStateData(Data("obsolete-cursor".utf8), forKey: migration.stateKey)
+
+        let state = TestCKSyncPendingState()
+        let coordinator = MuesliCKSyncEngine(
+            store: store,
+            legacyAccountRecordVerifier: { _ in
+                Issue.record("An exact legacy owner match must not query authored records")
+                return []
+            },
+            legacyScopeMigration: migration
+        )
+
+        #expect(try await coordinator.handleAccountChange(currentUser: owner, state: state))
+        #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.accountScopeKey)
+            == Data(scope.utf8))
+        #expect(try store.cloudSyncStateData(forKey: migration.accountScopeKey) == nil)
+        #expect(try store.cloudSyncStateData(forKey: migration.stateKey) == nil)
+        #expect(state.pendingRecordZoneChanges == [
+            .saveRecord(CKRecord.ID(
+                recordName: local.id,
+                zoneID: MuesliICloudSyncEngine.Schema.syncZoneID
+            )),
+        ])
+
+        let preserved = try #require(try store.textRecordForSync(recordName: local.id))
+        #expect(preserved.text == "Keep authored text private during environment repair")
+        #expect(preserved.cloudChangeTag == nil)
+        #expect(preserved.cloudSystemFields == nil)
+        #expect(try store.hasTextRecordsNeedingSync())
+    }
+
+    @Test("unspecified migration clears in-progress meeting metadata without uploading it")
+    func matchingUnspecifiedOwnerRepairsInProgressMeetingMetadata() async throws {
+        let store = try makeStore()
+        let meetingID = try store.insertMeeting(
+            title: "Private in-progress meeting",
+            calendarEventID: nil,
+            startTime: Date().addingTimeInterval(-60),
+            endTime: Date(),
+            rawTranscript: "Keep the local transcript untouched",
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+        let local = try #require(try store.textRecordsNeedingSync().first)
+        #expect(try store.markTextRecordSynced(
+            kind: local.kind,
+            recordName: local.id,
+            changeTag: "obsolete-unspecified-tag",
+            systemFields: Data([0x04, 0x05]),
+            recordUpdatedAt: local.updatedAt
+        ))
+        try store.updateMeetingStatus(id: meetingID, status: .processing)
+
+        let owner = CKRecord.ID(recordName: "same-private-owner-in-progress")
+        let scope = MuesliCKSyncEngine.accountScope(for: owner)
+        let migration = MuesliCKSyncLegacyScopeMigration(
+            accountScopeKey: "test.unspecified.owner.in-progress",
+            stateKey: "test.unspecified.state.in-progress"
+        )
+        try store.saveCloudSyncStateData(Data(scope.utf8), forKey: migration.accountScopeKey)
+        try store.saveCloudSyncStateData(Data("obsolete-cursor".utf8), forKey: migration.stateKey)
+
+        let state = TestCKSyncPendingState()
+        let coordinator = MuesliCKSyncEngine(
+            store: store,
+            legacyAccountRecordVerifier: { _ in
+                Issue.record("An exact legacy owner match must not query authored records")
+                return []
+            },
+            legacyScopeMigration: migration
+        )
+
+        #expect(try await coordinator.handleAccountChange(currentUser: owner, state: state))
+        #expect(state.pendingRecordZoneChanges.isEmpty)
+        #expect(try store.textRecordsNeedingSync().isEmpty)
+
+        let repaired = try #require(try store.textRecordForSync(recordName: local.id))
+        #expect(repaired.text == "Keep the local transcript untouched")
+        #expect(repaired.meetingStatus == .processing)
+        #expect(repaired.cloudChangeTag == nil)
+        #expect(repaired.cloudSystemFields == nil)
+
+        try store.updateMeetingStatus(id: meetingID, status: .completed)
+        let eligible = try #require(try store.textRecordsNeedingSync().first)
+        #expect(eligible.id == local.id)
+        #expect(eligible.cloudChangeTag == nil)
+        #expect(eligible.cloudSystemFields == nil)
+    }
+
+    @Test("mismatched unspecified owner remains blocked and untouched")
+    func mismatchedUnspecifiedOwnerDoesNotMigrate() async throws {
+        let store = try makeStore()
+        _ = try store.insertDictation(
+            text: "Never cross an account boundary",
+            durationSeconds: 2,
+            startedAt: Date().addingTimeInterval(-2),
+            endedAt: Date()
+        )
+        let local = try #require(try store.textRecordsNeedingSync().first)
+        #expect(try store.markTextRecordSynced(
+            kind: local.kind,
+            recordName: local.id,
+            changeTag: "other-account-tag",
+            systemFields: Data([0x03]),
+            recordUpdatedAt: local.updatedAt
+        ))
+
+        let migration = MuesliCKSyncLegacyScopeMigration(
+            accountScopeKey: "test.unspecified.owner.mismatch",
+            stateKey: "test.unspecified.state.mismatch"
+        )
+        let oldScope = MuesliCKSyncEngine.accountScope(
+            for: CKRecord.ID(recordName: "old-private-owner")
+        )
+        try store.saveCloudSyncStateData(Data(oldScope.utf8), forKey: migration.accountScopeKey)
+        try store.saveCloudSyncStateData(Data("keep-cursor".utf8), forKey: migration.stateKey)
+
+        let state = TestCKSyncPendingState()
+        let coordinator = MuesliCKSyncEngine(
+            store: store,
+            legacyAccountRecordVerifier: { names in
+                #expect(names == Set([local.id]))
+                return []
+            },
+            legacyScopeMigration: migration
+        )
+
+        #expect(try await coordinator.handleAccountChange(
+            currentUser: CKRecord.ID(recordName: "different-private-owner"),
+            state: state
+        ) == false)
+        #expect(try store.cloudSyncStateData(forKey: migration.accountScopeKey)
+            == Data(oldScope.utf8))
+        #expect(try store.cloudSyncStateData(forKey: migration.stateKey)
+            == Data("keep-cursor".utf8))
+        #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.accountScopeKey) == nil)
+        #expect(try !store.hasTextRecordsNeedingSync())
         #expect(state.pendingRecordZoneChanges.isEmpty)
     }
 
