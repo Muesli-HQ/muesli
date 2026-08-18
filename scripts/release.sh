@@ -60,6 +60,7 @@ GENERATE_APPCAST="$(muesli_spm_artifacts_dir "$PACKAGE_DIR" "$SWIFTPM_SCRATCH_PA
 UPDATE_APPCAST_RELEASE_NOTES="$ROOT/scripts/update_appcast_release_notes.py"
 HOMEBREW_CASK="${MUESLI_HOMEBREW_CASK:-muesli}"
 SKIP_HOMEBREW_CHECK="${MUESLI_SKIP_HOMEBREW_CHECK:-0}"
+RELEASE_PR_MODE="${MUESLI_RELEASE_PR_MODE:-0}"
 VERIFY_DIR=""
 HOSTED_MOUNT_POINT=""
 HOMEBREW_CHECK_STATUS="skipped"
@@ -101,6 +102,15 @@ fi
 if [[ -n "$(git status --porcelain)" ]]; then
   echo "ERROR: Working tree must be clean before running the release pipeline." >&2
   exit 1
+fi
+
+CURRENT_BRANCH="$(git branch --show-current)"
+if [[ "$RELEASE_PR_MODE" == "1" ]]; then
+  if [[ -z "$CURRENT_BRANCH" || "$CURRENT_BRANCH" == "main" ]]; then
+    echo "ERROR: MUESLI_RELEASE_PR_MODE=1 requires a dedicated release branch." >&2
+    exit 1
+  fi
+  echo "Release PR mode enabled: metadata will be pushed to ${CURRENT_BRANCH}, not main."
 fi
 
 if [[ ! -f "$UPDATE_APPCAST_RELEASE_NOTES" ]]; then
@@ -312,10 +322,17 @@ echo ""
 # --- Step 8: Commit version metadata before tagging ---
 echo "[8/13] Committing release metadata..."
 git add scripts/build_native_app.sh
+RELEASE_PREP_COMMITTED=0
 if git diff --cached --quiet; then
   echo "  No version metadata changes to commit."
 else
   git commit -m "Prepare release v${VERSION}"
+  RELEASE_PREP_COMMITTED=1
+fi
+if [[ "$RELEASE_PR_MODE" == "1" ]]; then
+  git push -u origin HEAD
+  echo "  Pushed release prep to ${CURRENT_BRANCH} for review."
+elif [[ "$RELEASE_PREP_COMMITTED" == "1" ]]; then
   git push origin main
   echo "  Pushed release prep commit to main."
 fi
@@ -461,8 +478,13 @@ if git diff --cached --quiet; then
   echo "  No docs changes to commit."
 else
   git commit -m "Update release metadata for v${VERSION}"
-  git push origin main
-  echo "  Pushed appcast and landing-page updates to main."
+  if [[ "$RELEASE_PR_MODE" == "1" ]]; then
+    git push origin HEAD
+    echo "  Pushed appcast and landing-page updates to ${CURRENT_BRANCH} for review."
+  else
+    git push origin main
+    echo "  Pushed appcast and landing-page updates to main."
+  fi
 fi
 
 # --- Step 13: Verify the official Homebrew cask can see the new release ---
@@ -475,6 +497,9 @@ echo "  Version: ${VERSION}"
 echo "  DMG: $DMG_PATH"
 echo "  Release: $RELEASE_URL"
 echo "  Hosted asset verified."
+if [[ "$RELEASE_PR_MODE" == "1" ]]; then
+  echo "  Production appcast publication is pending merge of ${CURRENT_BRANCH}."
+fi
 if [[ "$HOMEBREW_CHECK_STATUS" == "verified" ]]; then
   echo "  Homebrew cask livecheck verified for ${HOMEBREW_CASK}."
   echo "  Watch Homebrew/homebrew-cask for the BrewTestBot autobump PR."
