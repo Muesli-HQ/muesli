@@ -204,6 +204,11 @@ enum MeetingURLNormalizer {
             return NormalizedMeetingURL(id: "facetime:\(identity)", url: identity, platform: .facetime)
         }
 
+        if host == "app.slack.com", path.hasPrefix("/huddle/") {
+            let identity = compactIdentity(host: host, path: compactPath)
+            return NormalizedMeetingURL(id: "slack:\(identity)", url: identity, platform: .slack)
+        }
+
         return nil
     }
 
