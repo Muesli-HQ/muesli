@@ -6,6 +6,71 @@
         <language>en</language>
         <!-- Items are added by generate_appcast or the release script -->
         <item>
+            <title>0.8.2</title>
+            <pubDate>Tue, 18 Aug 2026 10:16:31 +0530</pubDate>
+            <description><![CDATA[
+<h2>Muesli 0.8.2</h2>
+<p>Muesli 0.8.2 brings dictations and meetings into one local timeline, adds Apple's newest on-device speech technology on supported Macs, and makes meeting context easier to keep with the conversation.</p>
+<h2>One timeline for dictations and meetings</h2>
+<ul>
+<li>Timeline combines recent dictations and meetings in chronological order, with filters for source, destination app, and date.</li>
+<li>Dictations can show the app that ultimately received the text, making it easier to find work from Mail, Notes, browsers, and other apps.</li>
+<li>Existing Dictations and Meetings views remain available when you want a focused history.</li>
+</ul>
+<h2>Apple Speech on macOS 26</h2>
+<ul>
+<li>Macs running macOS 26 can use Apple's system-managed SpeechAnalyzer for dictation, meeting transcription, and imported recordings.</li>
+<li>Apple Speech runs on-device, requires no separate Muesli model download, and follows the existing cleanup, diarization, summary, and persistence pipelines.</li>
+<li>Keep the current macOS language automatically or select another language supported by Apple Speech.</li>
+<li>On unsupported systems, Muesli continues to use its existing local model defaults.</li>
+</ul>
+<h2>Keep people with the meeting</h2>
+<ul>
+<li>Calendar organizers and attendees can be captured from EventKit and shown with the meeting.</li>
+<li>Add someone from Apple Contacts or create a minimal new contact directly from the meeting header.</li>
+<li>Search meetings by participant name or email address.</li>
+<li>Participant data remains local to this Mac. It is not included in CloudKit sync, exports, CLI output, or telemetry.</li>
+</ul>
+<h2>Faster, more resilient model setup</h2>
+<ul>
+<li>Model downloads now resume interrupted transfers, validate downloaded files, check disk space, and show clearer download and preparation stages.</li>
+<li>WhisperKit and supported local backends expose explicit language choices where available.</li>
+<li>Qwen ASR and LocalVQE packaging paths have been hardened so installed models and acoustic cleanup load more reliably.</li>
+</ul>
+<h2>A more capable local CLI</h2>
+<ul>
+<li>The bundled <code>muesli-cli</code> can transcribe supported audio and video files with multiple local backends and return agent-friendly output.</li>
+<li>Portable dictionary import and export make custom vocabulary easier to move between installations and automation workflows.</li>
+</ul>
+<h2>Meeting and dictation reliability</h2>
+<ul>
+<li>Dictation becomes available after a stopped meeting finishes audio transcription and cleanup, while title generation or summarization continues in the background.</li>
+<li>Meeting microphone capture can recover from degraded or changing input routes, and system-audio capture now detects stalled taps more reliably.</li>
+<li>Dictation drains the final audio buffer before transcription to reduce missing last words.</li>
+<li>iCloud text sync now uses Apple's durable sync engine while preserving Muesli's local outbox, improving recovery from interrupted syncs, account changes, and large pending histories.</li>
+<li>The floating recording indicator has more predictable drag behavior across displays and appearance settings.</li>
+</ul>
+<h2>macOS polish</h2>
+<ul>
+<li>Added standard macOS window and navigation shortcuts, including direct access to Dictations and Meetings.</li>
+<li>Meeting notes render inline Markdown more naturally while remaining editable.</li>
+<li>Invalid recording durations no longer distort words-per-minute statistics.</li>
+</ul>
+<h2>Privacy and compatibility</h2>
+<ul>
+<li>Audio, transcripts, meeting titles, contacts, file paths, hardware identifiers, and raw errors are not added to telemetry.</li>
+<li>Muesli 0.8.2 requires Apple silicon and macOS 14.2 or later. Apple Speech requires macOS 26 and a system-supported SpeechAnalyzer language.</li>
+</ul>
+]]></description>
+            <sparkle:version>0.8.2</sparkle:version>
+            <sparkle:shortVersionString>0.8.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.8.2/Muesli-0.8.2.dmg" length="98660546" type="application/octet-stream" sparkle:edSignature="qNWA67jv09l1L92tI71UNRtvQyS/F4UYzhiBLBonOrINL8zcKQQZmzvsBz83oDX3fvNjpPitDUAp4yfV7KMDDA=="/>
+            <sparkle:deltas>
+            </sparkle:deltas>
+        </item>
+        <item>
             <title>0.8.1</title>
             <pubDate>Sat, 01 Aug 2026 14:41:27 +0530</pubDate>
             <description><![CDATA[

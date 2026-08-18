@@ -76,6 +76,9 @@ jobs:
       - name: Test CI test shard assignments
         run: ./scripts/test_ci_test_shards.sh
 
+      - name: Test append-only appcast updates
+        run: python3 ./scripts/test_merge_appcast_item.py
+
       - name: Test LocalVQE runtime validation
         run: ./scripts/test_localvqe_runtime_validation.sh
 

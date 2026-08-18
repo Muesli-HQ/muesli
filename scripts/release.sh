@@ -58,8 +58,10 @@ INSTALL_DIR="${MUESLI_RELEASE_INSTALL_DIR:-$OUTPUT_DIR/install-root}"
 APP_DIR="${MUESLI_RELEASE_APP_DIR:-$INSTALL_DIR/Muesli.app}"
 GENERATE_APPCAST="$(muesli_spm_artifacts_dir "$PACKAGE_DIR" "$SWIFTPM_SCRATCH_PATH")/sparkle/Sparkle/bin/generate_appcast"
 UPDATE_APPCAST_RELEASE_NOTES="$ROOT/scripts/update_appcast_release_notes.py"
+MERGE_APPCAST_ITEM="$ROOT/scripts/merge_appcast_item.py"
 HOMEBREW_CASK="${MUESLI_HOMEBREW_CASK:-muesli}"
 SKIP_HOMEBREW_CHECK="${MUESLI_SKIP_HOMEBREW_CHECK:-0}"
+RELEASE_PR_MODE="${MUESLI_RELEASE_PR_MODE:-0}"
 VERIFY_DIR=""
 HOSTED_MOUNT_POINT=""
 HOMEBREW_CHECK_STATUS="skipped"
@@ -103,8 +105,32 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 
+CURRENT_BRANCH="$(git branch --show-current)"
+assert_release_branch_contains_origin_main() {
+  git fetch origin main --quiet
+  if ! git merge-base --is-ancestor origin/main HEAD; then
+    echo "ERROR: ${CURRENT_BRANCH} does not contain the latest origin/main." >&2
+    echo "Rebase or merge origin/main before publishing a stable release." >&2
+    exit 1
+  fi
+}
+
+if [[ "$RELEASE_PR_MODE" == "1" ]]; then
+  if [[ -z "$CURRENT_BRANCH" || "$CURRENT_BRANCH" == "main" ]]; then
+    echo "ERROR: MUESLI_RELEASE_PR_MODE=1 requires a dedicated release branch." >&2
+    exit 1
+  fi
+  assert_release_branch_contains_origin_main
+  echo "Release PR mode enabled: metadata will be pushed to ${CURRENT_BRANCH}, not main."
+fi
+
 if [[ ! -f "$UPDATE_APPCAST_RELEASE_NOTES" ]]; then
   echo "ERROR: update_appcast_release_notes.py not found at $UPDATE_APPCAST_RELEASE_NOTES" >&2
+  exit 1
+fi
+
+if [[ ! -f "$MERGE_APPCAST_ITEM" ]]; then
+  echo "ERROR: merge_appcast_item.py not found at $MERGE_APPCAST_ITEM" >&2
   exit 1
 fi
 
@@ -312,10 +338,17 @@ echo ""
 # --- Step 8: Commit version metadata before tagging ---
 echo "[8/13] Committing release metadata..."
 git add scripts/build_native_app.sh
+RELEASE_PREP_COMMITTED=0
 if git diff --cached --quiet; then
   echo "  No version metadata changes to commit."
 else
   git commit -m "Prepare release v${VERSION}"
+  RELEASE_PREP_COMMITTED=1
+fi
+if [[ "$RELEASE_PR_MODE" == "1" ]]; then
+  git push -u origin HEAD
+  echo "  Pushed release prep to ${CURRENT_BRANCH} for review."
+elif [[ "$RELEASE_PREP_COMMITTED" == "1" ]]; then
   git push origin main
   echo "  Pushed release prep commit to main."
 fi
@@ -328,6 +361,10 @@ fi
 if git ls-remote --tags origin "refs/tags/${TAG}" | grep -q .; then
   echo "ERROR: Remote tag ${TAG} already exists." >&2
   exit 1
+fi
+
+if [[ "$RELEASE_PR_MODE" == "1" ]]; then
+  assert_release_branch_contains_origin_main
 fi
 
 git tag -a "$TAG" -m "Release ${VERSION}"
@@ -425,25 +462,26 @@ echo "  Release published: $RELEASE_URL"
 
 # --- Step 12: Update appcast and landing-page links after release publication ---
 echo "[12/13] Updating appcast and release metadata..."
-"$GENERATE_APPCAST" "$OUTPUT_DIR" -o "$ROOT/docs/appcast.xml"
-
-# Point appcast enclosures at GitHub Releases, not GitHub Pages.
-perl -0pi -e 's{https://muesli-hq\.github\.io/muesli/(Muesli-([0-9][0-9A-Za-z\.\-]*)\.dmg)}{"https://github.com/Muesli-HQ/muesli/releases/download/v$2/$1"}ge' "$ROOT/docs/appcast.xml"
-
-# Delta artifacts are not hosted, so strip delta enclosures from the appcast.
-perl -0pi -e 's{^\h*<enclosure\b[^>]*\bsparkle:deltaFrom="[^"]*"[^>]*/>\n}{}mg' "$ROOT/docs/appcast.xml"
+GENERATED_APPCAST="$VERIFY_DIR/generated-appcast.xml"
+"$GENERATE_APPCAST" "$OUTPUT_DIR" -o "$GENERATED_APPCAST"
 if [[ "$RELEASE_NOTES_FROM_FILE" == "1" ]]; then
   python3 "$UPDATE_APPCAST_RELEASE_NOTES" \
-    "$ROOT/docs/appcast.xml" \
+    "$GENERATED_APPCAST" \
     --sparkle-version "$VERSION" \
     --short-version "$VERSION" \
     < "$RELEASE_NOTES_FILE"
 else
   printf '%s\n' "$RELEASE_NOTES" | python3 "$UPDATE_APPCAST_RELEASE_NOTES" \
-    "$ROOT/docs/appcast.xml" \
+    "$GENERATED_APPCAST" \
     --sparkle-version "$VERSION" \
     --short-version "$VERSION"
 fi
+
+python3 "$MERGE_APPCAST_ITEM" \
+  --existing "$ROOT/docs/appcast.xml" \
+  --generated "$GENERATED_APPCAST" \
+  --version "$VERSION" \
+  --output "$ROOT/docs/appcast.xml"
 
 # Keep the marketing/docs surface aligned with the published GitHub Release.
 sed -i '' "s|https://github.com/Muesli-HQ/muesli/releases/download/[^\"]*\\.dmg|$DOWNLOAD_URL|g" "$ROOT/docs/index.html"
@@ -461,8 +499,13 @@ if git diff --cached --quiet; then
   echo "  No docs changes to commit."
 else
   git commit -m "Update release metadata for v${VERSION}"
-  git push origin main
-  echo "  Pushed appcast and landing-page updates to main."
+  if [[ "$RELEASE_PR_MODE" == "1" ]]; then
+    git push origin HEAD
+    echo "  Pushed appcast and landing-page updates to ${CURRENT_BRANCH} for review."
+  else
+    git push origin main
+    echo "  Pushed appcast and landing-page updates to main."
+  fi
 fi
 
 # --- Step 13: Verify the official Homebrew cask can see the new release ---
@@ -475,6 +518,9 @@ echo "  Version: ${VERSION}"
 echo "  DMG: $DMG_PATH"
 echo "  Release: $RELEASE_URL"
 echo "  Hosted asset verified."
+if [[ "$RELEASE_PR_MODE" == "1" ]]; then
+  echo "  Production appcast publication is pending merge of ${CURRENT_BRANCH}."
+fi
 if [[ "$HOMEBREW_CHECK_STATUS" == "verified" ]]; then
   echo "  Homebrew cask livecheck verified for ${HOMEBREW_CASK}."
   echo "  Watch Homebrew/homebrew-cask for the BrewTestBot autobump PR."

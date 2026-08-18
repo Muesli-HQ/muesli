@@ -316,7 +316,7 @@ Important meeting fields:
 - `rawTranscript` is read-only and should be treated as source material.
 - If `notesState` is `missing` or `raw_transcript_fallback`, agents should prefer summarizing from `rawTranscript`.
 - Use `--db-path` or `--support-dir` only when the default Muesli data location is wrong.
-- Read the [SQLite database guide](docs/database-schema.md) before adding tables,
+- Read the [SQLite database guide](database-schema.md) before adding tables,
   columns, migrations, direct queries, or new sync fields.
 
 ---

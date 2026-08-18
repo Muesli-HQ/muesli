@@ -55,7 +55,7 @@ while IFS= read -r file; do
       esac
       ;;
 
-    .github/FUNDING.yml|README.md|LICENSE|docs/*.md|docs/reports/*|docs/plans/*|Context/*)
+    .github/FUNDING.yml|README.md|LICENSE|database-schema.md|docs/*.md|docs/reports/*|docs/plans/*|Context/*)
       ;;
 
     docs/appcast*.xml|docs/index.html|docs/download/*|docs/llms.txt)
