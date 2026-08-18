@@ -8986,8 +8986,8 @@ final class MuesliController: NSObject {
     }
 
     /// For paste output, runs only once the pasteboard has either been restored or superseded
-    /// by a newer copy. The dashboard queries and optional Accessibility monitor cannot lengthen
-    /// transcript ownership of the clipboard or the visible Transcribing state.
+    /// by a newer copy. Persistence and dashboard queries therefore cannot lengthen transcript
+    /// ownership of the clipboard or the visible Transcribing state.
     private func finishStandardDictationBookkeeping(
         text: String,
         duration: TimeInterval,
@@ -9013,19 +9013,6 @@ final class MuesliController: NSObject {
             historyWindowController.reload()
         } else {
             syncAppState()
-        }
-        if outputMode == .paste, config.enableDictionaryCorrectionPrompts {
-            // Dictionary correction prompts are an explicit opt-in
-            // screen-context feature: they briefly read focused app
-            // text via Accessibility after dictation, then stop when
-            // the bounded edit monitor session ends.
-            dictationCorrectionMonitor.start(
-                originalText: text,
-                appContext: appContext,
-                targetApp: targetApp
-            ) { [weak self] suggestion in
-                self?.addDictionarySuggestion(suggestion)
-            }
         }
         TelemetryDeck.signal("dictation.completed", parameters: [
             "backend": backend,
@@ -9144,6 +9131,18 @@ final class MuesliController: NSObject {
                                 let targetApp = self.externalDictationTargetApp(from: targetApplication)
                                 completionTargetApp = targetApp
                                 self.releaseStandardDictationState()
+                                if self.config.enableDictionaryCorrectionPrompts {
+                                    // This opt-in monitor only schedules its first Accessibility
+                                    // poll after 100 ms, so starting it here captures immediate
+                                    // edits without blocking the clipboard restoration timer.
+                                    self.dictationCorrectionMonitor.start(
+                                        originalText: text,
+                                        appContext: storageContext,
+                                        targetApp: targetApp
+                                    ) { [weak self] suggestion in
+                                        self?.addDictionarySuggestion(suggestion)
+                                    }
+                                }
                                 self.markDictationLatency(
                                     "user_visible_completion",
                                     trace: completionLatencyTrace

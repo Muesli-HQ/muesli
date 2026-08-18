@@ -192,6 +192,12 @@ If launch fails with `No matching profile found`, the embedded profile, bundle I
   ```
 
 - [ ] **Open the release-metadata PR while the GitHub Release remains a draft.**
+
+  If the final GitHub publication call fails after this point, rerun the same
+  `release.sh X.Y.Z` command from exact `origin/main`. The pipeline recognizes
+  the existing versioned metadata branch and open PR, revalidates the hosted
+  notarized artifact, Production CloudKit entitlements, and appcast, then safely
+  resumes publication without recreating release metadata.
   - If appcast generation, release-note injection, validation, commit, push, or PR creation fails, stop and leave the GitHub Release as a draft.
 
 - [ ] **Publish the verified draft release only after the metadata PR exists.**

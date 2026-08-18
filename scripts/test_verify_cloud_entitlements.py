@@ -133,6 +133,16 @@ assert "gh release edit" not in metadata_section
 assert "gh release edit" in publication_section
 assert "muesli_require_release_publication_ready" in publication_section
 assert "RELEASE_METADATA_PR_URL" in publication_section
+assert "resume_existing_release_publication()" in stable_release
+assert "Existing release metadata branch found" in stable_release
+assert "Expected exactly one open metadata PR" in stable_release
+assert '--appcast "$metadata_appcast"' in stable_release
+assert '"$ROOT/scripts/verify_signed_cloud_entitlements.sh"' in stable_release
+assert "resume_existing_release_publication" in stable_release.split(
+    '# --- Step 0: Update version in build script ---',
+    maxsplit=1,
+)[0]
+assert "Remote release metadata branch already exists" not in stable_release
 
 ordered_release_gates = (
     '"$GENERATE_APPCAST"',

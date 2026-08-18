@@ -166,6 +166,7 @@ RELEASE_NOTES=""
 RELEASE_NOTES_FROM_FILE=0
 RELEASE_NOTES_ARGS=()
 RELEASE_METADATA_VALIDATED=0
+RELEASE_METADATA_PR_URL=""
 
 if [[ -n "${MUESLI_RELEASE_NOTES_FILE:-}" && ! -f "$RELEASE_NOTES_FILE" ]]; then
   echo "ERROR: release notes file not found: $RELEASE_NOTES_FILE" >&2
@@ -197,14 +198,6 @@ if ! git check-ref-format --branch "$RELEASE_METADATA_BRANCH" >/dev/null 2>&1; t
   echo "ERROR: Invalid release metadata branch: $RELEASE_METADATA_BRANCH" >&2
   exit 1
 fi
-if git show-ref --verify --quiet "refs/heads/${RELEASE_METADATA_BRANCH}"; then
-  echo "ERROR: Local release metadata branch already exists: $RELEASE_METADATA_BRANCH" >&2
-  exit 1
-fi
-if git ls-remote --exit-code --heads origin "$RELEASE_METADATA_BRANCH" >/dev/null 2>&1; then
-  echo "ERROR: Remote release metadata branch already exists: $RELEASE_METADATA_BRANCH" >&2
-  exit 1
-fi
 
 verify_homebrew_autobump() {
   if [[ "$SKIP_HOMEBREW_CHECK" == "1" ]]; then
@@ -225,6 +218,112 @@ verify_homebrew_autobump() {
   fi
   echo "  BrewTestBot should open ${HOMEBREW_CASK} version bump PRs automatically."
 }
+
+resume_existing_release_publication() {
+  if ! git ls-remote --exit-code --heads origin "$RELEASE_METADATA_BRANCH" >/dev/null 2>&1; then
+    if git show-ref --verify --quiet "refs/heads/${RELEASE_METADATA_BRANCH}"; then
+      echo "ERROR: Local release metadata branch exists without its remote counterpart: $RELEASE_METADATA_BRANCH" >&2
+      exit 1
+    fi
+    return 1
+  fi
+
+  echo "Existing release metadata branch found; validating the hosted release before resuming publication."
+  git fetch origin \
+    "refs/heads/${RELEASE_METADATA_BRANCH}:refs/remotes/origin/${RELEASE_METADATA_BRANCH}" \
+    --quiet
+
+  local metadata_pr_count
+  metadata_pr_count=$(gh pr list \
+    --repo Muesli-HQ/muesli \
+    --base main \
+    --head "$RELEASE_METADATA_BRANCH" \
+    --state open \
+    --json url \
+    --jq 'length')
+  if [[ "$metadata_pr_count" != "1" ]]; then
+    echo "ERROR: Expected exactly one open metadata PR for $RELEASE_METADATA_BRANCH; found $metadata_pr_count." >&2
+    exit 1
+  fi
+  RELEASE_METADATA_PR_URL=$(gh pr list \
+    --repo Muesli-HQ/muesli \
+    --base main \
+    --head "$RELEASE_METADATA_BRANCH" \
+    --state open \
+    --json url \
+    --jq '.[0].url')
+
+  local release_is_draft
+  release_is_draft=$(gh release view "$TAG" --json isDraft --jq '.isDraft' 2>/dev/null || true)
+  if [[ "$release_is_draft" != "true" && "$release_is_draft" != "false" ]]; then
+    echo "ERROR: Metadata exists, but GitHub release $TAG could not be found." >&2
+    exit 1
+  fi
+
+  VERIFY_DIR=$(mktemp -d)
+  local hosted_dmg="$VERIFY_DIR/Muesli-${VERSION}.dmg"
+  local metadata_appcast="$VERIFY_DIR/appcast.xml"
+  gh release download "$TAG" \
+    -p "Muesli-${VERSION}.dmg" \
+    -D "$VERIFY_DIR" \
+    --clobber >/dev/null
+  git show "origin/${RELEASE_METADATA_BRANCH}:docs/appcast.xml" > "$metadata_appcast"
+
+  local metadata_file
+  for metadata_file in docs/index.html docs/llms.txt; do
+    local metadata_surface="$VERIFY_DIR/$(basename "$metadata_file")"
+    git show "origin/${RELEASE_METADATA_BRANCH}:${metadata_file}" > "$metadata_surface"
+    if ! grep -Fq "$DOWNLOAD_URL" "$metadata_surface"; then
+      echo "ERROR: $metadata_file on $RELEASE_METADATA_BRANCH does not reference $DOWNLOAD_URL." >&2
+      exit 1
+    fi
+  done
+
+  "$ROOT/scripts/verify_update_flow.sh" \
+    --version "$VERSION" \
+    --appcast "$metadata_appcast" \
+    --dmg "$hosted_dmg" \
+    --require-release-notes \
+    --require-notarized
+
+  HOSTED_MOUNT_POINT=$(hdiutil attach "$hosted_dmg" -nobrowse -readonly 2>&1 | awk -F'\t' '/\/Volumes\// {print $NF; exit}')
+  if [[ -z "$HOSTED_MOUNT_POINT" ]]; then
+    echo "ERROR: Could not mount hosted DMG while resuming $TAG." >&2
+    exit 1
+  fi
+  "$ROOT/scripts/verify_signed_cloud_entitlements.sh" \
+    "$HOSTED_MOUNT_POINT/Muesli.app" \
+    Production \
+    com.muesli.app \
+    iCloud.com.mueslihq.muesli \
+    production
+  hdiutil detach "$HOSTED_MOUNT_POINT" -quiet 2>/dev/null
+  HOSTED_MOUNT_POINT=""
+
+  RELEASE_METADATA_VALIDATED=1
+  muesli_require_release_publication_ready \
+    "$RELEASE_METADATA_VALIDATED" \
+    "$RELEASE_METADATA_PR_URL"
+  if [[ "$release_is_draft" == "true" ]]; then
+    gh release edit "$TAG" \
+      --draft=false \
+      --title "$RELEASE_TITLE" \
+      "${RELEASE_NOTES_ARGS[@]}"
+    echo "  Resumed and published verified GitHub release $TAG."
+  else
+    echo "  GitHub release $TAG is already public; hosted artifact and metadata were revalidated."
+  fi
+
+  RELEASE_URL=$(gh release view "$TAG" --json url -q .url)
+  verify_homebrew_autobump
+  echo "  Release: $RELEASE_URL"
+  echo "  Production appcast publication is pending merge of $RELEASE_METADATA_PR_URL."
+  return 0
+}
+
+if resume_existing_release_publication; then
+  exit 0
+fi
 
 echo "=== Muesli Release v${VERSION} ==="
 echo ""
