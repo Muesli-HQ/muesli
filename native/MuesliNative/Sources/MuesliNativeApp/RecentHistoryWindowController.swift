@@ -73,18 +73,31 @@ final class RecentHistoryWindowController: NSObject, NSWindowDelegate {
     }
 
     func reload() {
-        if let window {
-            applyAppearance(to: window)
-        }
+        applyThemeAppearance()
         controller.syncAppState()
+    }
+
+    /// Called when the theme preference changes, so the chrome follows the in-app light/dark
+    /// toggle instead of waiting for the window to be rebuilt.
+    func applyThemeAppearance() {
+        guard let window else { return }
+        applyAppearance(to: window)
+    }
+
+    nonisolated static func appearanceName(for darkMode: Bool) -> NSAppearance.Name {
+        darkMode ? .darkAqua : .aqua
     }
 
     /// The window is created before SwiftUI applies `preferredColorScheme`, and AppKit chrome
     /// (transparent titlebar, traffic lights, resize corners) resolves against the window's own
     /// appearance rather than the SwiftUI environment. Without this the titlebar keeps rendering
     /// dark while the app is set to the light theme.
+    ///
+    /// Reads `controller.config` rather than `appState.config`: the latter is assigned during
+    /// `syncAppState()`, so reading it here would apply the previous theme whenever the appearance
+    /// is refreshed before that assignment.
     private func applyAppearance(to window: NSWindow) {
-        let name: NSAppearance.Name = controller.appState.config.darkMode ? .darkAqua : .aqua
+        let name = Self.appearanceName(for: controller.config.darkMode)
         if window.appearance?.name != name {
             window.appearance = NSAppearance(named: name)
         }
