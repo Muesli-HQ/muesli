@@ -36,6 +36,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 source "$ROOT/scripts/muesli_spm_cache.sh"
 source "$ROOT/scripts/muesli_telemetry_channels.sh"
+source "$ROOT/scripts/release_publication_gate.sh"
 PACKAGE_DIR="$ROOT/native/MuesliNative"
 SWIFTPM_SCRATCH_PATH=""
 SWIFT_TEST_ARGS=(--package-path "$PACKAGE_DIR")
@@ -164,6 +165,7 @@ RELEASE_NOTES_FILE="${MUESLI_RELEASE_NOTES_FILE:-$DEFAULT_RELEASE_NOTES_FILE}"
 RELEASE_NOTES=""
 RELEASE_NOTES_FROM_FILE=0
 RELEASE_NOTES_ARGS=()
+RELEASE_METADATA_VALIDATED=0
 
 if [[ -n "${MUESLI_RELEASE_NOTES_FILE:-}" && ! -f "$RELEASE_NOTES_FILE" ]]; then
   echo "ERROR: release notes file not found: $RELEASE_NOTES_FILE" >&2
@@ -491,18 +493,8 @@ if ! echo "$HOSTED_APP_STAPLE_RESULT" | grep -q "worked"; then
   exit 1
 fi
 
-# --- Step 11: Publish the verified draft release ---
-echo "[11/13] Publishing verified GitHub release..."
-gh release edit "$TAG" \
-  --draft=false \
-  --title "$RELEASE_TITLE" \
-  "${RELEASE_NOTES_ARGS[@]}"
-
-RELEASE_URL=$(gh release view "$TAG" --json url -q .url)
-echo "  Release published: $RELEASE_URL"
-
-# --- Step 12: Open an appcast/landing metadata PR after release publication ---
-echo "[12/13] Preparing appcast and release metadata PR..."
+# --- Step 11: Validate appcast metadata and open its PR while release stays draft ---
+echo "[11/13] Preparing appcast and release metadata PR..."
 GENERATED_APPCAST="$VERIFY_DIR/generated-appcast.xml"
 "$GENERATE_APPCAST" "$OUTPUT_DIR" -o "$GENERATED_APPCAST"
 if [[ "$RELEASE_NOTES_FROM_FILE" == "1" ]]; then
@@ -534,6 +526,7 @@ echo "  Verifying Sparkle update flow metadata..."
   --dmg "$DMG_PATH" \
   --require-release-notes \
   --require-notarized
+RELEASE_METADATA_VALIDATED=1
 
 git add docs/appcast.xml docs/index.html docs/llms.txt
 if git diff --cached --quiet; then
@@ -547,9 +540,22 @@ else
     --base main \
     --head "$RELEASE_METADATA_BRANCH" \
     --title "Update release metadata for v${VERSION}" \
-    --body "Publishes the verified v${VERSION} Sparkle appcast entry and aligns the landing-page download metadata with the released GitHub DMG. The public appcast remains unchanged until this PR is reviewed and merged.")
+    --body "Publishes the verified v${VERSION} Sparkle appcast entry and aligns the landing-page download metadata with the verified GitHub DMG. The GitHub release was kept as a draft through validation and creation of this PR; the public appcast remains unchanged until this PR is reviewed and merged.")
   echo "  Release metadata PR: $RELEASE_METADATA_PR_URL"
 fi
+
+# --- Step 12: Publish only after appcast validation and metadata PR creation ---
+echo "[12/13] Publishing verified GitHub release..."
+muesli_require_release_publication_ready \
+  "$RELEASE_METADATA_VALIDATED" \
+  "${RELEASE_METADATA_PR_URL:-}"
+gh release edit "$TAG" \
+  --draft=false \
+  --title "$RELEASE_TITLE" \
+  "${RELEASE_NOTES_ARGS[@]}"
+
+RELEASE_URL=$(gh release view "$TAG" --json url -q .url)
+echo "  Release published: $RELEASE_URL"
 
 # --- Step 13: Verify the official Homebrew cask can see the new release ---
 echo "[13/13] Verifying official Homebrew cask livecheck..."

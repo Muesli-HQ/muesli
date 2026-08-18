@@ -151,8 +151,6 @@ If launch fails with `No matching profile found`, the embedded profile, bundle I
   - The local and hosted SHA256 hashes must match exactly
   - Must show `accepted` and `The validate action worked!`
 
-- [ ] **Publish the verified draft release**
-
 ## Appcast & Docs
 
 - [ ] **Generate the new release item without replacing appcast history:**
@@ -184,12 +182,17 @@ If launch fails with `No matching profile found`, the embedded profile, bundle I
   scripts/verify_update_flow.sh --version X.Y.Z --dmg dist-release/Muesli-X.Y.Z.dmg --require-notarized
   ```
 
-- [ ] **Push appcast + download link:**
+- [ ] **Push the appcast + download-link metadata branch:**
   ```bash
   git add docs/appcast.xml docs/index.html
   git commit -m "Update appcast for vX.Y.Z"
   git push
   ```
+
+- [ ] **Open the release-metadata PR while the GitHub Release remains a draft.**
+  - If appcast generation, release-note injection, validation, commit, push, or PR creation fails, stop and leave the GitHub Release as a draft.
+
+- [ ] **Publish the verified draft release only after the metadata PR exists.**
 
 ## Homebrew Cask
 
