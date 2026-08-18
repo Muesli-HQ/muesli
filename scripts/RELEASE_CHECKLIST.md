@@ -140,19 +140,27 @@ If launch fails with `No matching profile found`, the embedded profile, bundle I
 
 ## Appcast & Docs
 
-- [ ] **Generate appcast on the single Sparkle host:**
+- [ ] **Generate the new release item without replacing appcast history:**
   ```bash
-  native/MuesliNative/.build/artifacts/sparkle/Sparkle/bin/generate_appcast dist-release/ -o docs/appcast.xml
+  generated_appcast="$(mktemp)"
+  native/MuesliNative/.build/artifacts/sparkle/Sparkle/bin/generate_appcast \
+    dist-release/ -o "$generated_appcast"
+  python3 scripts/update_appcast_release_notes.py \
+    "$generated_appcast" \
+    --sparkle-version X.Y.Z \
+    --short-version X.Y.Z \
+    < docs/release-notes/X.Y.Z.md
+  python3 scripts/merge_appcast_item.py \
+    --existing docs/appcast.xml \
+    --generated "$generated_appcast" \
+    --version X.Y.Z \
+    --output docs/appcast.xml
+  rm "$generated_appcast"
   ```
 
-- [ ] **Fix appcast enclosure URLs to GitHub Releases** — `generate_appcast` writes GitHub Pages URLs. Replace with GitHub Releases URLs:
-  ```
-  https://muesli-hq.github.io/muesli/Muesli-X.Y.Z.dmg
-  →
-  https://github.com/Muesli-HQ/muesli/releases/download/vX.Y.Z/Muesli-X.Y.Z.dmg
-  ```
-
-- [ ] **Remove delta entries** from appcast (deltas aren't hosted)
+- [ ] **Confirm historical items are unchanged.** `merge_appcast_item.py` rejects
+  duplicate versions and noncanonical historical URLs, normalizes the new item
+  to GitHub Releases, and removes unhosted delta enclosures.
 
 - [ ] **Update download link** in `docs/index.html` (both the `<a>` href and JSON-LD `downloadUrl`)
 

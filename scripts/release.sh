@@ -58,6 +58,7 @@ INSTALL_DIR="${MUESLI_RELEASE_INSTALL_DIR:-$OUTPUT_DIR/install-root}"
 APP_DIR="${MUESLI_RELEASE_APP_DIR:-$INSTALL_DIR/Muesli.app}"
 GENERATE_APPCAST="$(muesli_spm_artifacts_dir "$PACKAGE_DIR" "$SWIFTPM_SCRATCH_PATH")/sparkle/Sparkle/bin/generate_appcast"
 UPDATE_APPCAST_RELEASE_NOTES="$ROOT/scripts/update_appcast_release_notes.py"
+MERGE_APPCAST_ITEM="$ROOT/scripts/merge_appcast_item.py"
 HOMEBREW_CASK="${MUESLI_HOMEBREW_CASK:-muesli}"
 SKIP_HOMEBREW_CHECK="${MUESLI_SKIP_HOMEBREW_CHECK:-0}"
 RELEASE_PR_MODE="${MUESLI_RELEASE_PR_MODE:-0}"
@@ -125,6 +126,11 @@ fi
 
 if [[ ! -f "$UPDATE_APPCAST_RELEASE_NOTES" ]]; then
   echo "ERROR: update_appcast_release_notes.py not found at $UPDATE_APPCAST_RELEASE_NOTES" >&2
+  exit 1
+fi
+
+if [[ ! -f "$MERGE_APPCAST_ITEM" ]]; then
+  echo "ERROR: merge_appcast_item.py not found at $MERGE_APPCAST_ITEM" >&2
   exit 1
 fi
 
@@ -456,25 +462,26 @@ echo "  Release published: $RELEASE_URL"
 
 # --- Step 12: Update appcast and landing-page links after release publication ---
 echo "[12/13] Updating appcast and release metadata..."
-"$GENERATE_APPCAST" "$OUTPUT_DIR" -o "$ROOT/docs/appcast.xml"
-
-# Point appcast enclosures at GitHub Releases, not GitHub Pages.
-perl -0pi -e 's{https://muesli-hq\.github\.io/muesli/(Muesli-([0-9][0-9A-Za-z\.\-]*)\.dmg)}{"https://github.com/Muesli-HQ/muesli/releases/download/v$2/$1"}ge' "$ROOT/docs/appcast.xml"
-
-# Delta artifacts are not hosted, so strip delta enclosures from the appcast.
-perl -0pi -e 's{^\h*<enclosure\b[^>]*\bsparkle:deltaFrom="[^"]*"[^>]*/>\n}{}mg' "$ROOT/docs/appcast.xml"
+GENERATED_APPCAST="$VERIFY_DIR/generated-appcast.xml"
+"$GENERATE_APPCAST" "$OUTPUT_DIR" -o "$GENERATED_APPCAST"
 if [[ "$RELEASE_NOTES_FROM_FILE" == "1" ]]; then
   python3 "$UPDATE_APPCAST_RELEASE_NOTES" \
-    "$ROOT/docs/appcast.xml" \
+    "$GENERATED_APPCAST" \
     --sparkle-version "$VERSION" \
     --short-version "$VERSION" \
     < "$RELEASE_NOTES_FILE"
 else
   printf '%s\n' "$RELEASE_NOTES" | python3 "$UPDATE_APPCAST_RELEASE_NOTES" \
-    "$ROOT/docs/appcast.xml" \
+    "$GENERATED_APPCAST" \
     --sparkle-version "$VERSION" \
     --short-version "$VERSION"
 fi
+
+python3 "$MERGE_APPCAST_ITEM" \
+  --existing "$ROOT/docs/appcast.xml" \
+  --generated "$GENERATED_APPCAST" \
+  --version "$VERSION" \
+  --output "$ROOT/docs/appcast.xml"
 
 # Keep the marketing/docs surface aligned with the published GitHub Release.
 sed -i '' "s|https://github.com/Muesli-HQ/muesli/releases/download/[^\"]*\\.dmg|$DOWNLOAD_URL|g" "$ROOT/docs/index.html"
