@@ -72,6 +72,8 @@ If launch fails with `No matching profile found`, the embedded profile, bundle I
   scripts/verify_signed_cloud_entitlements.sh /Volumes/Muesli/Muesli.app Production com.muesli.app iCloud.com.mueslihq.muesli production
   ```
 - [ ] Stable and pre-production builds explicitly set `MUESLI_ICLOUD_CONTAINER_ENVIRONMENT=Production`; omission must fail closed.
+- [ ] The stable release creates a dedicated `codex/release-<version>-appcast` PR for `docs/appcast.xml`, `docs/index.html`, and `docs/llms.txt`; it must not push those files directly to `main`.
+- [ ] Merge the release metadata PR only after confirming its Sparkle enclosure URL, length, EdDSA signature, version, and release notes match the verified GitHub Release asset.
 
 ## Notarize & Staple (CRITICAL ORDER)
 

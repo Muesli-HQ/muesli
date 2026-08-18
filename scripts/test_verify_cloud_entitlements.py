@@ -110,4 +110,13 @@ assert stable_release.count("verify_signed_cloud_entitlements.sh") >= 2
 assert preprod_release.count("verify_signed_cloud_entitlements.sh") >= 2
 assert "CloudKit provisioning profiles require an explicit" in build_script
 
+metadata_section = stable_release.split(
+    "# --- Step 12: Open an appcast/landing metadata PR after release publication ---",
+    maxsplit=1,
+)[1].split("# --- Step 13:", maxsplit=1)[0]
+assert 'RELEASE_METADATA_BRANCH="${MUESLI_RELEASE_METADATA_BRANCH:-codex/release-${VERSION}-appcast}"' in stable_release
+assert "gh pr create" in metadata_section
+assert "--base main" in metadata_section
+assert "git push origin main" not in metadata_section
+
 print("CloudKit entitlement validator tests passed.")
