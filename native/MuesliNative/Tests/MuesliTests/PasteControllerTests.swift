@@ -4,6 +4,7 @@ import AppKit
 
 // .serialized: some tests still post keyboard events into the active session.
 @Suite("PasteController — clipboard-preserving paste and keystroke simulation", .serialized)
+@MainActor
 struct PasteControllerTests {
 
     private let clipboardPollInterval: TimeInterval = 0.05
@@ -118,6 +119,59 @@ struct PasteControllerTests {
         #expect(result.0 == ["snapshot", "command", "callback"])
         #expect(result.1 == expectedApplication.processIdentifier)
         _ = await waitForClipboardString(in: pasteboard, expected: nil)
+    }
+
+    @Test("paste arms restoration before completion bookkeeping and settles afterward")
+    func pasteRestorationOwnsCriticalPath() async {
+        let pasteboard = makePasteboard()
+        pasteboard.clearContents()
+        pasteboard.setString("original", forType: .string)
+
+        let events = await withCheckedContinuation { continuation in
+            var events: [String] = []
+            PasteController.paste(
+                text: "dictated text",
+                pasteboard: pasteboard,
+                targetApplicationProvider: { nil },
+                simulatePasteAction: { true },
+                onPasteFinished: { _ in
+                    events.append("completion_bookkeeping")
+                },
+                onClipboardSettled: {
+                    events.append("clipboard_settled")
+                    continuation.resume(returning: events)
+                },
+                onLifecycleEvent: { event in
+                    events.append(event.rawValue)
+                }
+            )
+        }
+
+        #expect(events == [
+            "clipboard_staged",
+            "target_snapshotted",
+            "paste_dispatched",
+            "clipboard_restore_scheduled",
+            "completion_bookkeeping",
+            "clipboard_restored",
+            "clipboard_settled",
+        ])
+        #expect(pasteboard.string(forType: .string) == "original")
+    }
+
+    @Test("paste lifecycle diagnostics expose only fixed content-free categories")
+    func lifecycleDiagnosticsAreContentFree() {
+        #expect(PasteController.LifecycleEvent.allCases.map(\.rawValue) == [
+            "clipboard_staged",
+            "clipboard_stage_failed",
+            "target_snapshotted",
+            "paste_dispatched",
+            "paste_dispatch_failed",
+            "clipboard_ownership_lost",
+            "clipboard_restore_scheduled",
+            "clipboard_restored",
+            "clipboard_restore_skipped",
+        ])
     }
 
     @Test("dictation paste skips Cmd+V and attribution after clipboard ownership changes")
