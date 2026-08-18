@@ -35,12 +35,14 @@ if [[ "$CODESIGN_TIMESTAMP" == "none" ]]; then
   CODESIGN_TIMESTAMP="--timestamp=none"
 fi
 BUNDLE_THIN_ARCH="${MUESLI_BUNDLE_THIN_ARCH:-arm64}"
-# Opt-in: compile the app target via xcodebuild against native/MuesliXcode
-# instead of `swift build`, so Contents/Resources/Metadata.appintents gets
-# generated (App Intents metadata extraction only runs for real Xcode
-# Application targets, not SwiftPM executables). Off by default so
-# release.sh/CI/existing contributor workflows are unaffected; dev-test.sh
-# opts in so App Intents / Shortcuts integration can actually be tested.
+# Compile path switch: xcodebuild against native/MuesliXcode (1) vs plain
+# `swift build` (0). Only the xcodebuild path generates
+# Contents/Resources/Metadata.appintents (App Intents metadata extraction
+# runs for real Xcode Application targets, not SwiftPM executables), so all
+# shipped builds — release.sh, release-preprod.sh, release-alpha.sh — pin
+# this to 1, and dev-test.sh defaults to 1. The script-level default stays 0
+# so bare contributor invocations don't require xcodegen; set
+# MUESLI_USE_XCODE_BUILD=1 explicitly when testing Shortcuts by hand.
 USE_XCODE_BUILD="${MUESLI_USE_XCODE_BUILD:-0}"
 XCODE_PROJECT_DIR="$ROOT/native/MuesliXcode"
 XCODE_PRODUCT_NAME="Muesli"

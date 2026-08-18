@@ -1,6 +1,19 @@
+# xcodegen spec for the production Muesli app target.
+#
+# This project exists for exactly one reason: App Intents metadata extraction
+# (Contents/Resources/Metadata.appintents) only runs for a genuine Xcode
+# Application target, not for SwiftPM executables. scripts/build_native_app.sh
+# builds this target, then RESTAGES the binary, frameworks, resource bundles,
+# and Metadata.appintents into the canonical bundle it assembles itself —
+# bundle identity, Info.plist, versions, entitlements, signing, and
+# notarization all stay in build_native_app.sh and the release scripts.
+#
+# Consequence: the bundle ID and versions below belong to a throwaway
+# intermediate .app that never ships. They are intentionally generic; do not
+# "fix" them to match a release channel.
 name: MuesliXcode
 options:
-  bundleIdPrefix: com.muesli.spike
+  bundleIdPrefix: com.muesli
   deploymentTarget:
     macOS: "14.2"
   createIntermediateGroups: true
@@ -22,11 +35,11 @@ targets:
     settings:
       base:
         PRODUCT_NAME: Muesli
-        PRODUCT_BUNDLE_IDENTIFIER: com.muesli.spike.xcodeintents
+        PRODUCT_BUNDLE_IDENTIFIER: com.muesli.build.intermediate
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_LSUIElement: YES
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
-        MARKETING_VERSION: "0.1"
+        MARKETING_VERSION: "1"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.9"
         CODE_SIGNING_ALLOWED: NO
