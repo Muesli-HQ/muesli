@@ -57,6 +57,7 @@ final class RecentHistoryWindowController: NSObject, NSWindowDelegate {
             buildWindow()
         }
         guard let window else { return }
+        applyAppearance(to: window)
         controller.syncAppState()
         if !window.isVisible {
             controller.noteWindowOpened()
@@ -72,7 +73,21 @@ final class RecentHistoryWindowController: NSObject, NSWindowDelegate {
     }
 
     func reload() {
+        if let window {
+            applyAppearance(to: window)
+        }
         controller.syncAppState()
+    }
+
+    /// The window is created before SwiftUI applies `preferredColorScheme`, and AppKit chrome
+    /// (transparent titlebar, traffic lights, resize corners) resolves against the window's own
+    /// appearance rather than the SwiftUI environment. Without this the titlebar keeps rendering
+    /// dark while the app is set to the light theme.
+    private func applyAppearance(to window: NSWindow) {
+        let name: NSAppearance.Name = controller.appState.config.darkMode ? .darkAqua : .aqua
+        if window.appearance?.name != name {
+            window.appearance = NSAppearance(named: name)
+        }
     }
 
     func close() {
@@ -103,7 +118,8 @@ final class RecentHistoryWindowController: NSObject, NSWindowDelegate {
         window.delegate = self
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
-        window.backgroundColor = NSColor(red: 0.067, green: 0.071, blue: 0.078, alpha: 1) // #111214
+        window.backgroundColor = MuesliTheme.backgroundDeepNSColor
+        applyAppearance(to: window)
 
         let rootView = DashboardRootView(
             appState: controller.appState,
