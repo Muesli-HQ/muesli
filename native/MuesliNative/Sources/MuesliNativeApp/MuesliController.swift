@@ -22,6 +22,11 @@ private enum DictationOutputMode {
     }
 }
 
+private struct DictationLatencyTraceToken: Sendable {
+    let id: UUID
+    let startedAt: Date
+}
+
 enum DictationBackendReadiness: Equatable {
     case preparing
     case ready
@@ -8268,13 +8273,29 @@ final class MuesliController: NSObject {
     }
 
     private func markDictationLatency(_ event: String, at date: Date) {
-        guard let traceID = dictationLatencyTraceID,
-              let startedAt = dictationLatencyTraceStartedAt else { return }
-        let elapsedMS = Int(date.timeIntervalSince(startedAt) * 1000)
+        guard let trace = currentDictationLatencyTrace else { return }
+        markDictationLatency(event, at: date, trace: trace)
+    }
+
+    private var currentDictationLatencyTrace: DictationLatencyTraceToken? {
+        guard let id = dictationLatencyTraceID,
+              let startedAt = dictationLatencyTraceStartedAt else { return nil }
+        return DictationLatencyTraceToken(id: id, startedAt: startedAt)
+    }
+
+    private func markDictationLatency(
+        _ event: String,
+        at date: Date = Date(),
+        trace: DictationLatencyTraceToken?
+    ) {
+        guard let trace else { return }
+        let elapsedMS = max(Int(date.timeIntervalSince(trace.startedAt) * 1000), 0)
         let timestamp = dictationLatencyTimestampFormatter.string(from: date)
         let routeKind = dictationAudioRoutingController.currentOutputRouteKindForDebug()
-        let routeDescription = dictationAudioRoutingController.currentRouteDebugDescription()
-        let line = "[dictation-latency] ts=\(timestamp) id=\(traceID.uuidString) event=\(event) elapsed_ms=\(elapsedMS) profile=\(dictationLatencyProfile(routeKind: routeKind)) \(routeDescription)"
+        // Keep the timing suffix content-free: never persist transcript, clipboard,
+        // application, account, or route-device identity. New completion events are
+        // represented by fixed PasteController.LifecycleEvent categories.
+        let line = "[dictation-latency] ts=\(timestamp) id=\(trace.id.uuidString) event=\(event) elapsed_ms=\(elapsedMS) profile=\(dictationLatencyProfile(routeKind: routeKind))"
         fputs("\(line)\n", stderr)
         appendDictationLatencyLog(line)
     }
@@ -8295,7 +8316,15 @@ final class MuesliController: NSObject {
     }
 
     private func finishDictationLatencyTrace(_ event: String) {
-        markDictationLatency(event)
+        finishDictationLatencyTrace(event, trace: currentDictationLatencyTrace)
+    }
+
+    private func finishDictationLatencyTrace(
+        _ event: String,
+        trace: DictationLatencyTraceToken?
+    ) {
+        markDictationLatency(event, trace: trace)
+        guard dictationLatencyTraceID == trace?.id else { return }
         dictationLatencyTraceID = nil
         dictationLatencyTraceStartedAt = nil
     }
@@ -8946,13 +8975,27 @@ final class MuesliController: NSObject {
         syncDictationRecorderWarmup(intent: .idlePrewarm(.backendRecovery))
     }
 
-    private func completeStandardDictation(
+    /// Releases the user-visible dictation state immediately after Cmd+V. Keep this path
+    /// bounded so the main actor remains available for clipboard restoration.
+    private func releaseStandardDictationState() {
+        clearCapturedDictationSessionContext()
+        resetDictationOutputMode()
+        setState(.idle)
+        meetingMonitor.resumeAfterCooldown()
+        syncDictationRecorderWarmup(intent: .postDictation(.transcriptionComplete))
+    }
+
+    /// For paste output, runs only once the pasteboard has either been restored or superseded
+    /// by a newer copy. Persistence and dashboard queries therefore cannot lengthen transcript
+    /// ownership of the clipboard or the visible Transcribing state.
+    private func finishStandardDictationBookkeeping(
         text: String,
         duration: TimeInterval,
         appContext: String,
         startedAt: Date,
         outputMode: DictationOutputMode,
-        targetApp: DictationCorrectionTargetApp?
+        targetApp: DictationCorrectionTargetApp?,
+        backend: String
     ) {
         _ = try? dictationStore.insertDictation(
             text: text,
@@ -8964,29 +9007,15 @@ final class MuesliController: NSObject {
             endedAt: Date()
         )
         scheduleICloudSyncAfterLocalChange()
-        clearCapturedDictationSessionContext()
         statusBarController?.refresh()
-        historyWindowController?.reload()
-        syncAppState()
-        if outputMode == .paste, config.enableDictionaryCorrectionPrompts {
-            // Dictionary correction prompts are an explicit opt-in
-            // screen-context feature: they briefly read focused app
-            // text via Accessibility after dictation, then stop when
-            // the bounded edit monitor session ends.
-            dictationCorrectionMonitor.start(
-                originalText: text,
-                appContext: appContext,
-                targetApp: targetApp
-            ) { [weak self] suggestion in
-                self?.addDictionarySuggestion(suggestion)
-            }
+        if let historyWindowController {
+            // reload() already calls syncAppState(); do not repeat the full query set.
+            historyWindowController.reload()
+        } else {
+            syncAppState()
         }
-        resetDictationOutputMode()
-        setState(.idle)
-        meetingMonitor.resumeAfterCooldown()
-        syncDictationRecorderWarmup(intent: .postDictation(.transcriptionComplete))
         TelemetryDeck.signal("dictation.completed", parameters: [
-            "backend": selectedBackend.backend,
+            "backend": backend,
             "paste_method": outputMode.pasteMethod,
         ])
     }
@@ -9020,7 +9049,8 @@ final class MuesliController: NSObject {
         }
 
         setState(.transcribing)
-        finishDictationLatencyTrace("ready_for_transcription")
+        markDictationLatency("ready_for_transcription")
+        let completionLatencyTrace = currentDictationLatencyTrace
         syncDictationRecorderWarmup(intent: .postDictation(.dictationStop))
         let isTestMode = isDictationTestMode
         let outputMode = currentDictationOutputMode
@@ -9058,6 +9088,9 @@ final class MuesliController: NSObject {
                 // Drop result if test was cancelled (user navigated away)
                 try Task.checkCancellation()
                 let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                await MainActor.run {
+                    self.markDictationLatency("transcription_completed", trace: completionLatencyTrace)
+                }
 
                 // Test mode: route result to callback, skip history/paste
                 if isTestMode {
@@ -9068,6 +9101,7 @@ final class MuesliController: NSObject {
                         self.setState(.idle)
                         self.meetingMonitor.resumeAfterCooldown()
                         self.syncDictationRecorderWarmup(intent: .postDictation(.transcriptionComplete))
+                        self.finishDictationLatencyTrace("test_completed", trace: completionLatencyTrace)
                     }
                     return
                 }
@@ -9082,35 +9116,76 @@ final class MuesliController: NSObject {
                         self.setState(.idle)
                         self.meetingMonitor.resumeAfterCooldown()
                         self.syncDictationRecorderWarmup(intent: .postDictation(.transcriptionComplete))
+                        self.finishDictationLatencyTrace("empty_transcription", trace: completionLatencyTrace)
                     }
                     return
                 }
                 await MainActor.run {
                     if outputMode == .paste {
+                        var completionTargetApp: DictationCorrectionTargetApp?
                         PasteController.paste(
                             text: text,
                             requireStagedClipboardOwnership: true,
                             onPasteFinished: { [weak self] targetApplication in
                                 guard let self else { return }
                                 let targetApp = self.externalDictationTargetApp(from: targetApplication)
-                                self.completeStandardDictation(
+                                completionTargetApp = targetApp
+                                self.releaseStandardDictationState()
+                                if self.config.enableDictionaryCorrectionPrompts {
+                                    // This opt-in monitor only schedules its first Accessibility
+                                    // poll after 100 ms, so starting it here captures immediate
+                                    // edits without blocking the clipboard restoration timer.
+                                    self.dictationCorrectionMonitor.start(
+                                        originalText: text,
+                                        appContext: storageContext,
+                                        targetApp: targetApp
+                                    ) { [weak self] suggestion in
+                                        self?.addDictionarySuggestion(suggestion)
+                                    }
+                                }
+                                self.markDictationLatency(
+                                    "user_visible_completion",
+                                    trace: completionLatencyTrace
+                                )
+                            },
+                            onClipboardSettled: { [weak self] in
+                                guard let self else { return }
+                                self.finishStandardDictationBookkeeping(
                                     text: text,
                                     duration: duration,
                                     appContext: storageContext,
                                     startedAt: startedAt,
                                     outputMode: outputMode,
-                                    targetApp: targetApp
+                                    targetApp: completionTargetApp,
+                                    backend: transcriptionBackend.backend
+                                )
+                                self.finishDictationLatencyTrace(
+                                    "bookkeeping_completed",
+                                    trace: completionLatencyTrace
+                                )
+                            },
+                            onLifecycleEvent: { [weak self] event in
+                                self?.markDictationLatency(
+                                    "paste_\(event.rawValue)",
+                                    trace: completionLatencyTrace
                                 )
                             }
                         )
                     } else {
-                        self.completeStandardDictation(
+                        self.releaseStandardDictationState()
+                        self.markDictationLatency("user_visible_completion", trace: completionLatencyTrace)
+                        self.finishStandardDictationBookkeeping(
                             text: text,
                             duration: duration,
                             appContext: storageContext,
                             startedAt: startedAt,
                             outputMode: outputMode,
-                            targetApp: nil
+                            targetApp: nil,
+                            backend: transcriptionBackend.backend
+                        )
+                        self.finishDictationLatencyTrace(
+                            "bookkeeping_completed",
+                            trace: completionLatencyTrace
                         )
                     }
                 }
@@ -9122,6 +9197,7 @@ final class MuesliController: NSObject {
                     self.setState(.idle)
                     self.meetingMonitor.resumeAfterCooldown()
                     self.syncDictationRecorderWarmup(intent: .postDictation(.transcriptionCancelled))
+                    self.finishDictationLatencyTrace("transcription_cancelled", trace: completionLatencyTrace)
                 }
             } catch {
                 fputs("[muesli-native] transcription failed: \(error)\n", stderr)
@@ -9141,6 +9217,7 @@ final class MuesliController: NSObject {
                     self.setState(.idle)
                     self.meetingMonitor.resumeAfterCooldown()
                     self.syncDictationRecorderWarmup(intent: .postDictation(.transcriptionFailed))
+                    self.finishDictationLatencyTrace("transcription_failed", trace: completionLatencyTrace)
                 }
             }
         }

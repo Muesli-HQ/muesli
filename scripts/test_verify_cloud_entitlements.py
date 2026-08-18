@@ -110,13 +110,96 @@ assert stable_release.count("verify_signed_cloud_entitlements.sh") >= 2
 assert preprod_release.count("verify_signed_cloud_entitlements.sh") >= 2
 assert "CloudKit provisioning profiles require an explicit" in build_script
 
-metadata_section = stable_release.split(
-    "# --- Step 12: Open an appcast/landing metadata PR after release publication ---",
+metadata_marker = (
+    "# --- Step 11: Validate appcast metadata and open its PR while release stays draft ---"
+)
+publication_marker = (
+    "# --- Step 12: Publish only after appcast validation and metadata PR creation ---"
+)
+metadata_section = stable_release.split(metadata_marker, maxsplit=1)[1].split(
+    publication_marker,
     maxsplit=1,
-)[1].split("# --- Step 13:", maxsplit=1)[0]
+)[0]
+publication_section = stable_release.split(publication_marker, maxsplit=1)[1].split(
+    "# --- Step 13:",
+    maxsplit=1,
+)[0]
 assert 'RELEASE_METADATA_BRANCH="${MUESLI_RELEASE_METADATA_BRANCH:-codex/release-${VERSION}-appcast}"' in stable_release
 assert "gh pr create" in metadata_section
 assert "--base main" in metadata_section
 assert "git push origin main" not in metadata_section
+assert "verify_update_flow.sh" in metadata_section
+assert "gh release edit" not in metadata_section
+assert "gh release edit" in publication_section
+assert "muesli_require_release_publication_ready" in publication_section
+assert "RELEASE_METADATA_PR_URL" in publication_section
+assert "resume_existing_release_publication()" in stable_release
+assert "Existing release metadata branch found" in stable_release
+assert "Expected zero or one open metadata PR" in stable_release
+assert '--appcast "$metadata_appcast"' in stable_release
+assert '"$ROOT/scripts/verify_signed_cloud_entitlements.sh"' in stable_release
+assert "Existing release metadata or hosted artifact failed update-flow validation" in stable_release
+assert "Existing hosted app failed Production CloudKit entitlement validation" in stable_release
+assert "Recreated missing release metadata PR" in stable_release
+assert "resume_existing_release_publication" in stable_release.split(
+    '# --- Step 0: Update version in build script ---',
+    maxsplit=1,
+)[0]
+assert "Remote release metadata branch already exists" not in stable_release
+
+ordered_release_gates = (
+    '"$GENERATE_APPCAST"',
+    'python3 "$UPDATE_APPCAST_RELEASE_NOTES"',
+    'python3 "$MERGE_APPCAST_ITEM"',
+    '"$ROOT/scripts/verify_update_flow.sh"',
+    "git commit --signoff",
+    "git push -u origin",
+    "gh pr create",
+    "gh release edit",
+)
+release_finalization = metadata_section + publication_section
+gate_offsets = [release_finalization.index(gate) for gate in ordered_release_gates]
+assert gate_offsets == sorted(gate_offsets), gate_offsets
+
+publication_gate = ROOT / "scripts" / "release_publication_gate.sh"
+failed_validation_probe = subprocess.run(
+    [
+        "bash",
+        "-c",
+        f'''set -euo pipefail
+source "{publication_gate}"
+published=0
+publish() {{ published=1; }}
+if muesli_require_release_publication_ready 0 "https://example.invalid/pr/1"; then
+  publish
+fi
+[[ "$published" == "0" ]]
+''',
+    ],
+    text=True,
+    capture_output=True,
+    check=False,
+)
+assert failed_validation_probe.returncode == 0, failed_validation_probe.stderr
+
+missing_pr_probe = subprocess.run(
+    ["bash", "-c", f'source "{publication_gate}"; muesli_require_release_publication_ready 1 ""'],
+    text=True,
+    capture_output=True,
+    check=False,
+)
+assert missing_pr_probe.returncode != 0
+
+ready_probe = subprocess.run(
+    [
+        "bash",
+        "-c",
+        f'source "{publication_gate}"; muesli_require_release_publication_ready 1 "https://example.invalid/pr/1"',
+    ],
+    text=True,
+    capture_output=True,
+    check=False,
+)
+assert ready_probe.returncode == 0, ready_probe.stderr
 
 print("CloudKit entitlement validator tests passed.")

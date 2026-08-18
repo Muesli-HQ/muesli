@@ -4,6 +4,18 @@ import Foundation
 import MuesliCore
 
 enum PasteController {
+    enum LifecycleEvent: String, CaseIterable, Sendable {
+        case clipboardStaged = "clipboard_staged"
+        case clipboardStageFailed = "clipboard_stage_failed"
+        case targetSnapshotted = "target_snapshotted"
+        case pasteDispatched = "paste_dispatched"
+        case pasteDispatchFailed = "paste_dispatch_failed"
+        case clipboardOwnershipLost = "clipboard_ownership_lost"
+        case clipboardRestoreScheduled = "clipboard_restore_scheduled"
+        case clipboardRestored = "clipboard_restored"
+        case clipboardRestoreSkipped = "clipboard_restore_skipped"
+    }
+
     /// How long to wait after simulating Cmd+V before restoring the clipboard.
     /// The receiving app must have consumed the paste data within this window.
     private static let clipboardRestoreDelay: TimeInterval = 0.5
@@ -41,6 +53,7 @@ enum PasteController {
     /// For nonempty text, completion receives the target app only when the keyboard events
     /// were posted. When staged-clipboard ownership is required, a failed write or intervening
     /// clipboard change also completes with `nil` attribution and skips Cmd+V.
+    @MainActor
     static func paste(
         text: String,
         pasteboard: NSPasteboard = .general,
@@ -49,7 +62,9 @@ enum PasteController {
             NSWorkspace.shared.frontmostApplication
         },
         simulatePasteAction: @escaping @MainActor () -> Bool = PasteController.simulatePaste,
-        onPasteFinished: @escaping @MainActor (NSRunningApplication?) -> Void = { _ in }
+        onPasteFinished: @escaping @MainActor (NSRunningApplication?) -> Void = { _ in },
+        onClipboardSettled: @escaping @MainActor () -> Void = {},
+        onLifecycleEvent: @escaping @MainActor (LifecycleEvent) -> Void = { _ in }
     ) {
         guard !text.isEmpty else { return }
 
@@ -59,34 +74,52 @@ enum PasteController {
         let clearedChangeCount = pasteboard.clearContents()
         let didStageText = pasteboard.setString(text, forType: .string)
         let pasteChangeCount = pasteboard.changeCount
+        onLifecycleEvent(didStageText ? .clipboardStaged : .clipboardStageFailed)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             // Snapshot immediately before Cmd+V so attribution and the paste event
             // refer to the same frontmost application.
             let targetApplication = targetApplicationProvider()
+            onLifecycleEvent(.targetSnapshotted)
             if requireStagedClipboardOwnership {
                 guard didStageText else {
                     // Restore only when Muesli still owns the cleared pasteboard. If another
                     // app wrote to it, preserving that newer content takes precedence.
                     if pasteboard.changeCount == clearedChangeCount {
                         restoreClipboard(pasteboard, from: savedItems)
+                        onLifecycleEvent(.clipboardRestored)
+                    } else {
+                        onLifecycleEvent(.clipboardRestoreSkipped)
                     }
                     onPasteFinished(nil)
+                    onClipboardSettled()
                     return
                 }
                 guard pasteboard.changeCount == pasteChangeCount else {
+                    onLifecycleEvent(.clipboardOwnershipLost)
                     onPasteFinished(nil)
+                    onClipboardSettled()
                     return
                 }
             }
             let didDispatchPaste = simulatePasteAction()
-            onPasteFinished(didDispatchPaste ? targetApplication : nil)
+            onLifecycleEvent(didDispatchPaste ? .pasteDispatched : .pasteDispatchFailed)
 
-            // Restore the original clipboard contents after the receiving app has consumed the paste.
+            // Arm restoration before completion bookkeeping. The dictation completion callback
+            // persists attribution and refreshes UI; neither is allowed to extend how long the
+            // transcript owns the user's clipboard.
+            onLifecycleEvent(.clipboardRestoreScheduled)
             DispatchQueue.main.asyncAfter(deadline: .now() + clipboardRestoreDelay) {
-                guard pasteboard.changeCount == pasteChangeCount else { return }
-                restoreClipboard(pasteboard, from: savedItems)
+                if pasteboard.changeCount == pasteChangeCount {
+                    restoreClipboard(pasteboard, from: savedItems)
+                    onLifecycleEvent(.clipboardRestored)
+                } else {
+                    onLifecycleEvent(.clipboardRestoreSkipped)
+                }
+                onClipboardSettled()
             }
+
+            onPasteFinished(didDispatchPaste ? targetApplication : nil)
         }
     }
 
