@@ -3,7 +3,7 @@
 This document is the contributor and coding-agent map of Muesli's local SQLite
 database. It explains ownership, relationships, sync boundaries, and the safe
 way to evolve the schema. The executable source of truth remains
-[`DictationStore.migrateIfNeeded()`](../native/MuesliNative/Sources/MuesliCore/DictationStore.swift).
+[`DictationStore.migrateIfNeeded()`](native/MuesliNative/Sources/MuesliCore/DictationStore.swift).
 Update this guide whenever that schema changes.
 
 ## Where the database lives

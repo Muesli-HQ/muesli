@@ -105,11 +105,21 @@ if [[ -n "$(git status --porcelain)" ]]; then
 fi
 
 CURRENT_BRANCH="$(git branch --show-current)"
+assert_release_branch_contains_origin_main() {
+  git fetch origin main --quiet
+  if ! git merge-base --is-ancestor origin/main HEAD; then
+    echo "ERROR: ${CURRENT_BRANCH} does not contain the latest origin/main." >&2
+    echo "Rebase or merge origin/main before publishing a stable release." >&2
+    exit 1
+  fi
+}
+
 if [[ "$RELEASE_PR_MODE" == "1" ]]; then
   if [[ -z "$CURRENT_BRANCH" || "$CURRENT_BRANCH" == "main" ]]; then
     echo "ERROR: MUESLI_RELEASE_PR_MODE=1 requires a dedicated release branch." >&2
     exit 1
   fi
+  assert_release_branch_contains_origin_main
   echo "Release PR mode enabled: metadata will be pushed to ${CURRENT_BRANCH}, not main."
 fi
 
@@ -345,6 +355,10 @@ fi
 if git ls-remote --tags origin "refs/tags/${TAG}" | grep -q .; then
   echo "ERROR: Remote tag ${TAG} already exists." >&2
   exit 1
+fi
+
+if [[ "$RELEASE_PR_MODE" == "1" ]]; then
+  assert_release_branch_contains_origin_main
 fi
 
 git tag -a "$TAG" -m "Release ${VERSION}"

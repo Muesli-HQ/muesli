@@ -39,6 +39,22 @@ run_case readme_docs_only \
   "review_worthy=false" \
   "native_or_packaging=false"
 
+run_case root_database_guide_docs_only \
+  "database-schema.md" \
+  "docs_only=true" \
+  "app_source=false" \
+  "release_surface=false" \
+  "workflow=false" \
+  "ci_config=false" \
+  "site_or_metadata=false" \
+  "repo_policy=false" \
+  "unknown=false" \
+  "source_or_release=false" \
+  "full_ci=false" \
+  "workflow_ci=false" \
+  "review_worthy=false" \
+  "native_or_packaging=false"
+
 run_case docs_report_only \
   "docs/reports/ci.md" \
   "docs_only=true" \
