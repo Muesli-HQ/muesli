@@ -473,6 +473,28 @@ struct DictationStoreTests {
         #expect(record.calendarOccurrence == nil)
     }
 
+    @Test("MeetingRecord decodes legacy JSON without visual context")
+    func meetingRecordDecodesWithoutVisualContext() throws {
+        let json = """
+        {
+          "id": 42,
+          "title": "Legacy meeting",
+          "startTime": "2026-04-10T14:00:00Z",
+          "durationSeconds": 1800,
+          "rawTranscript": "",
+          "formattedNotes": "",
+          "wordCount": 0
+        }
+        """
+
+        let record = try JSONDecoder().decode(
+            MeetingRecord.self,
+            from: try #require(json.data(using: .utf8))
+        )
+
+        #expect(record.visualContext == nil)
+    }
+
     @Test("MeetingRecord preserves a calendar occurrence through Codable")
     func meetingRecordCalendarOccurrenceCodableRoundTrip() throws {
         let occurrence = CalendarOccurrenceReference(
@@ -577,6 +599,112 @@ struct DictationStoreTests {
 
         let inserted = try #require(try store.recentMeetings(limit: 1).first)
         #expect(inserted.source == .audioImport)
+    }
+
+    @Test("visual context round-trips through insert and fetch")
+    func visualContextPersists() throws {
+        let store = try makeStore()
+        let start = Date()
+
+        let id = try store.insertMeeting(
+            title: "Context Meeting",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(60),
+            rawTranscript: "Transcript",
+            formattedNotes: "Notes",
+            micAudioPath: nil,
+            systemAudioPath: nil,
+            visualContext: "[10:00:00] Safari:\nApp context:\nSlide deck"
+        )
+
+        let fetched = try #require(try store.meeting(id: id))
+        #expect(fetched.visualContext == "[10:00:00] Safari:\nApp context:\nSlide deck")
+
+        let plainID = try store.insertMeeting(
+            title: "No Context",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(60),
+            rawTranscript: "Transcript",
+            formattedNotes: "Notes",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+        #expect(try #require(try store.meeting(id: plainID)).visualContext == nil)
+    }
+
+    @Test("completeLiveMeeting stores visual context")
+    func completeLiveMeetingStoresVisualContext() throws {
+        let store = try makeStore()
+        let start = Date()
+        let id = try store.createLiveMeeting(
+            title: "Live",
+            calendarEventID: nil,
+            startTime: start
+        )
+
+        try store.completeLiveMeeting(
+            id: id,
+            title: "Live",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(120),
+            rawTranscript: "Transcript",
+            formattedNotes: "Notes",
+            micAudioPath: nil,
+            systemAudioPath: nil,
+            visualContext: "[10:05:00] Zoom:\nOCR visual text:\nQ3 roadmap"
+        )
+
+        let fetched = try #require(try store.meeting(id: id))
+        #expect(fetched.visualContext == "[10:05:00] Zoom:\nOCR visual text:\nQ3 roadmap")
+    }
+
+    @Test("migrating a legacy database twice tolerates the duplicate columns")
+    func legacyMigrationIsIdempotent() throws {
+        let store = try makeLegacyStore()
+
+        try store.migrateIfNeeded()
+        // The second pass re-runs every ADD COLUMN against columns that now
+        // exist; those duplicates must stay tolerated while real failures throw.
+        try store.migrateIfNeeded()
+
+        let start = Date()
+        let id = try store.insertMeeting(
+            title: "Twice Migrated",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(60),
+            rawTranscript: "Transcript",
+            formattedNotes: "Notes",
+            micAudioPath: nil,
+            systemAudioPath: nil,
+            visualContext: "context survives a second migration"
+        )
+        #expect(try #require(try store.meeting(id: id)).visualContext == "context survives a second migration")
+    }
+
+    @Test("migration adds visual context column to legacy meeting schema")
+    func migrationAddsVisualContextColumn() throws {
+        let store = try makeLegacyStore()
+
+        try store.migrateIfNeeded()
+
+        let start = Date()
+        let id = try store.insertMeeting(
+            title: "Migrated Meeting",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(60),
+            rawTranscript: "Transcript",
+            formattedNotes: "Notes",
+            micAudioPath: nil,
+            systemAudioPath: nil,
+            visualContext: "context after migration"
+        )
+
+        #expect(try #require(try store.meeting(id: id)).visualContext == "context after migration")
     }
 
     @Test("meetingRawTranscript returns the stored transcript")
@@ -2348,6 +2476,63 @@ struct DictationStoreTests {
         let remaining = try store.recentMeetings(limit: 10)
         #expect(remaining.count == 1)
         #expect(remaining.first?.title == "Keep Me")
+    }
+
+    @Test("delete meeting scrubs the stored visual context")
+    func deleteMeetingScrubsVisualContext() throws {
+        let store = try makeStore()
+        let now = Date()
+        let id = try store.insertMeeting(
+            title: "Context Delete",
+            calendarEventID: nil,
+            startTime: now,
+            endTime: now.addingTimeInterval(60),
+            rawTranscript: "Transcript",
+            formattedNotes: "Notes",
+            micAudioPath: nil,
+            systemAudioPath: nil,
+            visualContext: "[10:00:00] Safari:\nsensitive on-screen text"
+        )
+
+        try store.deleteMeeting(id: id)
+        #expect(try rawMeetingVisualContext(id: id, store: store) == nil)
+
+        let clearID = try store.insertMeeting(
+            title: "Context Clear",
+            calendarEventID: nil,
+            startTime: now,
+            endTime: now.addingTimeInterval(60),
+            rawTranscript: "Transcript",
+            formattedNotes: "Notes",
+            micAudioPath: nil,
+            systemAudioPath: nil,
+            visualContext: "more on-screen text"
+        )
+        try store.clearMeetings()
+        #expect(try rawMeetingVisualContext(id: clearID, store: store) == nil)
+    }
+
+    /// Reads visual_context straight from the row, bypassing the record readers
+    /// (which exclude soft-deleted meetings entirely).
+    private func rawMeetingVisualContext(id: Int64, store: DictationStore) throws -> String? {
+        var db: OpaquePointer?
+        guard sqlite3_open(store.databasePath().path, &db) == SQLITE_OK else {
+            throw sqliteTestError("failed to open test database")
+        }
+        defer { sqlite3_close(db) }
+
+        let sql = "SELECT visual_context FROM meetings WHERE id = ?"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw sqliteTestError("failed to prepare visual context read")
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, id)
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw sqliteTestError("meeting row missing")
+        }
+        guard sqlite3_column_type(statement, 0) != SQLITE_NULL else { return nil }
+        return String(cString: sqlite3_column_text(statement, 0))
     }
 
     @Test("delete meeting removes live transcript checkpoints")

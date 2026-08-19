@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import Testing
 import MuesliCore
 @testable import MuesliCLI
@@ -50,6 +51,113 @@ struct MuesliCLITests {
 
         #expect(context.supportDirectory.path == "/tmp/muesli-support")
         #expect(context.databaseURL.path == "/tmp/muesli-support/muesli.db")
+    }
+
+    @Test("migration runs before a read so a legacy database gains new columns")
+    func migrationWarningsUpgradesLegacyDatabase() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("muesli-cli-migrate-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // A meetings table shaped like an older Muesli release, predating
+        // visual_context (mirrors makeLegacyStore in DictationStoreTests).
+        let dbURL = dir.appendingPathComponent("muesli.db")
+        var db: OpaquePointer?
+        #expect(sqlite3_open(dbURL.path, &db) == SQLITE_OK)
+        let legacySQL = """
+        CREATE TABLE meetings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            calendar_event_id TEXT,
+            start_time TEXT NOT NULL,
+            end_time TEXT,
+            duration_seconds REAL,
+            raw_transcript TEXT,
+            formatted_notes TEXT,
+            mic_audio_path TEXT,
+            system_audio_path TEXT,
+            word_count INTEGER NOT NULL DEFAULT 0,
+            source TEXT NOT NULL DEFAULT 'meeting',
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        """
+        #expect(sqlite3_exec(db, legacySQL, nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(db)
+
+        let context = CLIContext(dbPath: dbURL.path, supportDir: nil)
+        #expect(migrationWarnings(context).isEmpty)
+        // The read would fail with "no such column" without the migration above.
+        #expect(try context.store.recentMeetings(limit: 1).isEmpty)
+    }
+
+    @Test("a failed migration is reported as a warning instead of thrown")
+    func migrationWarningsReportsFailure() {
+        // A directory in place of the database file: opening it fails, so the
+        // migration cannot run and must surface as a warning, not a crash.
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("muesli-cli-unwritable-\(UUID().uuidString)")
+        let dbURL = dir.appendingPathComponent("muesli.db")
+        try? FileManager.default.createDirectory(at: dbURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let warnings = migrationWarnings(CLIContext(dbPath: dbURL.path, supportDir: nil))
+        #expect(warnings.count == 1)
+        #expect(warnings.first?.contains("Schema migration failed") == true)
+    }
+
+    @Test("a read that fails after a failed migration explains the stale schema")
+    func withMigrationAttachesMigrationFailureToReadError() {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("muesli-cli-enrich-\(UUID().uuidString)")
+        let dbURL = dir.appendingPathComponent("muesli.db")
+        try? FileManager.default.createDirectory(at: dbURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let context = CLIContext(dbPath: dbURL.path, supportDir: nil)
+        #expect(throws: CLIError.self) {
+            try withMigration(context) { try context.store.recentMeetings(limit: 1) }
+        }
+        do {
+            _ = try withMigration(context) { try context.store.recentMeetings(limit: 1) }
+        } catch let error as CLIError {
+            #expect(error.errorBody.code == "database_error")
+            #expect(error.errorBody.fix?.contains("Schema migration failed") == true)
+        } catch {
+            Issue.record("expected a CLIError, got \(error)")
+        }
+    }
+
+    @Test("a successful read still reports a migration warning")
+    func withMigrationKeepsWarningOnSuccessfulRead() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("muesli-cli-passthrough-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let context = CLIContext(dbPath: dir.appendingPathComponent("muesli.db").path, supportDir: nil)
+        // A migration can fail against a schema that is already current (a busy
+        // database while the app writes), where the read still succeeds. The
+        // warning is the only signal the caller gets, so it must survive.
+        try context.store.migrateIfNeeded()
+        let (rows, warnings) = try withMigration(context, migrate: { _ in ["Schema migration failed: database is locked."] }) {
+            try context.store.recentMeetings(limit: 5)
+        }
+        #expect(rows.isEmpty)
+        #expect(warnings == ["Schema migration failed: database is locked."])
+    }
+
+    @Test("a read with no migration trouble reports no warnings")
+    func withMigrationReportsNoWarningsOnCleanMigration() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("muesli-cli-clean-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let context = CLIContext(dbPath: dir.appendingPathComponent("muesli.db").path, supportDir: nil)
+        let (rows, warnings) = try withMigration(context) { try context.store.recentMeetings(limit: 5) }
+        #expect(rows.isEmpty)
+        #expect(warnings.isEmpty)
     }
 
     @Test("meeting payloads expose applied template metadata")

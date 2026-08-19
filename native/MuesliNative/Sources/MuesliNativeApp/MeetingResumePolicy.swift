@@ -31,4 +31,22 @@ enum MeetingResumePolicy {
     static func hasNewTranscriptContent(prior: String, new: String) -> Bool {
         combinedResumeTranscript(prior: prior, new: new) != prior
     }
+
+    /// Combined visual context is prefix-capped so repeated resumes cannot grow
+    /// the stored value without bound (each session's drain is already capped
+    /// by MeetingScreenContextCollector).
+    static let combinedVisualContextLimit = 20_000
+
+    /// Merges the resumed meeting's stored visual context with the context the
+    /// resumed session captured, mirroring combinedResumeTranscript: either
+    /// side may be missing, and a no-op side never appends a dangling separator.
+    /// At the cap, the oldest prior content is dropped first so the resumed
+    /// session's context (the freshest) always survives whole.
+    static func combinedResumeVisualContext(prior: String?, new: String?) -> String? {
+        let trimmedPrior = prior?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let trimmedNew = new?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmedNew.isEmpty { return trimmedPrior.isEmpty ? nil : prior }
+        guard !trimmedPrior.isEmpty, let prior, let new else { return new }
+        return String((prior + resumeSeparator + new).suffix(combinedVisualContextLimit))
+    }
 }

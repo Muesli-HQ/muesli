@@ -45,6 +45,39 @@ struct MeetingResumePolicyTests {
         #expect(MeetingResumePolicy.hasNewTranscriptContent(prior: "", new: "new segment"))
     }
 
+    @Test("combined visual context keeps both sides with a separator")
+    func combinedVisualContextAppends() {
+        let combined = MeetingResumePolicy.combinedResumeVisualContext(
+            prior: "[10:00:00] Safari:\nfirst capture",
+            new: "[10:30:00] Zoom:\nsecond capture"
+        )
+        #expect(combined == "[10:00:00] Safari:\nfirst capture\(MeetingResumePolicy.resumeSeparator)[10:30:00] Zoom:\nsecond capture")
+    }
+
+    @Test("combined visual context preserves the surviving side when the other is missing")
+    func combinedVisualContextOneSided() {
+        #expect(MeetingResumePolicy.combinedResumeVisualContext(prior: "prior capture", new: nil) == "prior capture")
+        #expect(MeetingResumePolicy.combinedResumeVisualContext(prior: "prior capture", new: "  \n") == "prior capture")
+        #expect(MeetingResumePolicy.combinedResumeVisualContext(prior: nil, new: "new capture") == "new capture")
+        #expect(MeetingResumePolicy.combinedResumeVisualContext(prior: "", new: "new capture") == "new capture")
+    }
+
+    @Test("combined visual context is nil when neither side captured anything")
+    func combinedVisualContextBothEmpty() {
+        #expect(MeetingResumePolicy.combinedResumeVisualContext(prior: nil, new: nil) == nil)
+        #expect(MeetingResumePolicy.combinedResumeVisualContext(prior: " ", new: "") == nil)
+    }
+
+    @Test("combined visual context is capped by dropping the oldest prior content")
+    func combinedVisualContextCapped() {
+        let prior = String(repeating: "p", count: MeetingResumePolicy.combinedVisualContextLimit)
+        let new = String(repeating: "n", count: 5000)
+        let combined = MeetingResumePolicy.combinedResumeVisualContext(prior: prior, new: new)
+        #expect(combined?.count == MeetingResumePolicy.combinedVisualContextLimit)
+        #expect(combined?.hasSuffix(new) == true)
+        #expect(combined?.hasPrefix("p") == true)
+    }
+
     private func makeResult(start: Date, end: Date) -> MeetingSessionResult {
         MeetingSessionResult(
             title: "M",
