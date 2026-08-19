@@ -475,26 +475,29 @@
 <!-- 4. ICONOGRAPHY -->
 <section class="page-break">
   <h2><span class="num">04</span> Iconography</h2>
-  <p class="section-desc">SF Symbols for UI chrome, emoji for the floating indicator, custom MWaveformIcon for branding.</p>
+  <p class="section-desc">SF Symbols for UI chrome, animated waveform bars for the floating indicator, custom MWaveformIcon for branding.</p>
 
   <h3>Sidebar Navigation</h3>
   <div class="icon-grid">
+    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F552;</span><div class="icon-label">clock.fill<br>Timeline</div></div>
     <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F399;</span><div class="icon-label">mic.fill<br>Dictations</div></div>
     <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F465;</span><div class="icon-label">person.2.fill<br>Meetings</div></div>
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F4D6;</span><div class="icon-label">character.book<br>Dictionary</div></div>
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x2B07;</span><div class="icon-label">square.arrow.down<br>Models</div></div>
+    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F4D6;</span><div class="icon-label">character.book.closed<br>Dictionary</div></div>
+    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x2B07;</span><div class="icon-label">square.and.arrow.down<br>Models</div></div>
     <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x2328;</span><div class="icon-label">keyboard<br>Shortcuts</div></div>
     <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x2699;</span><div class="icon-label">gearshape<br>Settings</div></div>
     <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x2139;</span><div class="icon-label">info.circle<br>About</div></div>
   </div>
+  <p style="color:var(--text-secondary);font-size:13px;margin:8px 0">Timeline (clock.fill) leads: one chronological feed combining dictations and meetings. The Meetings row expands to reveal meeting folders. Insights (streak, words, pace, meetings) is a drill-in view with a back button, not a sidebar item.</p>
 
-  <h3>Floating Indicator Emoji</h3>
+  <h3>Floating Indicator Controls</h3>
   <table>
-    <tr><th>Emoji</th><th>State</th><th>Context</th></tr>
-    <tr><td style="font-size:20px">&#x1F3A4;</td><td>Idle, Preparing, Recording</td><td>Microphone — dictation active</td></tr>
-    <tr><td style="font-size:20px">&#x23F9;</td><td>Meeting recording</td><td>Stop button — click to end</td></tr>
-    <tr><td style="font-size:20px">&#x270D;&#xFE0F;</td><td>Transcribing</td><td>Writing hand — processing audio</td></tr>
-    <tr><td style="font-size:20px">&times;</td><td>Toggle dictation</td><td>Discard — cancel recording</td></tr>
+    <tr><th>Glyph</th><th>State</th><th>Context</th></tr>
+    <tr><td style="font-size:20px">&#x275A;&#x275A;&#x275A;</td><td>Idle, Preparing, Recording</td><td>Animated MWaveformIcon bars — dictation states render live amplitude, not emoji</td></tr>
+    <tr><td style="font-size:20px">&#x23F8;</td><td>Meeting recording</td><td>Pause — click to pause recording (<code>recordingControlSymbol()</code>)</td></tr>
+    <tr><td style="font-size:20px">&#x25B6;</td><td>Meeting paused</td><td>Resume — click to continue recording</td></tr>
+    <tr><td style="font-size:20px">&times;</td><td>Dictation recording</td><td>Discard — cancel recording</td></tr>
+    <tr><td style="font-size:20px">&#x23F9;</td><td>Meeting (menu/loading)</td><td>Stop glyph in menu-style indicator contexts</td></tr>
   </table>
 
   <h3>MWaveformIcon (Brand Mark)</h3>
@@ -800,7 +803,8 @@
   <div class="component-preview" style="display:flex;height:120px;gap:1px;background:var(--border);border-radius:8px;overflow:hidden">
     <div style="width:100px;background:var(--bg-deep);padding:12px">
       <div style="font-size:10px;font-weight:600;color:var(--text-secondary);margin-bottom:8px">Sidebar</div>
-      <div style="font-size:9px;color:var(--accent);margin:3px 0">Dictations</div>
+      <div style="font-size:9px;color:var(--accent);margin:3px 0">Timeline</div>
+      <div style="font-size:9px;color:var(--text-secondary);margin:3px 0">Dictations</div>
       <div style="font-size:9px;color:var(--text-secondary);margin:3px 0">Meetings</div>
       <div style="font-size:9px;color:var(--text-secondary);margin:3px 0">Settings</div>
     </div>
@@ -860,8 +864,8 @@
 <!-- FOOTER -->
 <section style="text-align:center;padding:60px 40px;color:var(--text-tertiary);font-size:12px">
   <div class="divider"></div>
-  <p>muesli design language system &middot; v0.5.6 &middot; April 2026</p>
-  <p style="margin-top:4px">Source of truth: <code>MuesliTheme.swift</code> &middot; <code>FloatingIndicatorController.swift</code></p>
+  <p>muesli design language system &middot; v0.8.3 &middot; August 2026</p>
+  <p style="margin-top:4px">Source of truth: <code>MuesliTheme.swift</code> &middot; <code>FloatingIndicatorController.swift</code> &middot; <code>SidebarView.swift</code></p>
 </section>
 
 </body>

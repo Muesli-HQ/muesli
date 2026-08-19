@@ -186,6 +186,75 @@ struct GoogleCalendarTests {
         #expect(url?.absoluteString == "https://meet.google.com/abc-defg-hij")
     }
 
+    @Test("CalendarMonitor extracts Slack huddle URL from text")
+    func extractsSlackHuddleURL() {
+        let url = CalendarMonitor.findMeetingURL(in: "Join the standup huddle: https://app.slack.com/huddle/T026CMCFV4H/D026SCN0LAU thanks")
+        #expect(url?.absoluteString == "https://app.slack.com/huddle/T026CMCFV4H/D026SCN0LAU")
+    }
+
+    @Test("CalendarMonitor returns nil for non-huddle Slack URL")
+    func slackNonHuddleURLNotMatched() {
+        let url = CalendarMonitor.findMeetingURL(in: "Open the channel: https://app.slack.com/client/T026CMCFV4H/C026SCN0LAU")
+        #expect(url == nil)
+    }
+
+    @Test("MeetingPlatform.detect recognizes Slack huddle URL")
+    func detectSlackHuddle() {
+        let url = URL(string: "https://app.slack.com/huddle/T026CMCFV4H/D026SCN0LAU")!
+        #expect(MeetingPlatform.detect(from: url) == .slack)
+    }
+
+    @Test("MeetingPlatform.detect ignores non-huddle Slack URL")
+    func detectSlackNonHuddleReturnsNil() {
+        let url = URL(string: "https://app.slack.com/client/T026CMCFV4H/C026SCN0LAU")!
+        #expect(MeetingPlatform.detect(from: url) == nil)
+    }
+
+    @Test("CalendarMonitor extracts huddle URL with query parameters")
+    func extractsSlackHuddleURLWithQueryParams() {
+        let url = CalendarMonitor.findMeetingURL(in: "Standup: https://app.slack.com/huddle/T026CMCFV4H/D026SCN0LAU?x=1")
+        #expect(url?.absoluteString == "https://app.slack.com/huddle/T026CMCFV4H/D026SCN0LAU?x=1")
+    }
+
+    @Test("Google event picks up huddle URL from description")
+    func googleEventHuddleFromDescription() throws {
+        let item: [String: Any] = [
+            "id": "huddle1",
+            "summary": "Standup",
+            "start": ["dateTime": "2026-04-10T14:00:00Z"],
+            "end": ["dateTime": "2026-04-10T14:30:00Z"],
+            "description": "Join: https://app.slack.com/huddle/T026CMCFV4H/D026SCN0LAU",
+        ]
+        let event = try #require(GoogleCalendarClient().parseEvent(item, calendarID: "primary"))
+        #expect(event.meetingURL?.absoluteString == "https://app.slack.com/huddle/T026CMCFV4H/D026SCN0LAU")
+    }
+
+    @Test("Google event picks up huddle URL from location")
+    func googleEventHuddleFromLocation() throws {
+        let item: [String: Any] = [
+            "id": "huddle2",
+            "summary": "Standup",
+            "start": ["dateTime": "2026-04-10T14:00:00Z"],
+            "end": ["dateTime": "2026-04-10T14:30:00Z"],
+            "location": "https://app.slack.com/huddle/T026CMCFV4H/D026SCN0LAU",
+        ]
+        let event = try #require(GoogleCalendarClient().parseEvent(item, calendarID: "primary"))
+        #expect(event.meetingURL?.absoluteString == "https://app.slack.com/huddle/T026CMCFV4H/D026SCN0LAU")
+    }
+
+    @Test("Google event ignores non-huddle Slack URL in description")
+    func googleEventNonHuddleSlackIgnored() throws {
+        let item: [String: Any] = [
+            "id": "notmeeting1",
+            "summary": "Async update",
+            "start": ["dateTime": "2026-04-10T14:00:00Z"],
+            "end": ["dateTime": "2026-04-10T14:30:00Z"],
+            "description": "Discuss in https://app.slack.com/client/T026CMCFV4H/C026SCN0LAU",
+        ]
+        let event = try #require(GoogleCalendarClient().parseEvent(item, calendarID: "primary"))
+        #expect(event.meetingURL == nil)
+    }
+
     @Test("CalendarMonitor returns nil for text without meeting URLs")
     func returnsNilForNonMeetingText() {
         let url = CalendarMonitor.findMeetingURL(in: "Conference room 3B on the second floor")

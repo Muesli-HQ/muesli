@@ -521,6 +521,16 @@ final class GoogleCalendarClient {
                     }
                 }
             }
+            // Non-Google meeting links (Slack huddles, Zoom, ...) usually live in
+            // the event description or location rather than conferenceData.
+            if let description = item["description"] as? String,
+               let url = CalendarMonitor.findMeetingURL(in: description) {
+                return url
+            }
+            if let location = item["location"] as? String,
+               let url = CalendarMonitor.findMeetingURL(in: location) {
+                return url
+            }
             return nil
         }()
         let recurringEventID = item["recurringEventId"] as? String
