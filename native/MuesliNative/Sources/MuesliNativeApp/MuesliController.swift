@@ -1504,9 +1504,14 @@ public final class MuesliController: NSObject {
     /// leaves fullscreen chrome following the OS theme instead of the app's.
     /// Also refreshes the dashboard window's own appearance.
     func applyAppThemeAppearance() {
-        NSApp.appearance = NSAppearance(
-            named: RecentHistoryWindowController.appearanceName(for: config.darkMode)
-        )
+        // NSApp is an implicitly unwrapped optional and is nil under `swift test`, where no
+        // NSApplication is ever created. Touching it there traps and takes the whole test
+        // bundle down, so bind it rather than forcing it.
+        if let app = NSApp {
+            app.appearance = NSAppearance(
+                named: RecentHistoryWindowController.appearanceName(for: config.darkMode)
+            )
+        }
         historyWindowController?.applyThemeAppearance()
     }
 
