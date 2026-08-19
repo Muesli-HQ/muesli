@@ -25,6 +25,7 @@ case "${shard}" in
       ChatGPTTokenStorageTests
       FloatingIndicatorVisibilityTests
       IndicatorFrameSizeTests
+      WindowAppearanceTests
       OpenAILogoShapeTests
       StandardMenuShortcutTests
       MeetingChunkCollectorTests
@@ -35,6 +36,7 @@ case "${shard}" in
       CustomWordDictionaryTests
       ModelDownloadCoordinatorTests
       IndicASRBackendTests
+      ContributionMilestoneTests
     )
     ;;
   dictation-transcription)

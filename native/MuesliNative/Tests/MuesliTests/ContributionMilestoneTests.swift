@@ -278,6 +278,26 @@ struct ContributionMilestoneTests {
         ) == nil)
     }
 
+    @Test("milestone counts group for English copy regardless of the user's locale")
+    func milestoneCountsGroupForEnglishCopy() {
+        // The formatter must honour the locale it is handed rather than silently
+        // using Locale.current. On an en_US CI runner, dropping the assignment makes
+        // this first expectation fail, which is what keeps the fix from regressing —
+        // asserting only the en_US output would pass either way.
+        #expect(ContributionSocialShare.formatCount(31_000, locale: Locale(identifier: "nl_NL")) == "31.000")
+        #expect(ContributionSocialShare.formatCount(31_000, locale: Locale(identifier: "de_DE")) == "31.000")
+        #expect(ContributionSocialShare.formatCount(31_000, locale: Locale(identifier: "en_US")) == "31,000")
+
+        // The default path is pinned to English grouping, so fixed English copy never
+        // renders "31.000" and get misread as thirty-one point zero. Note en_US and not
+        // en_US_POSIX: the POSIX locale drops grouping entirely and yields "31000".
+        #expect(ContributionSocialShare.formatCount(31_000, locale: Locale(identifier: "en_US_POSIX")) == "31000")
+        #expect(ContributionSocialShare.formatCount(31_000) == "31,000")
+        #expect(ContributionSocialShare.formatCount(1_000) == "1,000")
+        #expect(ContributionSocialShare.formatCount(999) == "999")
+        #expect(ContributionSocialShare.message(wordCount: 31_000).contains("31,000 words"))
+    }
+
     @Test("share message and URLs include encoded milestone content")
     func shareMessageAndURLs() throws {
         let message = ContributionSocialShare.message(wordCount: 31_000)

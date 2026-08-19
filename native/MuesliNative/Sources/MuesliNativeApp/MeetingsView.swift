@@ -261,6 +261,8 @@ struct MeetingsView: View {
         ScrollView {
             let presentation = browserPresentation
             VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
+                PageTitle("Meetings")
+
                 if !appState.upcomingCalendarEvents.isEmpty {
                     comingUpSection
                 }
@@ -305,7 +307,8 @@ struct MeetingsView: View {
             }
             .frame(maxWidth: 960, alignment: .leading)
             .padding(.horizontal, 40)
-            .padding(.vertical, 32)
+            .padding(.top, MuesliTheme.pageTop)
+            .padding(.bottom, 32)
             .frame(maxWidth: .infinity, alignment: .center)
         }
         .onDrop(of: ["public.file-url"], isTargeted: nil) { providers in
@@ -586,7 +589,7 @@ struct MeetingsView: View {
     @ViewBuilder
     private var browserHeaderTitle: some View {
         Text(currentFolderName)
-            .font(.system(size: 30, weight: .bold))
+            .font(MuesliTheme.title2())
             .foregroundStyle(MuesliTheme.textPrimary)
             .frame(maxWidth: .infinity, alignment: .leading)
     }

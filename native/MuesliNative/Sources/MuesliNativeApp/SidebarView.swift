@@ -184,7 +184,7 @@ struct SidebarView: View {
             }
         }
         .padding(.horizontal, MuesliTheme.spacing16)
-        .padding(.top, MuesliTheme.spacing24)
+        .padding(.top, MuesliTheme.pageTop)
         .padding(.bottom, MuesliTheme.spacing20)
     }
 
@@ -551,6 +551,7 @@ struct SidebarView: View {
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(!isDark ? MuesliTheme.accent : MuesliTheme.textTertiary)
                     .frame(width: 28, height: 22)
+                    .contentShape(Rectangle())
                     .background(
                         RoundedRectangle(cornerRadius: 4)
                             .fill(!isDark ? MuesliTheme.surfaceSelected : Color.clear)
@@ -567,6 +568,7 @@ struct SidebarView: View {
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(isDark ? MuesliTheme.accent : MuesliTheme.textTertiary)
                     .frame(width: 28, height: 22)
+                    .contentShape(Rectangle())
                     .background(
                         RoundedRectangle(cornerRadius: 4)
                             .fill(isDark ? MuesliTheme.surfaceSelected : Color.clear)

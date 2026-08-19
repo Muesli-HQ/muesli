@@ -4,7 +4,15 @@ import MuesliCore
 enum MuesliTheme {
     // MARK: - Colors — Backgrounds (layered)
 
-    static let backgroundDeep   = Color.adaptive(dark: 0x111214, light: 0xF5F5F7)
+    static let backgroundDeepDarkHex = 0x0B0C0E
+    static let backgroundDeepLightHex = 0xF5F5F7
+    static let backgroundDeep   = Color.adaptive(dark: backgroundDeepDarkHex, light: backgroundDeepLightHex)
+
+    /// AppKit counterpart of `backgroundDeep`, for window chrome that cannot use SwiftUI colors.
+    static let backgroundDeepNSColor = NSColor.adaptive(
+        dark: backgroundDeepDarkHex,
+        light: backgroundDeepLightHex
+    )
     static let backgroundBase   = Color.adaptive(dark: 0x161719, light: 0xFFFFFF)
     static let backgroundRaised = Color.adaptive(dark: 0x1C1D20, light: 0xF0F0F2)
     static let backgroundHover  = Color.adaptive(dark: 0x232528, light: 0xE8E8EC)
@@ -56,8 +64,8 @@ enum MuesliTheme {
 
     // MARK: - Typography (SF Pro via .system())
 
-    static func title1() -> Font { .system(size: 28, weight: .bold) }
-    static func title2() -> Font { .system(size: 22, weight: .semibold) }
+    static func title1() -> Font { .system(size: 26, weight: .bold) }
+    static func title2() -> Font { .system(size: 20, weight: .semibold) }
     static func title3() -> Font { .system(size: 18, weight: .semibold) }
     static func headline() -> Font { .system(size: 15, weight: .semibold) }
     static func body() -> Font { .system(size: 14, weight: .regular) }
@@ -66,6 +74,10 @@ enum MuesliTheme {
     static func captionMedium() -> Font { .system(size: 12, weight: .medium) }
 
     // MARK: - Spacing (4pt grid)
+
+    /// Top padding for page content and for the sidebar header, so a page's heading lines up
+    /// with the app name in the sidebar.
+    static let pageTop: CGFloat = 8
 
     static let spacing4: CGFloat = 4
     static let spacing8: CGFloat = 8
@@ -95,15 +107,7 @@ extension Color {
     }
 
     static func adaptive(dark: Int, light: Int) -> Color {
-        Color(nsColor: NSColor(name: nil) { appearance in
-            let hex = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
-            return NSColor(
-                red: CGFloat((hex >> 16) & 0xFF) / 255.0,
-                green: CGFloat((hex >> 8) & 0xFF) / 255.0,
-                blue: CGFloat(hex & 0xFF) / 255.0,
-                alpha: 1.0
-            )
-        })
+        Color(nsColor: NSColor.adaptive(dark: dark, light: light))
     }
 
     static func adaptiveAlpha(dark: NSColor, darkAlpha: CGFloat, light: NSColor, lightAlpha: CGFloat) -> Color {
@@ -112,5 +116,35 @@ extension Color {
                 ? dark.withAlphaComponent(darkAlpha)
                 : light.withAlphaComponent(lightAlpha)
         })
+    }
+}
+
+extension NSColor {
+    static func adaptive(dark: Int, light: Int) -> NSColor {
+        NSColor(name: nil) { appearance in
+            let hex = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+            return NSColor(
+                red: CGFloat((hex >> 16) & 0xFF) / 255.0,
+                green: CGFloat((hex >> 8) & 0xFF) / 255.0,
+                blue: CGFloat(hex & 0xFF) / 255.0,
+                alpha: 1.0
+            )
+        }
+    }
+}
+
+/// Page heading used by every dashboard page, so titles stay identical across tabs.
+struct PageTitle: View {
+    let text: String
+
+    init(_ text: String) {
+        self.text = text
+    }
+
+    var body: some View {
+        Text(text)
+            .font(MuesliTheme.title1())
+            .foregroundStyle(MuesliTheme.textPrimary)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

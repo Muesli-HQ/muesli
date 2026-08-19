@@ -38,7 +38,9 @@ struct RecordOriginPicker: View {
         }
         .pickerStyle(.segmented)
         .labelsHidden()
-        .frame(width: 240)
+        // The segmented control's intrinsic width is wider than a hardcoded frame, and the extra
+        // width bleeds out of it — which pushed the filter row past the page's leading padding.
+        .fixedSize()
         .help("Filter by the device where the recording was created")
         .accessibilityLabel("Record source")
     }
