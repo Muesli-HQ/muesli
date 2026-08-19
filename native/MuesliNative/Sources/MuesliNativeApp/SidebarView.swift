@@ -184,7 +184,7 @@ struct SidebarView: View {
             }
         }
         .padding(.horizontal, MuesliTheme.spacing16)
-        .padding(.top, MuesliTheme.spacing24)
+        .padding(.top, MuesliTheme.pageTop)
         .padding(.bottom, MuesliTheme.spacing20)
     }
 
