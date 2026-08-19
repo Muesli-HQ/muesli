@@ -3209,23 +3209,22 @@ public final class MuesliController: NSObject {
               !isMeetingRecording(),
               !isStartingMeetingRecording else { return }
         isShowingCalendarNotification = true
-        let autoStopSource = meetingURL.flatMap { MeetingAutoStopSource(meetingURL: $0) }
 
         meetingNotification.show(
             title: "Meeting starting now",
             subtitle: title,
             meetingURL: meetingURL,
             dismissAfter: 30,
+            defaultAction: config.meetingJoinDefaultAction,
             onStartRecording: { [weak self] in
                 guard let self else { return }
                 self.isShowingCalendarNotification = false
-                self.startMeetingRecordingFromEntryPoint(
+                self.recordOnly(
                     title: title,
-                    calendarOccurrence: calendarOccurrence,
+                    meetingURL: meetingURL,
                     endDate: endDate,
-                    autoStopSource: autoStopSource,
-                    presentation: .backgroundPill,
-                    startOrigin: .scheduledMeetingPrompt
+                    calendarOccurrence: calendarOccurrence,
+                    presentation: .backgroundPill
                 )
             },
             onJoinAndRecord: meetingURL != nil ? { [weak self] in
@@ -6117,8 +6116,8 @@ public final class MuesliController: NSObject {
         }
     }
 
-    /// Open meeting URL, start recording, schedule end notification, and suppress detection.
-    /// Single entry point for "Join & Record" from both notification panel and Coming Up section.
+    /// Open meeting URL, start transcription, schedule end notification, and suppress detection.
+    /// Single entry point for "Join & Transcribe" from both notification panel and Coming Up section.
     func joinAndRecord(
         title: String,
         meetingURL: URL,
@@ -6134,6 +6133,26 @@ public final class MuesliController: NSObject {
             autoStopSource: MeetingAutoStopSource(meetingURL: meetingURL),
             presentation: presentation,
             startOrigin: .joinAndRecord
+        )
+    }
+
+    /// Start transcription without opening the meeting URL — for people who join calls in
+    /// a separate browser or client.
+    /// Single entry point for "Transcribe Only" from both notification panel and Coming Up section.
+    func recordOnly(
+        title: String,
+        meetingURL: URL?,
+        endDate: Date?,
+        calendarOccurrence: CalendarOccurrenceReference? = nil,
+        presentation: MeetingStartPresentation = .foregroundNotes
+    ) {
+        startMeetingRecordingFromEntryPoint(
+            title: title,
+            calendarOccurrence: calendarOccurrence,
+            endDate: endDate,
+            autoStopSource: meetingURL.flatMap { MeetingAutoStopSource(meetingURL: $0) },
+            presentation: presentation,
+            startOrigin: .scheduledMeetingPrompt
         )
     }
 
@@ -7559,11 +7578,11 @@ public final class MuesliController: NSObject {
         let didShow = meetingNotification.show(
             promptID: promptID,
             title: "Meeting signal lost",
-            subtitle: "Still recording. Stop if the meeting ended.",
-            actionLabel: "Stop Recording",
+            subtitle: "Still transcribing. Stop if the meeting ended.",
+            actionLabel: "Stop Transcribing",
             dismissAfter: 30,
             // MeetingNotificationController uses onStartRecording as its generic
-            // primary-action slot; here the primary action is stopping recording.
+            // primary-action slot; here the primary action is stopping transcription.
             onStartRecording: { [weak self] in
                 guard let self, self.activeMeetingID == meetingID else { return }
                 self.stopMeetingRecording()
@@ -9431,7 +9450,6 @@ public final class MuesliController: NSObject {
         let calendarEndDate = calendarEvent?.endDate
         let meetingURL = event.meetingURL ?? calendarEvent?.meetingURL
         let calendarOccurrence = event.calendarOccurrence ?? calendarEvent?.resolvedCalendarOccurrence
-        let autoStopSource = meetingURL.flatMap { MeetingAutoStopSource(meetingURL: $0) }
 
         // Show notification panel for calendar events (if not auto-recording)
         guard config.showScheduledMeetingNotifications,
@@ -9457,16 +9475,16 @@ public final class MuesliController: NSObject {
             title: notificationTitle,
             subtitle: "\(title) · \(timeLabel)",
             meetingURL: meetingURL,
+            defaultAction: config.meetingJoinDefaultAction,
             onStartRecording: { [weak self] in
                 guard let self else { return }
                 self.isShowingCalendarNotification = false
-                self.startMeetingRecordingFromEntryPoint(
+                self.recordOnly(
                     title: title,
-                    calendarOccurrence: calendarOccurrence,
+                    meetingURL: meetingURL,
                     endDate: calendarEndDate,
-                    autoStopSource: autoStopSource,
-                    presentation: .backgroundPill,
-                    startOrigin: .scheduledMeetingPrompt
+                    calendarOccurrence: calendarOccurrence,
+                    presentation: .backgroundPill
                 )
             },
             onJoinAndRecord: meetingURL != nil ? { [weak self] in
@@ -9523,7 +9541,7 @@ public final class MuesliController: NSObject {
         meetingNotification.show(
             title: "Meeting ended",
             subtitle: "\(title) · scheduled time is over",
-            actionLabel: "Stop Recording",
+            actionLabel: "Stop Transcribing",
             dismissAfter: 45,
             onStartRecording: { [weak self] in
                 self?.stopMeetingRecording()

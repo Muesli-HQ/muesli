@@ -464,27 +464,7 @@ struct MeetingsView: View {
                                 if let meetingURL = event.meetingURL,
                                    !appState.isMeetingRecording,
                                    !appState.isMeetingStarting {
-                                    Button {
-                                        controller.joinAndRecord(
-                                            title: event.title,
-                                            meetingURL: meetingURL,
-                                            endDate: event.endDate,
-                                            calendarOccurrence: event.resolvedCalendarOccurrence
-                                        )
-                                    } label: {
-                                        HStack(spacing: 4) {
-                                            Image(systemName: "video.fill")
-                                                .font(.system(size: 9))
-                                            Text("Join & Record")
-                                                .font(.system(size: 10, weight: .medium))
-                                        }
-                                        .foregroundStyle(.white)
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 4)
-                                        .background(Color(nsColor: NSColor(red: 0.20, green: 0.72, blue: 0.53, alpha: 1.0)))
-                                        .clipShape(RoundedRectangle(cornerRadius: 5))
-                                    }
-                                    .buttonStyle(.plain)
+                                    joinActionControl(for: event, meetingURL: meetingURL)
                                 }
 
                                 Menu {
@@ -541,6 +521,90 @@ struct MeetingsView: View {
     private func formatTimeRange(_ event: UnifiedCalendarEvent) -> String {
         let f = Self.timeFormatter
         return "\(f.string(from: event.startDate)) – \(f.string(from: event.endDate))"
+    }
+
+    private static let joinActionGreen = Color(nsColor: NSColor(red: 0.20, green: 0.72, blue: 0.53, alpha: 1.0))
+    private static let joinActionGreenDarker = Color(nsColor: NSColor(red: 0.15, green: 0.58, blue: 0.42, alpha: 1.0))
+
+    /// Split control mirroring the meeting notification panel: the primary segment runs
+    /// the default action from Settings, the chevron offers the other two.
+    /// (Not `Menu(primaryAction:)` — with a plain custom label on macOS the chevron
+    /// segment doesn't render, leaving the menu unreachable.)
+    @ViewBuilder
+    private func joinActionControl(for event: UnifiedCalendarEvent, meetingURL: URL) -> some View {
+        let configured = appState.config.meetingJoinDefaultAction
+        let armed = configured.resolved(hasJoinAndRecord: true, hasJoinOnly: true)
+        let alternatives = configured.availableAlternatives(hasJoinAndRecord: true, hasJoinOnly: true)
+
+        HStack(spacing: 1) {
+            Button {
+                performJoinAction(armed, for: event, meetingURL: meetingURL)
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: armed.symbolName)
+                        .font(.system(size: 9))
+                    Text(armed.buttonLabel)
+                        .font(.system(size: 10, weight: .medium))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Self.joinActionGreen)
+            }
+            .buttonStyle(.plain)
+
+            Menu {
+                ForEach(alternatives, id: \.self) { action in
+                    Button {
+                        performJoinAction(action, for: event, meetingURL: meetingURL)
+                    } label: {
+                        Label(action.buttonLabel, systemImage: action.symbolName)
+                    }
+                }
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .padding(.horizontal, 5)
+                    .frame(maxHeight: .infinity)
+                    .background(Self.joinActionGreenDarker)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize(horizontal: true, vertical: false)
+            .help(alternatives.map(\.buttonLabel).joined(separator: " · "))
+        }
+        .fixedSize()
+        .clipShape(RoundedRectangle(cornerRadius: 5))
+    }
+
+    private func performJoinAction(
+        _ action: MeetingJoinDefaultAction,
+        for event: UnifiedCalendarEvent,
+        meetingURL: URL
+    ) {
+        // Both transcribe actions must carry calendar occurrence identity: it is
+        // what keeps the calendar title (MeetingSession.calendarTitleCandidate)
+        // and what createMeetingFromCalendarEvent dedupes against. Without it
+        // the same event can end up as two meetings.
+        switch action {
+        case .joinAndRecord:
+            controller.joinAndRecord(
+                title: event.title,
+                meetingURL: meetingURL,
+                endDate: event.endDate,
+                calendarOccurrence: event.resolvedCalendarOccurrence
+            )
+        case .joinOnly:
+            controller.joinOnly(meetingURL: meetingURL, endDate: event.endDate)
+        case .recordOnly:
+            controller.recordOnly(
+                title: event.title,
+                meetingURL: meetingURL,
+                endDate: event.endDate,
+                calendarOccurrence: event.resolvedCalendarOccurrence
+            )
+        }
     }
 
     private func hideEventButton(_ event: UnifiedCalendarEvent) -> some View {

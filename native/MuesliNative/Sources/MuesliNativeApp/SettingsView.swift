@@ -1451,6 +1451,19 @@ struct SettingsView: View {
 
                 Divider().background(MuesliTheme.surfaceBorder)
 
+                settingsRow("Default action") {
+                    settingsMenu(
+                        selection: appState.config.meetingJoinDefaultAction.buttonLabel,
+                        options: MeetingJoinDefaultAction.allCases.map(\.buttonLabel)
+                    ) { label in
+                        guard let action = meetingJoinDefaultAction(for: label) else { return }
+                        controller.updateConfig { $0.meetingJoinDefaultAction = action }
+                    }
+                }
+                settingsDescription("Primary button for notifications and Coming Up. Pick “Transcribe Only” if you join in another browser.")
+
+                Divider().background(MuesliTheme.surfaceBorder)
+
                 settingsRow("Auto-detected meetings") {
                     settingsSwitch(isOn: appState.config.showMeetingDetectionNotification) { newValue in
                         controller.updateConfig { $0.showMeetingDetectionNotification = newValue }
@@ -3060,6 +3073,14 @@ struct SettingsView: View {
             assertionFailure("Unexpected scheduled meeting notification lead time label: \(label)")
         }
         return leadTime
+    }
+
+    private func meetingJoinDefaultAction(for label: String) -> MeetingJoinDefaultAction? {
+        let action = MeetingJoinDefaultAction.allCases.first { $0.buttonLabel == label }
+        if action == nil {
+            assertionFailure("Unexpected meeting join default action label: \(label)")
+        }
+        return action
     }
 }
 

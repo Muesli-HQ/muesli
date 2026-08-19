@@ -38,7 +38,7 @@ struct MeetingNotificationControllerTests {
     @Test("Single-action prompts use available text width")
     @MainActor
     func singleActionPromptsUseAvailableTextWidth() {
-        let subtitle = "Still recording. Stop if the meeting ended." as NSString
+        let subtitle = "Still transcribing. Stop if the meeting ended." as NSString
         let subtitleWidth = subtitle.size(withAttributes: [.font: NSFont.systemFont(ofSize: 11)]).width
         let cardWidth = MeetingNotificationController.singleActionCardWidth(
             requiredTextWidth: subtitleWidth,
@@ -48,6 +48,74 @@ struct MeetingNotificationControllerTests {
 
         #expect(cardWidth > 344)
         #expect(textWidth >= subtitleWidth)
+    }
+
+    @Test("Default join action arms the matching primary button")
+    func defaultJoinActionArmsMatchingPrimaryButton() {
+        #expect(MeetingJoinDefaultAction.joinAndRecord
+            .resolved(hasJoinAndRecord: true, hasJoinOnly: true) == .joinAndRecord)
+        #expect(MeetingJoinDefaultAction.joinOnly
+            .resolved(hasJoinAndRecord: true, hasJoinOnly: true) == .joinOnly)
+        #expect(MeetingJoinDefaultAction.recordOnly
+            .resolved(hasJoinAndRecord: true, hasJoinOnly: true) == .recordOnly)
+    }
+
+    @Test("Join defaults fall back to transcribe only without a join link")
+    func joinDefaultsFallBackToTranscribeOnlyWithoutJoinLink() {
+        #expect(MeetingJoinDefaultAction.joinAndRecord
+            .resolved(hasJoinAndRecord: false, hasJoinOnly: false) == .recordOnly)
+        #expect(MeetingJoinDefaultAction.joinOnly
+            .resolved(hasJoinAndRecord: false, hasJoinOnly: false) == .recordOnly)
+        #expect(MeetingJoinDefaultAction.joinAndRecord
+            .availableAlternatives(hasJoinAndRecord: false, hasJoinOnly: false).isEmpty)
+    }
+
+    @Test("Dropdown offers the two actions that are not armed")
+    func dropdownOffersTheTwoActionsThatAreNotArmed() {
+        #expect(MeetingJoinDefaultAction.joinAndRecord
+            .availableAlternatives(hasJoinAndRecord: true, hasJoinOnly: true) == [.joinOnly, .recordOnly])
+        #expect(MeetingJoinDefaultAction.recordOnly
+            .availableAlternatives(hasJoinAndRecord: true, hasJoinOnly: true) == [.joinAndRecord, .joinOnly])
+        #expect(MeetingJoinDefaultAction.joinOnly
+            .availableAlternatives(hasJoinAndRecord: true, hasJoinOnly: true) == [.joinAndRecord, .recordOnly])
+    }
+
+    @Test("Existing installs keep Join & Transcribe as the default")
+    func existingInstallsKeepJoinAndTranscribeAsDefault() throws {
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+        #expect(config.meetingJoinDefaultAction == .joinAndRecord)
+        #expect(MeetingJoinDefaultAction.fallback == .joinAndRecord)
+    }
+
+    @Test("Saved default action round-trips through config JSON")
+    func savedDefaultActionRoundTripsThroughConfigJSON() throws {
+        var config = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+        config.meetingJoinDefaultAction = .recordOnly
+
+        let encoded = try JSONEncoder().encode(config)
+        let json = try #require(try JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        #expect(json["meeting_join_default_action"] as? String == "record_only")
+
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: encoded)
+        #expect(decoded.meetingJoinDefaultAction == .recordOnly)
+    }
+
+    @Test("Join action labels say transcribe rather than record")
+    func joinActionLabelsSayTranscribeRatherThanRecord() {
+        #expect(MeetingJoinDefaultAction.joinAndRecord.buttonLabel == "Join & Transcribe")
+        #expect(MeetingJoinDefaultAction.joinOnly.buttonLabel == "Join Only")
+        #expect(MeetingJoinDefaultAction.recordOnly.buttonLabel == "Transcribe Only")
+    }
+
+    @Test("Every join action label fits the split button")
+    @MainActor
+    func everyJoinActionLabelFitsSplitButton() {
+        for action in MeetingJoinDefaultAction.allCases {
+            #expect(
+                MeetingNotificationController.splitButtonLabelFits(action.buttonLabel),
+                "\(action.buttonLabel) overflows the \(MeetingNotificationController.splitButtonWidth)pt split button"
+            )
+        }
     }
 
     @Test("Completion notification can show during recording but not over prompts")

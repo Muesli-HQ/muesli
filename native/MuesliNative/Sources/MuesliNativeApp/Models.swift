@@ -1152,6 +1152,7 @@ struct AppConfig: Codable {
     var upcomingMeetingsDayCount: Int = UpcomingMeetingsWindow.defaultDayCount
     var showScheduledMeetingNotifications: Bool = true
     var scheduledMeetingNotificationLeadTime: ScheduledMeetingNotificationLeadTime = .atStart
+    var meetingJoinDefaultAction: MeetingJoinDefaultAction = .fallback
     var showMeetingDetectionNotification: Bool = true
     var mutedMeetingDetectionAppBundleIDs: [String] = []
     var meetingRecordingSavePolicy: MeetingRecordingSavePolicy = .never
@@ -1276,6 +1277,7 @@ struct AppConfig: Codable {
         case upcomingMeetingsDayCount = "upcoming_meetings_day_count"
         case showScheduledMeetingNotifications = "show_scheduled_meeting_notifications"
         case scheduledMeetingNotificationLeadTime = "scheduled_meeting_notification_lead_time"
+        case meetingJoinDefaultAction = "meeting_join_default_action"
         case showMeetingDetectionNotification = "show_meeting_detection_notification"
         case mutedMeetingDetectionAppBundleIDs = "muted_meeting_detection_app_bundle_ids"
         case meetingRecordingSavePolicy = "meeting_recording_save_policy"
@@ -1418,6 +1420,9 @@ struct AppConfig: Codable {
         scheduledMeetingNotificationLeadTime =
             (try? c.decode(ScheduledMeetingNotificationLeadTime.self, forKey: .scheduledMeetingNotificationLeadTime))
             ?? defaults.scheduledMeetingNotificationLeadTime
+        meetingJoinDefaultAction =
+            (try? c.decode(MeetingJoinDefaultAction.self, forKey: .meetingJoinDefaultAction))
+            ?? defaults.meetingJoinDefaultAction
         showMeetingDetectionNotification = decodedShowMeetingDetectionNotification ?? defaults.showMeetingDetectionNotification
         mutedMeetingDetectionAppBundleIDs = (try? c.decode([String].self, forKey: .mutedMeetingDetectionAppBundleIDs)) ?? defaults.mutedMeetingDetectionAppBundleIDs
         meetingRecordingSavePolicy = (try? c.decode(MeetingRecordingSavePolicy.self, forKey: .meetingRecordingSavePolicy)) ?? defaults.meetingRecordingSavePolicy
