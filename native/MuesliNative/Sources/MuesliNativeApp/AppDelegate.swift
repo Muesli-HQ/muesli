@@ -34,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSApplication.shared.applicationIconImage = image
             }
             let controller = MuesliController(runtime: runtime)
+            controller.applyAppThemeAppearance()
             sparkleUpdateDelegate.appState = controller.appState
             if Self.hasConfiguredSparkleFeed {
                 let updaterController = SPUStandardUpdaterController(
