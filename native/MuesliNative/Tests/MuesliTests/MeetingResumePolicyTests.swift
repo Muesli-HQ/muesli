@@ -94,4 +94,50 @@ struct MeetingResumePolicyTests {
         #expect(overridden.durationSeconds == 45)
         #expect(overridden.rawTranscript == "z")
     }
+
+    @Test("a resumed meeting inherits the origin it was started with")
+    func resumeInheritsRecordedOrigin() {
+        for origin in [
+            MeetingRecordingStartOrigin.detectedPrompt,
+            .calendarAutoRecord,
+            .scheduledMeetingPrompt,
+            .joinAndRecord,
+            .manual,
+        ] {
+            #expect(MeetingResumePolicy.resumedStartOrigin(recordedOrigin: origin) == origin)
+        }
+    }
+
+    @Test("resuming an auto-armed meeting keeps auto-stop armed")
+    func resumeKeepsAutoStopArmed() {
+        // The defect this guards: resume hardcoded `.manual`, so a recording armed
+        // from a detection prompt came back unstoppable and ran until stopped by hand.
+        for origin in [
+            MeetingRecordingStartOrigin.detectedPrompt,
+            .calendarAutoRecord,
+            .scheduledMeetingPrompt,
+            .joinAndRecord,
+        ] {
+            let resumed = MeetingResumePolicy.resumedStartOrigin(recordedOrigin: origin)
+            #expect(resumed.enablesMeetingAutoStop)
+            #expect(resumed.signalLossResponse == .autoStopAfterWarning)
+        }
+    }
+
+    @Test("resuming a manually started meeting stays manual")
+    func resumeManualStaysManual() {
+        let resumed = MeetingResumePolicy.resumedStartOrigin(recordedOrigin: .manual)
+
+        #expect(!resumed.enablesMeetingAutoStop)
+        #expect(resumed.signalLossResponse == .none)
+    }
+
+    @Test("an unknown origin falls back to manual so resume never arms blind")
+    func resumeUnknownOriginFallsBackToManual() {
+        // Meetings started before this app launch have no recorded origin.
+        let resumed = MeetingResumePolicy.resumedStartOrigin(recordedOrigin: nil)
+
+        #expect(resumed == .manual)
+        #expect(!resumed.enablesMeetingAutoStop)
+    }
 }

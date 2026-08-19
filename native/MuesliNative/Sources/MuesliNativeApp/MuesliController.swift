@@ -493,6 +493,12 @@ public final class MuesliController: NSObject {
     /// Present only while a resume is in flight; consumed at stop to merge old + new
     /// transcript, and cleared on success or restored-on-failure.
     private var pendingResumePriorTranscript: [Int64: String] = [:]
+    /// How each meeting recorded in this app session was started, keyed by meeting id.
+    /// Resuming a finished meeting reads this so the reopened recording keeps the
+    /// auto-stop behaviour it was armed with instead of degrading to `.manual`.
+    /// In-memory only: meetings started before the current launch are absent, and
+    /// `MeetingResumePolicy.resumedStartOrigin` falls back to `.manual` for those.
+    private var meetingStartOrigins: [Int64: MeetingRecordingStartOrigin] = [:]
     private var iCloudSyncTask: Task<Void, Never>?
     private var ckSyncEngine: MuesliCKSyncEngine?
     private var ckSyncEngineLifecycleID = UUID()
@@ -5340,6 +5346,7 @@ public final class MuesliController: NSObject {
             persistCalendarAttendees(for: calendarOccurrence, meetingID: meetingID)
             activeMeetingID = meetingID
             activeMeetingAudioWarning = nil
+            meetingStartOrigins[meetingID] = startOrigin
             syncAppState()
             if openDocument {
                 showMeetingDocument(id: meetingID)
@@ -5511,12 +5518,18 @@ public final class MuesliController: NSObject {
         activeMeetingAudioWarning = nil
         syncAppState()
 
+        // Resume reopens the same row, so it inherits how that meeting was
+        // started rather than degrading to `.manual` and losing auto-stop.
+        let resumedOrigin = MeetingResumePolicy.resumedStartOrigin(
+            recordedOrigin: meetingStartOrigins[meetingID]
+        )
+        meetingStartOrigins[meetingID] = resumedOrigin
         armMeetingAutoStop(
-            source: MeetingRecordingStartOrigin.manual.signalLossSource(
+            source: resumedOrigin.signalLossSource(
                 explicitSource: nil,
                 recentSource: recentMeetingAutoStopSource()
             ),
-            response: MeetingRecordingStartOrigin.manual.signalLossResponse
+            response: resumedOrigin.signalLossResponse
         )
         isStartingMeetingRecording = true
         cancelDictationAudioSessionForMeetingRecordingIfNeeded()
