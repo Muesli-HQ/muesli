@@ -10,6 +10,7 @@ actor MeetingMediaSessionTracker {
         var appName: String
         var url: String?
         var meetingTitle: String?
+        var calendarEventID: String?
         var evidence: Set<MeetingCandidate.Evidence>
     }
 
@@ -42,7 +43,12 @@ actor MeetingMediaSessionTracker {
             meetingTitle: session.meetingTitle,
             sourceBundleID: candidate.sourceBundleID,
             sourcePID: candidate.sourcePID,
-            suppressionID: session.id
+            suppressionID: session.id,
+            // The session id deliberately replaces the observation identity, but
+            // the calendar event is the meeting's own identity and must survive.
+            // Dropping it here left `matchesCalendarEventIdentity` unreachable
+            // for media-backed candidates — which is all of them on this path.
+            calendarEventID: session.calendarEventID
         )
     }
 
@@ -62,6 +68,7 @@ actor MeetingMediaSessionTracker {
             session.appName = candidate.appName
             session.url = candidate.url ?? session.url
             session.meetingTitle = candidate.meetingTitle ?? session.meetingTitle
+            session.calendarEventID = candidate.calendarEventID ?? session.calendarEventID
             session.evidence.formUnion(candidate.evidence)
             sessionsByKey[key] = session
             return session
@@ -76,6 +83,7 @@ actor MeetingMediaSessionTracker {
             appName: candidate.appName,
             url: candidate.url,
             meetingTitle: candidate.meetingTitle,
+            calendarEventID: candidate.calendarEventID,
             evidence: candidate.evidence
         )
         sessionsByKey[key] = session

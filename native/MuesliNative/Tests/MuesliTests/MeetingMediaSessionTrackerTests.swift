@@ -44,6 +44,37 @@ struct MeetingMediaSessionTrackerTests {
         )
     }
 
+    private func zoomCandidate(calendarEventID: String?, now: Date) -> MeetingCandidate {
+        MeetingCandidate(
+            id: calendarEventID.map { "cal:\($0)" } ?? "app:us.zoom.xos",
+            platform: .zoom,
+            appName: "Zoom",
+            url: nil,
+            evidence: [.audioInputProcess, .calendarEvent],
+            startedAt: now,
+            meetingTitle: "Weekly sync",
+            sourceBundleID: "us.zoom.xos",
+            sourcePID: 4321,
+            suppressionID: "app:us.zoom.xos:session:\(Int(now.timeIntervalSince1970))",
+            calendarEventID: calendarEventID
+        )
+    }
+
+    private func zoomSnapshot(now: Date) -> MeetingSignalSnapshot {
+        snapshot(
+            audioInputProcesses: [
+                AudioProcessActivity(
+                    pid: 4321,
+                    bundleID: "us.zoom.xos",
+                    appName: "Zoom",
+                    isRunningInput: true,
+                    isRunningOutput: true
+                ),
+            ],
+            now: now
+        )
+    }
+
     private func browserAudioCandidate(now: Date) -> MeetingCandidate {
         MeetingCandidate(
             id: "browser:com.google.Chrome:session:\(Int(now.timeIntervalSince1970))",
@@ -148,5 +179,85 @@ struct MeetingMediaSessionTrackerTests {
 
         #expect(result?.id == candidate.id)
         #expect(result?.suppressionID == candidate.id)
+    }
+
+    @Test("stabilizing a candidate preserves its calendar event attribution")
+    func stabilizePreservesCalendarEventID() async {
+        // The stabilized candidate is what reaches MeetingAutoStopPolicy.matches.
+        // Dropping calendarEventID here makes matchesCalendarEventIdentity
+        // unreachable for every media-backed candidate, which is all of them on
+        // the calendar path.
+        let tracker = MeetingMediaSessionTracker()
+        let candidate = MeetingCandidate(
+            id: "cal:event-123",
+            platform: .zoom,
+            appName: "Zoom",
+            url: nil,
+            evidence: [.audioInputProcess, .calendarEvent],
+            startedAt: now,
+            meetingTitle: "Weekly sync",
+            sourceBundleID: "us.zoom.xos",
+            sourcePID: 4321,
+            suppressionID: "app:us.zoom.xos:session:1",
+            calendarEventID: "event-123"
+        )
+
+        let result = await tracker.stabilize(
+            candidate: candidate,
+            snapshot: snapshot(
+                audioInputProcesses: [
+                    AudioProcessActivity(
+                        pid: 4321,
+                        bundleID: "us.zoom.xos",
+                        appName: "Zoom",
+                        isRunningInput: true,
+                        isRunningOutput: true
+                    ),
+                ],
+                now: now
+            )
+        )
+
+        // The session identity is expected to be rewritten…
+        #expect(result?.id != candidate.id)
+        // …but the calendar event is meeting identity, not observation identity.
+        #expect(result?.calendarEventID == "event-123")
+    }
+
+    @Test("an established session keeps its calendar event when a later candidate has none")
+    func stabilizeKeepsCalendarEventAcrossRefreshes() async {
+        // The first stabilize creates the session; the rest refresh it, which is
+        // a different code path. A live meeting emits many candidates, and the
+        // calendar event drops off whenever the cached event lapses mid-call —
+        // wiping the stored id there would take matchesCalendarEventIdentity
+        // dark again, the same way dropping it on rebuild did.
+        let tracker = MeetingMediaSessionTracker(quietWindow: 30)
+
+        let created = await tracker.stabilize(
+            candidate: zoomCandidate(calendarEventID: "event-123", now: now),
+            snapshot: zoomSnapshot(now: now)
+        )
+
+        let later = now.addingTimeInterval(5)
+        let rescheduled = await tracker.stabilize(
+            candidate: zoomCandidate(calendarEventID: "event-456", now: later),
+            snapshot: zoomSnapshot(now: later)
+        )
+
+        let laterStill = now.addingTimeInterval(10)
+        let withoutEvent = await tracker.stabilize(
+            candidate: zoomCandidate(calendarEventID: nil, now: laterStill),
+            snapshot: zoomSnapshot(now: laterStill)
+        )
+
+        // All three refresh one session rather than starting new ones.
+        #expect(rescheduled?.id == created?.id)
+        #expect(withoutEvent?.id == created?.id)
+
+        // A newer event id wins…
+        #expect(created?.calendarEventID == "event-123")
+        #expect(rescheduled?.calendarEventID == "event-456")
+        // …but absence is not a new answer, so the stored id survives.
+        #expect(withoutEvent?.calendarEventID == "event-456")
     }
 }

@@ -95,6 +95,8 @@ case "${shard}" in
       MeetingNotesInlineMarkdownTests
       TranscriptFormatterTests
       MeetingSummaryBackendTests
+      MeetingAutoStopPolicyTests
+      MeetingMediaSessionTrackerTests
       MeetingResummarizationPolicyTests
       MeetingTemplateResolutionTests
       MeetingTemplatesDefaultFallbackTests

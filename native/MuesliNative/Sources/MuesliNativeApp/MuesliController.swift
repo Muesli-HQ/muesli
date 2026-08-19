@@ -3115,7 +3115,9 @@ public final class MuesliController: NSObject {
                     calendarOccurrence: event.resolvedCalendarOccurrence,
                     openDocument: false,
                     endDate: event.endDate,
-                    autoStopSource: event.meetingURL.flatMap { MeetingAutoStopSource(meetingURL: $0) },
+                    autoStopSource: event.meetingURL.flatMap {
+                        MeetingAutoStopSource(meetingURL: $0, calendarEventID: event.id)
+                    },
                     startOrigin: .calendarAutoRecord
                 )
                 return
@@ -3190,7 +3192,9 @@ public final class MuesliController: NSObject {
               !isMeetingRecording(),
               !isStartingMeetingRecording else { return }
         isShowingCalendarNotification = true
-        let autoStopSource = meetingURL.flatMap { MeetingAutoStopSource(meetingURL: $0) }
+        let autoStopSource = meetingURL.flatMap {
+            MeetingAutoStopSource(meetingURL: $0, calendarEventID: calendarOccurrence?.eventID)
+        }
 
         meetingNotification.show(
             title: "Meeting starting now",
@@ -6112,7 +6116,10 @@ public final class MuesliController: NSObject {
             title: title,
             calendarOccurrence: calendarOccurrence,
             endDate: endDate,
-            autoStopSource: MeetingAutoStopSource(meetingURL: meetingURL),
+            autoStopSource: MeetingAutoStopSource(
+                meetingURL: meetingURL,
+                calendarEventID: calendarOccurrence?.eventID
+            ),
             presentation: presentation,
             startOrigin: .joinAndRecord
         )
@@ -9402,7 +9409,12 @@ public final class MuesliController: NSObject {
         let calendarEndDate = calendarEvent?.endDate
         let meetingURL = event.meetingURL ?? calendarEvent?.meetingURL
         let calendarOccurrence = event.calendarOccurrence ?? calendarEvent?.resolvedCalendarOccurrence
-        let autoStopSource = meetingURL.flatMap { MeetingAutoStopSource(meetingURL: $0) }
+        let autoStopSource = meetingURL.flatMap {
+            MeetingAutoStopSource(
+                meetingURL: $0,
+                calendarEventID: calendarOccurrence?.eventID ?? event.id
+            )
+        }
 
         // Show notification panel for calendar events (if not auto-recording)
         guard config.showScheduledMeetingNotifications,

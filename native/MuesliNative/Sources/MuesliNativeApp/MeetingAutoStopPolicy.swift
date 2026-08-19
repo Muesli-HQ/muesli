@@ -75,6 +75,7 @@ struct MeetingAutoStopSource: Equatable {
     let suppressionID: String?
     let normalizedURL: String?
     let sourceBundleID: String?
+    let calendarEventID: String?
     let hasObservedCandidate: Bool
 
     private init(
@@ -82,12 +83,14 @@ struct MeetingAutoStopSource: Equatable {
         suppressionID: String?,
         normalizedURL: String?,
         sourceBundleID: String?,
+        calendarEventID: String?,
         hasObservedCandidate: Bool
     ) {
         self.candidateID = candidateID
         self.suppressionID = suppressionID
         self.normalizedURL = normalizedURL
         self.sourceBundleID = sourceBundleID
+        self.calendarEventID = calendarEventID
         self.hasObservedCandidate = hasObservedCandidate
     }
 
@@ -96,10 +99,17 @@ struct MeetingAutoStopSource: Equatable {
         self.suppressionID = candidate.suppressionID
         self.normalizedURL = candidate.url
         self.sourceBundleID = candidate.sourceBundleID
+        self.calendarEventID = candidate.calendarEventID
         self.hasObservedCandidate = true
     }
 
-    init?(meetingURL: URL) {
+    /// Arming from a join link alone leaves the source with only URL-derived
+    /// identity, and a dedicated meeting app's candidates carry no URL. The
+    /// source cannot learn the app's bundle id either: it only refines after a
+    /// match, and the only candidates that match a URL are browser ones. Pass
+    /// the calendar event the link came from so the two sides have an identity
+    /// in common from the first candidate.
+    init?(meetingURL: URL, calendarEventID: String? = nil) {
         guard let normalized = MeetingURLNormalizer.normalize(meetingURL.absoluteString) else {
             return nil
         }
@@ -107,6 +117,7 @@ struct MeetingAutoStopSource: Equatable {
         self.suppressionID = normalized.id
         self.normalizedURL = normalized.url
         self.sourceBundleID = nil
+        self.calendarEventID = calendarEventID
         self.hasObservedCandidate = false
     }
 
@@ -119,6 +130,7 @@ struct MeetingAutoStopSource: Equatable {
             suppressionID: refinedSuppressionID,
             normalizedURL: normalizedURL ?? candidate.url,
             sourceBundleID: sourceBundleID ?? candidate.sourceBundleID,
+            calendarEventID: calendarEventID ?? candidate.calendarEventID,
             hasObservedCandidate: true
         )
     }
@@ -199,6 +211,70 @@ enum MeetingAutoStopPolicy {
             return true
         }
 
+        if matchesCalendarEventIdentity(candidate: candidate, source: source) {
+            return true
+        }
+
+        if matchesDedicatedAppIdentity(candidate: candidate, source: source) {
+            return true
+        }
+
         return false
+    }
+
+    /// Every other identity here describes *how* a meeting is currently being
+    /// observed, and each can change while the same call continues: the room
+    /// URL is only reported while the call's browser tab is frontmost, and both
+    /// the candidate and suppression IDs are audio-session IDs that rotate once
+    /// their idle timeout lapses. A recording armed from a calendar event's
+    /// join URL then stops matching the very meeting it was started for, and
+    /// gets torn down mid-call. The calendar event is the one identity that
+    /// stays fixed, so match on it when both sides agree on the event.
+    ///
+    /// The candidate must also show that a meeting is actually being observed.
+    /// `MeetingCandidateResolver.resolve` attributes *any* media activity to the
+    /// current calendar event once one exists, and its last fallback returns a
+    /// bare `cal:<id>` candidate with no meeting app at all. A calendar entry
+    /// that is only a reminder or a placeholder would then hold a recording open
+    /// for its whole duration on the strength of unrelated microphone use — a
+    /// dictation tool, say. Requiring attributed meeting audio or a room URL
+    /// keeps that fallback from standing in for a live call, while every calendar
+    /// branch backed by real meeting media still matches.
+    private static func matchesCalendarEventIdentity(
+        candidate: MeetingCandidate,
+        source: MeetingAutoStopSource
+    ) -> Bool {
+        guard let sourceCalendarEventID = source.calendarEventID else { return false }
+        guard candidate.evidence.contains(.audioInputProcess)
+            || candidate.evidence.contains(.browserURL) else {
+            return false
+        }
+        return candidate.calendarEventID == sourceCalendarEventID
+    }
+
+    /// A dedicated meeting app has no meeting URL, and `MeetingMediaSessionTracker`
+    /// mints a new session ID once its quiet window lapses. A call that briefly
+    /// stops reporting microphone input — being muted, or a transient input device
+    /// reconfiguration — therefore reappears under an ID that can never match the
+    /// armed source again, so the still-running meeting gets torn down and cannot
+    /// recover. Fall back to the app identity for that case.
+    ///
+    /// Browsers are excluded: a single browser hosts many unrelated sessions, so
+    /// its bundle ID is not a meeting identity.
+    ///
+    /// The URL-less side that matters is the *candidate's*. Requiring the source
+    /// to have no URL disabled this arm permanently for every recording started
+    /// from a "Join & Record" notification, since those arm from the join link
+    /// and `refined` never clears it.
+    private static func matchesDedicatedAppIdentity(
+        candidate: MeetingCandidate,
+        source: MeetingAutoStopSource
+    ) -> Bool {
+        guard candidate.url == nil,
+              let sourceBundleID = source.sourceBundleID,
+              MeetingCandidateResolver.browserApps[sourceBundleID] == nil else {
+            return false
+        }
+        return candidate.sourceBundleID == sourceBundleID
     }
 }
