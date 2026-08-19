@@ -1451,7 +1451,7 @@ struct SettingsView: View {
 
                 Divider().background(MuesliTheme.surfaceBorder)
 
-                settingsRow("Default action", controlWidth: meetingControlWidth) {
+                settingsRow("Default action") {
                     settingsMenu(
                         selection: appState.config.meetingJoinDefaultAction.buttonLabel,
                         options: MeetingJoinDefaultAction.allCases.map(\.buttonLabel)
