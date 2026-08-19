@@ -4,7 +4,15 @@ import MuesliCore
 enum MuesliTheme {
     // MARK: - Colors — Backgrounds (layered)
 
-    static let backgroundDeep   = Color.adaptive(dark: 0x111214, light: 0xF5F5F7)
+    static let backgroundDeepDarkHex = 0x111214
+    static let backgroundDeepLightHex = 0xF5F5F7
+    static let backgroundDeep   = Color.adaptive(dark: backgroundDeepDarkHex, light: backgroundDeepLightHex)
+
+    /// AppKit counterpart of `backgroundDeep`, for window chrome that cannot use SwiftUI colors.
+    static let backgroundDeepNSColor = NSColor.adaptive(
+        dark: backgroundDeepDarkHex,
+        light: backgroundDeepLightHex
+    )
     static let backgroundBase   = Color.adaptive(dark: 0x161719, light: 0xFFFFFF)
     static let backgroundRaised = Color.adaptive(dark: 0x1C1D20, light: 0xF0F0F2)
     static let backgroundHover  = Color.adaptive(dark: 0x232528, light: 0xE8E8EC)
@@ -95,15 +103,7 @@ extension Color {
     }
 
     static func adaptive(dark: Int, light: Int) -> Color {
-        Color(nsColor: NSColor(name: nil) { appearance in
-            let hex = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
-            return NSColor(
-                red: CGFloat((hex >> 16) & 0xFF) / 255.0,
-                green: CGFloat((hex >> 8) & 0xFF) / 255.0,
-                blue: CGFloat(hex & 0xFF) / 255.0,
-                alpha: 1.0
-            )
-        })
+        Color(nsColor: NSColor.adaptive(dark: dark, light: light))
     }
 
     static func adaptiveAlpha(dark: NSColor, darkAlpha: CGFloat, light: NSColor, lightAlpha: CGFloat) -> Color {
@@ -112,5 +112,19 @@ extension Color {
                 ? dark.withAlphaComponent(darkAlpha)
                 : light.withAlphaComponent(lightAlpha)
         })
+    }
+}
+
+extension NSColor {
+    static func adaptive(dark: Int, light: Int) -> NSColor {
+        NSColor(name: nil) { appearance in
+            let hex = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+            return NSColor(
+                red: CGFloat((hex >> 16) & 0xFF) / 255.0,
+                green: CGFloat((hex >> 8) & 0xFF) / 255.0,
+                blue: CGFloat(hex & 0xFF) / 255.0,
+                alpha: 1.0
+            )
+        }
     }
 }

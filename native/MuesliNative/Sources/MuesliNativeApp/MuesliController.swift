@@ -1498,6 +1498,23 @@ public final class MuesliController: NSObject {
         }
     }
 
+    /// Applies the configured theme to app-level chrome. The fullscreen
+    /// titlebar, menus, and panels resolve against `NSApp.appearance` rather
+    /// than any individual window's appearance, so syncing only the window
+    /// leaves fullscreen chrome following the OS theme instead of the app's.
+    /// Also refreshes the dashboard window's own appearance.
+    func applyAppThemeAppearance() {
+        // NSApp is an implicitly unwrapped optional and is nil under `swift test`, where no
+        // NSApplication is ever created. Touching it there traps and takes the whole test
+        // bundle down, so bind it rather than forcing it.
+        if let app = NSApp {
+            app.appearance = NSAppearance(
+                named: RecentHistoryWindowController.appearanceName(for: config.darkMode)
+            )
+        }
+        historyWindowController?.applyThemeAppearance()
+    }
+
     private func applyConfigRuntimeSideEffects(wasICloudSyncEnabled: Bool, hotkeyTriggerThresholdChanged: Bool) {
         statusBarController?.refresh()
         statusBarController?.refreshIcon()
@@ -1509,6 +1526,7 @@ public final class MuesliController: NSObject {
         }
         dictationAudioRoutingController.selectedInputDeviceUID = config.dictationInputDeviceUID
         historyWindowController?.updateBackendLabel()
+        applyAppThemeAppearance()
         refreshIndicatorVisibility()
         appState.selectedBackend = selectedBackend
         appState.selectedMeetingTranscriptionBackend = selectedMeetingTranscriptionBackend

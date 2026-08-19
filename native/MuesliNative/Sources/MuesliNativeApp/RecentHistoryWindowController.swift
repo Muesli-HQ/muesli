@@ -57,6 +57,7 @@ final class RecentHistoryWindowController: NSObject, NSWindowDelegate {
             buildWindow()
         }
         guard let window else { return }
+        applyAppearance(to: window)
         controller.syncAppState()
         if !window.isVisible {
             controller.noteWindowOpened()
@@ -72,7 +73,34 @@ final class RecentHistoryWindowController: NSObject, NSWindowDelegate {
     }
 
     func reload() {
+        applyThemeAppearance()
         controller.syncAppState()
+    }
+
+    /// Called when the theme preference changes, so the chrome follows the in-app light/dark
+    /// toggle instead of waiting for the window to be rebuilt.
+    func applyThemeAppearance() {
+        guard let window else { return }
+        applyAppearance(to: window)
+    }
+
+    nonisolated static func appearanceName(for darkMode: Bool) -> NSAppearance.Name {
+        darkMode ? .darkAqua : .aqua
+    }
+
+    /// The window is created before SwiftUI applies `preferredColorScheme`, and AppKit chrome
+    /// (transparent titlebar, traffic lights, resize corners) resolves against the window's own
+    /// appearance rather than the SwiftUI environment. Without this the titlebar keeps rendering
+    /// dark while the app is set to the light theme.
+    ///
+    /// Reads `controller.config` rather than `appState.config`: the latter is assigned during
+    /// `syncAppState()`, so reading it here would apply the previous theme whenever the appearance
+    /// is refreshed before that assignment.
+    private func applyAppearance(to window: NSWindow) {
+        let name = Self.appearanceName(for: controller.config.darkMode)
+        if window.appearance?.name != name {
+            window.appearance = NSAppearance(named: name)
+        }
     }
 
     func close() {
@@ -103,7 +131,8 @@ final class RecentHistoryWindowController: NSObject, NSWindowDelegate {
         window.delegate = self
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
-        window.backgroundColor = NSColor(red: 0.067, green: 0.071, blue: 0.078, alpha: 1) // #111214
+        window.backgroundColor = MuesliTheme.backgroundDeepNSColor
+        applyAppearance(to: window)
 
         let rootView = DashboardRootView(
             appState: controller.appState,

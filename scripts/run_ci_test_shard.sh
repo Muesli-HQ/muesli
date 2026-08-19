@@ -25,6 +25,7 @@ case "${shard}" in
       ChatGPTTokenStorageTests
       FloatingIndicatorVisibilityTests
       IndicatorFrameSizeTests
+      WindowAppearanceTests
       OpenAILogoShapeTests
       StandardMenuShortcutTests
       MeetingChunkCollectorTests
