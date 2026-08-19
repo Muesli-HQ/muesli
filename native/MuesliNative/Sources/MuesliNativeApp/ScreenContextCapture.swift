@@ -258,17 +258,7 @@ enum ScreenContextCapture {
         try await withCheckedThrowingContinuation { continuation in
             // Dispatch to background queue to avoid blocking the Swift cooperative thread pool
             DispatchQueue.global(qos: .userInitiated).async {
-                let request = VNRecognizeTextRequest { request, error in
-                    if let error {
-                        continuation.resume(throwing: error)
-                        return
-                    }
-                    let observations = request.results as? [VNRecognizedTextObservation] ?? []
-                    let text = observations
-                        .compactMap { $0.topCandidates(1).first?.string }
-                        .joined(separator: "\n")
-                    continuation.resume(returning: text)
-                }
+                let request = VNRecognizeTextRequest()
                 request.recognitionLevel = .accurate
                 request.usesLanguageCorrection = true
                 request.usesCPUOnly = true
@@ -276,6 +266,11 @@ enum ScreenContextCapture {
                 let handler = VNImageRequestHandler(cgImage: image, options: [:])
                 do {
                     try handler.perform([request])
+                    let observations = request.results ?? []
+                    let text = observations
+                        .compactMap { $0.topCandidates(1).first?.string }
+                        .joined(separator: "\n")
+                    continuation.resume(returning: text)
                 } catch {
                     continuation.resume(throwing: error)
                 }
