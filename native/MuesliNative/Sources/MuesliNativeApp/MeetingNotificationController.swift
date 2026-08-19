@@ -28,7 +28,7 @@ final class MeetingNotificationController {
 
     /// Fixed geometry for the split button, so swapping which action is armed never
     /// reflows the card. `splitButtonLabelFits` guards the assumption in tests.
-    static let splitButtonWidth: CGFloat = 98
+    static let splitButtonWidth: CGFloat = 126
     static let splitButtonFont = NSFont.systemFont(ofSize: 11, weight: .medium)
 
     static func splitButtonLabelFits(_ label: String, horizontalPadding: CGFloat = 12) -> Bool {
@@ -39,7 +39,7 @@ final class MeetingNotificationController {
     static func singleActionTextWidth(
         cardWidth: CGFloat,
         textX: CGFloat,
-        buttonWidth: CGFloat = 110,
+        buttonWidth: CGFloat = 126,
         trailingInset: CGFloat = 12,
         spacing: CGFloat = 8
     ) -> CGFloat {
@@ -49,7 +49,7 @@ final class MeetingNotificationController {
     static func singleActionCardWidth(
         requiredTextWidth: CGFloat,
         textX: CGFloat,
-        buttonWidth: CGFloat = 110,
+        buttonWidth: CGFloat = 126,
         trailingInset: CGFloat = 12,
         spacing: CGFloat = 8,
         minimumWidth: CGFloat = 344,
@@ -64,7 +64,7 @@ final class MeetingNotificationController {
         promptID: String? = nil,
         title: String,
         subtitle: String,
-        actionLabel: String = "Start Recording",
+        actionLabel: String = "Start Transcribing",
         meetingURL: URL? = nil,
         preferredScreen: NSScreen? = nil,
         platform explicitPlatform: MeetingPlatform? = nil,
@@ -96,7 +96,7 @@ final class MeetingNotificationController {
             hasJoinAndRecord: hasJoinAndRecord,
             hasJoinOnly: hasJoinOnly
         )
-        // Nothing to drop down (a prompt with no join link, or "Stop Recording")
+        // Nothing to drop down (a prompt with no join link, or "Stop Transcribing")
         // keeps the plain single-action button.
         let hasJoinButton = !splitButtonAlternatives.isEmpty
         let platform = explicitPlatform ?? meetingURL.flatMap { MeetingPlatform.detect(from: $0) }
@@ -262,8 +262,8 @@ final class MeetingNotificationController {
             chevronButton.toolTip = splitButtonAlternatives.map(\.buttonLabel).joined(separator: " · ")
             cardView.addSubview(chevronButton)
         } else {
-            // Single "Start Recording" button
-            let buttonWidth: CGFloat = 110
+            // Single "Start Transcribing" button
+            let buttonWidth: CGFloat = 126
             let buttonX = cardWidth - buttonWidth - 12
             let textWidth = Self.singleActionTextWidth(cardWidth: cardWidth, textX: textX, buttonWidth: buttonWidth)
             titleLabel.frame.size.width = textWidth
@@ -440,7 +440,7 @@ final class MeetingNotificationController {
         }
     }
 
-    /// Maps a join action to the handler that performs it. The record-only handler is
+    /// Maps a join action to the handler that performs it. The transcribe-only handler is
     /// the same `onStartRecording` used by single-action prompts.
     private static func selector(for action: MeetingJoinDefaultAction) -> Selector {
         switch action {

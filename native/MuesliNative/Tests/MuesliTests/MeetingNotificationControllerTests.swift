@@ -38,7 +38,7 @@ struct MeetingNotificationControllerTests {
     @Test("Single-action prompts use available text width")
     @MainActor
     func singleActionPromptsUseAvailableTextWidth() {
-        let subtitle = "Still recording. Stop if the meeting ended." as NSString
+        let subtitle = "Still transcribing. Stop if the meeting ended." as NSString
         let subtitleWidth = subtitle.size(withAttributes: [.font: NSFont.systemFont(ofSize: 11)]).width
         let cardWidth = MeetingNotificationController.singleActionCardWidth(
             requiredTextWidth: subtitleWidth,
@@ -60,8 +60,8 @@ struct MeetingNotificationControllerTests {
             .resolved(hasJoinAndRecord: true, hasJoinOnly: true) == .recordOnly)
     }
 
-    @Test("Join defaults fall back to record only without a join link")
-    func joinDefaultsFallBackToRecordOnlyWithoutJoinLink() {
+    @Test("Join defaults fall back to transcribe only without a join link")
+    func joinDefaultsFallBackToTranscribeOnlyWithoutJoinLink() {
         #expect(MeetingJoinDefaultAction.joinAndRecord
             .resolved(hasJoinAndRecord: false, hasJoinOnly: false) == .recordOnly)
         #expect(MeetingJoinDefaultAction.joinOnly
@@ -80,8 +80,8 @@ struct MeetingNotificationControllerTests {
             .availableAlternatives(hasJoinAndRecord: true, hasJoinOnly: true) == [.joinAndRecord, .recordOnly])
     }
 
-    @Test("Existing installs keep Join & Record as the default")
-    func existingInstallsKeepJoinAndRecordAsDefault() throws {
+    @Test("Existing installs keep Join & Transcribe as the default")
+    func existingInstallsKeepJoinAndTranscribeAsDefault() throws {
         let config = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
         #expect(config.meetingJoinDefaultAction == .joinAndRecord)
         #expect(MeetingJoinDefaultAction.fallback == .joinAndRecord)
@@ -98,6 +98,13 @@ struct MeetingNotificationControllerTests {
 
         let decoded = try JSONDecoder().decode(AppConfig.self, from: encoded)
         #expect(decoded.meetingJoinDefaultAction == .recordOnly)
+    }
+
+    @Test("Join action labels say transcribe rather than record")
+    func joinActionLabelsSayTranscribeRatherThanRecord() {
+        #expect(MeetingJoinDefaultAction.joinAndRecord.buttonLabel == "Join & Transcribe")
+        #expect(MeetingJoinDefaultAction.joinOnly.buttonLabel == "Join Only")
+        #expect(MeetingJoinDefaultAction.recordOnly.buttonLabel == "Transcribe Only")
     }
 
     @Test("Every join action label fits the split button")

@@ -6116,8 +6116,8 @@ public final class MuesliController: NSObject {
         }
     }
 
-    /// Open meeting URL, start recording, schedule end notification, and suppress detection.
-    /// Single entry point for "Join & Record" from both notification panel and Coming Up section.
+    /// Open meeting URL, start transcription, schedule end notification, and suppress detection.
+    /// Single entry point for "Join & Transcribe" from both notification panel and Coming Up section.
     func joinAndRecord(
         title: String,
         meetingURL: URL,
@@ -6136,9 +6136,9 @@ public final class MuesliController: NSObject {
         )
     }
 
-    /// Start recording without opening the meeting URL — for people who join calls in
+    /// Start transcription without opening the meeting URL — for people who join calls in
     /// a separate browser or client.
-    /// Single entry point for "Record Only" from both notification panel and Coming Up section.
+    /// Single entry point for "Transcribe Only" from both notification panel and Coming Up section.
     func recordOnly(
         title: String,
         meetingURL: URL?,
@@ -7568,11 +7568,11 @@ public final class MuesliController: NSObject {
         let didShow = meetingNotification.show(
             promptID: promptID,
             title: "Meeting signal lost",
-            subtitle: "Still recording. Stop if the meeting ended.",
-            actionLabel: "Stop Recording",
+            subtitle: "Still transcribing. Stop if the meeting ended.",
+            actionLabel: "Stop Transcribing",
             dismissAfter: 30,
             // MeetingNotificationController uses onStartRecording as its generic
-            // primary-action slot; here the primary action is stopping recording.
+            // primary-action slot; here the primary action is stopping transcription.
             onStartRecording: { [weak self] in
                 guard let self, self.activeMeetingID == meetingID else { return }
                 self.stopMeetingRecording()
@@ -9531,7 +9531,7 @@ public final class MuesliController: NSObject {
         meetingNotification.show(
             title: "Meeting ended",
             subtitle: "\(title) · scheduled time is over",
-            actionLabel: "Stop Recording",
+            actionLabel: "Stop Transcribing",
             dismissAfter: 45,
             onStartRecording: { [weak self] in
                 self?.stopMeetingRecording()

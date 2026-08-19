@@ -16,11 +16,11 @@ enum MeetingJoinDefaultAction: String, Codable, CaseIterable {
     var buttonLabel: String {
         switch self {
         case .joinAndRecord:
-            return "Join & Record"
+            return "Join & Transcribe"
         case .joinOnly:
             return "Join Only"
         case .recordOnly:
-            return "Record Only"
+            return "Transcribe Only"
         }
     }
 
@@ -35,8 +35,8 @@ enum MeetingJoinDefaultAction: String, Codable, CaseIterable {
         }
     }
 
-    /// Falls back to record-only when the prompt has no join affordance — a
-    /// calendar event without a meeting link can still be recorded.
+    /// Falls back to transcribe-only when the prompt has no join affordance — a
+    /// calendar event without a meeting link can still be transcribed.
     func resolved(hasJoinAndRecord: Bool, hasJoinOnly: Bool) -> MeetingJoinDefaultAction {
         switch self {
         case .joinAndRecord:

@@ -583,7 +583,7 @@ struct MeetingsView: View {
         for event: UnifiedCalendarEvent,
         meetingURL: URL
     ) {
-        // Both recording actions must carry calendar occurrence identity: it is
+        // Both transcribe actions must carry calendar occurrence identity: it is
         // what keeps the calendar title (MeetingSession.calendarTitleCandidate)
         // and what createMeetingFromCalendarEvent dedupes against. Without it
         // the same event can end up as two meetings.

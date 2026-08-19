@@ -1460,7 +1460,7 @@ struct SettingsView: View {
                         controller.updateConfig { $0.meetingJoinDefaultAction = action }
                     }
                 }
-                settingsDescription("Primary button for notifications and Coming Up.")
+                settingsDescription("Primary button for notifications and Coming Up. Pick “Transcribe Only” if you join in another browser.")
 
                 Divider().background(MuesliTheme.surfaceBorder)
 
