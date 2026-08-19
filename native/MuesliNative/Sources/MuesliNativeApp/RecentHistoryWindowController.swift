@@ -129,7 +129,12 @@ final class RecentHistoryWindowController: NSObject, NSWindowDelegate {
         window.title = AppIdentity.displayName
         window.isReleasedWhenClosed = false
         window.delegate = self
-        window.titlebarAppearsTransparent = true
+        // Opaque titlebar: with .fullSizeContentView a transparent titlebar
+        // renders the system chrome material over the detail column, and that
+        // material follows the OS theme rather than the app's (dark strip with
+        // OS dark + app light). An opaque titlebar resolves against the
+        // window's own appearance and background color, which we control.
+        window.titlebarAppearsTransparent = false
         window.titleVisibility = .hidden
         window.backgroundColor = MuesliTheme.backgroundDeepNSColor
         applyAppearance(to: window)
