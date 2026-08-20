@@ -1133,17 +1133,48 @@ final class FloatingIndicatorController: NSObject {
         guard state == .idle, config.indicatorHoverStyle == .shortcutPill else { return bounds }
         let placement = idleHoverPlacement(for: config.indicatorAnchor)
         if isHovered {
-            let title = "Dictate \(config.dictationHotkey.displayLabel)"
-            let frames = idleHoverFrames(
+            let (pill, _, _, _) = shortcutPillHoverFrame(
                 placement: placement,
                 frameSize: bounds.size,
-                labelWidth: idleLabelWidth(title: title)
+                config: config
             )
-            return frames.label.union(frames.icon).insetBy(dx: -6, dy: -6).intersection(bounds)
+            return pill.insetBy(dx: -6, dy: -6).intersection(bounds)
         }
         return idleRestingHandleFrame(placement: placement, frameSize: bounds.size)
             .insetBy(dx: -6, dy: -6)
             .intersection(bounds)
+    }
+
+    /// Unified hover pill for `IndicatorHoverStyle.shortcutPill`: the classic
+    /// stadium shape (icon + text in one rounded rectangle), popping
+    /// bottom-to-top from the resting grip instead of left-to-right.
+    private func shortcutPillHoverFrame(
+        placement: IdleHoverPlacement,
+        frameSize: NSSize,
+        config: AppConfig
+    ) -> (pill: CGRect, title: String, font: NSFont, textWidth: CGFloat) {
+        let title = "Hold \(config.dictationHotkey.label) to dictate"
+        let font = NSFont.systemFont(ofSize: 13, weight: .regular)
+        let textWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width) + 4
+        let pad: CGFloat = 14
+        let gap: CGFloat = 6
+        let iconW: CGFloat = 15
+        let pillW = pad + iconW + gap + textWidth + pad
+        let pillH: CGFloat = 30
+        let handle = idleRestingHandleFrame(placement: placement, frameSize: frameSize)
+        let pill: CGRect
+        switch placement {
+        case .above:
+            // Grip at the canvas bottom; the pill grows upward from its baseline.
+            pill = CGRect(x: handle.midX - pillW / 2, y: handle.minY, width: pillW, height: pillH)
+        case .below:
+            pill = CGRect(x: handle.midX - pillW / 2, y: handle.maxY - pillH, width: pillW, height: pillH)
+        case .leading:
+            pill = CGRect(x: handle.minX, y: handle.midY - pillH / 2, width: pillW, height: pillH)
+        case .trailing:
+            pill = CGRect(x: handle.maxX - pillW, y: handle.midY - pillH / 2, width: pillW, height: pillH)
+        }
+        return (pill, title, font, textWidth)
     }
 
     /// Shortcut-pill chrome belongs to the idle presentation only. Every
@@ -1158,8 +1189,8 @@ final class FloatingIndicatorController: NSObject {
     /// thin grip handle; on hover the mic capsule and an adjacent rounded label
     /// pill appear without resizing the window.
     private func layoutShortcutPillIdle(frameSize: NSSize, config: AppConfig) {
-        // Transparent host: only the mic capsule and the label pill draw. The
-        // classic pill's tint/glass/border would paint the whole canvas as one blob.
+        // Transparent host: only the resting grip or the unified hover pill
+        // draws. The classic canvas chrome would paint the whole area as a blob.
         tintLayer?.isHidden = true
         glassView?.isHidden = true
         CATransaction.begin()
@@ -1169,25 +1200,19 @@ final class FloatingIndicatorController: NSObject {
         CATransaction.commit()
         wandIconView?.isHidden = true
         iconLabel?.isHidden = true
-        textLabel?.isHidden = true
-        textLabel?.alphaValue = 0
+        idleShortcutPillView?.isHidden = true
 
-        let title = "Dictate \(config.dictationHotkey.displayLabel)"
-        let labelWidth = idleLabelWidth(title: title)
         let placement = idleHoverPlacement(for: config.indicatorAnchor)
-        let idleFrames = idleHoverFrames(
+        let (pillFrame, title, font, textWidth) = shortcutPillHoverFrame(
             placement: placement,
             frameSize: frameSize,
-            labelWidth: labelWidth
+            config: config
         )
-        idleShortcutPillView?.isHidden = !isHovered
-        idleShortcutPillView?.frame = idleFrames.label
-        idleShortcutPillView?.title = title
-
         let restingHandle = idleRestingHandleFrame(
             placement: placement,
             frameSize: frameSize
         )
+
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         idleIconBackgroundLayer?.isHidden = false
@@ -1195,14 +1220,8 @@ final class FloatingIndicatorController: NSObject {
             ? NSColor.colorWith(hex: 0x111111, alpha: 1).cgColor
             : NSColor.colorWith(hex: 0x696969, alpha: 0.82).cgColor
         idleIconBackgroundLayer?.borderWidth = isHovered ? 1 : 0
-        let hoveredCapsule = CGRect(
-            x: idleFrames.icon.midX - 22,
-            y: idleFrames.icon.midY - 14,
-            width: 44,
-            height: 28
-        )
-        idleIconBackgroundLayer?.frame = isHovered ? hoveredCapsule : restingHandle
-        idleIconBackgroundLayer?.cornerRadius = isHovered ? 14 : 5
+        idleIconBackgroundLayer?.frame = isHovered ? pillFrame : restingHandle
+        idleIconBackgroundLayer?.cornerRadius = isHovered ? pillFrame.height / 2 : 5
         CATransaction.commit()
 
         let iconSize = NSSize(width: 15, height: 15)
@@ -1210,10 +1229,25 @@ final class FloatingIndicatorController: NSObject {
         if let mic = micIconView {
             mic.alphaValue = 1
             mic.frame = NSRect(
-                x: idleFrames.icon.midX - iconSize.width / 2,
-                y: idleFrames.icon.midY - iconSize.height / 2,
+                x: pillFrame.minX + 14,
+                y: pillFrame.midY - iconSize.height / 2,
                 width: iconSize.width,
                 height: iconSize.height
+            )
+        }
+
+        if let textLabel {
+            textLabel.stringValue = title
+            textLabel.font = font
+            textLabel.textColor = .white.withAlphaComponent(0.88)
+            textLabel.alignment = .left
+            textLabel.isHidden = !isHovered
+            textLabel.alphaValue = isHovered ? 1 : 0
+            textLabel.frame = NSRect(
+                x: pillFrame.minX + 14 + 15 + 6,
+                y: pillFrame.midY - 8,
+                width: textWidth,
+                height: 16
             )
         }
     }
@@ -1754,16 +1788,14 @@ final class FloatingIndicatorController: NSObject {
         switch state {
         case .idle:
             if config.indicatorHoverStyle == .shortcutPill {
-                // Fixed canvas: the window never resizes on hover. Only child
-                // visibility changes, so the pill cannot reveal or crossfade.
-                let title = "Dictate \(config.dictationHotkey.displayLabel)"
-                let labelWidth = idleLabelWidth(title: title)
-                switch idleHoverPlacement(for: config.indicatorAnchor) {
-                case .above, .below:
-                    size = NSSize(width: max(labelWidth, 36) + 4, height: 82)
-                case .leading, .trailing:
-                    size = NSSize(width: labelWidth + 46, height: 40)
-                }
+                // Fixed canvas sized to the unified hover pill: the window never
+                // resizes on hover, only child visibility changes.
+                let (pill, _, _, _) = shortcutPillHoverFrame(
+                    placement: idleHoverPlacement(for: config.indicatorAnchor),
+                    frameSize: .zero,
+                    config: config
+                )
+                size = NSSize(width: pill.width + 4, height: 40)
             } else {
                 size = isHovered
                     ? Self.idleHoverPillSize(hotkeyLabel: config.dictationHotkey.label, screenWidth: screen.width)
