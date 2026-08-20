@@ -1,8 +1,9 @@
 import FluidAudio
+
 import Foundation
 import MuesliCore
 
-/// Resolves Qwen3 ASR cache paths used by FluidAudio.
+/// Resolves Qwen3 ASR cache paths (layout matches FluidAudio's original cache).
 ///
 /// FluidAudio's `Repo.folderName` strips the `-coreml` suffix for Qwen, so the
 /// on-disk cache is `qwen3-asr-0.6b/{int8,f32}` rather than
@@ -54,12 +55,12 @@ enum Qwen3AsrWarmupReadiness {
     }
 }
 
-/// Native Swift transcription backend using FluidAudio's Qwen3 ASR model
+/// Native Swift transcription backend using the vendored Qwen3 ASR manager
 /// running on Apple's Neural Engine (ANE) via CoreML.
 /// Requires macOS 15+ due to CoreML stateful decoder support.
 @available(macOS 15, *)
 actor Qwen3AsrTranscriber {
-    private var manager: Qwen3AsrManager?
+    private var manager: MuesliQwen3AsrManager?
 
     enum TranscriberError: Error, LocalizedError {
         case notLoaded
@@ -92,7 +93,7 @@ actor Qwen3AsrTranscriber {
             )
             progress?(0.95, preparing.message)
             progressSnapshot?(preparing)
-            let candidate = Qwen3AsrManager()
+            let candidate = MuesliQwen3AsrManager()
             try await candidate.loadModels(from: modelDir)
             self.manager = candidate
             fputs("[qwen3-asr] models loaded, running warmup inference...\n", stderr)
