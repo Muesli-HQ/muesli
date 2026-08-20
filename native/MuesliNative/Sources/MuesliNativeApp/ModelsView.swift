@@ -593,6 +593,13 @@ struct ModelsView: View {
         )
     }
 
+    private var qwen3AsrLanguageSelection: Binding<Qwen3AsrLanguage> {
+        Binding(
+            get: { appState.config.resolvedQwen3AsrLanguage },
+            set: { controller.selectQwen3AsrLanguage($0) }
+        )
+    }
+
     private var appleSpeechLanguageSelection: Binding<String> {
         Binding(
             get: { appState.config.resolvedAppleSpeechLanguage },
@@ -1181,6 +1188,24 @@ struct ModelsView: View {
 
                     Picker("", selection: indicASRLanguageSelection) {
                         ForEach(IndicASRLanguage.allCases, id: \.self) { language in
+                            Text(language.label).tag(language)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 220, alignment: .leading)
+                }
+            }
+
+            if option.backend == BackendOption.qwen3Asr.backend {
+                HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
+                    Text("Language")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .frame(width: 64, alignment: .leading)
+
+                    Picker("", selection: qwen3AsrLanguageSelection) {
+                        ForEach(Qwen3AsrLanguage.allCases, id: \.self) { language in
                             Text(language.label).tag(language)
                         }
                     }

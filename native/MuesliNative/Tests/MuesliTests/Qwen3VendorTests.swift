@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 @testable import MuesliCore
+@testable import MuesliNativeApp
 
 struct Qwen3VendorTests {
 
@@ -60,5 +61,31 @@ struct Qwen3LanguageTests {
         #expect(MuesliQwen3AsrConfig.Language(from: "eng") == nil)
         #expect(MuesliQwen3AsrConfig.Language(from: "") == nil)
         #expect(MuesliQwen3AsrConfig.Language(from: "chinese (simplified)") == nil)
+    }
+}
+
+struct Qwen3LanguageSelectionTests {
+
+    @available(macOS 15, *)
+    @Test("Qwen3AsrLanguage resolves auto and pinned languages")
+    func resolvesAutoAndPinned() {
+        #expect(Qwen3AsrLanguage.resolved(nil) == .auto)
+        #expect(Qwen3AsrLanguage.resolved("") == .auto)
+        #expect(Qwen3AsrLanguage.resolved("auto") == .auto)
+        #expect(Qwen3AsrLanguage.resolved("AUTO") == .auto)
+        #expect(Qwen3AsrLanguage.resolved("en") == .pinned(.english))
+        #expect(Qwen3AsrLanguage.resolved("English") == .pinned(.english))
+        #expect(Qwen3AsrLanguage.resolved("bogus") == .auto)
+    }
+
+    @available(macOS 15, *)
+    @Test("Qwen3AsrLanguage exposes codes and labels")
+    func exposesCodesAndLabels() {
+        #expect(Qwen3AsrLanguage.auto.pinnedCode == nil)
+        #expect(Qwen3AsrLanguage.auto.rawValue == "auto")
+        #expect(Qwen3AsrLanguage.auto.label == "Auto-detect")
+        #expect(Qwen3AsrLanguage.pinned(.english).pinnedCode == "en")
+        #expect(Qwen3AsrLanguage.pinned(.english).label == "English")
+        #expect(Qwen3AsrLanguage.allCases.count == MuesliQwen3AsrConfig.Language.allCases.count + 1)
     }
 }
