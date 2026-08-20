@@ -4,9 +4,14 @@ import MuesliCore
 struct SidebarView: View {
     private let sidebarIconColumnWidth: CGFloat = 20
     private let meetingsTrailingColumnWidth: CGFloat = 24
-    private let sidebarRowHorizontalPadding: CGFloat = 16
+    /// Совпадает с внутренним отступом поля поиска, поэтому колонка иконок строк
+    /// встаёт ровно под лупой, а не на 6 пунктов правее.
+    private let sidebarRowHorizontalPadding: CGFloat = 10
     private let sidebarRowOuterPadding: CGFloat = 8
-    private let folderDepthIndent: CGFloat = 8
+    /// Отступ вложенных строк раздела Meetings. Сайдбар узкий (260pt по умолчанию),
+    /// поэтому вложенность показываем сдвигом, но экономно.
+    private let meetingsChildIndent: CGFloat = 24
+    private let folderDepthIndent: CGFloat = 16
 
     let appState: AppState
     let controller: MuesliController
@@ -281,10 +286,11 @@ Even out the sidebar icon set)
 
     @ViewBuilder
     private var searchBar: some View {
-        HStack(spacing: MuesliTheme.spacing8) {
+        HStack(spacing: MuesliTheme.spacing12) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 12))
                 .foregroundStyle(MuesliTheme.textTertiary)
+                .frame(width: sidebarIconColumnWidth, alignment: .center)
             TextField("Search...", text: searchTextBinding)
                 .textFieldStyle(.plain)
                 .font(MuesliTheme.callout())
@@ -302,8 +308,8 @@ Even out the sidebar icon set)
                 .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
+        .padding(.horizontal, sidebarRowHorizontalPadding)
+        .frame(height: 32)
         .background(MuesliTheme.backgroundRaised)
         .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
         .overlay(
@@ -380,6 +386,8 @@ Even out the sidebar icon set)
 
             if meetingsExpanded {
                 let folderTree = folderTreePresentation
+                // Дети раздела сдвинуты как группа: сейчас у них нулевой отступ,
+                // и вложенность читается только по мелкому кеглю иконки.
                 VStack(alignment: .leading, spacing: 2) {
                     meetingFilterRow(
                         icon: "tray.2",
@@ -443,6 +451,7 @@ Even out the sidebar icon set)
                         }
                     }
                 }
+                .padding(.leading, meetingsChildIndent)
                 .padding(.horizontal, sidebarRowOuterPadding)
             }
         }
@@ -686,9 +695,9 @@ Even out the sidebar icon set)
         disclosureAction: (() -> Void)? = nil,
         action: @escaping () -> Void
     ) -> some View {
-        HStack(spacing: MuesliTheme.spacing8) {
+        HStack(spacing: MuesliTheme.spacing12) {
             Image(systemName: icon)
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(isSelected ? MuesliTheme.accent : MuesliTheme.textTertiary)
                 .frame(width: sidebarIconColumnWidth)
             Text(label)
@@ -721,7 +730,7 @@ Even out the sidebar icon set)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .offset(x: 4)
+                .offset(x: -20)
             }
         }
     }
