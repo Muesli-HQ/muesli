@@ -151,7 +151,9 @@ public struct MuesliQwen3AsrModels: Sendable {
         logger.info("Downloading Qwen3-ASR \(variant.rawValue) models via managed downloader...")
         let plan = ManagedASRModelPlans.qwen3ASRInt8(cacheDirectory: targetDir)
         if force {
-            try? plan.delete(fileManager: .default)
+            // A failed delete would let the downloader short-circuit on the stale
+            // cache, so surface the failure instead of silently keeping old files.
+            try plan.delete(fileManager: .default)
         }
         _ = try await ManagedASRModelDownloader.downloadIfNeeded(
             plan,
