@@ -416,6 +416,7 @@ public final class MuesliController: NSObject {
     private var autoRecordedCalendarEventIDs = Set<String>()
     private var meetingFeatureMonitorsAllowed = false
     private var meetingDetectionMonitorStarted = false
+    private var pendingPushToTalkEnable = false
 
     private var searchTask: Task<Void, Never>?
     private var onboardingModelPreparationTask: Task<Void, Never>?
@@ -749,11 +750,12 @@ public final class MuesliController: NSObject {
         meetingFeatureMonitorsAllowed = canRunMainApp
 
         // Defer permission-triggering monitors until after onboarding
-        if canRunMainApp && config.resolvedOnboardingUseCase.includesPushToTalk {
-            hotkeyMonitor.configure(config.dictationHotkey)
-            hotkeyMonitor.start()
-            startComputerUseHotkeyMonitorIfNeeded()
-            startQuilHotkeyMonitorIfNeeded()
+        if PushToTalkEnablementPolicy.shouldStartDictationHotkeyMonitor(
+            hasCompletedOnboarding: config.hasCompletedOnboarding,
+            hasRequiredStartupPermissions: hasRequiredStartupPermissions(for: config.resolvedOnboardingUseCase),
+            useCase: config.resolvedOnboardingUseCase
+        ) {
+            startDictationHotkeyMonitorIfNeeded()
         }
         if canRunMainApp {
             startMeetingRecordingHotkeyMonitorIfNeeded()
@@ -4347,6 +4349,7 @@ public final class MuesliController: NSObject {
         updateConfig { $0.dictationHotkey = hotkey }
         hotkeyMonitor.configure(hotkey)
         configureComputerUseHotkeyMonitor()
+        enablePushToTalkIfNeeded(requestPermissions: true)
         return result
     }
 
@@ -4851,9 +4854,12 @@ public final class MuesliController: NSObject {
         onboardingWindowController = nil
         if hasRequiredStartupPermissions(for: onboardingUseCase) {
             meetingFeatureMonitorsAllowed = true
-            if onboardingUseCase.includesPushToTalk {
-                hotkeyMonitor.start()
-                startComputerUseHotkeyMonitorIfNeeded()
+            if PushToTalkEnablementPolicy.shouldStartDictationHotkeyMonitor(
+                hasCompletedOnboarding: true,
+                hasRequiredStartupPermissions: true,
+                useCase: onboardingUseCase
+            ) {
+                startDictationHotkeyMonitorIfNeeded()
             }
             syncCalendarMonitor()
             // Start monitors that were deferred during onboarding
@@ -4906,13 +4912,7 @@ public final class MuesliController: NSObject {
 
     private func hasRequiredStartupPermissions(for useCase: OnboardingUseCase) -> Bool {
         OnboardingPermissionGate.hasRequiredPermissions(
-            OnboardingPermissionSnapshot(
-                microphone: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
-                accessibility: AXIsProcessTrusted(),
-                inputMonitoring: CGPreflightListenEventAccess(),
-                systemAudio: false,
-                screenRecording: false
-            ),
+            currentOnboardingPermissionSnapshot(),
             for: useCase
         )
     }
@@ -4941,14 +4941,83 @@ public final class MuesliController: NSObject {
                 .union([.dictation])
         )
         updateConfig { $0.onboardingUseCase = updatedUseCase.rawValue }
-        hotkeyMonitor.configure(keyCode: config.dictationHotkey.keyCode)
-        hotkeyMonitor.start()
-        startComputerUseHotkeyMonitorIfNeeded()
+        startDictationHotkeyMonitorIfNeeded()
         syncDictationRecorderWarmup(intent: .idlePrewarm(.permissionsReady))
         TelemetryDeck.signal("onboarding.use_case_reclassified", parameters: [
             "from_use_case": previousUseCase.rawValue,
             "to_use_case": updatedUseCase.rawValue,
             "reason": "dictation_permissions_granted",
+        ])
+    }
+
+    enum PushToTalkEnableResult: Equatable {
+        case alreadyEnabled
+        case enabled
+        case needsPermissions
+    }
+
+    @discardableResult
+    func enablePushToTalkIfNeeded(requestPermissions: Bool = false) -> PushToTalkEnableResult {
+        let snapshot = currentOnboardingPermissionSnapshot()
+        let hasDictationPermissions = OnboardingPermissionGate.hasRequiredDictationPermissions(snapshot)
+        switch PushToTalkEnablementPolicy.outcome(
+            currentUseCase: config.resolvedOnboardingUseCase,
+            hasDictationPermissions: hasDictationPermissions
+        ) {
+        case .alreadyEnabled:
+            pendingPushToTalkEnable = false
+            startDictationHotkeyMonitorIfNeeded()
+            return .alreadyEnabled
+        case .promote(let useCase):
+            applyPushToTalkEnablement(useCase: useCase)
+            return .enabled
+        case .waitForPermissions:
+            pendingPushToTalkEnable = true
+            if requestPermissions {
+                requestMissingDictationPermissions(snapshot)
+            }
+            return .needsPermissions
+        }
+    }
+
+    func completePendingPushToTalkEnableIfReady() {
+        guard pendingPushToTalkEnable else { return }
+        enablePushToTalkIfNeeded(requestPermissions: false)
+    }
+
+    private func currentOnboardingPermissionSnapshot() -> OnboardingPermissionSnapshot {
+        OnboardingPermissionSnapshot(
+            microphone: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
+            accessibility: AXIsProcessTrusted(),
+            inputMonitoring: CGPreflightListenEventAccess(),
+            systemAudio: false,
+            screenRecording: false
+        )
+    }
+
+    private func requestMissingDictationPermissions(_ snapshot: OnboardingPermissionSnapshot) {
+        if !snapshot.microphone {
+            AVCaptureDevice.requestAccess(for: .audio) { _ in }
+        }
+        if !snapshot.accessibility {
+            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+            AXIsProcessTrustedWithOptions(options)
+        }
+        if !snapshot.inputMonitoring {
+            _ = CGRequestListenEventAccess()
+        }
+    }
+
+    private func applyPushToTalkEnablement(useCase: OnboardingUseCase) {
+        let fromUseCase = config.resolvedOnboardingUseCase
+        pendingPushToTalkEnable = false
+        updateConfig { $0.onboardingUseCase = useCase.rawValue }
+        startDictationHotkeyMonitorIfNeeded()
+        syncDictationRecorderWarmup(intent: .idlePrewarm(.permissionsReady))
+        TelemetryDeck.signal("onboarding.use_case_reclassified", parameters: [
+            "from_use_case": fromUseCase.rawValue,
+            "to_use_case": useCase.rawValue,
+            "reason": "push_to_talk_enabled",
         ])
     }
 
@@ -8191,6 +8260,14 @@ public final class MuesliController: NSObject {
         computerUseHotkeyMonitor.configureTriggerThreshold(milliseconds: config.computerUseHotkeyTriggerThresholdMS)
         quilHotkeyMonitor.configureTriggerThreshold(milliseconds: config.quilHotkeyTriggerThresholdMS)
         meetingRecordingHotkeyMonitor.configureTriggerThreshold(milliseconds: config.meetingRecordingHotkeyTriggerThresholdMS)
+    }
+
+    private func startDictationHotkeyMonitorIfNeeded() {
+        guard config.resolvedOnboardingUseCase.includesPushToTalk else { return }
+        hotkeyMonitor.configure(config.dictationHotkey)
+        hotkeyMonitor.start()
+        startComputerUseHotkeyMonitorIfNeeded()
+        startQuilHotkeyMonitorIfNeeded()
     }
 
     private func startComputerUseHotkeyMonitorIfNeeded() {
