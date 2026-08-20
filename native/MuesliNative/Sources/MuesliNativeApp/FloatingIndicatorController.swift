@@ -50,10 +50,17 @@ private final class HoverIndicatorView: NSView {
         if let trackingAreaRef {
             removeTrackingArea(trackingAreaRef)
         }
+        // .inVisibleRect would discard a narrowed rect and track the full
+        // bounds, so only include it when the interactive rect is the full
+        // bounds (classic style); shortcut-pill tracks its explicit rect.
         let interactiveRect = owner?.pointerInteractiveRect(in: bounds) ?? bounds
+        var options: NSTrackingArea.Options = [.mouseEnteredAndExited, .activeAlways]
+        if interactiveRect.equalTo(bounds) {
+            options.insert(.inVisibleRect)
+        }
         let tracking = NSTrackingArea(
             rect: interactiveRect,
-            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            options: options,
             owner: self,
             userInfo: nil
         )
