@@ -263,7 +263,7 @@ struct IPhoneBridgeCard: View {
     }
 }
 
-private struct BridgeSyncIcon: View {
+struct BridgeSyncIcon: View {
     let systemName: String
     let isAnimating: Bool
     let font: Font
@@ -295,7 +295,7 @@ private struct BridgeSyncIcon: View {
     }
 }
 
-private struct IPhoneBridgeQRCodeSheet: View {
+struct IPhoneBridgeQRCodeSheet: View {
     let deepLinkURL: URL
     let installURL: URL
     @Environment(\.dismiss) private var dismiss

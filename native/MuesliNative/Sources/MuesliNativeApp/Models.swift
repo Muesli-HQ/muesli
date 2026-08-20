@@ -1167,7 +1167,7 @@ struct AppConfig: Codable {
     var openDashboardOnLaunch: Bool = true
     var showFloatingIndicator: Bool = true
     var showHotkeyOnFloatingIndicator: Bool = false
-    var indicatorAnchor: IndicatorAnchor = .midTrailing
+    var indicatorAnchor: IndicatorAnchor = .bottomCenter
 
     var dashboardWindowFrame: WindowFrame? = nil
     var indicatorOrigin: CGPointCodable? = nil

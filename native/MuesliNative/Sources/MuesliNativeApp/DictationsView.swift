@@ -1,10 +1,13 @@
 import SwiftUI
 import MuesliCore
+import TelemetryDeck
 
 struct DictationsView: View {
     let appState: AppState
     let controller: MuesliController
     @State private var selectedFilter: HistoryDateFilter = .all
+    @State private var isBridgeQRCodePresented = false
+    @State private var bridgePromptSeen = false
 
     private var groupedDictations: [(id: Date, header: String, records: [DictationRecord])] {
         let calendar = Calendar.current

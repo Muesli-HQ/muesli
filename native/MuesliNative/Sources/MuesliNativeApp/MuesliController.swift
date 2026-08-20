@@ -8959,6 +8959,7 @@ public final class MuesliController: NSObject {
         guard isMeetingRecording() else { return false }
         stopMeetingRecording()
         return true
+    }
 
     /// Starts the same paste-at-cursor dictation used by the configured hotkey,
     /// exposed for the dashboard's floating record control.

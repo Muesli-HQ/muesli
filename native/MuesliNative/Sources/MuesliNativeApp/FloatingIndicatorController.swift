@@ -783,6 +783,7 @@ final class FloatingIndicatorController: NSObject {
 
     /// Refresh the idle icon to match the user's selected menu bar icon.
     func refreshIcon() {
+        let config = configStore.load()
         let fallback = NSImage(systemSymbolName: "waveform.badge.microphone", accessibilityDescription: nil)?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)) ?? NSImage()
         let newImage = MenuBarIconRenderer.make(choice: config.menuBarIcon) ?? fallback
@@ -1631,8 +1632,9 @@ final class FloatingIndicatorController: NSObject {
         contentView.layer?.insertSublayer(iconBackground, above: tint)
         idleIconBackgroundLayer = iconBackground
 
-        // Keep Pranav's original thin waveform for the floating control,
-        // independent of the separately configurable menu-bar icon.
+        // Idle icon — uses the user's selected menu bar icon from config.
+        // Falls back to waveform.badge.microphone if the configured icon can't be loaded.
+        let config = configStore.load()
         let fallbackImage = NSImage(systemSymbolName: "waveform.badge.microphone", accessibilityDescription: nil)?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)) ?? NSImage()
         let idleImage = MenuBarIconRenderer.make(choice: config.menuBarIcon) ?? fallbackImage
@@ -1859,20 +1861,20 @@ final class FloatingIndicatorController: NSObject {
                     center = Self.defaultIndicatorCenter(in: screen, idleSize: size)
                 }
             default:
-                center = Self.anchorCenter(config.indicatorAnchor, in: positioningFrame, size: size)
+                center = Self.anchorCenter(config.indicatorAnchor, in: screen, size: size)
             }
         }
 
         var resolvedCenter = center
         switch config.indicatorAnchor {
         case .bottomLeading, .bottomCenter, .bottomTrailing:
-            resolvedCenter.y = positioningFrame.minY + size.height / 2 + 2
+            resolvedCenter.y = screen.minY + size.height / 2 + 2
         default:
             break
         }
 
-        let x = min(max(resolvedCenter.x - size.width / 2, positioningFrame.minX), positioningFrame.maxX - size.width)
-        let y = min(max(resolvedCenter.y - size.height / 2, positioningFrame.minY), positioningFrame.maxY - size.height)
+        let x = min(max(resolvedCenter.x - size.width / 2, screen.minX), screen.maxX - size.width)
+        let y = min(max(resolvedCenter.y - size.height / 2, screen.minY), screen.maxY - size.height)
         return NSRect(x: x, y: y, width: size.width, height: size.height)
     }
 

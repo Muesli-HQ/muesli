@@ -1504,7 +1504,7 @@ struct OnboardingView: View {
                         .fill(isDictationTesting ? MuesliTheme.success : MuesliTheme.surfacePrimary)
                         .frame(width: 12, height: 12)
                 }
-                TimelineView(.periodic(from: .now, by: 0.08)) { _ in
+                SwiftUI.TimelineView(.periodic(from: .now, by: 0.08)) { _ in
                     let power = isDictationTesting ? controller.currentDictationMicrophonePower() : -160
                     let level = microphoneMeterLevel(for: power)
                     HStack(alignment: .bottom, spacing: 5) {
@@ -1534,6 +1534,7 @@ struct OnboardingView: View {
                         .buttonStyle(.plain)
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(MuesliTheme.accent)
+                    }
 
                 if !isSelectedModelReadyForDictationTest {
                     HStack(spacing: MuesliTheme.spacing8) {

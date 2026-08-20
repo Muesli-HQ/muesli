@@ -1787,7 +1787,8 @@ public final class DictationStore {
                 longestStreakDays: streaks.longest,
                 activeDaysInRange: activity.filter { $0.words > 0 || $0.meetings > 0 }.count,
                 dictationWords: try cachedTopWords(db: db, sinceDay: startDay, meeting: false),
-                meetingWords: try cachedTopWords(db: db, sinceDay: startDay, meeting: true)
+                meetingWords: try cachedTopWords(db: db, sinceDay: startDay, meeting: true),
+                topApps: try topDictationApps(db: db, sinceDay: startDay)
             )
             try exec("COMMIT", db: db)
             return snapshot
