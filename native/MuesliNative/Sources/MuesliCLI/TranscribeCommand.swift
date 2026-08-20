@@ -755,7 +755,10 @@ actor Qwen3AsrCLITranscriber: AudioTranscribing {
         }
         let start = CFAbsoluteTimeGetCurrent()
         let samples = try AudioConverter().resampleAudioFile(wavURL)
-        let text = try await (manager as! MuesliQwen3AsrManager).transcribe(audioSamples: samples)
+        guard let qwen3Manager = manager as? MuesliQwen3AsrManager else {
+            throw CLIError.invalidInput("Qwen3 ASR model was not loaded.", fix: "Run the command again after the model finishes downloading.")
+        }
+        let text = try await qwen3Manager.transcribe(audioSamples: samples)
         progress("transcription complete in \(String(format: "%.2f", CFAbsoluteTimeGetCurrent() - start))s")
         return HeadlessTranscription(text: text, durationSeconds: nil)
     }

@@ -1,14 +1,16 @@
 // Vendored from FluidAudio v0.15.1 (ASR/Qwen3/), Apache License 2.0.
 // Original: https://github.com/FluidInference/FluidAudio — types renamed with MuesliQwen3 prefix.
-// Licensed under the Apache License, Version 2.0; see NOTICE for the full license text.
+// Licensed under the Apache License, Version 2.0; see LICENSE-Apache-2.0 in this directory.
 @preconcurrency import CoreML
 import Foundation
 import OSLog
 
 /// Model artifact file names for the vendored Qwen3 ASR backend.
 private enum MuesliQwen3ModelFiles {
-    static let audioEncoder = "qwen3_asr_audio_encoder_v2.mlmodelc"
-    static let decoderStateful = "qwen3_asr_decoder_stateful.mlmodelc"
+    static let audioEncoderName = "qwen3_asr_audio_encoder_v2"
+    static let decoderStatefulName = "qwen3_asr_decoder_stateful"
+    static let audioEncoder = "\(audioEncoderName).mlmodelc"
+    static let decoderStateful = "\(decoderStatefulName).mlmodelc"
     static let embeddings = "qwen3_asr_embeddings.bin"
     static let vocab = "vocab.json"
 }
@@ -71,14 +73,14 @@ public struct MuesliQwen3AsrModels: Sendable {
 
         // Load audio encoder
         let audioEncoder = try await loadModel(
-            named: "qwen3_asr_audio_encoder_v2",
+            named: MuesliQwen3ModelFiles.audioEncoderName,
             from: directory,
             configuration: modelConfig
         )
 
         // Load stateful decoder (with fused lmHead)
         let decoderStateful = try await loadModel(
-            named: "qwen3_asr_decoder_stateful",
+            named: MuesliQwen3ModelFiles.decoderStatefulName,
             from: directory,
             configuration: modelConfig
         )
@@ -262,6 +264,11 @@ public struct MuesliQwen3AsrModels: Sendable {
     }
 
     private static func loadMuesliQwen3EmbeddingWeights(from directory: URL) throws -> MuesliQwen3EmbeddingWeights {
+        #if !arch(arm64)
+        // Fail loading with a clear error instead of reaching the fatalError in
+        // embedding(for:) on non-Apple-Silicon machines.
+        throw MuesliQwen3AsrError.unsupportedHardware
+        #endif
         let path = directory.appendingPathComponent(MuesliQwen3ModelFiles.embeddings)
         guard FileManager.default.fileExists(atPath: path.path) else {
             throw MuesliQwen3AsrError.modelNotFound("qwen3_asr_embeddings.bin")
@@ -277,9 +284,9 @@ public struct MuesliQwen3AsrModels: Sendable {
     }
 
     private static func loadVocabulary(from directory: URL) throws -> [Int: String] {
-        let vocabPath = directory.appendingPathComponent("vocab.json")
+        let vocabPath = directory.appendingPathComponent(MuesliQwen3ModelFiles.vocab)
         guard FileManager.default.fileExists(atPath: vocabPath.path) else {
-            throw MuesliQwen3AsrError.modelNotFound("vocab.json")
+            throw MuesliQwen3AsrError.modelNotFound(MuesliQwen3ModelFiles.vocab)
         }
 
         let data = try Data(contentsOf: vocabPath)
@@ -387,6 +394,8 @@ public enum MuesliQwen3AsrError: Error, LocalizedError {
     case decoderFailed(String)
     case generationFailed(String)
     case downloadUnavailable(String)
+    case audioTooLong(String)
+    case unsupportedHardware
 
     public var errorDescription: String? {
         switch self {
@@ -402,6 +411,10 @@ public enum MuesliQwen3AsrError: Error, LocalizedError {
             return "Generation failed: \(detail)"
         case .downloadUnavailable(let detail):
             return detail
+        case .audioTooLong(let detail):
+            return detail
+        case .unsupportedHardware:
+            return "Qwen3-ASR requires Apple Silicon (arm64)"
         }
     }
 }

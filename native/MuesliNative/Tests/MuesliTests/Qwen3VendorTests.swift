@@ -44,3 +44,21 @@ struct Qwen3VendorTests {
         #expect(cache.standardizedFileURL == plan.cacheDirectory.standardizedFileURL)
     }
 }
+
+struct Qwen3LanguageTests {
+
+    @Test("Language init parses ISO codes and English names")
+    func languageInitParsesCodesAndNames() {
+        #expect(MuesliQwen3AsrConfig.Language(from: "en") == .english)
+        #expect(MuesliQwen3AsrConfig.Language(from: "English") == .english)
+        #expect(MuesliQwen3AsrConfig.Language(from: "ENGLISH") == .english)
+        #expect(MuesliQwen3AsrConfig.Language(from: "hi") == .hindi)
+    }
+
+    @Test("Language init rejects unknown input")
+    func languageInitRejectsUnknownInput() {
+        #expect(MuesliQwen3AsrConfig.Language(from: "eng") == nil)
+        #expect(MuesliQwen3AsrConfig.Language(from: "") == nil)
+        #expect(MuesliQwen3AsrConfig.Language(from: "chinese (simplified)") == nil)
+    }
+}

@@ -1,6 +1,6 @@
 // Vendored from FluidAudio v0.15.1 (ASR/Qwen3/), Apache License 2.0.
 // Original: https://github.com/FluidInference/FluidAudio — types renamed with MuesliQwen3 prefix.
-// Licensed under the Apache License, Version 2.0; see NOTICE for the full license text.
+// Licensed under the Apache License, Version 2.0; see LICENSE-Apache-2.0 in this directory.
 import Accelerate
 @preconcurrency import CoreML
 import Foundation
@@ -50,6 +50,12 @@ public actor MuesliQwen3AsrManager {
         language: String? = nil,
         maxNewTokens: Int = 512
     ) async throws -> String {
+        let maxSamples = Int(MuesliQwen3AsrConfig.maxAudioSeconds * 16_000)
+        guard audioSamples.count <= maxSamples else {
+            throw MuesliQwen3AsrError.audioTooLong(
+                "Audio is \(audioSamples.count / 16_000)s long; Qwen3-ASR supports up to \(Int(MuesliQwen3AsrConfig.maxAudioSeconds))s."
+            )
+        }
         let mel = melExtractor.compute(audio: audioSamples)
         guard !mel.isEmpty else {
             throw MuesliQwen3AsrError.generationFailed("Audio too short to extract mel spectrogram")
