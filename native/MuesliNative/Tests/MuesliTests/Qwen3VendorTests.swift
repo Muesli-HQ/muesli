@@ -6,71 +6,20 @@ import Foundation
 struct Qwen3VendorTests {
 
     @available(macOS 15, *)
-    @Test("installArtifacts copies every artifact and replaces stale files")
-    func installArtifactsCopiesAllFiles() throws {
-        let fm = FileManager.default
-        let root = fm.temporaryDirectory
-            .appendingPathComponent("qwen3-vendor-test-\(UUID().uuidString)", isDirectory: true)
-        defer { try? fm.removeItem(at: root) }
-
-        let source = root.appendingPathComponent("source", isDirectory: true)
-        let destination = root.appendingPathComponent("destination", isDirectory: true)
-        try fm.createDirectory(at: source, withIntermediateDirectories: true)
-
-        let encoderDir = source.appendingPathComponent("qwen3_asr_audio_encoder_v2.mlmodelc", isDirectory: true)
-        try fm.createDirectory(at: encoderDir, withIntermediateDirectories: true)
-        try Data([0x01]).write(to: encoderDir.appendingPathComponent("coremldata.bin"))
-        try Data([0x02]).write(to: source.appendingPathComponent("vocab.json"))
-
-        try MuesliQwen3AsrModels.installArtifacts(from: source, to: destination)
-
-        #expect(fm.fileExists(atPath: destination.appendingPathComponent("vocab.json").path))
-        #expect(fm.fileExists(
-            atPath: destination
-                .appendingPathComponent("qwen3_asr_audio_encoder_v2.mlmodelc/coremldata.bin").path
-        ))
-
-        // Re-run with a stale destination file: it must be replaced, not duplicated.
-        try Data([0xFF]).write(to: destination.appendingPathComponent("vocab.json"))
-        try MuesliQwen3AsrModels.installArtifacts(from: source, to: destination)
-        let replaced = try Data(contentsOf: destination.appendingPathComponent("vocab.json"))
-        #expect(replaced == Data([0x02]))
-    }
-
-    @available(macOS 15, *)
-    @Test("installArtifacts swaps the whole directory, dropping stale files")
-    func installArtifactsSwapsWholeDirectory() throws {
-        let fm = FileManager.default
-        let root = fm.temporaryDirectory
-            .appendingPathComponent("qwen3-vendor-swap-\(UUID().uuidString)", isDirectory: true)
-        defer { try? fm.removeItem(at: root) }
-
-        let source = root.appendingPathComponent("source", isDirectory: true)
-        let destination = root.appendingPathComponent("destination", isDirectory: true)
-        try fm.createDirectory(at: source, withIntermediateDirectories: true)
-        try fm.createDirectory(at: destination, withIntermediateDirectories: true)
-        try Data([0x02]).write(to: source.appendingPathComponent("vocab.json"))
-        // A stale file that exists in the old destination but not in the source.
-        try Data([0x99]).write(to: destination.appendingPathComponent("stale.bin"))
-
-        try MuesliQwen3AsrModels.installArtifacts(from: source, to: destination)
-
-        // Whole-directory swap: the stale artifact must be gone and the new
-        // artifact present. (This swap semantics is what keeps an existing
-        // installation intact until the new set is fully staged.)
-        #expect(fm.fileExists(atPath: destination.appendingPathComponent("vocab.json").path))
-        #expect(!fm.fileExists(atPath: destination.appendingPathComponent("stale.bin").path))
-        // No staging/backup leftovers next to the destination.
-        let siblings = try fm.contentsOfDirectory(atPath: root.path).sorted()
-        #expect(siblings == ["destination", "source"])
-    }
-
-    @available(macOS 15, *)
     @Test("default int8 cache directory matches the managed plan's install directory")
     func defaultCacheMatchesManagedPlan() {
         let plan = ManagedASRModelPlans.qwen3ASRInt8()
         let cache = MuesliQwen3AsrModels.defaultCacheDirectory(variant: .int8)
         #expect(cache.standardizedFileURL == plan.cacheDirectory.standardizedFileURL)
+    }
+
+    @available(macOS 15, *)
+    @Test("qwen3ASRInt8(cacheDirectory:) honors an explicit install directory")
+    func explicitCacheDirectoryIsHonored() {
+        let custom = URL(fileURLWithPath: "/tmp/qwen3-custom-install")
+        let plan = ManagedASRModelPlans.qwen3ASRInt8(cacheDirectory: custom)
+        #expect(plan.cacheDirectory == custom)
+        #expect(plan.modelID == "FluidInference/qwen3-asr-0.6b-coreml")
     }
 }
 

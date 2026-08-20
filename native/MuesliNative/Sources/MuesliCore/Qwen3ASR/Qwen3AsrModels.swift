@@ -144,135 +144,21 @@ public struct MuesliQwen3AsrModels: Sendable {
             return targetDir
         }
 
+        // Delegate entirely to the managed downloader: the plan's cacheDirectory
+        // IS the requested destination, so the downloader's own resume/marker
+        // machinery owns the directory (same semantics as every other model in
+        // the app). `force` reuses the app-standard delete-then-download flow.
         logger.info("Downloading Qwen3-ASR \(variant.rawValue) models via managed downloader...")
-        let plan = ManagedASRModelPlans.qwen3ASRInt8()
-        let cacheBackup: URL?
-        let destinationBackup: URL?
+        let plan = ManagedASRModelPlans.qwen3ASRInt8(cacheDirectory: targetDir)
         if force {
-            // The managed downloader short-circuits on its canonical cache, so a
-            // forced re-download must move that cache (and the requested
-            // destination) aside before starting. Keep backups so a failed
-            // re-download restores the previous installation instead of leaving
-            // nothing usable. If moving the destination aside fails after the
-            // cache was already moved, put the cache back before rethrowing.
-            cacheBackup = try Self.stageAside(plan.cacheDirectory, fileManager: .default)
-            if targetDir.standardizedFileURL != plan.cacheDirectory.standardizedFileURL {
-                do {
-                    destinationBackup = try Self.stageAside(targetDir, fileManager: .default)
-                } catch {
-                    if let cacheBackup {
-                        try? Self.restore(staged: cacheBackup, to: plan.cacheDirectory, fileManager: .default)
-                    }
-                    throw error
-                }
-            } else {
-                destinationBackup = nil
-            }
-        } else {
-            cacheBackup = nil
-            destinationBackup = nil
+            try? plan.delete(fileManager: .default)
         }
-        // The managed plan installs into its canonical cache directory. Honor a
-        // caller-provided destination by copying the artifacts there, so
-        // `downloadAndLoad(to:)` always loads from a directory that has them.
-        do {
-            _ = try await ManagedASRModelDownloader.downloadIfNeeded(
-                plan,
-                progress: { fraction, _ in progressHandler?(fraction) }
-            )
-            if let directory,
-               directory.standardizedFileURL != plan.cacheDirectory.standardizedFileURL {
-                try installArtifacts(from: plan.cacheDirectory, to: directory)
-            }
-        } catch {
-            // Roll back every staged-aside directory on ANY failure (download or
-            // artifact install), so a forced refresh can never leave the custom
-            // destination or the canonical cache unusable.
-            if let cacheBackup {
-                try? Self.restore(staged: cacheBackup, to: plan.cacheDirectory, fileManager: .default)
-            }
-            if let destinationBackup {
-                try? Self.restore(staged: destinationBackup, to: targetDir, fileManager: .default)
-            }
-            throw error
-        }
-        if let cacheBackup {
-            try? FileManager.default.removeItem(at: cacheBackup)
-        }
-        if let destinationBackup {
-            try? FileManager.default.removeItem(at: destinationBackup)
-        }
-
+        _ = try await ManagedASRModelDownloader.downloadIfNeeded(
+            plan,
+            progress: { fraction, _ in progressHandler?(fraction) }
+        )
         logger.info("Successfully downloaded Qwen3-ASR \(variant.rawValue) models")
         return targetDir
-    }
-
-    /// Copy the artifacts in `source` into `destination`, replacing any existing
-    /// files with the same names. Creates `destination` if needed.
-    ///
-    /// Stage-then-swap with rollback: artifacts are fully copied into a
-    /// temporary sibling directory first, the existing destination is moved
-    /// aside, and the staged set is moved into place. A failure at any step
-    /// restores the previous installation, so a broken copy can never leave the
-    /// destination unusable.
-    static func installArtifacts(from source: URL, to destination: URL) throws {
-        let fileManager = FileManager.default
-        let parent = destination.deletingLastPathComponent()
-        let staging = parent.appendingPathComponent(".qwen3-install-\(UUID().uuidString)", isDirectory: true)
-        defer { try? fileManager.removeItem(at: staging) }
-
-        try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
-        let contents = try fileManager.contentsOfDirectory(
-            at: source,
-            includingPropertiesForKeys: nil
-        )
-        for item in contents {
-            try fileManager.copyItem(
-                at: item,
-                to: staging.appendingPathComponent(item.lastPathComponent)
-            )
-        }
-
-        // Move the existing installation aside, then swap the staged set in.
-        // Restore the previous installation if the swap fails.
-        let old = fileManager.fileExists(atPath: destination.path)
-            ? parent.appendingPathComponent(".qwen3-old-\(UUID().uuidString)", isDirectory: true)
-            : nil
-        if let old {
-            try fileManager.moveItem(at: destination, to: old)
-        }
-        do {
-            try fileManager.moveItem(at: staging, to: destination)
-        } catch {
-            if let old, fileManager.fileExists(atPath: old.path) {
-                try? fileManager.moveItem(at: old, to: destination)
-            }
-            throw error
-        }
-        if let old {
-            try? fileManager.removeItem(at: old)
-        }
-    }
-
-    /// Move a directory aside (rename) so its original location can be rebuilt.
-    /// Returns the backup URL, or nil if the directory does not exist.
-    static func stageAside(_ directory: URL, fileManager: FileManager = .default) throws -> URL? {
-        guard fileManager.fileExists(atPath: directory.path) else { return nil }
-        let backup = directory.deletingLastPathComponent()
-            .appendingPathComponent(".qwen3-backup-\(UUID().uuidString)", isDirectory: true)
-        try fileManager.moveItem(at: directory, to: backup)
-        return backup
-    }
-
-    /// Restore a staged-aside directory into its original location.
-    static func restore(
-        staged backup: URL,
-        to directory: URL,
-        fileManager: FileManager = .default
-    ) {
-        guard fileManager.fileExists(atPath: backup.path) else { return }
-        try? fileManager.removeItem(at: directory)
-        try? fileManager.moveItem(at: backup, to: directory)
     }
 
     /// Check if all required model files exist locally.
