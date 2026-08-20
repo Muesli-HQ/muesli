@@ -153,11 +153,21 @@ public struct MuesliQwen3AsrModels: Sendable {
             // forced re-download must move that cache (and the requested
             // destination) aside before starting. Keep backups so a failed
             // re-download restores the previous installation instead of leaving
-            // nothing usable.
+            // nothing usable. If moving the destination aside fails after the
+            // cache was already moved, put the cache back before rethrowing.
             cacheBackup = try Self.stageAside(plan.cacheDirectory, fileManager: .default)
-            destinationBackup = targetDir.standardizedFileURL != plan.cacheDirectory.standardizedFileURL
-                ? try Self.stageAside(targetDir, fileManager: .default)
-                : nil
+            if targetDir.standardizedFileURL != plan.cacheDirectory.standardizedFileURL {
+                do {
+                    destinationBackup = try Self.stageAside(targetDir, fileManager: .default)
+                } catch {
+                    if let cacheBackup {
+                        try? Self.restore(staged: cacheBackup, to: plan.cacheDirectory, fileManager: .default)
+                    }
+                    throw error
+                }
+            } else {
+                destinationBackup = nil
+            }
         } else {
             cacheBackup = nil
             destinationBackup = nil
