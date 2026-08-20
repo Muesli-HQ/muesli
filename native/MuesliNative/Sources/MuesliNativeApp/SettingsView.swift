@@ -481,7 +481,7 @@ struct SettingsView: View {
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-            .frame(width: 760)
+            .frame(maxWidth: 760)
             Spacer()
         }
     }
