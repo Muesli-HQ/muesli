@@ -162,12 +162,22 @@ public struct MuesliQwen3AsrModels: Sendable {
             cacheBackup = nil
             destinationBackup = nil
         }
+        // The managed plan installs into its canonical cache directory. Honor a
+        // caller-provided destination by copying the artifacts there, so
+        // `downloadAndLoad(to:)` always loads from a directory that has them.
         do {
             _ = try await ManagedASRModelDownloader.downloadIfNeeded(
                 plan,
                 progress: { fraction, _ in progressHandler?(fraction) }
             )
+            if let directory,
+               directory.standardizedFileURL != plan.cacheDirectory.standardizedFileURL {
+                try installArtifacts(from: plan.cacheDirectory, to: directory)
+            }
         } catch {
+            // Roll back every staged-aside directory on ANY failure (download or
+            // artifact install), so a forced refresh can never leave the custom
+            // destination or the canonical cache unusable.
             if let cacheBackup {
                 try? Self.restore(staged: cacheBackup, to: plan.cacheDirectory, fileManager: .default)
             }
@@ -181,14 +191,6 @@ public struct MuesliQwen3AsrModels: Sendable {
         }
         if let destinationBackup {
             try? FileManager.default.removeItem(at: destinationBackup)
-        }
-
-        // The managed plan installs into its canonical cache directory. Honor a
-        // caller-provided destination by copying the artifacts there, so
-        // `downloadAndLoad(to:)` always loads from a directory that has them.
-        if let directory,
-           directory.standardizedFileURL != plan.cacheDirectory.standardizedFileURL {
-            try installArtifacts(from: plan.cacheDirectory, to: directory)
         }
 
         logger.info("Successfully downloaded Qwen3-ASR \(variant.rawValue) models")
