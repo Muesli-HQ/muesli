@@ -185,11 +185,13 @@ struct SidebarView: View {
             sidebarHeader
             searchBar
 
-            sidebarItem(tab: .timeline, icon: "clock.fill", label: "Timeline")
+            sidebarItem(tab: .timeline, icon: "clock", label: "Timeline")
             sidebarItem(tab: .dictations, icon: "waveform", label: "Dictations")
+Even out the sidebar icon set)
             meetingsSection
             sidebarItem(tab: .insights, icon: "chart.bar.xaxis", label: "Insights")
             sidebarItem(tab: .dictionary, icon: "character.book.closed", label: "Dictionary")
+Even out the sidebar icon set)
 
             Spacer()
 
@@ -330,7 +332,7 @@ struct SidebarView: View {
                     controller.showMeetingsHome()
                 } label: {
                     HStack(spacing: MuesliTheme.spacing12) {
-                        Image(systemName: "person.2.fill")
+                        Image(systemName: "person.wave.2")
                             .font(.system(size: 14, weight: .medium))
                             .foregroundStyle(isSelected ? MuesliTheme.accent : MuesliTheme.textSecondary)
                             .frame(width: sidebarIconColumnWidth)
@@ -397,7 +399,7 @@ struct SidebarView: View {
                                 .padding(.leading, CGFloat(depth) * folderDepthIndent)
                         } else {
                             meetingFilterRow(
-                                icon: hasChildren ? "folder.fill" : "folder",
+                                icon: "folder",
                                 label: folder.name,
                                 count: appState.meetingCountsByFolder[folder.id] ?? 0,
                                 isSelected: appState.selectedTab == .meetings && appState.selectedFolderID == folder.id,
@@ -589,7 +591,6 @@ struct SidebarView: View {
                     .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(isSelected ? MuesliTheme.accent : MuesliTheme.textSecondary)
                     .frame(width: sidebarIconColumnWidth, height: sidebarIconColumnWidth, alignment: .center)
-                    .offset(y: icon == "square.and.arrow.down" ? -1 : 0)
                 Text(label)
                     .font(MuesliTheme.headline())
                     .foregroundStyle(isSelected ? MuesliTheme.textPrimary : MuesliTheme.textSecondary)
