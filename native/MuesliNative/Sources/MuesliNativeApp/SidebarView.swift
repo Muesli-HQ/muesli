@@ -151,6 +151,11 @@ struct SidebarView: View {
             withAnimation(.easeInOut(duration: 0.15)) {
                 if tab == .timeline {
                     controller.showTimelineHome()
+                } else if tab == .meetings {
+                    // Mirror the expanded Meetings action: returning to the
+                    // rail must restore the browser, not leave a document open.
+                    meetingsExpanded = true
+                    controller.showMeetingsHome()
                 } else {
                     appState.selectedTab = tab
                 }

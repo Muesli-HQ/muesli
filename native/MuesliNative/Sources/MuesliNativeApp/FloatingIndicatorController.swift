@@ -35,13 +35,24 @@ private final class HoverIndicatorView: NSView {
     private var windowOriginAtMouseDown: NSPoint?
     private var didDrag = false
 
+    /// In shortcut-pill mode the panel is a large fixed canvas, but only the
+    /// visible grip (resting) or pill + capsule (hovered) should intercept
+    /// input. Outside those rects clicks fall through to apps underneath.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if let owner, !owner.pointerInteractiveRect(in: bounds).contains(point) {
+            return nil
+        }
+        return super.hitTest(point)
+    }
+
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let trackingAreaRef {
             removeTrackingArea(trackingAreaRef)
         }
+        let interactiveRect = owner?.pointerInteractiveRect(in: bounds) ?? bounds
         let tracking = NSTrackingArea(
-            rect: bounds,
+            rect: interactiveRect,
             options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
             owner: self,
             userInfo: nil
@@ -575,8 +586,7 @@ final class FloatingIndicatorController: NSObject {
                 )
             }
         case .preparing:
-            idleShortcutPillView?.isHidden = true
-            idleIconBackgroundLayer?.isHidden = true
+            hideShortcutPillChrome()
             ensureWaveformAnimation(in: targetFrame.size, mode: .waiting)
         default:
             break
@@ -590,6 +600,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func showComputerUseCursor(at quartzPoint: CGPoint, label rawLabel: String?) {
+        hideShortcutPillChrome()
         let config = configStore.load()
         if panel == nil {
             createPanel(config: config)
@@ -678,6 +689,7 @@ final class FloatingIndicatorController: NSObject {
 
     /// Flash a brief warning message on the indicator pill, then snap back to idle.
     func showWarning(_ message: String, icon: String = "⚡", duration: TimeInterval = 2.5) {
+        hideShortcutPillChrome()
         guard state == .idle else { return }
         let config = configStore.load()
         if panel == nil { createPanel(config: config) }
@@ -752,6 +764,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func showLoading(_ message: String) {
+        hideShortcutPillChrome()
         let config = configStore.load()
         if panel == nil { createPanel(config: config) }
         guard let panel, let contentView, let textLabel else { return }
@@ -875,6 +888,7 @@ final class FloatingIndicatorController: NSObject {
         isHovered = hovered
         let config = configStore.load()
         setState(.idle, config: config)
+        contentView?.updateTrackingAreas()
         if hovered, config.indicatorHoverStyle == .shortcutPill {
             animateIdleHoverPop()
         }
@@ -1110,6 +1124,36 @@ final class FloatingIndicatorController: NSObject {
         CATransaction.commit()
     }
 
+
+    /// The rect that should respond to pointer input right now. Classic style
+    /// uses the full panel; shortcut-pill limits interaction to the visible
+    /// resting grip, expanding to the label pill + mic capsule only while hovered.
+    func pointerInteractiveRect(in bounds: NSRect) -> NSRect {
+        let config = configStore.load()
+        guard state == .idle, config.indicatorHoverStyle == .shortcutPill else { return bounds }
+        let placement = idleHoverPlacement(for: config.indicatorAnchor)
+        if isHovered {
+            let title = "Dictate \(config.dictationHotkey.displayLabel)"
+            let frames = idleHoverFrames(
+                placement: placement,
+                frameSize: bounds.size,
+                labelWidth: idleLabelWidth(title: title)
+            )
+            return frames.label.union(frames.icon).insetBy(dx: -6, dy: -6).intersection(bounds)
+        }
+        return idleRestingHandleFrame(placement: placement, frameSize: bounds.size)
+            .insetBy(dx: -6, dy: -6)
+            .intersection(bounds)
+    }
+
+    /// Shortcut-pill chrome belongs to the idle presentation only. Every
+    /// non-idle path (transcribing, loading, warning, automation cursor) must
+    /// clear it or the grip/label lingers on top of those overlays.
+    private func hideShortcutPillChrome() {
+        idleShortcutPillView?.isHidden = true
+        idleIconBackgroundLayer?.isHidden = true
+    }
+
     /// Idle layout for `IndicatorHoverStyle.shortcutPill`: the resting state is a
     /// thin grip handle; on hover the mic capsule and an adjacent rounded label
     /// pill appear without resizing the window.
@@ -1151,8 +1195,14 @@ final class FloatingIndicatorController: NSObject {
             ? NSColor.colorWith(hex: 0x111111, alpha: 1).cgColor
             : NSColor.colorWith(hex: 0x696969, alpha: 0.82).cgColor
         idleIconBackgroundLayer?.borderWidth = isHovered ? 1 : 0
-        idleIconBackgroundLayer?.frame = isHovered ? idleFrames.icon : restingHandle
-        idleIconBackgroundLayer?.cornerRadius = isHovered ? 18 : 5
+        let hoveredCapsule = CGRect(
+            x: idleFrames.icon.midX - 22,
+            y: idleFrames.icon.midY - 14,
+            width: 44,
+            height: 28
+        )
+        idleIconBackgroundLayer?.frame = isHovered ? hoveredCapsule : restingHandle
+        idleIconBackgroundLayer?.cornerRadius = isHovered ? 14 : 5
         CATransaction.commit()
 
         let iconSize = NSSize(width: 15, height: 15)
@@ -1263,8 +1313,7 @@ final class FloatingIndicatorController: NSObject {
             }
 
         case .recording:
-            idleShortcutPillView?.isHidden = true
-            idleIconBackgroundLayer?.isHidden = true
+            hideShortcutPillChrome()
             // Waveform bars replace mic icon during recording.
             wandIconView?.isHidden = true
             iconLabel?.isHidden = false   // keeps the ✕ cancel label
@@ -1723,6 +1772,7 @@ final class FloatingIndicatorController: NSObject {
         case .preparing: size = NSSize(width: 76, height: 22)
         case .recording: size = NSSize(width: 76, height: 22)
         case .transcribing:
+            hideShortcutPillChrome()
             if let transcript = computerUseTranscriptText {
                 size = Self.computerUseTranscriptPillSize(transcript: transcript, screen: screen)
             } else {
@@ -1803,7 +1853,7 @@ final class FloatingIndicatorController: NSObject {
         frameSize: NSSize,
         labelWidth: CGFloat
     ) -> (label: CGRect, icon: CGRect) {
-        let iconSize: CGFloat = 36
+        let iconSize: CGFloat = 36  // vertical footprint only; the capsule is a 44x28 stadium pill
         let labelHeight: CGFloat = 36
         let gap: CGFloat = 6
         let inset: CGFloat = 2
