@@ -38,6 +38,34 @@ struct Qwen3VendorTests {
     }
 
     @available(macOS 15, *)
+    @Test("installArtifacts swaps the whole directory, dropping stale files")
+    func installArtifactsSwapsWholeDirectory() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory
+            .appendingPathComponent("qwen3-vendor-swap-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: root) }
+
+        let source = root.appendingPathComponent("source", isDirectory: true)
+        let destination = root.appendingPathComponent("destination", isDirectory: true)
+        try fm.createDirectory(at: source, withIntermediateDirectories: true)
+        try fm.createDirectory(at: destination, withIntermediateDirectories: true)
+        try Data([0x02]).write(to: source.appendingPathComponent("vocab.json"))
+        // A stale file that exists in the old destination but not in the source.
+        try Data([0x99]).write(to: destination.appendingPathComponent("stale.bin"))
+
+        try MuesliQwen3AsrModels.installArtifacts(from: source, to: destination)
+
+        // Whole-directory swap: the stale artifact must be gone and the new
+        // artifact present. (This swap semantics is what keeps an existing
+        // installation intact until the new set is fully staged.)
+        #expect(fm.fileExists(atPath: destination.appendingPathComponent("vocab.json").path))
+        #expect(!fm.fileExists(atPath: destination.appendingPathComponent("stale.bin").path))
+        // No staging/backup leftovers next to the destination.
+        let siblings = try fm.contentsOfDirectory(atPath: root.path).sorted()
+        #expect(siblings == ["destination", "source"])
+    }
+
+    @available(macOS 15, *)
     @Test("default int8 cache directory matches the managed plan's install directory")
     func defaultCacheMatchesManagedPlan() {
         let plan = ManagedASRModelPlans.qwen3ASRInt8()
@@ -87,5 +115,18 @@ struct Qwen3LanguageSelectionTests {
         #expect(Qwen3AsrLanguage.pinned(.english).pinnedCode == "en")
         #expect(Qwen3AsrLanguage.pinned(.english).label == "English")
         #expect(Qwen3AsrLanguage.allCases.count == MuesliQwen3AsrConfig.Language.allCases.count + 1)
+    }
+
+    @available(macOS 15, *)
+    @Test("Qwen3AsrLanguage selection survives config encode/decode round-trip")
+    func persistenceRoundTrip() throws {
+        let selection = Qwen3AsrLanguage.pinned(.english)
+        var config = AppConfig()
+        config.qwen3AsrLanguage = selection.rawValue
+
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+
+        #expect(decoded.resolvedQwen3AsrLanguage == .pinned(.english))
     }
 }

@@ -144,23 +144,44 @@ public struct MuesliQwen3AsrModels: Sendable {
             return targetDir
         }
 
-        if force {
-            try? FileManager.default.removeItem(at: targetDir)
-        }
-
         logger.info("Downloading Qwen3-ASR \(variant.rawValue) models via managed downloader...")
         let plan = ManagedASRModelPlans.qwen3ASRInt8()
+        let cacheBackup: URL?
+        let destinationBackup: URL?
         if force {
             // The managed downloader short-circuits on its canonical cache, so a
-            // forced re-download must purge that cache (and the requested
-            // destination) before starting, or stale artifacts survive.
-            try? plan.delete(fileManager: .default)
-            try? FileManager.default.removeItem(at: targetDir)
+            // forced re-download must move that cache (and the requested
+            // destination) aside before starting. Keep backups so a failed
+            // re-download restores the previous installation instead of leaving
+            // nothing usable.
+            cacheBackup = try Self.stageAside(plan.cacheDirectory, fileManager: .default)
+            destinationBackup = targetDir.standardizedFileURL != plan.cacheDirectory.standardizedFileURL
+                ? try Self.stageAside(targetDir, fileManager: .default)
+                : nil
+        } else {
+            cacheBackup = nil
+            destinationBackup = nil
         }
-        _ = try await ManagedASRModelDownloader.downloadIfNeeded(
-            plan,
-            progress: { fraction, _ in progressHandler?(fraction) }
-        )
+        do {
+            _ = try await ManagedASRModelDownloader.downloadIfNeeded(
+                plan,
+                progress: { fraction, _ in progressHandler?(fraction) }
+            )
+        } catch {
+            if let cacheBackup {
+                try? Self.restore(staged: cacheBackup, to: plan.cacheDirectory, fileManager: .default)
+            }
+            if let destinationBackup {
+                try? Self.restore(staged: destinationBackup, to: targetDir, fileManager: .default)
+            }
+            throw error
+        }
+        if let cacheBackup {
+            try? FileManager.default.removeItem(at: cacheBackup)
+        }
+        if let destinationBackup {
+            try? FileManager.default.removeItem(at: destinationBackup)
+        }
 
         // The managed plan installs into its canonical cache directory. Honor a
         // caller-provided destination by copying the artifacts there, so
@@ -176,20 +197,55 @@ public struct MuesliQwen3AsrModels: Sendable {
 
     /// Copy the artifacts in `source` into `destination`, replacing any existing
     /// files with the same names. Creates `destination` if needed.
+    ///
+    /// Stage-then-swap: artifacts are fully copied into a temporary sibling
+    /// directory first, then swapped into place. A failure mid-copy leaves the
+    /// existing installation untouched instead of deleting live artifacts before
+    /// their replacements are ready.
     static func installArtifacts(from source: URL, to destination: URL) throws {
         let fileManager = FileManager.default
+        let staging = destination
+            .deletingLastPathComponent()
+            .appendingPathComponent(".qwen3-install-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fileManager.removeItem(at: staging) }
+
+        try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
         let contents = try fileManager.contentsOfDirectory(
             at: source,
             includingPropertiesForKeys: nil
         )
-        try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
         for item in contents {
-            let target = destination.appendingPathComponent(item.lastPathComponent)
-            if fileManager.fileExists(atPath: target.path) {
-                try fileManager.removeItem(at: target)
-            }
-            try fileManager.copyItem(at: item, to: target)
+            try fileManager.copyItem(
+                at: item,
+                to: staging.appendingPathComponent(item.lastPathComponent)
+            )
         }
+
+        if fileManager.fileExists(atPath: destination.path) {
+            try fileManager.removeItem(at: destination)
+        }
+        try fileManager.moveItem(at: staging, to: destination)
+    }
+
+    /// Move a directory aside (rename) so its original location can be rebuilt.
+    /// Returns the backup URL, or nil if the directory does not exist.
+    static func stageAside(_ directory: URL, fileManager: FileManager = .default) throws -> URL? {
+        guard fileManager.fileExists(atPath: directory.path) else { return nil }
+        let backup = directory.deletingLastPathComponent()
+            .appendingPathComponent(".qwen3-backup-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.moveItem(at: directory, to: backup)
+        return backup
+    }
+
+    /// Restore a staged-aside directory into its original location.
+    static func restore(
+        staged backup: URL,
+        to directory: URL,
+        fileManager: FileManager = .default
+    ) {
+        guard fileManager.fileExists(atPath: backup.path) else { return }
+        try? fileManager.removeItem(at: directory)
+        try? fileManager.moveItem(at: backup, to: directory)
     }
 
     /// Check if all required model files exist locally.

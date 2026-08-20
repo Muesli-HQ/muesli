@@ -431,6 +431,10 @@ enum Qwen3AsrLanguage: Hashable, Sendable {
         }
         return defaultLanguage
     }
+
+    static func resolvedCode(_ rawValue: String?) -> String {
+        resolved(rawValue).rawValue
+    }
 }
 
 /// Language selection for multilingual WhisperKit models.
@@ -1316,6 +1320,7 @@ struct AppConfig: Codable {
         case indicASRLanguage = "indic_asr_language"
         case nemotron35Language = "nemotron35_language"
         case whisperLanguage = "whisper_language"
+        case qwen3AsrLanguage = "qwen3_asr_language"
         case appleSpeechLanguage = "apple_speech_language"
         case meetingTranscriptionBackend = "meeting_transcription_backend"
         case meetingTranscriptionModel = "meeting_transcription_model"
@@ -1447,6 +1452,7 @@ struct AppConfig: Codable {
         indicASRLanguage = IndicASRLanguage.resolvedCode(try? c.decode(String.self, forKey: .indicASRLanguage))
         nemotron35Language = Nemotron35Language.resolvedCode(try? c.decode(String.self, forKey: .nemotron35Language))
         whisperLanguage = WhisperKitLanguage.resolvedCode(try? c.decode(String.self, forKey: .whisperLanguage))
+        qwen3AsrLanguage = Qwen3AsrLanguage.resolvedCode(try? c.decode(String.self, forKey: .qwen3AsrLanguage))
         appleSpeechLanguage = AppleSpeechLanguageOption.normalize(try? c.decode(String.self, forKey: .appleSpeechLanguage))
         meetingTranscriptionBackend = (try? c.decode(String.self, forKey: .meetingTranscriptionBackend)) ?? sttBackend
         meetingTranscriptionModel = (try? c.decode(String.self, forKey: .meetingTranscriptionModel)) ?? sttModel
