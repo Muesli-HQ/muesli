@@ -720,10 +720,10 @@ actor SenseVoiceCLITranscriber: AudioTranscribing {
     }
 }
 
-/// Wraps FluidAudio's `Qwen3AsrManager` directly — a thin wrapper, same shape as
+/// Wraps the vendored `MuesliQwen3AsrManager` directly — a thin wrapper, same shape as
 /// the app's `Qwen3AsrTranscriber` (`Qwen3AsrBackend.swift`), reusing the app's
 /// default model cache. Requires macOS 15+ for CoreML stateful decoder support,
-/// same constraint FluidAudio's `Qwen3AsrManager` itself carries.
+/// same constraint the vendored manager itself carries.
 actor Qwen3AsrCLITranscriber: AudioTranscribing {
     func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
         guard #available(macOS 15, *) else {
@@ -744,7 +744,7 @@ actor Qwen3AsrCLITranscriber: AudioTranscribing {
                 }
             ) { modelDir in
                 progress("preparing model")
-                let mgr = Qwen3AsrManager()
+                let mgr = MuesliQwen3AsrManager()
                 try await mgr.loadModels(from: modelDir)
                 return mgr
             }
@@ -755,12 +755,15 @@ actor Qwen3AsrCLITranscriber: AudioTranscribing {
         }
         let start = CFAbsoluteTimeGetCurrent()
         let samples = try AudioConverter().resampleAudioFile(wavURL)
-        let text = try await (manager as! Qwen3AsrManager).transcribe(audioSamples: samples)
+        guard let qwen3Manager = manager as? MuesliQwen3AsrManager else {
+            throw CLIError.invalidInput("Qwen3 ASR model was not loaded.", fix: "Run the command again after the model finishes downloading.")
+        }
+        let text = try await qwen3Manager.transcribe(audioSamples: samples)
         progress("transcription complete in \(String(format: "%.2f", CFAbsoluteTimeGetCurrent() - start))s")
         return HeadlessTranscription(text: text, durationSeconds: nil)
     }
 
-    // Stored as Any: `Qwen3AsrManager` itself is `@available(macOS 15, *)` in FluidAudio,
+    // Stored as Any: the vendored manager is `@available(macOS 15, *)`,
     // and a stored property of that type would force this whole actor declaration behind
     // the same guard — but `RoutingAudioTranscriber` needs to construct this actor
     // unconditionally on any deployment target, and only fail at call time on older OSes.
