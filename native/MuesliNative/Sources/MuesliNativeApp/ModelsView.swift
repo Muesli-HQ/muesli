@@ -199,8 +199,6 @@ struct ModelsView: View {
                 options: BackendOption.parakeetFamily
             )
 
-            modelCard(option: .qwen3Asr, logo: "qwen-logo")
-
             familyCard(
                 title: "Whisper",
                 subtitle: "Dependable alternatives when you prefer Whisper's transcription style or need broader multilingual coverage.",

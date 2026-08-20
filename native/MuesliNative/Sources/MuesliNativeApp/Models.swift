@@ -161,12 +161,12 @@ struct BackendOption: Equatable {
         model: "FluidInference/qwen3-asr-0.6b-coreml",
         label: "Qwen3 ASR",
         sizeLabel: "~1.3 GB",
-        description: "Strong multilingual transcription across 52 languages when accuracy matters more than instant results. Expect a short 2–3 second wait compared with Parakeet, and about 30 seconds of one-time preparation the first time it runs.",
+        description: "Experimental multilingual transcription across 52 languages. Accuracy can vary noticeably for accented English, so try it with your own voice before relying on it. Expect a short 2–3 second wait compared with Parakeet, and about 30 seconds of one-time preparation the first time it runs.",
         recommended: false
     )
 
     static let experimental: [BackendOption] = [
-        .senseVoiceSmall, .indicASR, .gemma4E2BLiteRT,
+        .senseVoiceSmall, .indicASR, .gemma4E2BLiteRT, .qwen3Asr,
     ]
 
     /// Native streaming backends used by low-latency product surfaces.
@@ -180,7 +180,6 @@ struct BackendOption: Equatable {
         let systemManaged: [BackendOption] = appleSpeechAvailable ? [.appleSpeechAnalyzer] : []
         let all = systemManaged
             + parakeetFamily
-            + [.qwen3Asr]
             + whisperFamily
             + [.cohereTranscribe]
             + streaming
