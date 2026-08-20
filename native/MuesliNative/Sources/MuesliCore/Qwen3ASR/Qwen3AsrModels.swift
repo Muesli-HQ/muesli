@@ -150,6 +150,13 @@ public struct MuesliQwen3AsrModels: Sendable {
 
         logger.info("Downloading Qwen3-ASR \(variant.rawValue) models via managed downloader...")
         let plan = ManagedASRModelPlans.qwen3ASRInt8()
+        if force {
+            // The managed downloader short-circuits on its canonical cache, so a
+            // forced re-download must purge that cache (and the requested
+            // destination) before starting, or stale artifacts survive.
+            try? plan.delete(fileManager: .default)
+            try? FileManager.default.removeItem(at: targetDir)
+        }
         _ = try await ManagedASRModelDownloader.downloadIfNeeded(
             plan,
             progress: { fraction, _ in progressHandler?(fraction) }
@@ -322,9 +329,10 @@ public final class MuesliQwen3EmbeddingWeights: Sendable {
             throw MuesliQwen3AsrError.invalidVocabulary
         }
 
-        // Read header
-        let vocab = fileData.withUnsafeBytes { $0.load(fromByteOffset: 0, as: UInt32.self) }
-        let hidden = fileData.withUnsafeBytes { $0.load(fromByteOffset: 4, as: UInt32.self) }
+        // Read header. Data's backing buffer is not guaranteed to be aligned, so
+        // use loadUnaligned to avoid trapping on unaligned addresses.
+        let vocab = fileData.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 0, as: UInt32.self) }
+        let hidden = fileData.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 4, as: UInt32.self) }
         self.vocabSize = Int(vocab)
         self.hiddenSize = Int(hidden)
 
@@ -363,11 +371,12 @@ public final class MuesliQwen3EmbeddingWeights: Sendable {
 
         #if arch(arm64)
         data.withUnsafeBytes { (ptr: UnsafeRawBufferPointer) in
-            let f16Ptr = ptr.baseAddress!.advanced(by: offset)
-                .assumingMemoryBound(to: Float16.self)
-
             for i in 0..<hiddenSize {
-                result[i] = Float(f16Ptr[i])
+                let value = ptr.loadUnaligned(
+                    fromByteOffset: offset + i * 2,
+                    as: Float16.self
+                )
+                result[i] = Float(value)
             }
         }
         #else

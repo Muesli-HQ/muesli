@@ -140,7 +140,7 @@ public actor MuesliQwen3StreamingManager {
         samplesSinceLastTranscribe = 0
 
         let duration = Double(audioBuffer.count) / 16000.0
-        logger.debug("Streaming update: \(String(format: "%.1f", duration))s audio -> \"\(transcript.prefix(50))...\"")
+        logger.debug("Streaming update: \(String(format: "%.1f", duration))s audio transcribed")
 
         return MuesliQwen3StreamingResult(
             transcript: transcript,

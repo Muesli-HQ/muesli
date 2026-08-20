@@ -53,7 +53,7 @@ public actor MuesliQwen3AsrManager {
         let maxSamples = Int(MuesliQwen3AsrConfig.maxAudioSeconds * 16_000)
         guard audioSamples.count <= maxSamples else {
             throw MuesliQwen3AsrError.audioTooLong(
-                "Audio is \(audioSamples.count / 16_000)s long; Qwen3-ASR supports up to \(Int(MuesliQwen3AsrConfig.maxAudioSeconds))s."
+                "Audio is \(String(format: "%.1f", Double(audioSamples.count) / 16_000.0))s long; Qwen3-ASR supports up to \(Int(MuesliQwen3AsrConfig.maxAudioSeconds))s."
             )
         }
         let mel = melExtractor.compute(audio: audioSamples)
