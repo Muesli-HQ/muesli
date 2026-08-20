@@ -562,7 +562,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: ConfigStore(supportDirectory: makeSupportDirectory())
         )
 
         let liveMeeting = try #require(try store.meeting(id: meetingID))

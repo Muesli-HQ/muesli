@@ -6,18 +6,28 @@ import MuesliCore
 @Suite("ConfigStore", .serialized)
 struct ConfigStoreTests {
 
+    /// A throwaway support directory. Tests must never read or write the real
+    /// config.json: `swift test` runs on machines where Muesli is installed, and
+    /// a test that saves into the live support directory rewrites the settings of
+    /// whoever is running the suite.
+    private func makeStore() -> ConfigStore {
+        ConfigStore(
+            supportDirectory: FileManager.default.temporaryDirectory
+                .appendingPathComponent("muesli-config-store-\(UUID().uuidString)", isDirectory: true)
+        )
+    }
+
     @Test("load returns a valid config")
     func loadReturnsConfig() {
-        let store = ConfigStore()
+        let store = makeStore()
         let config = store.load()
-        // Hotkey may have been customized by user — just verify it loaded
         #expect(HotkeyConfig.label(for: config.dictationHotkey.keyCode) != nil)
         #expect(!config.sttBackend.isEmpty)
     }
 
     @Test("save and load round-trip")
     func saveLoadRoundTrip() {
-        let store = ConfigStore()
+        let store = makeStore()
         let original = store.load()
 
         var config = original
@@ -40,9 +50,6 @@ struct ConfigStoreTests {
         #expect(loaded.whisperLanguage == WhisperKitLanguage.german.rawValue)
         #expect(loaded.appleSpeechLanguage == "en-US")
         #expect(loaded.meetingSummaryBackend == "openrouter")
-
-        // Restore original
-        store.save(original)
     }
 
     @Test("config path is in Application Support")
@@ -55,7 +62,7 @@ struct ConfigStoreTests {
 
     @Test("saved config uses owner-only file permissions")
     func configPermissions() throws {
-        let store = ConfigStore()
+        let store = makeStore()
         let original = store.load()
 
         store.save(original)

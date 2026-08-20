@@ -495,7 +495,11 @@ struct GoogleCalendarTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: ConfigStore(
+                supportDirectory: FileManager.default.temporaryDirectory
+                    .appendingPathComponent("muesli-calendar-support-\(UUID().uuidString)", isDirectory: true)
+            )
         )
         let firstStart = date("2026-04-10T14:00:00Z")
         let firstOccurrence = CalendarOccurrenceReference(

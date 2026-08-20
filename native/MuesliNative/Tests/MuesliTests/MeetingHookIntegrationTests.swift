@@ -152,8 +152,14 @@ struct MeetingHookIntegrationTests {
                 bundlePath: nil
             ),
             dictationStore: store,
+            configStore: ConfigStore(supportDirectory: makeSupportDirectory()),
             meetingHookDispatcher: dispatcher
         )
+    }
+
+    private func makeSupportDirectory() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-hook-support-\(UUID().uuidString)", isDirectory: true)
     }
 
     private func makeStore() throws -> DictationStore {
