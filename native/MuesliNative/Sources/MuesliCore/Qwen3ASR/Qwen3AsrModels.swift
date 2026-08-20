@@ -198,15 +198,15 @@ public struct MuesliQwen3AsrModels: Sendable {
     /// Copy the artifacts in `source` into `destination`, replacing any existing
     /// files with the same names. Creates `destination` if needed.
     ///
-    /// Stage-then-swap: artifacts are fully copied into a temporary sibling
-    /// directory first, then swapped into place. A failure mid-copy leaves the
-    /// existing installation untouched instead of deleting live artifacts before
-    /// their replacements are ready.
+    /// Stage-then-swap with rollback: artifacts are fully copied into a
+    /// temporary sibling directory first, the existing destination is moved
+    /// aside, and the staged set is moved into place. A failure at any step
+    /// restores the previous installation, so a broken copy can never leave the
+    /// destination unusable.
     static func installArtifacts(from source: URL, to destination: URL) throws {
         let fileManager = FileManager.default
-        let staging = destination
-            .deletingLastPathComponent()
-            .appendingPathComponent(".qwen3-install-\(UUID().uuidString)", isDirectory: true)
+        let parent = destination.deletingLastPathComponent()
+        let staging = parent.appendingPathComponent(".qwen3-install-\(UUID().uuidString)", isDirectory: true)
         defer { try? fileManager.removeItem(at: staging) }
 
         try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
@@ -221,10 +221,25 @@ public struct MuesliQwen3AsrModels: Sendable {
             )
         }
 
-        if fileManager.fileExists(atPath: destination.path) {
-            try fileManager.removeItem(at: destination)
+        // Move the existing installation aside, then swap the staged set in.
+        // Restore the previous installation if the swap fails.
+        let old = fileManager.fileExists(atPath: destination.path)
+            ? parent.appendingPathComponent(".qwen3-old-\(UUID().uuidString)", isDirectory: true)
+            : nil
+        if let old {
+            try fileManager.moveItem(at: destination, to: old)
         }
-        try fileManager.moveItem(at: staging, to: destination)
+        do {
+            try fileManager.moveItem(at: staging, to: destination)
+        } catch {
+            if let old, fileManager.fileExists(atPath: old.path) {
+                try? fileManager.moveItem(at: old, to: destination)
+            }
+            throw error
+        }
+        if let old {
+            try? fileManager.removeItem(at: old)
+        }
     }
 
     /// Move a directory aside (rename) so its original location can be rebuilt.
