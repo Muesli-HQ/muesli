@@ -665,7 +665,7 @@ struct ModelsView: View {
 
         return VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
             HStack(alignment: .top, spacing: MuesliTheme.spacing12) {
-                brandLogo("qwen-logo")
+                brandLogo(option.logoResourceName)
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
                     HStack(spacing: MuesliTheme.spacing8) {
                         Text(option.label)

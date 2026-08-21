@@ -18,6 +18,25 @@ private struct MicrophoneOption: Identifiable {
     var id: String { uid ?? "__automatic__" }
 }
 
+private enum OnDeviceCleanupModel: Identifiable {
+    case gguf(PostProcessorOption)
+    case gemma4
+
+    var id: String {
+        switch self {
+        case let .gguf(option): option.id
+        case .gemma4: TranscriptCleanupBackendOption.gemma4LiteRT.backend
+        }
+    }
+
+    var label: String {
+        switch self {
+        case let .gguf(option): option.label
+        case .gemma4: BackendOption.gemma4E2BLiteRT.label
+        }
+    }
+}
+
 struct SettingsView: View {
     private enum PendingDataDestruction {
         case dictations
@@ -159,13 +178,34 @@ struct SettingsView: View {
     }
 
     private var cleanupBackendOptions: [TranscriptCleanupBackendOption] {
-        TranscriptCleanupBackendOption.all
+        TranscriptCleanupBackendOption.all.filter { !$0.isGemma4LiteRT }
     }
 
-    private var disabledCleanupBackendLabels: Set<String> {
-        Set(cleanupBackendOptions.lazy
-            .filter { !$0.isCompatible(with: appState.selectedBackend) }
-            .map(\.label))
+    private var selectedCleanupBackendLabel: String {
+        appState.selectedPostProcessorBackend.isOnDevice
+            ? TranscriptCleanupBackendOption.local.label
+            : appState.selectedPostProcessorBackend.label
+    }
+
+    private var onDeviceCleanupModels: [OnDeviceCleanupModel] {
+        var models = downloadedPostProcOptions
+            .filter { $0.isCompatible(with: appState.selectedBackend) }
+            .map(OnDeviceCleanupModel.gguf)
+        if Gemma4LiteRTModelStore.isAvailableLocally(),
+           TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: appState.selectedBackend) {
+            models.append(.gemma4)
+        }
+        return models
+    }
+
+    private var selectedOnDeviceCleanupModelLabel: String {
+        if appState.selectedPostProcessorBackend == .gemma4LiteRT {
+            return BackendOption.gemma4E2BLiteRT.label
+        }
+        let selectedID = appState.activePostProcessor.id
+        return onDeviceCleanupModels.first(where: { $0.id == selectedID })?.label
+            ?? onDeviceCleanupModels.first?.label
+            ?? ""
     }
 
     private var selectedCleanupPromptName: String {
@@ -173,16 +213,21 @@ struct SettingsView: View {
             ?? TranscriptCleanupPrompts.builtIns[0].name
     }
 
+    private var cleanupModelUsesFixedPrompt: Bool {
+        appState.selectedPostProcessorBackend == .local
+            && appState.activePostProcessor.inputFormat == .s1Mini
+    }
+
+    private var gemmaCleanupIsUnavailable: Bool {
+        Gemma4LiteRTModelStore.isAvailableLocally()
+            && !TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: appState.selectedBackend)
+    }
+
     private var cleanupBackendDescription: String {
-        if appState.selectedPostProcessorBackend == .local {
-            return downloadedPostProcOptions.isEmpty
+        if appState.selectedPostProcessorBackend.isOnDevice {
+            return onDeviceCleanupModels.isEmpty
                 ? "Download a cleanup model from Models to refine dictations on this Mac."
                 : "Refines dictated text on this Mac."
-        }
-        if appState.selectedPostProcessorBackend == .gemma4LiteRT {
-            return Gemma4LiteRTModelStore.isAvailableLocally()
-                ? "Uses the downloaded Gemma 4 model to refine dictated text on this Mac."
-                : "Download Gemma 4 E2B from Models to use it for cleanup."
         }
         return "Sends dictated text to \(appState.selectedPostProcessorBackend.label) and may add latency."
     }
@@ -825,65 +870,69 @@ struct SettingsView: View {
 
     private var dictationCleanupSettingsSection: some View {
         settingsSection("Dictation Cleanup") {
-            settingsRow(
-                "Cleanup backend",
-                description: cleanupBackendDescription,
-                controlWidth: meetingControlWidth
-            ) {
-                settingsMenu(
-                    selection: appState.selectedPostProcessorBackend.label,
-                    options: cleanupBackendOptions.map(\.label),
-                    disabledOptions: disabledCleanupBackendLabels
-                ) { label in
-                    if let option = cleanupBackendOptions.first(where: { $0.label == label }) {
-                        controller.selectPostProcessorBackend(option)
-                    }
+            settingsRow("AI transcript cleanup") {
+                settingsSwitch(isOn: appState.config.enablePostProcessor) { newValue in
+                    controller.setPostProcessorEnabled(newValue)
                 }
             }
-            .id(FeatureTourTarget.cloudCleanupSetting.rawValue)
-            .featureTourTarget(.cloudCleanupSetting)
-            if !disabledCleanupBackendLabels.isEmpty {
-                settingsDescription("Gemma 4 cleanup is unavailable while Gemma 4 is the dictation model.")
-            }
-            if appState.selectedPostProcessorBackend == .local {
+            if appState.config.enablePostProcessor {
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Cleanup model", controlWidth: meetingControlWidth) {
-                    if downloadedPostProcOptions.isEmpty {
-                        compactActionButton("View cleanup models", systemImage: "arrow.right") {
-                            controller.showModels(category: .postProcessing)
+                if cleanupModelUsesFixedPrompt {
+                    fixedCleanupPromptNotice
+                } else {
+                    cleanupPromptSettings
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow(
+                    "Cleanup source",
+                    description: cleanupBackendDescription,
+                    controlWidth: meetingControlWidth
+                ) {
+                    settingsMenu(
+                        selection: selectedCleanupBackendLabel,
+                        options: cleanupBackendOptions.map(\.label)
+                    ) { label in
+                        if let option = cleanupBackendOptions.first(where: { $0.label == label }) {
+                            controller.selectPostProcessorBackend(option)
                         }
-                        .frame(width: meetingControlWidth, alignment: .trailing)
-                    } else {
-                        let selection = downloadedPostProcOptions.contains(where: { $0.id == appState.activePostProcessor.id })
-                            ? appState.activePostProcessor.label
-                            : (downloadedPostProcOptions.first?.label ?? "")
-                        settingsMenu(
-                            selection: selection,
-                            options: downloadedPostProcOptions.map(\.label)
-                        ) { label in
-                            if let option = downloadedPostProcOptions.first(where: { $0.label == label }) {
-                                controller.selectPostProcessor(option)
+                    }
+                }
+                .id(FeatureTourTarget.cloudCleanupSetting.rawValue)
+                .featureTourTarget(.cloudCleanupSetting)
+                if appState.selectedPostProcessorBackend.isOnDevice {
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Cleanup model", controlWidth: meetingControlWidth) {
+                        if onDeviceCleanupModels.isEmpty {
+                            compactActionButton("View cleanup models", systemImage: "arrow.right") {
+                                controller.showModels(category: .postProcessing)
                             }
-                        }
-                    }
-                }
-            } else if appState.selectedPostProcessorBackend == .gemma4LiteRT {
-                Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Cleanup model", controlWidth: meetingControlWidth) {
-                    if Gemma4LiteRTModelStore.isAvailableLocally() {
-                        Text("Gemma 4 E2B (Downloaded)")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(MuesliTheme.textSecondary)
                             .frame(width: meetingControlWidth, alignment: .trailing)
-                    } else {
-                        compactActionButton("View Gemma model", systemImage: "arrow.right") {
-                            controller.showModels(category: .postProcessing)
+                        } else {
+                            FixedWidthPopUp(
+                                selection: selectedOnDeviceCleanupModelLabel,
+                                options: onDeviceCleanupModels.map(\.label),
+                                onSelectIndex: { index in
+                                    guard onDeviceCleanupModels.indices.contains(index) else { return }
+                                    switch onDeviceCleanupModels[index] {
+                                    case let .gguf(option):
+                                        controller.selectPostProcessor(option)
+                                    case .gemma4:
+                                        controller.selectPostProcessorBackend(.gemma4LiteRT)
+                                    }
+                                }
+                            )
+                            .frame(height: 24)
                         }
-                        .frame(width: meetingControlWidth, alignment: .trailing)
                     }
+                    if gemmaCleanupIsUnavailable {
+                        Text("Gemma 4 E2B is unavailable for cleanup while it is selected for dictation.")
+                            .font(MuesliTheme.body())
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                } else {
+                    hostedCleanupSettings(for: appState.selectedPostProcessorBackend)
                 }
-            } else {
-                hostedCleanupSettings(for: appState.selectedPostProcessorBackend)
             }
         }
     }
@@ -1067,6 +1116,19 @@ struct SettingsView: View {
         }
     }
 
+    private var fixedCleanupPromptNotice: some View {
+        settingsRow(
+            "Cleanup prompt",
+            description: "S1-mini uses Superwhisper’s built-in normalization instructions.",
+            controlWidth: meetingControlWidth
+        ) {
+            Text("Built in")
+                .font(MuesliTheme.body())
+                .foregroundStyle(MuesliTheme.textSecondary)
+                .frame(width: meetingControlWidth, alignment: .trailing)
+        }
+    }
+
     private var meetingSummarySettingsSection: some View {
         settingsSection("Meeting Summaries") {
             settingsRow("Summary backend", controlWidth: meetingControlWidth) {
@@ -1229,14 +1291,6 @@ struct SettingsView: View {
                     )
                     .frame(height: 24)
                 }
-                Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("AI transcript cleanup") {
-                    settingsSwitch(isOn: appState.config.enablePostProcessor) { newValue in
-                        controller.setPostProcessorEnabled(newValue)
-                    }
-                }
-                Divider().background(MuesliTheme.surfaceBorder)
-                cleanupPromptSettings
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow(
                     "Dictionary suggestions",
@@ -1540,6 +1594,17 @@ struct SettingsView: View {
                     }
                     .disabled(!appState.config.showFloatingIndicator)
                 }
+                settingsRow("Hover style") {
+                    settingsMenu(
+                        selection: appState.config.indicatorHoverStyle.label,
+                        options: IndicatorHoverStyle.allCases.map(\.label)
+                    ) { label in
+                        guard let style = IndicatorHoverStyle.allCases.first(where: { $0.label == label }) else { return }
+                        controller.updateConfig { $0.indicatorHoverStyle = style }
+                    }
+                    .disabled(!appState.config.showFloatingIndicator)
+                }
+                settingsDescription("Classic grows the pill to show the hotkey. Shortcut pill keeps a thin grip and pops a separate label on hover.")
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Indicator position") {
                     let isCustom = appState.config.indicatorAnchor == .custom

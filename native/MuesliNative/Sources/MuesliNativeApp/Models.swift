@@ -782,12 +782,38 @@ enum CustomLLMFormat: String, Codable, CaseIterable {
 }
 
 struct PostProcessorOption: Identifiable, Equatable {
+    enum InputFormat: Hashable {
+        /// The existing Muesli/Qwen cleanup prompt, which users may customize.
+        case configurable
+        /// S1-mini is trained on a fixed prompt and control-line contract.
+        case s1Mini
+    }
+
     let id: String
     let label: String
     let sizeLabel: String
     let description: String
     let downloadURL: URL
     let filename: String
+    let inputFormat: InputFormat
+
+    init(
+        id: String,
+        label: String,
+        sizeLabel: String,
+        description: String,
+        downloadURL: URL,
+        filename: String,
+        inputFormat: InputFormat = .configurable
+    ) {
+        self.id = id
+        self.label = label
+        self.sizeLabel = sizeLabel
+        self.description = description
+        self.downloadURL = downloadURL
+        self.filename = filename
+        self.inputFormat = inputFormat
+    }
 
     var cacheDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -800,6 +826,16 @@ struct PostProcessorOption: Identifiable, Equatable {
 
     var isDownloaded: Bool {
         FileManager.default.fileExists(atPath: modelURL.path)
+    }
+
+    var logoResourceName: String {
+        inputFormat == .s1Mini ? "superwhisper-logo" : "qwen-logo"
+    }
+
+    /// S1-mini normalizes English transcripts only. Indic ASR always emits an
+    /// Indic-language transcript, so do not offer or run S1-mini for it.
+    func isCompatible(with transcriptionBackend: BackendOption) -> Bool {
+        inputFormat != .s1Mini || transcriptionBackend != .indicASR
     }
 
     // Fine-tuned Qwen3-0.6B trained on Muesli dictation correction data.
@@ -833,7 +869,17 @@ struct PostProcessorOption: Identifiable, Equatable {
         filename: "qwen35-postproc-v3-Q4_K_M.gguf"
     )
 
-    static let all: [PostProcessorOption] = [.finetunedV3, .finetunedV2, .qwen35_0_8b]
+    static let s1Mini = PostProcessorOption(
+        id: "superwhisper-s1-mini",
+        label: "S1-mini by Superwhisper",
+        sizeLabel: "~462 MB",
+        description: "English-only speech-to-text normalization with reliable filler removal, corrections, punctuation, capitalization, and written numbers, dates, times, currency, and email addresses.",
+        downloadURL: URL(string: "https://huggingface.co/superwhisper/s1-mini-GGUF/resolve/main/s1-mini-q4_k_m.gguf")!,
+        filename: "s1-mini-q4_k_m.gguf",
+        inputFormat: .s1Mini
+    )
+
+    static let all: [PostProcessorOption] = [.finetunedV3, .s1Mini, .finetunedV2, .qwen35_0_8b]
     static let defaultOption: PostProcessorOption = .finetunedV3
 
     static var downloaded: [PostProcessorOption] {
@@ -891,6 +937,18 @@ struct PostProcessorOption: Identifiable, Equatable {
 
     Do not: paraphrase, reword, add words, remove meaningful words, change the meaning in any way, wrap the output in markdown, code fences, tags, labels, or commentary, or repeat the output more than once. Preserve the speaker's original phrasing.
     """
+
+    /// S1-mini was trained on this exact system prompt and rejects prompt customization.
+    static let s1MiniSystemPrompt = "You are a text normalizer for speech-to-text transcripts. The input begins with a control line specifying the styling, structure, and context settings; clean the transcript to match those settings and output only the cleaned text."
+
+    func effectiveSystemPrompt(configuredSystemPrompt: String) -> String {
+        switch inputFormat {
+        case .configurable:
+            configuredSystemPrompt
+        case .s1Mini:
+            Self.s1MiniSystemPrompt
+        }
+    }
 }
 
 struct TranscriptCleanupPromptPreset: Identifiable, Equatable {
@@ -1021,6 +1079,18 @@ struct DictionarySuggestion: Codable, Equatable, Identifiable, Sendable {
             .split(whereSeparator: \.isWhitespace)
             .joined(separator: " ")
             .lowercased()
+    }
+}
+
+enum IndicatorHoverStyle: String, Codable, CaseIterable {
+    case classic = "classic"
+    case shortcutPill = "shortcut_pill"
+
+    var label: String {
+        switch self {
+        case .classic: return "Classic"
+        case .shortcutPill: return "Shortcut pill"
+        }
     }
 }
 
@@ -1233,6 +1303,7 @@ struct AppConfig: Codable {
     var openDashboardOnLaunch: Bool = true
     var showFloatingIndicator: Bool = true
     var showHotkeyOnFloatingIndicator: Bool = false
+    var indicatorHoverStyle: IndicatorHoverStyle = .classic
     var indicatorAnchor: IndicatorAnchor = .midTrailing
     var dashboardWindowFrame: WindowFrame? = nil
     var indicatorOrigin: CGPointCodable? = nil
@@ -1359,6 +1430,7 @@ struct AppConfig: Codable {
         case openDashboardOnLaunch = "open_dashboard_on_launch"
         case showFloatingIndicator = "show_floating_indicator"
         case showHotkeyOnFloatingIndicator = "show_hotkey_on_floating_indicator"
+        case indicatorHoverStyle = "indicator_hover_style"
         case indicatorAnchor = "indicator_anchor"
         case dashboardWindowFrame = "dashboard_window_frame"
         case indicatorOrigin = "indicator_origin"
@@ -1521,6 +1593,9 @@ struct AppConfig: Codable {
         showHotkeyOnFloatingIndicator =
             (try? c.decode(Bool.self, forKey: .showHotkeyOnFloatingIndicator))
             ?? defaults.showHotkeyOnFloatingIndicator
+        indicatorHoverStyle =
+            (try? c.decode(IndicatorHoverStyle.self, forKey: .indicatorHoverStyle))
+            ?? defaults.indicatorHoverStyle
         indicatorAnchor = (try? c.decode(IndicatorAnchor.self, forKey: .indicatorAnchor))
             ?? ((try? c.decodeIfPresent(CGPointCodable.self, forKey: .indicatorOrigin)) != nil ? .custom : .midTrailing)
         dashboardWindowFrame = try? c.decode(WindowFrame.self, forKey: .dashboardWindowFrame)
