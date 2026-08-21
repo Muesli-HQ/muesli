@@ -314,7 +314,7 @@ struct BackendOptionTests {
             #expect(BackendOption.onboardingDefault == .appleSpeechAnalyzer)
             #expect(BackendOption.onboarding.contains(.appleSpeechAnalyzer))
         } else {
-            #expect(BackendOption.onboardingDefault == .parakeetMultilingual)
+            #expect(BackendOption.onboardingDefault == .parakeetUnified)
             #expect(!BackendOption.onboarding.contains(.appleSpeechAnalyzer))
         }
     }
