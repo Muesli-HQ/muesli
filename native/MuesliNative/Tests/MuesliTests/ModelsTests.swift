@@ -465,6 +465,13 @@ struct PostProcessorOptionTests {
         #expect(option.logoResourceName == "superwhisper-logo")
     }
 
+    @Test("S1-mini is unavailable for Indic ASR only")
+    func s1MiniIndicASRCompatibility() {
+        #expect(!PostProcessorOption.s1Mini.isCompatible(with: .indicASR))
+        #expect(PostProcessorOption.s1Mini.isCompatible(with: .parakeetMultilingual))
+        #expect(PostProcessorOption.finetunedV3.isCompatible(with: .indicASR))
+    }
+
     @Test("default option is first and matches config default")
     func defaultOption() {
         #expect(PostProcessorOption.all.first == PostProcessorOption.defaultOption)

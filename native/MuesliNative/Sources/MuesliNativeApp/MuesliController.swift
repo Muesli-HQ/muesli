@@ -524,10 +524,19 @@ public final class MuesliController: NSObject {
             $0.backend == loadedConfig.sttBackend && $0.model == loadedConfig.sttModel
         }) ?? .whisper
         var loadedPostProcessorBackend = TranscriptCleanupBackendOption.resolved(loadedConfig.postProcessorBackend)
+        var repairedCleanupConfiguration = false
+        if loadedPostProcessorBackend == .local,
+           !PostProcessorOption.resolve(id: loadedConfig.activePostProcessorId).isCompatible(with: loadedBackend) {
+            loadedConfig.enablePostProcessor = false
+            repairedCleanupConfiguration = true
+        }
         if !loadedPostProcessorBackend.isCompatible(with: loadedBackend) {
             loadedPostProcessorBackend = .local
             loadedConfig.postProcessorBackend = loadedPostProcessorBackend.backend
             loadedConfig.enablePostProcessor = false
+            repairedCleanupConfiguration = true
+        }
+        if repairedCleanupConfiguration {
             configStore.save(loadedConfig)
         }
         self.runtime = runtime
@@ -1458,6 +1467,13 @@ public final class MuesliController: NSObject {
             $0.backend == config.sttBackend && $0.model == config.sttModel
         }) ?? .whisper
         let configuredPostProcessorBackend = TranscriptCleanupBackendOption.resolved(config.postProcessorBackend)
+        let activePostProcessor = PostProcessorOption.resolve(id: config.activePostProcessorId)
+        if configuredPostProcessorBackend == .local,
+           !activePostProcessor.isCompatible(with: selectedBackend) {
+            // Keep the selected model for a later compatible ASR choice, but
+            // require an explicit re-enable after switching to Indic ASR.
+            config.enablePostProcessor = false
+        }
         if !configuredPostProcessorBackend.isCompatible(with: selectedBackend) {
             config.postProcessorBackend = TranscriptCleanupBackendOption.local.backend
             config.enablePostProcessor = false
@@ -2544,7 +2560,7 @@ public final class MuesliController: NSObject {
         guard config.enablePostProcessor,
               selectedPostProcessorBackend.isCompatible(with: selectedBackend) else { return false }
         if selectedPostProcessorBackend == .local {
-            return option != nil
+            return option?.isCompatible(with: selectedBackend) == true
         }
         if selectedPostProcessorBackend == .gemma4LiteRT {
             return Gemma4LiteRTModelStore.isAvailableLocally()
@@ -2571,9 +2587,9 @@ public final class MuesliController: NSObject {
             return
         }
         if enabled, selectedPostProcessorBackend == .local {
-            guard normalizePostProcessorSelectionForAvailability() != nil else {
+            guard let option = normalizePostProcessorSelectionForAvailability(),
+                  option.isCompatible(with: selectedBackend) else {
                 updateConfig { $0.enablePostProcessor = false }
-                showModels(category: .postProcessing)
                 return
             }
         }
@@ -2601,6 +2617,13 @@ public final class MuesliController: NSObject {
     }
 
     func selectPostProcessor(_ option: PostProcessorOption) {
+        guard option.isCompatible(with: selectedBackend) else {
+            presentErrorAlert(
+                title: "Cleanup model unavailable",
+                message: "S1-mini cleans English transcripts and cannot be used with Indic ASR."
+            )
+            return
+        }
         updateConfig {
             $0.postProcessorBackend = TranscriptCleanupBackendOption.local.backend
             $0.activePostProcessorId = option.id

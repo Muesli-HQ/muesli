@@ -820,6 +820,12 @@ struct PostProcessorOption: Identifiable, Equatable {
         inputFormat == .s1Mini ? "superwhisper-logo" : "qwen-logo"
     }
 
+    /// S1-mini normalizes English transcripts only. Indic ASR always emits an
+    /// Indic-language transcript, so do not offer or run S1-mini for it.
+    func isCompatible(with transcriptionBackend: BackendOption) -> Bool {
+        inputFormat != .s1Mini || transcriptionBackend != .indicASR
+    }
+
     // Fine-tuned Qwen3-0.6B trained on Muesli dictation correction data.
     // HF repo must be public (or token-gated) before distributing alpha builds.
     static let finetunedV2 = PostProcessorOption(

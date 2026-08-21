@@ -188,7 +188,9 @@ struct SettingsView: View {
     }
 
     private var onDeviceCleanupModels: [OnDeviceCleanupModel] {
-        var models = downloadedPostProcOptions.map(OnDeviceCleanupModel.gguf)
+        var models = downloadedPostProcOptions
+            .filter { $0.isCompatible(with: appState.selectedBackend) }
+            .map(OnDeviceCleanupModel.gguf)
         if Gemma4LiteRTModelStore.isAvailableLocally(),
            TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: appState.selectedBackend) {
             models.append(.gemma4)
