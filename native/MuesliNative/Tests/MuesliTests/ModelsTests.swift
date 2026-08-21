@@ -2651,3 +2651,73 @@ struct AppConfigAppearanceTests {
         #expect(json?["recording_color_hex"] as? String == "eff1f5")
     }
 }
+
+struct ParakeetUnifiedPlanTests {
+
+    private func installPlan(in root: URL) throws -> ManagedASRModelPlan {
+        let plan = ManagedASRModelPlans.parakeetUnified(modelsRoot: root)
+        let installedPaths = [
+            "parakeet_unified_encoder_int8.mlmodelc/coremldata.bin",
+            "parakeet_unified_encoder_int8.mlmodelc/weights/weight.bin",
+            "parakeet_unified_decoder.mlmodelc/coremldata.bin",
+            "parakeet_unified_decoder.mlmodelc/weights/weight.bin",
+            "parakeet_unified_joint_decision_single_step.mlmodelc/coremldata.bin",
+            "parakeet_unified_joint_decision_single_step.mlmodelc/weights/weight.bin",
+            "vocab.json",
+            "metadata.json",
+        ]
+        let fm = FileManager.default
+        for relativePath in installedPaths {
+            let url = plan.cacheDirectory.appendingPathComponent(relativePath)
+            try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data([0x01]).write(to: url)
+        }
+        let manifest = ModelDownloadManifest(
+            id: plan.modelID,
+            version: "test-install",
+            files: installedPaths.map { relativePath in
+                ModelDownloadFile(
+                    relativePath: relativePath,
+                    remoteURL: URL(string: "https://example.com/model")!,
+                    expectedByteCount: 1
+                )
+            }
+        )
+        try plan.recordSuccessfulInstallation(manifest)
+        return plan
+    }
+
+    @Test("Parakeet Unified plan detects a complete install")
+    func completeInstallIsAvailable() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("pu-plan-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: root) }
+        let plan = try installPlan(in: root)
+        #expect(plan.isAvailableLocally(fileManager: fm))
+    }
+
+    @Test("Parakeet Unified plan rejects installs with a missing artifact")
+    func missingArtifactIsNotAvailable() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("pu-plan-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: root) }
+        let plan = try installPlan(in: root)
+        try? fm.removeItem(at: plan.cacheDirectory.appendingPathComponent("vocab.json"))
+        #expect(!plan.isAvailableLocally(fileManager: fm))
+        try? fm.removeItem(at: plan.cacheDirectory.appendingPathComponent("parakeet_unified_decoder.mlmodelc"))
+        #expect(!plan.isAvailableLocally(fileManager: fm))
+    }
+
+    @Test("Parakeet Unified plan rejects an incomplete mlmodelc bundle")
+    func incompleteBundleIsNotAvailable() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("pu-plan-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: root) }
+        let plan = try installPlan(in: root)
+        try? fm.removeItem(
+            at: plan.cacheDirectory
+                .appendingPathComponent("parakeet_unified_encoder_int8.mlmodelc/weights/weight.bin")
+        )
+        #expect(!plan.isAvailableLocally(fileManager: fm))
+    }
+}

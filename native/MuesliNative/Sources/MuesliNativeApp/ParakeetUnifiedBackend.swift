@@ -9,6 +9,7 @@ import MuesliCore
 actor ParakeetUnifiedTranscriber {
     private var asrManager: UnifiedAsrManager?
     private var loadedPlan: ManagedASRModelPlan?
+    private var loadGeneration: UInt64 = 0
 
     enum TranscriberError: Error, LocalizedError {
         case notLoaded
@@ -27,6 +28,7 @@ actor ParakeetUnifiedTranscriber {
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
         if asrManager != nil { return }
+        let generation = loadGeneration
 
         fputs("[parakeet-unified] downloading/loading models...\n", stderr)
         let plan = ManagedASRModelPlans.parakeetUnified()
@@ -44,6 +46,11 @@ actor ParakeetUnifiedTranscriber {
             let manager = UnifiedAsrManager()
             try await manager.loadModels(from: modelDirectory)
             return manager
+        }
+        // A shutdown() during the load must invalidate the result: discard the
+        // freshly loaded manager instead of resurrecting a stale one.
+        guard generation == loadGeneration else {
+            throw CancellationError()
         }
         self.asrManager = manager
         self.loadedPlan = plan
@@ -70,5 +77,6 @@ actor ParakeetUnifiedTranscriber {
     func shutdown() {
         asrManager = nil
         loadedPlan = nil
+        loadGeneration &+= 1
     }
 }
