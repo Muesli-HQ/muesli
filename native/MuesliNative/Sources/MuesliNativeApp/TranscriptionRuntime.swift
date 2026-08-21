@@ -249,6 +249,7 @@ actor TranscriptionCoordinator {
 
     private struct PostProcessorSnapshot {
         let backend: TranscriptCleanupBackendOption
+        let modelURL: URL
         let systemPrompt: String
         let modelId: String
         let inputFormat: PostProcessorOption.InputFormat
@@ -787,6 +788,7 @@ actor TranscriptionCoordinator {
     private func currentPostProcessorSnapshot() -> PostProcessorSnapshot {
         PostProcessorSnapshot(
             backend: postProcessorBackend,
+            modelURL: postProcessorModelURL,
             systemPrompt: postProcessorSystemPrompt,
             modelId: postProcessorModelId,
             inputFormat: postProcessorInputFormat,
@@ -806,7 +808,6 @@ actor TranscriptionCoordinator {
         customWords: [[String: Any]] = [],
         appContext: String? = nil
     ) async throws -> SpeechTranscriptionResult {
-        let postProcessorSnapshot = currentPostProcessorSnapshot()
         // Qwen3 post-processing is intentionally dictation-only. Meeting transcription should keep raw backend/Parakeet output.
         // Cohere decodes hallucinated text from silence — skip if VAD detects no speech
         if backend.backend == "cohere", let vadManager {
@@ -834,6 +835,10 @@ actor TranscriptionCoordinator {
         if !result.text.isEmpty {
             Qwen3PostProcessorLogging.logVerbose("Dictation raw transcript after artifact cleanup: \(result.text)")
         }
+        // Capture this after ASR awaits. The snapshot is then passed through the
+        // complete cleanup path, so a model switch cannot change the model or
+        // empty-output policy for this dictation.
+        let postProcessorSnapshot = currentPostProcessorSnapshot()
         result = await postProcessDictationIfNeeded(
             result,
             backend: backend,
@@ -1020,7 +1025,15 @@ actor TranscriptionCoordinator {
             // Trigger heuristics were removed; the only remaining heuristic here preserves deletion-cue empty output.
             Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor forced by toggle")
             let start = CFAbsoluteTimeGetCurrent()
-            let processed = try await qwen3PostProcessor.process(result.text, appContext: appContext)
+            let processed = try await qwen3PostProcessor.process(
+                result.text,
+                appContext: appContext,
+                configuration: Qwen3PostProcessor.Configuration(
+                    modelURL: postProcessorSnapshot.modelURL,
+                    systemPrompt: postProcessorSnapshot.systemPrompt,
+                    inputFormat: postProcessorSnapshot.inputFormat
+                )
+            )
             let elapsedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
             let trimmed = processed.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty,

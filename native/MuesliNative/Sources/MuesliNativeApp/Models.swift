@@ -770,7 +770,7 @@ enum CustomLLMFormat: String, Codable, CaseIterable {
 }
 
 struct PostProcessorOption: Identifiable, Equatable {
-    enum InputFormat: Equatable {
+    enum InputFormat: Hashable {
         /// The existing Muesli/Qwen cleanup prompt, which users may customize.
         case configurable
         /// S1-mini is trained on a fixed prompt and control-line contract.

@@ -211,6 +211,16 @@ struct SettingsView: View {
             ?? TranscriptCleanupPrompts.builtIns[0].name
     }
 
+    private var cleanupModelUsesFixedPrompt: Bool {
+        appState.selectedPostProcessorBackend == .local
+            && appState.activePostProcessor.inputFormat == .s1Mini
+    }
+
+    private var gemmaCleanupIsUnavailable: Bool {
+        Gemma4LiteRTModelStore.isAvailableLocally()
+            && !TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: appState.selectedBackend)
+    }
+
     private var cleanupBackendDescription: String {
         if appState.selectedPostProcessorBackend.isOnDevice {
             return onDeviceCleanupModels.isEmpty
@@ -865,7 +875,11 @@ struct SettingsView: View {
             }
             if appState.config.enablePostProcessor {
                 Divider().background(MuesliTheme.surfaceBorder)
-                cleanupPromptSettings
+                if cleanupModelUsesFixedPrompt {
+                    fixedCleanupPromptNotice
+                } else {
+                    cleanupPromptSettings
+                }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow(
                     "Cleanup source",
@@ -907,6 +921,12 @@ struct SettingsView: View {
                             )
                             .frame(height: 24)
                         }
+                    }
+                    if gemmaCleanupIsUnavailable {
+                        Text("Gemma 4 E2B is unavailable for cleanup while it is selected for dictation.")
+                            .font(MuesliTheme.body())
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 } else {
                     hostedCleanupSettings(for: appState.selectedPostProcessorBackend)
@@ -1091,6 +1111,19 @@ struct SettingsView: View {
                     isCleanupPromptManagerPresented = true
                 }
             }
+        }
+    }
+
+    private var fixedCleanupPromptNotice: some View {
+        settingsRow(
+            "Cleanup prompt",
+            description: "S1-mini uses Superwhisper’s built-in normalization instructions.",
+            controlWidth: meetingControlWidth
+        ) {
+            Text("Built in")
+                .font(MuesliTheme.body())
+                .foregroundStyle(MuesliTheme.textSecondary)
+                .frame(width: meetingControlWidth, alignment: .trailing)
         }
     }
 

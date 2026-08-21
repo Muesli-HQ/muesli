@@ -537,8 +537,70 @@ struct Qwen3PostProcessingOutputCleanerTests {
     @Test("recognizes LLM.swift's empty-generation placeholder for S1-mini")
     func recognizesS1MiniEmptyOutput() {
         #expect(Qwen3PostProcessorOutputCleaner.isS1MiniEmptyOutput("..."))
+        #expect(Qwen3PostProcessorOutputCleaner.isS1MiniEmptyOutput(". . ."))
         #expect(Qwen3PostProcessorOutputCleaner.isS1MiniEmptyOutput("…"))
         #expect(!Qwen3PostProcessorOutputCleaner.isS1MiniEmptyOutput("Okay."))
+    }
+
+    @available(macOS 15, *)
+    @Test("local cleanup keeps the captured configuration across model switches")
+    func localCleanupKeepsCapturedConfigurationAcrossModelSwitches() async {
+        let configurableURL = URL(fileURLWithPath: "/tmp/muesli-configurable-cleanup-test.gguf")
+        let s1MiniURL = URL(fileURLWithPath: "/tmp/muesli-s1-mini-cleanup-test.gguf")
+        let configurable = Qwen3PostProcessor.Configuration(
+            modelURL: configurableURL,
+            systemPrompt: "Configurable prompt",
+            inputFormat: .configurable
+        )
+        let s1Mini = Qwen3PostProcessor.Configuration(
+            modelURL: s1MiniURL,
+            systemPrompt: PostProcessorOption.s1MiniSystemPrompt,
+            inputFormat: .s1Mini
+        )
+        let processor = Qwen3PostProcessor(
+            modelURL: configurable.modelURL,
+            systemPrompt: configurable.systemPrompt,
+            inputFormat: configurable.inputFormat
+        )
+
+        // Configurable -> S1-mini: the active configuration changes, but the
+        // already captured configurable request must still use its own model.
+        await processor.reconfigure(
+            modelURL: s1Mini.modelURL,
+            systemPrompt: s1Mini.systemPrompt,
+            inputFormat: s1Mini.inputFormat
+        )
+        await assertMissingModel(
+            processor: processor,
+            configuration: configurable,
+            expectedPath: configurableURL.path
+        )
+
+        // S1-mini -> configurable follows the same rule in the other direction.
+        await processor.reconfigure(
+            modelURL: configurable.modelURL,
+            systemPrompt: configurable.systemPrompt,
+            inputFormat: configurable.inputFormat
+        )
+        await assertMissingModel(
+            processor: processor,
+            configuration: s1Mini,
+            expectedPath: s1MiniURL.path
+        )
+    }
+
+    @available(macOS 15, *)
+    private func assertMissingModel(
+        processor: Qwen3PostProcessor,
+        configuration: Qwen3PostProcessor.Configuration,
+        expectedPath: String
+    ) async {
+        do {
+            _ = try await processor.process("test", configuration: configuration)
+            Issue.record("Expected the test-only missing cleanup model to fail loading")
+        } catch {
+            #expect(error.localizedDescription.contains(expectedPath))
+        }
     }
 
     @Test("accepts short legitimate cleanup output")

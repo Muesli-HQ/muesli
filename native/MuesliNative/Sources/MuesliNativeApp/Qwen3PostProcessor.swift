@@ -146,23 +146,25 @@ enum Qwen3PostProcessorOutputCleaner {
     /// LLM.swift represents a genuinely empty generation as `...`; S1-mini
     /// documents an empty result as the correct normalization for noise-only input.
     static func isS1MiniEmptyOutput(_ cleaned: String) -> Bool {
-        let normalized = cleaned
-            .replacingOccurrences(of: "…", with: "...")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = normalizedPlaceholderOutput(cleaned)
         return normalized == "..." || normalized == ". . ."
     }
 
     private static func isPlaceholderOutput(_ text: String) -> Bool {
-        let normalized = text
-            .replacingOccurrences(of: "…", with: "...")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if normalized == "..." || normalized == ". . ." {
+        let normalized = normalizedPlaceholderOutput(text)
+        if isS1MiniEmptyOutput(normalized) {
             return true
         }
         let punctuationOnly = normalized.allSatisfy { character in
             character.isWhitespace || ".…-_,;:!?()[]{}".contains(character)
         }
         return punctuationOnly && normalized.count <= 8
+    }
+
+    private static func normalizedPlaceholderOutput(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "…", with: "...")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -348,62 +350,81 @@ private actor Qwen3PostProcessorManager {
 
 @available(macOS 15, *)
 actor Qwen3PostProcessor {
-    private struct LoadTaskState {
-        let id = UUID()
+    struct Configuration: Hashable, Sendable {
         let modelURL: URL
         let systemPrompt: String
         let inputFormat: PostProcessorOption.InputFormat
+    }
+
+    private struct LoadTaskState {
+        let id = UUID()
+        let configuration: Configuration
         let task: Task<Qwen3PostProcessorManager, Error>
     }
 
-    private var modelURL: URL
-    private var systemPrompt: String
-    private var inputFormat: PostProcessorOption.InputFormat
-    private var manager: Qwen3PostProcessorManager?
-    private var loadTask: LoadTaskState?
+    private var activeConfiguration: Configuration
+    private var managers: [Configuration: Qwen3PostProcessorManager] = [:]
+    private var loadTasks: [Configuration: LoadTaskState] = [:]
 
     init(modelURL: URL, systemPrompt: String, inputFormat: PostProcessorOption.InputFormat) {
         // Local development env-var override takes precedence.
-        self.modelURL = Qwen3PostProcessorConfig.devOverrideURL() ?? modelURL
-        self.systemPrompt = systemPrompt
-        self.inputFormat = inputFormat
+        self.activeConfiguration = Configuration(
+            modelURL: Qwen3PostProcessorConfig.devOverrideURL() ?? modelURL,
+            systemPrompt: systemPrompt,
+            inputFormat: inputFormat
+        )
     }
 
-    /// Swap to a different model or system prompt. Discards the loaded manager so
-    /// the next `prepare()` or `process()` call reloads with the new config.
+    /// Sets the configuration used by future preloads. Existing dictations keep
+    /// their captured configuration, so a settings change cannot alter an
+    /// in-flight cleanup request.
     func reconfigure(modelURL: URL, systemPrompt: String, inputFormat: PostProcessorOption.InputFormat) {
-        let resolved = Qwen3PostProcessorConfig.devOverrideURL() ?? modelURL
-        guard resolved != self.modelURL || systemPrompt != self.systemPrompt || inputFormat != self.inputFormat else { return }
-        self.modelURL = resolved
-        self.systemPrompt = systemPrompt
-        self.inputFormat = inputFormat
-        manager = nil
-        loadTask?.task.cancel()
-        loadTask = nil
+        let previousConfiguration = activeConfiguration
+        activeConfiguration = Configuration(
+            modelURL: Qwen3PostProcessorConfig.devOverrideURL() ?? modelURL,
+            systemPrompt: systemPrompt,
+            inputFormat: inputFormat
+        )
+        // An in-flight request holds its manager locally. Releasing a stale
+        // cache entry avoids retaining every model a user has switched away from.
+        if previousConfiguration != activeConfiguration {
+            managers[previousConfiguration] = nil
+        }
     }
 
     func prepare() async throws {
-        _ = try await loadManager()
+        _ = try await loadManager(for: activeConfiguration)
     }
 
-    func process(_ text: String, appContext: String? = nil) async throws -> String {
-        let manager = try await loadManager()
+    func process(
+        _ text: String,
+        appContext: String? = nil,
+        configuration: Configuration
+    ) async throws -> String {
+        let effectiveConfiguration = Configuration(
+            modelURL: Qwen3PostProcessorConfig.devOverrideURL() ?? configuration.modelURL,
+            systemPrompt: configuration.systemPrompt,
+            inputFormat: configuration.inputFormat
+        )
+        let manager = try await loadManager(for: effectiveConfiguration)
         return try await manager.process(text, appContext: appContext)
     }
 
     func shutdown() {
-        manager = nil
-        loadTask?.task.cancel()
-        loadTask = nil
+        managers.removeAll()
+        for task in loadTasks.values {
+            task.task.cancel()
+        }
+        loadTasks.removeAll()
     }
 
-    private func loadManager() async throws -> Qwen3PostProcessorManager {
-        if let manager { return manager }
-        if let loadTask { return try await finishLoad(loadTask) }
+    private func loadManager(for configuration: Configuration) async throws -> Qwen3PostProcessorManager {
+        if let manager = managers[configuration] { return manager }
+        if let loadTask = loadTasks[configuration] { return try await finishLoad(loadTask) }
 
-        let url = self.modelURL
-        let prompt = self.systemPrompt
-        let inputFormat = self.inputFormat
+        let url = configuration.modelURL
+        let prompt = configuration.systemPrompt
+        let inputFormat = configuration.inputFormat
         let task = Task<Qwen3PostProcessorManager, Error> {
             guard FileManager.default.fileExists(atPath: url.path) else {
                 throw NSError(domain: "Qwen3PostProcessor", code: 1, userInfo: [
@@ -414,28 +435,30 @@ actor Qwen3PostProcessor {
             try await manager.warm()
             return manager
         }
-        let state = LoadTaskState(modelURL: url, systemPrompt: prompt, inputFormat: inputFormat, task: task)
-        loadTask = state
+        let state = LoadTaskState(configuration: configuration, task: task)
+        loadTasks[configuration] = state
         return try await finishLoad(state)
     }
 
     private func finishLoad(_ state: LoadTaskState) async throws -> Qwen3PostProcessorManager {
         do {
             let loaded = try await state.task.value
-            guard state.modelURL == modelURL, state.systemPrompt == systemPrompt, state.inputFormat == inputFormat else {
-                if loadTask?.id == state.id {
-                    loadTask = nil
+            if let manager = managers[state.configuration] { return manager }
+            if state.configuration != activeConfiguration {
+                if loadTasks[state.configuration]?.id == state.id {
+                    loadTasks[state.configuration] = nil
                 }
-                return try await loadManager()
+                // The caller owns this manager while its cleanup runs. Do not
+                // retain it after a settings switch.
+                return loaded
             }
-            if let manager { return manager }
-            guard loadTask?.id == state.id else { throw CancellationError() }
-            manager = loaded
-            loadTask = nil
+            guard loadTasks[state.configuration]?.id == state.id else { throw CancellationError() }
+            managers[state.configuration] = loaded
+            loadTasks[state.configuration] = nil
             return loaded
         } catch {
-            if loadTask?.id == state.id {
-                loadTask = nil
+            if loadTasks[state.configuration]?.id == state.id {
+                loadTasks[state.configuration] = nil
             }
             throw error
         }
