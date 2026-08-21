@@ -110,7 +110,7 @@ struct TranscribeCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Output format: text, json, or markdown.")
     var format: TranscribeOutputFormat = .text
     @Option(name: .long, help: "Transcription model: parakeet-v3, parakeet-v2, parakeet-unified, parakeet-eou-320ms (streaming), sensevoice, qwen3-asr, nemotron35, whisper-tiny, whisper-tiny-english, whisper-small, whisper-small-english, whisper-medium-english, or whisper-large-turbo.")
-    var model: TranscribeModel = .parakeetV3
+    var model: TranscribeModel = .parakeetUnified
     @Flag(name: .long, help: "Generate meeting notes using the configured Muesli summary backend when available.")
     var summarize = false
     @Flag(name: .long, help: "Save the transcript as an imported Muesli meeting.")

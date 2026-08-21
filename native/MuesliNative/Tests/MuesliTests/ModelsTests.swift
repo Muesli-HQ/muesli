@@ -788,8 +788,8 @@ struct AppConfigTests {
     @Test("default values")
     func defaults() {
         let config = AppConfig()
-        #expect(config.sttBackend == BackendOption.whisper.backend)
-        #expect(config.sttModel == BackendOption.whisper.model)
+        #expect(config.sttBackend == BackendOption.parakeetUnified.backend)
+        #expect(config.sttModel == BackendOption.parakeetUnified.model)
         #expect(config.meetingInputDeviceUID == nil)
         #expect(config.cohereLanguage == CohereTranscribeLanguage.defaultLanguage.rawValue)
         #expect(config.indicASRLanguage == IndicASRLanguage.defaultLanguage.rawValue)

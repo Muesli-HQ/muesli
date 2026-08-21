@@ -161,7 +161,7 @@ struct AppleSpeechAnalyzerBackendTests {
         } else {
             #expect(!BackendOption.systemManaged.contains(option))
             #expect(!BackendOption.all.contains(option))
-            #expect(BackendOption.onboardingDefault == .parakeetMultilingual)
+            #expect(BackendOption.onboardingDefault == .parakeetUnified)
             #expect(!BackendOption.onboarding.contains(option))
         }
     }

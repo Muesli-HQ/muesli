@@ -196,6 +196,7 @@ struct BackendOption: Equatable {
         let onboardingDefault = systemManaged.first ?? .parakeetUnified
         let onboardingCandidates: [BackendOption] = [
             onboardingDefault,
+            .parakeetUnified,
             .parakeetMultilingual,
             .whisperTiny,
             .whisperSmall,
@@ -299,6 +300,8 @@ struct BackendOption: Equatable {
                 ? ManagedASRModelPlans.parakeetV2()
                 : ManagedASRModelPlans.parakeetV3()
             return plan.isAvailableLocally(fileManager: fm)
+        case "parakeet-unified":
+            return ManagedASRModelPlans.parakeetUnified().isAvailableLocally(fileManager: fm)
         case "qwen":
             return Qwen3AsrModelStore.isModelDownloaded(fileManager: fm)
         case "nemotron35":
@@ -1195,8 +1198,8 @@ struct AppConfig: Codable {
     var enableComputerUsePlanner: Bool = true
     var computerUsePlannerModel: String = ""
     var computerUseTimeoutSeconds: Int = 120
-    var sttBackend: String = BackendOption.whisper.backend
-    var sttModel: String = BackendOption.whisper.model
+    var sttBackend: String = BackendOption.parakeetUnified.backend
+    var sttModel: String = BackendOption.parakeetUnified.model
     var dictationInputDeviceUID: String? = nil
     var meetingInputDeviceUID: String? = nil
     var cohereLanguage: String = CohereTranscribeLanguage.defaultLanguage.rawValue

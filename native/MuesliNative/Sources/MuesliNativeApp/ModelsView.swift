@@ -1013,6 +1013,7 @@ struct ModelsView: View {
     private func logoForBackend(_ option: BackendOption) -> String? {
         switch option.backend {
         case "fluidaudio": return "nvidia-logo"
+        case "parakeet-unified": return "nvidia-logo"
         case "whisper": return "openai-logo"
         case "cohere": return "cohere-logo"
         case "qwen": return "qwen-logo"
@@ -1727,7 +1728,7 @@ struct ModelsView: View {
         if appState.selectedBackend == option {
             let fallback = downloadedModels
                 .compactMap { model in BackendOption.all.first(where: { $0.model == model && $0 != option }) }
-                .first ?? .parakeetUnified
+                .first ?? (option == .parakeetUnified ? .parakeetMultilingual : .parakeetUnified)
             controller.selectBackend(fallback)
         }
         let task = downloadTasks[option.model]
