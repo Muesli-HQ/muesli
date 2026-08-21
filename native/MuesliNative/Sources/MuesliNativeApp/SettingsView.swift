@@ -188,9 +188,7 @@ struct SettingsView: View {
     }
 
     private var onDeviceCleanupModels: [OnDeviceCleanupModel] {
-        var models = downloadedPostProcOptions
-            .filter { $0.isCompatible(with: appState.selectedBackend) }
-            .map(OnDeviceCleanupModel.gguf)
+        var models = downloadedPostProcOptions.map(OnDeviceCleanupModel.gguf)
         if Gemma4LiteRTModelStore.isAvailableLocally(),
            TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: appState.selectedBackend) {
             models.append(.gemma4)
@@ -225,11 +223,6 @@ struct SettingsView: View {
 
     private var cleanupBackendDescription: String {
         if appState.selectedPostProcessorBackend.isOnDevice {
-            if onDeviceCleanupModels.isEmpty,
-               downloadedPostProcOptions.contains(PostProcessorOption.s1Mini),
-               !appState.selectedBackend.isEnglishOnly {
-                return "S1-mini requires an English-only dictation model."
-            }
             return onDeviceCleanupModels.isEmpty
                 ? "Download a cleanup model from Models to refine dictations on this Mac."
                 : "Refines dictated text on this Mac."

@@ -465,37 +465,6 @@ struct PostProcessorOptionTests {
         #expect(option.logoResourceName == "superwhisper-logo")
     }
 
-    @Test("S1-mini is available only with English-only ASR checkpoints")
-    func s1MiniEnglishOnlyASRCompatibility() {
-        for backend in [
-            BackendOption.parakeetEnglish,
-            .whisperTinyEnglish,
-            .whisperSmallEnglish,
-            .whisperMediumEnglish,
-        ] {
-            #expect(backend.isEnglishOnly)
-            #expect(PostProcessorOption.s1Mini.isCompatible(with: backend))
-        }
-
-        for backend in [
-            BackendOption.parakeetMultilingual,
-            .whisperTiny,
-            .whisperSmall,
-            .whisperLargeTurbo,
-            .qwen3Asr,
-            .cohereTranscribe,
-            .nemotron35Multilingual,
-            .indicASR,
-            .senseVoiceSmall,
-            .gemma4E2BLiteRT,
-        ] {
-            #expect(!backend.isEnglishOnly)
-            #expect(!PostProcessorOption.s1Mini.isCompatible(with: backend))
-        }
-
-        #expect(PostProcessorOption.finetunedV3.isCompatible(with: .parakeetMultilingual))
-    }
-
     @Test("default option is first and matches config default")
     func defaultOption() {
         #expect(PostProcessorOption.all.first == PostProcessorOption.defaultOption)

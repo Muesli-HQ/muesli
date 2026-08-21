@@ -524,18 +524,10 @@ public final class MuesliController: NSObject {
             $0.backend == loadedConfig.sttBackend && $0.model == loadedConfig.sttModel
         }) ?? .whisper
         var loadedPostProcessorBackend = TranscriptCleanupBackendOption.resolved(loadedConfig.postProcessorBackend)
-        var repairedCleanupConfiguration = false
-        if !PostProcessorOption.resolve(id: loadedConfig.activePostProcessorId).isCompatible(with: loadedBackend) {
-            loadedConfig.enablePostProcessor = false
-            repairedCleanupConfiguration = true
-        }
         if !loadedPostProcessorBackend.isCompatible(with: loadedBackend) {
             loadedPostProcessorBackend = .local
             loadedConfig.postProcessorBackend = loadedPostProcessorBackend.backend
             loadedConfig.enablePostProcessor = false
-            repairedCleanupConfiguration = true
-        }
-        if repairedCleanupConfiguration {
             configStore.save(loadedConfig)
         }
         self.runtime = runtime
@@ -1465,13 +1457,6 @@ public final class MuesliController: NSObject {
         selectedBackend = BackendOption.all.first(where: {
             $0.backend == config.sttBackend && $0.model == config.sttModel
         }) ?? .whisper
-        let activePostProcessor = PostProcessorOption.resolve(id: config.activePostProcessorId)
-        if !activePostProcessor.isCompatible(with: selectedBackend) {
-            // S1-mini is English-only. Keep the saved model selection so it is
-            // restored if the user returns to an English-only ASR checkpoint,
-            // but require an explicit re-enable of cleanup for this backend.
-            config.enablePostProcessor = false
-        }
         let configuredPostProcessorBackend = TranscriptCleanupBackendOption.resolved(config.postProcessorBackend)
         if !configuredPostProcessorBackend.isCompatible(with: selectedBackend) {
             config.postProcessorBackend = TranscriptCleanupBackendOption.local.backend
@@ -2559,7 +2544,7 @@ public final class MuesliController: NSObject {
         guard config.enablePostProcessor,
               selectedPostProcessorBackend.isCompatible(with: selectedBackend) else { return false }
         if selectedPostProcessorBackend == .local {
-            return option?.isCompatible(with: selectedBackend) == true
+            return option != nil
         }
         if selectedPostProcessorBackend == .gemma4LiteRT {
             return Gemma4LiteRTModelStore.isAvailableLocally()

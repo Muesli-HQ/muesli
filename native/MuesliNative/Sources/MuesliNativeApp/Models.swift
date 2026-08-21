@@ -219,13 +219,6 @@ struct BackendOption: Equatable {
     /// Models available for download and use.
     static let all = currentCatalog.all
 
-    /// True only for ASR checkpoints trained exclusively for English. A
-    /// multilingual model remains multilingual even when its language picker is
-    /// temporarily pinned to English.
-    var isEnglishOnly: Bool {
-        self == .parakeetEnglish || WhisperKitLanguage.isEnglishOnlyModel(model)
-    }
-
     /// The first-run default uses the system-managed backend when the OS exposes it.
     /// Parakeet remains the deterministic fallback for older or unsupported Macs.
     static let onboardingDefault = currentCatalog.onboardingDefault
@@ -825,12 +818,6 @@ struct PostProcessorOption: Identifiable, Equatable {
 
     var logoResourceName: String {
         inputFormat == .s1Mini ? "superwhisper-logo" : "qwen-logo"
-    }
-
-    /// S1-mini is trained only for English transcript normalization. Keep that
-    /// contract at the model boundary instead of relying on settings UI alone.
-    func isCompatible(with transcriptionBackend: BackendOption) -> Bool {
-        inputFormat != .s1Mini || transcriptionBackend.isEnglishOnly
     }
 
     // Fine-tuned Qwen3-0.6B trained on Muesli dictation correction data.
