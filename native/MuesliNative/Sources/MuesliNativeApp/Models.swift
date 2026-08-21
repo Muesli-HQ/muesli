@@ -1070,6 +1070,18 @@ struct DictionarySuggestion: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+enum IndicatorHoverStyle: String, Codable, CaseIterable {
+    case classic = "classic"
+    case shortcutPill = "shortcut_pill"
+
+    var label: String {
+        switch self {
+        case .classic: return "Classic"
+        case .shortcutPill: return "Shortcut pill"
+        }
+    }
+}
+
 enum IndicatorAnchor: String, Codable, CaseIterable {
     case topLeading = "top_leading"
     case topCenter = "top_center"
@@ -1279,6 +1291,7 @@ struct AppConfig: Codable {
     var openDashboardOnLaunch: Bool = true
     var showFloatingIndicator: Bool = true
     var showHotkeyOnFloatingIndicator: Bool = false
+    var indicatorHoverStyle: IndicatorHoverStyle = .classic
     var indicatorAnchor: IndicatorAnchor = .midTrailing
     var dashboardWindowFrame: WindowFrame? = nil
     var indicatorOrigin: CGPointCodable? = nil
@@ -1405,6 +1418,7 @@ struct AppConfig: Codable {
         case openDashboardOnLaunch = "open_dashboard_on_launch"
         case showFloatingIndicator = "show_floating_indicator"
         case showHotkeyOnFloatingIndicator = "show_hotkey_on_floating_indicator"
+        case indicatorHoverStyle = "indicator_hover_style"
         case indicatorAnchor = "indicator_anchor"
         case dashboardWindowFrame = "dashboard_window_frame"
         case indicatorOrigin = "indicator_origin"
@@ -1567,6 +1581,9 @@ struct AppConfig: Codable {
         showHotkeyOnFloatingIndicator =
             (try? c.decode(Bool.self, forKey: .showHotkeyOnFloatingIndicator))
             ?? defaults.showHotkeyOnFloatingIndicator
+        indicatorHoverStyle =
+            (try? c.decode(IndicatorHoverStyle.self, forKey: .indicatorHoverStyle))
+            ?? defaults.indicatorHoverStyle
         indicatorAnchor = (try? c.decode(IndicatorAnchor.self, forKey: .indicatorAnchor))
             ?? ((try? c.decodeIfPresent(CGPointCodable.self, forKey: .indicatorOrigin)) != nil ? .custom : .midTrailing)
         dashboardWindowFrame = try? c.decode(WindowFrame.self, forKey: .dashboardWindowFrame)
