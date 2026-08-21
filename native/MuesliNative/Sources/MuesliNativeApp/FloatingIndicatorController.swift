@@ -171,6 +171,7 @@ final class FloatingIndicatorController: NSObject {
     private var textLabel: NSTextField?
     private var state: DictationState = .idle
     private var isHovered = false
+    private var lastLoadedConfig: AppConfig?
     private var preservesCollapsedLeftEdge = false
     private var hoverExitWorkItem: DispatchWorkItem?
     private let configStore: ConfigStore
@@ -449,6 +450,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func setState(_ state: DictationState, config: AppConfig) {
+        lastLoadedConfig = config
         let previousState = self.state
         let previousHover = isHovered
         let previouslyPreservedCollapsedLeftEdge = preservesCollapsedLeftEdge
@@ -456,6 +458,9 @@ final class FloatingIndicatorController: NSObject {
             exitComputerUseCursorMode(restoreFrame: false)
         }
         self.state = state
+        if state != .idle {
+            hideShortcutPillChrome()
+        }
         if state != .transcribing {
             transcribingTitle = "Transcribing"
             computerUseTranscriptText = nil
@@ -1136,7 +1141,9 @@ final class FloatingIndicatorController: NSObject {
     /// uses the full panel; shortcut-pill limits interaction to the visible
     /// resting grip, expanding to the label pill + mic capsule only while hovered.
     func pointerInteractiveRect(in bounds: NSRect) -> NSRect {
-        let config = configStore.load()
+        // Cache: hit-testing runs on the pointer hot path; reading + decoding
+        // config from disk per event would add avoidable main-thread latency.
+        let config = lastLoadedConfig ?? configStore.load()
         guard state == .idle, config.indicatorHoverStyle == .shortcutPill else { return bounds }
         let placement = idleHoverPlacement(for: config.indicatorAnchor)
         if isHovered {
@@ -1177,9 +1184,11 @@ final class FloatingIndicatorController: NSObject {
         case .below:
             pill = CGRect(x: handle.midX - pillW / 2, y: handle.maxY - pillH, width: pillW, height: pillH)
         case .leading:
-            pill = CGRect(x: handle.minX, y: handle.midY - pillH / 2, width: pillW, height: pillH)
-        case .trailing:
+            // Grip sits at the canvas's trailing edge; pop leftward from it.
             pill = CGRect(x: handle.maxX - pillW, y: handle.midY - pillH / 2, width: pillW, height: pillH)
+        case .trailing:
+            // Grip sits at the leading edge; pop rightward from it.
+            pill = CGRect(x: handle.minX, y: handle.midY - pillH / 2, width: pillW, height: pillH)
         }
         return (pill, title, font, textWidth)
     }
@@ -1878,45 +1887,6 @@ final class FloatingIndicatorController: NSObject {
         case .midLeading: return .trailing
         case .midTrailing: return .leading
         case .bottomLeading, .bottomCenter, .bottomTrailing, .custom: return .above
-        }
-    }
-
-    private func idleLabelWidth(title: String) -> CGFloat {
-        let font = NSFont.systemFont(ofSize: 15, weight: .regular)
-        let measured = ceil((title as NSString).size(withAttributes: [.font: font]).width)
-        return max(108, measured + 28)
-    }
-
-    private func idleHoverFrames(
-        placement: IdleHoverPlacement,
-        frameSize: NSSize,
-        labelWidth: CGFloat
-    ) -> (label: CGRect, icon: CGRect) {
-        let iconSize: CGFloat = 36  // vertical footprint only; the capsule is a 44x28 stadium pill
-        let labelHeight: CGFloat = 36
-        let gap: CGFloat = 6
-        let inset: CGFloat = 2
-        switch placement {
-        case .above:
-            return (
-                CGRect(x: (frameSize.width - labelWidth) / 2, y: inset + iconSize + gap, width: labelWidth, height: labelHeight),
-                CGRect(x: (frameSize.width - iconSize) / 2, y: inset, width: iconSize, height: iconSize)
-            )
-        case .below:
-            return (
-                CGRect(x: (frameSize.width - labelWidth) / 2, y: inset, width: labelWidth, height: labelHeight),
-                CGRect(x: (frameSize.width - iconSize) / 2, y: inset + labelHeight + gap, width: iconSize, height: iconSize)
-            )
-        case .leading:
-            return (
-                CGRect(x: inset, y: (frameSize.height - labelHeight) / 2, width: labelWidth, height: labelHeight),
-                CGRect(x: inset + labelWidth + gap, y: inset, width: iconSize, height: iconSize)
-            )
-        case .trailing:
-            return (
-                CGRect(x: inset + iconSize + gap, y: (frameSize.height - labelHeight) / 2, width: labelWidth, height: labelHeight),
-                CGRect(x: inset, y: inset, width: iconSize, height: iconSize)
-            )
         }
     }
 
