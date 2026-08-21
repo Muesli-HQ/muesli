@@ -4,9 +4,14 @@ import MuesliCore
 struct SidebarView: View {
     private let sidebarIconColumnWidth: CGFloat = 20
     private let meetingsTrailingColumnWidth: CGFloat = 24
-    private let sidebarRowHorizontalPadding: CGFloat = 16
+    /// Matches the search field's inner padding so the row icon column sits
+    /// exactly under the magnifier instead of 6pt to its right.
+    private let sidebarRowHorizontalPadding: CGFloat = 10
     private let sidebarRowOuterPadding: CGFloat = 8
-    private let folderDepthIndent: CGFloat = 8
+    /// Indent for nested Meetings section rows. The sidebar is narrow (260pt by
+    /// default), so show nesting by indent, but economically.
+    private let meetingsChildIndent: CGFloat = 24
+    private let folderDepthIndent: CGFloat = 16
 
     let appState: AppState
     let controller: MuesliController
@@ -113,9 +118,9 @@ struct SidebarView: View {
                 .padding(.top, MuesliTheme.spacing16)
                 .padding(.bottom, MuesliTheme.spacing12)
 
-            collapsedItem(tab: .timeline, icon: "clock.fill", label: "Timeline")
+            collapsedItem(tab: .timeline, icon: "clock", label: "Timeline")
             collapsedItem(tab: .dictations, icon: "waveform", label: "Dictations")
-            collapsedItem(tab: .meetings, icon: "person.2.fill", label: "Meetings")
+            collapsedItem(tab: .meetings, icon: "person.2", label: "Meetings")
             collapsedItem(tab: .insights, icon: "chart.bar.xaxis", label: "Insights")
             collapsedItem(tab: .dictionary, icon: "character.book.closed", label: "Dictionary")
 
@@ -185,7 +190,7 @@ struct SidebarView: View {
             sidebarHeader
             searchBar
 
-            sidebarItem(tab: .timeline, icon: "clock.fill", label: "Timeline")
+            sidebarItem(tab: .timeline, icon: "clock", label: "Timeline")
             sidebarItem(tab: .dictations, icon: "waveform", label: "Dictations")
             meetingsSection
             sidebarItem(tab: .insights, icon: "chart.bar.xaxis", label: "Insights")
@@ -279,10 +284,11 @@ struct SidebarView: View {
 
     @ViewBuilder
     private var searchBar: some View {
-        HStack(spacing: MuesliTheme.spacing8) {
+        HStack(spacing: MuesliTheme.spacing12) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 12))
                 .foregroundStyle(MuesliTheme.textTertiary)
+                .frame(width: sidebarIconColumnWidth, alignment: .center)
             TextField("Search...", text: searchTextBinding)
                 .textFieldStyle(.plain)
                 .font(MuesliTheme.callout())
@@ -300,8 +306,8 @@ struct SidebarView: View {
                 .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
+        .padding(.horizontal, sidebarRowHorizontalPadding)
+        .frame(height: 32)
         .background(MuesliTheme.backgroundRaised)
         .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
         .overlay(
@@ -330,7 +336,7 @@ struct SidebarView: View {
                     controller.showMeetingsHome()
                 } label: {
                     HStack(spacing: MuesliTheme.spacing12) {
-                        Image(systemName: "person.2.fill")
+                        Image(systemName: "person.wave.2")
                             .font(.system(size: 14, weight: .medium))
                             .foregroundStyle(isSelected ? MuesliTheme.accent : MuesliTheme.textSecondary)
                             .frame(width: sidebarIconColumnWidth)
@@ -378,6 +384,8 @@ struct SidebarView: View {
 
             if meetingsExpanded {
                 let folderTree = folderTreePresentation
+                // Section children are indented as a group: previously they had zero
+                // indent and nesting only read via the smaller icon size.
                 VStack(alignment: .leading, spacing: 2) {
                     meetingFilterRow(
                         icon: "tray.2",
@@ -397,7 +405,7 @@ struct SidebarView: View {
                                 .padding(.leading, CGFloat(depth) * folderDepthIndent)
                         } else {
                             meetingFilterRow(
-                                icon: hasChildren ? "folder.fill" : "folder",
+                                icon: "folder",
                                 label: folder.name,
                                 count: appState.meetingCountsByFolder[folder.id] ?? 0,
                                 isSelected: appState.selectedTab == .meetings && appState.selectedFolderID == folder.id,
@@ -441,6 +449,7 @@ struct SidebarView: View {
                         }
                     }
                 }
+                .padding(.leading, meetingsChildIndent)
                 .padding(.horizontal, sidebarRowOuterPadding)
             }
         }
@@ -589,7 +598,6 @@ struct SidebarView: View {
                     .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(isSelected ? MuesliTheme.accent : MuesliTheme.textSecondary)
                     .frame(width: sidebarIconColumnWidth, height: sidebarIconColumnWidth, alignment: .center)
-                    .offset(y: icon == "square.and.arrow.down" ? -1 : 0)
                 Text(label)
                     .font(MuesliTheme.headline())
                     .foregroundStyle(isSelected ? MuesliTheme.textPrimary : MuesliTheme.textSecondary)
@@ -685,9 +693,9 @@ struct SidebarView: View {
         disclosureAction: (() -> Void)? = nil,
         action: @escaping () -> Void
     ) -> some View {
-        HStack(spacing: MuesliTheme.spacing8) {
+        HStack(spacing: MuesliTheme.spacing12) {
             Image(systemName: icon)
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(isSelected ? MuesliTheme.accent : MuesliTheme.textTertiary)
                 .frame(width: sidebarIconColumnWidth)
             Text(label)
@@ -720,7 +728,7 @@ struct SidebarView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .offset(x: 4)
+                .offset(x: -20)
             }
         }
     }
