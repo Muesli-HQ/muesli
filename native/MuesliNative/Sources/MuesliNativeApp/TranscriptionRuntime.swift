@@ -942,6 +942,7 @@ actor TranscriptionCoordinator {
 
     func shutdown() async {
         await fluidTranscriber.shutdown()
+        await parakeetUnifiedTranscriber.shutdown()
         await whisperTranscriber.shutdown()
         await senseVoiceTranscriber.shutdown()
         if #available(macOS 15, *) {

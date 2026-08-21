@@ -773,9 +773,8 @@ actor Qwen3AsrCLITranscriber: AudioTranscribing {
     private var manager: Any?
 }
 
-/// Wraps FluidAudio's public multilingual Nemotron manager using the exact
-/// model directory maintained by the app's native Nemotron RNNT backend. The
-/// shared store prevents the app and CLI from downloading separate copies.
+/// Offline-batch Parakeet Unified 0.6B (FastConformer-RNNT) via the managed
+/// model directory shared with the app backend.
 actor ParakeetUnifiedCLITranscriber: AudioTranscribing {
     private var manager: UnifiedAsrManager?
 
@@ -807,6 +806,9 @@ actor ParakeetUnifiedCLITranscriber: AudioTranscribing {
     }
 }
 
+/// Wraps FluidAudio's public multilingual Nemotron manager using the exact
+/// model directory maintained by the app's native Nemotron RNNT backend. The
+/// shared store prevents the app and CLI from downloading separate copies.
 actor Nemotron35CLITranscriber: AudioTranscribing {
     private var manager: StreamingNemotronMultilingualAsrManager?
 
