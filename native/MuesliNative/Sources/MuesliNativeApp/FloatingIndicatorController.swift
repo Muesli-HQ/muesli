@@ -35,14 +35,32 @@ private final class HoverIndicatorView: NSView {
     private var windowOriginAtMouseDown: NSPoint?
     private var didDrag = false
 
+    /// In shortcut-pill mode the panel is a large fixed canvas, but only the
+    /// visible grip (resting) or pill + capsule (hovered) should intercept
+    /// input. Outside those rects clicks fall through to apps underneath.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if let owner, !owner.pointerInteractiveRect(in: bounds).contains(point) {
+            return nil
+        }
+        return super.hitTest(point)
+    }
+
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let trackingAreaRef {
             removeTrackingArea(trackingAreaRef)
         }
+        // .inVisibleRect would discard a narrowed rect and track the full
+        // bounds, so only include it when the interactive rect is the full
+        // bounds (classic style); shortcut-pill tracks its explicit rect.
+        let interactiveRect = owner?.pointerInteractiveRect(in: bounds) ?? bounds
+        var options: NSTrackingArea.Options = [.mouseEnteredAndExited, .activeAlways]
+        if interactiveRect.equalTo(bounds) {
+            options.insert(.inVisibleRect)
+        }
         let tracking = NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            rect: interactiveRect,
+            options: options,
             owner: self,
             userInfo: nil
         )
@@ -108,6 +126,42 @@ private final class HoverIndicatorView: NSView {
     }
 }
 
+// A self-contained rounded "shortcut pill" shown beside the idle indicator on
+// hover when `IndicatorHoverStyle.shortcutPill` is configured. Drawn as one
+// rounded rectangle so the label never inherits the mic surface's shape.
+private final class IdleShortcutPillView: NSView {
+    var title = "" {
+        didSet { needsDisplay = true }
+    }
+
+    override var isOpaque: Bool { false }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let pillRect = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let pillPath = NSBezierPath(roundedRect: pillRect, xRadius: 14, yRadius: 14)
+        NSColor.black.withAlphaComponent(0.97).setFill()
+        pillPath.fill()
+        NSColor.white.withAlphaComponent(0.16).setStroke()
+        pillPath.lineWidth = 1
+        pillPath.stroke()
+
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 15, weight: .regular),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.88),
+            .paragraphStyle: paragraph
+        ]
+        let attributedTitle = NSAttributedString(string: title, attributes: attributes)
+        let textSize = attributedTitle.size()
+        attributedTitle.draw(at: NSPoint(
+            x: floor((bounds.width - textSize.width) / 2),
+            y: floor((bounds.height - textSize.height) / 2)
+        ))
+    }
+}
+
 @MainActor
 final class FloatingIndicatorController: NSObject {
     private var panel: NSPanel?
@@ -117,6 +171,7 @@ final class FloatingIndicatorController: NSObject {
     private var textLabel: NSTextField?
     private var state: DictationState = .idle
     private var isHovered = false
+    private var lastLoadedConfig: AppConfig?
     private var preservesCollapsedLeftEdge = false
     private var hoverExitWorkItem: DispatchWorkItem?
     private let configStore: ConfigStore
@@ -136,6 +191,8 @@ final class FloatingIndicatorController: NSObject {
     )
     private var glassView: NSVisualEffectView?
     private var tintLayer: CALayer?
+    private var idleShortcutPillView: IdleShortcutPillView?
+    private var idleIconBackgroundLayer: CALayer?
     private var micIconView: NSImageView?
     private var wandIconView: NSImageView?
     private var barLayers: [CALayer] = []
@@ -393,6 +450,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func setState(_ state: DictationState, config: AppConfig) {
+        lastLoadedConfig = config
         let previousState = self.state
         let previousHover = isHovered
         let previouslyPreservedCollapsedLeftEdge = preservesCollapsedLeftEdge
@@ -400,6 +458,9 @@ final class FloatingIndicatorController: NSObject {
             exitComputerUseCursorMode(restoreFrame: false)
         }
         self.state = state
+        if state != .idle {
+            hideShortcutPillChrome()
+        }
         if state != .transcribing {
             transcribingTitle = "Transcribing"
             computerUseTranscriptText = nil
@@ -537,6 +598,7 @@ final class FloatingIndicatorController: NSObject {
                 )
             }
         case .preparing:
+            hideShortcutPillChrome()
             ensureWaveformAnimation(in: targetFrame.size, mode: .waiting)
         default:
             break
@@ -550,6 +612,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func showComputerUseCursor(at quartzPoint: CGPoint, label rawLabel: String?) {
+        hideShortcutPillChrome()
         let config = configStore.load()
         if panel == nil {
             createPanel(config: config)
@@ -638,6 +701,7 @@ final class FloatingIndicatorController: NSObject {
 
     /// Flash a brief warning message on the indicator pill, then snap back to idle.
     func showWarning(_ message: String, icon: String = "⚡", duration: TimeInterval = 2.5) {
+        hideShortcutPillChrome()
         guard state == .idle else { return }
         let config = configStore.load()
         if panel == nil { createPanel(config: config) }
@@ -712,6 +776,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func showLoading(_ message: String) {
+        hideShortcutPillChrome()
         let config = configStore.load()
         if panel == nil { createPanel(config: config) }
         guard let panel, let contentView, let textLabel else { return }
@@ -835,6 +900,11 @@ final class FloatingIndicatorController: NSObject {
         isHovered = hovered
         let config = configStore.load()
         setState(.idle, config: config)
+        contentView?.updateTrackingAreas()
+        if hovered, config.indicatorHoverStyle == .shortcutPill {
+            animateIdleHoverPop()
+        }
+
     }
 
     func scheduleHoverExit() {
@@ -1066,6 +1136,138 @@ final class FloatingIndicatorController: NSObject {
         CATransaction.commit()
     }
 
+
+    /// The rect that should respond to pointer input right now. Classic style
+    /// uses the full panel; shortcut-pill limits interaction to the visible
+    /// resting grip, expanding to the label pill + mic capsule only while hovered.
+    func pointerInteractiveRect(in bounds: NSRect) -> NSRect {
+        // Cache: hit-testing runs on the pointer hot path; reading + decoding
+        // config from disk per event would add avoidable main-thread latency.
+        let config = lastLoadedConfig ?? configStore.load()
+        guard state == .idle, config.indicatorHoverStyle == .shortcutPill else { return bounds }
+        let placement = idleHoverPlacement(for: config.indicatorAnchor)
+        if isHovered {
+            let (pill, _, _, _) = shortcutPillHoverFrame(
+                placement: placement,
+                frameSize: bounds.size,
+                config: config
+            )
+            return pill.insetBy(dx: -6, dy: -6).intersection(bounds)
+        }
+        return idleRestingHandleFrame(placement: placement, frameSize: bounds.size)
+            .insetBy(dx: -6, dy: -6)
+            .intersection(bounds)
+    }
+
+    /// Unified hover pill for `IndicatorHoverStyle.shortcutPill`: the classic
+    /// stadium shape (icon + text in one rounded rectangle), popping
+    /// bottom-to-top from the resting grip instead of left-to-right.
+    private func shortcutPillHoverFrame(
+        placement: IdleHoverPlacement,
+        frameSize: NSSize,
+        config: AppConfig
+    ) -> (pill: CGRect, title: String, font: NSFont, textWidth: CGFloat) {
+        let title = "Hold \(config.dictationHotkey.label) to dictate"
+        let font = NSFont.systemFont(ofSize: 13, weight: .regular)
+        let textWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width) + 4
+        let pad: CGFloat = 14
+        let gap: CGFloat = 6
+        let iconW: CGFloat = 15
+        let pillW = pad + iconW + gap + textWidth + pad
+        let pillH: CGFloat = 30
+        let handle = idleRestingHandleFrame(placement: placement, frameSize: frameSize)
+        let pill: CGRect
+        switch placement {
+        case .above:
+            // Grip at the canvas bottom; the pill grows upward from its baseline.
+            pill = CGRect(x: handle.midX - pillW / 2, y: handle.minY, width: pillW, height: pillH)
+        case .below:
+            pill = CGRect(x: handle.midX - pillW / 2, y: handle.maxY - pillH, width: pillW, height: pillH)
+        case .leading:
+            // Grip sits at the canvas's trailing edge; pop leftward from it.
+            pill = CGRect(x: handle.maxX - pillW, y: handle.midY - pillH / 2, width: pillW, height: pillH)
+        case .trailing:
+            // Grip sits at the leading edge; pop rightward from it.
+            pill = CGRect(x: handle.minX, y: handle.midY - pillH / 2, width: pillW, height: pillH)
+        }
+        return (pill, title, font, textWidth)
+    }
+
+    /// Shortcut-pill chrome belongs to the idle presentation only. Every
+    /// non-idle path (transcribing, loading, warning, automation cursor) must
+    /// clear it or the grip/label lingers on top of those overlays.
+    private func hideShortcutPillChrome() {
+        idleShortcutPillView?.isHidden = true
+        idleIconBackgroundLayer?.isHidden = true
+    }
+
+    /// Idle layout for `IndicatorHoverStyle.shortcutPill`: the resting state is a
+    /// thin grip handle; on hover the mic capsule and an adjacent rounded label
+    /// pill appear without resizing the window.
+    private func layoutShortcutPillIdle(frameSize: NSSize, config: AppConfig) {
+        // Transparent host: only the resting grip or the unified hover pill
+        // draws. The classic canvas chrome would paint the whole area as a blob.
+        tintLayer?.isHidden = true
+        glassView?.isHidden = true
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        contentView?.layer?.borderWidth = 0
+        contentView?.layer?.backgroundColor = NSColor.clear.cgColor
+        CATransaction.commit()
+        wandIconView?.isHidden = true
+        iconLabel?.isHidden = true
+        idleShortcutPillView?.isHidden = true
+
+        let placement = idleHoverPlacement(for: config.indicatorAnchor)
+        let (pillFrame, title, font, textWidth) = shortcutPillHoverFrame(
+            placement: placement,
+            frameSize: frameSize,
+            config: config
+        )
+        let restingHandle = idleRestingHandleFrame(
+            placement: placement,
+            frameSize: frameSize
+        )
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        idleIconBackgroundLayer?.isHidden = false
+        idleIconBackgroundLayer?.backgroundColor = isHovered
+            ? NSColor.colorWith(hex: 0x111111, alpha: 1).cgColor
+            : NSColor.colorWith(hex: 0x696969, alpha: 0.82).cgColor
+        idleIconBackgroundLayer?.borderWidth = isHovered ? 1 : 0
+        idleIconBackgroundLayer?.frame = isHovered ? pillFrame : restingHandle
+        idleIconBackgroundLayer?.cornerRadius = isHovered ? pillFrame.height / 2 : 5
+        CATransaction.commit()
+
+        let iconSize = NSSize(width: 15, height: 15)
+        micIconView?.isHidden = !isHovered
+        if let mic = micIconView {
+            mic.alphaValue = 1
+            mic.frame = NSRect(
+                x: pillFrame.minX + 14,
+                y: pillFrame.midY - iconSize.height / 2,
+                width: iconSize.width,
+                height: iconSize.height
+            )
+        }
+
+        if let textLabel {
+            textLabel.stringValue = title
+            textLabel.font = font
+            textLabel.textColor = .white.withAlphaComponent(0.88)
+            textLabel.alignment = .left
+            textLabel.isHidden = !isHovered
+            textLabel.alphaValue = isHovered ? 1 : 0
+            textLabel.frame = NSRect(
+                x: pillFrame.minX + 14 + 15 + 6,
+                y: pillFrame.midY - 8,
+                width: textWidth,
+                height: 16
+            )
+        }
+    }
+
     private func applyGlassState(_ state: DictationState, frameSize: NSSize) {
         let config = configStore.load()
         let radius = frameSize.height / 2
@@ -1102,6 +1304,12 @@ final class FloatingIndicatorController: NSObject {
 
         switch state {
         case .idle:
+            if config.indicatorHoverStyle == .shortcutPill {
+                layoutShortcutPillIdle(frameSize: frameSize, config: config)
+                return
+            }
+            idleShortcutPillView?.isHidden = true
+            idleIconBackgroundLayer?.isHidden = true
             // Mic symbol centred (or left-aligned when hovered beside text).
             wandIconView?.isHidden = true
             iconLabel?.isHidden = true
@@ -1155,6 +1363,7 @@ final class FloatingIndicatorController: NSObject {
             }
 
         case .recording:
+            hideShortcutPillChrome()
             // Waveform bars replace mic icon during recording.
             wandIconView?.isHidden = true
             iconLabel?.isHidden = false   // keeps the ✕ cancel label
@@ -1411,6 +1620,22 @@ final class FloatingIndicatorController: NSObject {
         contentView.layer?.insertSublayer(tint, at: 0)
         tintLayer = tint
 
+        // Shortcut-pill hover style: adjacent label pill + mic capsule/handle.
+        let shortcutPill = IdleShortcutPillView(frame: .zero)
+        shortcutPill.wantsLayer = true
+        shortcutPill.isHidden = true
+        contentView.addSubview(shortcutPill)
+        idleShortcutPillView = shortcutPill
+
+        let iconBackground = CALayer()
+        iconBackground.backgroundColor = NSColor.colorWith(hex: 0x111111, alpha: 1).cgColor
+        iconBackground.borderColor = NSColor.white.withAlphaComponent(0.10).cgColor
+        iconBackground.borderWidth = 1
+        iconBackground.cornerCurve = .circular
+        iconBackground.isHidden = true
+        contentView.layer?.insertSublayer(iconBackground, above: tint)
+        idleIconBackgroundLayer = iconBackground
+
         // Idle icon — uses the user's selected menu bar icon from config.
         // Falls back to waveform.badge.microphone if the configured icon can't be loaded.
         let config = configStore.load()
@@ -1578,12 +1803,24 @@ final class FloatingIndicatorController: NSObject {
         let size: NSSize
         switch state {
         case .idle:
-            size = isHovered
-                ? Self.idleHoverPillSize(hotkeyLabel: config.dictationHotkey.label, screenWidth: screen.width)
-                : NSSize(width: 44, height: 28)
+            if config.indicatorHoverStyle == .shortcutPill {
+                // Fixed canvas sized to the unified hover pill: the window never
+                // resizes on hover, only child visibility changes.
+                let (pill, _, _, _) = shortcutPillHoverFrame(
+                    placement: idleHoverPlacement(for: config.indicatorAnchor),
+                    frameSize: .zero,
+                    config: config
+                )
+                size = NSSize(width: pill.width + 4, height: 40)
+            } else {
+                size = isHovered
+                    ? Self.idleHoverPillSize(hotkeyLabel: config.dictationHotkey.label, screenWidth: screen.width)
+                    : NSSize(width: 44, height: 28)
+            }
         case .preparing: size = NSSize(width: 76, height: 22)
         case .recording: size = NSSize(width: 76, height: 22)
         case .transcribing:
+            hideShortcutPillChrome()
             if let transcript = computerUseTranscriptText {
                 size = Self.computerUseTranscriptPillSize(transcript: transcript, screen: screen)
             } else {
@@ -1635,6 +1872,49 @@ final class FloatingIndicatorController: NSObject {
         let x = min(max(center.x - size.width / 2, screen.minX), screen.maxX - size.width)
         let y = min(max(center.y - size.height / 2, screen.minY), screen.maxY - size.height)
         return NSRect(x: x, y: y, width: size.width, height: size.height)
+    }
+
+
+    // MARK: - Shortcut-pill hover (IndicatorHoverStyle.shortcutPill)
+
+    private enum IdleHoverPlacement {
+        case above, below, leading, trailing
+    }
+
+    private func idleHoverPlacement(for anchor: IndicatorAnchor) -> IdleHoverPlacement {
+        switch anchor {
+        case .topLeading, .topCenter, .topTrailing: return .below
+        case .midLeading: return .trailing
+        case .midTrailing: return .leading
+        case .bottomLeading, .bottomCenter, .bottomTrailing, .custom: return .above
+        }
+    }
+
+    private func idleRestingHandleFrame(
+        placement: IdleHoverPlacement,
+        frameSize: NSSize
+    ) -> CGRect {
+        let inset: CGFloat = 2
+        switch placement {
+        case .above: return CGRect(x: (frameSize.width - 30) / 2, y: inset, width: 30, height: 8)
+        case .below: return CGRect(x: (frameSize.width - 30) / 2, y: frameSize.height - inset - 8, width: 30, height: 8)
+        case .leading: return CGRect(x: frameSize.width - inset - 8, y: (frameSize.height - 30) / 2, width: 8, height: 30)
+        case .trailing: return CGRect(x: inset, y: (frameSize.height - 30) / 2, width: 8, height: 30)
+        }
+    }
+
+    private func animateIdleHoverPop() {
+        let bounce = CAKeyframeAnimation(keyPath: "transform.translation.y")
+        bounce.values = [0, 2, -0.5, 0]
+        bounce.keyTimes = [0, 0.45, 0.75, 1]
+        bounce.duration = 0.16
+        bounce.timingFunctions = [
+            CAMediaTimingFunction(name: .easeOut),
+            CAMediaTimingFunction(name: .easeInEaseOut),
+            CAMediaTimingFunction(name: .easeInEaseOut)
+        ]
+        idleIconBackgroundLayer?.add(bounce, forKey: "idle-hover-bounce")
+        micIconView?.layer?.add(bounce, forKey: "idle-hover-bounce")
     }
 
     private func styleForState(_ state: DictationState, config: AppConfig) -> (background: NSColor, border: NSColor, icon: String, title: String, iconColor: NSColor, textColor: NSColor, alpha: CGFloat) {

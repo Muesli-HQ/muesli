@@ -161,12 +161,12 @@ struct BackendOption: Equatable {
         model: "FluidInference/qwen3-asr-0.6b-coreml",
         label: "Qwen3 ASR",
         sizeLabel: "~1.3 GB",
-        description: "Strong multilingual transcription across 52 languages when accuracy matters more than instant results. Expect a short 2–3 second wait compared with Parakeet, and about 30 seconds of one-time preparation the first time it runs.",
+        description: "Experimental multilingual transcription across 52 languages. Accuracy can vary noticeably for accented English, so try it with your own voice before relying on it. Expect a short 2–3 second wait compared with Parakeet, and about 30 seconds of one-time preparation the first time it runs.",
         recommended: false
     )
 
     static let experimental: [BackendOption] = [
-        .senseVoiceSmall, .indicASR, .gemma4E2BLiteRT,
+        .senseVoiceSmall, .indicASR, .gemma4E2BLiteRT, .qwen3Asr,
     ]
 
     /// Native streaming backends used by low-latency product surfaces.
@@ -180,7 +180,6 @@ struct BackendOption: Equatable {
         let systemManaged: [BackendOption] = appleSpeechAvailable ? [.appleSpeechAnalyzer] : []
         let all = systemManaged
             + parakeetFamily
-            + [.qwen3Asr]
             + whisperFamily
             + [.cohereTranscribe]
             + streaming
@@ -377,6 +376,60 @@ enum Nemotron35Language: String, CaseIterable, Codable, Sendable {
             return defaultLanguage
         }
         return language
+    }
+
+    static func resolvedCode(_ rawValue: String?) -> String {
+        resolved(rawValue).rawValue
+    }
+}
+
+/// Language selection for the Qwen3 ASR backend.
+/// `auto` leaves detection to the model; explicit codes pin the decoding
+/// language (the vendored manager maps them to its own prompt languages).
+enum Qwen3AsrLanguage: Hashable, Sendable {
+    case auto
+    case pinned(MuesliQwen3AsrConfig.Language)
+
+    static let defaultLanguage: Self = .auto
+
+    static var allCases: [Qwen3AsrLanguage] {
+        [.auto] + MuesliQwen3AsrConfig.Language.allCases.map(Qwen3AsrLanguage.pinned)
+    }
+
+    var label: String {
+        switch self {
+        case .auto: return "Auto-detect"
+        case .pinned(let language): return language.englishName
+        }
+    }
+
+    var rawValue: String {
+        switch self {
+        case .auto: return "auto"
+        case .pinned(let language): return language.rawValue
+        }
+    }
+
+    /// ISO code passed to the model, or nil for automatic detection.
+    var pinnedCode: String? {
+        switch self {
+        case .auto: return nil
+        case .pinned(let language): return language.rawValue
+        }
+    }
+
+    static func resolved(_ rawValue: String?) -> Self {
+        let normalized = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let normalized, !normalized.isEmpty, normalized != "auto" else {
+            return defaultLanguage
+        }
+        if let language = MuesliQwen3AsrConfig.Language(rawValue: normalized) {
+            return .pinned(language)
+        }
+        if let language = MuesliQwen3AsrConfig.Language(from: normalized) {
+            return .pinned(language)
+        }
+        return defaultLanguage
     }
 
     static func resolvedCode(_ rawValue: String?) -> String {
@@ -717,12 +770,38 @@ enum CustomLLMFormat: String, Codable, CaseIterable {
 }
 
 struct PostProcessorOption: Identifiable, Equatable {
+    enum InputFormat: Hashable {
+        /// The existing Muesli/Qwen cleanup prompt, which users may customize.
+        case configurable
+        /// S1-mini is trained on a fixed prompt and control-line contract.
+        case s1Mini
+    }
+
     let id: String
     let label: String
     let sizeLabel: String
     let description: String
     let downloadURL: URL
     let filename: String
+    let inputFormat: InputFormat
+
+    init(
+        id: String,
+        label: String,
+        sizeLabel: String,
+        description: String,
+        downloadURL: URL,
+        filename: String,
+        inputFormat: InputFormat = .configurable
+    ) {
+        self.id = id
+        self.label = label
+        self.sizeLabel = sizeLabel
+        self.description = description
+        self.downloadURL = downloadURL
+        self.filename = filename
+        self.inputFormat = inputFormat
+    }
 
     var cacheDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -735,6 +814,16 @@ struct PostProcessorOption: Identifiable, Equatable {
 
     var isDownloaded: Bool {
         FileManager.default.fileExists(atPath: modelURL.path)
+    }
+
+    var logoResourceName: String {
+        inputFormat == .s1Mini ? "superwhisper-logo" : "qwen-logo"
+    }
+
+    /// S1-mini normalizes English transcripts only. Indic ASR always emits an
+    /// Indic-language transcript, so do not offer or run S1-mini for it.
+    func isCompatible(with transcriptionBackend: BackendOption) -> Bool {
+        inputFormat != .s1Mini || transcriptionBackend != .indicASR
     }
 
     // Fine-tuned Qwen3-0.6B trained on Muesli dictation correction data.
@@ -768,7 +857,17 @@ struct PostProcessorOption: Identifiable, Equatable {
         filename: "qwen35-postproc-v3-Q4_K_M.gguf"
     )
 
-    static let all: [PostProcessorOption] = [.finetunedV3, .finetunedV2, .qwen35_0_8b]
+    static let s1Mini = PostProcessorOption(
+        id: "superwhisper-s1-mini",
+        label: "S1-mini by Superwhisper",
+        sizeLabel: "~462 MB",
+        description: "English-only speech-to-text normalization with reliable filler removal, corrections, punctuation, capitalization, and written numbers, dates, times, currency, and email addresses.",
+        downloadURL: URL(string: "https://huggingface.co/superwhisper/s1-mini-GGUF/resolve/main/s1-mini-q4_k_m.gguf")!,
+        filename: "s1-mini-q4_k_m.gguf",
+        inputFormat: .s1Mini
+    )
+
+    static let all: [PostProcessorOption] = [.finetunedV3, .s1Mini, .finetunedV2, .qwen35_0_8b]
     static let defaultOption: PostProcessorOption = .finetunedV3
 
     static var downloaded: [PostProcessorOption] {
@@ -826,6 +925,18 @@ struct PostProcessorOption: Identifiable, Equatable {
 
     Do not: paraphrase, reword, add words, remove meaningful words, change the meaning in any way, wrap the output in markdown, code fences, tags, labels, or commentary, or repeat the output more than once. Preserve the speaker's original phrasing.
     """
+
+    /// S1-mini was trained on this exact system prompt and rejects prompt customization.
+    static let s1MiniSystemPrompt = "You are a text normalizer for speech-to-text transcripts. The input begins with a control line specifying the styling, structure, and context settings; clean the transcript to match those settings and output only the cleaned text."
+
+    func effectiveSystemPrompt(configuredSystemPrompt: String) -> String {
+        switch inputFormat {
+        case .configurable:
+            configuredSystemPrompt
+        case .s1Mini:
+            Self.s1MiniSystemPrompt
+        }
+    }
 }
 
 struct TranscriptCleanupPromptPreset: Identifiable, Equatable {
@@ -956,6 +1067,18 @@ struct DictionarySuggestion: Codable, Equatable, Identifiable, Sendable {
             .split(whereSeparator: \.isWhitespace)
             .joined(separator: " ")
             .lowercased()
+    }
+}
+
+enum IndicatorHoverStyle: String, Codable, CaseIterable {
+    case classic = "classic"
+    case shortcutPill = "shortcut_pill"
+
+    var label: String {
+        switch self {
+        case .classic: return "Classic"
+        case .shortcutPill: return "Shortcut pill"
+        }
     }
 }
 
@@ -1141,6 +1264,7 @@ struct AppConfig: Codable {
     var indicASRLanguage: String = IndicASRLanguage.defaultLanguage.rawValue
     var nemotron35Language: String = Nemotron35Language.defaultLanguage.rawValue
     var whisperLanguage: String = WhisperKitLanguage.defaultLanguage.rawValue
+    var qwen3AsrLanguage: String = Qwen3AsrLanguage.defaultLanguage.rawValue
     var appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier
     var meetingTranscriptionBackend: String = BackendOption.whisper.backend
     var meetingTranscriptionModel: String = BackendOption.whisper.model
@@ -1167,6 +1291,7 @@ struct AppConfig: Codable {
     var openDashboardOnLaunch: Bool = true
     var showFloatingIndicator: Bool = true
     var showHotkeyOnFloatingIndicator: Bool = false
+    var indicatorHoverStyle: IndicatorHoverStyle = .classic
     var indicatorAnchor: IndicatorAnchor = .midTrailing
     var dashboardWindowFrame: WindowFrame? = nil
     var indicatorOrigin: CGPointCodable? = nil
@@ -1268,6 +1393,7 @@ struct AppConfig: Codable {
         case indicASRLanguage = "indic_asr_language"
         case nemotron35Language = "nemotron35_language"
         case whisperLanguage = "whisper_language"
+        case qwen3AsrLanguage = "qwen3_asr_language"
         case appleSpeechLanguage = "apple_speech_language"
         case meetingTranscriptionBackend = "meeting_transcription_backend"
         case meetingTranscriptionModel = "meeting_transcription_model"
@@ -1294,6 +1420,7 @@ struct AppConfig: Codable {
         case openDashboardOnLaunch = "open_dashboard_on_launch"
         case showFloatingIndicator = "show_floating_indicator"
         case showHotkeyOnFloatingIndicator = "show_hotkey_on_floating_indicator"
+        case indicatorHoverStyle = "indicator_hover_style"
         case indicatorAnchor = "indicator_anchor"
         case dashboardWindowFrame = "dashboard_window_frame"
         case indicatorOrigin = "indicator_origin"
@@ -1401,6 +1528,7 @@ struct AppConfig: Codable {
         indicASRLanguage = IndicASRLanguage.resolvedCode(try? c.decode(String.self, forKey: .indicASRLanguage))
         nemotron35Language = Nemotron35Language.resolvedCode(try? c.decode(String.self, forKey: .nemotron35Language))
         whisperLanguage = WhisperKitLanguage.resolvedCode(try? c.decode(String.self, forKey: .whisperLanguage))
+        qwen3AsrLanguage = Qwen3AsrLanguage.resolvedCode(try? c.decode(String.self, forKey: .qwen3AsrLanguage))
         appleSpeechLanguage = AppleSpeechLanguageOption.normalize(try? c.decode(String.self, forKey: .appleSpeechLanguage))
         meetingTranscriptionBackend = (try? c.decode(String.self, forKey: .meetingTranscriptionBackend)) ?? sttBackend
         meetingTranscriptionModel = (try? c.decode(String.self, forKey: .meetingTranscriptionModel)) ?? sttModel
@@ -1457,6 +1585,9 @@ struct AppConfig: Codable {
         showHotkeyOnFloatingIndicator =
             (try? c.decode(Bool.self, forKey: .showHotkeyOnFloatingIndicator))
             ?? defaults.showHotkeyOnFloatingIndicator
+        indicatorHoverStyle =
+            (try? c.decode(IndicatorHoverStyle.self, forKey: .indicatorHoverStyle))
+            ?? defaults.indicatorHoverStyle
         indicatorAnchor = (try? c.decode(IndicatorAnchor.self, forKey: .indicatorAnchor))
             ?? ((try? c.decodeIfPresent(CGPointCodable.self, forKey: .indicatorOrigin)) != nil ? .custom : .midTrailing)
         dashboardWindowFrame = try? c.decode(WindowFrame.self, forKey: .dashboardWindowFrame)
@@ -1588,6 +1719,10 @@ struct AppConfig: Codable {
 
     var resolvedWhisperLanguage: WhisperKitLanguage {
         WhisperKitLanguage.resolved(whisperLanguage)
+    }
+
+    var resolvedQwen3AsrLanguage: Qwen3AsrLanguage {
+        Qwen3AsrLanguage.resolved(qwen3AsrLanguage)
     }
 
     var resolvedAppleSpeechLanguage: String {

@@ -82,10 +82,10 @@ struct BackendOptionTests {
         #expect(BackendOption.all.contains(.gemma4E2BLiteRT))
     }
 
-    @Test("Qwen ASR is a standard dictation model")
-    func qwenAsrIsNotExperimental() {
+    @Test("Qwen ASR is available but experimental")
+    func qwenAsrIsExperimental() {
         #expect(BackendOption.all.contains(.qwen3Asr))
-        #expect(!BackendOption.experimental.contains(.qwen3Asr))
+        #expect(BackendOption.experimental.contains(.qwen3Asr))
         #expect(BackendOption.qwen3Asr.description.contains("52 languages"))
         #expect(BackendOption.qwen3Asr.description.contains("2–3 second"))
     }
@@ -452,6 +452,24 @@ struct PostProcessorOptionTests {
             #expect(!option.description.isEmpty, "Empty description for \(option.id)")
             #expect(!option.sizeLabel.isEmpty, "Empty size label for \(option.id)")
         }
+    }
+
+    @Test("S1-mini retains its trained normalization contract")
+    func s1MiniNormalizationContract() {
+        let option = PostProcessorOption.s1Mini
+
+        #expect(option.label == "S1-mini by Superwhisper")
+        #expect(option.inputFormat == .s1Mini)
+        #expect(option.effectiveSystemPrompt(configuredSystemPrompt: "Custom prompt") == PostProcessorOption.s1MiniSystemPrompt)
+        #expect(option.downloadURL.lastPathComponent == "s1-mini-q4_k_m.gguf")
+        #expect(option.logoResourceName == "superwhisper-logo")
+    }
+
+    @Test("S1-mini is unavailable for Indic ASR only")
+    func s1MiniIndicASRCompatibility() {
+        #expect(!PostProcessorOption.s1Mini.isCompatible(with: .indicASR))
+        #expect(PostProcessorOption.s1Mini.isCompatible(with: .parakeetMultilingual))
+        #expect(PostProcessorOption.finetunedV3.isCompatible(with: .indicASR))
     }
 
     @Test("default option is first and matches config default")
@@ -1401,6 +1419,14 @@ struct AppConfigTests {
 
         #expect(prompt.contains("<APP-CONTEXT>\naaaaa\n</APP-CONTEXT>"))
         #expect(prompt.contains("<USER-INPUT>\nhello\n</USER-INPUT>"))
+    }
+
+    @Test("S1-mini input uses its exact trained control line")
+    func s1MiniInputUsesTrainedControlLine() {
+        #expect(
+            Qwen3PostProcessorConfig.formatS1MiniInput("um send it friday") ==
+                "[Styling: semi-formal] [Structure: prose] [Context: general]\num send it friday"
+        )
     }
 
     @Test("hosted cleanup augments custom prompts when app context is present")

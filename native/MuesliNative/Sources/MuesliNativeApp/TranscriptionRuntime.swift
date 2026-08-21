@@ -242,14 +242,17 @@ actor TranscriptionCoordinator {
 
     private var postProcessorModelURL: URL = PostProcessorOption.defaultOption.modelURL
     private var postProcessorSystemPrompt: String = PostProcessorOption.defaultSystemPrompt
+    private var postProcessorInputFormat: PostProcessorOption.InputFormat = PostProcessorOption.defaultOption.inputFormat
     private var postProcessorModelId: String = PostProcessorOption.defaultOption.id
     private var postProcessorBackend: TranscriptCleanupBackendOption = .local
     private var postProcessorConfig: AppConfig = AppConfig()
 
     private struct PostProcessorSnapshot {
         let backend: TranscriptCleanupBackendOption
+        let modelURL: URL
         let systemPrompt: String
         let modelId: String
+        let inputFormat: PostProcessorOption.InputFormat
         let config: AppConfig
     }
 
@@ -258,7 +261,8 @@ actor TranscriptionCoordinator {
         if _qwen3PostProcessor == nil {
             _qwen3PostProcessor = Qwen3PostProcessor(
                 modelURL: postProcessorModelURL,
-                systemPrompt: postProcessorSystemPrompt
+                systemPrompt: postProcessorSystemPrompt,
+                inputFormat: postProcessorInputFormat
             )
         }
         return _qwen3PostProcessor as! Qwen3PostProcessor
@@ -289,8 +293,15 @@ actor TranscriptionCoordinator {
         } else if let option {
             postProcessorModelURL = option.modelURL
             postProcessorModelId = option.id
+            postProcessorInputFormat = option.inputFormat
+            let effectiveSystemPrompt = option.effectiveSystemPrompt(configuredSystemPrompt: systemPrompt)
+            postProcessorSystemPrompt = effectiveSystemPrompt
             if #available(macOS 15, *), let existing = _qwen3PostProcessor as? Qwen3PostProcessor {
-                await existing.reconfigure(modelURL: option.modelURL, systemPrompt: systemPrompt)
+                await existing.reconfigure(
+                    modelURL: option.modelURL,
+                    systemPrompt: effectiveSystemPrompt,
+                    inputFormat: option.inputFormat
+                )
             }
         } else if backend.llmBackend != nil {
             postProcessorModelId = TranscriptCleanupClient.configuredModel(for: backend, config: config)
@@ -777,8 +788,10 @@ actor TranscriptionCoordinator {
     private func currentPostProcessorSnapshot() -> PostProcessorSnapshot {
         PostProcessorSnapshot(
             backend: postProcessorBackend,
+            modelURL: postProcessorModelURL,
             systemPrompt: postProcessorSystemPrompt,
             modelId: postProcessorModelId,
+            inputFormat: postProcessorInputFormat,
             config: postProcessorConfig
         )
     }
@@ -789,12 +802,12 @@ actor TranscriptionCoordinator {
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
         indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage,
         whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
+        qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
         appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier,
         enablePostProcessor: Bool = false,
         customWords: [[String: Any]] = [],
         appContext: String? = nil
     ) async throws -> SpeechTranscriptionResult {
-        let postProcessorSnapshot = currentPostProcessorSnapshot()
         // Qwen3 post-processing is intentionally dictation-only. Meeting transcription should keep raw backend/Parakeet output.
         // Cohere decodes hallucinated text from silence — skip if VAD detects no speech
         if backend.backend == "cohere", let vadManager {
@@ -815,12 +828,17 @@ actor TranscriptionCoordinator {
             cohereLanguage: cohereLanguage,
             indicASRLanguage: indicASRLanguage,
             whisperLanguage: whisperLanguage,
+            qwen3AsrLanguage: qwen3AsrLanguage,
             appleSpeechLanguage: appleSpeechLanguage
         )
         result = removeArtifacts(result)
         if !result.text.isEmpty {
             Qwen3PostProcessorLogging.logVerbose("Dictation raw transcript after artifact cleanup: \(result.text)")
         }
+        // Capture this after ASR awaits. The snapshot is then passed through the
+        // complete cleanup path, so a model switch cannot change the model or
+        // empty-output policy for this dictation.
+        let postProcessorSnapshot = currentPostProcessorSnapshot()
         result = await postProcessDictationIfNeeded(
             result,
             backend: backend,
@@ -841,6 +859,7 @@ actor TranscriptionCoordinator {
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
         indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage,
         whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
+        qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
         appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier
     ) async throws -> SpeechTranscriptionResult {
         // Meetings intentionally skip Qwen/custom-word post-processing. Keep deterministic artifact/filler cleanup only.
@@ -850,6 +869,7 @@ actor TranscriptionCoordinator {
             cohereLanguage: cohereLanguage,
             indicASRLanguage: indicASRLanguage,
             whisperLanguage: whisperLanguage,
+            qwen3AsrLanguage: qwen3AsrLanguage,
             appleSpeechLanguage: appleSpeechLanguage
         ))
     }
@@ -860,6 +880,7 @@ actor TranscriptionCoordinator {
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
         indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage,
         whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
+        qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
         appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier
     ) async throws -> SpeechTranscriptionResult {
         // Meeting chunks intentionally skip Qwen/custom-word post-processing for reconciliation.
@@ -882,6 +903,7 @@ actor TranscriptionCoordinator {
             cohereLanguage: cohereLanguage,
             indicASRLanguage: indicASRLanguage,
             whisperLanguage: whisperLanguage,
+            qwen3AsrLanguage: qwen3AsrLanguage,
             appleSpeechLanguage: appleSpeechLanguage
         ))
     }
@@ -1003,10 +1025,20 @@ actor TranscriptionCoordinator {
             // Trigger heuristics were removed; the only remaining heuristic here preserves deletion-cue empty output.
             Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor forced by toggle")
             let start = CFAbsoluteTimeGetCurrent()
-            let processed = try await qwen3PostProcessor.process(result.text, appContext: appContext)
+            let processed = try await qwen3PostProcessor.process(
+                result.text,
+                appContext: appContext,
+                configuration: Qwen3PostProcessor.Configuration(
+                    modelURL: postProcessorSnapshot.modelURL,
+                    systemPrompt: postProcessorSnapshot.systemPrompt,
+                    inputFormat: postProcessorSnapshot.inputFormat
+                )
+            )
             let elapsedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
             let trimmed = processed.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty, !Qwen3DeletionCueDetector.containsDeletionCue(result.text) {
+            if trimmed.isEmpty,
+               postProcessorSnapshot.inputFormat != .s1Mini,
+               !Qwen3DeletionCueDetector.containsDeletionCue(result.text) {
                 Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor returned empty output in \(String(format: "%.1f", elapsedMs))ms; falling back")
                 TranscriptCleanupDebugLogger.append(
                     status: "fallback_empty_output",
@@ -1209,6 +1241,7 @@ actor TranscriptionCoordinator {
         cohereLanguage: CohereTranscribeLanguage,
         indicASRLanguage: IndicASRLanguage,
         whisperLanguage: WhisperKitLanguage,
+        qwen3AsrLanguage: Qwen3AsrLanguage,
         appleSpeechLanguage: String
     ) async throws -> SpeechTranscriptionResult {
         switch backend.backend {
@@ -1220,7 +1253,7 @@ actor TranscriptionCoordinator {
         case "nemotron35":
             return try await transcribeWithNemotron35(url: url)
         case "qwen":
-            return try await transcribeWithQwen3(url: url)
+            return try await transcribeWithQwen3(url: url, language: qwen3AsrLanguage)
         case "cohere":
             return try await transcribeWithCohere(url: url, language: cohereLanguage)
         case "indicasr":
@@ -1276,10 +1309,10 @@ actor TranscriptionCoordinator {
 
     // MARK: - Qwen3 ASR (Autoregressive CoreML on ANE)
 
-    private func transcribeWithQwen3(url: URL) async throws -> SpeechTranscriptionResult {
+    private func transcribeWithQwen3(url: URL, language: Qwen3AsrLanguage) async throws -> SpeechTranscriptionResult {
         if #available(macOS 15, *) {
             fputs("[muesli-native] transcribing with Qwen3 ASR: \(url.lastPathComponent)\n", stderr)
-            let result = try await qwen3Transcriber.transcribe(wavURL: url)
+            let result = try await qwen3Transcriber.transcribe(wavURL: url, language: language.pinnedCode)
             fputs("[muesli-native] Qwen3 ASR result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             return SpeechTranscriptionResult(

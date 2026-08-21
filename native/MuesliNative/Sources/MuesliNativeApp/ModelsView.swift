@@ -199,8 +199,6 @@ struct ModelsView: View {
                 options: BackendOption.parakeetFamily
             )
 
-            modelCard(option: .qwen3Asr, logo: "qwen-logo")
-
             familyCard(
                 title: "Whisper",
                 subtitle: "Dependable alternatives when you prefer Whisper's transcription style or need broader multilingual coverage.",
@@ -595,6 +593,13 @@ struct ModelsView: View {
         )
     }
 
+    private var qwen3AsrLanguageSelection: Binding<Qwen3AsrLanguage> {
+        Binding(
+            get: { appState.config.resolvedQwen3AsrLanguage },
+            set: { controller.selectQwen3AsrLanguage($0) }
+        )
+    }
+
     private var appleSpeechLanguageSelection: Binding<String> {
         Binding(
             get: { appState.config.resolvedAppleSpeechLanguage },
@@ -660,7 +665,7 @@ struct ModelsView: View {
 
         return VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
             HStack(alignment: .top, spacing: MuesliTheme.spacing12) {
-                brandLogo("qwen-logo")
+                brandLogo(option.logoResourceName)
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
                     HStack(spacing: MuesliTheme.spacing8) {
                         Text(option.label)
@@ -1183,6 +1188,24 @@ struct ModelsView: View {
 
                     Picker("", selection: indicASRLanguageSelection) {
                         ForEach(IndicASRLanguage.allCases, id: \.self) { language in
+                            Text(language.label).tag(language)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 220, alignment: .leading)
+                }
+            }
+
+            if option.backend == BackendOption.qwen3Asr.backend {
+                HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
+                    Text("Language")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .frame(width: 64, alignment: .leading)
+
+                    Picker("", selection: qwen3AsrLanguageSelection) {
+                        ForEach(Qwen3AsrLanguage.allCases, id: \.self) { language in
                             Text(language.label).tag(language)
                         }
                     }
