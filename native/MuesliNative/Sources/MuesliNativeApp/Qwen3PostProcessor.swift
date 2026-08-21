@@ -143,6 +143,15 @@ enum Qwen3PostProcessorOutputCleaner {
         return expansion > 2.0 && trimmed.count > 200
     }
 
+    /// LLM.swift represents a genuinely empty generation as `...`; S1-mini
+    /// documents an empty result as the correct normalization for noise-only input.
+    static func isS1MiniEmptyOutput(_ cleaned: String) -> Bool {
+        let normalized = cleaned
+            .replacingOccurrences(of: "…", with: "...")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized == "..." || normalized == ". . ."
+    }
+
     private static func isPlaceholderOutput(_ text: String) -> Bool {
         let normalized = text
             .replacingOccurrences(of: "…", with: "...")
@@ -176,6 +185,12 @@ enum Qwen3PostProcessorConfig {
         }
         parts += "<USER-INPUT>\n\(text)\n</USER-INPUT>"
         return parts
+    }
+
+    /// S1-mini is a dedicated normalizer rather than an instruction-following
+    /// chat model. Its training contract requires these exact control values.
+    static func formatS1MiniInput(_ text: String) -> String {
+        "[Styling: semi-formal] [Structure: prose] [Context: general]\n\(text)"
     }
 
     /// Checks for a local development env-var override and returns the resolved GGUF URL if present.
@@ -254,12 +269,14 @@ actor InferenceGate {
 private actor Qwen3PostProcessorManager {
     private let modelURL: URL
     private let systemPrompt: String
+    private let inputFormat: PostProcessorOption.InputFormat
     private var bot: LLM?
     private let inferenceGate = InferenceGate()
 
-    init(modelURL: URL, systemPrompt: String) {
+    init(modelURL: URL, systemPrompt: String, inputFormat: PostProcessorOption.InputFormat) {
         self.modelURL = modelURL
         self.systemPrompt = systemPrompt
+        self.inputFormat = inputFormat
     }
 
     func warm() throws {
@@ -273,7 +290,13 @@ private actor Qwen3PostProcessorManager {
             try Task.checkCancellation()
             let bot = try loadBot()
             defer { bot.reset() }
-            let formattedInput = Qwen3PostProcessorConfig.formatInput(text, appContext: appContext)
+            let formattedInput: String
+            switch inputFormat {
+            case .configurable:
+                formattedInput = Qwen3PostProcessorConfig.formatInput(text, appContext: appContext)
+            case .s1Mini:
+                formattedInput = Qwen3PostProcessorConfig.formatS1MiniInput(text)
+            }
             await bot.respond(to: formattedInput, thinking: .suppressed)
             let raw = bot.output
             let cleaned = Qwen3PostProcessorOutputCleaner.clean(raw)
@@ -281,13 +304,16 @@ private actor Qwen3PostProcessorManager {
             Qwen3PostProcessorLogging.logVerbose("Qwen3 GGUF raw output: \(raw)")
             Qwen3PostProcessorLogging.logVerbose("Qwen3 GGUF cleaned output: \(cleaned)")
             let result: String
-            if Qwen3PostProcessorOutputCleaner.shouldFallbackToInput(cleaned: cleaned, input: text) {
+            let acceptsS1MiniEmptyOutput = inputFormat == .s1Mini && (
+                cleaned.isEmpty || Qwen3PostProcessorOutputCleaner.isS1MiniEmptyOutput(cleaned)
+            )
+            if !acceptsS1MiniEmptyOutput && Qwen3PostProcessorOutputCleaner.shouldFallbackToInput(cleaned: cleaned, input: text) {
                 Qwen3PostProcessorLogging.logVerbose("Qwen3 GGUF output rejected; falling back to deterministic cleanup")
                 throw NSError(domain: "Qwen3PostProcessor", code: 4, userInfo: [
                     NSLocalizedDescriptionKey: "Qwen3 GGUF output was rejected by transcript safety checks",
                 ])
             } else {
-                result = cleaned
+                result = acceptsS1MiniEmptyOutput ? "" : cleaned
             }
             await inferenceGate.release()
             return result
@@ -326,27 +352,31 @@ actor Qwen3PostProcessor {
         let id = UUID()
         let modelURL: URL
         let systemPrompt: String
+        let inputFormat: PostProcessorOption.InputFormat
         let task: Task<Qwen3PostProcessorManager, Error>
     }
 
     private var modelURL: URL
     private var systemPrompt: String
+    private var inputFormat: PostProcessorOption.InputFormat
     private var manager: Qwen3PostProcessorManager?
     private var loadTask: LoadTaskState?
 
-    init(modelURL: URL, systemPrompt: String) {
+    init(modelURL: URL, systemPrompt: String, inputFormat: PostProcessorOption.InputFormat) {
         // Local development env-var override takes precedence.
         self.modelURL = Qwen3PostProcessorConfig.devOverrideURL() ?? modelURL
         self.systemPrompt = systemPrompt
+        self.inputFormat = inputFormat
     }
 
     /// Swap to a different model or system prompt. Discards the loaded manager so
     /// the next `prepare()` or `process()` call reloads with the new config.
-    func reconfigure(modelURL: URL, systemPrompt: String) {
+    func reconfigure(modelURL: URL, systemPrompt: String, inputFormat: PostProcessorOption.InputFormat) {
         let resolved = Qwen3PostProcessorConfig.devOverrideURL() ?? modelURL
-        guard resolved != self.modelURL || systemPrompt != self.systemPrompt else { return }
+        guard resolved != self.modelURL || systemPrompt != self.systemPrompt || inputFormat != self.inputFormat else { return }
         self.modelURL = resolved
         self.systemPrompt = systemPrompt
+        self.inputFormat = inputFormat
         manager = nil
         loadTask?.task.cancel()
         loadTask = nil
@@ -373,17 +403,18 @@ actor Qwen3PostProcessor {
 
         let url = self.modelURL
         let prompt = self.systemPrompt
+        let inputFormat = self.inputFormat
         let task = Task<Qwen3PostProcessorManager, Error> {
             guard FileManager.default.fileExists(atPath: url.path) else {
                 throw NSError(domain: "Qwen3PostProcessor", code: 1, userInfo: [
                     NSLocalizedDescriptionKey: "Post-processor model not found at \(url.path). Download it from the Models tab.",
                 ])
             }
-            let manager = Qwen3PostProcessorManager(modelURL: url, systemPrompt: prompt)
+            let manager = Qwen3PostProcessorManager(modelURL: url, systemPrompt: prompt, inputFormat: inputFormat)
             try await manager.warm()
             return manager
         }
-        let state = LoadTaskState(modelURL: url, systemPrompt: prompt, task: task)
+        let state = LoadTaskState(modelURL: url, systemPrompt: prompt, inputFormat: inputFormat, task: task)
         loadTask = state
         return try await finishLoad(state)
     }
@@ -391,7 +422,7 @@ actor Qwen3PostProcessor {
     private func finishLoad(_ state: LoadTaskState) async throws -> Qwen3PostProcessorManager {
         do {
             let loaded = try await state.task.value
-            guard state.modelURL == modelURL, state.systemPrompt == systemPrompt else {
+            guard state.modelURL == modelURL, state.systemPrompt == systemPrompt, state.inputFormat == inputFormat else {
                 if loadTask?.id == state.id {
                     loadTask = nil
                 }

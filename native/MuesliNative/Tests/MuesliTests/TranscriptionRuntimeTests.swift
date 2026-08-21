@@ -534,6 +534,13 @@ struct Qwen3PostProcessingOutputCleanerTests {
         }
     }
 
+    @Test("recognizes LLM.swift's empty-generation placeholder for S1-mini")
+    func recognizesS1MiniEmptyOutput() {
+        #expect(Qwen3PostProcessorOutputCleaner.isS1MiniEmptyOutput("..."))
+        #expect(Qwen3PostProcessorOutputCleaner.isS1MiniEmptyOutput("…"))
+        #expect(!Qwen3PostProcessorOutputCleaner.isS1MiniEmptyOutput("Okay."))
+    }
+
     @Test("accepts short legitimate cleanup output")
     func acceptsShortLegitimateCleanupOutput() {
         for cleaned in ["OK.", "Sure.", "No."] {

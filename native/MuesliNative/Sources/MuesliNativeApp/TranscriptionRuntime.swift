@@ -242,6 +242,7 @@ actor TranscriptionCoordinator {
 
     private var postProcessorModelURL: URL = PostProcessorOption.defaultOption.modelURL
     private var postProcessorSystemPrompt: String = PostProcessorOption.defaultSystemPrompt
+    private var postProcessorInputFormat: PostProcessorOption.InputFormat = PostProcessorOption.defaultOption.inputFormat
     private var postProcessorModelId: String = PostProcessorOption.defaultOption.id
     private var postProcessorBackend: TranscriptCleanupBackendOption = .local
     private var postProcessorConfig: AppConfig = AppConfig()
@@ -250,6 +251,7 @@ actor TranscriptionCoordinator {
         let backend: TranscriptCleanupBackendOption
         let systemPrompt: String
         let modelId: String
+        let inputFormat: PostProcessorOption.InputFormat
         let config: AppConfig
     }
 
@@ -258,7 +260,8 @@ actor TranscriptionCoordinator {
         if _qwen3PostProcessor == nil {
             _qwen3PostProcessor = Qwen3PostProcessor(
                 modelURL: postProcessorModelURL,
-                systemPrompt: postProcessorSystemPrompt
+                systemPrompt: postProcessorSystemPrompt,
+                inputFormat: postProcessorInputFormat
             )
         }
         return _qwen3PostProcessor as! Qwen3PostProcessor
@@ -289,8 +292,15 @@ actor TranscriptionCoordinator {
         } else if let option {
             postProcessorModelURL = option.modelURL
             postProcessorModelId = option.id
+            postProcessorInputFormat = option.inputFormat
+            let effectiveSystemPrompt = option.effectiveSystemPrompt(configuredSystemPrompt: systemPrompt)
+            postProcessorSystemPrompt = effectiveSystemPrompt
             if #available(macOS 15, *), let existing = _qwen3PostProcessor as? Qwen3PostProcessor {
-                await existing.reconfigure(modelURL: option.modelURL, systemPrompt: systemPrompt)
+                await existing.reconfigure(
+                    modelURL: option.modelURL,
+                    systemPrompt: effectiveSystemPrompt,
+                    inputFormat: option.inputFormat
+                )
             }
         } else if backend.llmBackend != nil {
             postProcessorModelId = TranscriptCleanupClient.configuredModel(for: backend, config: config)
@@ -779,6 +789,7 @@ actor TranscriptionCoordinator {
             backend: postProcessorBackend,
             systemPrompt: postProcessorSystemPrompt,
             modelId: postProcessorModelId,
+            inputFormat: postProcessorInputFormat,
             config: postProcessorConfig
         )
     }
@@ -1012,7 +1023,9 @@ actor TranscriptionCoordinator {
             let processed = try await qwen3PostProcessor.process(result.text, appContext: appContext)
             let elapsedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
             let trimmed = processed.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty, !Qwen3DeletionCueDetector.containsDeletionCue(result.text) {
+            if trimmed.isEmpty,
+               postProcessorSnapshot.inputFormat != .s1Mini,
+               !Qwen3DeletionCueDetector.containsDeletionCue(result.text) {
                 Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor returned empty output in \(String(format: "%.1f", elapsedMs))ms; falling back")
                 TranscriptCleanupDebugLogger.append(
                     status: "fallback_empty_output",
