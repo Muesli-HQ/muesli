@@ -1258,6 +1258,23 @@ struct MeetingsNavigationTests {
         #expect(!controller.appState.config.enablePostProcessor)
     }
 
+    @Test("switching from hosted cleanup to local disables incompatible S1-mini cleanup")
+    func switchingFromHostedCleanupToLocalDisablesIncompatibleS1MiniCleanup() {
+        let controller = makeController()
+        controller.updateConfig {
+            $0.sttBackend = BackendOption.indicASR.backend
+            $0.sttModel = BackendOption.indicASR.model
+            $0.postProcessorBackend = LLMBackendOption.chatGPT.backend
+            $0.activePostProcessorId = PostProcessorOption.s1Mini.id
+            $0.enablePostProcessor = true
+        }
+
+        controller.selectPostProcessorBackend(.local)
+
+        #expect(controller.selectedPostProcessorBackend == .local)
+        #expect(!controller.appState.config.enablePostProcessor)
+    }
+
     @Test("startup repairs a persisted Gemma dictation and cleanup conflict")
     func startupRepairsPersistedGemmaConflict() {
         let configStore = ConfigStore(supportDirectory: makeSupportDirectory())
