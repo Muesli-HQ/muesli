@@ -1242,6 +1242,22 @@ struct MeetingsNavigationTests {
         #expect(controller.appState.config.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
     }
 
+    @Test("switching to a multilingual ASR model disables S1-mini cleanup")
+    func switchingToMultilingualASRDisablesS1MiniCleanup() {
+        let controller = makeController()
+        controller.updateConfig {
+            $0.sttBackend = BackendOption.parakeetEnglish.backend
+            $0.sttModel = BackendOption.parakeetEnglish.model
+            $0.activePostProcessorId = PostProcessorOption.s1Mini.id
+            $0.enablePostProcessor = true
+        }
+
+        controller.selectBackend(.parakeetMultilingual)
+
+        #expect(controller.appState.config.activePostProcessorId == PostProcessorOption.s1Mini.id)
+        #expect(!controller.appState.config.enablePostProcessor)
+    }
+
     @Test("startup repairs a persisted Gemma dictation and cleanup conflict")
     func startupRepairsPersistedGemmaConflict() {
         let configStore = ConfigStore(supportDirectory: makeSupportDirectory())

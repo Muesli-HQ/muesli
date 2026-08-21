@@ -766,6 +766,7 @@ actor TranscriptionCoordinator {
     ) async {
         guard enabled,
               transcriptionBackend.map({ postProcessorBackend.isCompatible(with: $0) }) ?? true,
+              transcriptionBackend.map({ postProcessorInputFormat != .s1Mini || $0.isEnglishOnly }) ?? true,
               #available(macOS 15, *) else { return }
         do {
             switch postProcessorBackend {
@@ -997,6 +998,10 @@ actor TranscriptionCoordinator {
         }
         guard postProcessorSnapshot.backend.isCompatible(with: backend) else {
             Gemma4LiteRTLogging.log("Gemma cleanup skipped because Gemma is the transcription backend")
+            return nil
+        }
+        guard postProcessorSnapshot.inputFormat != .s1Mini || backend.isEnglishOnly else {
+            Qwen3PostProcessorLogging.logVerbose("S1-mini cleanup skipped: requires an English-only ASR model")
             return nil
         }
         if postProcessorSnapshot.backend.isGemma4LiteRT {
