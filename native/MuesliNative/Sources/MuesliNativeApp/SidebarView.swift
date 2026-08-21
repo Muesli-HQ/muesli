@@ -4,12 +4,12 @@ import MuesliCore
 struct SidebarView: View {
     private let sidebarIconColumnWidth: CGFloat = 20
     private let meetingsTrailingColumnWidth: CGFloat = 24
-    /// Совпадает с внутренним отступом поля поиска, поэтому колонка иконок строк
-    /// встаёт ровно под лупой, а не на 6 пунктов правее.
+    /// Matches the search field's inner padding so the row icon column sits
+    /// exactly under the magnifier instead of 6pt to its right.
     private let sidebarRowHorizontalPadding: CGFloat = 10
     private let sidebarRowOuterPadding: CGFloat = 8
-    /// Отступ вложенных строк раздела Meetings. Сайдбар узкий (260pt по умолчанию),
-    /// поэтому вложенность показываем сдвигом, но экономно.
+    /// Indent for nested Meetings section rows. The sidebar is narrow (260pt by
+    /// default), so show nesting by indent, but economically.
     private let meetingsChildIndent: CGFloat = 24
     private let folderDepthIndent: CGFloat = 16
 
@@ -118,9 +118,9 @@ struct SidebarView: View {
                 .padding(.top, MuesliTheme.spacing16)
                 .padding(.bottom, MuesliTheme.spacing12)
 
-            collapsedItem(tab: .timeline, icon: "clock.fill", label: "Timeline")
+            collapsedItem(tab: .timeline, icon: "clock", label: "Timeline")
             collapsedItem(tab: .dictations, icon: "waveform", label: "Dictations")
-            collapsedItem(tab: .meetings, icon: "person.2.fill", label: "Meetings")
+            collapsedItem(tab: .meetings, icon: "person.2", label: "Meetings")
             collapsedItem(tab: .insights, icon: "chart.bar.xaxis", label: "Insights")
             collapsedItem(tab: .dictionary, icon: "character.book.closed", label: "Dictionary")
 
@@ -192,11 +192,9 @@ struct SidebarView: View {
 
             sidebarItem(tab: .timeline, icon: "clock", label: "Timeline")
             sidebarItem(tab: .dictations, icon: "waveform", label: "Dictations")
-Even out the sidebar icon set)
             meetingsSection
             sidebarItem(tab: .insights, icon: "chart.bar.xaxis", label: "Insights")
             sidebarItem(tab: .dictionary, icon: "character.book.closed", label: "Dictionary")
-Even out the sidebar icon set)
 
             Spacer()
 
@@ -386,8 +384,8 @@ Even out the sidebar icon set)
 
             if meetingsExpanded {
                 let folderTree = folderTreePresentation
-                // Дети раздела сдвинуты как группа: сейчас у них нулевой отступ,
-                // и вложенность читается только по мелкому кеглю иконки.
+                // Section children are indented as a group: previously they had zero
+                // indent and nesting only read via the smaller icon size.
                 VStack(alignment: .leading, spacing: 2) {
                     meetingFilterRow(
                         icon: "tray.2",

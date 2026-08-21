@@ -479,16 +479,18 @@
 
   <h3>Sidebar Navigation</h3>
   <div class="icon-grid">
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F552;</span><div class="icon-label">clock.fill<br>Timeline</div></div>
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F399;</span><div class="icon-label">mic.fill<br>Dictations</div></div>
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F465;</span><div class="icon-label">person.2.fill<br>Meetings</div></div>
+    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F552;</span><div class="icon-label">clock<br>Timeline</div></div>
+    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x301C;</span><div class="icon-label">waveform<br>Dictations</div></div>
+    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F465;</span><div class="icon-label">person.wave.2<br>Meetings</div></div>
+    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F4CA;</span><div class="icon-label">chart.bar.xaxis<br>Insights</div></div>
     <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F4D6;</span><div class="icon-label">character.book.closed<br>Dictionary</div></div>
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x2B07;</span><div class="icon-label">square.and.arrow.down<br>Models</div></div>
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x2328;</span><div class="icon-label">keyboard<br>Shortcuts</div></div>
+    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F4BB;</span><div class="icon-label">cpu<br>Models</div></div>
+    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x2318;</span><div class="icon-label">command<br>Shortcuts</div></div>
     <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x2699;</span><div class="icon-label">gearshape<br>Settings</div></div>
     <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x2139;</span><div class="icon-label">info.circle<br>About</div></div>
   </div>
-  <p style="color:var(--text-secondary);font-size:13px;margin:8px 0">Timeline (clock.fill) leads: one chronological feed combining dictations and meetings. The Meetings row expands to reveal meeting folders. Insights (streak, words, pace, meetings) is a drill-in view with a back button, not a sidebar item.</p>
+  <p style="color:var(--text-secondary);font-size:13px;margin:8px 0">Timeline (clock) leads: one chronological feed combining dictations and meetings. The Meetings row expands to reveal meeting folders, with children indented as a group (position carries nesting, not icon size). Insights is a first-class sidebar item. Models, Shortcuts, Settings, and About sit in the bottom section. The rail collapses to a 68pt icon strip via the header toggle.</p>
+  <p style="color:var(--text-secondary);font-size:13px;margin:8px 0">Icons are outline-only at 14pt medium; <code>.fill</code> is reserved for selection state, keeping ink weight even across the column. The icon column is center-aligned and starts at the search field's inner padding, so row glyphs sit directly under the magnifier.</p>
 
   <h3>Floating Indicator Controls</h3>
   <table>
