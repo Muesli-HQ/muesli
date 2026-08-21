@@ -26,7 +26,7 @@ struct BackendOptionTests {
 
     @Test("backend field is one of the known backends")
     func knownBackends() {
-        let known: Set<String> = ["fluidaudio", "whisper", "qwen", "nemotron35", "cohere", "indicasr", "sensevoice", "gemma4-litert", "apple-speech"]
+        let known: Set<String> = ["fluidaudio", "parakeet-unified", "whisper", "qwen", "nemotron35", "cohere", "indicasr", "sensevoice", "gemma4-litert", "apple-speech"]
         for option in BackendOption.all {
             #expect(known.contains(option.backend), "Unknown backend: \(option.backend)")
         }

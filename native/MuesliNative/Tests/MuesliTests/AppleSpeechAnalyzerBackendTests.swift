@@ -182,7 +182,7 @@ struct AppleSpeechAnalyzerBackendTests {
 
         #expect(catalog.systemManaged.isEmpty)
         #expect(!catalog.all.contains(.appleSpeechAnalyzer))
-        #expect(catalog.onboardingDefault == .parakeetMultilingual)
+        #expect(catalog.onboardingDefault == .parakeetUnified)
         #expect(!catalog.onboarding.contains(.appleSpeechAnalyzer))
     }
 }

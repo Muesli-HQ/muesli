@@ -17,13 +17,22 @@ struct BackendOption: Equatable {
     let description: String
     let recommended: Bool
 
+    static let parakeetUnified = BackendOption(
+        backend: "parakeet-unified",
+        model: "FluidInference/parakeet-unified-en-0.6b-coreml",
+        label: "Parakeet Unified",
+        sizeLabel: "~565 MB",
+        description: "The newest Parakeet generation and the best choice for English dictation: a lower error rate than Parakeet v3 with a newer architecture. English-focused; pick Parakeet v3 for multilingual needs.",
+        recommended: true
+    )
+
     static let parakeetMultilingual = BackendOption(
         backend: "fluidaudio",
         model: "FluidInference/parakeet-tdt-0.6b-v3-coreml",
         label: "Parakeet v3",
         sizeLabel: "~450 MB",
-        description: "The best default for everyday dictation: quick enough to feel responsive, reliable in normal rooms, and able to follow 25 languages.",
-        recommended: true
+        description: "The multilingual Parakeet: quick enough to feel responsive, reliable in normal rooms, and able to follow 25 languages.",
+        recommended: false
     )
 
     static let parakeetEnglish = BackendOption(
@@ -147,7 +156,7 @@ struct BackendOption: Equatable {
     static let whisper = parakeetMultilingual
 
     static let parakeetFamily: [BackendOption] = [
-        .parakeetMultilingual, .parakeetEnglish,
+        .parakeetUnified, .parakeetMultilingual, .parakeetEnglish,
     ]
 
     static let whisperFamily: [BackendOption] = [
@@ -184,7 +193,7 @@ struct BackendOption: Equatable {
             + [.cohereTranscribe]
             + streaming
             + experimental
-        let onboardingDefault = systemManaged.first ?? .parakeetMultilingual
+        let onboardingDefault = systemManaged.first ?? .parakeetUnified
         let onboardingCandidates: [BackendOption] = [
             onboardingDefault,
             .parakeetMultilingual,

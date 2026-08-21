@@ -60,7 +60,7 @@ struct ModelsView: View {
         self.controller = controller
 
         let active = appState.selectedBackend
-        _selectedParakeetModel = State(initialValue: BackendOption.parakeetFamily.contains(active) ? active.model : BackendOption.parakeetMultilingual.model)
+        _selectedParakeetModel = State(initialValue: BackendOption.parakeetFamily.contains(active) ? active.model : BackendOption.parakeetUnified.model)
         _selectedWhisperModel = State(initialValue: BackendOption.whisperFamily.contains(active) ? active.model : BackendOption.whisperSmall.model)
         _showExperimental = State(initialValue: appState.activeFeatureTourTarget == .experimentalModels)
     }
@@ -193,7 +193,7 @@ struct ModelsView: View {
             familyCard(
                 title: "Parakeet Family",
                 subtitle: "The most responsive choices for everyday dictation, with multilingual and English-only options.",
-                defaultBadge: "Default: v3",
+                defaultBadge: "Recommended: Unified",
                 logo: "nvidia-logo",
                 selection: $selectedParakeetModel,
                 options: BackendOption.parakeetFamily
@@ -1727,7 +1727,7 @@ struct ModelsView: View {
         if appState.selectedBackend == option {
             let fallback = downloadedModels
                 .compactMap { model in BackendOption.all.first(where: { $0.model == model && $0 != option }) }
-                .first ?? .parakeetMultilingual
+                .first ?? .parakeetUnified
             controller.selectBackend(fallback)
         }
         let task = downloadTasks[option.model]
@@ -1795,6 +1795,9 @@ struct ModelsView: View {
                 ? ManagedASRModelPlans.parakeetV2()
                 : ManagedASRModelPlans.parakeetV3()
             try plan.delete(fileManager: fm)
+        case "parakeet-unified":
+            await controller.transcriptionCoordinator.unloadParakeetUnifiedTranscriber()
+            try ManagedASRModelPlans.parakeetUnified().delete(fileManager: fm)
         case "qwen":
             await controller.transcriptionCoordinator.unloadQwen3Transcriber()
             try Qwen3AsrModelStore.deleteModelFiles(fileManager: fm)
@@ -1854,6 +1857,8 @@ struct ModelsView: View {
                 ? ManagedASRModelPlans.parakeetV2()
                 : ManagedASRModelPlans.parakeetV3()
             return plan.isAvailableLocally(fileManager: fm)
+        case "parakeet-unified":
+            return ManagedASRModelPlans.parakeetUnified().isAvailableLocally(fileManager: fm)
         case "qwen":
             return Qwen3AsrModelStore.isModelDownloaded(fileManager: fm)
         case "cohere":

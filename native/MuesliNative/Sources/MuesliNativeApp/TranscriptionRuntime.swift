@@ -114,10 +114,11 @@ actor TranscriptionCoordinator {
     private static let defaultDiarizerLoadOperationTimeout: Duration = .seconds(300)
 
     static let explicitlyRoutedBackendIdentifiers: Set<String> = [
-        "whisper", "nemotron35", "qwen", "cohere", "indicasr", "sensevoice", "gemma4-litert", "apple-speech",
+        "whisper", "nemotron35", "parakeet-unified", "qwen", "cohere", "indicasr", "sensevoice", "gemma4-litert", "apple-speech",
     ]
 
     private let fluidTranscriber = FluidAudioTranscriber()
+    private let parakeetUnifiedTranscriber = ParakeetUnifiedTranscriber()
     private let whisperTranscriber = WhisperKitTranscriber()
     private var _qwen3Transcriber: Any?
     private var _qwen3PostProcessor: Any?
@@ -206,6 +207,10 @@ actor TranscriptionCoordinator {
 
     func unloadFluidAudioTranscriber(ifLoadedVersion version: AsrModelVersion) async {
         await fluidTranscriber.shutdown(ifLoadedVersion: version)
+    }
+
+    func unloadParakeetUnifiedTranscriber() async {
+        await parakeetUnifiedTranscriber.shutdown()
     }
 
     func unloadQwen3Transcriber() async {
@@ -455,6 +460,11 @@ actor TranscriptionCoordinator {
             let version: AsrModelVersion = backend.model.contains("v2") ? .v2 : .v3
             try await fluidTranscriber.loadModels(
                 version: version,
+                progress: progress,
+                progressSnapshot: progressSnapshot
+            )
+        case "parakeet-unified":
+            try await parakeetUnifiedTranscriber.loadModels(
                 progress: progress,
                 progressSnapshot: progressSnapshot
             )
@@ -1226,6 +1236,8 @@ actor TranscriptionCoordinator {
             return try await transcribeWithWhisperKit(url: url, language: language)
         case "nemotron35":
             return try await transcribeWithNemotron35(url: url)
+        case "parakeet-unified":
+            return try await transcribeWithParakeetUnified(url: url)
         case "qwen":
             return try await transcribeWithQwen3(url: url, language: qwen3AsrLanguage)
         case "cohere":
@@ -1262,6 +1274,19 @@ actor TranscriptionCoordinator {
         return SpeechTranscriptionResult(
             text: text,
             segments: segments.isEmpty && !text.isEmpty ? [SpeechSegment(start: 0, end: result.duration, text: text)] : segments
+        )
+    }
+
+    // MARK: - Parakeet Unified (FastConformer-RNNT offline batch)
+
+    private func transcribeWithParakeetUnified(url: URL) async throws -> SpeechTranscriptionResult {
+        fputs("[muesli-native] transcribing with Parakeet Unified: \(url.lastPathComponent)\n", stderr)
+        let result = try await parakeetUnifiedTranscriber.transcribe(wavURL: url)
+        fputs("[muesli-native] Parakeet Unified result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
+        let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return SpeechTranscriptionResult(
+            text: text,
+            segments: text.isEmpty ? [] : [SpeechSegment(start: 0, end: 0, text: text)]
         )
     }
 

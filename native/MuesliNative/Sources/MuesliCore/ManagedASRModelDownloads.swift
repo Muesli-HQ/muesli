@@ -234,6 +234,25 @@ public enum ManagedASRModelPlans {
         )
     }
 
+    /// Parakeet Unified 0.6B (FastConformer-RNNT), English-focused offline batch
+    /// path: int8 full-attention encoder + decoder + joint + vocabulary.
+    public static func parakeetUnified(modelsRoot: URL? = nil) -> ManagedASRModelPlan {
+        let required = [
+            "parakeet_unified_encoder_int8.mlmodelc",
+            "parakeet_unified_decoder.mlmodelc",
+            "parakeet_unified_joint_decision_single_step.mlmodelc",
+            "vocab.json",
+            "metadata.json",
+        ]
+        return fluidAudioPlan(
+            modelID: "FluidInference/parakeet-unified-en-0.6b-coreml",
+            repository: "FluidInference/parakeet-unified-en-0.6b-coreml",
+            directoryName: "parakeet-unified-en-0.6b-coreml",
+            required: required,
+            modelsRoot: modelsRoot
+        )
+    }
+
     public static func senseVoice(modelsRoot: URL? = nil) -> ManagedASRModelPlan {
         let required = [
             "SenseVoicePreprocessor.mlmodelc", "SenseVoiceSmall_int8.mlmodelc", "vocab.json",
