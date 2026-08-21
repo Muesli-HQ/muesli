@@ -1540,6 +1540,17 @@ struct SettingsView: View {
                     }
                     .disabled(!appState.config.showFloatingIndicator)
                 }
+                settingsRow("Hover style") {
+                    settingsMenu(
+                        selection: appState.config.indicatorHoverStyle.label,
+                        options: IndicatorHoverStyle.allCases.map(\.label)
+                    ) { label in
+                        guard let style = IndicatorHoverStyle.allCases.first(where: { $0.label == label }) else { return }
+                        controller.updateConfig { $0.indicatorHoverStyle = style }
+                    }
+                    .disabled(!appState.config.showFloatingIndicator)
+                }
+                settingsDescription("Classic grows the pill to show the hotkey. Shortcut pill keeps a thin grip and pops a separate label on hover.")
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Indicator position") {
                     let isCustom = appState.config.indicatorAnchor == .custom
