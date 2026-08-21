@@ -2480,6 +2480,12 @@ public final class MuesliController: NSObject {
         }
     }
 
+    func selectQwen3AsrLanguage(_ language: Qwen3AsrLanguage) {
+        updateConfig {
+            $0.qwen3AsrLanguage = language.rawValue
+        }
+    }
+
     func selectIndicASRLanguage(_ language: IndicASRLanguage) {
         updateConfig {
             $0.indicASRLanguage = language.rawValue
@@ -4410,6 +4416,7 @@ public final class MuesliController: NSObject {
                     cohereLanguage: self.config.resolvedCohereLanguage,
                     indicASRLanguage: self.config.resolvedIndicASRLanguage,
                     whisperLanguage: self.config.resolvedWhisperLanguage,
+                    qwen3AsrLanguage: self.config.resolvedQwen3AsrLanguage,
                     appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage
                 )
                 let rawTranscript = transcription.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -7852,6 +7859,7 @@ public final class MuesliController: NSObject {
                     cohereLanguage: self.config.resolvedCohereLanguage,
                     indicASRLanguage: self.config.resolvedIndicASRLanguage,
                     whisperLanguage: self.config.resolvedWhisperLanguage,
+                    qwen3AsrLanguage: self.config.resolvedQwen3AsrLanguage,
                     appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage,
                     enablePostProcessor: false,
                     customWords: self.serializedCustomWords(),
@@ -9189,6 +9197,7 @@ public final class MuesliController: NSObject {
                     cohereLanguage: transcriptionLanguage,
                     indicASRLanguage: indicTranscriptionLanguage,
                     whisperLanguage: whisperTranscriptionLanguage,
+                    qwen3AsrLanguage: self.config.resolvedQwen3AsrLanguage,
                     appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage,
                     enablePostProcessor: enableTranscriptCleanup,
                     customWords: self.serializedCustomWords(),

@@ -82,10 +82,10 @@ struct BackendOptionTests {
         #expect(BackendOption.all.contains(.gemma4E2BLiteRT))
     }
 
-    @Test("Qwen ASR is a standard dictation model")
-    func qwenAsrIsNotExperimental() {
+    @Test("Qwen ASR is available but experimental")
+    func qwenAsrIsExperimental() {
         #expect(BackendOption.all.contains(.qwen3Asr))
-        #expect(!BackendOption.experimental.contains(.qwen3Asr))
+        #expect(BackendOption.experimental.contains(.qwen3Asr))
         #expect(BackendOption.qwen3Asr.description.contains("52 languages"))
         #expect(BackendOption.qwen3Asr.description.contains("2–3 second"))
     }

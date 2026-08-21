@@ -789,6 +789,7 @@ actor TranscriptionCoordinator {
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
         indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage,
         whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
+        qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
         appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier,
         enablePostProcessor: Bool = false,
         customWords: [[String: Any]] = [],
@@ -815,6 +816,7 @@ actor TranscriptionCoordinator {
             cohereLanguage: cohereLanguage,
             indicASRLanguage: indicASRLanguage,
             whisperLanguage: whisperLanguage,
+            qwen3AsrLanguage: qwen3AsrLanguage,
             appleSpeechLanguage: appleSpeechLanguage
         )
         result = removeArtifacts(result)
@@ -841,6 +843,7 @@ actor TranscriptionCoordinator {
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
         indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage,
         whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
+        qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
         appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier
     ) async throws -> SpeechTranscriptionResult {
         // Meetings intentionally skip Qwen/custom-word post-processing. Keep deterministic artifact/filler cleanup only.
@@ -850,6 +853,7 @@ actor TranscriptionCoordinator {
             cohereLanguage: cohereLanguage,
             indicASRLanguage: indicASRLanguage,
             whisperLanguage: whisperLanguage,
+            qwen3AsrLanguage: qwen3AsrLanguage,
             appleSpeechLanguage: appleSpeechLanguage
         ))
     }
@@ -860,6 +864,7 @@ actor TranscriptionCoordinator {
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
         indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage,
         whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
+        qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
         appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier
     ) async throws -> SpeechTranscriptionResult {
         // Meeting chunks intentionally skip Qwen/custom-word post-processing for reconciliation.
@@ -882,6 +887,7 @@ actor TranscriptionCoordinator {
             cohereLanguage: cohereLanguage,
             indicASRLanguage: indicASRLanguage,
             whisperLanguage: whisperLanguage,
+            qwen3AsrLanguage: qwen3AsrLanguage,
             appleSpeechLanguage: appleSpeechLanguage
         ))
     }
@@ -1209,6 +1215,7 @@ actor TranscriptionCoordinator {
         cohereLanguage: CohereTranscribeLanguage,
         indicASRLanguage: IndicASRLanguage,
         whisperLanguage: WhisperKitLanguage,
+        qwen3AsrLanguage: Qwen3AsrLanguage,
         appleSpeechLanguage: String
     ) async throws -> SpeechTranscriptionResult {
         switch backend.backend {
@@ -1220,7 +1227,7 @@ actor TranscriptionCoordinator {
         case "nemotron35":
             return try await transcribeWithNemotron35(url: url)
         case "qwen":
-            return try await transcribeWithQwen3(url: url)
+            return try await transcribeWithQwen3(url: url, language: qwen3AsrLanguage)
         case "cohere":
             return try await transcribeWithCohere(url: url, language: cohereLanguage)
         case "indicasr":
@@ -1276,10 +1283,10 @@ actor TranscriptionCoordinator {
 
     // MARK: - Qwen3 ASR (Autoregressive CoreML on ANE)
 
-    private func transcribeWithQwen3(url: URL) async throws -> SpeechTranscriptionResult {
+    private func transcribeWithQwen3(url: URL, language: Qwen3AsrLanguage) async throws -> SpeechTranscriptionResult {
         if #available(macOS 15, *) {
             fputs("[muesli-native] transcribing with Qwen3 ASR: \(url.lastPathComponent)\n", stderr)
-            let result = try await qwen3Transcriber.transcribe(wavURL: url)
+            let result = try await qwen3Transcriber.transcribe(wavURL: url, language: language.pinnedCode)
             fputs("[muesli-native] Qwen3 ASR result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             return SpeechTranscriptionResult(

@@ -161,12 +161,12 @@ struct BackendOption: Equatable {
         model: "FluidInference/qwen3-asr-0.6b-coreml",
         label: "Qwen3 ASR",
         sizeLabel: "~1.3 GB",
-        description: "Strong multilingual transcription across 52 languages when accuracy matters more than instant results. Expect a short 2–3 second wait compared with Parakeet, and about 30 seconds of one-time preparation the first time it runs.",
+        description: "Experimental multilingual transcription across 52 languages. Accuracy can vary noticeably for accented English, so try it with your own voice before relying on it. Expect a short 2–3 second wait compared with Parakeet, and about 30 seconds of one-time preparation the first time it runs.",
         recommended: false
     )
 
     static let experimental: [BackendOption] = [
-        .senseVoiceSmall, .indicASR, .gemma4E2BLiteRT,
+        .senseVoiceSmall, .indicASR, .gemma4E2BLiteRT, .qwen3Asr,
     ]
 
     /// Native streaming backends used by low-latency product surfaces.
@@ -180,7 +180,6 @@ struct BackendOption: Equatable {
         let systemManaged: [BackendOption] = appleSpeechAvailable ? [.appleSpeechAnalyzer] : []
         let all = systemManaged
             + parakeetFamily
-            + [.qwen3Asr]
             + whisperFamily
             + [.cohereTranscribe]
             + streaming
@@ -377,6 +376,60 @@ enum Nemotron35Language: String, CaseIterable, Codable, Sendable {
             return defaultLanguage
         }
         return language
+    }
+
+    static func resolvedCode(_ rawValue: String?) -> String {
+        resolved(rawValue).rawValue
+    }
+}
+
+/// Language selection for the Qwen3 ASR backend.
+/// `auto` leaves detection to the model; explicit codes pin the decoding
+/// language (the vendored manager maps them to its own prompt languages).
+enum Qwen3AsrLanguage: Hashable, Sendable {
+    case auto
+    case pinned(MuesliQwen3AsrConfig.Language)
+
+    static let defaultLanguage: Self = .auto
+
+    static var allCases: [Qwen3AsrLanguage] {
+        [.auto] + MuesliQwen3AsrConfig.Language.allCases.map(Qwen3AsrLanguage.pinned)
+    }
+
+    var label: String {
+        switch self {
+        case .auto: return "Auto-detect"
+        case .pinned(let language): return language.englishName
+        }
+    }
+
+    var rawValue: String {
+        switch self {
+        case .auto: return "auto"
+        case .pinned(let language): return language.rawValue
+        }
+    }
+
+    /// ISO code passed to the model, or nil for automatic detection.
+    var pinnedCode: String? {
+        switch self {
+        case .auto: return nil
+        case .pinned(let language): return language.rawValue
+        }
+    }
+
+    static func resolved(_ rawValue: String?) -> Self {
+        let normalized = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let normalized, !normalized.isEmpty, normalized != "auto" else {
+            return defaultLanguage
+        }
+        if let language = MuesliQwen3AsrConfig.Language(rawValue: normalized) {
+            return .pinned(language)
+        }
+        if let language = MuesliQwen3AsrConfig.Language(from: normalized) {
+            return .pinned(language)
+        }
+        return defaultLanguage
     }
 
     static func resolvedCode(_ rawValue: String?) -> String {
@@ -1153,6 +1206,7 @@ struct AppConfig: Codable {
     var indicASRLanguage: String = IndicASRLanguage.defaultLanguage.rawValue
     var nemotron35Language: String = Nemotron35Language.defaultLanguage.rawValue
     var whisperLanguage: String = WhisperKitLanguage.defaultLanguage.rawValue
+    var qwen3AsrLanguage: String = Qwen3AsrLanguage.defaultLanguage.rawValue
     var appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier
     var meetingTranscriptionBackend: String = BackendOption.whisper.backend
     var meetingTranscriptionModel: String = BackendOption.whisper.model
@@ -1279,6 +1333,7 @@ struct AppConfig: Codable {
         case indicASRLanguage = "indic_asr_language"
         case nemotron35Language = "nemotron35_language"
         case whisperLanguage = "whisper_language"
+        case qwen3AsrLanguage = "qwen3_asr_language"
         case appleSpeechLanguage = "apple_speech_language"
         case meetingTranscriptionBackend = "meeting_transcription_backend"
         case meetingTranscriptionModel = "meeting_transcription_model"
@@ -1411,6 +1466,7 @@ struct AppConfig: Codable {
         indicASRLanguage = IndicASRLanguage.resolvedCode(try? c.decode(String.self, forKey: .indicASRLanguage))
         nemotron35Language = Nemotron35Language.resolvedCode(try? c.decode(String.self, forKey: .nemotron35Language))
         whisperLanguage = WhisperKitLanguage.resolvedCode(try? c.decode(String.self, forKey: .whisperLanguage))
+        qwen3AsrLanguage = Qwen3AsrLanguage.resolvedCode(try? c.decode(String.self, forKey: .qwen3AsrLanguage))
         appleSpeechLanguage = AppleSpeechLanguageOption.normalize(try? c.decode(String.self, forKey: .appleSpeechLanguage))
         meetingTranscriptionBackend = (try? c.decode(String.self, forKey: .meetingTranscriptionBackend)) ?? sttBackend
         meetingTranscriptionModel = (try? c.decode(String.self, forKey: .meetingTranscriptionModel)) ?? sttModel
@@ -1598,6 +1654,10 @@ struct AppConfig: Codable {
 
     var resolvedWhisperLanguage: WhisperKitLanguage {
         WhisperKitLanguage.resolved(whisperLanguage)
+    }
+
+    var resolvedQwen3AsrLanguage: Qwen3AsrLanguage {
+        Qwen3AsrLanguage.resolved(qwen3AsrLanguage)
     }
 
     var resolvedAppleSpeechLanguage: String {

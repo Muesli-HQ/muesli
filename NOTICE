@@ -1,0 +1,11 @@
+Muesli includes software vendored from FluidAudio
+(https://github.com/FluidInference/FluidAudio), licensed under the
+Apache License, Version 2.0.
+
+The vendored sources live in:
+  native/MuesliNative/Sources/MuesliCore/Qwen3ASR/
+
+A copy of the Apache License, Version 2.0 is included alongside those
+sources in LICENSE-Apache-2.0. The files were copied from FluidAudio
+v0.15.1 (ASR/Qwen3/) and renamed with a MuesliQwen3 prefix; this
+distribution preserves that origin and license.
