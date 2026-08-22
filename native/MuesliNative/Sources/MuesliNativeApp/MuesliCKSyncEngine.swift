@@ -111,7 +111,7 @@ enum MuesliCKSyncError: Error, Equatable, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .differentProductionAccount:
-            return "This Mac's sync history belongs to a different iCloud account. Sign in to the original account to continue."
+            return "This Mac is linked to a different iCloud account. Return to that account, or remove the linked device and set up sync again."
         case .legacyAccountNeedsReconnection:
             return "This Mac's older sync history needs to be reconnected before it can use your current iCloud account."
         }
@@ -412,6 +412,33 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
         }
 
         accountBoundaryBlocked = false
+        return true
+    }
+
+    /// Removes a confirmed Production-account link only after the account gate
+    /// has detected that the currently signed-in account is different. This is
+    /// deliberately separate from legacy reconnection: removal turns sync back
+    /// into an unconfigured state so setup can explicitly claim one new account.
+    @discardableResult
+    func removeLinkedProductionAccount() async throws -> Bool {
+        guard accountBoundaryBlocked,
+              accountBoundaryError == .differentProductionAccount,
+              let legacyScopeMigration else {
+            throw accountBoundaryError
+        }
+
+        await invalidatePreparation(cancelEngine: true)
+        try Task.checkCancellation()
+        let removed = try store.removeCloudSyncAccountLink(
+            accountScopeKey: Self.accountScopeKey,
+            stateKey: Self.stateKey,
+            legacyAccountScopeKey: legacyScopeMigration.accountScopeKey,
+            legacyStateKey: legacyScopeMigration.stateKey
+        )
+        guard removed else { throw MuesliCKSyncError.differentProductionAccount }
+
+        accountBoundaryBlocked = true
+        accountBoundaryError = .legacyAccountNeedsReconnection
         return true
     }
 

@@ -3918,6 +3918,94 @@ public final class DictationStore {
         }
     }
 
+    /// Removes an established CloudKit account binding after an explicit user
+    /// confirmation. Authored content and audio paths remain untouched. Sync
+    /// engine/version metadata is cleared and eligible text is requeued so the
+    /// next setup can claim exactly one new account without inheriting the old
+    /// account's CloudKit cursors or change tags.
+    public func removeCloudSyncAccountLink(
+        accountScopeKey: String,
+        stateKey: String,
+        legacyAccountScopeKey: String,
+        legacyStateKey: String
+    ) throws -> Bool {
+        let keys = Set([accountScopeKey, stateKey, legacyAccountScopeKey, legacyStateKey])
+        guard keys.count == 4 else { return false }
+
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE TRANSACTION", db: db)
+        do {
+            let ownerSQL = "SELECT 1 FROM cloud_sync_state WHERE key = ? LIMIT 1"
+            var ownerStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, ownerSQL, -1, &ownerStatement, nil) == SQLITE_OK else {
+                throw lastError(db)
+            }
+            sqlite3_bind_text(ownerStatement, 1, (accountScopeKey as NSString).utf8String, -1, nil)
+            let hasCurrentOwner: Bool
+            switch sqlite3_step(ownerStatement) {
+            case SQLITE_ROW:
+                hasCurrentOwner = true
+            case SQLITE_DONE:
+                hasCurrentOwner = false
+            default:
+                sqlite3_finalize(ownerStatement)
+                throw lastError(db)
+            }
+            sqlite3_finalize(ownerStatement)
+            guard hasCurrentOwner else {
+                try exec("COMMIT", db: db)
+                return false
+            }
+
+            let deleteSQL = "DELETE FROM cloud_sync_state WHERE key IN (?, ?, ?, ?)"
+            var deleteStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, deleteSQL, -1, &deleteStatement, nil) == SQLITE_OK else {
+                throw lastError(db)
+            }
+            sqlite3_bind_text(deleteStatement, 1, (accountScopeKey as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(deleteStatement, 2, (stateKey as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(deleteStatement, 3, (legacyAccountScopeKey as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(deleteStatement, 4, (legacyStateKey as NSString).utf8String, -1, nil)
+            guard sqlite3_step(deleteStatement) == SQLITE_DONE else {
+                sqlite3_finalize(deleteStatement)
+                throw lastError(db)
+            }
+            sqlite3_finalize(deleteStatement)
+
+            try exec(
+                """
+                UPDATE dictations
+                SET cloud_change_tag = NULL,
+                    cloud_system_fields = NULL,
+                    last_synced_at = NULL,
+                    sync_dirty = 1
+                WHERE cloud_record_name IS NOT NULL
+                """,
+                db: db
+            )
+            try exec(
+                """
+                UPDATE meetings
+                SET cloud_change_tag = NULL,
+                    cloud_system_fields = NULL,
+                    last_synced_at = NULL,
+                    sync_dirty = CASE
+                        WHEN meeting_status NOT IN ('recording', 'processing') THEN 1
+                        ELSE sync_dirty
+                    END
+                WHERE cloud_record_name IS NOT NULL
+                """,
+                db: db
+            )
+            try exec("COMMIT", db: db)
+            return true
+        } catch {
+            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
+    }
+
     /// Atomically claims an environment-scoped CloudKit account boundary.
     /// The first claimant wins; subsequent callers may only confirm the same scope.
     public func claimCloudSyncAccountScope(_ scope: String, forKey key: String) throws -> Bool {

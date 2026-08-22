@@ -121,6 +121,7 @@ struct SettingsView: View {
     @State private var openRouterFreeModelsError: String?
     @State private var hasRefreshedMeetingCalendarSources = false
     @State private var isShowingICloudReconnectConfirmation = false
+    @State private var isShowingICloudLinkRemovalConfirmation = false
 
     init(appState: AppState, controller: MuesliController) {
         self.appState = appState
@@ -444,6 +445,14 @@ struct SettingsView: View {
             } message: {
                 Text("Muesli will keep your local history and audio, then sync eligible existing text with the iCloud account currently signed in on this Mac. Audio always stays local.")
             }
+            .alert("Remove linked device?", isPresented: $isShowingICloudLinkRemovalConfirmation) {
+                Button("Cancel", role: .cancel) {}
+                Button("Remove linked device", role: .destructive) {
+                    controller.removeLinkedICloudDevice()
+                }
+            } message: {
+                Text("Muesli will turn off sync and remove this Mac's previous account link. Local history and audio stay on this Mac, and data in the previous iCloud account is not deleted. You can then set up sync with the current iCloud account.")
+            }
             .sheet(isPresented: $isCleanupPromptManagerPresented) {
                 TranscriptCleanupPromptsManagerView(
                     appState: appState,
@@ -713,6 +722,11 @@ struct SettingsView: View {
                             isShowingICloudReconnectConfirmation = true
                         }
                         .frame(width: controlWidth)
+                    } else if appState.iCloudBridgeState == .needsAccountReplacement {
+                        actionButton("Remove linked device", systemImage: "link.badge.minus") {
+                            isShowingICloudLinkRemovalConfirmation = true
+                        }
+                        .frame(width: controlWidth)
                     } else {
                         actionButton("Sync now", systemImage: "arrow.triangle.2.circlepath") {
                             controller.performICloudSync()
@@ -757,6 +771,10 @@ struct SettingsView: View {
         if appState.iCloudBridgeState == .needsReconnection {
             return appState.iCloudSyncStatus
                 ?? "Reconnect this Mac to continue syncing with your current iCloud account."
+        }
+        if appState.iCloudBridgeState == .needsAccountReplacement {
+            return appState.iCloudSyncStatus
+                ?? "Remove the previous account link before setting up sync with this iCloud account."
         }
         if !appState.config.iCloudSyncEnabled {
             return "Sync is off. Turn it on to bridge this Mac with Muesli for iPhone."

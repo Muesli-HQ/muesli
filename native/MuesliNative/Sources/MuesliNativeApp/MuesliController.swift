@@ -1941,6 +1941,54 @@ public final class MuesliController: NSObject {
         }
     }
 
+    func removeLinkedICloudDevice() {
+        guard iCloudSubscriptionTask == nil, iCloudSyncTask == nil else { return }
+
+        appState.iCloudSyncStatus = "Removing the existing iCloud link..."
+        appState.iCloudBridgeState = .syncing
+        appState.iCloudBridgeMessage = nil
+        TelemetryDeck.signal("icloud_account_link_removal_started", parameters: ["platform": "macos"])
+
+        iCloudSyncGeneration += 1
+        let generation = iCloudSyncGeneration
+        let syncEngine = resolvedCKSyncEngine()
+        iCloudSubscriptionTask = Task { [weak self] in
+            do {
+                try await syncEngine.removeLinkedProductionAccount()
+                await MainActor.run {
+                    guard let self, self.iCloudSyncGeneration == generation else { return }
+                    self.iCloudSubscriptionTask = nil
+                    MuesliBridgeDeviceIdentity.clearRemoteDevice()
+                    self.refreshICloudBridgeDeviceState()
+                    self.updateConfig { $0.iCloudSyncEnabled = false }
+                    self.appState.iCloudSyncStatus = "Linked device removed. Set up sync again to use the current iCloud account."
+                    self.appState.iCloudBridgeState = .notConfigured
+                    self.appState.iCloudBridgeMessage = nil
+                    TelemetryDeck.signal(
+                        "icloud_account_link_removal_completed",
+                        parameters: ["platform": "macos"]
+                    )
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    guard let self, self.iCloudSyncGeneration == generation else { return }
+                    self.iCloudSubscriptionTask = nil
+                    self.refreshICloudBridgeStateForConfig()
+                }
+            } catch {
+                await MainActor.run {
+                    guard let self, self.iCloudSyncGeneration == generation else { return }
+                    self.iCloudSubscriptionTask = nil
+                    self.presentICloudSyncFailure(error, statusPrefix: "Link removal failed")
+                    TelemetryDeck.signal(
+                        "icloud_account_link_removal_failed",
+                        parameters: ["platform": "macos", "reason": self.iCloudSyncFailureReason(error)]
+                    )
+                }
+            }
+        }
+    }
+
     func handleICloudRemoteNotification(userInfo: [AnyHashable: Any]) {
         guard config.iCloudSyncEnabled,
               (MuesliICloudSyncEngine.isTextRecordSubscriptionNotification(userInfo)
@@ -2238,9 +2286,13 @@ public final class MuesliController: NSObject {
     private func presentICloudSyncFailure(_ error: Error, statusPrefix: String) {
         let message = error.localizedDescription
         appState.iCloudSyncStatus = "\(statusPrefix): \(message)"
-        if let syncError = error as? MuesliCKSyncError,
-           syncError == .legacyAccountNeedsReconnection {
-            appState.iCloudBridgeState = .needsReconnection
+        if let syncError = error as? MuesliCKSyncError {
+            switch syncError {
+            case .differentProductionAccount:
+                appState.iCloudBridgeState = .needsAccountReplacement
+            case .legacyAccountNeedsReconnection:
+                appState.iCloudBridgeState = .needsReconnection
+            }
         } else if MuesliICloudSyncEngine.isICloudAccountAvailabilityError(error) {
             appState.iCloudBridgeState = .needsICloud
         } else {
@@ -2378,7 +2430,8 @@ public final class MuesliController: NSObject {
             appState.iCloudBridgeState = .syncing
             return
         }
-        if appState.iCloudBridgeState == .needsReconnection {
+        if appState.iCloudBridgeState == .needsReconnection
+            || appState.iCloudBridgeState == .needsAccountReplacement {
             return
         }
         if !config.iCloudSyncEnabled {
@@ -2392,7 +2445,7 @@ public final class MuesliController: NSObject {
             return
         }
         switch appState.iCloudBridgeState {
-        case .needsICloud, .needsReconnection, .error:
+        case .needsICloud, .needsReconnection, .needsAccountReplacement, .error:
             return
         case .notConfigured, .checkingICloud, .syncing, .active:
             appState.iCloudBridgeState = .active

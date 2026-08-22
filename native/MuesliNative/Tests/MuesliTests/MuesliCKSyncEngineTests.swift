@@ -915,6 +915,14 @@ struct MuesliCKSyncEngineTests {
         #expect(try !store.hasTextRecordsNeedingSync())
         #expect(state.pendingRecordZoneChanges.isEmpty)
         #expect(await coordinator.currentAccountBoundaryError() == .legacyAccountNeedsReconnection)
+        do {
+            _ = try await coordinator.removeLinkedProductionAccount()
+            Issue.record("Ambiguous legacy state must use reconnect, not account-link removal")
+        } catch let error as MuesliCKSyncError {
+            #expect(error == .legacyAccountNeedsReconnection)
+        }
+        #expect(try store.cloudSyncStateData(forKey: migration.accountScopeKey)
+            == Data(oldScope.utf8))
     }
 
     @Test("explicit reconnect adopts an ambiguous legacy library without changing authored data")
@@ -1146,7 +1154,7 @@ struct MuesliCKSyncEngineTests {
         #expect(await coordinator.currentAccountBoundaryError() == .legacyAccountNeedsReconnection)
     }
 
-    @Test("account switch clears pending engine state but never uploads the old library")
+    @Test("account switch stays blocked until explicit link removal and setup")
     func accountSwitchPreservesLocalData() async throws {
         let store = try makeStore()
         _ = try store.insertDictation(
@@ -1163,6 +1171,27 @@ struct MuesliCKSyncEngineTests {
             systemFields: Data([0x01, 0x02]),
             recordUpdatedAt: local.updatedAt
         ))
+        let meetingID = try store.insertMeeting(
+            title: "Keep private account-switch audio",
+            calendarEventID: nil,
+            startTime: Date().addingTimeInterval(-60),
+            endTime: Date(),
+            rawTranscript: "Keep the processing transcript local",
+            formattedNotes: "",
+            micAudioPath: "/private/audio/account-switch-mic.wav",
+            systemAudioPath: "/private/audio/account-switch-system.wav"
+        )
+        let meetingText = try #require(
+            try store.textRecordsNeedingSync().first { $0.kind == .meeting }
+        )
+        #expect(try store.markTextRecordSynced(
+            kind: meetingText.kind,
+            recordName: meetingText.id,
+            changeTag: "account-one-meeting-tag",
+            systemFields: Data([0x03, 0x04]),
+            recordUpdatedAt: meetingText.updatedAt
+        ))
+        try store.updateMeetingStatus(id: meetingID, status: .processing)
         let cancellationProbe = TestCKSyncCancellationProbe()
         let originalOwner = CKRecord.ID(recordName: "account-one")
         #expect(try store.claimCloudSyncAccountScope(
@@ -1186,6 +1215,14 @@ struct MuesliCKSyncEngineTests {
         try store.saveCloudSyncStateData(
             Data("account-one-state".utf8),
             forKey: MuesliCKSyncEngine.stateKey
+        )
+        try store.saveCloudSyncStateData(
+            Data("obsolete-legacy-owner".utf8),
+            forKey: migration.accountScopeKey
+        )
+        try store.saveCloudSyncStateData(
+            Data("obsolete-legacy-state".utf8),
+            forKey: migration.stateKey
         )
 
         #expect(try await coordinator.handleAccountChange(
@@ -1218,6 +1255,47 @@ struct MuesliCKSyncEngineTests {
         #expect(stillPreserved.text == "Keep this local text")
         #expect(stillPreserved.cloudChangeTag == "account-one-tag")
         #expect(stillPreserved.cloudSystemFields == Data([0x01, 0x02]))
+
+        #expect(try await coordinator.removeLinkedProductionAccount())
+        #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.accountScopeKey) == nil)
+        #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.stateKey) == nil)
+        #expect(try store.cloudSyncStateData(forKey: migration.accountScopeKey) == nil)
+        #expect(try store.cloudSyncStateData(forKey: migration.stateKey) == nil)
+        let reset = try #require(try store.textRecordForSync(recordName: local.id))
+        #expect(reset.text == "Keep this local text")
+        #expect(reset.cloudChangeTag == nil)
+        #expect(reset.cloudSystemFields == nil)
+        #expect(try store.hasTextRecordsNeedingSync())
+        let heldMeeting = try #require(try store.textRecordForSync(recordName: meetingText.id))
+        #expect(heldMeeting.cloudChangeTag == nil)
+        #expect(heldMeeting.cloudSystemFields == nil)
+        #expect(try store.meeting(id: meetingID)?.micAudioPath
+            == "/private/audio/account-switch-mic.wav")
+        #expect(try store.meeting(id: meetingID)?.systemAudioPath
+            == "/private/audio/account-switch-system.wav")
+        #expect(try store.textRecordsNeedingSync().map(\.id) == [local.id])
+
+        let replacementOwner = CKRecord.ID(recordName: "account-two")
+        #expect(try await coordinator.handleAccountChange(
+            currentUser: replacementOwner,
+            state: state
+        ))
+        #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.accountScopeKey)
+            == Data(MuesliCKSyncEngine.accountScope(for: replacementOwner).utf8))
+        #expect(state.pendingRecordZoneChanges == [
+            .saveRecord(CKRecord.ID(
+                recordName: local.id,
+                zoneID: MuesliICloudSyncEngine.Schema.syncZoneID
+            )),
+        ])
+
+        #expect(try await coordinator.handleAccountChange(
+            currentUser: CKRecord.ID(recordName: "account-three"),
+            state: state
+        ) == false)
+        #expect(await coordinator.currentAccountBoundaryError() == .differentProductionAccount)
+        #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.accountScopeKey)
+            == Data(MuesliCKSyncEngine.accountScope(for: replacementOwner).utf8))
     }
 
     @Test("account identity failure blocks automatic upload and clears stale pending state")

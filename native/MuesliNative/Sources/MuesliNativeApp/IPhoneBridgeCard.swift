@@ -29,6 +29,7 @@ struct IPhoneBridgeCard: View {
     @State private var promptSeen = false
     @State private var isQRCodePresented = false
     @State private var isReconnectConfirmationPresented = false
+    @State private var isRemoveLinkConfirmationPresented = false
 
     var body: some View {
         HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
@@ -127,6 +128,14 @@ struct IPhoneBridgeCard: View {
         } message: {
             Text("Muesli will keep your local history and audio, then sync eligible existing text with the iCloud account currently signed in on this Mac. Audio always stays local.")
         }
+        .alert("Remove linked device?", isPresented: $isRemoveLinkConfirmationPresented) {
+            Button("Cancel", role: .cancel) {}
+            Button("Remove linked device", role: .destructive) {
+                controller.removeLinkedICloudDevice()
+            }
+        } message: {
+            Text("Muesli will turn off sync and remove this Mac's previous account link. Local history and audio stay on this Mac, and data in the previous iCloud account is not deleted. You can then set up sync with the current iCloud account.")
+        }
     }
 
     private var bridgeState: ICloudBridgeState {
@@ -136,7 +145,7 @@ struct IPhoneBridgeCard: View {
     private var shouldShowHandoffButton: Bool {
         guard appState.config.iCloudSyncEnabled else { return false }
         switch bridgeState {
-        case .needsICloud, .needsReconnection, .error:
+        case .needsICloud, .needsReconnection, .needsAccountReplacement, .error:
             return false
         case .active:
             return appState.iCloudBridgeCompanionDeviceName == nil
@@ -161,7 +170,8 @@ struct IPhoneBridgeCard: View {
         switch bridgeState {
         case .active: return "checkmark.icloud"
         case .checkingICloud, .syncing: return "arrow.triangle.2.circlepath"
-        case .needsICloud, .needsReconnection, .error: return "exclamationmark.icloud"
+        case .needsICloud, .needsReconnection, .needsAccountReplacement, .error:
+            return "exclamationmark.icloud"
         case .notConfigured: return "iphone.gen3"
         }
     }
@@ -169,7 +179,8 @@ struct IPhoneBridgeCard: View {
     private var bridgeIconColor: Color {
         switch bridgeState {
         case .active: return MuesliTheme.success
-        case .needsICloud, .needsReconnection, .error: return MuesliTheme.transcribing
+        case .needsICloud, .needsReconnection, .needsAccountReplacement, .error:
+            return MuesliTheme.transcribing
         default: return MuesliTheme.accent
         }
     }
@@ -197,6 +208,8 @@ struct IPhoneBridgeCard: View {
             return "Sign in to iCloud to sync"
         case .needsReconnection:
             return "Reconnect iPhone sync"
+        case .needsAccountReplacement:
+            return "iCloud account changed"
         case .error:
             return "iPhone sync needs attention"
         case .notConfigured:
@@ -217,7 +230,7 @@ struct IPhoneBridgeCard: View {
             return ICloudBridgeWorkingCopy.subtitle(
                 isActivationPending: appState.isICloudBridgeActivationPending
             )
-        case .needsICloud, .needsReconnection, .error:
+        case .needsICloud, .needsReconnection, .needsAccountReplacement, .error:
             return appState.iCloudBridgeMessage ?? "Open iCloud settings, then try again."
         case .notConfigured:
             return "Your Muesli history follows you through private iCloud. Audio stays local."
@@ -229,6 +242,7 @@ struct IPhoneBridgeCard: View {
         case .active: return "Sync"
         case .checkingICloud, .syncing: return "Syncing"
         case .needsReconnection: return "Reconnect"
+        case .needsAccountReplacement: return "Remove link"
         case .needsICloud, .error: return "Try again"
         case .notConfigured: return "Set up private iCloud sync"
         }
@@ -254,6 +268,8 @@ struct IPhoneBridgeCard: View {
             )
         case .needsReconnection:
             return "Confirm this Mac's current iCloud account and reconnect text sync"
+        case .needsAccountReplacement:
+            return "Remove the previous account link before setting up sync again"
         default:
             return "Set up private iCloud text sync"
         }
@@ -265,6 +281,8 @@ struct IPhoneBridgeCard: View {
             controller.performICloudSync()
         case .needsReconnection:
             isReconnectConfirmationPresented = true
+        case .needsAccountReplacement:
+            isRemoveLinkConfirmationPresented = true
         case .checkingICloud, .syncing:
             break
         default:

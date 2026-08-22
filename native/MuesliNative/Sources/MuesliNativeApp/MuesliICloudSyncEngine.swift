@@ -168,28 +168,35 @@ enum MuesliBridgeDeviceIdentity {
         defaults.set(date, forKey: lastRefreshFailureKey)
     }
 
+    static func clearRemoteDevice(defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: remoteDeviceIDKey)
+        defaults.removeObject(forKey: remoteDeviceNameKey)
+        defaults.removeObject(forKey: remoteDevicePlatformKey)
+        defaults.removeObject(forKey: remoteDeviceLastSeenAtKey)
+        defaults.removeObject(forKey: lastRefreshKey)
+        defaults.removeObject(forKey: lastRefreshFailureKey)
+    }
+
     static func updateRemoteDevices(from records: [CKRecord], defaults: UserDefaults = .standard) {
         let localID = defaults.string(forKey: localDeviceIDKey) ?? ""
         let remoteDevices = records
             .compactMap(Self.snapshot(from:))
             .filter { $0.deviceID != localID }
 
-        let latestRemote = remoteDevices
-            .filter { isCompanionPlatform($0.platform) }
-            .max { $0.lastSeenAt < $1.lastSeenAt }
+        let companionDevices = remoteDevices.filter { isCompanionPlatform($0.platform) }
+        let persistedRemoteID = defaults.string(forKey: remoteDeviceIDKey)
+        let linkedRemote = companionDevices.first { $0.deviceID == persistedRemoteID }
+            ?? companionDevices.max { $0.lastSeenAt < $1.lastSeenAt }
 
-        guard let latestRemote else {
-            defaults.removeObject(forKey: remoteDeviceIDKey)
-            defaults.removeObject(forKey: remoteDeviceNameKey)
-            defaults.removeObject(forKey: remoteDevicePlatformKey)
-            defaults.removeObject(forKey: remoteDeviceLastSeenAtKey)
+        guard let linkedRemote else {
+            clearRemoteDevice(defaults: defaults)
             return
         }
 
-        defaults.set(latestRemote.deviceID, forKey: remoteDeviceIDKey)
-        defaults.set(latestRemote.deviceName, forKey: remoteDeviceNameKey)
-        defaults.set(latestRemote.platform, forKey: remoteDevicePlatformKey)
-        defaults.set(latestRemote.lastSeenAt, forKey: remoteDeviceLastSeenAtKey)
+        defaults.set(linkedRemote.deviceID, forKey: remoteDeviceIDKey)
+        defaults.set(linkedRemote.deviceName, forKey: remoteDeviceNameKey)
+        defaults.set(linkedRemote.platform, forKey: remoteDevicePlatformKey)
+        defaults.set(linkedRemote.lastSeenAt, forKey: remoteDeviceLastSeenAtKey)
     }
 
     static func hasCompanionRemoteDevice(defaults: UserDefaults = .standard) -> Bool {
