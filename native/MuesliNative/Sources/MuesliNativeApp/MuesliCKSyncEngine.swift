@@ -104,8 +104,18 @@ struct MuesliCKSyncRecordBatch: Sendable {
     let staleChanges: [CKSyncEngine.PendingRecordZoneChange]
 }
 
-enum MuesliCKSyncError: Error {
-    case accountChanged
+enum MuesliCKSyncError: Error, Equatable, LocalizedError {
+    case differentProductionAccount
+    case legacyAccountNeedsReconnection
+
+    var errorDescription: String? {
+        switch self {
+        case .differentProductionAccount:
+            return "This Mac's sync history belongs to a different iCloud account. Sign in to the original account to continue."
+        case .legacyAccountNeedsReconnection:
+            return "This Mac's older sync history needs to be reconnected before it can use your current iCloud account."
+        }
+    }
 }
 
 struct MuesliCKSyncLegacyScopeMigration: Sendable, Equatable {
@@ -149,6 +159,7 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
     private var preparationTaskID: UUID?
     private var preparationGeneration = 0
     private var accountBoundaryBlocked = true
+    private var accountBoundaryError = MuesliCKSyncError.differentProductionAccount
     private var conflictBaseRecords: [CKRecord.ID: CKRecord] = [:]
     private var uploaded = ICloudSyncKindCounts()
     private var downloaded = ICloudSyncKindCounts()
@@ -363,9 +374,45 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
                 engine.state.remove(pendingRecordZoneChanges: engine.state.pendingRecordZoneChanges)
             }
             try store.clearCloudSyncStateData(forKey: Self.stateKey)
-            throw MuesliCKSyncError.accountChanged
+            throw accountBoundaryError
         }
         return try await preflight.prepareForCKSyncEngine(store: store)
+    }
+
+    /// Explicitly adopts the current private iCloud account for an ambiguous
+    /// pre-0.8.3 library. The store transaction preserves authored content and
+    /// audio while clearing only account-scoped CloudKit metadata and requeueing
+    /// eligible text. A definite Production-owner mismatch remains blocked.
+    func reconnectLegacyLibrary() async throws {
+        let currentUser = try await resolvedContainer().userRecordID()
+        try await reconnectLegacyLibrary(currentUser: currentUser)
+        try await prepare()
+    }
+
+    @discardableResult
+    func reconnectLegacyLibrary(currentUser: CKRecord.ID) async throws -> Bool {
+        guard let legacyScopeMigration else {
+            throw MuesliCKSyncError.legacyAccountNeedsReconnection
+        }
+
+        await invalidatePreparation(cancelEngine: true)
+        try Task.checkCancellation()
+        let requestedScope = Self.accountScope(for: currentUser)
+        let reconnected = try store.reconnectCloudSyncAccountScope(
+            expectedScope: requestedScope,
+            accountScopeKey: Self.accountScopeKey,
+            stateKey: Self.stateKey,
+            legacyAccountScopeKey: legacyScopeMigration.accountScopeKey,
+            legacyStateKey: legacyScopeMigration.stateKey
+        )
+        guard reconnected else {
+            accountBoundaryBlocked = true
+            accountBoundaryError = .differentProductionAccount
+            throw accountBoundaryError
+        }
+
+        accountBoundaryBlocked = false
+        return true
     }
 
     private func invalidatePreparation(cancelEngine: Bool) async {
@@ -418,7 +465,7 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
 
     private func makeEngineIfNeeded() throws -> CKSyncEngine {
         if let engine { return engine }
-        guard !accountBoundaryBlocked else { throw MuesliCKSyncError.accountChanged }
+        guard !accountBoundaryBlocked else { throw accountBoundaryError }
 
         let serialization: CKSyncEngine.State.Serialization?
         if let data = try store.cloudSyncStateData(forKey: Self.stateKey) {
@@ -768,12 +815,14 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
         preflight: MuesliICloudSyncEngine? = nil
     ) async throws -> Bool {
         accountBoundaryBlocked = true
+        accountBoundaryError = .legacyAccountNeedsReconnection
         let requestedScope = Self.accountScope(for: userRecordID)
 
         if let persistedScope = try store.cloudSyncStateData(forKey: Self.accountScopeKey) {
             let matches = persistedScope == Data(requestedScope.utf8)
             accountBoundaryBlocked = !matches
             if !matches {
+                accountBoundaryError = .differentProductionAccount
                 fputs("[muesli-native] CKSyncEngine account boundary blocked\n", stderr)
             }
             return matches
@@ -827,8 +876,13 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
         )
         accountBoundaryBlocked = !matches
         if !matches {
+            accountBoundaryError = .differentProductionAccount
             fputs("[muesli-native] CKSyncEngine account boundary blocked\n", stderr)
         }
         return matches
+    }
+
+    func currentAccountBoundaryError() -> MuesliCKSyncError? {
+        accountBoundaryBlocked ? accountBoundaryError : nil
     }
 }

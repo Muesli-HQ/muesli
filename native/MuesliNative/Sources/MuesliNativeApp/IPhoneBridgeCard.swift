@@ -28,6 +28,7 @@ struct IPhoneBridgeCard: View {
 
     @State private var promptSeen = false
     @State private var isQRCodePresented = false
+    @State private var isReconnectConfirmationPresented = false
 
     var body: some View {
         HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
@@ -118,6 +119,14 @@ struct IPhoneBridgeCard: View {
                 installURL: IPhoneBridgeLinks.installURL
             )
         }
+        .alert("Reconnect this Mac?", isPresented: $isReconnectConfirmationPresented) {
+            Button("Cancel", role: .cancel) {}
+            Button("Reconnect this Mac") {
+                controller.reconnectICloudSyncToCurrentAccount()
+            }
+        } message: {
+            Text("Muesli will keep your local history and audio, then sync eligible existing text with the iCloud account currently signed in on this Mac. Audio always stays local.")
+        }
     }
 
     private var bridgeState: ICloudBridgeState {
@@ -127,7 +136,7 @@ struct IPhoneBridgeCard: View {
     private var shouldShowHandoffButton: Bool {
         guard appState.config.iCloudSyncEnabled else { return false }
         switch bridgeState {
-        case .needsICloud, .error:
+        case .needsICloud, .needsReconnection, .error:
             return false
         case .active:
             return appState.iCloudBridgeCompanionDeviceName == nil
@@ -152,7 +161,7 @@ struct IPhoneBridgeCard: View {
         switch bridgeState {
         case .active: return "checkmark.icloud"
         case .checkingICloud, .syncing: return "arrow.triangle.2.circlepath"
-        case .needsICloud, .error: return "exclamationmark.icloud"
+        case .needsICloud, .needsReconnection, .error: return "exclamationmark.icloud"
         case .notConfigured: return "iphone.gen3"
         }
     }
@@ -160,7 +169,7 @@ struct IPhoneBridgeCard: View {
     private var bridgeIconColor: Color {
         switch bridgeState {
         case .active: return MuesliTheme.success
-        case .needsICloud, .error: return MuesliTheme.transcribing
+        case .needsICloud, .needsReconnection, .error: return MuesliTheme.transcribing
         default: return MuesliTheme.accent
         }
     }
@@ -186,6 +195,8 @@ struct IPhoneBridgeCard: View {
             )
         case .needsICloud:
             return "Sign in to iCloud to sync"
+        case .needsReconnection:
+            return "Reconnect iPhone sync"
         case .error:
             return "iPhone sync needs attention"
         case .notConfigured:
@@ -206,7 +217,7 @@ struct IPhoneBridgeCard: View {
             return ICloudBridgeWorkingCopy.subtitle(
                 isActivationPending: appState.isICloudBridgeActivationPending
             )
-        case .needsICloud, .error:
+        case .needsICloud, .needsReconnection, .error:
             return appState.iCloudBridgeMessage ?? "Open iCloud settings, then try again."
         case .notConfigured:
             return "Your Muesli history follows you through private iCloud. Audio stays local."
@@ -217,6 +228,7 @@ struct IPhoneBridgeCard: View {
         switch bridgeState {
         case .active: return "Sync"
         case .checkingICloud, .syncing: return "Syncing"
+        case .needsReconnection: return "Reconnect"
         case .needsICloud, .error: return "Try again"
         case .notConfigured: return "Set up private iCloud sync"
         }
@@ -240,6 +252,8 @@ struct IPhoneBridgeCard: View {
             return ICloudBridgeWorkingCopy.buttonHelp(
                 isActivationPending: appState.isICloudBridgeActivationPending
             )
+        case .needsReconnection:
+            return "Confirm this Mac's current iCloud account and reconnect text sync"
         default:
             return "Set up private iCloud text sync"
         }
@@ -249,6 +263,8 @@ struct IPhoneBridgeCard: View {
         switch bridgeState {
         case .active:
             controller.performICloudSync()
+        case .needsReconnection:
+            isReconnectConfirmationPresented = true
         case .checkingICloud, .syncing:
             break
         default:

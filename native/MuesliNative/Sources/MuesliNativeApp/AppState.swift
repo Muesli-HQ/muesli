@@ -131,6 +131,7 @@ enum ICloudBridgeState: Equatable {
     case syncing
     case active
     case needsICloud
+    case needsReconnection
     case error
 }
 

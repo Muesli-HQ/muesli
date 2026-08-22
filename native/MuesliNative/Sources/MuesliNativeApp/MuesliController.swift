@@ -1870,17 +1870,71 @@ public final class MuesliController: NSObject {
                     self.iCloudSubscriptionTask = nil
                     self.bridgeActivationPending = false
                     self.appState.isICloudBridgeActivationPending = false
-                    let message = error.localizedDescription
-                    self.appState.iCloudSyncStatus = "Sync needs iCloud: \(message)"
-                    if MuesliICloudSyncEngine.isICloudAccountAvailabilityError(error) {
-                        self.appState.iCloudBridgeState = .needsICloud
-                    } else {
-                        self.appState.iCloudBridgeState = .error
-                    }
-                    self.appState.iCloudBridgeMessage = message
+                    self.presentICloudSyncFailure(error, statusPrefix: "Sync needs attention")
                     TelemetryDeck.signal(
                         "bridge_enable_failed",
-                        parameters: ["platform": "macos", "reason": String(describing: type(of: error))]
+                        parameters: ["platform": "macos", "reason": self.iCloudSyncFailureReason(error)]
+                    )
+                }
+            }
+        }
+    }
+
+    func reconnectICloudSyncToCurrentAccount() {
+        guard MuesliICloudSyncEngine.hasRequiredEntitlement else {
+            disableICloudSyncForUnavailableEntitlement()
+            return
+        }
+        guard iCloudSubscriptionTask == nil, iCloudSyncTask == nil else { return }
+
+        bridgeActivationPending = true
+        appState.isICloudBridgeActivationPending = true
+        appState.iCloudSyncStatus = "Reconnecting this Mac to iCloud..."
+        appState.iCloudBridgeState = .syncing
+        appState.iCloudBridgeMessage = nil
+        TelemetryDeck.signal("icloud_legacy_reconnect_started", parameters: ["platform": "macos"])
+
+        iCloudSyncGeneration += 1
+        let generation = iCloudSyncGeneration
+        let syncEngine = resolvedCKSyncEngine()
+        iCloudSubscriptionTask = Task { [weak self] in
+            do {
+                try await syncEngine.reconnectLegacyLibrary()
+                await MainActor.run {
+                    guard let self, self.iCloudSyncGeneration == generation else { return }
+                    self.iCloudSubscriptionTask = nil
+                    self.hasEnsuredICloudSubscription = true
+                    self.appState.iCloudSyncStatus = "Reconnected. Syncing your text..."
+                    self.appState.iCloudBridgeState = .syncing
+                    self.appState.iCloudBridgeMessage = nil
+                    TelemetryDeck.signal(
+                        "icloud_legacy_reconnect_completed",
+                        parameters: ["platform": "macos"]
+                    )
+                    if self.config.iCloudSyncEnabled {
+                        self.scheduleICloudSync(intent: .manual, delay: 0, userInitiated: true)
+                    } else {
+                        self.updateConfig { $0.iCloudSyncEnabled = true }
+                    }
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    guard let self, self.iCloudSyncGeneration == generation else { return }
+                    self.iCloudSubscriptionTask = nil
+                    self.bridgeActivationPending = false
+                    self.appState.isICloudBridgeActivationPending = false
+                    self.refreshICloudBridgeStateForConfig()
+                }
+            } catch {
+                await MainActor.run {
+                    guard let self, self.iCloudSyncGeneration == generation else { return }
+                    self.iCloudSubscriptionTask = nil
+                    self.bridgeActivationPending = false
+                    self.appState.isICloudBridgeActivationPending = false
+                    self.presentICloudSyncFailure(error, statusPrefix: "Reconnection failed")
+                    TelemetryDeck.signal(
+                        "icloud_legacy_reconnect_failed",
+                        parameters: ["platform": "macos", "reason": self.iCloudSyncFailureReason(error)]
                     )
                 }
             }
@@ -2156,20 +2210,13 @@ public final class MuesliController: NSObject {
                     self.appState.isICloudSyncInProgress = false
                     let shouldRunBridgeDiscoveryFollowUp = self.bridgeDiscoveryFollowUpPending
                     self.bridgeDiscoveryFollowUpPending = false
-                    let message = error.localizedDescription
-                    self.appState.iCloudSyncStatus = "Sync failed: \(message)"
-                    if MuesliICloudSyncEngine.isICloudAccountAvailabilityError(error) {
-                        self.appState.iCloudBridgeState = .needsICloud
-                    } else {
-                        self.appState.iCloudBridgeState = .error
-                    }
-                    self.appState.iCloudBridgeMessage = message
+                    self.presentICloudSyncFailure(error, statusPrefix: "Sync failed")
                     if self.bridgeActivationPending {
                         self.bridgeActivationPending = false
                         self.appState.isICloudBridgeActivationPending = false
                         TelemetryDeck.signal(
                             "bridge_enable_failed",
-                            parameters: ["platform": "macos", "reason": String(describing: type(of: error))]
+                            parameters: ["platform": "macos", "reason": self.iCloudSyncFailureReason(error)]
                         )
                     }
                     // The request that failed was consumed before the cycle began.
@@ -2186,6 +2233,35 @@ public final class MuesliController: NSObject {
                 }
             }
         }
+    }
+
+    private func presentICloudSyncFailure(_ error: Error, statusPrefix: String) {
+        let message = error.localizedDescription
+        appState.iCloudSyncStatus = "\(statusPrefix): \(message)"
+        if let syncError = error as? MuesliCKSyncError,
+           syncError == .legacyAccountNeedsReconnection {
+            appState.iCloudBridgeState = .needsReconnection
+        } else if MuesliICloudSyncEngine.isICloudAccountAvailabilityError(error) {
+            appState.iCloudBridgeState = .needsICloud
+        } else {
+            appState.iCloudBridgeState = .error
+        }
+        appState.iCloudBridgeMessage = message
+    }
+
+    private func iCloudSyncFailureReason(_ error: Error) -> String {
+        if let syncError = error as? MuesliCKSyncError {
+            switch syncError {
+            case .differentProductionAccount:
+                return "different_production_account"
+            case .legacyAccountNeedsReconnection:
+                return "legacy_account_needs_reconnection"
+            }
+        }
+        if MuesliICloudSyncEngine.isICloudAccountAvailabilityError(error) {
+            return "icloud_account_unavailable"
+        }
+        return String(describing: type(of: error))
     }
 
     private func cancelActiveICloudSyncTask() {
@@ -2302,6 +2378,9 @@ public final class MuesliController: NSObject {
             appState.iCloudBridgeState = .syncing
             return
         }
+        if appState.iCloudBridgeState == .needsReconnection {
+            return
+        }
         if !config.iCloudSyncEnabled {
             appState.iCloudBridgeState = .notConfigured
             appState.iCloudBridgeMessage = nil
@@ -2313,7 +2392,7 @@ public final class MuesliController: NSObject {
             return
         }
         switch appState.iCloudBridgeState {
-        case .needsICloud, .error:
+        case .needsICloud, .needsReconnection, .error:
             return
         case .notConfigured, .checkingICloud, .syncing, .active:
             appState.iCloudBridgeState = .active

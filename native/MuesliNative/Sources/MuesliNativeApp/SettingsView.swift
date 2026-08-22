@@ -120,6 +120,7 @@ struct SettingsView: View {
     @State private var isLoadingOpenRouterFreeModels = false
     @State private var openRouterFreeModelsError: String?
     @State private var hasRefreshedMeetingCalendarSources = false
+    @State private var isShowingICloudReconnectConfirmation = false
 
     init(appState: AppState, controller: MuesliController) {
         self.appState = appState
@@ -435,6 +436,14 @@ struct SettingsView: View {
             } message: {
                 Text("Dictionary suggestions briefly read focused app text via Accessibility after dictation. Grant access, then relaunch Muesli to turn suggestions on.")
             }
+            .alert("Reconnect this Mac?", isPresented: $isShowingICloudReconnectConfirmation) {
+                Button("Cancel", role: .cancel) {}
+                Button("Reconnect this Mac") {
+                    controller.reconnectICloudSyncToCurrentAccount()
+                }
+            } message: {
+                Text("Muesli will keep your local history and audio, then sync eligible existing text with the iCloud account currently signed in on this Mac. Audio always stays local.")
+            }
             .sheet(isPresented: $isCleanupPromptManagerPresented) {
                 TranscriptCleanupPromptsManagerView(
                     appState: appState,
@@ -699,11 +708,18 @@ struct SettingsView: View {
                         }
                     }
                     Spacer(minLength: MuesliTheme.spacing16)
-                    actionButton("Sync now", systemImage: "arrow.triangle.2.circlepath") {
-                        controller.performICloudSync()
+                    if appState.iCloudBridgeState == .needsReconnection {
+                        actionButton("Reconnect this Mac", systemImage: "arrow.triangle.2.circlepath") {
+                            isShowingICloudReconnectConfirmation = true
+                        }
+                        .frame(width: controlWidth)
+                    } else {
+                        actionButton("Sync now", systemImage: "arrow.triangle.2.circlepath") {
+                            controller.performICloudSync()
+                        }
+                        .frame(width: controlWidth)
+                        .disabled(!appState.config.iCloudSyncEnabled)
                     }
-                    .frame(width: controlWidth)
-                    .disabled(!appState.config.iCloudSyncEnabled)
                 }
             }
 
@@ -738,6 +754,10 @@ struct SettingsView: View {
     }
 
     private var syncStatusText: String {
+        if appState.iCloudBridgeState == .needsReconnection {
+            return appState.iCloudSyncStatus
+                ?? "Reconnect this Mac to continue syncing with your current iCloud account."
+        }
         if !appState.config.iCloudSyncEnabled {
             return "Sync is off. Turn it on to bridge this Mac with Muesli for iPhone."
         }

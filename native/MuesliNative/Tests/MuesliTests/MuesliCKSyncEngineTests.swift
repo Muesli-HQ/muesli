@@ -613,6 +613,17 @@ struct MuesliCKSyncEngineTests {
         #expect(firstScope.hasPrefix("sha256:"))
     }
 
+    @Test("account boundary errors are actionable and do not expose implementation names")
+    func accountBoundaryErrorsAreActionable() {
+        let reconnectMessage = MuesliCKSyncError.legacyAccountNeedsReconnection.localizedDescription
+        let mismatchMessage = MuesliCKSyncError.differentProductionAccount.localizedDescription
+
+        #expect(reconnectMessage.localizedCaseInsensitiveContains("reconnect"))
+        #expect(mismatchMessage.contains("different iCloud account"))
+        #expect(!reconnectMessage.contains("MuesliCKSyncError"))
+        #expect(!mismatchMessage.contains("MuesliCKSyncError"))
+    }
+
     @Test("CloudKit runtime requires both the private container and an explicit environment")
     func cloudEntitlementContractRejectsUnspecifiedEnvironment() {
         let container = MuesliICloudSyncEngine.Schema.containerIdentifier
@@ -903,6 +914,126 @@ struct MuesliCKSyncEngineTests {
         #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.accountScopeKey) == nil)
         #expect(try !store.hasTextRecordsNeedingSync())
         #expect(state.pendingRecordZoneChanges.isEmpty)
+        #expect(await coordinator.currentAccountBoundaryError() == .legacyAccountNeedsReconnection)
+    }
+
+    @Test("explicit reconnect adopts an ambiguous legacy library without changing authored data")
+    func explicitReconnectPreservesAndRequeuesLegacyLibrary() async throws {
+        let store = try makeStore()
+        let endedAt = Date(timeIntervalSince1970: 1_780_000_000)
+        let dictationID = try store.insertDictation(
+            text: "Keep the original dictation exactly",
+            durationSeconds: 3,
+            startedAt: endedAt.addingTimeInterval(-3),
+            endedAt: endedAt
+        )
+        let originalDictation = try #require(try store.dictation(id: dictationID))
+        let dictation = try #require(try store.textRecordsNeedingSync().first)
+        #expect(try store.markTextRecordSynced(
+            kind: dictation.kind,
+            recordName: dictation.id,
+            changeTag: "ambiguous-dictation-tag",
+            systemFields: Data([0x01, 0x02]),
+            recordUpdatedAt: dictation.updatedAt
+        ))
+
+        let meetingID = try store.insertMeeting(
+            title: "Keep meeting and audio",
+            calendarEventID: nil,
+            startTime: endedAt.addingTimeInterval(-60),
+            endTime: endedAt,
+            rawTranscript: "Keep the original meeting transcript exactly",
+            formattedNotes: "Keep the original notes exactly",
+            micAudioPath: "/private/audio/mic.wav",
+            systemAudioPath: "/private/audio/system.wav",
+            savedRecordingPath: "/private/audio/combined.wav"
+        )
+        let meetingText = try #require(
+            try store.textRecordsNeedingSync().first { $0.kind == .meeting }
+        )
+        #expect(try store.markTextRecordSynced(
+            kind: meetingText.kind,
+            recordName: meetingText.id,
+            changeTag: "ambiguous-meeting-tag",
+            systemFields: Data([0x03, 0x04]),
+            recordUpdatedAt: meetingText.updatedAt
+        ))
+        try store.updateMeetingStatus(id: meetingID, status: .processing)
+
+        let migration = MuesliCKSyncLegacyScopeMigration(
+            accountScopeKey: "test.reconnect.legacy.owner",
+            stateKey: "test.reconnect.legacy.state"
+        )
+        try store.saveCloudSyncStateData(
+            Data(MuesliCKSyncEngine.accountScope(
+                for: CKRecord.ID(recordName: "unknown-legacy-owner")
+            ).utf8),
+            forKey: migration.accountScopeKey
+        )
+        try store.saveCloudSyncStateData(
+            Data("obsolete-legacy-cursor".utf8),
+            forKey: migration.stateKey
+        )
+        try store.saveCloudSyncStateData(
+            Data("obsolete-production-cursor".utf8),
+            forKey: MuesliCKSyncEngine.stateKey
+        )
+
+        let currentUser = CKRecord.ID(recordName: "confirmed-current-owner")
+        let coordinator = MuesliCKSyncEngine(
+            store: store,
+            legacyAccountRecordVerifier: { _ in [] },
+            legacyScopeMigration: migration
+        )
+        let state = TestCKSyncPendingState()
+
+        #expect(try await coordinator.handleAccountChange(
+            currentUser: currentUser,
+            state: state
+        ) == false)
+        #expect(await coordinator.currentAccountBoundaryError() == .legacyAccountNeedsReconnection)
+        try store.saveCloudSyncStateData(
+            Data("stale-cursor-created-before-confirmation".utf8),
+            forKey: MuesliCKSyncEngine.stateKey
+        )
+
+        #expect(try await coordinator.reconnectLegacyLibrary(currentUser: currentUser))
+        #expect(await coordinator.currentAccountBoundaryError() == nil)
+        #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.accountScopeKey)
+            == Data(MuesliCKSyncEngine.accountScope(for: currentUser).utf8))
+        #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.stateKey) == nil)
+        #expect(try store.cloudSyncStateData(forKey: migration.accountScopeKey) == nil)
+        #expect(try store.cloudSyncStateData(forKey: migration.stateKey) == nil)
+
+        let preservedDictation = try #require(try store.dictation(id: dictationID))
+        #expect(preservedDictation.rawText == "Keep the original dictation exactly")
+        #expect(preservedDictation.timestamp == originalDictation.timestamp)
+        let preservedMeeting = try #require(try store.meeting(id: meetingID))
+        #expect(preservedMeeting.rawTranscript == "Keep the original meeting transcript exactly")
+        #expect(preservedMeeting.formattedNotes == "Keep the original notes exactly")
+        #expect(preservedMeeting.micAudioPath == "/private/audio/mic.wav")
+        #expect(preservedMeeting.systemAudioPath == "/private/audio/system.wav")
+        #expect(preservedMeeting.savedRecordingPath == "/private/audio/combined.wav")
+        #expect(preservedMeeting.status == .processing)
+
+        let requeued = try store.textRecordsNeedingSync()
+        #expect(requeued.map(\.id) == [dictation.id])
+        #expect(requeued.allSatisfy {
+            $0.cloudChangeTag == nil && $0.cloudSystemFields == nil
+        })
+        let heldMeeting = try #require(try store.textRecordForSync(recordName: meetingText.id))
+        #expect(heldMeeting.cloudChangeTag == nil)
+        #expect(heldMeeting.cloudSystemFields == nil)
+
+        try store.updateMeetingStatus(id: meetingID, status: .completed)
+        #expect(Set(try store.textRecordsNeedingSync().map(\.id))
+            == Set([dictation.id, meetingText.id]))
+
+        // A repeated confirmation of the same Production owner is a no-op.
+        #expect(try await coordinator.reconnectLegacyLibrary(currentUser: currentUser))
+        #expect(try store.dictation(id: dictationID)?.rawText
+            == "Keep the original dictation exactly")
+        #expect(try store.meeting(id: meetingID)?.micAudioPath == "/private/audio/mic.wav")
     }
 
     @Test("partial legacy overlap cannot claim or upload the unscoped library")
@@ -967,6 +1098,7 @@ struct MuesliCKSyncEngineTests {
         #expect(preservedFirst.cloudChangeTag == "first-account-tag")
         #expect(preservedSecond.text == "Second private legacy note")
         #expect(preservedSecond.cloudChangeTag == "second-account-tag")
+        #expect(await coordinator.currentAccountBoundaryError() == .legacyAccountNeedsReconnection)
     }
 
     @Test("unverified legacy account is blocked without requeue or metadata loss")
@@ -1011,6 +1143,7 @@ struct MuesliCKSyncEngineTests {
         #expect(preserved.text == "Legacy authored text stays local")
         #expect(preserved.cloudChangeTag == "legacy-account-tag")
         #expect(preserved.cloudSystemFields == Data([0x01, 0x02]))
+        #expect(await coordinator.currentAccountBoundaryError() == .legacyAccountNeedsReconnection)
     }
 
     @Test("account switch clears pending engine state but never uploads the old library")
@@ -1036,8 +1169,13 @@ struct MuesliCKSyncEngineTests {
             MuesliCKSyncEngine.accountScope(for: originalOwner),
             forKey: MuesliCKSyncEngine.accountScopeKey
         ))
+        let migration = MuesliCKSyncLegacyScopeMigration(
+            accountScopeKey: "test.account-switch.legacy.owner",
+            stateKey: "test.account-switch.legacy.state"
+        )
         let coordinator = MuesliCKSyncEngine(
             store: store,
+            legacyScopeMigration: migration,
             engineCancellationObserver: { await cancellationProbe.record() }
         )
         let stalePending = CKSyncEngine.PendingRecordZoneChange.saveRecord(CKRecord.ID(
@@ -1064,6 +1202,22 @@ struct MuesliCKSyncEngineTests {
         #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.stateKey) == nil)
         #expect(state.pendingRecordZoneChanges.isEmpty)
         #expect(await cancellationProbe.count == 0)
+        #expect(await coordinator.currentAccountBoundaryError() == .differentProductionAccount)
+
+        do {
+            _ = try await coordinator.reconnectLegacyLibrary(
+                currentUser: CKRecord.ID(recordName: "account-two")
+            )
+            Issue.record("A confirmed Production owner must never be overwritten")
+        } catch let error as MuesliCKSyncError {
+            #expect(error == .differentProductionAccount)
+        }
+        #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.accountScopeKey)
+            == Data(MuesliCKSyncEngine.accountScope(for: originalOwner).utf8))
+        let stillPreserved = try #require(try store.textRecordForSync(recordName: local.id))
+        #expect(stillPreserved.text == "Keep this local text")
+        #expect(stillPreserved.cloudChangeTag == "account-one-tag")
+        #expect(stillPreserved.cloudSystemFields == Data([0x01, 0x02]))
     }
 
     @Test("account identity failure blocks automatic upload and clears stale pending state")
