@@ -694,7 +694,7 @@ struct SettingsView: View {
                         controller.setICloudSyncEnabledFromSettings(newValue)
                     }
                 }
-                settingsDescription("Sync dictation text, meeting transcripts, notes, summaries, and manual notes with Muesli for iPhone through your private iCloud account. Audio recordings are never synced.")
+                settingsDescription("Sync text privately with Muesli for iPhone. Audio stays on this Mac.")
 
                 Divider().background(MuesliTheme.surfaceBorder)
 
@@ -788,13 +788,13 @@ struct SettingsView: View {
     }
 
     private var syncLinkedDeviceText: String? {
-        guard appState.config.iCloudSyncEnabled else { return nil }
         if let remoteDeviceName = appState.iCloudBridgeCompanionDeviceName {
             if let platform = appState.iCloudBridgeRemoteDevicePlatform {
                 return "Linked \(syncDeviceLabel(for: platform)): \(remoteDeviceName)"
             }
             return "Linked device: \(remoteDeviceName)"
         }
+        guard appState.config.iCloudSyncEnabled else { return nil }
         return "No linked iPhone yet."
     }
 
