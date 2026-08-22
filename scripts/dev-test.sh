@@ -47,6 +47,8 @@ com.muesli.dev, ~/Library/Application Support/MuesliDev, and
 
 Cloud-entitled dev builds require a provisioning profile whose app identifier
 matches the selected bundle ID and a signing identity included by that profile.
+Cloud-entitled MuesliDev builds always use the CloudKit Development environment;
+only production/preproduction release builds may use CloudKit Production.
 For the maintainer's plain MuesliDev lane, this script auto-selects the local
 com.muesli.dev CloudKit profile from ../muesli-ios/secrets when
 --cloud-entitlements is provided and the profile exists.
@@ -166,6 +168,13 @@ case "$ENTITLEMENTS_MODE" in
     use_local_only_entitlements
     ;;
   cloud)
+    REQUESTED_CLOUDKIT_ENVIRONMENT="${MUESLI_ICLOUD_CONTAINER_ENVIRONMENT:-Development}"
+    if [[ "$(printf '%s' "$REQUESTED_CLOUDKIT_ENVIRONMENT" | tr '[:upper:]' '[:lower:]')" != "development" ]]; then
+      echo "Error: MuesliDev builds must use the CloudKit Development environment." >&2
+      echo "Use the production Muesli release workflow for CloudKit Production." >&2
+      exit 2
+    fi
+    BUILD_ENV+=(MUESLI_ICLOUD_CONTAINER_ENVIRONMENT="Development")
     if [[ -z "$RESOLVED_PROVISIONING_PROFILE" && "$DEV_BUNDLE_ID" == "com.muesli.dev" && -f "$DEFAULT_DEV_CLOUD_PROFILE" ]]; then
       RESOLVED_PROVISIONING_PROFILE="$DEFAULT_DEV_CLOUD_PROFILE"
       if [[ -z "$RESOLVED_SIGN_IDENTITY" ]]; then
