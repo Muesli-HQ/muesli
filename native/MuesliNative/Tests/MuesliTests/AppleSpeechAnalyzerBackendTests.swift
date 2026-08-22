@@ -161,7 +161,7 @@ struct AppleSpeechAnalyzerBackendTests {
         } else {
             #expect(!BackendOption.systemManaged.contains(option))
             #expect(!BackendOption.all.contains(option))
-            #expect(BackendOption.onboardingDefault == .parakeetMultilingual)
+            #expect(BackendOption.onboardingDefault == .parakeetUnified)
             #expect(!BackendOption.onboarding.contains(option))
         }
     }
@@ -182,7 +182,7 @@ struct AppleSpeechAnalyzerBackendTests {
 
         #expect(catalog.systemManaged.isEmpty)
         #expect(!catalog.all.contains(.appleSpeechAnalyzer))
-        #expect(catalog.onboardingDefault == .parakeetMultilingual)
+        #expect(catalog.onboardingDefault == .parakeetUnified)
         #expect(!catalog.onboarding.contains(.appleSpeechAnalyzer))
     }
 }
