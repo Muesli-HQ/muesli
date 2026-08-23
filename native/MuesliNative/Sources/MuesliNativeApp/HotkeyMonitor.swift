@@ -418,17 +418,25 @@ final class HotkeyMonitor {
                         return
                     }
 
+                    if tapToToggleEnabled {
+                        // Tap-to-toggle: start toggle immediately on key-down.
+                        // Skip arming and hold timers — the toggle persists
+                        // until the next tap stops it.
+                        fputs("[hotkey] tap-to-toggle → toggle start\n", stderr)
+                        lastTapWasShort = false
+                        lastTapUpTime = nil
+                        toggleActive = true
+                        cancelTimers()
+                        onToggleStart?()
+                        return
+                    }
+
                     if let onArm {
                         armed = true
                         onArm()
                     }
-                    if tapToToggleEnabled {
-                        fputs("[hotkey] target key \(targetKeyCode) down (tap-to-toggle)\n", stderr)
-                        // Skip hold timers — release will start toggle mode
-                    } else {
-                        fputs("[hotkey] target key \(targetKeyCode) down\n", stderr)
-                        scheduleTimers()
-                    }
+                    fputs("[hotkey] target key \(targetKeyCode) down\n", stderr)
+                    scheduleTimers()
                 }
             } else {
                 fputs("[hotkey] target key \(targetKeyCode) up\n", stderr)
@@ -443,15 +451,8 @@ final class HotkeyMonitor {
                     return
                 }
 
-                // Tap-to-toggle: a quick press-and-release (before hold timers
-                // would have fired) starts toggle mode. If recording already
-                // started (user held long enough despite the mode), stop it
-                // normally via the active branch below.
-                if tapToToggleEnabled && wasDown && !active && !otherKeyPressed {
-                    fputs("[hotkey] tap-to-toggle → toggle start\n", stderr)
-                    lastTapWasShort = false
-                    lastTapUpTime = nil
-                    toggleActive = true
+                // Tap-to-toggle starts/stops on key-down; key-up is a no-op.
+                if tapToToggleEnabled {
                     return
                 }
 

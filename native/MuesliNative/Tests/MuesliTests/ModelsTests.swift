@@ -2223,31 +2223,56 @@ struct HotkeyMonitorTests {
 
     // MARK: - Tap-to-Toggle Mode
 
-    @Test("tap-to-toggle starts toggle on quick tap")
+    @Test("tap-to-toggle starts toggle on key down")
     @MainActor
-    func tapToToggleStartsOnQuickTap() {
+    func tapToToggleStartsOnKeyDown() {
         let scheduler = ManualHotkeyScheduler()
         let monitor = scheduler.makeMonitor(doubleTapWindow: 0.35)
         monitor.tapToToggleEnabled = true
         var toggleStartCount = 0
         var startCount = 0
+        var armCount = 0
         monitor.onToggleStart = {
             toggleStartCount += 1
         }
         monitor.onStart = {
             startCount += 1
         }
+        monitor.onArm = {
+            armCount += 1
+        }
 
-        // Quick press and release — should start toggle, not hold recording
+        // Single key-down should start toggle immediately — no release needed
         monitor.handleFlagsChanged(keyCode: 55, flags: .command)
-        monitor.handleFlagsChanged(keyCode: 55, flags: [])
 
         #expect(toggleStartCount == 1)
         #expect(startCount == 0)
+        #expect(armCount == 0)
         #expect(monitor.isToggleRecording)
     }
 
-    @Test("tap-to-toggle stops toggle on next tap")
+    @Test("tap-to-toggle key-up does not stop toggle")
+    @MainActor
+    func tapToToggleKeyUpDoesNotStop() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(doubleTapWindow: 0.35)
+        monitor.tapToToggleEnabled = true
+        var toggleStopCount = 0
+        monitor.onToggleStop = {
+            toggleStopCount += 1
+        }
+
+        // Start toggle
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        #expect(monitor.isToggleRecording)
+
+        // Key-up should NOT stop toggle — it persists until next key-down
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        #expect(monitor.isToggleRecording)
+        #expect(toggleStopCount == 0)
+    }
+
+    @Test("tap-to-toggle stops toggle on next key down")
     @MainActor
     func tapToToggleStopsOnNextTap() {
         let scheduler = ManualHotkeyScheduler()
@@ -2264,12 +2289,44 @@ struct HotkeyMonitorTests {
 
         // First tap → start
         monitor.handleFlagsChanged(keyCode: 55, flags: .command)
-        monitor.handleFlagsChanged(keyCode: 55, flags: [])
         #expect(toggleStartCount == 1)
         #expect(monitor.isToggleRecording)
 
+        // Release (no-op)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+
         // Second tap → stop
         monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        #expect(toggleStopCount == 1)
+        #expect(!monitor.isToggleRecording)
+    }
+
+    @Test("tap-to-toggle does not restart after stop on key-up")
+    @MainActor
+    func tapToToggleDoesNotRestartAfterStop() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(doubleTapWindow: 0.35)
+        monitor.tapToToggleEnabled = true
+        var toggleStartCount = 0
+        var toggleStopCount = 0
+        monitor.onToggleStart = {
+            toggleStartCount += 1
+        }
+        monitor.onToggleStop = {
+            toggleStopCount += 1
+        }
+
+        // Start → release → stop
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        #expect(toggleStartCount == 1)
+        #expect(toggleStopCount == 1)
+        #expect(!monitor.isToggleRecording)
+
+        // Key-up after stop must NOT restart toggle
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        #expect(toggleStartCount == 1)
         #expect(toggleStopCount == 1)
         #expect(!monitor.isToggleRecording)
     }
@@ -2289,7 +2346,7 @@ struct HotkeyMonitorTests {
             startCount += 1
         }
 
-        // Press and hold — timers should not fire in tap-to-toggle mode
+        // Press and hold — hold timers should not fire in tap-to-toggle mode
         monitor.handleFlagsChanged(keyCode: 55, flags: .command)
         scheduler.advance(by: 0.50)
 
@@ -2311,10 +2368,10 @@ struct HotkeyMonitorTests {
 
         // First tap → toggle start (not waiting for double-tap)
         monitor.handleFlagsChanged(keyCode: 55, flags: .command)
-        monitor.handleFlagsChanged(keyCode: 55, flags: [])
         #expect(toggleStartCount == 1)
 
-        // Wait beyond double-tap window
+        // Release and wait beyond double-tap window
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
         scheduler.advance(by: 0.40)
 
         // No additional toggle start from stale double-tap detection
