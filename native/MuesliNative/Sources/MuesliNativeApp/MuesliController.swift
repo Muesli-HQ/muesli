@@ -673,6 +673,11 @@ public final class MuesliController: NSObject {
         if canRunMainApp {
             startMeetingRecordingHotkeyMonitorIfNeeded()
         }
+        // The automation bridge is independent of the hotkey and of push-to-talk,
+        // so it is configured here rather than inside the hotkey setup above.
+        if canRunMainApp {
+            configureComputerUseAutomationBridge()
+        }
         syncDictationRecorderWarmup(intent: .idlePrewarm(.startup))
         indicator.onStopMeeting = { [weak self] in self?.stopMeetingRecording() }
         indicator.onDiscardMeeting = { [weak self] in self?.discardMeetingWithConfirmation() }
@@ -1443,7 +1448,11 @@ public final class MuesliController: NSObject {
         let previousMeetingRecordingHotkeyTriggerThresholdMS = config.meetingRecordingHotkeyTriggerThresholdMS
         let previousEnableDictionaryCorrectionPrompts = config.enableDictionaryCorrectionPrompts
         let previousEnableLiveStreamingPartials = config.enableLiveStreamingPartials
+        let previousEnableComputerUseAutomationBridge = config.enableComputerUseAutomationBridge
         mutate(&config)
+        if previousEnableComputerUseAutomationBridge != config.enableComputerUseAutomationBridge {
+            configureComputerUseAutomationBridge()
+        }
         if previousEnableLiveStreamingPartials, !config.enableLiveStreamingPartials {
             preparingMeetingSession?.stopStreamingPartials()
             activeMeetingSession?.stopStreamingPartials()
