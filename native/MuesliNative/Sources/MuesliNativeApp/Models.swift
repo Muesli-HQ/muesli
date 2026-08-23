@@ -586,13 +586,13 @@ struct SummaryModelPreset {
         "gpt-5.4-nano",
     ]
 
+    /// Only models the WHAM endpoint accepts for ChatGPT accounts. gpt-5.6-sol,
+    /// gpt-5.4 and gpt-5.2 are rejected with a 400 and are deliberately absent —
+    /// offering them in the picker only produces failed runs. See #457.
     static let computerUsePlannerModels: [SummaryModelPreset] = [
-        SummaryModelPreset(id: "gpt-5.6-sol", label: "GPT-5.6 Sol (default)"),
-        SummaryModelPreset(id: "gpt-5.6-terra", label: "GPT-5.6 Terra"),
+        SummaryModelPreset(id: "gpt-5.6-terra", label: "GPT-5.6 Terra (default)"),
         SummaryModelPreset(id: "gpt-5.6-luna", label: "GPT-5.6 Luna"),
-        SummaryModelPreset(id: "gpt-5.4", label: "GPT-5.4"),
         SummaryModelPreset(id: "gpt-5.4-mini", label: "GPT-5.4 Mini"),
-        SummaryModelPreset(id: "gpt-5.2", label: "GPT-5.2"),
     ]
 
     static let openRouterModels: [SummaryModelPreset] = [
@@ -621,6 +621,24 @@ struct SummaryModelPreset {
         default:
             return nil
         }
+    }
+
+    /// Models the WHAM endpoint rejects for ChatGPT accounts. Only applies to the
+    /// Computer Use planner; the summary backends use a different endpoint that
+    /// accepts these. See #457.
+    static let rejectedComputerUsePlannerModels: Set<String> = [
+        "gpt-5.5", "gpt-5.6-sol", "gpt-5.4", "gpt-5.2",
+    ]
+
+    /// Moves a stored planner model off anything the backend refuses. Without
+    /// this, users who selected gpt-5.5 before #348 and users migrated onto
+    /// gpt-5.6-sol by it are both left unable to run Computer Use.
+    static func migratedComputerUsePlannerModel(_ model: String) -> String {
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return model }
+        return rejectedComputerUsePlannerModels.contains(trimmed)
+            ? "gpt-5.6-terra"
+            : trimmed
     }
 
     static func migratedFromGPT55(_ model: String) -> String {
@@ -1524,7 +1542,7 @@ struct AppConfig: Codable {
         meetingRecordingHotkey = (try? c.decode(HotkeyConfig.self, forKey: .meetingRecordingHotkey)) ?? defaults.meetingRecordingHotkey
         enableMeetingRecordingHotkey = (try? c.decode(Bool.self, forKey: .enableMeetingRecordingHotkey)) ?? defaults.enableMeetingRecordingHotkey
         enableComputerUsePlanner = (try? c.decode(Bool.self, forKey: .enableComputerUsePlanner)) ?? defaults.enableComputerUsePlanner
-        computerUsePlannerModel = SummaryModelPreset.migratedFromGPT55(
+        computerUsePlannerModel = SummaryModelPreset.migratedComputerUsePlannerModel(
             (try? c.decode(String.self, forKey: .computerUsePlannerModel)) ?? defaults.computerUsePlannerModel
         )
         computerUseTimeoutSeconds = (try? c.decode(Int.self, forKey: .computerUseTimeoutSeconds)) ?? defaults.computerUseTimeoutSeconds

@@ -649,13 +649,15 @@ struct SummaryModelPresetTests {
         }
     }
 
-    @Test("Computer use planner presets use GPT-5.6 Sol by default")
+    @Test("Computer use planner presets use GPT-5.6 Terra by default")
     func computerUsePlannerModels() {
-        #expect(SummaryModelPreset.computerUsePlannerModels.first?.id == "gpt-5.6-sol")
-        #expect(SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-5.6-terra" })
+        // Only models the WHAM endpoint accepts for ChatGPT accounts. See #457.
+        #expect(SummaryModelPreset.computerUsePlannerModels.first?.id == "gpt-5.6-terra")
         #expect(SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-5.6-luna" })
         #expect(SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-5.4-mini" })
-        #expect(!SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-5.5" })
+        for rejected in SummaryModelPreset.rejectedComputerUsePlannerModels {
+            #expect(!SummaryModelPreset.computerUsePlannerModels.contains { $0.id == rejected })
+        }
         for preset in SummaryModelPreset.computerUsePlannerModels {
             #expect(!preset.id.isEmpty)
             #expect(!preset.label.isEmpty)
@@ -1033,7 +1035,7 @@ struct AppConfigTests {
         config.computerUseHotkey = HotkeyConfig(keyCode: 62, label: "Right Ctrl")
         config.enableComputerUseHotkey = false
         config.enableComputerUsePlanner = false
-        config.computerUsePlannerModel = "gpt-5.4"
+        config.computerUsePlannerModel = "gpt-5.4-mini"
         config.computerUseTimeoutSeconds = 180
         config.hotkeyTriggerThresholdMS = 125
         config.computerUseHotkeyTriggerThresholdMS = 350
@@ -1115,7 +1117,7 @@ struct AppConfigTests {
         #expect(decoded.computerUseHotkey == HotkeyConfig(keyCode: 62, label: "Right Ctrl"))
         #expect(decoded.enableComputerUseHotkey == false)
         #expect(decoded.enableComputerUsePlanner == false)
-        #expect(decoded.computerUsePlannerModel == "gpt-5.4")
+        #expect(decoded.computerUsePlannerModel == "gpt-5.4-mini")
         #expect(decoded.computerUseTimeoutSeconds == 180)
         #expect(decoded.hotkeyTriggerThresholdMS == 125)
         #expect(decoded.computerUseHotkeyTriggerThresholdMS == 350)
@@ -1468,7 +1470,9 @@ struct AppConfigTests {
         """
         let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
 
-        #expect(config.computerUsePlannerModel == "gpt-5.6-sol")
+        // The CUA planner migrates onto a model the backend accepts (#457); the
+        // summary backends use a different endpoint and keep gpt-5.6-sol.
+        #expect(config.computerUsePlannerModel == "gpt-5.6-terra")
         #expect(config.openAIModel == "gpt-5.6-sol")
         #expect(config.chatGPTModel == "gpt-5.6-sol")
         #expect(config.postProcessorOpenAIModel == "gpt-5.6-sol")

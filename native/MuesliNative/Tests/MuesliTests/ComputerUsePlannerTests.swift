@@ -385,11 +385,11 @@ struct ComputerUsePlannerModelTests {
         config.chatGPTModel = "gpt-5.4-mini"
 
         #expect(ComputerUsePlannerClient.plannerModel(for: config) == ComputerUsePlannerClient.defaultModel)
-        #expect(ComputerUsePlannerClient.defaultModel == "gpt-5.6-sol")
+        #expect(ComputerUsePlannerClient.defaultModel == "gpt-5.6-terra")
 
-        config.computerUsePlannerModel = "gpt-5.4"
+        config.computerUsePlannerModel = "gpt-5.4-mini"
 
-        #expect(ComputerUsePlannerClient.plannerModel(for: config) == "gpt-5.4")
+        #expect(ComputerUsePlannerClient.plannerModel(for: config) == "gpt-5.4-mini")
     }
 
     @Test("uses fixed High reasoning for every GPT-5.6 planner tier")
@@ -405,6 +405,60 @@ struct ComputerUsePlannerModelTests {
 
             #expect(reasoning?["effort"] == "high")
         }
+    }
+
+    // MARK: - #457: the shipped planner model was rejected by the backend
+
+    @Test("The default planner model is one the backend accepts")
+    func defaultModelIsAccepted() {
+        #expect(!SummaryModelPreset.rejectedComputerUsePlannerModels
+            .contains(ComputerUsePlannerClient.defaultModel))
+    }
+
+    @Test("No model offered in the picker is one the backend rejects")
+    func noPresetIsRejected() {
+        let offered = Set(SummaryModelPreset.computerUsePlannerModels.map(\.id))
+        let bad = offered.intersection(SummaryModelPreset.rejectedComputerUsePlannerModels)
+        #expect(bad.isEmpty, "picker offers models the backend refuses: \(bad.sorted())")
+    }
+
+    @Test("The default is among the offered presets")
+    func defaultIsOffered() {
+        #expect(SummaryModelPreset.computerUsePlannerModels
+            .map(\.id).contains(ComputerUsePlannerClient.defaultModel))
+    }
+
+    @Test("Users stored on a rejected model are migrated off it",
+          arguments: ["gpt-5.5", "gpt-5.6-sol", "gpt-5.4", "gpt-5.2"])
+    func migratesRejectedModels(stored: String) {
+        let migrated = SummaryModelPreset.migratedComputerUsePlannerModel(stored)
+        #expect(migrated == "gpt-5.6-terra")
+        #expect(!SummaryModelPreset.rejectedComputerUsePlannerModels.contains(migrated))
+    }
+
+    @Test("An accepted model is left alone",
+          arguments: ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4-mini"])
+    func leavesAcceptedModels(stored: String) {
+        #expect(SummaryModelPreset.migratedComputerUsePlannerModel(stored) == stored)
+    }
+
+    @Test("An empty stored value falls through to the default rather than being rewritten")
+    func leavesEmptyAlone() {
+        #expect(SummaryModelPreset.migratedComputerUsePlannerModel("").isEmpty)
+    }
+
+    @Test("A config written before the fix decodes onto a working model")
+    func legacyConfigMigratesOnDecode() throws {
+        let legacy = Data(#"{"computer_use_planner_model":"gpt-5.6-sol"}"#.utf8)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: legacy)
+        #expect(decoded.computerUsePlannerModel == "gpt-5.6-terra")
+    }
+
+    @Test("The summary backends keep their own migration and are unaffected")
+    func summaryMigrationUnchanged() {
+        // gpt-5.6-sol works on the summary endpoint; only the CUA planner path
+        // treats it as rejected.
+        #expect(SummaryModelPreset.migratedFromGPT55("gpt-5.5") == "gpt-5.6-sol")
     }
 
     @Test("keeps GPT-5.4 Mini available without changing its reasoning behavior")
