@@ -296,9 +296,9 @@ final class HotkeyMonitor {
         }
 
         // Enter during toggle mode: stop dictation and submit (paste + Enter).
-        // Consume the event so the physical keypress doesn't reach the
-        // frontmost app — the synthetic Return after paste handles submission.
-        if type == .keyDown && keyCode == 36 && toggleActive {
+        // Only the dictation monitor has onToggleStopAndSubmit wired — gate on
+        // it so Enter doesn't interfere with computer-use or meeting toggles.
+        if type == .keyDown && keyCode == 36 && toggleActive, onToggleStopAndSubmit != nil {
             fputs("[hotkey] enter → toggle stop and submit (combination)\n", stderr)
             toggleActive = false
             cancelTimers()
@@ -537,9 +537,9 @@ final class HotkeyMonitor {
         }
 
         // Enter during toggle mode: stop dictation and submit (paste + Enter).
-        // Consume the event so the physical keypress doesn't reach the
-        // frontmost app — the synthetic Return after paste handles submission.
-        if keyCode == 36 && toggleActive {
+        // Only the dictation monitor has onToggleStopAndSubmit wired — gate on
+        // it so Enter doesn't interfere with computer-use or meeting toggles.
+        if keyCode == 36 && toggleActive, onToggleStopAndSubmit != nil {
             fputs("[hotkey] enter → toggle stop and submit\n", stderr)
             toggleActive = false
             cancelTimers()
