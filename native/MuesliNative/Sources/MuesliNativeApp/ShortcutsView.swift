@@ -314,6 +314,27 @@ struct ShortcutsView: View {
 
     private var doubleTapSection: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
+            // Trigger mode picker
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                Text("Dictation Trigger")
+                    .font(MuesliTheme.headline())
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                Text("Choose how the hotkey activates dictation")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+            }
+            Picker("", selection: Binding(
+                get: { appState.config.resolvedDictationTriggerMode },
+                set: { newValue in
+                    controller.updateConfig { $0.dictationTriggerMode = newValue.rawValue }
+                }
+            )) {
+                ForEach(DictationTriggerMode.allCases, id: \.self) { mode in
+                    Text(mode.label).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
                     Text("Hands-Free Mode")
@@ -333,6 +354,7 @@ struct ShortcutsView: View {
                 .toggleStyle(.switch)
                 .tint(MuesliTheme.accent)
                 .labelsHidden()
+                .disabled(appState.config.resolvedDictationTriggerMode == .tapToToggle)
             }
         }
         .padding(MuesliTheme.spacing16)

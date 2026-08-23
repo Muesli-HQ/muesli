@@ -882,6 +882,8 @@ struct AppConfigTests {
         #expect(config.contributionLinkedInClicked == false)
         #expect(config.upcomingMeetingsDayCount == UpcomingMeetingsWindow.defaultDayCount)
         #expect(config.hiddenCalendarEventSourceHints.isEmpty)
+        #expect(config.dictationTriggerMode == DictationTriggerMode.holdToRecord.rawValue)
+        #expect(config.resolvedDictationTriggerMode == .holdToRecord)
     }
 
     @Test("LM Studio cleanup readiness requires model and valid URL")
@@ -1079,6 +1081,7 @@ struct AppConfigTests {
             "ek-event-1": UnifiedCalendarEvent.CalendarSource.eventKit.rawValue,
             "google-event-1": UnifiedCalendarEvent.CalendarSource.googleCalendar.rawValue,
         ]
+        config.dictationTriggerMode = DictationTriggerMode.tapToToggle.rawValue
 
         let data = try JSONEncoder().encode(config)
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
@@ -1153,6 +1156,8 @@ struct AppConfigTests {
         #expect(decoded.contributionLinkedInClicked == false)
         #expect(decoded.upcomingMeetingsDayCount == UpcomingMeetingsWindow.today.dayCount)
         #expect(decoded.hiddenCalendarEventSourceHints == config.hiddenCalendarEventSourceHints)
+        #expect(decoded.dictationTriggerMode == DictationTriggerMode.tapToToggle.rawValue)
+        #expect(decoded.resolvedDictationTriggerMode == .tapToToggle)
     }
 
     @Test("Automatic diagnostic issue prompts default off when absent")
@@ -2214,6 +2219,132 @@ struct HotkeyMonitorTests {
         scheduler.advance(by: 0.05)
 
         #expect(toggleStartCount == 0)
+    }
+
+    // MARK: - Tap-to-Toggle Mode
+
+    @Test("tap-to-toggle starts toggle on quick tap")
+    @MainActor
+    func tapToToggleStartsOnQuickTap() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(doubleTapWindow: 0.35)
+        monitor.tapToToggleEnabled = true
+        var toggleStartCount = 0
+        var startCount = 0
+        monitor.onToggleStart = {
+            toggleStartCount += 1
+        }
+        monitor.onStart = {
+            startCount += 1
+        }
+
+        // Quick press and release — should start toggle, not hold recording
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+
+        #expect(toggleStartCount == 1)
+        #expect(startCount == 0)
+        #expect(monitor.isToggleRecording)
+    }
+
+    @Test("tap-to-toggle stops toggle on next tap")
+    @MainActor
+    func tapToToggleStopsOnNextTap() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(doubleTapWindow: 0.35)
+        monitor.tapToToggleEnabled = true
+        var toggleStartCount = 0
+        var toggleStopCount = 0
+        monitor.onToggleStart = {
+            toggleStartCount += 1
+        }
+        monitor.onToggleStop = {
+            toggleStopCount += 1
+        }
+
+        // First tap → start
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        #expect(toggleStartCount == 1)
+        #expect(monitor.isToggleRecording)
+
+        // Second tap → stop
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        #expect(toggleStopCount == 1)
+        #expect(!monitor.isToggleRecording)
+    }
+
+    @Test("tap-to-toggle does not start hold timers on key down")
+    @MainActor
+    func tapToToggleSkipsHoldTimers() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(doubleTapWindow: 0.35)
+        monitor.tapToToggleEnabled = true
+        var prepareCount = 0
+        var startCount = 0
+        monitor.onPrepare = {
+            prepareCount += 1
+        }
+        monitor.onStart = {
+            startCount += 1
+        }
+
+        // Press and hold — timers should not fire in tap-to-toggle mode
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        scheduler.advance(by: 0.50)
+
+        #expect(prepareCount == 0)
+        #expect(startCount == 0)
+    }
+
+    @Test("tap-to-toggle ignores double-tap detection")
+    @MainActor
+    func tapToToggleIgnoresDoubleTap() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(doubleTapWindow: 0.35)
+        monitor.tapToToggleEnabled = true
+        monitor.doubleTapEnabled = true
+        var toggleStartCount = 0
+        monitor.onToggleStart = {
+            toggleStartCount += 1
+        }
+
+        // First tap → toggle start (not waiting for double-tap)
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        #expect(toggleStartCount == 1)
+
+        // Wait beyond double-tap window
+        scheduler.advance(by: 0.40)
+
+        // No additional toggle start from stale double-tap detection
+        #expect(toggleStartCount == 1)
+    }
+
+    @Test("hold-to-record mode still works when tap-to-toggle is disabled")
+    @MainActor
+    func holdToRecordStillWorksWhenTapToToggleDisabled() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(doubleTapWindow: 0.35)
+        monitor.tapToToggleEnabled = false
+        monitor.doubleTapEnabled = false
+        var startCount = 0
+        var stopCount = 0
+        monitor.onStart = {
+            startCount += 1
+        }
+        monitor.onStop = {
+            stopCount += 1
+        }
+
+        // Hold past threshold → start
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        scheduler.advance(by: 0.30)
+        #expect(startCount == 1)
+
+        // Release → stop
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        #expect(stopCount == 1)
     }
 }
 

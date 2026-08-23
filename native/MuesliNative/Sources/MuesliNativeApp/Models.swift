@@ -1258,6 +1258,33 @@ enum OnboardingUseCase: String, Codable, CaseIterable {
     }
 }
 
+/// How the dictation hotkey triggers recording.
+///
+/// - `holdToRecord`: Hold the hotkey to record; release to stop and paste.
+///   Double-tap hands-free mode remains available when enabled.
+/// - `tapToToggle`: A single tap starts hands-free recording; tap again to stop.
+///   No need to hold the key or double-tap.
+enum DictationTriggerMode: String, Codable, CaseIterable {
+    case holdToRecord = "hold_to_record"
+    case tapToToggle = "tap_to_toggle"
+
+    var label: String {
+        switch self {
+        case .holdToRecord: return "Hold to Record"
+        case .tapToToggle: return "Tap to Toggle"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .holdToRecord:
+            return "Hold the hotkey to record, release to paste. Double-tap for hands-free."
+        case .tapToToggle:
+            return "Tap once to start recording, tap again to stop and paste."
+        }
+    }
+}
+
 struct AppConfig: Codable {
     var dictationHotkey: HotkeyConfig = .default
     var computerUseHotkey: HotkeyConfig = .computerUseDefault
@@ -1296,6 +1323,7 @@ struct AppConfig: Codable {
     var waveformCacheOrphanCleanupMigrationApplied: Bool = false
     var darkMode: Bool = true
     var enableDoubleTapDictation: Bool = true
+    var dictationTriggerMode: String = DictationTriggerMode.holdToRecord.rawValue
     var hotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
     var computerUseHotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
     var meetingRecordingHotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultMeetingThresholdMilliseconds
@@ -1423,6 +1451,7 @@ struct AppConfig: Codable {
         case waveformCacheOrphanCleanupMigrationApplied = "waveform_cache_orphan_cleanup_migration_applied"
         case darkMode = "dark_mode"
         case enableDoubleTapDictation = "enable_double_tap_dictation"
+        case dictationTriggerMode = "dictation_trigger_mode"
         case hotkeyTriggerThresholdMS = "hotkey_trigger_threshold_ms"
         case computerUseHotkeyTriggerThresholdMS = "computer_use_hotkey_trigger_threshold_ms"
         case meetingRecordingHotkeyTriggerThresholdMS = "meeting_recording_hotkey_trigger_threshold_ms"
@@ -1577,6 +1606,7 @@ struct AppConfig: Codable {
         iCloudSyncEnabled = (try? c.decode(Bool.self, forKey: .iCloudSyncEnabled)) ?? defaults.iCloudSyncEnabled
         showIOSCompanionPrompt = (try? c.decode(Bool.self, forKey: .showIOSCompanionPrompt)) ?? defaults.showIOSCompanionPrompt
         enableDoubleTapDictation = (try? c.decode(Bool.self, forKey: .enableDoubleTapDictation)) ?? defaults.enableDoubleTapDictation
+        dictationTriggerMode = (try? c.decode(String.self, forKey: .dictationTriggerMode)) ?? defaults.dictationTriggerMode
         hotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(
             (try? c.decode(Int.self, forKey: .hotkeyTriggerThresholdMS)) ?? defaults.hotkeyTriggerThresholdMS
         )
@@ -1740,6 +1770,10 @@ struct AppConfig: Codable {
 
     var resolvedOnboardingUseCase: OnboardingUseCase {
         OnboardingUseCase.resolved(onboardingUseCase)
+    }
+
+    var resolvedDictationTriggerMode: DictationTriggerMode {
+        DictationTriggerMode(rawValue: dictationTriggerMode) ?? .holdToRecord
     }
 
     var resolvedAutoExportMarkdownContent: MeetingExportContent {

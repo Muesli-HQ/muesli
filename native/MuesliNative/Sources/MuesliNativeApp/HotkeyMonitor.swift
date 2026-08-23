@@ -34,6 +34,7 @@ final class HotkeyMonitor {
     var onToggleStop: (() -> Void)?
     var targetKeyCode: UInt16 = 55
     var doubleTapEnabled: Bool = true
+    var tapToToggleEnabled: Bool = false
 
     // Combination mode (e.g. Cmd+Shift+R)
     var combinationModifiers: NSEvent.ModifierFlags?
@@ -400,8 +401,10 @@ final class HotkeyMonitor {
                         return
                     }
 
-                    // Check for double-tap
-                    if doubleTapEnabled,
+                    // Check for double-tap (skipped in tap-to-toggle mode — a
+                    // single tap already toggles, so double-tap is redundant)
+                    if !tapToToggleEnabled,
+                       doubleTapEnabled,
                        lastTapWasShort,
                        let lastUp = lastTapUpTime,
                        now().timeIntervalSince(lastUp) < doubleTapWindow {
@@ -419,8 +422,13 @@ final class HotkeyMonitor {
                         armed = true
                         onArm()
                     }
-                    fputs("[hotkey] target key \(targetKeyCode) down\n", stderr)
-                    scheduleTimers()
+                    if tapToToggleEnabled {
+                        fputs("[hotkey] target key \(targetKeyCode) down (tap-to-toggle)\n", stderr)
+                        // Skip hold timers — release will start toggle mode
+                    } else {
+                        fputs("[hotkey] target key \(targetKeyCode) down\n", stderr)
+                        scheduleTimers()
+                    }
                 }
             } else {
                 fputs("[hotkey] target key \(targetKeyCode) up\n", stderr)
@@ -432,6 +440,18 @@ final class HotkeyMonitor {
 
                 if toggleActive {
                     // Don't stop toggle on key-up — only on next key-down
+                    return
+                }
+
+                // Tap-to-toggle: a quick press-and-release (before hold timers
+                // would have fired) starts toggle mode. If recording already
+                // started (user held long enough despite the mode), stop it
+                // normally via the active branch below.
+                if tapToToggleEnabled && wasDown && !active && !otherKeyPressed {
+                    fputs("[hotkey] tap-to-toggle → toggle start\n", stderr)
+                    lastTapWasShort = false
+                    lastTapUpTime = nil
+                    toggleActive = true
                     return
                 }
 
