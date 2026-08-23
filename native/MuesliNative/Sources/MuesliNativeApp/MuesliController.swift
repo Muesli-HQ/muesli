@@ -446,6 +446,7 @@ public final class MuesliController: NSObject {
     private var pendingComputerUseStopSessionID: UUID?
     private var computerUseCommandTask: Task<Void, Never>?
     private var computerUseCommandTaskID: UUID?
+    private let computerUseAutomationBridge = ComputerUseAutomationBridge.Observer()
     private var computerUseFloatingStatusWorkItem: DispatchWorkItem?
     private var computerUseLastFloatingStatusAt = Date.distantPast
     private var computerUseLastFloatingStatus = ""
@@ -672,6 +673,11 @@ public final class MuesliController: NSObject {
         if canRunMainApp {
             startMeetingRecordingHotkeyMonitorIfNeeded()
         }
+        // The automation bridge is independent of the hotkey, of push-to-talk, and
+        // of onboarding state. Its own flag and the production-build refusal are
+        // the gating; adding `canRunMainApp` here would only create a window where
+        // an enabled bridge never registers.
+        configureComputerUseAutomationBridge()
         syncDictationRecorderWarmup(intent: .idlePrewarm(.startup))
         indicator.onStopMeeting = { [weak self] in self?.stopMeetingRecording() }
         indicator.onDiscardMeeting = { [weak self] in self?.discardMeetingWithConfirmation() }
@@ -1442,7 +1448,11 @@ public final class MuesliController: NSObject {
         let previousMeetingRecordingHotkeyTriggerThresholdMS = config.meetingRecordingHotkeyTriggerThresholdMS
         let previousEnableDictionaryCorrectionPrompts = config.enableDictionaryCorrectionPrompts
         let previousEnableLiveStreamingPartials = config.enableLiveStreamingPartials
+        let previousEnableComputerUseAutomationBridge = config.enableComputerUseAutomationBridge
         mutate(&config)
+        if previousEnableComputerUseAutomationBridge != config.enableComputerUseAutomationBridge {
+            configureComputerUseAutomationBridge()
+        }
         if previousEnableLiveStreamingPartials, !config.enableLiveStreamingPartials {
             preparingMeetingSession?.stopStreamingPartials()
             activeMeetingSession?.stopStreamingPartials()
@@ -7326,12 +7336,60 @@ public final class MuesliController: NSObject {
     }
 
     private func configureComputerUseHotkeyMonitor() {
+        configureComputerUseAutomationBridge()
         guard config.enableComputerUseHotkey else {
             computerUseHotkeyMonitor.stop()
             return
         }
         computerUseHotkeyMonitor.configure(config.computerUseHotkey)
         startComputerUseHotkeyMonitorIfNeeded()
+    }
+
+    /// Non-production only. See ComputerUseAutomationBridge for the two gates.
+    private func configureComputerUseAutomationBridge() {
+        computerUseAutomationBridge.sync(
+            enabled: config.enableComputerUseAutomationBridge
+        ) { [weak self] request in
+            self?.handleComputerUseAutomationRequest(request)
+        }
+    }
+
+    /// Starts a CUA command supplied by the acceptance harness instead of the
+    /// microphone. Everything after the transcript — the dictation row, the
+    /// planner loop, the trace — is the normal path.
+    private func handleComputerUseAutomationRequest(
+        _ request: ComputerUseAutomationBridge.Request
+    ) {
+        guard config.enableComputerUseAutomationBridge,
+              ComputerUseAutomationBridge.isPermittedBuild else { return }
+        guard canStartComputerUseCommand else {
+            fputs("[cua-bridge] busy, rejected: \(request.command)\n", stderr)
+            return
+        }
+        fputs("[cua-bridge] command: \(request.command) tag=\(request.runTag ?? "-")\n", stderr)
+        let taskID = UUID()
+        computerUseCommandTaskID = taskID
+        let startedAt = Date()
+        let dictationID = try? dictationStore.insertDictation(
+            text: request.command,
+            durationSeconds: 0,
+            // There is no screen context for a bridge-started run, so the column
+            // carries the harness's run tag instead. Without it a sweep's rows are
+            // indistinguishable from real dictations in history.
+            appContext: request.runTag.map { "harness:\($0)" } ?? "harness",
+            source: "cua",
+            startedAt: startedAt,
+            endedAt: startedAt
+        )
+        scheduleICloudSyncAfterLocalChange()
+        computerUseCommandTask = Task { [weak self] in
+            guard let self else { return }
+            await self.handleComputerUseCommand(
+                transcript: request.command,
+                dictationID: dictationID,
+                taskID: taskID
+            )
+        }
     }
 
     private func configureHotkeyMonitorTiming() {
