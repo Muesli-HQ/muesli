@@ -634,7 +634,12 @@ public final class MuesliController: NSObject {
         hotkeyMonitor.onStart = { [weak self] in self?.handleStart() }
         hotkeyMonitor.onStop = { [weak self] in self?.handleStop() }
         hotkeyMonitor.onCancel = { [weak self] in self?.handleCancel() }
-        hotkeyMonitor.onToggleStart = { [weak self] in self?.handleToggleStart() }
+        hotkeyMonitor.onToggleStart = { [weak self] in
+            guard let self else { return }
+            if !self.handleToggleStart() {
+                self.hotkeyMonitor.cancelToggleMode()
+            }
+        }
         hotkeyMonitor.onToggleStop = { [weak self] in self?.handleToggleStop() }
         hotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
         hotkeyMonitor.tapToToggleEnabled = config.resolvedDictationTriggerMode == .tapToToggle
@@ -1540,7 +1545,6 @@ public final class MuesliController: NSObject {
         hotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
         hotkeyMonitor.tapToToggleEnabled = config.resolvedDictationTriggerMode == .tapToToggle
         computerUseHotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
-        computerUseHotkeyMonitor.tapToToggleEnabled = config.resolvedDictationTriggerMode == .tapToToggle
         if hotkeyTriggerThresholdChanged {
             configureHotkeyMonitorTiming()
         }
@@ -7364,7 +7368,6 @@ public final class MuesliController: NSObject {
             return
         }
         computerUseHotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
-        computerUseHotkeyMonitor.tapToToggleEnabled = config.resolvedDictationTriggerMode == .tapToToggle
         computerUseHotkeyMonitor.configure(config.computerUseHotkey)
         computerUseHotkeyMonitor.start()
     }

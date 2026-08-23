@@ -1638,6 +1638,19 @@ struct AppConfigTests {
         #expect(config.resolvedOnboardingUseCase == .dictation)
     }
 
+    @Test("unsupported dictation trigger mode falls back to hold-to-record")
+    func unsupportedDictationTriggerModeFallsBackToHoldToRecord() throws {
+        let json = """
+        {
+          "dictation_trigger_mode": "unknown_mode"
+        }
+        """
+
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.resolvedDictationTriggerMode == .holdToRecord)
+    }
+
     @Test("voice notes use push-to-talk without paste dictation")
     func voiceNotesUsePushToTalkWithoutPasteDictation() {
         #expect(OnboardingUseCase.voiceNotes.includesVoiceNotes)
@@ -2402,6 +2415,54 @@ struct HotkeyMonitorTests {
         // Release → stop
         monitor.handleFlagsChanged(keyCode: 55, flags: [])
         #expect(stopCount == 1)
+    }
+
+    @Test("tap-to-toggle cancels when interrupted by another key")
+    @MainActor
+    func tapToToggleCancelsWhenInterruptedByOtherKey() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(doubleTapWindow: 0.35)
+        monitor.tapToToggleEnabled = true
+        var toggleStartCount = 0
+        var cancelCount = 0
+        monitor.onToggleStart = {
+            toggleStartCount += 1
+        }
+        monitor.onCancel = {
+            cancelCount += 1
+        }
+
+        // Key-down starts toggle, then another key interrupts
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        #expect(toggleStartCount == 1)
+
+        // Another modifier key pressed — should cancel toggle
+        monitor.handleFlagsChanged(keyCode: 56, flags: .shift)
+
+        #expect(!monitor.isToggleRecording)
+    }
+
+    @Test("reconfiguring hotkey during active tap-to-toggle cancels cleanly")
+    @MainActor
+    func configureKeyCodeDuringActiveTapToToggleCancelsCleanly() {
+        let monitor = HotkeyMonitor(doubleTapWindow: 0.35)
+        monitor.tapToToggleEnabled = true
+        var toggleStopCount = 0
+        monitor.onToggleStart = {}
+        monitor.onToggleStop = {
+            toggleStopCount += 1
+        }
+
+        // Start toggle
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        #expect(monitor.isToggleRecording)
+
+        // Reconfigure key code — should cancel active toggle
+        monitor.configure(keyCode: 56)
+
+        #expect(!monitor.isToggleRecording)
+        #expect(toggleStopCount == 1)
+        #expect(monitor.targetKeyCode == 56)
     }
 }
 
