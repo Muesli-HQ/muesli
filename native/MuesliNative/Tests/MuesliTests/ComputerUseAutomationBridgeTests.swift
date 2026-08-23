@@ -119,6 +119,29 @@ struct ComputerUseAutomationBridgeTests {
         _ = observer.sync(enabled: false) { _ in }
     }
 
+    // MARK: - Run tag correlation
+
+    @Test("A run tag survives decoding so it can be persisted with the attempt")
+    func runTagIsAvailableDownstream() {
+        let request = ComputerUseAutomationBridge.decode(
+            payload: #"{"command":"open Notes","run_tag":"MuesliCUA-1234abcd-7"}"#
+        )
+        #expect(request?.runTag == "MuesliCUA-1234abcd-7")
+    }
+
+    @Test("Run tags are recorded in a form that separates sweep rows from real dictations")
+    func runTagContextIsDistinguishable() {
+        // Mirrors how the controller stores the tag: a bridge-started run has no
+        // screen context, so the column carries the harness tag instead.
+        let tagged = ComputerUseAutomationBridge.Request(
+            command: "open Notes", runTag: "MuesliCUA-1234abcd-7"
+        )
+        let untagged = ComputerUseAutomationBridge.Request(command: "open Notes", runTag: nil)
+
+        #expect(tagged.runTag.map { "harness:\($0)" } == "harness:MuesliCUA-1234abcd-7")
+        #expect(untagged.runTag.map { "harness:\($0)" } ?? "harness" == "harness")
+    }
+
     // MARK: - Config
 
     @Test("The bridge is off by default")

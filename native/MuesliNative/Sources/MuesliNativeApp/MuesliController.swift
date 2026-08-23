@@ -673,11 +673,11 @@ public final class MuesliController: NSObject {
         if canRunMainApp {
             startMeetingRecordingHotkeyMonitorIfNeeded()
         }
-        // The automation bridge is independent of the hotkey and of push-to-talk,
-        // so it is configured here rather than inside the hotkey setup above.
-        if canRunMainApp {
-            configureComputerUseAutomationBridge()
-        }
+        // The automation bridge is independent of the hotkey, of push-to-talk, and
+        // of onboarding state. Its own flag and the production-build refusal are
+        // the gating; adding `canRunMainApp` here would only create a window where
+        // an enabled bridge never registers.
+        configureComputerUseAutomationBridge()
         syncDictationRecorderWarmup(intent: .idlePrewarm(.startup))
         indicator.onStopMeeting = { [weak self] in self?.stopMeetingRecording() }
         indicator.onDiscardMeeting = { [weak self] in self?.discardMeetingWithConfirmation() }
@@ -7366,13 +7366,17 @@ public final class MuesliController: NSObject {
             fputs("[cua-bridge] busy, rejected: \(request.command)\n", stderr)
             return
         }
-        fputs("[cua-bridge] command: \(request.command)\n", stderr)
+        fputs("[cua-bridge] command: \(request.command) tag=\(request.runTag ?? "-")\n", stderr)
         let taskID = UUID()
         computerUseCommandTaskID = taskID
         let startedAt = Date()
         let dictationID = try? dictationStore.insertDictation(
             text: request.command,
             durationSeconds: 0,
+            // There is no screen context for a bridge-started run, so the column
+            // carries the harness's run tag instead. Without it a sweep's rows are
+            // indistinguishable from real dictations in history.
+            appContext: request.runTag.map { "harness:\($0)" } ?? "harness",
             source: "cua",
             startedAt: startedAt,
             endedAt: startedAt
