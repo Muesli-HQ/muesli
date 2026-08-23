@@ -1296,6 +1296,10 @@ struct AppConfig: Codable {
     var waveformCacheOrphanCleanupMigrationApplied: Bool = false
     var darkMode: Bool = true
     var enableDoubleTapDictation: Bool = true
+    /// When enabled, pressing Enter during toggle (hands-free) dictation stops
+    /// recording, pastes the transcript, and sends an Enter keypress to the
+    /// frontmost app — e.g. submitting a prompt in Cursor or Codex.
+    var enableSubmitOnEnter: Bool = false
     var hotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
     var computerUseHotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
     var meetingRecordingHotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultMeetingThresholdMilliseconds
@@ -1423,6 +1427,7 @@ struct AppConfig: Codable {
         case waveformCacheOrphanCleanupMigrationApplied = "waveform_cache_orphan_cleanup_migration_applied"
         case darkMode = "dark_mode"
         case enableDoubleTapDictation = "enable_double_tap_dictation"
+        case enableSubmitOnEnter = "enable_submit_on_enter"
         case hotkeyTriggerThresholdMS = "hotkey_trigger_threshold_ms"
         case computerUseHotkeyTriggerThresholdMS = "computer_use_hotkey_trigger_threshold_ms"
         case meetingRecordingHotkeyTriggerThresholdMS = "meeting_recording_hotkey_trigger_threshold_ms"
@@ -1577,6 +1582,7 @@ struct AppConfig: Codable {
         iCloudSyncEnabled = (try? c.decode(Bool.self, forKey: .iCloudSyncEnabled)) ?? defaults.iCloudSyncEnabled
         showIOSCompanionPrompt = (try? c.decode(Bool.self, forKey: .showIOSCompanionPrompt)) ?? defaults.showIOSCompanionPrompt
         enableDoubleTapDictation = (try? c.decode(Bool.self, forKey: .enableDoubleTapDictation)) ?? defaults.enableDoubleTapDictation
+        enableSubmitOnEnter = (try? c.decode(Bool.self, forKey: .enableSubmitOnEnter)) ?? defaults.enableSubmitOnEnter
         hotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(
             (try? c.decode(Int.self, forKey: .hotkeyTriggerThresholdMS)) ?? defaults.hotkeyTriggerThresholdMS
         )

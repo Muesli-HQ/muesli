@@ -334,6 +334,27 @@ struct ShortcutsView: View {
                 .tint(MuesliTheme.accent)
                 .labelsHidden()
             }
+
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                    Text("Submit on Enter")
+                        .font(MuesliTheme.headline())
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                    Text("Press Enter during hands-free dictation to stop, paste, and submit in apps like Cursor or Codex")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
+                Spacer()
+                Toggle("", isOn: Binding(
+                    get: { appState.config.enableSubmitOnEnter },
+                    set: { newValue in
+                        controller.updateConfig { $0.enableSubmitOnEnter = newValue }
+                    }
+                ))
+                .toggleStyle(.switch)
+                .tint(MuesliTheme.accent)
+                .labelsHidden()
+            }
         }
         .padding(MuesliTheme.spacing16)
         .background(MuesliTheme.backgroundRaised)

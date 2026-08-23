@@ -32,6 +32,7 @@ final class HotkeyMonitor {
     var onCancel: (() -> Void)?
     var onToggleStart: (() -> Void)?
     var onToggleStop: (() -> Void)?
+    var onToggleStopAndSubmit: (() -> Void)?
     var targetKeyCode: UInt16 = 55
     var doubleTapEnabled: Bool = true
 
@@ -519,6 +520,15 @@ final class HotkeyMonitor {
                 cancelTimers()
                 onCancel?()
             }
+            return
+        }
+
+        // Enter during toggle mode: stop dictation and submit (paste + Enter)
+        if keyCode == 36 && toggleActive {
+            fputs("[hotkey] enter → toggle stop and submit\n", stderr)
+            toggleActive = false
+            cancelTimers()
+            onToggleStopAndSubmit?()
             return
         }
 
