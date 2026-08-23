@@ -8866,6 +8866,7 @@ public final class MuesliController: NSObject {
         if isMeetingRecording() { return false }
         if blockDictationForMeetingActivityIfNeeded() { return false }
         fputs("[muesli-native] toggle dictation start\n", stderr)
+        pendingSubmitAfterPaste = false
         if dictationLatencyTraceID == nil {
             beginDictationLatencyTrace(reason: "toggle")
         }
@@ -8991,11 +8992,16 @@ public final class MuesliController: NSObject {
     private func handleStop() {
         if isMeetingRecording() {
             cancelDictationAudioSessionForMeetingRecordingIfNeeded()
+            pendingSubmitAfterPaste = false
             return
         }
-        if shouldIgnoreDictationCleanupForComputerUseActivity() { return }
+        if shouldIgnoreDictationCleanupForComputerUseActivity() {
+            pendingSubmitAfterPaste = false
+            return
+        }
         if shouldIgnoreCleanupAfterBlockedDictationStart {
             fputs("[muesli-native] ignoring dictation stop because start was blocked\n", stderr)
+            pendingSubmitAfterPaste = false
             return
         }
         fputs("[muesli-native] stop\n", stderr)
@@ -9133,8 +9139,10 @@ public final class MuesliController: NSObject {
         syncDictationRecorderWarmup(intent: .idlePrewarm(.backendRecovery))
         if pendingSubmitAfterPaste {
             pendingSubmitAfterPaste = false
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                PasteController.simulateReturnKey()
+            if !cleaned.isEmpty {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    PasteController.simulateReturnKey()
+                }
             }
         }
     }
@@ -9188,6 +9196,7 @@ public final class MuesliController: NSObject {
         markDictationLatency("stop_finished")
         guard let wavURL = stoppedWavURL else {
             fputs("[muesli-native] stop without wav\n", stderr)
+            pendingSubmitAfterPaste = false
             clearCapturedDictationSessionContext()
             resetDictationOutputMode()
             setState(.idle)
@@ -9203,6 +9212,7 @@ public final class MuesliController: NSObject {
             if isDictationTestMode {
                 dictationTestCallback?("")
             }
+            pendingSubmitAfterPaste = false
             clearCapturedDictationSessionContext()
             resetDictationOutputMode()
             setState(.idle)
@@ -9261,6 +9271,7 @@ public final class MuesliController: NSObject {
                 if isTestMode {
                     await MainActor.run {
                         self.dictationTestCallback?(text)
+                        self.pendingSubmitAfterPaste = false
                         self.clearCapturedDictationSessionContext()
                         self.resetDictationOutputMode()
                         self.setState(.idle)
@@ -9344,6 +9355,7 @@ public final class MuesliController: NSObject {
                             }
                         )
                     } else {
+                        self.pendingSubmitAfterPaste = false
                         self.releaseStandardDictationState()
                         self.markDictationLatency("user_visible_completion", trace: completionLatencyTrace)
                         self.finishStandardDictationBookkeeping(
@@ -9364,6 +9376,7 @@ public final class MuesliController: NSObject {
             } catch is CancellationError {
                 fputs("[muesli-native] test dictation cancelled\n", stderr)
                 await MainActor.run {
+                    self.pendingSubmitAfterPaste = false
                     self.clearCapturedDictationSessionContext()
                     self.resetDictationOutputMode()
                     self.setState(.idle)
@@ -9374,6 +9387,7 @@ public final class MuesliController: NSObject {
             } catch {
                 fputs("[muesli-native] transcription failed: \(error)\n", stderr)
                 await MainActor.run {
+                    self.pendingSubmitAfterPaste = false
                     if self.isDictationTestMode {
                         self.dictationTestFailureCallback?(self.userFacingDictationTestError(error))
                     } else {

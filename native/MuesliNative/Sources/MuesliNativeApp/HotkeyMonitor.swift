@@ -256,12 +256,12 @@ final class HotkeyMonitor {
         switch event.type {
         case .flagsChanged:
             handleFlagsChanged(keyCode: event.keyCode, flags: event.modifierFlags)
+            return false
         case .keyDown:
-            handleKeyDown(keyCode: event.keyCode)
+            return handleKeyDown(keyCode: event.keyCode)
         default:
-            break
+            return false
         }
-        return false
     }
 
     @discardableResult
@@ -492,7 +492,8 @@ final class HotkeyMonitor {
         }
     }
 
-    func handleKeyDown(keyCode: UInt16) {
+    @discardableResult
+    func handleKeyDown(keyCode: UInt16) -> Bool {
         // Escape cancels any active recording
         if keyCode == 53 {
             if toggleActive {
@@ -500,7 +501,7 @@ final class HotkeyMonitor {
                 toggleActive = false
                 cancelTimers()
                 onCancel?()
-                return
+                return true
             }
             if active {
                 fputs("[hotkey] escape → cancel hold\n", stderr)
@@ -510,7 +511,7 @@ final class HotkeyMonitor {
                 armed = false
                 cancelTimers()
                 onCancel?()
-                return
+                return true
             }
             if armed || prepared {
                 fputs("[hotkey] escape → cancel armed hold\n", stderr)
@@ -519,17 +520,20 @@ final class HotkeyMonitor {
                 prepared = false
                 cancelTimers()
                 onCancel?()
+                return true
             }
-            return
+            return false
         }
 
-        // Enter during toggle mode: stop dictation and submit (paste + Enter)
+        // Enter during toggle mode: stop dictation and submit (paste + Enter).
+        // Consume the event so the physical keypress doesn't reach the
+        // frontmost app — the synthetic Return after paste handles submission.
         if keyCode == 36 && toggleActive {
             fputs("[hotkey] enter → toggle stop and submit\n", stderr)
             toggleActive = false
             cancelTimers()
             onToggleStopAndSubmit?()
-            return
+            return true
         }
 
         if targetKeyDown && !toggleActive {
@@ -552,6 +556,7 @@ final class HotkeyMonitor {
                 }
             }
         }
+        return false
     }
 
     private func scheduleTimers() {
