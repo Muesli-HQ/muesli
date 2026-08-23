@@ -498,6 +498,12 @@ final class HotkeyMonitor {
             } else if wasArmed {
                 onCancel?()
             }
+        } else if toggleActive {
+            // Another modifier key while toggle is active — cancel toggle
+            fputs("[hotkey] canceled by other modifier key \(keyCode) during toggle\n", stderr)
+            toggleActive = false
+            cancelTimers()
+            onCancel?()
         }
     }
 

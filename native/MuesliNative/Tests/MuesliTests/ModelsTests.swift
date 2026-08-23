@@ -2439,6 +2439,7 @@ struct HotkeyMonitorTests {
         // Another modifier key pressed — should cancel toggle
         monitor.handleFlagsChanged(keyCode: 56, flags: .shift)
 
+        #expect(cancelCount == 1)
         #expect(!monitor.isToggleRecording)
     }
 
