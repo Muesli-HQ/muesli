@@ -1266,6 +1266,10 @@ struct AppConfig: Codable {
     var enableMeetingRecordingHotkey: Bool = false
     var computerUseHotkeyDefaultDisabledMigrationApplied: Bool = true
     var enableComputerUsePlanner: Bool = true
+    /// Non-production only: lets an external process start a CUA command so the
+    /// acceptance harness can sweep unattended. Refused outright on production
+    /// builds — see ComputerUseAutomationBridge.
+    var enableComputerUseAutomationBridge: Bool = false
     var computerUsePlannerModel: String = ""
     var computerUseTimeoutSeconds: Int = 120
     var sttBackend: String = BackendOption.parakeetUnified.backend
@@ -1393,6 +1397,7 @@ struct AppConfig: Codable {
         case enableMeetingRecordingHotkey = "enable_meeting_recording_hotkey"
         case computerUseHotkeyDefaultDisabledMigrationApplied = "computer_use_hotkey_default_disabled_migration_applied"
         case enableComputerUsePlanner = "enable_computer_use_planner"
+        case enableComputerUseAutomationBridge = "enable_computer_use_automation_bridge"
         case computerUsePlannerModel = "computer_use_planner_model"
         case computerUseTimeoutSeconds = "computer_use_timeout_seconds"
         case sttBackend = "stt_backend"
@@ -1524,6 +1529,7 @@ struct AppConfig: Codable {
         meetingRecordingHotkey = (try? c.decode(HotkeyConfig.self, forKey: .meetingRecordingHotkey)) ?? defaults.meetingRecordingHotkey
         enableMeetingRecordingHotkey = (try? c.decode(Bool.self, forKey: .enableMeetingRecordingHotkey)) ?? defaults.enableMeetingRecordingHotkey
         enableComputerUsePlanner = (try? c.decode(Bool.self, forKey: .enableComputerUsePlanner)) ?? defaults.enableComputerUsePlanner
+        enableComputerUseAutomationBridge = (try? c.decode(Bool.self, forKey: .enableComputerUseAutomationBridge)) ?? defaults.enableComputerUseAutomationBridge
         computerUsePlannerModel = SummaryModelPreset.migratedFromGPT55(
             (try? c.decode(String.self, forKey: .computerUsePlannerModel)) ?? defaults.computerUsePlannerModel
         )

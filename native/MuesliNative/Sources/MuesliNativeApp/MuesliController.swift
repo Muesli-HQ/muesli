@@ -446,6 +446,7 @@ public final class MuesliController: NSObject {
     private var pendingComputerUseStopSessionID: UUID?
     private var computerUseCommandTask: Task<Void, Never>?
     private var computerUseCommandTaskID: UUID?
+    private let computerUseAutomationBridge = ComputerUseAutomationBridge.Observer()
     private var computerUseFloatingStatusWorkItem: DispatchWorkItem?
     private var computerUseLastFloatingStatusAt = Date.distantPast
     private var computerUseLastFloatingStatus = ""
@@ -7326,12 +7327,56 @@ public final class MuesliController: NSObject {
     }
 
     private func configureComputerUseHotkeyMonitor() {
+        configureComputerUseAutomationBridge()
         guard config.enableComputerUseHotkey else {
             computerUseHotkeyMonitor.stop()
             return
         }
         computerUseHotkeyMonitor.configure(config.computerUseHotkey)
         startComputerUseHotkeyMonitorIfNeeded()
+    }
+
+    /// Non-production only. See ComputerUseAutomationBridge for the two gates.
+    private func configureComputerUseAutomationBridge() {
+        computerUseAutomationBridge.sync(
+            enabled: config.enableComputerUseAutomationBridge
+        ) { [weak self] request in
+            self?.handleComputerUseAutomationRequest(request)
+        }
+    }
+
+    /// Starts a CUA command supplied by the acceptance harness instead of the
+    /// microphone. Everything after the transcript — the dictation row, the
+    /// planner loop, the trace — is the normal path.
+    private func handleComputerUseAutomationRequest(
+        _ request: ComputerUseAutomationBridge.Request
+    ) {
+        guard config.enableComputerUseAutomationBridge,
+              ComputerUseAutomationBridge.isPermittedBuild else { return }
+        guard canStartComputerUseCommand else {
+            fputs("[cua-bridge] busy, rejected: \(request.command)\n", stderr)
+            return
+        }
+        fputs("[cua-bridge] command: \(request.command)\n", stderr)
+        let taskID = UUID()
+        computerUseCommandTaskID = taskID
+        let startedAt = Date()
+        let dictationID = try? dictationStore.insertDictation(
+            text: request.command,
+            durationSeconds: 0,
+            source: "cua",
+            startedAt: startedAt,
+            endedAt: startedAt
+        )
+        scheduleICloudSyncAfterLocalChange()
+        computerUseCommandTask = Task { [weak self] in
+            guard let self else { return }
+            await self.handleComputerUseCommand(
+                transcript: request.command,
+                dictationID: dictationID,
+                taskID: taskID
+            )
+        }
     }
 
     private func configureHotkeyMonitorTiming() {
