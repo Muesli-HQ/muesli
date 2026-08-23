@@ -8691,6 +8691,7 @@ public final class MuesliController: NSObject {
         // backends (see isStreamingDictationBackend) so the double-tap detection window
         // stays clean; beginRecording cold-starts here just like the toggle path.
         fputs("[muesli-native] recording start\n", stderr)
+        pendingSubmitAfterPaste = false
         meetingMonitor.suppressWhileActive()
         beginDictationOutput()
         dictationStartedAt = nil
@@ -8814,6 +8815,7 @@ public final class MuesliController: NSObject {
         nemotron35StreamingSessionID = nil
         previousStreamText = ""
         dictationStartedAt = nil
+        pendingSubmitAfterPaste = false
         clearCapturedDictationSessionContext()
         dictationAudioSessionManager.endExternalSession(reason: "nemotron-runtime-failed")
         indicator.setToggleDictation(false, config: config)

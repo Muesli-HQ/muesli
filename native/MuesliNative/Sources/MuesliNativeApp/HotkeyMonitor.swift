@@ -295,6 +295,17 @@ final class HotkeyMonitor {
             return false
         }
 
+        // Enter during toggle mode: stop dictation and submit (paste + Enter).
+        // Consume the event so the physical keypress doesn't reach the
+        // frontmost app — the synthetic Return after paste handles submission.
+        if type == .keyDown && keyCode == 36 && toggleActive {
+            fputs("[hotkey] enter → toggle stop and submit (combination)\n", stderr)
+            toggleActive = false
+            cancelTimers()
+            onToggleStopAndSubmit?()
+            return true
+        }
+
         guard let targetMods = combinationModifiers,
               let targetKey = combinationKeyCode else { return false }
 
