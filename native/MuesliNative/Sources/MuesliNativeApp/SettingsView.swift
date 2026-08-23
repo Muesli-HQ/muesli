@@ -120,8 +120,7 @@ struct SettingsView: View {
     @State private var isLoadingOpenRouterFreeModels = false
     @State private var openRouterFreeModelsError: String?
     @State private var hasRefreshedMeetingCalendarSources = false
-    @State private var isShowingICloudReconnectConfirmation = false
-    @State private var isShowingICloudLinkRemovalConfirmation = false
+    @State private var isShowingICloudSyncResetConfirmation = false
 
     init(appState: AppState, controller: MuesliController) {
         self.appState = appState
@@ -437,21 +436,13 @@ struct SettingsView: View {
             } message: {
                 Text("Dictionary suggestions briefly read focused app text via Accessibility after dictation. Grant access, then relaunch Muesli to turn suggestions on.")
             }
-            .alert("Reconnect this Mac?", isPresented: $isShowingICloudReconnectConfirmation) {
+            .alert("Reset iCloud sync?", isPresented: $isShowingICloudSyncResetConfirmation) {
                 Button("Cancel", role: .cancel) {}
-                Button("Reconnect this Mac") {
-                    controller.reconnectICloudSyncToCurrentAccount()
+                Button("Reset iCloud sync", role: .destructive) {
+                    controller.resetICloudSync()
                 }
             } message: {
-                Text("Muesli will keep your local history and audio, then sync eligible existing text with the iCloud account currently signed in on this Mac. Audio always stays local.")
-            }
-            .alert("Remove linked device?", isPresented: $isShowingICloudLinkRemovalConfirmation) {
-                Button("Cancel", role: .cancel) {}
-                Button("Remove linked device", role: .destructive) {
-                    controller.removeLinkedICloudDevice()
-                }
-            } message: {
-                Text("Muesli will turn off sync and remove this Mac's previous account link. Local history and audio stay on this Mac, and data in the previous iCloud account is not deleted. You can then set up sync with the current iCloud account.")
+                Text("Muesli will turn off sync and clear this Mac's local iCloud sync state. Local history and audio stay on this Mac, and CloudKit data is not deleted. Turn sync on afterward to set up the currently signed-in iCloud account.")
             }
             .sheet(isPresented: $isCleanupPromptManagerPresented) {
                 TranscriptCleanupPromptsManagerView(
@@ -717,22 +708,25 @@ struct SettingsView: View {
                         }
                     }
                     Spacer(minLength: MuesliTheme.spacing16)
-                    if appState.iCloudBridgeState == .needsReconnection {
-                        actionButton("Reconnect this Mac", systemImage: "arrow.triangle.2.circlepath") {
-                            isShowingICloudReconnectConfirmation = true
-                        }
-                        .frame(width: controlWidth)
-                    } else if appState.iCloudBridgeState == .needsAccountReplacement {
-                        actionButton("Remove linked device", systemImage: "link.badge.minus") {
-                            isShowingICloudLinkRemovalConfirmation = true
+                    if appState.iCloudBridgeState == .needsReconnection
+                        || appState.iCloudBridgeState == .needsAccountReplacement {
+                        actionButton("Reset iCloud sync", systemImage: "arrow.counterclockwise.icloud") {
+                            isShowingICloudSyncResetConfirmation = true
                         }
                         .frame(width: controlWidth)
                     } else {
-                        actionButton("Sync now", systemImage: "arrow.triangle.2.circlepath") {
-                            controller.performICloudSync()
+                        VStack(spacing: MuesliTheme.spacing8) {
+                            actionButton("Sync now", systemImage: "arrow.triangle.2.circlepath") {
+                                controller.performICloudSync()
+                            }
+                            .disabled(!appState.config.iCloudSyncEnabled)
+                            if shouldOfferICloudSyncReset {
+                                actionButton("Reset iCloud sync", systemImage: "arrow.counterclockwise.icloud") {
+                                    isShowingICloudSyncResetConfirmation = true
+                                }
+                            }
                         }
                         .frame(width: controlWidth)
-                        .disabled(!appState.config.iCloudSyncEnabled)
                     }
                 }
             }
@@ -770,11 +764,11 @@ struct SettingsView: View {
     private var syncStatusText: String {
         if appState.iCloudBridgeState == .needsReconnection {
             return appState.iCloudSyncStatus
-                ?? "Reconnect this Mac to continue syncing with your current iCloud account."
+                ?? "Reset iCloud sync to reconnect this Mac with the current account."
         }
         if appState.iCloudBridgeState == .needsAccountReplacement {
             return appState.iCloudSyncStatus
-                ?? "Remove the previous account link before setting up sync with this iCloud account."
+                ?? "Reset iCloud sync before setting it up with this account."
         }
         if !appState.config.iCloudSyncEnabled {
             return "Sync is off. Turn it on to bridge this Mac with Muesli for iPhone."
@@ -796,6 +790,13 @@ struct SettingsView: View {
         }
         guard appState.config.iCloudSyncEnabled else { return nil }
         return "No linked iPhone yet."
+    }
+
+    private var shouldOfferICloudSyncReset: Bool {
+        appState.config.iCloudSyncEnabled
+            || appState.iCloudBridgeCompanionDeviceName != nil
+            || appState.iCloudBridgeState == .error
+            || appState.iCloudBridgeState == .needsICloud
     }
 
     private func syncDeviceLabel(for platform: String) -> String {

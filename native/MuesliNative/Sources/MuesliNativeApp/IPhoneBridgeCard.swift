@@ -28,8 +28,7 @@ struct IPhoneBridgeCard: View {
 
     @State private var promptSeen = false
     @State private var isQRCodePresented = false
-    @State private var isReconnectConfirmationPresented = false
-    @State private var isRemoveLinkConfirmationPresented = false
+    @State private var isResetConfirmationPresented = false
 
     var body: some View {
         HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
@@ -120,21 +119,13 @@ struct IPhoneBridgeCard: View {
                 installURL: IPhoneBridgeLinks.installURL
             )
         }
-        .alert("Reconnect this Mac?", isPresented: $isReconnectConfirmationPresented) {
+        .alert("Reset iCloud sync?", isPresented: $isResetConfirmationPresented) {
             Button("Cancel", role: .cancel) {}
-            Button("Reconnect this Mac") {
-                controller.reconnectICloudSyncToCurrentAccount()
+            Button("Reset iCloud sync", role: .destructive) {
+                controller.resetICloudSync()
             }
         } message: {
-            Text("Muesli will keep your local history and audio, then sync eligible existing text with the iCloud account currently signed in on this Mac. Audio always stays local.")
-        }
-        .alert("Remove linked device?", isPresented: $isRemoveLinkConfirmationPresented) {
-            Button("Cancel", role: .cancel) {}
-            Button("Remove linked device", role: .destructive) {
-                controller.removeLinkedICloudDevice()
-            }
-        } message: {
-            Text("Muesli will turn off sync and remove this Mac's previous account link. Local history and audio stay on this Mac, and data in the previous iCloud account is not deleted. You can then set up sync with the current iCloud account.")
+            Text("Muesli will turn off sync and clear this Mac's local iCloud sync state. Local history and audio stay on this Mac, and CloudKit data is not deleted. Turn sync on afterward to set up the currently signed-in iCloud account.")
         }
     }
 
@@ -206,10 +197,8 @@ struct IPhoneBridgeCard: View {
             )
         case .needsICloud:
             return "Sign in to iCloud to sync"
-        case .needsReconnection:
-            return "Reconnect iPhone sync"
-        case .needsAccountReplacement:
-            return "iCloud account changed"
+        case .needsReconnection, .needsAccountReplacement:
+            return "iCloud sync needs reset"
         case .error:
             return "iPhone sync needs attention"
         case .notConfigured:
@@ -241,8 +230,7 @@ struct IPhoneBridgeCard: View {
         switch bridgeState {
         case .active: return "Sync"
         case .checkingICloud, .syncing: return "Syncing"
-        case .needsReconnection: return "Reconnect"
-        case .needsAccountReplacement: return "Remove link"
+        case .needsReconnection, .needsAccountReplacement: return "Reset sync"
         case .needsICloud, .error: return "Try again"
         case .notConfigured: return "Set up private iCloud sync"
         }
@@ -266,10 +254,8 @@ struct IPhoneBridgeCard: View {
             return ICloudBridgeWorkingCopy.buttonHelp(
                 isActivationPending: appState.isICloudBridgeActivationPending
             )
-        case .needsReconnection:
-            return "Confirm this Mac's current iCloud account and reconnect text sync"
-        case .needsAccountReplacement:
-            return "Remove the previous account link before setting up sync again"
+        case .needsReconnection, .needsAccountReplacement:
+            return "Reset local iCloud sync state, then set up the current account"
         default:
             return "Set up private iCloud text sync"
         }
@@ -279,10 +265,8 @@ struct IPhoneBridgeCard: View {
         switch bridgeState {
         case .active:
             controller.performICloudSync()
-        case .needsReconnection:
-            isReconnectConfirmationPresented = true
-        case .needsAccountReplacement:
-            isRemoveLinkConfirmationPresented = true
+        case .needsReconnection, .needsAccountReplacement:
+            isResetConfirmationPresented = true
         case .checkingICloud, .syncing:
             break
         default:

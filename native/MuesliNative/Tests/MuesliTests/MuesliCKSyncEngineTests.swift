@@ -865,7 +865,7 @@ struct MuesliCKSyncEngineTests {
         #expect(eligible.cloudSystemFields == nil)
     }
 
-    @Test("mismatched unspecified owner remains blocked and untouched")
+    @Test("mismatched legacy owner stays blocked until explicit sync reset")
     func mismatchedUnspecifiedOwnerDoesNotMigrate() async throws {
         let store = try makeStore()
         _ = try store.insertDictation(
@@ -915,14 +915,29 @@ struct MuesliCKSyncEngineTests {
         #expect(try !store.hasTextRecordsNeedingSync())
         #expect(state.pendingRecordZoneChanges.isEmpty)
         #expect(await coordinator.currentAccountBoundaryError() == .legacyAccountNeedsReconnection)
-        do {
-            _ = try await coordinator.removeLinkedProductionAccount()
-            Issue.record("Ambiguous legacy state must use reconnect, not account-link removal")
-        } catch let error as MuesliCKSyncError {
-            #expect(error == .legacyAccountNeedsReconnection)
-        }
-        #expect(try store.cloudSyncStateData(forKey: migration.accountScopeKey)
-            == Data(oldScope.utf8))
+
+        #expect(try await coordinator.resetCloudSyncAccount())
+        #expect(try store.cloudSyncStateData(forKey: migration.accountScopeKey) == nil)
+        #expect(try store.cloudSyncStateData(forKey: migration.stateKey) == nil)
+        let reset = try #require(try store.textRecordForSync(recordName: local.id))
+        #expect(reset.text == "Never cross an account boundary")
+        #expect(reset.cloudChangeTag == nil)
+        #expect(reset.cloudSystemFields == nil)
+        #expect(try store.hasTextRecordsNeedingSync())
+
+        let replacementOwner = CKRecord.ID(recordName: "different-private-owner")
+        #expect(try await coordinator.handleAccountChange(
+            currentUser: replacementOwner,
+            state: state
+        ))
+        #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.accountScopeKey)
+            == Data(MuesliCKSyncEngine.accountScope(for: replacementOwner).utf8))
+        #expect(state.pendingRecordZoneChanges == [
+            .saveRecord(CKRecord.ID(
+                recordName: local.id,
+                zoneID: MuesliICloudSyncEngine.Schema.syncZoneID
+            )),
+        ])
     }
 
     @Test("explicit reconnect adopts an ambiguous legacy library without changing authored data")
@@ -1154,7 +1169,106 @@ struct MuesliCKSyncEngineTests {
         #expect(await coordinator.currentAccountBoundaryError() == .legacyAccountNeedsReconnection)
     }
 
-    @Test("account switch stays blocked until explicit link removal and setup")
+    @Test("orphaned engine state can be reset repeatedly before account setup")
+    func orphanedEngineStateResetIsIdempotent() async throws {
+        let store = try makeStore()
+        _ = try store.insertDictation(
+            text: "Keep this locally while repairing setup",
+            durationSeconds: 2,
+            startedAt: Date().addingTimeInterval(-2),
+            endedAt: Date()
+        )
+        let local = try #require(try store.textRecordsNeedingSync().first)
+        #expect(try store.markTextRecordSynced(
+            kind: local.kind,
+            recordName: local.id,
+            changeTag: "orphaned-state-tag",
+            systemFields: Data([0x09, 0x0A]),
+            recordUpdatedAt: local.updatedAt
+        ))
+        try store.saveCloudSyncStateData(
+            Data("orphaned-engine-state".utf8),
+            forKey: MuesliCKSyncEngine.stateKey
+        )
+
+        let coordinator = MuesliCKSyncEngine(store: store, legacyScopeMigration: nil)
+        #expect(try await coordinator.resetCloudSyncAccount())
+        #expect(try await coordinator.resetCloudSyncAccount())
+        #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.accountScopeKey) == nil)
+        #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.stateKey) == nil)
+        let reset = try #require(try store.textRecordForSync(recordName: local.id))
+        #expect(reset.text == "Keep this locally while repairing setup")
+        #expect(reset.cloudChangeTag == nil)
+        #expect(reset.cloudSystemFields == nil)
+        #expect(try store.hasTextRecordsNeedingSync())
+
+        let owner = CKRecord.ID(recordName: "new-account-after-orphaned-state")
+        let state = TestCKSyncPendingState()
+        #expect(try await coordinator.handleAccountChange(currentUser: owner, state: state))
+        #expect(state.pendingRecordZoneChanges == [
+            .saveRecord(CKRecord.ID(
+                recordName: local.id,
+                zoneID: MuesliICloudSyncEngine.Schema.syncZoneID
+            )),
+        ])
+    }
+
+    @Test("healthy account can reset and set up the same account again")
+    func healthyAccountResetPreservesAndRequeuesLocalData() async throws {
+        let store = try makeStore()
+        _ = try store.insertDictation(
+            text: "Resync this text without changing it",
+            durationSeconds: 2,
+            startedAt: Date().addingTimeInterval(-2),
+            endedAt: Date()
+        )
+        let local = try #require(try store.textRecordsNeedingSync().first)
+        #expect(try store.markTextRecordSynced(
+            kind: local.kind,
+            recordName: local.id,
+            changeTag: "healthy-account-tag",
+            systemFields: Data([0x07, 0x08]),
+            recordUpdatedAt: local.updatedAt
+        ))
+
+        let owner = CKRecord.ID(recordName: "healthy-account")
+        #expect(try store.claimCloudSyncAccountScope(
+            MuesliCKSyncEngine.accountScope(for: owner),
+            forKey: MuesliCKSyncEngine.accountScopeKey
+        ))
+        let cancellationProbe = TestCKSyncCancellationProbe()
+        let coordinator = MuesliCKSyncEngine(
+            store: store,
+            legacyScopeMigration: nil,
+            engineCancellationObserver: { await cancellationProbe.record() }
+        )
+        let state = TestCKSyncPendingState()
+        #expect(try await coordinator.handleAccountChange(currentUser: owner, state: state))
+        try store.saveCloudSyncStateData(
+            Data("healthy-engine-state".utf8),
+            forKey: MuesliCKSyncEngine.stateKey
+        )
+
+        #expect(try await coordinator.resetCloudSyncAccount())
+        #expect(await cancellationProbe.count == 1)
+        #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.accountScopeKey) == nil)
+        #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.stateKey) == nil)
+        let reset = try #require(try store.textRecordForSync(recordName: local.id))
+        #expect(reset.text == "Resync this text without changing it")
+        #expect(reset.cloudChangeTag == nil)
+        #expect(reset.cloudSystemFields == nil)
+        #expect(try store.hasTextRecordsNeedingSync())
+
+        #expect(try await coordinator.handleAccountChange(currentUser: owner, state: state))
+        #expect(state.pendingRecordZoneChanges == [
+            .saveRecord(CKRecord.ID(
+                recordName: local.id,
+                zoneID: MuesliICloudSyncEngine.Schema.syncZoneID
+            )),
+        ])
+    }
+
+    @Test("account switch stays blocked until explicit sync reset and setup")
     func accountSwitchPreservesLocalData() async throws {
         let store = try makeStore()
         _ = try store.insertDictation(
@@ -1256,7 +1370,7 @@ struct MuesliCKSyncEngineTests {
         #expect(stillPreserved.cloudChangeTag == "account-one-tag")
         #expect(stillPreserved.cloudSystemFields == Data([0x01, 0x02]))
 
-        #expect(try await coordinator.removeLinkedProductionAccount())
+        #expect(try await coordinator.resetCloudSyncAccount())
         #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.accountScopeKey) == nil)
         #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.stateKey) == nil)
         #expect(try store.cloudSyncStateData(forKey: migration.accountScopeKey) == nil)

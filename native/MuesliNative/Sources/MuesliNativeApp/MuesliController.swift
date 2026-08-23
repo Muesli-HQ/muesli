@@ -1941,31 +1941,32 @@ public final class MuesliController: NSObject {
         }
     }
 
-    func removeLinkedICloudDevice() {
+    func resetICloudSync() {
         guard iCloudSubscriptionTask == nil, iCloudSyncTask == nil else { return }
 
-        appState.iCloudSyncStatus = "Removing the existing iCloud link..."
+        appState.iCloudSyncStatus = "Resetting iCloud sync..."
         appState.iCloudBridgeState = .syncing
         appState.iCloudBridgeMessage = nil
-        TelemetryDeck.signal("icloud_account_link_removal_started", parameters: ["platform": "macos"])
+        TelemetryDeck.signal("icloud_sync_reset_started", parameters: ["platform": "macos"])
 
         iCloudSyncGeneration += 1
         let generation = iCloudSyncGeneration
         let syncEngine = resolvedCKSyncEngine()
         iCloudSubscriptionTask = Task { [weak self] in
             do {
-                try await syncEngine.removeLinkedProductionAccount()
+                try await syncEngine.resetCloudSyncAccount()
                 await MainActor.run {
                     guard let self, self.iCloudSyncGeneration == generation else { return }
                     self.iCloudSubscriptionTask = nil
                     MuesliBridgeDeviceIdentity.clearRemoteDevice()
                     self.refreshICloudBridgeDeviceState()
+                    self.appState.iCloudLastSyncedAt = nil
                     self.updateConfig { $0.iCloudSyncEnabled = false }
-                    self.appState.iCloudSyncStatus = "Linked device removed. Set up sync again to use the current iCloud account."
+                    self.appState.iCloudSyncStatus = "iCloud sync reset. Turn it on to set up the current iCloud account."
                     self.appState.iCloudBridgeState = .notConfigured
                     self.appState.iCloudBridgeMessage = nil
                     TelemetryDeck.signal(
-                        "icloud_account_link_removal_completed",
+                        "icloud_sync_reset_completed",
                         parameters: ["platform": "macos"]
                     )
                 }
@@ -1979,9 +1980,9 @@ public final class MuesliController: NSObject {
                 await MainActor.run {
                     guard let self, self.iCloudSyncGeneration == generation else { return }
                     self.iCloudSubscriptionTask = nil
-                    self.presentICloudSyncFailure(error, statusPrefix: "Link removal failed")
+                    self.presentICloudSyncFailure(error, statusPrefix: "Reset failed")
                     TelemetryDeck.signal(
-                        "icloud_account_link_removal_failed",
+                        "icloud_sync_reset_failed",
                         parameters: ["platform": "macos", "reason": self.iCloudSyncFailureReason(error)]
                     )
                 }

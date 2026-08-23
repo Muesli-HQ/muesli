@@ -111,7 +111,7 @@ enum MuesliCKSyncError: Error, Equatable, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .differentProductionAccount:
-            return "This Mac is linked to a different iCloud account. Return to that account, or remove the linked device and set up sync again."
+            return "This Mac was synced with a different iCloud account. Return to that account, or reset iCloud sync and set it up again."
         case .legacyAccountNeedsReconnection:
             return "This Mac's older sync history needs to be reconnected before it can use your current iCloud account."
         }
@@ -415,27 +415,20 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
         return true
     }
 
-    /// Removes a confirmed Production-account link only after the account gate
-    /// has detected that the currently signed-in account is different. This is
-    /// deliberately separate from legacy reconnection: removal turns sync back
-    /// into an unconfigured state so setup can explicitly claim one new account.
+    /// Resets local account ownership and engine metadata after explicit user
+    /// confirmation. This is valid for healthy, mismatched, and legacy state:
+    /// setup must explicitly claim the currently signed-in account afterward.
     @discardableResult
-    func removeLinkedProductionAccount() async throws -> Bool {
-        guard accountBoundaryBlocked,
-              accountBoundaryError == .differentProductionAccount,
-              let legacyScopeMigration else {
-            throw accountBoundaryError
-        }
-
+    func resetCloudSyncAccount() async throws -> Bool {
         await invalidatePreparation(cancelEngine: true)
         try Task.checkCancellation()
-        let removed = try store.removeCloudSyncAccountLink(
+        let reset = try store.resetCloudSyncAccountLink(
             accountScopeKey: Self.accountScopeKey,
             stateKey: Self.stateKey,
-            legacyAccountScopeKey: legacyScopeMigration.accountScopeKey,
-            legacyStateKey: legacyScopeMigration.stateKey
+            legacyAccountScopeKey: legacyScopeMigration?.accountScopeKey,
+            legacyStateKey: legacyScopeMigration?.stateKey
         )
-        guard removed else { throw MuesliCKSyncError.differentProductionAccount }
+        guard reset else { throw accountBoundaryError }
 
         accountBoundaryBlocked = true
         accountBoundaryError = .legacyAccountNeedsReconnection
