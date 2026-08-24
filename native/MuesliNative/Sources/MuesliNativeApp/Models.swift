@@ -586,9 +586,10 @@ struct SummaryModelPreset {
         "gpt-5.4-nano",
     ]
 
-    /// Only models the WHAM endpoint accepts for ChatGPT accounts. gpt-5.6-sol,
-    /// gpt-5.4 and gpt-5.2 are rejected with a 400 and are deliberately absent —
-    /// offering them in the picker only produces failed runs. See #457.
+    /// Only models the current WHAM endpoint accepts for ChatGPT accounts.
+    /// gpt-5.6-sol, gpt-5.4 and gpt-5.2 are rejected with a 400 and are absent
+    /// because offering them can only produce failed runs. Expected to come back
+    /// when the planner moves to the Codex endpoint. See #457.
     static let computerUsePlannerModels: [SummaryModelPreset] = [
         SummaryModelPreset(id: "gpt-5.6-terra", label: "GPT-5.6 Terra (default)"),
         SummaryModelPreset(id: "gpt-5.6-luna", label: "GPT-5.6 Luna"),
@@ -623,20 +624,26 @@ struct SummaryModelPreset {
         }
     }
 
-    /// Models the WHAM endpoint rejects for ChatGPT accounts. Only applies to the
-    /// Computer Use planner; the summary backends use a different endpoint that
-    /// accepts these. See #457.
-    static let rejectedComputerUsePlannerModels: Set<String> = [
+    /// Models the current WHAM endpoint rejects for ChatGPT accounts.
+    ///
+    /// This is a property of the endpoint, not of the models: WHAM is a ChatGPT
+    /// endpoint, and once the planner migrates to the Codex endpoint all of these
+    /// are expected to work. Revisit this set — and the presets below — as part of
+    /// that migration rather than treating the restriction as permanent. See #457.
+    ///
+    /// Only affects the Computer Use planner; the summary backends call a
+    /// different endpoint that accepts these today.
+    static let whamRejectedPlannerModels: Set<String> = [
         "gpt-5.5", "gpt-5.6-sol", "gpt-5.4", "gpt-5.2",
     ]
 
-    /// Moves a stored planner model off anything the backend refuses. Without
-    /// this, users who selected gpt-5.5 before #348 and users migrated onto
-    /// gpt-5.6-sol by it are both left unable to run Computer Use.
+    /// Moves a stored planner model off anything the current endpoint refuses.
+    /// Without this, users who selected gpt-5.5 before #348 and users migrated
+    /// onto gpt-5.6-sol by it are both left unable to run Computer Use.
     static func migratedComputerUsePlannerModel(_ model: String) -> String {
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return model }
-        return rejectedComputerUsePlannerModels.contains(trimmed)
+        return whamRejectedPlannerModels.contains(trimmed)
             ? "gpt-5.6-terra"
             : trimmed
     }

@@ -655,7 +655,7 @@ struct SummaryModelPresetTests {
         #expect(SummaryModelPreset.computerUsePlannerModels.first?.id == "gpt-5.6-terra")
         #expect(SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-5.6-luna" })
         #expect(SummaryModelPreset.computerUsePlannerModels.contains { $0.id == "gpt-5.4-mini" })
-        for rejected in SummaryModelPreset.rejectedComputerUsePlannerModels {
+        for rejected in SummaryModelPreset.whamRejectedPlannerModels {
             #expect(!SummaryModelPreset.computerUsePlannerModels.contains { $0.id == rejected })
         }
         for preset in SummaryModelPreset.computerUsePlannerModels {

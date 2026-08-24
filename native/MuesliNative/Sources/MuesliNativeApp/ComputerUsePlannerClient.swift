@@ -25,8 +25,10 @@ enum ComputerUsePlannerError: LocalizedError, Equatable {
 
 enum ComputerUsePlannerClient {
     private static let whamURL = URL(string: "https://chatgpt.com/backend-api/wham/responses")!
-    // The WHAM endpoint rejects gpt-5.6-sol, gpt-5.4 and gpt-5.2 for ChatGPT
-    // accounts, which is the only auth this planner supports. See #457.
+    // The current WHAM endpoint rejects gpt-5.6-sol, gpt-5.4 and gpt-5.2 for
+    // ChatGPT accounts, which is the only auth this planner supports. WHAM is a
+    // ChatGPT endpoint; this is expected to change when the planner migrates to
+    // the Codex endpoint. See #457.
     static let defaultModel = "gpt-5.6-terra"
 
     static var instructions: String {

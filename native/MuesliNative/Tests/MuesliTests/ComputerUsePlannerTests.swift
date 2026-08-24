@@ -411,14 +411,14 @@ struct ComputerUsePlannerModelTests {
 
     @Test("The default planner model is one the backend accepts")
     func defaultModelIsAccepted() {
-        #expect(!SummaryModelPreset.rejectedComputerUsePlannerModels
+        #expect(!SummaryModelPreset.whamRejectedPlannerModels
             .contains(ComputerUsePlannerClient.defaultModel))
     }
 
     @Test("No model offered in the picker is one the backend rejects")
     func noPresetIsRejected() {
         let offered = Set(SummaryModelPreset.computerUsePlannerModels.map(\.id))
-        let bad = offered.intersection(SummaryModelPreset.rejectedComputerUsePlannerModels)
+        let bad = offered.intersection(SummaryModelPreset.whamRejectedPlannerModels)
         #expect(bad.isEmpty, "picker offers models the backend refuses: \(bad.sorted())")
     }
 
@@ -433,7 +433,7 @@ struct ComputerUsePlannerModelTests {
     func migratesRejectedModels(stored: String) {
         let migrated = SummaryModelPreset.migratedComputerUsePlannerModel(stored)
         #expect(migrated == "gpt-5.6-terra")
-        #expect(!SummaryModelPreset.rejectedComputerUsePlannerModels.contains(migrated))
+        #expect(!SummaryModelPreset.whamRejectedPlannerModels.contains(migrated))
     }
 
     @Test("An accepted model is left alone",
