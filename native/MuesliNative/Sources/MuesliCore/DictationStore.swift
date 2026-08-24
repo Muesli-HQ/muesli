@@ -403,6 +403,88 @@ public final class DictationStore {
     ) throws -> Int64 {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
+        return try insertDictation(
+            text: text,
+            durationSeconds: durationSeconds,
+            appContext: appContext,
+            source: source,
+            targetAppName: targetAppName,
+            targetAppBundleID: targetAppBundleID,
+            startedAt: startedAt,
+            endedAt: endedAt,
+            db: db
+        )
+    }
+
+    @discardableResult
+    public func insertQuilDictation(
+        outputText: String,
+        originalText: String,
+        instruction: String,
+        backend: String,
+        model: String,
+        durationSeconds: Double,
+        targetAppName: String? = nil,
+        targetAppBundleID: String? = nil,
+        startedAt: Date,
+        endedAt: Date
+    ) throws -> Int64 {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db)
+        do {
+            let dictationID = try insertDictation(
+                text: outputText,
+                durationSeconds: durationSeconds,
+                source: "quil",
+                targetAppName: targetAppName,
+                targetAppBundleID: targetAppBundleID,
+                startedAt: startedAt,
+                endedAt: endedAt,
+                db: db
+            )
+            try insertComputerUseTrace(
+                dictationID: dictationID,
+                finalStatus: "done",
+                finalMessage: "\(backend) · \(model)",
+                events: [
+                    ComputerUseTraceEvent(
+                        kind: "quil_original",
+                        title: "Original highlighted text",
+                        body: originalText
+                    ),
+                    ComputerUseTraceEvent(
+                        kind: "quil_instruction",
+                        title: "Spoken instruction",
+                        body: instruction
+                    ),
+                    ComputerUseTraceEvent(
+                        kind: "quil_model",
+                        title: "Model",
+                        body: "\(backend) · \(model)"
+                    ),
+                ],
+                db: db
+            )
+            try exec("COMMIT", db: db)
+            return dictationID
+        } catch {
+            sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
+    }
+
+    private func insertDictation(
+        text: String,
+        durationSeconds: Double,
+        appContext: String = "",
+        source: String,
+        targetAppName: String?,
+        targetAppBundleID: String?,
+        startedAt: Date,
+        endedAt: Date,
+        db: OpaquePointer?
+    ) throws -> Int64 {
 
         let sql = """
         INSERT INTO dictations
@@ -848,7 +930,12 @@ public final class DictationStore {
         SELECT \(Self.dictationColumns)
         FROM dictations d
         LEFT JOIN computer_use_traces t ON t.dictation_id = d.id
-        WHERE d.deleted_at IS NULL AND (d.raw_text LIKE ? ESCAPE '\\' OR d.app_context LIKE ? ESCAPE '\\' OR t.final_message LIKE ? ESCAPE '\\' OR t.trace_json LIKE ? ESCAPE '\\')
+        WHERE d.deleted_at IS NULL AND (
+            d.raw_text LIKE ? ESCAPE '\\'
+            OR d.app_context LIKE ? ESCAPE '\\'
+            OR t.final_message LIKE ? ESCAPE '\\'
+            OR t.trace_json LIKE ? ESCAPE '\\'
+        )
         ORDER BY d.id DESC
         LIMIT ?
         """
@@ -2309,7 +2396,22 @@ public final class DictationStore {
     ) throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
+        try insertComputerUseTrace(
+            dictationID: dictationID,
+            finalStatus: finalStatus,
+            finalMessage: finalMessage,
+            events: events,
+            db: db
+        )
+    }
 
+    private func insertComputerUseTrace(
+        dictationID: Int64,
+        finalStatus: String,
+        finalMessage: String,
+        events: [ComputerUseTraceEvent],
+        db: OpaquePointer?
+    ) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(events)

@@ -136,12 +136,28 @@ struct BackendOption: Equatable {
 
     static let gemma4E2BLiteRT = BackendOption(
         backend: "gemma4-litert",
-        model: Gemma4LiteRTModelStore.repoID,
-        label: "Gemma 4 E2B",
-        sizeLabel: "~2.6 GB",
+        model: Gemma4LiteRTModel.e2b.repoID,
+        label: Gemma4LiteRTModel.e2b.label,
+        sizeLabel: Gemma4LiteRTModel.e2b.sizeLabel,
         description: "A research preview, not a dependable dictation model yet. It is large, slow to get ready, requires macOS 15 or later, and may produce an answer instead of a faithful transcript.",
         recommended: false
     )
+
+    static let gemma4E4BLiteRT = BackendOption(
+        backend: "gemma4-litert",
+        model: Gemma4LiteRTModel.e4b.repoID,
+        label: Gemma4LiteRTModel.e4b.label,
+        sizeLabel: Gemma4LiteRTModel.e4b.sizeLabel,
+        description: "A larger experimental Gemma 4 model for higher-quality local transcription and rewriting. It requires macOS 15 or later and trades additional download size and memory for stronger instruction following.",
+        recommended: false
+    )
+
+    static func gemma4LiteRT(_ model: Gemma4LiteRTModel) -> BackendOption {
+        switch model {
+        case .e2b: .gemma4E2BLiteRT
+        case .e4b: .gemma4E4BLiteRT
+        }
+    }
 
     static let appleSpeechAnalyzer = BackendOption(
         backend: "apple-speech",
@@ -175,7 +191,7 @@ struct BackendOption: Equatable {
     )
 
     static let experimental: [BackendOption] = [
-        .senseVoiceSmall, .indicASR, .gemma4E2BLiteRT, .qwen3Asr,
+        .senseVoiceSmall, .indicASR, .gemma4E2BLiteRT, .gemma4E4BLiteRT, .qwen3Asr,
     ]
 
     /// Native streaming backends used by low-latency product surfaces.
@@ -313,7 +329,7 @@ struct BackendOption: Equatable {
         case "sensevoice":
             return SenseVoiceTranscriber.isModelDownloaded(fileManager: fm)
         case "gemma4-litert":
-            return Gemma4LiteRTModelStore.isAvailableLocally()
+            return Gemma4LiteRTModelStore.isAvailableLocally(model: Gemma4LiteRTModel.resolved(model))
         case "apple-speech":
             if #available(macOS 26.0, *) {
                 return AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem
@@ -832,6 +848,17 @@ struct PostProcessorOption: Identifiable, Equatable {
         inputFormat == .s1Mini ? "superwhisper-logo" : "qwen-logo"
     }
 
+    /// Quill needs a general instruction-following model. Models fine-tuned for
+    /// transcript cleanup can emit their training schema (including JSON)
+    /// instead of following an arbitrary rewrite instruction.
+    var supportsQuil: Bool {
+        self == .qwen35_0_8b
+    }
+
+    var quilLabel: String {
+        self == .qwen35_0_8b ? "Qwen 3.5 0.8B (General)" : label
+    }
+
     /// S1-mini normalizes English transcripts only. Indic ASR always emits an
     /// Indic-language transcript, so do not offer or run S1-mini for it.
     func isCompatible(with transcriptionBackend: BackendOption) -> Bool {
@@ -881,6 +908,7 @@ struct PostProcessorOption: Identifiable, Equatable {
 
     static let all: [PostProcessorOption] = [.finetunedV3, .s1Mini, .finetunedV2, .qwen35_0_8b]
     static let defaultOption: PostProcessorOption = .finetunedV3
+    static let defaultQuilOption: PostProcessorOption = .qwen35_0_8b
 
     static var downloaded: [PostProcessorOption] {
         all.filter(\.isDownloaded)
@@ -1211,6 +1239,7 @@ struct HotkeyConfig: Codable, Equatable {
     }
 
     static let `default` = HotkeyConfig()
+    static let quilDefault = HotkeyConfig(keyCode: 63, label: "Fn")
     static let computerUseDefault = HotkeyConfig(keyCode: 54, label: "Right Cmd")
     static let meetingRecordingDefault = HotkeyConfig(
         keyCode: UInt16.max,
@@ -1260,6 +1289,8 @@ enum OnboardingUseCase: String, Codable, CaseIterable {
 
 struct AppConfig: Codable {
     var dictationHotkey: HotkeyConfig = .default
+    var quilHotkey: HotkeyConfig = .quilDefault
+    var enableQuilMode: Bool = false
     var computerUseHotkey: HotkeyConfig = .computerUseDefault
     var enableComputerUseHotkey: Bool = false
     var meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault
@@ -1297,6 +1328,7 @@ struct AppConfig: Codable {
     var darkMode: Bool = true
     var enableDoubleTapDictation: Bool = true
     var hotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
+    var quilHotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
     var computerUseHotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
     var meetingRecordingHotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultMeetingThresholdMilliseconds
     var launchAtLogin: Bool = false
@@ -1349,7 +1381,10 @@ struct AppConfig: Codable {
     var hiddenCalendarEventSourceHints: [String: String] = [:]
     var disabledCalendarIDs: [String] = []
     var enablePostProcessor: Bool = false
+    var quilBackend: String = TranscriptCleanupBackendOption.local.backend
+    var quilModel: String = PostProcessorOption.defaultQuilOption.id
     var postProcessorBackend: String = TranscriptCleanupBackendOption.local.backend
+    var postProcessorGemmaModel: String = Gemma4LiteRTModel.e2b.repoID
     var activePostProcessorId: String = PostProcessorOption.defaultOption.id
     var postProcessorChatGPTModel: String = ""
     var postProcessorOpenAIModel: String = ""
@@ -1387,6 +1422,8 @@ struct AppConfig: Codable {
 
     enum CodingKeys: String, CodingKey {
         case dictationHotkey = "dictation_hotkey"
+        case quilHotkey = "quil_hotkey"
+        case enableQuilMode = "enable_quil_mode"
         case computerUseHotkey = "computer_use_hotkey"
         case enableComputerUseHotkey = "enable_computer_use_hotkey"
         case meetingRecordingHotkey = "meeting_recording_hotkey"
@@ -1424,6 +1461,7 @@ struct AppConfig: Codable {
         case darkMode = "dark_mode"
         case enableDoubleTapDictation = "enable_double_tap_dictation"
         case hotkeyTriggerThresholdMS = "hotkey_trigger_threshold_ms"
+        case quilHotkeyTriggerThresholdMS = "quil_hotkey_trigger_threshold_ms"
         case computerUseHotkeyTriggerThresholdMS = "computer_use_hotkey_trigger_threshold_ms"
         case meetingRecordingHotkeyTriggerThresholdMS = "meeting_recording_hotkey_trigger_threshold_ms"
         case launchAtLogin = "launch_at_login"
@@ -1474,7 +1512,10 @@ struct AppConfig: Codable {
         case hiddenCalendarEventSourceHints = "hidden_calendar_event_source_hints"
         case disabledCalendarIDs = "disabled_calendar_ids"
         case enablePostProcessor = "enable_post_processor"
+        case quilBackend = "quil_backend"
+        case quilModel = "quil_model"
         case postProcessorBackend = "post_processor_backend"
+        case postProcessorGemmaModel = "post_processor_gemma_model"
         case activePostProcessorId = "active_post_processor_id"
         case postProcessorChatGPTModel = "post_processor_chatgpt_model"
         case postProcessorOpenAIModel = "post_processor_openai_model"
@@ -1514,6 +1555,8 @@ struct AppConfig: Codable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let defaults = AppConfig()
         dictationHotkey = (try? c.decode(HotkeyConfig.self, forKey: .dictationHotkey)) ?? defaults.dictationHotkey
+        quilHotkey = (try? c.decode(HotkeyConfig.self, forKey: .quilHotkey)) ?? defaults.quilHotkey
+        enableQuilMode = (try? c.decode(Bool.self, forKey: .enableQuilMode)) ?? defaults.enableQuilMode
         computerUseHotkey = (try? c.decode(HotkeyConfig.self, forKey: .computerUseHotkey))
             ?? HotkeyConfig.computerUseDefault(avoiding: dictationHotkey)
         let hasAppliedComputerUseHotkeyDefaultMigration = c.contains(.computerUseHotkeyDefaultDisabledMigrationApplied)
@@ -1579,6 +1622,9 @@ struct AppConfig: Codable {
         enableDoubleTapDictation = (try? c.decode(Bool.self, forKey: .enableDoubleTapDictation)) ?? defaults.enableDoubleTapDictation
         hotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(
             (try? c.decode(Int.self, forKey: .hotkeyTriggerThresholdMS)) ?? defaults.hotkeyTriggerThresholdMS
+        )
+        quilHotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(
+            (try? c.decode(Int.self, forKey: .quilHotkeyTriggerThresholdMS)) ?? defaults.quilHotkeyTriggerThresholdMS
         )
         computerUseHotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(
             (try? c.decode(Int.self, forKey: .computerUseHotkeyTriggerThresholdMS)) ?? hotkeyTriggerThresholdMS
@@ -1662,9 +1708,20 @@ struct AppConfig: Codable {
         )) ?? defaults.hiddenCalendarEventSourceHints
         disabledCalendarIDs = (try? c.decode([String].self, forKey: .disabledCalendarIDs)) ?? defaults.disabledCalendarIDs
         enablePostProcessor = (try? c.decode(Bool.self, forKey: .enablePostProcessor)) ?? defaults.enablePostProcessor
+        quilBackend = TranscriptCleanupBackendOption
+            .resolved(try? c.decode(String.self, forKey: .quilBackend))
+            .backend
+        let decodedQuilModel = (try? c.decode(String.self, forKey: .quilModel)) ?? defaults.quilModel
+        quilModel = quilBackend == TranscriptCleanupBackendOption.local.backend
+            && !PostProcessorOption.resolve(id: decodedQuilModel).supportsQuil
+            ? PostProcessorOption.defaultQuilOption.id
+            : decodedQuilModel
         postProcessorBackend = TranscriptCleanupBackendOption
             .resolved(try? c.decode(String.self, forKey: .postProcessorBackend))
             .backend
+        postProcessorGemmaModel = Gemma4LiteRTModel
+            .resolved(try? c.decode(String.self, forKey: .postProcessorGemmaModel))
+            .repoID
         activePostProcessorId = (try? c.decode(String.self, forKey: .activePostProcessorId)) ?? defaults.activePostProcessorId
         postProcessorChatGPTModel = SummaryModelPreset.supportedChatGPTModel(
             SummaryModelPreset.migratedFromGPT55(

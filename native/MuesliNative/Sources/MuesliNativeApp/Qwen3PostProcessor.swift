@@ -325,6 +325,22 @@ private actor Qwen3PostProcessorManager {
         }
     }
 
+    func generate(_ userPrompt: String) async throws -> String {
+        try await inferenceGate.acquire()
+        do {
+            try Task.checkCancellation()
+            let bot = try loadBot()
+            defer { bot.reset() }
+            await bot.respond(to: userPrompt, thinking: .suppressed)
+            let raw = bot.output
+            await inferenceGate.release()
+            return raw
+        } catch {
+            await inferenceGate.release()
+            throw error
+        }
+    }
+
     private func loadBot() throws -> LLM {
         if let bot { return bot }
         guard let loaded = LLM(
@@ -408,6 +424,26 @@ actor Qwen3PostProcessor {
         )
         let manager = try await loadManager(for: effectiveConfiguration)
         return try await manager.process(text, appContext: appContext)
+    }
+
+    func generate(
+        _ userPrompt: String,
+        configuration: Configuration
+    ) async throws -> String {
+        let effectiveConfiguration = Configuration(
+            modelURL: Qwen3PostProcessorConfig.devOverrideURL() ?? configuration.modelURL,
+            systemPrompt: configuration.systemPrompt,
+            inputFormat: configuration.inputFormat
+        )
+        let manager = try await loadManager(for: effectiveConfiguration)
+        defer {
+            // Quill uses a distinct system prompt. Do not retain a second LLM
+            // instance after the one-shot rewrite completes.
+            if effectiveConfiguration != activeConfiguration {
+                managers[effectiveConfiguration] = nil
+            }
+        }
+        return try await manager.generate(userPrompt)
     }
 
     func shutdown() {

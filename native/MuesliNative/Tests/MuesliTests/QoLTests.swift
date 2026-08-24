@@ -367,6 +367,23 @@ struct IndicatorFrameSizeTests {
         #expect(long.width <= 372)
         #expect(long.height > short.height)
     }
+
+    @Test("Quill instruction pill reserves room for its progress spinner")
+    @MainActor
+    func quillInstructionPillIncludesProgressChrome() {
+        let transcript = "Rewrite this as a concise professional email"
+        let computerUseSize = FloatingIndicatorController.computerUseTranscriptPillSizeForTesting(
+            transcript: transcript,
+            screenWidth: 1200
+        )
+        let quillSize = FloatingIndicatorController.quillInstructionPillSizeForTesting(
+            transcript: transcript,
+            screenWidth: 1200
+        )
+
+        #expect(quillSize.width > computerUseSize.width)
+        #expect(quillSize.height == computerUseSize.height)
+    }
 }
 
 @Suite("Floating meeting transcript")

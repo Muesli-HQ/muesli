@@ -65,6 +65,7 @@ case "${shard}" in
       DiarizerPreloadDiagnosticsTests
       DiarizerPreloadCoordinationTests
       PasteControllerTests
+      QuilTransformationTests
       BackendOptionTests
       SummaryModelPresetTests
       HotkeyMonitorTests

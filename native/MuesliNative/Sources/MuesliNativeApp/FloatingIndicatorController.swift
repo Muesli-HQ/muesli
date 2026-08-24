@@ -195,6 +195,7 @@ final class FloatingIndicatorController: NSObject {
     private var idleIconBackgroundLayer: CALayer?
     private var micIconView: NSImageView?
     private var wandIconView: NSImageView?
+    private var quillIconView: NSImageView?
     private var barLayers: [CALayer] = []
     private var amplitudeTimer: Timer?
     private var smoothedAmplitude: CGFloat = 0
@@ -212,7 +213,8 @@ final class FloatingIndicatorController: NSObject {
     var isToggleDictation = false
     private var stopLayer: CALayer?
     private var transcribingTitle = "Transcribing"
-    private var computerUseTranscriptText: String?
+    private var instructionTranscriptText: String?
+    private var instructionTranscriptShowsProgress = false
     private var loadingSpinner: NSProgressIndicator?
     private var isShowingLoading = false
     private var isComputerUseCursorMode = false
@@ -436,16 +438,42 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func setTranscribingTitle(_ title: String, config: AppConfig) {
-        computerUseTranscriptText = nil
+        instructionTranscriptText = nil
+        instructionTranscriptShowsProgress = false
+        hideInstructionProgress()
         transcribingTitle = title
         guard state == .transcribing else { return }
         setState(.transcribing, config: config)
     }
 
     func showComputerUseTranscript(_ transcript: String, config: AppConfig) {
-        let normalized = Self.normalizedComputerUseTranscript(transcript)
-        computerUseTranscriptText = normalized.isEmpty ? nil : normalized
-        transcribingTitle = normalized.isEmpty ? "Starting CUA" : normalized
+        showInstructionTranscript(
+            transcript,
+            fallbackTitle: "Starting CUA",
+            showsProgress: false,
+            config: config
+        )
+    }
+
+    func showQuilInstruction(_ instruction: String, config: AppConfig) {
+        showInstructionTranscript(
+            instruction,
+            fallbackTitle: "Rewriting selection",
+            showsProgress: true,
+            config: config
+        )
+    }
+
+    private func showInstructionTranscript(
+        _ transcript: String,
+        fallbackTitle: String,
+        showsProgress: Bool,
+        config: AppConfig
+    ) {
+        let normalized = Self.normalizedInstructionTranscript(transcript)
+        instructionTranscriptText = normalized.isEmpty ? nil : normalized
+        instructionTranscriptShowsProgress = showsProgress && !normalized.isEmpty
+        transcribingTitle = normalized.isEmpty ? fallbackTitle : normalized
         setState(.transcribing, config: config)
     }
 
@@ -463,7 +491,11 @@ final class FloatingIndicatorController: NSObject {
         }
         if state != .transcribing {
             transcribingTitle = "Transcribing"
-            computerUseTranscriptText = nil
+            instructionTranscriptText = nil
+            instructionTranscriptShowsProgress = false
+            hideInstructionProgress()
+        } else if !instructionTranscriptShowsProgress {
+            hideInstructionProgress()
         }
         if state != .recording {
             recordingWaveformMode = .level
@@ -560,13 +592,13 @@ final class FloatingIndicatorController: NSObject {
                 iconLabel.font = NSFont.systemFont(ofSize: 14, weight: .bold)
                 iconLabel.stringValue = style.icon
                 iconLabel.textColor = style.iconColor
-                configureTextLabelForTranscript(state == .transcribing && computerUseTranscriptText != nil)
+                configureTextLabelForTranscript(state == .transcribing && instructionTranscriptText != nil)
                 textLabel.stringValue = style.title
                 textLabel.textColor = style.textColor
                 textLabel.animator().alphaValue = style.title.isEmpty ? 0 : 1
                 textLabel.isHidden = style.title.isEmpty
-                if state == .transcribing, computerUseTranscriptText != nil {
-                    layoutComputerUseTranscript(in: targetFrame.size, animated: true)
+                if state == .transcribing, instructionTranscriptText != nil {
+                    layoutInstructionTranscript(in: targetFrame.size, animated: true)
                 } else {
                     layoutLabels(
                         iconLabel: iconLabel,
@@ -645,6 +677,7 @@ final class FloatingIndicatorController: NSObject {
         tintLayer?.isHidden = true
         micIconView?.isHidden = true
         wandIconView?.isHidden = true
+        quillIconView?.isHidden = true
 
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.16
@@ -790,16 +823,7 @@ final class FloatingIndicatorController: NSObject {
         let y = min(max(center.y - loadingSize.height / 2, screen.minY), screen.maxY - loadingSize.height)
         let targetFrame = NSRect(x: x, y: y, width: loadingSize.width, height: loadingSize.height)
 
-        // Create spinner if needed
-        if loadingSpinner == nil {
-            let spinner = NSProgressIndicator()
-            spinner.style = .spinning
-            spinner.controlSize = .small
-            spinner.isIndeterminate = true
-            spinner.appearance = NSAppearance(named: .darkAqua)
-            contentView.addSubview(spinner)
-            loadingSpinner = spinner
-        }
+        ensureLoadingSpinner(in: contentView)
 
         let spinnerSize: CGFloat = 16
         let gap: CGFloat = 8
@@ -813,6 +837,7 @@ final class FloatingIndicatorController: NSObject {
 
         micIconView?.isHidden = true
         wandIconView?.isHidden = true
+        quillIconView?.isHidden = true
         iconLabel?.isHidden = true
         glassView?.isHidden = false
         tintLayer?.isHidden = false
@@ -868,6 +893,24 @@ final class FloatingIndicatorController: NSObject {
         let minWidth = min(CGFloat(180), max(120, screen.width - 32))
         let maxWidth = max(minWidth, min(360, screen.width - 32))
         return NSSize(width: min(max(preferredWidth, minWidth), maxWidth), height: 36)
+    }
+
+    private func ensureLoadingSpinner(in contentView: NSView) {
+        guard loadingSpinner == nil else { return }
+        let spinner = NSProgressIndicator()
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isIndeterminate = true
+        spinner.appearance = NSAppearance(named: .darkAqua)
+        spinner.isHidden = true
+        contentView.addSubview(spinner)
+        loadingSpinner = spinner
+    }
+
+    private func hideInstructionProgress() {
+        guard !isShowingLoading else { return }
+        loadingSpinner?.stopAnimation(nil)
+        loadingSpinner?.isHidden = true
     }
 
     func hideLoading() {
@@ -942,6 +985,10 @@ final class FloatingIndicatorController: NSObject {
         tintLayer = nil
         micIconView = nil
         wandIconView = nil
+        quillIconView = nil
+        loadingSpinner = nil
+        instructionTranscriptShowsProgress = false
+        isShowingLoading = false
         meetingTranscriptPanel.close()
     }
 
@@ -1215,6 +1262,7 @@ final class FloatingIndicatorController: NSObject {
         contentView?.layer?.backgroundColor = NSColor.clear.cgColor
         CATransaction.commit()
         wandIconView?.isHidden = true
+        quillIconView?.isHidden = true
         iconLabel?.isHidden = true
         idleShortcutPillView?.isHidden = true
 
@@ -1312,6 +1360,7 @@ final class FloatingIndicatorController: NSObject {
             idleIconBackgroundLayer?.isHidden = true
             // Mic symbol centred (or left-aligned when hovered beside text).
             wandIconView?.isHidden = true
+            quillIconView?.isHidden = true
             iconLabel?.isHidden = true
             micIconView?.isHidden = false
             if let mic = micIconView {
@@ -1366,18 +1415,23 @@ final class FloatingIndicatorController: NSObject {
             hideShortcutPillChrome()
             // Waveform bars replace mic icon during recording.
             wandIconView?.isHidden = true
+            quillIconView?.isHidden = true
             iconLabel?.isHidden = false   // keeps the ✕ cancel label
             micIconView?.isHidden = true
 
         case .transcribing:
-            // Animated wand beside "Transcribing" label, the pair centred in the pill.
+            // Quill uses its feather mark plus a compact spinner while keeping the
+            // dictated instruction visible. Other transcribing states keep the wand.
             micIconView?.isHidden = true
             iconLabel?.isHidden = true
-            wandIconView?.isHidden = false
-            if computerUseTranscriptText != nil {
-                layoutComputerUseTranscript(in: frameSize, animated: false)
+            if instructionTranscriptText != nil {
+                wandIconView?.isHidden = instructionTranscriptShowsProgress
+                quillIconView?.isHidden = !instructionTranscriptShowsProgress
+                layoutInstructionTranscript(in: frameSize, animated: false)
                 return
             }
+            quillIconView?.isHidden = true
+            wandIconView?.isHidden = false
             if let wand = wandIconView {
                 let gap: CGFloat = 6
                 let horizontalPadding: CGFloat = 14
@@ -1405,6 +1459,7 @@ final class FloatingIndicatorController: NSObject {
 
         case .preparing:
             wandIconView?.isHidden = true
+            quillIconView?.isHidden = true
             iconLabel?.isHidden = true
             micIconView?.isHidden = true
         }
@@ -1434,14 +1489,21 @@ final class FloatingIndicatorController: NSObject {
         }
     }
 
-    private func layoutComputerUseTranscript(in size: NSSize, animated: Bool) {
-        guard let wand = wandIconView, let textLabel else { return }
+    private func layoutInstructionTranscript(in size: NSSize, animated: Bool) {
+        guard let textLabel else { return }
+        let leadingIcon = instructionTranscriptShowsProgress ? quillIconView : wandIconView
+        guard let leadingIcon else { return }
         let iconSize = NSSize(width: 18, height: 18)
         let gap: CGFloat = 8
         let horizontalPadding: CGFloat = 16
         let verticalPadding: CGFloat = 12
         let textX = horizontalPadding + iconSize.width + gap
-        let textWidth = max(40, size.width - textX - horizontalPadding)
+        let spinnerSize: CGFloat = instructionTranscriptShowsProgress ? 14 : 0
+        let spinnerGap: CGFloat = instructionTranscriptShowsProgress ? 8 : 0
+        let textWidth = max(
+            40,
+            size.width - textX - horizontalPadding - spinnerGap - spinnerSize
+        )
         let textHeight = max(16, size.height - (verticalPadding * 2))
         let textFrame = NSRect(
             x: textX,
@@ -1456,16 +1518,31 @@ final class FloatingIndicatorController: NSObject {
             height: iconSize.height
         )
 
-        wand.isHidden = false
+        wandIconView?.isHidden = instructionTranscriptShowsProgress
+        quillIconView?.isHidden = !instructionTranscriptShowsProgress
+        leadingIcon.isHidden = false
         textLabel.isHidden = false
+        if instructionTranscriptShowsProgress, let contentView {
+            ensureLoadingSpinner(in: contentView)
+            loadingSpinner?.frame = NSRect(
+                x: size.width - horizontalPadding - spinnerSize,
+                y: floor((size.height - spinnerSize) / 2),
+                width: spinnerSize,
+                height: spinnerSize
+            )
+            loadingSpinner?.isHidden = false
+            loadingSpinner?.startAnimation(nil)
+        } else {
+            hideInstructionProgress()
+        }
         if animated {
-            wand.animator().alphaValue = 1
-            wand.animator().frame = iconFrame
+            leadingIcon.animator().alphaValue = 1
+            leadingIcon.animator().frame = iconFrame
             textLabel.animator().alphaValue = 1
             textLabel.animator().frame = textFrame
         } else {
-            wand.alphaValue = 1
-            wand.frame = iconFrame
+            leadingIcon.alphaValue = 1
+            leadingIcon.frame = iconFrame
             textLabel.alphaValue = 1
             textLabel.frame = textFrame
         }
@@ -1661,6 +1738,13 @@ final class FloatingIndicatorController: NSObject {
         contentView.addSubview(wandView)
         wandIconView = wandView
 
+        let quillView = NSImageView(image: QuillIcon.image())
+        quillView.contentTintColor = .white
+        quillView.imageScaling = .scaleProportionallyDown
+        quillView.isHidden = true
+        contentView.addSubview(quillView)
+        quillIconView = quillView
+
     }
 
     private func applyTintLayerGeometry(size: NSSize, radius: CGFloat) {
@@ -1821,8 +1905,12 @@ final class FloatingIndicatorController: NSObject {
         case .recording: size = NSSize(width: 76, height: 22)
         case .transcribing:
             hideShortcutPillChrome()
-            if let transcript = computerUseTranscriptText {
-                size = Self.computerUseTranscriptPillSize(transcript: transcript, screen: screen)
+            if let transcript = instructionTranscriptText {
+                size = Self.instructionTranscriptPillSize(
+                    transcript: transcript,
+                    screen: screen,
+                    showsProgress: instructionTranscriptShowsProgress
+                )
             } else {
                 size = Self.transcribingPillSize(title: transcribingTitle, screenWidth: screen.width)
             }
@@ -2044,9 +2132,22 @@ final class FloatingIndicatorController: NSObject {
         screenWidth: CGFloat,
         screenHeight: CGFloat = 900
     ) -> NSSize {
-        computerUseTranscriptPillSize(
+        instructionTranscriptPillSize(
             transcript: transcript,
-            screen: NSRect(x: 0, y: 0, width: screenWidth, height: screenHeight)
+            screen: NSRect(x: 0, y: 0, width: screenWidth, height: screenHeight),
+            showsProgress: false
+        )
+    }
+
+    static func quillInstructionPillSizeForTesting(
+        transcript: String,
+        screenWidth: CGFloat,
+        screenHeight: CGFloat = 900
+    ) -> NSSize {
+        instructionTranscriptPillSize(
+            transcript: transcript,
+            screen: NSRect(x: 0, y: 0, width: screenWidth, height: screenHeight),
+            showsProgress: true
         )
     }
 
@@ -2062,14 +2163,19 @@ final class FloatingIndicatorController: NSObject {
         return NSSize(width: min(max(preferredWidth, minWidth), maxWidth), height: 32)
     }
 
-    private static func computerUseTranscriptPillSize(transcript: String, screen: NSRect) -> NSSize {
-        let normalized = normalizedComputerUseTranscript(transcript)
+    private static func instructionTranscriptPillSize(
+        transcript: String,
+        screen: NSRect,
+        showsProgress: Bool
+    ) -> NSSize {
+        let normalized = normalizedInstructionTranscript(transcript)
         let font = NSFont.systemFont(ofSize: 12, weight: .medium)
         let iconWidth: CGFloat = 18
         let gap: CGFloat = 8
         let horizontalPadding: CGFloat = 16
         let verticalPadding: CGFloat = 12
-        let chromeWidth = horizontalPadding + iconWidth + gap + horizontalPadding
+        let progressWidth: CGFloat = showsProgress ? 22 : 0
+        let chromeWidth = horizontalPadding + iconWidth + gap + progressWidth + horizontalPadding
         let minWidth = min(CGFloat(280), max(160, screen.width - 48))
         let maxWidth = max(minWidth, min(720, screen.width - 48))
         let singleLineTextWidth = ceil((normalized as NSString).size(withAttributes: [.font: font]).width) + 2
@@ -2090,7 +2196,7 @@ final class FloatingIndicatorController: NSObject {
         return max(16, ceil(bounding.height))
     }
 
-    private static func normalizedComputerUseTranscript(_ transcript: String) -> String {
+    private static func normalizedInstructionTranscript(_ transcript: String) -> String {
         transcript
             .components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }

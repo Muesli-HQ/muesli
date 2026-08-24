@@ -45,21 +45,77 @@ enum Gemma4LiteRTLogging {
     }
 }
 
+enum Gemma4LiteRTModel: String, CaseIterable, Identifiable, Sendable {
+    case e2b = "litert-community/gemma-4-E2B-it-litert-lm"
+    case e4b = "litert-community/gemma-4-E4B-it-litert-lm"
+
+    var id: String { repoID }
+    var repoID: String { rawValue }
+
+    var filename: String {
+        switch self {
+        case .e2b: "gemma-4-E2B-it.litertlm"
+        case .e4b: "gemma-4-E4B-it.litertlm"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .e2b: "Gemma 4 E2B"
+        case .e4b: "Gemma 4 E4B"
+        }
+    }
+
+    var sizeLabel: String {
+        switch self {
+        case .e2b: "~2.6 GB"
+        case .e4b: "~3.7 GB"
+        }
+    }
+
+    var cacheDirectoryName: String {
+        switch self {
+        case .e2b: "gemma-4-e2b-litert-lm"
+        case .e4b: "gemma-4-e4b-litert-lm"
+        }
+    }
+
+    var expectedByteCount: Int64 {
+        switch self {
+        case .e2b: 2_588_147_712
+        case .e4b: 3_659_530_240
+        }
+    }
+
+    var minimumDownloadedSizeBytes: Int64 {
+        switch self {
+        case .e2b: 2_000_000_000
+        case .e4b: 3_000_000_000
+        }
+    }
+
+    var downloadURL: URL {
+        URL(string: "https://huggingface.co/\(repoID)/resolve/main/\(filename)?download=1")!
+    }
+
+    static func resolved(_ repoID: String?) -> Self {
+        allCases.first(where: { $0.repoID == repoID }) ?? .e2b
+    }
+}
+
 enum Gemma4LiteRTModelStore {
     static let modelPathEnvVar = "MUESLI_GEMMA4_LITERT_MODEL_PATH"
     static let promptEnvVar = "MUESLI_GEMMA4_LITERT_PROMPT"
     static let cacheDirEnvVar = "MUESLI_GEMMA4_LITERT_CACHE_DIR"
     static let backendEnvVar = "MUESLI_GEMMA4_LITERT_BACKEND"
     static let mtpEnvVar = "MUESLI_GEMMA4_LITERT_MTP"
-    static let repoID = "litert-community/gemma-4-E2B-it-litert-lm"
-    static let modelFilename = "gemma-4-E2B-it.litertlm"
-    static let cacheRelativePath = ".cache/muesli/models/gemma-4-e2b-litert-lm"
-    static let expectedModelByteCount: Int64 = 2_588_147_712
-    static let minimumDownloadedModelSizeBytes: Int64 = 2_000_000_000
-
-    static let downloadURL = URL(
-        string: "https://huggingface.co/\(repoID)/resolve/main/\(modelFilename)?download=1"
-    )!
+    // Preserve the original E2B constants as source-compatible defaults.
+    static let repoID = Gemma4LiteRTModel.e2b.repoID
+    static let modelFilename = Gemma4LiteRTModel.e2b.filename
+    static let cacheRelativePath = ".cache/muesli/models/\(Gemma4LiteRTModel.e2b.cacheDirectoryName)"
+    static let expectedModelByteCount = Gemma4LiteRTModel.e2b.expectedByteCount
+    static let minimumDownloadedModelSizeBytes = Gemma4LiteRTModel.e2b.minimumDownloadedSizeBytes
+    static let downloadURL = Gemma4LiteRTModel.e2b.downloadURL
 
     static let defaultPrompt = """
     Transcribe the following speech segment in its original language.
@@ -69,17 +125,26 @@ enum Gemma4LiteRTModelStore {
     * When transcribing numbers, write the digits, i.e. write 1.7 and not one point seven, and write 3 instead of three.
     """
 
-    static func cacheDirectory(fileManager: FileManager = .default) -> URL {
+    static func cacheDirectory(
+        for model: Gemma4LiteRTModel = .e2b,
+        fileManager: FileManager = .default
+    ) -> URL {
         fileManager.homeDirectoryForCurrentUser
-            .appendingPathComponent(cacheRelativePath, isDirectory: true)
+            .appendingPathComponent(".cache/muesli/models/\(model.cacheDirectoryName)", isDirectory: true)
     }
 
-    static func managedModelURL(fileManager: FileManager = .default) -> URL {
-        cacheDirectory(fileManager: fileManager).appendingPathComponent(modelFilename)
+    static func managedModelURL(
+        for model: Gemma4LiteRTModel = .e2b,
+        fileManager: FileManager = .default
+    ) -> URL {
+        cacheDirectory(for: model, fileManager: fileManager).appendingPathComponent(model.filename)
     }
 
-    static func managedLiteRTCacheDirectory(fileManager: FileManager = .default) -> URL {
-        cacheDirectory(fileManager: fileManager).appendingPathComponent("litert-cache", isDirectory: true)
+    static func managedLiteRTCacheDirectory(
+        for model: Gemma4LiteRTModel = .e2b,
+        fileManager: FileManager = .default
+    ) -> URL {
+        cacheDirectory(for: model, fileManager: fileManager).appendingPathComponent("litert-cache", isDirectory: true)
     }
 
     static func localOverrideURL(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL? {
@@ -91,19 +156,21 @@ enum Gemma4LiteRTModelStore {
     }
 
     static func resolvedModelURL(
+        for model: Gemma4LiteRTModel = .e2b,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default
     ) -> URL {
-        localOverrideURL(environment: environment) ?? managedModelURL(fileManager: fileManager)
+        localOverrideURL(environment: environment) ?? managedModelURL(for: model, fileManager: fileManager)
     }
 
     static func resolvedCacheDirectory(
+        for model: Gemma4LiteRTModel = .e2b,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default
     ) -> URL {
         guard let rawPath = environment[cacheDirEnvVar]?.trimmingCharacters(in: .whitespacesAndNewlines),
               !rawPath.isEmpty else {
-            return managedLiteRTCacheDirectory(fileManager: fileManager)
+            return managedLiteRTCacheDirectory(for: model, fileManager: fileManager)
         }
         return URL(fileURLWithPath: rawPath, isDirectory: true)
     }
@@ -128,25 +195,27 @@ enum Gemma4LiteRTModelStore {
     }
 
     static func isAvailableLocally(
+        model: Gemma4LiteRTModel = .e2b,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default
     ) -> Bool {
-        let url = resolvedModelURL(environment: environment, fileManager: fileManager)
+        let url = resolvedModelURL(for: model, environment: environment, fileManager: fileManager)
         let minimumSize: Int64 = localOverrideURL(environment: environment) == nil
-            ? minimumDownloadedModelSizeBytes
+            ? model.minimumDownloadedSizeBytes
             : 1
         return isValidLiteRTLMFile(at: url, minimumSizeBytes: minimumSize, fileManager: fileManager)
     }
 
     static func ensureModelDownloaded(
+        model: Gemma4LiteRTModel = .e2b,
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default
     ) async throws -> URL {
-        let modelURL = resolvedModelURL(environment: environment, fileManager: fileManager)
-        if isAvailableLocally(environment: environment, fileManager: fileManager) {
-            progress?(0.8, "Gemma 4 E2B already downloaded")
+        let modelURL = resolvedModelURL(for: model, environment: environment, fileManager: fileManager)
+        if isAvailableLocally(model: model, environment: environment, fileManager: fileManager) {
+            progress?(0.8, "\(model.label) already downloaded")
             return modelURL
         }
 
@@ -156,17 +225,18 @@ enum Gemma4LiteRTModelStore {
             ])
         }
 
-        try await downloadManagedModel(progress: progress, progressSnapshot: progressSnapshot, fileManager: fileManager)
-        guard isAvailableLocally(environment: environment, fileManager: fileManager) else {
+        try await downloadManagedModel(model: model, progress: progress, progressSnapshot: progressSnapshot, fileManager: fileManager)
+        guard isAvailableLocally(model: model, environment: environment, fileManager: fileManager) else {
             throw NSError(domain: "Gemma4LiteRTModelStore", code: 2, userInfo: [
                 NSLocalizedDescriptionKey: "Gemma 4 LiteRT-LM did not download successfully.",
             ])
         }
-        progress?(0.8, "Gemma 4 E2B downloaded")
+        progress?(0.8, "\(model.label) downloaded")
         return modelURL
     }
 
     static func deleteModelFiles(
+        model: Gemma4LiteRTModel = .e2b,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default
     ) throws {
@@ -176,27 +246,28 @@ enum Gemma4LiteRTModelStore {
             return
         }
 
-        let directory = cacheDirectory(fileManager: fileManager)
+        let directory = cacheDirectory(for: model, fileManager: fileManager)
         guard fileManager.fileExists(atPath: directory.path) else { return }
         try fileManager.removeItem(at: directory)
     }
 
     private static func downloadManagedModel(
+        model: Gemma4LiteRTModel,
         progress: ((Double, String?) -> Void)?,
         progressSnapshot: ModelDownloadProgressHandler?,
         fileManager: FileManager
     ) async throws {
-        let directory = cacheDirectory(fileManager: fileManager)
-        let destination = managedModelURL(fileManager: fileManager)
+        let directory = cacheDirectory(for: model, fileManager: fileManager)
+        let destination = managedModelURL(for: model, fileManager: fileManager)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
 
         let manifest = ModelDownloadManifest(
-            id: repoID,
+            id: model.repoID,
             version: "main",
             files: [ModelDownloadFile(
-                relativePath: modelFilename,
-                remoteURL: downloadURL,
-                expectedByteCount: expectedModelByteCount
+                relativePath: model.filename,
+                remoteURL: model.downloadURL,
+                expectedByteCount: model.expectedByteCount
             )],
             maximumConcurrency: 1
         )
@@ -204,10 +275,10 @@ enum Gemma4LiteRTModelStore {
             let fraction = snapshot.fractionCompleted ?? 0.05
             let rate = ModelDownloadDisplayFormatting.rate(snapshot.bytesPerSecond)
             let speed = rate.isEmpty ? "" : " · " + rate
-            progress?(fraction, "Downloading Gemma 4 E2B" + speed)
+            progress?(fraction, "Downloading \(model.label)" + speed)
             progressSnapshot?(snapshot)
         }
-        try validateDownloadedLiteRTLMFile(at: destination, fileManager: fileManager)
+        try validateDownloadedLiteRTLMFile(at: destination, minimumSizeBytes: model.minimumDownloadedSizeBytes, fileManager: fileManager)
     }
 
     static func isValidLiteRTLMFile(
@@ -225,7 +296,11 @@ enum Gemma4LiteRTModelStore {
         return size.int64Value >= minimumSizeBytes
     }
 
-    static func validateDownloadedLiteRTLMFile(at url: URL, fileManager: FileManager) throws {
+    static func validateDownloadedLiteRTLMFile(
+        at url: URL,
+        minimumSizeBytes: Int64 = minimumDownloadedModelSizeBytes,
+        fileManager: FileManager
+    ) throws {
         let attributes = try fileManager.attributesOfItem(atPath: url.path)
         guard attributes[.type] as? FileAttributeType == .typeRegular else {
             throw NSError(domain: "Gemma4LiteRTModelStore", code: 4, userInfo: [
@@ -233,7 +308,7 @@ enum Gemma4LiteRTModelStore {
             ])
         }
         let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
-        guard size >= minimumDownloadedModelSizeBytes else {
+        guard size >= minimumSizeBytes else {
             throw NSError(domain: "Gemma4LiteRTModelStore", code: 4, userInfo: [
                 NSLocalizedDescriptionKey: "Downloaded Gemma 4 LiteRT-LM model is too small (\(size) bytes).",
             ])
@@ -249,6 +324,7 @@ actor Gemma4LiteRTTranscriber {
 
     private var engine: OpaquePointer?
     private var isLoading = false
+    private var loadedModel: Gemma4LiteRTModel?
 
     deinit {
         if let engine {
@@ -301,13 +377,20 @@ actor Gemma4LiteRTTranscriber {
     }
 
     func prepare(
+        model: Gemma4LiteRTModel = .e2b,
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
-        if engine != nil { return }
+        if engine != nil {
+            if loadedModel == model { return }
+            shutdown()
+        }
         if isLoading {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 loadWaiters.append(continuation)
+            }
+            if loadedModel != model {
+                try await prepare(model: model, progress: progress, progressSnapshot: progressSnapshot)
             }
             return
         }
@@ -315,7 +398,7 @@ actor Gemma4LiteRTTranscriber {
         isLoading = true
         let generation = loadGeneration
         do {
-            try await loadEngine(progress: progress, progressSnapshot: progressSnapshot, generation: generation)
+            try await loadEngine(model: model, progress: progress, progressSnapshot: progressSnapshot, generation: generation)
             isLoading = false
             completeLoadWaiters()
         } catch {
@@ -326,26 +409,28 @@ actor Gemma4LiteRTTranscriber {
     }
 
     private func loadEngine(
+        model: Gemma4LiteRTModel,
         progress: ((Double, String?) -> Void)?,
         progressSnapshot: ModelDownloadProgressHandler?,
         generation: Int
     ) async throws {
         let fileManager = FileManager.default
         let modelURL = try await Gemma4LiteRTModelStore.ensureModelDownloaded(
+            model: model,
             progress: progress,
             progressSnapshot: progressSnapshot
         )
         try checkLoadGeneration(generation)
-        progressSnapshot?(ModelDownloadProgress.preparing(modelID: Gemma4LiteRTModelStore.repoID, message: "Preparing Gemma 4 LiteRT-LM..."))
+        progressSnapshot?(ModelDownloadProgress.preparing(modelID: model.repoID, message: "Preparing \(model.label)..."))
         guard fileManager.fileExists(atPath: modelURL.path) else {
             throw TranscriberError.modelMissing(path: modelURL.path)
         }
 
-        let cacheDirectory = Gemma4LiteRTModelStore.resolvedCacheDirectory()
+        let cacheDirectory = Gemma4LiteRTModelStore.resolvedCacheDirectory(for: model)
         try fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
         try checkLoadGeneration(generation)
 
-        progress?(0.9, "Loading Gemma 4 E2B...")
+        progress?(0.9, "Loading \(model.label)...")
         Gemma4LiteRTLogging.log("loading \(modelURL.path)")
         let backend = Gemma4LiteRTModelStore.resolvedBackend()
         // Google's Audio Scribe configuration accelerates the decoder with Metal while keeping
@@ -366,6 +451,7 @@ actor Gemma4LiteRTTranscriber {
             throw TranscriberError.failedToCreateEngine
         }
         engine = loadedEngine
+        loadedModel = model
         progress?(1.0, nil)
         Gemma4LiteRTLogging.log(
             "engine ready; backend=\(backend) audioBackend=cpu mtp=\(enableMTP) cache=\(cacheDirectory.path)"
@@ -535,12 +621,64 @@ actor Gemma4LiteRTTranscriber {
         return (trimmed, rawOutput, elapsed)
     }
 
+    func generateText(systemPrompt: String, userPrompt: String) async throws -> String {
+        guard let engine else { throw TranscriberError.notLoaded }
+        guard let sessionConfig = litert_lm_session_config_create() else {
+            throw TranscriberError.failedToCreateSessionConfig
+        }
+        defer { litert_lm_session_config_delete(sessionConfig) }
+        litert_lm_session_config_set_max_output_tokens(sessionConfig, Self.maxCleanupOutputTokens)
+        var sampler = LiteRtLmSamplerParams(
+            type: kLiteRtLmSamplerTypeTopP,
+            top_k: 1,
+            top_p: 0.95,
+            temperature: 1.0,
+            seed: 0
+        )
+        litert_lm_session_config_set_sampler_params(sessionConfig, &sampler)
+
+        guard let conversationConfig = litert_lm_conversation_config_create() else {
+            throw TranscriberError.failedToCreateConversationConfig
+        }
+        defer { litert_lm_conversation_config_delete(conversationConfig) }
+        litert_lm_conversation_config_set_session_config(conversationConfig, sessionConfig)
+        let systemMessageJSON = try Self.messageJSONString(
+            role: "system",
+            contents: [["type": "text", "text": systemPrompt]]
+        )
+        litert_lm_conversation_config_set_system_message(conversationConfig, systemMessageJSON)
+        guard let conversation = litert_lm_conversation_create(engine, conversationConfig) else {
+            throw TranscriberError.failedToCreateConversation
+        }
+        defer { litert_lm_conversation_delete(conversation) }
+        guard let optionalArgs = litert_lm_conversation_optional_args_create() else {
+            throw TranscriberError.failedToCreateOptionalArgs
+        }
+        defer { litert_lm_conversation_optional_args_delete(optionalArgs) }
+        let userMessageJSON = try Self.messageJSONString(
+            role: "user",
+            contents: [["type": "text", "text": userPrompt]]
+        )
+        guard let jsonResponse = litert_lm_conversation_send_message(
+            conversation,
+            userMessageJSON,
+            nil,
+            optionalArgs
+        ) else { throw TranscriberError.invalidResponse }
+        defer { litert_lm_json_response_delete(jsonResponse) }
+        guard let responseCString = litert_lm_json_response_get_string(jsonResponse) else {
+            throw TranscriberError.invalidResponse
+        }
+        return try Self.textContent(fromResponseJSON: String(cString: responseCString))
+    }
+
     func shutdown() {
         loadGeneration += 1
         if let engine {
             litert_lm_engine_delete(engine)
         }
         engine = nil
+        loadedModel = nil
         isLoading = false
         completeLoadWaiters(throwing: TranscriberError.notLoaded)
     }

@@ -14,6 +14,10 @@ struct DictationContext {
 }
 
 enum DictationContextCapture {
+    private static let browserBundleIDs: Set<String> = [
+        "com.google.Chrome", "com.apple.Safari", "company.thebrowser.Browser",
+        "org.mozilla.firefox", "com.brave.Browser", "com.microsoft.edgemac",
+    ]
 
     /// Captures focused app name + text context via Accessibility API, with optional
     /// on-device OCR when Screen Recording permission is already granted.
@@ -48,7 +52,7 @@ enum DictationContextCapture {
 
         if let app, AXIsProcessTrusted(), let focusedElement = focusedUIElement(for: app) {
             docContext = textBeforeCursor(focusedElement, maxChars: 200)
-            selectedText = axStringValue(focusedElement, attribute: kAXSelectedTextAttribute as String)
+            selectedText = selectedTextValue(in: focusedElement)
         }
 
         let url = browserURL(for: app)
@@ -95,7 +99,7 @@ enum DictationContextCapture {
 
     // MARK: - Accessibility helpers
 
-    private static func focusedUIElement(for app: NSRunningApplication) -> AXUIElement? {
+    static func focusedUIElement(for app: NSRunningApplication) -> AXUIElement? {
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
         var focusedElement: CFTypeRef?
         let result = AXUIElementCopyAttributeValue(axApp, kAXFocusedUIElementAttribute as CFString, &focusedElement)
@@ -108,27 +112,21 @@ enum DictationContextCapture {
     /// AX string-for-range attribute. Falls back to suffix of full value if unsupported.
     private static func textBeforeCursor(_ element: AXUIElement, maxChars: Int) -> String {
         // Try cursor-aware read via kAXSelectedTextRangeAttribute + kAXStringForRangeParameterizedAttribute
-        var rangeRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeRef) == .success,
-           let rangeValue = rangeRef,
-           CFGetTypeID(rangeValue) == AXValueGetTypeID() {
-            var cfRange = CFRange(location: 0, length: 0)
-            if AXValueGetValue(rangeValue as! AXValue, .cfRange, &cfRange) {
-                let cursorPos = cfRange.location
-                let prefixLen = min(cursorPos, maxChars)
-                if prefixLen > 0 {
-                    var sliceRange = CFRange(location: cursorPos - prefixLen, length: prefixLen)
-                    let axRange: AXValue? = AXValueCreate(.cfRange, &sliceRange)
-                    if let axRange {
-                        var sliceRef: CFTypeRef?
-                        if AXUIElementCopyParameterizedAttributeValue(
-                            element,
-                            kAXStringForRangeParameterizedAttribute as CFString,
-                            axRange,
-                            &sliceRef
-                        ) == .success, let text = sliceRef as? String {
-                            return text
-                        }
+        if let selectedRange = selectedTextRange(element) {
+            let cursorPos = selectedRange.location
+            let prefixLen = min(cursorPos, maxChars)
+            if prefixLen > 0 {
+                var sliceRange = CFRange(location: cursorPos - prefixLen, length: prefixLen)
+                let axRange: AXValue? = AXValueCreate(.cfRange, &sliceRange)
+                if let axRange {
+                    var sliceRef: CFTypeRef?
+                    if AXUIElementCopyParameterizedAttributeValue(
+                        element,
+                        kAXStringForRangeParameterizedAttribute as CFString,
+                        axRange,
+                        &sliceRef
+                    ) == .success, let text = sliceRef as? String {
+                        return text
                     }
                 }
             }
@@ -149,20 +147,54 @@ enum DictationContextCapture {
         return full
     }
 
-    private static func axStringValue(_ element: AXUIElement, attribute: String) -> String {
+    static func axStringValue(_ element: AXUIElement, attribute: String) -> String {
         var value: CFTypeRef?
         let result = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
         guard result == .success, let str = value as? String else { return "" }
         return str
     }
 
+    static func selectedTextRange(_ element: AXUIElement) -> CFRange? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            &value
+        ) == .success,
+        let value,
+        CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+        var range = CFRange(location: 0, length: 0)
+        return AXValueGetValue(value as! AXValue, .cfRange, &range) ? range : nil
+    }
+
+    /// Some web editors expose a selected range and parameterized text without
+    /// implementing AXSelectedText. Prefer the direct attribute, then reconstruct
+    /// the exact selection from that range before considering clipboard fallback.
+    static func selectedTextValue(in element: AXUIElement) -> String {
+        let direct = axStringValue(element, attribute: kAXSelectedTextAttribute as String)
+        guard direct.isEmpty, let range = selectedTextRange(element), range.length > 0 else {
+            return direct
+        }
+        var mutableRange = range
+        guard let axRange = AXValueCreate(.cfRange, &mutableRange) else { return "" }
+        var value: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(
+            element,
+            kAXStringForRangeParameterizedAttribute as CFString,
+            axRange,
+            &value
+        ) == .success else { return "" }
+        return value as? String ?? ""
+    }
+
+    static func isBrowserApplication(_ app: NSRunningApplication) -> Bool {
+        guard let bundleID = app.bundleIdentifier else { return false }
+        return browserBundleIDs.contains(bundleID)
+    }
+
     private static func browserURL(for app: NSRunningApplication?) -> String? {
         guard let app else { return nil }
-        let browserBundles = [
-            "com.google.Chrome", "com.apple.Safari", "company.thebrowser.Browser",
-            "org.mozilla.firefox", "com.brave.Browser", "com.microsoft.edgemac"
-        ]
-        guard browserBundles.contains(app.bundleIdentifier ?? "") else { return nil }
+        guard isBrowserApplication(app) else { return nil }
 
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
         var windowRef: CFTypeRef?
@@ -180,6 +212,74 @@ enum DictationContextCapture {
             return String(url.prefix(100))
         }
         return nil
+    }
+}
+
+@MainActor
+final class QuilSelectionSnapshot {
+    let text: String
+    let application: NSRunningApplication
+    private let element: AXUIElement
+    private let selectedRange: CFRange?
+    private let usesClipboardFallback: Bool
+
+    private init(
+        text: String,
+        application: NSRunningApplication,
+        element: AXUIElement,
+        selectedRange: CFRange?,
+        usesClipboardFallback: Bool
+    ) {
+        self.text = text
+        self.application = application
+        self.element = element
+        self.selectedRange = selectedRange
+        self.usesClipboardFallback = usesClipboardFallback
+    }
+
+    static func capture() throws -> QuilSelectionSnapshot {
+        guard AXIsProcessTrusted() else { throw QuilTransformationError.accessibilityPermissionRequired }
+        guard let application = NSWorkspace.shared.frontmostApplication,
+              application.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+              let element = DictationContextCapture.focusedUIElement(for: application) else {
+            throw QuilTransformationError.noSelection
+        }
+        var text = DictationContextCapture.selectedTextValue(in: element)
+        var usesClipboardFallback = false
+        if text.isEmpty, DictationContextCapture.isBrowserApplication(application) {
+            text = PasteController.copySelectedText() ?? ""
+            usesClipboardFallback = !text.isEmpty
+        }
+        guard !text.isEmpty else { throw QuilTransformationError.noSelection }
+        return QuilSelectionSnapshot(
+            text: text,
+            application: application,
+            element: element,
+            selectedRange: DictationContextCapture.selectedTextRange(element),
+            usesClipboardFallback: usesClipboardFallback
+        )
+    }
+
+    func isStillCurrent() -> Bool {
+        guard isTargetStillFocused(),
+              let focused = DictationContextCapture.focusedUIElement(for: application) else { return false }
+        if usesClipboardFallback {
+            return PasteController.copySelectedText() == text
+        }
+        guard DictationContextCapture.selectedTextValue(in: focused) == text else { return false }
+        guard let selectedRange else { return true }
+        guard let currentRange = DictationContextCapture.selectedTextRange(focused) else { return false }
+        return currentRange.location == selectedRange.location
+            && currentRange.length == selectedRange.length
+    }
+
+    /// Safe to call after Quill has staged its replacement on the clipboard.
+    /// Full text equality is checked before staging; this last guard only ensures
+    /// focus has not moved during the short paste dispatch delay.
+    func isTargetStillFocused() -> Bool {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier,
+              let focused = DictationContextCapture.focusedUIElement(for: application) else { return false }
+        return CFEqual(focused, element)
     }
 }
 

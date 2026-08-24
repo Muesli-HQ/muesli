@@ -282,7 +282,7 @@ struct BackendOptionTests {
         #expect(BackendOption.senseVoiceSmall.model == "FluidInference/sensevoice-small-coreml")
     }
 
-    @Test("Gemma 4 E2B remains an experimental managed model")
+    @Test("Gemma 4 variants remain experimental managed models")
     func gemma4LiteRTBackend() {
         #expect(BackendOption.gemma4E2BLiteRT.backend == "gemma4-litert")
         #expect(BackendOption.gemma4E2BLiteRT.model == Gemma4LiteRTModelStore.repoID)
@@ -292,6 +292,12 @@ struct BackendOptionTests {
         #expect(BackendOption.gemma4E2BLiteRT.description.contains("macOS 15"))
         #expect(BackendOption.experimental.contains(.gemma4E2BLiteRT))
         #expect(!BackendOption.onboarding.contains(.gemma4E2BLiteRT))
+        #expect(BackendOption.gemma4E4BLiteRT.backend == "gemma4-litert")
+        #expect(BackendOption.gemma4E4BLiteRT.model == Gemma4LiteRTModel.e4b.repoID)
+        #expect(BackendOption.gemma4E4BLiteRT.label == "Gemma 4 E4B")
+        #expect(BackendOption.gemma4E4BLiteRT.sizeLabel == "~3.7 GB")
+        #expect(BackendOption.experimental.contains(.gemma4E4BLiteRT))
+        #expect(!BackendOption.onboarding.contains(.gemma4E4BLiteRT))
     }
 
     @Test("Cohere is not in experimental list")
@@ -564,8 +570,9 @@ struct TranscriptCleanupBackendOptionTests {
     @Test("Gemma cleanup is unavailable only for Gemma dictation")
     func gemmaCleanupCompatibility() {
         #expect(!TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: .gemma4E2BLiteRT))
+        #expect(!TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: .gemma4E4BLiteRT))
 
-        for backend in BackendOption.all where backend != .gemma4E2BLiteRT {
+        for backend in BackendOption.all where backend.backend != "gemma4-litert" {
             #expect(TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: backend))
         }
     }
@@ -574,6 +581,7 @@ struct TranscriptCleanupBackendOptionTests {
     func otherCleanupBackendsRemainCompatible() {
         for backend in TranscriptCleanupBackendOption.all where backend != .gemma4LiteRT {
             #expect(backend.isCompatible(with: .gemma4E2BLiteRT))
+            #expect(backend.isCompatible(with: .gemma4E4BLiteRT))
         }
     }
 
@@ -583,6 +591,18 @@ struct TranscriptCleanupBackendOptionTests {
 
         #expect(!available.contains(.gemma4LiteRT))
         #expect(available.count == TranscriptCleanupBackendOption.all.count - 1)
+    }
+
+    @Test("Gemma cleanup model selection round trips")
+    func gemmaCleanupModelRoundTrip() throws {
+        var config = AppConfig()
+        config.postProcessorBackend = TranscriptCleanupBackendOption.gemma4LiteRT.backend
+        config.postProcessorGemmaModel = Gemma4LiteRTModel.e4b.repoID
+
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(config))
+
+        #expect(decoded.postProcessorGemmaModel == Gemma4LiteRTModel.e4b.repoID)
+        #expect(TranscriptCleanupClient.configuredModel(for: .gemma4LiteRT, config: decoded) == Gemma4LiteRTModel.e4b.repoID)
     }
 }
 
@@ -1985,6 +2005,36 @@ struct HotkeyMonitorTests {
         #expect(toggleStartCount == 1)
     }
 
+    @Test("Fn double-tap reuses hands-free start and tap-to-stop lifecycle")
+    @MainActor
+    func fnDoubleTapHandsFreeLifecycle() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(doubleTapWindow: 0.35)
+        monitor.configure(keyCode: 63)
+        var toggleStartCount = 0
+        var toggleStopCount = 0
+        monitor.onToggleStart = {
+            toggleStartCount += 1
+        }
+        monitor.onToggleStop = {
+            toggleStopCount += 1
+        }
+
+        monitor.handleFlagsChanged(keyCode: 63, flags: .function)
+        monitor.handleFlagsChanged(keyCode: 63, flags: [])
+        scheduler.advance(by: 0.10)
+        monitor.handleFlagsChanged(keyCode: 63, flags: .function)
+
+        #expect(monitor.isToggleRecording)
+        #expect(toggleStartCount == 1)
+
+        monitor.handleFlagsChanged(keyCode: 63, flags: [])
+        monitor.handleFlagsChanged(keyCode: 63, flags: .function)
+
+        #expect(!monitor.isToggleRecording)
+        #expect(toggleStopCount == 1)
+    }
+
     @Test("double-tap outside window arms instead of toggling")
     @MainActor
     func doubleTapOutsideWindowArmsInsteadOfToggling() {
@@ -2214,6 +2264,58 @@ struct HotkeyMonitorTests {
         scheduler.advance(by: 0.05)
 
         #expect(toggleStartCount == 0)
+    }
+
+    @Test("combination shortcut can reuse push-to-talk lifecycle")
+    @MainActor
+    func combinationShortcutPushToTalkLifecycle() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(prepareDelay: 0.02, startDelay: 0.05)
+        monitor.configure(HotkeyConfig.combination(modifiers: [.control], keyCode: 12))
+        monitor.combinationActivation = .pushToTalk
+        monitor.doubleTapEnabled = false
+        var events: [String] = []
+        monitor.onPrepare = { events.append("prepare") }
+        monitor.onStart = { events.append("start") }
+        monitor.onStop = { events.append("stop") }
+
+        monitor.handleCombinationForTests(type: .keyDown, keyCode: 12, flags: .control)
+        scheduler.advance(by: 0.06)
+        monitor.handleCombinationForTests(type: .keyUp, keyCode: 12, flags: .control)
+
+        #expect(events == ["prepare", "start", "stop"])
+    }
+
+    @Test("Muesli synthetic copy does not cancel an active Fn hold")
+    @MainActor
+    func syntheticCopyDoesNotCancelFnHold() throws {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor(prepareDelay: 0.02, startDelay: 0.05)
+        monitor.configure(keyCode: 63)
+        monitor.doubleTapEnabled = false
+        var events: [String] = []
+        monitor.onPrepare = { events.append("prepare") }
+        monitor.onStart = { events.append("start") }
+        monitor.onStop = { events.append("stop") }
+        monitor.onCancel = { events.append("cancel") }
+
+        monitor.handleFlagsChanged(keyCode: 63, flags: .function)
+        scheduler.advance(by: 0.03)
+
+        let source = try #require(CGEventSource(stateID: .combinedSessionState))
+        let copyKeyDown = try #require(CGEvent(
+            keyboardEventSource: source,
+            virtualKey: 8,
+            keyDown: true
+        ))
+        MuesliSyntheticKeyboardEvent.mark(copyKeyDown)
+        let copyEvent = try #require(NSEvent(cgEvent: copyKeyDown))
+        monitor.handleEventForTests(copyEvent)
+
+        scheduler.advance(by: 0.03)
+        monitor.handleFlagsChanged(keyCode: 63, flags: [])
+
+        #expect(events == ["prepare", "start", "stop"])
     }
 }
 

@@ -624,7 +624,9 @@ struct ModelsView: View {
             .padding(.top, MuesliTheme.spacing8)
 
             VStack(spacing: MuesliTheme.spacing12) {
-                gemmaCleanupModelCard
+                ForEach(Gemma4LiteRTModel.allCases) { model in
+                    gemmaCleanupModelCard(model)
+                }
 
                 ForEach(PostProcessorOption.all) { option in
                     postProcModelCard(option)
@@ -633,8 +635,8 @@ struct ModelsView: View {
         }
     }
 
-    private var gemmaCleanupModelCard: some View {
-        let option = BackendOption.gemma4E2BLiteRT
+    private func gemmaCleanupModelCard(_ model: Gemma4LiteRTModel) -> some View {
+        let option = BackendOption.gemma4LiteRT(model)
         let isDownloaded = downloadedModels.contains(option.model)
         let isCompatible = TranscriptCleanupBackendOption.gemma4LiteRT
             .isCompatible(with: appState.selectedBackend)
@@ -642,11 +644,13 @@ struct ModelsView: View {
         return modelCard(
             option: option,
             logo: "google-logo",
-            isActive: isDownloaded && appState.selectedPostProcessorBackend == .gemma4LiteRT,
+            isActive: isDownloaded
+                && appState.selectedPostProcessorBackend == .gemma4LiteRT
+                && appState.config.postProcessorGemmaModel == model.repoID,
             onSetActive: {
-                controller.selectPostProcessorBackend(.gemma4LiteRT)
+                controller.selectGemma4PostProcessor(model)
             },
-            description: "An experimental local option for filler removal, formatting, and obvious transcript errors. It uses the same download as Gemma 4 dictation.",
+            description: "An experimental local option for filler removal, formatting, and obvious transcript errors. It shares the \(model.label) download with dictation and Quill.",
             activeLabel: "Cleanup Active",
             downloadedLabel: isCompatible ? "Downloaded" : "Used for Dictation",
             actionTitle: "Use for Cleanup",
@@ -1722,7 +1726,8 @@ struct ModelsView: View {
            appState.config.resolvedMeetingLiveCaptionBackend == .nemotron35 {
             controller.updateConfig { $0.enableLiveStreamingPartials = false }
         }
-        if !appState.selectedPostProcessorBackend.isCompatible(with: option) {
+        if appState.selectedPostProcessorBackend == .gemma4LiteRT,
+           appState.config.postProcessorGemmaModel == option.model {
             controller.selectPostProcessorBackend(.local)
         }
         if appState.selectedBackend == option {
@@ -1786,7 +1791,10 @@ struct ModelsView: View {
             SenseVoiceTranscriber.deleteModelFiles(fileManager: fm)
         case "gemma4-litert":
             await controller.transcriptionCoordinator.unloadGemma4LiteRTTranscriber()
-            try Gemma4LiteRTModelStore.deleteModelFiles(fileManager: fm)
+            try Gemma4LiteRTModelStore.deleteModelFiles(
+                model: Gemma4LiteRTModel.resolved(option.model),
+                fileManager: fm
+            )
         case "fluidaudio":
             let version: AsrModelVersion = option.model.contains("v2") ? .v2 : .v3
             await controller.transcriptionCoordinator.unloadFluidAudioTranscriber(
@@ -1869,7 +1877,10 @@ struct ModelsView: View {
         case "sensevoice":
             return SenseVoiceTranscriber.isModelDownloaded(fileManager: fm)
         case "gemma4-litert":
-            return Gemma4LiteRTModelStore.isAvailableLocally(fileManager: fm)
+            return Gemma4LiteRTModelStore.isAvailableLocally(
+                model: Gemma4LiteRTModel.resolved(option.model),
+                fileManager: fm
+            )
         case "apple-speech":
             if #available(macOS 26.0, *) {
                 return AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem

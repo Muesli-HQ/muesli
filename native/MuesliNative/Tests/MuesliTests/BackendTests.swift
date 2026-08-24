@@ -98,12 +98,19 @@ struct Gemma4LiteRTTranscriberTests {
         #expect(BackendOption.gemma4E2BLiteRT.description.contains("faithful transcript"))
         #expect(Gemma4LiteRTModelStore.downloadURL.absoluteString.contains(Gemma4LiteRTModelStore.repoID))
         #expect(Gemma4LiteRTModelStore.downloadURL.absoluteString.contains(Gemma4LiteRTModelStore.modelFilename))
+        #expect(BackendOption.gemma4E4BLiteRT.backend == "gemma4-litert")
+        #expect(BackendOption.gemma4E4BLiteRT.model == Gemma4LiteRTModel.e4b.repoID)
+        #expect(Gemma4LiteRTModel.e4b.filename == "gemma-4-E4B-it.litertlm")
+        #expect(Gemma4LiteRTModel.e4b.expectedByteCount == 3_659_530_240)
+        #expect(Gemma4LiteRTModel.e4b.downloadURL.absoluteString.contains(Gemma4LiteRTModel.e4b.repoID))
     }
 
     @Test("gemma4 stays experimental and out of onboarding")
     func gemma4Experimental() {
         #expect(BackendOption.experimental.contains(.gemma4E2BLiteRT))
+        #expect(BackendOption.experimental.contains(.gemma4E4BLiteRT))
         #expect(!BackendOption.onboarding.contains(.gemma4E2BLiteRT))
+        #expect(!BackendOption.onboarding.contains(.gemma4E4BLiteRT))
     }
 
     @available(macOS 15, *)
@@ -118,6 +125,7 @@ struct Gemma4LiteRTTranscriberTests {
         #expect(TranscriptCleanupClient.defaultModel(for: cleanup) == Gemma4LiteRTModelStore.repoID)
         #expect(cleanup.isCompatible(with: .parakeetMultilingual))
         #expect(!cleanup.isCompatible(with: .gemma4E2BLiteRT))
+        #expect(!cleanup.isCompatible(with: .gemma4E4BLiteRT))
         #expect(TranscriptCleanupBackendOption.available(for: .parakeetMultilingual).contains(cleanup))
         #expect(!TranscriptCleanupBackendOption.available(for: .gemma4E2BLiteRT).contains(cleanup))
         #expect(TranscriptCleanupBackendOption.available(for: .gemma4E2BLiteRT).contains(.local))
@@ -183,6 +191,8 @@ struct Gemma4LiteRTTranscriberTests {
         #expect(Gemma4LiteRTModelStore.cacheRelativePath == ".cache/muesli/models/gemma-4-e2b-litert-lm")
         #expect(Gemma4LiteRTModelStore.managedModelURL().path.hasSuffix("/.cache/muesli/models/gemma-4-e2b-litert-lm/\(Gemma4LiteRTModelStore.modelFilename)"))
         #expect(Gemma4LiteRTModelStore.managedLiteRTCacheDirectory().path.hasSuffix("/.cache/muesli/models/gemma-4-e2b-litert-lm/litert-cache"))
+        #expect(Gemma4LiteRTModelStore.managedModelURL(for: .e4b).path.hasSuffix("/.cache/muesli/models/gemma-4-e4b-litert-lm/\(Gemma4LiteRTModel.e4b.filename)"))
+        #expect(Gemma4LiteRTModelStore.managedLiteRTCacheDirectory(for: .e4b).path.hasSuffix("/.cache/muesli/models/gemma-4-e4b-litert-lm/litert-cache"))
     }
 
     @Test("gemma4 managed download validation rejects tiny files")
@@ -450,7 +460,8 @@ struct BackendCoverageTests {
         #expect(backendCounts["whisper"]! >= 1, "Whisper should have at least 1 model")
         #expect(backendCounts["sensevoice"]! >= 1, "SenseVoice should have at least 1 model")
         #expect(backendCounts["nemotron35"]! == 1, "Nemotron 3.5 should be the only Nemotron backend")
-        #expect(backendCounts["gemma4-litert"]! == 1, "Gemma 4 LiteRT should have exactly 1 experimental model")
+        #expect(backendCounts["gemma4-litert"]! == Gemma4LiteRTModel.allCases.count,
+                "Gemma 4 LiteRT should expose every managed model variant")
     }
 
     @Test("size labels are human-readable")

@@ -3366,6 +3366,47 @@ struct DictationStoreTests {
         #expect(results.first(where: { $0.id == dictationID })?.computerUseTrace?.finalStatus == "done")
     }
 
+    @Test("Quill dictation persists formatted output and expandable inputs")
+    func quilTransformationHydrates() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_777_000_000)
+        let dictationID = try store.insertQuilDictation(
+            outputText: "- First point\n- Second point",
+            originalText: "First point. Second point.",
+            instruction: "Turn this into bullet points",
+            backend: "local",
+            model: "qwen35-0.8b",
+            durationSeconds: 1.4,
+            targetAppName: "Notes",
+            targetAppBundleID: "com.apple.Notes",
+            startedAt: now.addingTimeInterval(-1.4),
+            endedAt: now
+        )
+
+        let row = try #require(try store.dictation(id: dictationID))
+        #expect(row.source == "quil")
+        #expect(row.rawText == "- First point\n- Second point")
+        #expect(row.targetAppName == "Notes")
+        #expect(row.computerUseTrace?.events.map(\.title) == [
+            "Original highlighted text",
+            "Spoken instruction",
+            "Model",
+        ])
+        #expect(row.computerUseTrace?.events.map(\.body) == [
+            "First point. Second point.",
+            "Turn this into bullet points",
+            "local · qwen35-0.8b",
+        ])
+
+        let timeline = try store.timelineEntries(limit: 10)
+        #expect(timeline.contains { entry in
+            guard case .dictation(let record) = entry else { return false }
+            return record.id == dictationID && record.computerUseTrace != nil
+        })
+        #expect(try store.searchDictations(query: "First point.").map(\.id).contains(dictationID))
+        #expect(try store.searchDictations(query: "bullet points").map(\.id).contains(dictationID))
+    }
+
     @Test("insertComputerUseTrace replaces existing trace atomically")
     func insertComputerUseTraceReplacesExistingTrace() throws {
         let store = try makeStore()
