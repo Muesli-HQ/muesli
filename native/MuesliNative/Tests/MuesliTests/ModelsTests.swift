@@ -1449,6 +1449,15 @@ struct AppConfigTests {
             documentIdentifier: "https://docs.google.com/document/d/other",
             ocrText: matching.ocrText
         )
+        let emptyIdentity = DictationContext(
+            appName: matching.appName,
+            bundleID: "",
+            documentContext: matching.documentContext,
+            selectedText: matching.selectedText,
+            url: matching.url,
+            documentIdentifier: "",
+            ocrText: matching.ocrText
+        )
 
         #expect(DictationContextCapture.matchesQuilSelection(
             matching,
@@ -1468,6 +1477,16 @@ struct AppConfigTests {
         #expect(!DictationContextCapture.matchesQuilSelection(
             matching,
             bundleID: "com.apple.Safari",
+            documentIdentifier: "https://docs.google.com/document/d/original"
+        ))
+        #expect(!DictationContextCapture.matchesQuilSelection(
+            emptyIdentity,
+            bundleID: "",
+            documentIdentifier: ""
+        ))
+        #expect(!DictationContextCapture.matchesQuilSelection(
+            matching,
+            bundleID: "   ",
             documentIdentifier: "https://docs.google.com/document/d/original"
         ))
     }
@@ -2363,7 +2382,7 @@ struct HotkeyMonitorTests {
 
     @Test("Muesli synthetic copy does not cancel an active Fn hold")
     @MainActor
-    func syntheticCopyDoesNotCancelFnHold() throws {
+    func syntheticCopyDoesNotCancelFnHold() {
         let scheduler = ManualHotkeyScheduler()
         let monitor = scheduler.makeMonitor(prepareDelay: 0.02, startDelay: 0.05)
         monitor.configure(keyCode: 63)
@@ -2377,14 +2396,17 @@ struct HotkeyMonitorTests {
         monitor.handleFlagsChanged(keyCode: 63, flags: .function)
         scheduler.advance(by: 0.03)
 
-        let source = try #require(CGEventSource(stateID: .combinedSessionState))
-        let copyKeyDown = try #require(CGEvent(
-            keyboardEventSource: source,
-            virtualKey: 8,
-            keyDown: true
-        ))
+        guard let source = CGEventSource(stateID: .combinedSessionState),
+              let copyKeyDown = CGEvent(
+                keyboardEventSource: source,
+                virtualKey: 8,
+                keyDown: true
+              ),
+              let copyEvent = NSEvent(cgEvent: copyKeyDown) else {
+            // Headless CI sessions may not be able to construct synthetic events.
+            return
+        }
         MuesliSyntheticKeyboardEvent.mark(copyKeyDown)
-        let copyEvent = try #require(NSEvent(cgEvent: copyKeyDown))
         monitor.handleEventForTests(copyEvent)
 
         scheduler.advance(by: 0.03)

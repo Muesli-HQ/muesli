@@ -24,11 +24,15 @@ enum DictationContextCapture {
     /// on-device OCR when Screen Recording permission is already granted.
     static func capture(
         includeScreenOCR: Bool,
-        shouldCaptureScreenOCR: (@Sendable () async -> Bool)? = nil
+        shouldCaptureScreenOCR: (@Sendable () async -> Bool)? = nil,
+        allowTitleFallback: Bool = true
     ) async -> DictationContext {
-        let base = capture()
+        let base = capture(allowTitleFallback: allowTitleFallback)
         guard includeScreenOCR, CGPreflightScreenCaptureAccess() else { return base }
-        let screenContext = await ScreenContextCapture.captureVisibleScreen(shouldCapture: shouldCaptureScreenOCR)
+        let screenContext = await ScreenContextCapture.captureVisibleScreen(
+            shouldCapture: shouldCaptureScreenOCR,
+            allowTitleFallback: allowTitleFallback
+        )
         guard screenContext?.bundleID == base.bundleID,
               (base.documentIdentifier == nil
                 || screenContext?.documentIdentifier == base.documentIdentifier) else { return base }
@@ -47,7 +51,7 @@ enum DictationContextCapture {
 
     /// Captures focused app name + text context via Accessibility API.
     /// Lightweight and deterministic — no screenshots, no OCR.
-    static func capture() -> DictationContext {
+    static func capture(allowTitleFallback: Bool = true) -> DictationContext {
         let app = NSWorkspace.shared.frontmostApplication
         let appName = app?.localizedName ?? "Unknown"
         let bundleID = app?.bundleIdentifier ?? ""
@@ -61,7 +65,10 @@ enum DictationContextCapture {
         }
 
         let url = browserURL(for: app)
-        let documentIdentifier = focusedDocumentIdentifier(for: app)
+        let documentIdentifier = focusedDocumentIdentifier(
+            for: app,
+            allowTitleFallback: allowTitleFallback
+        )
 
         fputs("[muesli-native] dictation context: app=\(appName) docContext=\(docContext.count) chars selectedText=\(selectedText.count) chars url=\(url ?? "none")\n", stderr)
 
@@ -111,8 +118,18 @@ enum DictationContextCapture {
         bundleID expectedBundleID: String,
         documentIdentifier expectedDocumentIdentifier: String
     ) -> Bool {
-        context.bundleID == expectedBundleID
-            && context.documentIdentifier == expectedDocumentIdentifier
+        let capturedBundleID = context.bundleID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let expectedBundleID = expectedBundleID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let capturedDocumentIdentifier = context.documentIdentifier?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let expectedDocumentIdentifier = expectedDocumentIdentifier
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !capturedBundleID.isEmpty,
+              !expectedBundleID.isEmpty,
+              !capturedDocumentIdentifier.isEmpty,
+              !expectedDocumentIdentifier.isEmpty else { return false }
+        return capturedBundleID == expectedBundleID
+            && capturedDocumentIdentifier == expectedDocumentIdentifier
     }
 
     // MARK: - Accessibility helpers
@@ -232,10 +249,13 @@ enum DictationContextCapture {
         return nil
     }
 
-    /// Stable enough to bind async context capture to the document/window that
-    /// owned the original selection. Browsers usually expose AXDocument (URL);
-    /// native editors commonly expose a focused-window title instead.
-    static func focusedDocumentIdentifier(for app: NSRunningApplication?) -> String? {
+    /// Returns the focused document identifier. Window titles are useful as
+    /// descriptive context, but callers that bind asynchronous context across
+    /// time must disable the fallback because titles are neither stable nor unique.
+    static func focusedDocumentIdentifier(
+        for app: NSRunningApplication?,
+        allowTitleFallback: Bool = true
+    ) -> String? {
         guard let app else { return nil }
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
         var windowRef: CFTypeRef?
@@ -243,7 +263,10 @@ enum DictationContextCapture {
               let windowRef,
               CFGetTypeID(windowRef) == AXUIElementGetTypeID() else { return nil }
         let window = windowRef as! AXUIElement
-        for attribute in [kAXDocumentAttribute as String, kAXTitleAttribute as String] {
+        let attributes = allowTitleFallback
+            ? [kAXDocumentAttribute as String, kAXTitleAttribute as String]
+            : [kAXDocumentAttribute as String]
+        for attribute in attributes {
             let value = axStringValue(window, attribute: attribute)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if !value.isEmpty { return String(value.prefix(500)) }
@@ -259,7 +282,7 @@ final class QuilSelectionSnapshot {
     private let element: AXUIElement
     private let selectedRange: CFRange?
     private let usesClipboardFallback: Bool
-    let documentIdentifier: String?
+    let contextDocumentIdentifier: String?
 
     private init(
         text: String,
@@ -267,14 +290,14 @@ final class QuilSelectionSnapshot {
         element: AXUIElement,
         selectedRange: CFRange?,
         usesClipboardFallback: Bool,
-        documentIdentifier: String?
+        contextDocumentIdentifier: String?
     ) {
         self.text = text
         self.application = application
         self.element = element
         self.selectedRange = selectedRange
         self.usesClipboardFallback = usesClipboardFallback
-        self.documentIdentifier = documentIdentifier
+        self.contextDocumentIdentifier = contextDocumentIdentifier
     }
 
     static func capture() throws -> QuilSelectionSnapshot {
@@ -297,7 +320,10 @@ final class QuilSelectionSnapshot {
             element: element,
             selectedRange: DictationContextCapture.selectedTextRange(element),
             usesClipboardFallback: usesClipboardFallback,
-            documentIdentifier: DictationContextCapture.focusedDocumentIdentifier(for: application)
+            contextDocumentIdentifier: DictationContextCapture.focusedDocumentIdentifier(
+                for: application,
+                allowTitleFallback: false
+            )
         )
     }
 
@@ -326,11 +352,11 @@ final class QuilSelectionSnapshot {
 
     func matches(context: DictationContext?) -> Bool {
         guard let context else { return true }
-        guard let documentIdentifier else { return false }
+        guard let contextDocumentIdentifier else { return false }
         return DictationContextCapture.matchesQuilSelection(
             context,
             bundleID: application.bundleIdentifier ?? "",
-            documentIdentifier: documentIdentifier
+            documentIdentifier: contextDocumentIdentifier
         )
     }
 
@@ -340,9 +366,7 @@ final class QuilSelectionSnapshot {
     func isTargetStillFocused() -> Bool {
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier,
               let focused = DictationContextCapture.focusedUIElement(for: application) else { return false }
-        guard CFEqual(focused, element) else { return false }
-        guard let documentIdentifier else { return true }
-        return DictationContextCapture.focusedDocumentIdentifier(for: application) == documentIdentifier
+        return CFEqual(focused, element)
     }
 }
 
@@ -360,25 +384,39 @@ enum ScreenContextCapture {
 
     /// Captures the frontmost app window and runs on-device OCR. The screenshot itself
     /// is not persisted or sent to cleanup backends; only recognized text is used.
-    static func captureVisibleScreen(shouldCapture: (@Sendable () async -> Bool)? = nil) async -> ScreenContext? {
-        await captureFrontmostWindow(logLabel: "dictation OCR", shouldCapture: shouldCapture)
+    static func captureVisibleScreen(
+        shouldCapture: (@Sendable () async -> Bool)? = nil,
+        allowTitleFallback: Bool = true
+    ) async -> ScreenContext? {
+        await captureFrontmostWindow(
+            logLabel: "dictation OCR",
+            shouldCapture: shouldCapture,
+            allowTitleFallback: allowTitleFallback
+        )
     }
 
     /// Captures a screenshot of the focused window and runs on-device OCR.
     /// Used for meeting context only — heavier than AX but provides visual content.
     static func captureOnce() async -> ScreenContext? {
-        await captureFrontmostWindow(logLabel: "meeting OCR")
+        await captureFrontmostWindow(
+            logLabel: "meeting OCR",
+            allowTitleFallback: true
+        )
     }
 
     private static func captureFrontmostWindow(
         logLabel: String,
-        shouldCapture: (@Sendable () async -> Bool)? = nil
+        shouldCapture: (@Sendable () async -> Bool)? = nil,
+        allowTitleFallback: Bool
     ) async -> ScreenContext? {
         guard CGPreflightScreenCaptureAccess() else { return nil }
         let app = NSWorkspace.shared.frontmostApplication
         let appName = app?.localizedName ?? "Unknown"
         let bundleID = app?.bundleIdentifier ?? ""
-        let documentIdentifier = DictationContextCapture.focusedDocumentIdentifier(for: app)
+        let documentIdentifier = DictationContextCapture.focusedDocumentIdentifier(
+            for: app,
+            allowTitleFallback: allowTitleFallback
+        )
 
         let pid = app?.processIdentifier ?? 0
         let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[CFString: Any]] ?? []
