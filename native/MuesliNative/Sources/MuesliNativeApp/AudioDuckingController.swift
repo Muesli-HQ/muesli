@@ -97,7 +97,7 @@ final class AudioDuckingController: AudioDuckingManaging {
     }
 
     func beginDictationDucking(enabled: Bool, attenuationLevel: Float32?) {
-        let clampedLevel = attenuationLevel.map { max(0, min(1, $0)) }
+        let clampedLevel = attenuationLevel.map { max(0.1, min(1, $0)) }
         queue.async { [self] in
             guard enabled else {
                 self.cancelPendingRestoreLocked(preserveCompletions: true)
@@ -174,8 +174,10 @@ final class AudioDuckingController: AudioDuckingManaging {
                     ))
                 }
             }
-            // Fallback: if device has no volume control but has mute, still mute as last resort
-            if snapshot.volumeMutations.isEmpty {
+            // Fallback only when the device exposes no controllable volume elements at all.
+            // Do not fall back to mute merely because attenuation produced no change
+            // (e.g. attenuationLevel == 1.0, or the volume was already at the target).
+            if client.volumeElements(for: deviceID).isEmpty {
                 let muteElements = client.muteElements(for: deviceID)
                 for element in muteElements {
                     guard let isMuted = client.isMuted(deviceID: deviceID, element: element),
