@@ -48,12 +48,31 @@ enum ICloudSyncActivationPolicy {
     }
 }
 
+enum ICloudSyncRecoveryAction: Equatable {
+    case reconnectLegacyLibrary
+    case resetAccountLink
+}
+
+enum ICloudSyncRecoveryPolicy {
+    static func action(for state: ICloudBridgeState) -> ICloudSyncRecoveryAction? {
+        switch state {
+        case .needsReconnection:
+            return .reconnectLegacyLibrary
+        case .needsAccountReplacement:
+            return .resetAccountLink
+        default:
+            return nil
+        }
+    }
+}
+
 struct IPhoneBridgeCard: View {
     let appState: AppState
     let controller: MuesliController
 
     @State private var promptSeen = false
     @State private var isQRCodePresented = false
+    @State private var isReconnectConfirmationPresented = false
     @State private var isResetConfirmationPresented = false
 
     var body: some View {
@@ -145,6 +164,14 @@ struct IPhoneBridgeCard: View {
                 installURL: IPhoneBridgeLinks.installURL
             )
         }
+        .alert("Reconnect iCloud sync?", isPresented: $isReconnectConfirmationPresented) {
+            Button("Cancel", role: .cancel) {}
+            Button("Reconnect iCloud sync") {
+                controller.reconnectICloudSyncToCurrentAccount()
+            }
+        } message: {
+            Text("Muesli will reconnect this Mac to the currently signed-in iCloud account and resync eligible text. Local history and audio stay on this Mac.")
+        }
         .alert("Reset iCloud sync?", isPresented: $isResetConfirmationPresented) {
             Button("Cancel", role: .cancel) {}
             Button("Reset iCloud sync", role: .destructive) {
@@ -223,7 +250,9 @@ struct IPhoneBridgeCard: View {
             )
         case .needsICloud:
             return "Sign in to iCloud to sync"
-        case .needsReconnection, .needsAccountReplacement:
+        case .needsReconnection:
+            return "iCloud sync needs reconnection"
+        case .needsAccountReplacement:
             return "iCloud sync needs reset"
         case .error:
             return "iPhone sync needs attention"
@@ -253,10 +282,18 @@ struct IPhoneBridgeCard: View {
     }
 
     private var buttonTitle: String {
+        switch ICloudSyncRecoveryPolicy.action(for: bridgeState) {
+        case .reconnectLegacyLibrary:
+            return "Reconnect sync"
+        case .resetAccountLink:
+            return "Reset sync"
+        case nil:
+            break
+        }
         switch bridgeState {
         case .active: return "Sync"
         case .checkingICloud, .syncing: return "Syncing"
-        case .needsReconnection, .needsAccountReplacement: return "Reset sync"
+        case .needsReconnection, .needsAccountReplacement: return "Sync"
         case .needsICloud, .error: return "Try again"
         case .notConfigured: return "Set up private iCloud sync"
         }
@@ -271,6 +308,14 @@ struct IPhoneBridgeCard: View {
     }
 
     private var buttonHelp: String {
+        switch ICloudSyncRecoveryPolicy.action(for: bridgeState) {
+        case .reconnectLegacyLibrary:
+            return "Reconnect this legacy library to the current iCloud account"
+        case .resetAccountLink:
+            return "Reset local iCloud sync state, then set up the current account"
+        case nil:
+            break
+        }
         switch bridgeState {
         case .active:
             return "Sync text with iCloud"
@@ -281,19 +326,29 @@ struct IPhoneBridgeCard: View {
                 isActivationPending: appState.isICloudBridgeActivationPending
             )
         case .needsReconnection, .needsAccountReplacement:
-            return "Reset local iCloud sync state, then set up the current account"
+            return "Repair private iCloud text sync"
         default:
             return "Set up private iCloud text sync"
         }
     }
 
     private func primaryAction() {
+        switch ICloudSyncRecoveryPolicy.action(for: bridgeState) {
+        case .reconnectLegacyLibrary:
+            isReconnectConfirmationPresented = true
+            return
+        case .resetAccountLink:
+            isResetConfirmationPresented = true
+            return
+        case nil:
+            break
+        }
         switch bridgeState {
         case .active:
             controller.performICloudSync()
-        case .needsReconnection, .needsAccountReplacement:
-            isResetConfirmationPresented = true
         case .checkingICloud, .syncing:
+            break
+        case .needsReconnection, .needsAccountReplacement:
             break
         default:
             controller.enableIPhoneBridgeSync()

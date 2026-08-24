@@ -120,6 +120,7 @@ struct SettingsView: View {
     @State private var isLoadingOpenRouterFreeModels = false
     @State private var openRouterFreeModelsError: String?
     @State private var hasRefreshedMeetingCalendarSources = false
+    @State private var isShowingICloudSyncReconnectConfirmation = false
     @State private var isShowingICloudSyncResetConfirmation = false
 
     init(appState: AppState, controller: MuesliController) {
@@ -436,6 +437,14 @@ struct SettingsView: View {
             } message: {
                 Text("Dictionary suggestions briefly read focused app text via Accessibility after dictation. Grant access, then relaunch Muesli to turn suggestions on.")
             }
+            .alert("Reconnect iCloud sync?", isPresented: $isShowingICloudSyncReconnectConfirmation) {
+                Button("Cancel", role: .cancel) {}
+                Button("Reconnect iCloud sync") {
+                    controller.reconnectICloudSyncToCurrentAccount()
+                }
+            } message: {
+                Text("Muesli will reconnect this Mac to the currently signed-in iCloud account and resync eligible text. Local history and audio stay on this Mac.")
+            }
             .alert("Reset iCloud sync?", isPresented: $isShowingICloudSyncResetConfirmation) {
                 Button("Cancel", role: .cancel) {}
                 Button("Reset iCloud sync", role: .destructive) {
@@ -718,8 +727,14 @@ struct SettingsView: View {
                         }
                     }
                     Spacer(minLength: MuesliTheme.spacing16)
-                    if appState.iCloudBridgeState == .needsReconnection
-                        || appState.iCloudBridgeState == .needsAccountReplacement {
+                    if ICloudSyncRecoveryPolicy.action(for: appState.iCloudBridgeState)
+                        == .reconnectLegacyLibrary {
+                        actionButton("Reconnect iCloud sync", systemImage: "arrow.triangle.2.circlepath") {
+                            isShowingICloudSyncReconnectConfirmation = true
+                        }
+                        .frame(width: controlWidth)
+                    } else if ICloudSyncRecoveryPolicy.action(for: appState.iCloudBridgeState)
+                        == .resetAccountLink {
                         actionButton("Reset iCloud sync", systemImage: "arrow.counterclockwise.icloud") {
                             isShowingICloudSyncResetConfirmation = true
                         }
@@ -774,7 +789,7 @@ struct SettingsView: View {
     private var syncStatusText: String {
         if appState.iCloudBridgeState == .needsReconnection {
             return appState.iCloudSyncStatus
-                ?? "Reset iCloud sync to reconnect this Mac with the current account."
+                ?? "Reconnect this Mac with the current iCloud account."
         }
         if appState.iCloudBridgeState == .needsAccountReplacement {
             return appState.iCloudSyncStatus

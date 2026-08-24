@@ -162,4 +162,12 @@ struct ICloudBridgeWorkingCopyTests {
             isActivationPending: false
         ) == .performSync)
     }
+
+    @Test("legacy ambiguity reconnects while a confirmed account mismatch resets")
+    func recoveryActionsRespectAccountBoundaryClassification() {
+        #expect(ICloudSyncRecoveryPolicy.action(for: .needsReconnection) == .reconnectLegacyLibrary)
+        #expect(ICloudSyncRecoveryPolicy.action(for: .needsAccountReplacement) == .resetAccountLink)
+        #expect(ICloudSyncRecoveryPolicy.action(for: .active) == nil)
+        #expect(ICloudSyncRecoveryPolicy.action(for: .error) == nil)
+    }
 }

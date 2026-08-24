@@ -1481,7 +1481,10 @@ public final class MuesliController: NSObject {
         normalizeMeetingTranscriptionSelectionForAvailability()
     }
 
-    func updateConfig(_ mutate: (inout AppConfig) -> Void) {
+    func updateConfig(
+        iCloudDisableCompletionStatus: String? = nil,
+        _ mutate: (inout AppConfig) -> Void
+    ) {
         let wasICloudSyncEnabled = config.iCloudSyncEnabled
         let wasUsingAppleSpeech = selectedBackend.backend == "apple-speech"
             || selectedMeetingTranscriptionBackend.backend == "apple-speech"
@@ -1559,7 +1562,8 @@ public final class MuesliController: NSObject {
         selectedPostProcessorBackend = TranscriptCleanupBackendOption.resolved(config.postProcessorBackend)
         applyConfigRuntimeSideEffects(
             wasICloudSyncEnabled: wasICloudSyncEnabled,
-            hotkeyTriggerThresholdChanged: hotkeyTriggerThresholdChanged
+            hotkeyTriggerThresholdChanged: hotkeyTriggerThresholdChanged,
+            iCloudDisableCompletionStatus: iCloudDisableCompletionStatus
         )
         if previousMeetingInputDeviceUID != config.meetingInputDeviceUID {
             dictationAudioRoutingController.selectedMeetingInputDeviceUID = config.meetingInputDeviceUID
@@ -1584,7 +1588,11 @@ public final class MuesliController: NSObject {
         historyWindowController?.applyThemeAppearance()
     }
 
-    private func applyConfigRuntimeSideEffects(wasICloudSyncEnabled: Bool, hotkeyTriggerThresholdChanged: Bool) {
+    private func applyConfigRuntimeSideEffects(
+        wasICloudSyncEnabled: Bool,
+        hotkeyTriggerThresholdChanged: Bool,
+        iCloudDisableCompletionStatus: String? = nil
+    ) {
         statusBarController?.refresh()
         statusBarController?.refreshIcon()
         indicator.refreshIcon()
@@ -1612,7 +1620,9 @@ public final class MuesliController: NSObject {
             enableICloudPersistentSync()
             scheduleICloudSync(intent: .manual, delay: 0.2, userInitiated: false)
         } else if wasICloudSyncEnabled && !config.iCloudSyncEnabled {
-            disableICloudSyncRuntimeState()
+            disableICloudSyncRuntimeState(
+                completionStatus: iCloudDisableCompletionStatus ?? "iCloud sync is off."
+            )
         }
     }
 
@@ -1970,8 +1980,11 @@ public final class MuesliController: NSObject {
                     MuesliBridgeDeviceIdentity.clearRemoteDevice()
                     self.refreshICloudBridgeDeviceState()
                     self.appState.iCloudLastSyncedAt = nil
-                    self.updateConfig { $0.iCloudSyncEnabled = false }
-                    self.appState.iCloudSyncStatus = "iCloud sync reset. Turn it on to set up the current iCloud account."
+                    let completionStatus = "iCloud sync reset. Turn it on to set up the current iCloud account."
+                    self.updateConfig(iCloudDisableCompletionStatus: completionStatus) {
+                        $0.iCloudSyncEnabled = false
+                    }
+                    self.appState.iCloudSyncStatus = completionStatus
                     self.appState.iCloudBridgeState = .notConfigured
                     self.appState.iCloudBridgeMessage = nil
                     TelemetryDeck.signal(
@@ -2372,7 +2385,9 @@ public final class MuesliController: NSObject {
         return cancellationTask
     }
 
-    private func disableICloudSyncRuntimeState() {
+    private func disableICloudSyncRuntimeState(
+        completionStatus: String = "iCloud sync is off."
+    ) {
         cancelActiveICloudSyncTask()
         iCloudSyncDebounceTask?.cancel()
         iCloudSyncDebounceTask = nil
@@ -2390,7 +2405,7 @@ public final class MuesliController: NSObject {
             guard let self,
                   self.iCloudSyncGeneration == generation,
                   self.ckSyncEngine == nil else { return }
-            self.appState.iCloudSyncStatus = "iCloud sync is off."
+            self.appState.iCloudSyncStatus = completionStatus
             self.appState.iCloudBridgeState = .notConfigured
         }
     }
