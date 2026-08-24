@@ -6,30 +6,20 @@ import TelemetryDeck
 enum ICloudBridgeWorkingCopy {
     static func title(isActivationPending: Bool) -> String {
         isActivationPending
-            ? "Setting up private iCloud sync"
-            : "Syncing with private iCloud"
+            ? "Setting up sync"
+            : "Syncing"
     }
 
     static func subtitle(isActivationPending: Bool) -> String {
         isActivationPending
-            ? "Creating the sync channel and pulling your latest text records."
-            : "Checking for new text and uploading local changes."
+            ? "Connecting to iCloud…"
+            : "Uploading and downloading changes…"
     }
 
     static func buttonHelp(isActivationPending: Bool) -> String {
         isActivationPending
             ? "Sync setup is in progress"
             : "Text sync is in progress"
-    }
-}
-
-struct ICloudSyncTogglePresentation: Equatable {
-    let isOn: Bool
-    let isInteractionDisabled: Bool
-
-    init(isEnabled: Bool, isActivationPending: Bool) {
-        isOn = isEnabled || isActivationPending
-        isInteractionDisabled = isActivationPending
     }
 }
 
@@ -54,15 +44,101 @@ enum ICloudSyncRecoveryAction: Equatable {
 }
 
 enum ICloudSyncRecoveryPolicy {
-    static func action(for state: ICloudBridgeState) -> ICloudSyncRecoveryAction? {
+    static func action(
+        for state: ICloudBridgeState,
+        supportsLegacyReconnect: Bool = MuesliICloudSyncEngine.cloudKitEnvironmentKeyComponent == "production"
+    ) -> ICloudSyncRecoveryAction? {
         switch state {
         case .needsReconnection:
-            return .reconnectLegacyLibrary
+            return supportsLegacyReconnect ? .reconnectLegacyLibrary : .resetAccountLink
         case .needsAccountReplacement:
             return .resetAccountLink
         default:
             return nil
         }
+    }
+}
+
+enum ICloudSyncFlowAction: Equatable {
+    case setUp
+    case continueSetup
+    case connectDevice
+    case waitingForDevice
+    case syncNow
+    case reconnect
+    case reset
+    case retry
+    case working
+}
+
+enum ICloudSyncFlowPolicy {
+    static func action(
+        for state: ICloudBridgeState,
+        isEnabled: Bool,
+        hasCompanionDevice: Bool,
+        companionDiscoveryState: ICloudBridgeCompanionDiscoveryState = .idle
+    ) -> ICloudSyncFlowAction {
+        switch ICloudSyncRecoveryPolicy.action(for: state) {
+        case .reconnectLegacyLibrary:
+            return .reconnect
+        case .resetAccountLink:
+            return .reset
+        case nil:
+            break
+        }
+
+        switch state {
+        case .checkingICloud, .syncing:
+            return .working
+        case .notConfigured:
+            return .setUp
+        case .active:
+            guard isEnabled else { return .setUp }
+            if hasCompanionDevice { return .syncNow }
+            return companionDiscoveryState == .waiting ? .waitingForDevice : .connectDevice
+        case .needsICloud:
+            return .retry
+        case .error:
+            return hasCompanionDevice ? .retry : .continueSetup
+        case .needsReconnection, .needsAccountReplacement:
+            return .reset
+        }
+    }
+}
+
+enum ICloudSyncDisplayStatePolicy {
+    static func state(
+        rawState: ICloudBridgeState,
+        isEnabled: Bool,
+        isActivationPending: Bool,
+        isSyncInProgress: Bool
+    ) -> ICloudBridgeState {
+        guard rawState == .syncing,
+              isEnabled,
+              !isActivationPending,
+              !isSyncInProgress else {
+            return rawState
+        }
+        return .active
+    }
+}
+
+enum ICloudSyncQRCodePresentationPhase: Equatable {
+    case hidden
+    case readyToScan
+    case syncing
+    case dismiss
+}
+
+enum ICloudSyncQRCodePresentationPolicy {
+    static func phase(
+        isPresented: Bool,
+        hasCompanionDevice: Bool,
+        isSyncInProgress: Bool
+    ) -> ICloudSyncQRCodePresentationPhase {
+        guard isPresented else { return .hidden }
+        guard hasCompanionDevice else { return .readyToScan }
+        return isSyncInProgress ? .syncing : .dismiss
     }
 }
 
@@ -96,22 +172,6 @@ struct IPhoneBridgeCard: View {
             }
 
             Spacer(minLength: MuesliTheme.spacing12)
-
-            if shouldShowHandoffButton {
-                Button {
-                    isQRCodePresented = true
-                    TelemetryDeck.signal("bridge_qr_shown", parameters: ["platform": "macos"])
-                } label: {
-                    Image(systemName: "qrcode")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(MuesliTheme.textPrimary)
-                        .frame(width: 28, height: 28)
-                        .background(MuesliTheme.surfacePrimary)
-                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                }
-                .buttonStyle(.plain)
-                .help("Show iPhone setup QR")
-            }
 
             Button(action: primaryAction) {
                 HStack(spacing: 6) {
@@ -161,8 +221,15 @@ struct IPhoneBridgeCard: View {
         .sheet(isPresented: $isQRCodePresented) {
             IPhoneBridgeQRCodeSheet(
                 deepLinkURL: IPhoneBridgeLinks.iOSSyncDeepLinkURL,
-                installURL: IPhoneBridgeLinks.installURL
+                installURL: IPhoneBridgeLinks.installURL,
+                isWaitingForDevice: appState.iCloudBridgeCompanionDiscoveryState == .waiting,
+                presentationPhase: qrCodePresentationPhase
             )
+        }
+        .onChange(of: qrCodePresentationPhase) { _, phase in
+            guard phase == .dismiss else { return }
+            isQRCodePresented = false
+            TelemetryDeck.signal("bridge_qr_auto_dismissed", parameters: ["platform": "macos_timeline"])
         }
         .alert("Reconnect iCloud sync?", isPresented: $isReconnectConfirmationPresented) {
             Button("Cancel", role: .cancel) {}
@@ -183,19 +250,30 @@ struct IPhoneBridgeCard: View {
     }
 
     private var bridgeState: ICloudBridgeState {
-        appState.iCloudBridgeState
+        ICloudSyncDisplayStatePolicy.state(
+            rawState: appState.iCloudBridgeState,
+            isEnabled: appState.config.iCloudSyncEnabled,
+            isActivationPending: appState.isICloudBridgeActivationPending,
+            isSyncInProgress: appState.isICloudSyncInProgress
+        )
     }
 
-    private var shouldShowHandoffButton: Bool {
-        guard appState.config.iCloudSyncEnabled else { return false }
-        switch bridgeState {
-        case .needsICloud, .needsReconnection, .needsAccountReplacement, .error:
-            return false
-        case .active:
-            return appState.iCloudBridgeCompanionDeviceName == nil
-        case .notConfigured, .checkingICloud, .syncing:
-            return false
-        }
+    private var qrCodePresentationPhase: ICloudSyncQRCodePresentationPhase {
+        ICloudSyncQRCodePresentationPolicy.phase(
+            isPresented: isQRCodePresented,
+            hasCompanionDevice: appState.iCloudBridgeCompanionDeviceName != nil,
+            isSyncInProgress: appState.isICloudSyncInProgress
+                || appState.isICloudBridgeActivationPending
+        )
+    }
+
+    private var flowAction: ICloudSyncFlowAction {
+        ICloudSyncFlowPolicy.action(
+            for: bridgeState,
+            isEnabled: appState.config.iCloudSyncEnabled,
+            hasCompanionDevice: appState.iCloudBridgeCompanionDeviceName != nil,
+            companionDiscoveryState: appState.iCloudBridgeCompanionDiscoveryState
+        )
     }
 
     private var bridgeSyncIconIsAnimating: Bool {
@@ -207,10 +285,15 @@ struct IPhoneBridgeCard: View {
     }
 
     private var isSyncWorking: Bool {
-        bridgeState == .checkingICloud || bridgeState == .syncing
+        bridgeState == .checkingICloud
+            || bridgeState == .syncing
+            || flowAction == .waitingForDevice
     }
 
     private var bridgeIcon: String {
+        if flowAction == .waitingForDevice {
+            return "arrow.triangle.2.circlepath"
+        }
         switch bridgeState {
         case .active: return "checkmark.icloud"
         case .checkingICloud, .syncing: return "arrow.triangle.2.circlepath"
@@ -233,6 +316,9 @@ struct IPhoneBridgeCard: View {
         switch bridgeState {
         case .active:
             guard let deviceName = appState.iCloudBridgeCompanionDeviceName else {
+                if appState.iCloudBridgeCompanionDiscoveryState == .waiting {
+                    return "Finishing device setup"
+                }
                 if let lastSyncedAt = appState.iCloudLastSyncedAt {
                     return "iCloud sync active · \(relativeSyncTime(lastSyncedAt))"
                 }
@@ -243,21 +329,28 @@ struct IPhoneBridgeCard: View {
             }
             return "Synced with \(deviceName)"
         case .checkingICloud:
-            return "Setting up private iCloud sync"
+            return "Setting up sync"
         case .syncing:
             return ICloudBridgeWorkingCopy.title(
                 isActivationPending: appState.isICloudBridgeActivationPending
             )
         case .needsICloud:
-            return "Sign in to iCloud to sync"
+            return "Sign in to iCloud"
         case .needsReconnection:
-            return "iCloud sync needs reconnection"
+            switch ICloudSyncRecoveryPolicy.action(for: bridgeState) {
+            case .reconnectLegacyLibrary:
+                return "Reconnect iCloud sync"
+            case .resetAccountLink:
+                return "Reset iCloud sync"
+            case nil:
+                return "Sync needs attention"
+            }
         case .needsAccountReplacement:
-            return "iCloud sync needs reset"
+            return "Reset iCloud sync"
         case .error:
-            return "iPhone sync needs attention"
+            return "Sync couldn't finish"
         case .notConfigured:
-            return "Use Muesli on iPhone"
+            return "Sync with iPhone or iPad"
         }
     }
 
@@ -265,46 +358,66 @@ struct IPhoneBridgeCard: View {
         switch bridgeState {
         case .active:
             if let deviceName = appState.iCloudBridgeCompanionDeviceName {
-                return "Private iCloud text sync is on with \(deviceName). Audio stays local."
+                return "Connected to \(deviceName)."
             }
-            return "Scan the QR code to connect your iPhone. Audio stays local."
+            if appState.iCloudBridgeCompanionDiscoveryState == .waiting {
+                return "Waiting for your iPhone or iPad…"
+            }
+            if appState.iCloudBridgeCompanionDiscoveryState == .timedOut {
+                return "Couldn't find your device. Open Muesli there, then try again."
+            }
+            return "Connect another device to sync text."
         case .checkingICloud:
-            return "Checking this Mac's iCloud account..."
+            return "Checking iCloud…"
         case .syncing:
             return ICloudBridgeWorkingCopy.subtitle(
                 isActivationPending: appState.isICloudBridgeActivationPending
             )
-        case .needsICloud, .needsReconnection, .needsAccountReplacement, .error:
-            return appState.iCloudBridgeMessage ?? "Open iCloud settings, then try again."
+        case .needsICloud:
+            return "Sign in on this Mac, then try again."
+        case .needsReconnection:
+            switch ICloudSyncRecoveryPolicy.action(for: bridgeState) {
+            case .reconnectLegacyLibrary:
+                return "Reconnect to keep syncing."
+            case .resetAccountLink:
+                return "Reset sync to start again."
+            case nil:
+                return "Try again from Sync settings."
+            }
+        case .needsAccountReplacement:
+            return "Reset sync to use this iCloud account."
+        case .error:
+            return "Try again."
         case .notConfigured:
-            return "Your Muesli history follows you through private iCloud. Audio stays local."
+            return "Turn on iCloud sync to get started."
         }
     }
 
     private var buttonTitle: String {
-        switch ICloudSyncRecoveryPolicy.action(for: bridgeState) {
-        case .reconnectLegacyLibrary:
-            return "Reconnect sync"
-        case .resetAccountLink:
-            return "Reset sync"
-        case nil:
-            break
-        }
-        switch bridgeState {
-        case .active: return "Sync"
-        case .checkingICloud, .syncing: return "Syncing"
-        case .needsReconnection, .needsAccountReplacement: return "Sync"
-        case .needsICloud, .error: return "Try again"
-        case .notConfigured: return "Set up private iCloud sync"
+        switch flowAction {
+        case .setUp: return "Set up sync"
+        case .continueSetup: return "Continue setup"
+        case .connectDevice: return "Connect device"
+        case .waitingForDevice: return "Checking…"
+        case .syncNow: return "Sync now"
+        case .reconnect: return "Reconnect"
+        case .reset: return "Reset"
+        case .retry: return "Try again"
+        case .working: return "Working…"
         }
     }
 
     private var buttonIcon: String {
-        bridgeState == .notConfigured ? "icloud" : "arrow.triangle.2.circlepath"
+        switch flowAction {
+        case .setUp: return "icloud"
+        case .continueSetup, .connectDevice: return "qrcode"
+        case .reset: return "arrow.counterclockwise.icloud"
+        default: return "arrow.triangle.2.circlepath"
+        }
     }
 
     private var actionDisabled: Bool {
-        bridgeState == .checkingICloud || bridgeState == .syncing
+        flowAction == .working || flowAction == .waitingForDevice
     }
 
     private var buttonHelp: String {
@@ -315,6 +428,9 @@ struct IPhoneBridgeCard: View {
             return "Reset local iCloud sync state, then set up the current account"
         case nil:
             break
+        }
+        if flowAction == .waitingForDevice {
+            return "Waiting for Muesli on your other device"
         }
         switch bridgeState {
         case .active:
@@ -333,25 +449,28 @@ struct IPhoneBridgeCard: View {
     }
 
     private func primaryAction() {
-        switch ICloudSyncRecoveryPolicy.action(for: bridgeState) {
-        case .reconnectLegacyLibrary:
-            isReconnectConfirmationPresented = true
-            return
-        case .resetAccountLink:
-            isResetConfirmationPresented = true
-            return
-        case nil:
-            break
-        }
-        switch bridgeState {
-        case .active:
-            controller.performICloudSync()
-        case .checkingICloud, .syncing:
-            break
-        case .needsReconnection, .needsAccountReplacement:
-            break
-        default:
+        switch flowAction {
+        case .setUp, .continueSetup:
+            isQRCodePresented = true
+            TelemetryDeck.signal("bridge_qr_shown", parameters: ["platform": "macos_setup"])
+            controller.beginIPhoneBridgeDeviceDiscovery()
             controller.enableIPhoneBridgeSync()
+        case .connectDevice:
+            isQRCodePresented = true
+            TelemetryDeck.signal("bridge_qr_shown", parameters: ["platform": "macos"])
+            controller.beginIPhoneBridgeDeviceDiscovery()
+        case .waitingForDevice:
+            break
+        case .syncNow:
+            controller.performICloudSync()
+        case .reconnect:
+            isReconnectConfirmationPresented = true
+        case .reset:
+            isResetConfirmationPresented = true
+        case .retry:
+            controller.enableIPhoneBridgeSync()
+        case .working:
+            break
         }
     }
 
@@ -394,9 +513,11 @@ private struct BridgeSyncIcon: View {
     }
 }
 
-private struct IPhoneBridgeQRCodeSheet: View {
+struct IPhoneBridgeQRCodeSheet: View {
     let deepLinkURL: URL
     let installURL: URL
+    let isWaitingForDevice: Bool
+    let presentationPhase: ICloudSyncQRCodePresentationPhase
     @Environment(\.dismiss) private var dismiss
     @State private var didCopySetupLink = false
 
@@ -404,10 +525,12 @@ private struct IPhoneBridgeQRCodeSheet: View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                    Text("Open Muesli on iPhone")
+                    Text("Connect iPhone or iPad")
                         .font(MuesliTheme.title3())
                         .foregroundStyle(MuesliTheme.textPrimary)
-                    Text("Scan this after installing the iPhone app. The QR only opens setup; private iCloud does the actual sync.")
+                    Text(presentationPhase == .syncing
+                        ? "Device connected. Finishing sync…"
+                        : "Scan once. This window closes when sync is ready.")
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -432,6 +555,24 @@ private struct IPhoneBridgeQRCodeSheet: View {
                     .padding(MuesliTheme.spacing8)
                     .background(.white)
                     .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                    .overlay {
+                        if presentationPhase == .syncing {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                                    .fill(MuesliTheme.backgroundRaised.opacity(0.98))
+                                VStack(spacing: MuesliTheme.spacing8) {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                    Text("Device connected")
+                                        .font(MuesliTheme.body())
+                                        .foregroundStyle(MuesliTheme.textPrimary)
+                                    Text("Syncing…")
+                                        .font(MuesliTheme.caption())
+                                        .foregroundStyle(MuesliTheme.textTertiary)
+                                }
+                            }
+                        }
+                    }
 
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
                     Label("Same iCloud account", systemImage: "icloud")
@@ -440,6 +581,17 @@ private struct IPhoneBridgeQRCodeSheet: View {
                 }
                 .font(MuesliTheme.caption())
                 .foregroundStyle(MuesliTheme.textSecondary)
+            }
+
+            if isWaitingForDevice && presentationPhase == .readyToScan {
+                Divider().background(MuesliTheme.surfaceBorder)
+                HStack(spacing: MuesliTheme.spacing8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Waiting for iPhone or iPad…")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
             }
 
             HStack(spacing: MuesliTheme.spacing8) {
@@ -457,6 +609,7 @@ private struct IPhoneBridgeQRCodeSheet: View {
                 }
                 .buttonStyle(.bordered)
             }
+            .disabled(presentationPhase == .syncing)
         }
         .padding(MuesliTheme.spacing20)
         .frame(width: 430)

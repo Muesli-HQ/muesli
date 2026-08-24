@@ -469,6 +469,10 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
         }
     }
 
+    func requestBridgeDeviceRefresh() {
+        scheduleBridgeDeviceRefresh(forceRefresh: true)
+    }
+
     private func runBridgeDeviceRefreshes() async {
         while !Task.isCancelled {
             let forceRefresh = bridgeRefreshForceRequested
