@@ -174,10 +174,9 @@ final class AudioDuckingController: AudioDuckingManaging {
                     ))
                 }
             }
-            // Fallback only when the device exposes no controllable volume elements at all.
-            // Do not fall back to mute merely because attenuation produced no change
-            // (e.g. attenuationLevel == 1.0, or the volume was already at the target).
-            if client.volumeElements(for: deviceID).isEmpty {
+            // Fallback only when attenuation actually wants reduction and no writable volume control exists.
+            // 100% (no reduction) should be no-op even on mute-only devices.
+            if attenuationLevel < 0.999, client.volumeElements(for: deviceID).isEmpty {
                 let muteElements = client.muteElements(for: deviceID)
                 for element in muteElements {
                     guard let isMuted = client.isMuted(deviceID: deviceID, element: element),
@@ -410,7 +409,26 @@ final class CoreAudioDuckingDeviceClient: AudioDuckingDeviceClient {
         ]
         return candidates.filter {
             hasProperty(selector, objectID: deviceID, scope: scope, element: $0)
+                && isPropertySettable(selector, objectID: deviceID, scope: scope, element: $0)
         }
+    }
+
+    private func isPropertySettable(
+        _ selector: AudioObjectPropertySelector,
+        objectID: AudioObjectID,
+        scope: AudioObjectPropertyScope,
+        element: AudioObjectPropertyElement
+    ) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: scope,
+            mElement: element
+        )
+        var isSettable: DarwinBoolean = false
+        guard AudioObjectIsPropertySettable(objectID, &address, &isSettable) == noErr else {
+            return false
+        }
+        return isSettable.boolValue
     }
 
     private func processObjectIDs() -> [AudioObjectID]? {
