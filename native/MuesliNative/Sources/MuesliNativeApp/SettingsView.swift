@@ -1096,13 +1096,19 @@ struct SettingsView: View {
                     onChange: { value in controller.updateConfig { $0.lmStudioURL = value } }
                 ).frame(height: 22)
             }
+        } else if backend == .hosted(.customLLM) {
+            customLLMSettingsRows(model: appState.config.quilModel) { value in
+                controller.updateConfig { $0.quilModel = value }
+            }
         }
-        Divider().background(MuesliTheme.surfaceBorder)
-        settingsRow("Quill model", controlWidth: meetingControlWidth) {
-            settingsModelTextField(
-                currentModel: appState.config.quilModel,
-                placeholder: TranscriptCleanupClient.defaultModel(for: backend)
-            ) { value in controller.updateConfig { $0.quilModel = value } }
+        if backend != .hosted(.customLLM) {
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("Quill model", controlWidth: meetingControlWidth) {
+                settingsModelTextField(
+                    currentModel: appState.config.quilModel,
+                    placeholder: TranscriptCleanupClient.defaultModel(for: backend)
+                ) { value in controller.updateConfig { $0.quilModel = value } }
+            }
         }
     }
 
