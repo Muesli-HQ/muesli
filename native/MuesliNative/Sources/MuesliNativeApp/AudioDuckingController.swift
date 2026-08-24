@@ -3,6 +3,7 @@ import Foundation
 
 protocol AudioDuckingManaging: AnyObject {
     func beginDictationDucking(enabled: Bool)
+    func beginDictationDucking(enabled: Bool, attenuationLevel: Float32?)
     func ensureCurrentDefaultDucked()
     func restoreDictationDucking(completion: (() -> Void)?)
 }
@@ -10,6 +11,10 @@ protocol AudioDuckingManaging: AnyObject {
 extension AudioDuckingManaging {
     func restoreDictationDucking() {
         restoreDictationDucking(completion: nil)
+    }
+
+    func beginDictationDucking(enabled: Bool) {
+        beginDictationDucking(enabled: enabled, attenuationLevel: nil)
     }
 }
 
@@ -50,6 +55,7 @@ final class AudioDuckingController: AudioDuckingManaging {
     private struct VolumeMutation {
         let element: AudioObjectPropertyElement
         let previousValue: Float32
+        let attenuatedValue: Float32
     }
 
     private struct DeviceSnapshot {
@@ -68,6 +74,7 @@ final class AudioDuckingController: AudioDuckingManaging {
     private let stabilizationTimeout: TimeInterval
     private let stabilizationPollInterval: TimeInterval
     private var duckingEnabledForSession = false
+    private var attenuationLevelForSession: Float32?
     private var snapshots: [AudioObjectID: DeviceSnapshot] = [:]
     private var restoreGeneration = 0
     private var isRestorePending = false
@@ -86,15 +93,22 @@ final class AudioDuckingController: AudioDuckingManaging {
     }
 
     func beginDictationDucking(enabled: Bool) {
+        beginDictationDucking(enabled: enabled, attenuationLevel: nil)
+    }
+
+    func beginDictationDucking(enabled: Bool, attenuationLevel: Float32?) {
+        let clampedLevel = attenuationLevel.map { max(0, min(1, $0)) }
         queue.async { [self] in
             guard enabled else {
                 self.cancelPendingRestoreLocked(preserveCompletions: true)
                 self.duckingEnabledForSession = false
+                self.attenuationLevelForSession = nil
                 self.restoreLocked(completion: nil)
                 return
             }
             self.cancelPendingRestoreLocked(preserveCompletions: false)
             self.duckingEnabledForSession = true
+            self.attenuationLevelForSession = clampedLevel
             guard self.shouldDuckCurrentOutput() else { return }
             self.duckCurrentDefaultDevice()
         }
@@ -137,21 +151,61 @@ final class AudioDuckingController: AudioDuckingManaging {
         let sampleRate = client.nominalSampleRate(for: deviceID)
         var snapshot = DeviceSnapshot(deviceID: deviceID, sampleRate: sampleRate)
 
-        let muteElements = client.muteElements(for: deviceID)
-        for element in muteElements {
-            guard let isMuted = client.isMuted(deviceID: deviceID, element: element),
-                  !isMuted else { continue }
-            if client.setMuted(true, deviceID: deviceID, element: element) {
-                snapshot.muteMutations.append(MuteMutation(element: element, previousValue: isMuted))
-            }
-        }
-
-        if snapshot.muteMutations.isEmpty {
+        // When attenuation is requested, use volume scaling rather than muting.
+        // This keeps media audible at reduced level (e.g. 50%) and avoids
+        // toggling the mute control, which is a distinct user preference.
+        if let attenuationLevel = attenuationLevelForSession {
             for element in client.volumeElements(for: deviceID) {
                 guard let volume = client.volume(deviceID: deviceID, element: element),
                       volume > 0.0001 else { continue }
-                if client.setVolume(0, deviceID: deviceID, element: element) {
-                    snapshot.volumeMutations.append(VolumeMutation(element: element, previousValue: volume))
+                // Attenuation is proportional: reduce to `level` fraction of current.
+                // e.g. level 0.5 halves volume (50%). Clamped above to 0...1.
+                // Avoid increasing volume if already below target absolute level:
+                // proportional scaling always reduces, while absolute mode would
+                // otherwise raise quiet sources and increase bleed.
+                let attenuated = max(0, min(1, volume * attenuationLevel))
+                // Skip if attenuation would not change volume meaningfully.
+                guard abs(attenuated - volume) > 0.0001, attenuated < volume else { continue }
+                if client.setVolume(attenuated, deviceID: deviceID, element: element) {
+                    snapshot.volumeMutations.append(VolumeMutation(
+                        element: element,
+                        previousValue: volume,
+                        attenuatedValue: attenuated
+                    ))
+                }
+            }
+            // Fallback: if device has no volume control but has mute, still mute as last resort
+            if snapshot.volumeMutations.isEmpty {
+                let muteElements = client.muteElements(for: deviceID)
+                for element in muteElements {
+                    guard let isMuted = client.isMuted(deviceID: deviceID, element: element),
+                          !isMuted else { continue }
+                    if client.setMuted(true, deviceID: deviceID, element: element) {
+                        snapshot.muteMutations.append(MuteMutation(element: element, previousValue: isMuted))
+                    }
+                }
+            }
+        } else {
+            let muteElements = client.muteElements(for: deviceID)
+            for element in muteElements {
+                guard let isMuted = client.isMuted(deviceID: deviceID, element: element),
+                      !isMuted else { continue }
+                if client.setMuted(true, deviceID: deviceID, element: element) {
+                    snapshot.muteMutations.append(MuteMutation(element: element, previousValue: isMuted))
+                }
+            }
+
+            if snapshot.muteMutations.isEmpty {
+                for element in client.volumeElements(for: deviceID) {
+                    guard let volume = client.volume(deviceID: deviceID, element: element),
+                          volume > 0.0001 else { continue }
+                    if client.setVolume(0, deviceID: deviceID, element: element) {
+                        snapshot.volumeMutations.append(VolumeMutation(
+                            element: element,
+                            previousValue: volume,
+                            attenuatedValue: 0
+                        ))
+                    }
                 }
             }
         }
@@ -198,6 +252,7 @@ final class AudioDuckingController: AudioDuckingManaging {
         let pendingSnapshots = snapshots.values
         snapshots.removeAll()
         duckingEnabledForSession = false
+        attenuationLevelForSession = nil
         isRestorePending = false
         let completions = restoreCompletions
         restoreCompletions.removeAll()
@@ -212,7 +267,9 @@ final class AudioDuckingController: AudioDuckingManaging {
             }
             for mutation in snapshot.volumeMutations {
                 guard let current = client.volume(deviceID: snapshot.deviceID, element: mutation.element),
-                      abs(current) <= 0.0001 else {
+                      abs(current - mutation.attenuatedValue) <= 0.001 else {
+                    // User changed volume during dictation – treat as intentional
+                    // and do not overwrite. See suggested implementation edge case.
                     continue
                 }
                 _ = client.setVolume(mutation.previousValue, deviceID: snapshot.deviceID, element: mutation.element)
