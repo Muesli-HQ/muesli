@@ -8171,10 +8171,10 @@ public final class MuesliController: NSObject {
     private func startQuilContextCapture(for snapshot: QuilSelectionSnapshot) {
         quilContextCaptureTask?.cancel()
         quilContextCaptureTask = nil
-        guard config.enableScreenContext else { return }
+        guard config.enableScreenContext,
+              let expectedDocumentIdentifier = snapshot.documentIdentifier else { return }
 
         let expectedBundleID = snapshot.application.bundleIdentifier ?? ""
-        let expectedDocumentIdentifier = snapshot.documentIdentifier
         let includeScreenOCR = config.enableDictationOCRContext
             && !isMeetingRecording()
             && CGPreflightScreenCaptureAccess()
@@ -8185,9 +8185,11 @@ public final class MuesliController: NSObject {
                 shouldCaptureScreenOCR: { !Task.isCancelled }
             )
             guard !Task.isCancelled,
-                  context.bundleID == expectedBundleID,
-                  (expectedDocumentIdentifier == nil
-                    || context.documentIdentifier == expectedDocumentIdentifier) else { return nil }
+                  DictationContextCapture.matchesQuilSelection(
+                    context,
+                    bundleID: expectedBundleID,
+                    documentIdentifier: expectedDocumentIdentifier
+                  ) else { return nil }
             return context
         }
     }

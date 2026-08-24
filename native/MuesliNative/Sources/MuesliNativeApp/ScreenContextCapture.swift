@@ -104,6 +104,17 @@ enum DictationContextCapture {
         return parts
     }
 
+    /// Quill screen context is optional, so fail closed when macOS cannot bind
+    /// the captured context to the document that owns the selected text.
+    static func matchesQuilSelection(
+        _ context: DictationContext,
+        bundleID expectedBundleID: String,
+        documentIdentifier expectedDocumentIdentifier: String
+    ) -> Bool {
+        context.bundleID == expectedBundleID
+            && context.documentIdentifier == expectedDocumentIdentifier
+    }
+
     // MARK: - Accessibility helpers
 
     static func focusedUIElement(for app: NSRunningApplication) -> AXUIElement? {
@@ -315,9 +326,12 @@ final class QuilSelectionSnapshot {
 
     func matches(context: DictationContext?) -> Bool {
         guard let context else { return true }
-        guard context.bundleID == application.bundleIdentifier ?? "" else { return false }
-        guard let documentIdentifier else { return true }
-        return context.documentIdentifier == documentIdentifier
+        guard let documentIdentifier else { return false }
+        return DictationContextCapture.matchesQuilSelection(
+            context,
+            bundleID: application.bundleIdentifier ?? "",
+            documentIdentifier: documentIdentifier
+        )
     }
 
     /// Safe to call after Quill has staged its replacement on the clipboard.

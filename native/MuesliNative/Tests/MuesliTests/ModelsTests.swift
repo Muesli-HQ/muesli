@@ -1420,6 +1420,58 @@ struct AppConfigTests {
         #expect(prompt.contains("tail"))
     }
 
+    @Test("Quill context requires the original app and document identity")
+    func quilContextRequiresBoundDocumentIdentity() {
+        let matching = DictationContext(
+            appName: "Chrome",
+            bundleID: "com.google.Chrome",
+            documentContext: "Draft",
+            selectedText: "Selection",
+            url: nil,
+            documentIdentifier: "https://docs.google.com/document/d/original",
+            ocrText: ""
+        )
+        let unidentified = DictationContext(
+            appName: matching.appName,
+            bundleID: matching.bundleID,
+            documentContext: matching.documentContext,
+            selectedText: matching.selectedText,
+            url: matching.url,
+            documentIdentifier: nil,
+            ocrText: matching.ocrText
+        )
+        let otherDocument = DictationContext(
+            appName: matching.appName,
+            bundleID: matching.bundleID,
+            documentContext: matching.documentContext,
+            selectedText: matching.selectedText,
+            url: matching.url,
+            documentIdentifier: "https://docs.google.com/document/d/other",
+            ocrText: matching.ocrText
+        )
+
+        #expect(DictationContextCapture.matchesQuilSelection(
+            matching,
+            bundleID: "com.google.Chrome",
+            documentIdentifier: "https://docs.google.com/document/d/original"
+        ))
+        #expect(!DictationContextCapture.matchesQuilSelection(
+            unidentified,
+            bundleID: "com.google.Chrome",
+            documentIdentifier: "https://docs.google.com/document/d/original"
+        ))
+        #expect(!DictationContextCapture.matchesQuilSelection(
+            otherDocument,
+            bundleID: "com.google.Chrome",
+            documentIdentifier: "https://docs.google.com/document/d/original"
+        ))
+        #expect(!DictationContextCapture.matchesQuilSelection(
+            matching,
+            bundleID: "com.apple.Safari",
+            documentIdentifier: "https://docs.google.com/document/d/original"
+        ))
+    }
+
     @Test("post processor input caps app context")
     func postProcessorInputCapsAppContext() {
         let prompt = Qwen3PostProcessorConfig.formatInput(
