@@ -126,19 +126,21 @@ final class HotkeyMonitor {
     func start() {
         guard !isRunning else { return }
 
+        // Carbon registration itself does not require listen access, but the
+        // companion global Escape monitor does.
+        let hasListenAccess = CGPreflightListenEventAccess()
+        fputs("[hotkey] listen event access: \(hasListenAccess)\n", stderr)
+        if !hasListenAccess {
+            let requested = CGRequestListenEventAccess()
+            fputs("[hotkey] requested listen event access: \(requested)\n", stderr)
+        }
+
         if isCombinationMode, registersCombinationGlobally {
             if startRegisteredCombination() {
                 startRegisteredCombinationEscapeMonitors()
                 return
             }
             fputs("[hotkey] Carbon registration failed; falling back to event monitors\n", stderr)
-        }
-
-        let hasListenAccess = CGPreflightListenEventAccess()
-        fputs("[hotkey] listen event access: \(hasListenAccess)\n", stderr)
-        if !hasListenAccess {
-            let requested = CGRequestListenEventAccess()
-            fputs("[hotkey] requested listen event access: \(requested)\n", stderr)
         }
 
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged, .keyDown, .keyUp]) { [weak self] event in

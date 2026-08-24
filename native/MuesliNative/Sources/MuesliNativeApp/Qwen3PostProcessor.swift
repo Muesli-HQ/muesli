@@ -426,11 +426,7 @@ actor Qwen3PostProcessor {
         appContext: String? = nil,
         configuration: Configuration
     ) async throws -> String {
-        let effectiveConfiguration = Configuration(
-            modelURL: Qwen3PostProcessorConfig.devOverrideURL() ?? configuration.modelURL,
-            systemPrompt: configuration.systemPrompt,
-            inputFormat: configuration.inputFormat
-        )
+        let effectiveConfiguration = Self.effectiveConfiguration(for: configuration)
         let manager = try await loadManager(for: effectiveConfiguration)
         return try await manager.process(text, appContext: appContext)
     }
@@ -439,11 +435,7 @@ actor Qwen3PostProcessor {
         _ userPrompt: String,
         configuration: Configuration
     ) async throws -> String {
-        let effectiveConfiguration = Configuration(
-            modelURL: Qwen3PostProcessorConfig.devOverrideURL() ?? configuration.modelURL,
-            systemPrompt: configuration.systemPrompt,
-            inputFormat: configuration.inputFormat
-        )
+        let effectiveConfiguration = Self.effectiveConfiguration(for: configuration)
         let manager = try await loadManager(for: effectiveConfiguration)
         defer {
             // Quill uses a distinct system prompt. Do not retain a second LLM
@@ -453,6 +445,15 @@ actor Qwen3PostProcessor {
             }
         }
         return try await manager.generate(userPrompt)
+    }
+
+    nonisolated static func effectiveConfiguration(for configuration: Configuration) -> Configuration {
+        Configuration(
+            modelURL: Qwen3PostProcessorConfig.devOverrideURL() ?? configuration.modelURL,
+            systemPrompt: configuration.systemPrompt,
+            inputFormat: configuration.inputFormat,
+            maxTokenCount: configuration.maxTokenCount
+        )
     }
 
     func shutdown() {

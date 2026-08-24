@@ -157,7 +157,7 @@ enum TranscriptCleanupClient {
         backend: TranscriptCleanupBackendOption,
         model: String,
         config: AppConfig,
-        maxOutputTokens: Int = defaultMaxOutputTokens,
+        maxOutputTokens: Int? = nil,
         logCategory: String = "generation"
     ) async throws -> String {
         guard let llmBackend = backend.llmBackend else {
@@ -173,7 +173,7 @@ enum TranscriptCleanupClient {
                 logCategory: logCategory
             )
         case .openAI:
-            return try await cleanWithOpenAI(systemPrompt: systemPrompt, userPrompt: userPrompt, model: model, config: config, maxOutputTokens: maxOutputTokens)
+            return try await cleanWithOpenAI(systemPrompt: systemPrompt, userPrompt: userPrompt, model: model, config: config, maxOutputTokens: maxOutputTokens ?? defaultMaxOutputTokens)
         case .openRouter:
             let apiKey = resolvedOpenRouterAPIKey(config: config)
             return try await cleanWithChatCompletions(
@@ -183,10 +183,10 @@ enum TranscriptCleanupClient {
                 systemPrompt: systemPrompt,
                 userPrompt: userPrompt,
                 model: model,
-                maxOutputTokens: maxOutputTokens
+                maxOutputTokens: maxOutputTokens ?? defaultMaxOutputTokens
             )
         case .ollama:
-            return try await cleanWithOllama(systemPrompt: systemPrompt, userPrompt: userPrompt, model: model, config: config, maxOutputTokens: maxOutputTokens)
+            return try await cleanWithOllama(systemPrompt: systemPrompt, userPrompt: userPrompt, model: model, config: config, maxOutputTokens: maxOutputTokens ?? defaultMaxOutputTokens)
         case .lmStudio:
             guard let requestURL = MeetingSummaryClient.resolveLMStudioURL(config: cleanupConfig(config, model: model)) else {
                 throw TranscriptCleanupError.missingConfiguration("Invalid LM Studio URL: \(config.lmStudioURL)")
@@ -198,7 +198,7 @@ enum TranscriptCleanupClient {
                 systemPrompt: systemPrompt,
                 userPrompt: userPrompt,
                 model: model,
-                maxOutputTokens: maxOutputTokens
+                maxOutputTokens: maxOutputTokens ?? defaultMaxOutputTokens
             )
         case .customLLM:
             let format = CustomLLMFormat(rawValue: config.customLLMFormat) ?? .openAI
@@ -214,7 +214,7 @@ enum TranscriptCleanupClient {
                     systemPrompt: systemPrompt,
                     userPrompt: userPrompt,
                     model: model,
-                    maxOutputTokens: maxOutputTokens
+                    maxOutputTokens: maxOutputTokens ?? defaultMaxOutputTokens
                 )
             case .anthropic:
                 return try await cleanWithAnthropic(
@@ -223,7 +223,7 @@ enum TranscriptCleanupClient {
                     systemPrompt: systemPrompt,
                     userPrompt: userPrompt,
                     model: model,
-                    maxOutputTokens: maxOutputTokens
+                    maxOutputTokens: maxOutputTokens ?? defaultMaxOutputTokens
                 )
             }
         default:

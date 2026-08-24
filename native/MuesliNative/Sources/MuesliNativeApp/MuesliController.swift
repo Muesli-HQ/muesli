@@ -9591,13 +9591,18 @@ public final class MuesliController: NSObject {
 
     private func cancelDictationAudioSessionForMeetingRecordingIfNeeded() {
         let hasComputerUseActivity = interactiveAudioSessionOwnership.computerUseIsActive
+        let hasQuilActivity = interactiveAudioSessionOwnership.quilIsActive
         guard dictationAudioSessionManager.hasActiveSession
             || isNemotron35Streaming
-            || hasComputerUseActivity else { return }
+            || hasComputerUseActivity
+            || hasQuilActivity else { return }
         fputs("[muesli-native] cancelling dictation audio session because meeting is active\n", stderr)
 
         if hasComputerUseActivity {
             handleComputerUseCancel()
+        }
+        if hasQuilActivity {
+            clearQuilSession(cancelAudioReason: "meeting-active")
         }
 
         if isNemotron35Streaming {
