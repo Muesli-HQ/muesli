@@ -537,9 +537,10 @@ final class DictationAudioSessionManager: @unchecked Sendable {
         attenuationEnabled: Bool = false,
         attenuationLevel: Float32 = 0.5
     ) {
-        // When attenuation is active we deliberately do NOT pause media –
-        // spec says "Do not pause media. Leave output at reduced level."
-        let effectiveMediaPause = attenuationEnabled ? false : mediaPauseEnabled
+        // When attenuation actually applies we do NOT pause media – spec says
+        // "Do not pause media. Leave output at reduced level."
+        let attenuationWillApply = attenuationEnabled && routeSnapshot.shouldDuck
+        let effectiveMediaPause = attenuationWillApply ? false : mediaPauseEnabled
         mediaPlaybackController.beginDictationMediaPause(
             enabled: effectiveMediaPause,
             routeKind: routeSnapshot.routeKind

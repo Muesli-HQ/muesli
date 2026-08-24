@@ -1388,7 +1388,7 @@ struct AppConfig: Codable {
     var contributionLinkedInClicked: Bool = false
 
     var resolvedDictationAttenuationLevel: Float32 {
-        Float32(min(1.0, max(0.0, dictationAttenuationLevel)))
+        Float32(min(1.0, max(0.1, dictationAttenuationLevel)))
     }
 
     enum CodingKeys: String, CodingKey {
@@ -1656,7 +1656,7 @@ struct AppConfig: Codable {
         muteSystemAudioDuringDictation = (try? c.decode(Bool.self, forKey: .muteSystemAudioDuringDictation)) ?? defaults.muteSystemAudioDuringDictation
         lowerVolumeDuringDictation = (try? c.decode(Bool.self, forKey: .lowerVolumeDuringDictation)) ?? defaults.lowerVolumeDuringDictation
         let decodedAttenuationLevel = (try? c.decode(Double.self, forKey: .dictationAttenuationLevel)) ?? defaults.dictationAttenuationLevel
-        dictationAttenuationLevel = min(1.0, max(0.0, decodedAttenuationLevel))
+        dictationAttenuationLevel = min(1.0, max(0.1, decodedAttenuationLevel))
         recordingColorHex = (try? c.decode(String.self, forKey: .recordingColorHex)) ?? defaults.recordingColorHex
         menuBarIcon = (try? c.decode(String.self, forKey: .menuBarIcon)) ?? defaults.menuBarIcon
         showHotkeyInMenuBar =
