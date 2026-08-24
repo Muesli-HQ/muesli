@@ -681,9 +681,19 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
             settingsSection("iCloud Text Sync") {
                 settingsRow("Private iCloud sync") {
-                    settingsSwitch(isOn: appState.config.iCloudSyncEnabled) { newValue in
+                    let presentation = ICloudSyncTogglePresentation(
+                        isEnabled: appState.config.iCloudSyncEnabled,
+                        isActivationPending: appState.isICloudBridgeActivationPending
+                    )
+                    settingsSwitch(isOn: presentation.isOn) { newValue in
                         controller.setICloudSyncEnabledFromSettings(newValue)
                     }
+                    .disabled(presentation.isInteractionDisabled)
+                    .help(
+                        presentation.isInteractionDisabled
+                            ? "Checking iCloud…"
+                            : "Sync text through private iCloud"
+                    )
                 }
                 settingsDescription("Sync text privately with Muesli for iPhone. Audio stays on this Mac.")
 

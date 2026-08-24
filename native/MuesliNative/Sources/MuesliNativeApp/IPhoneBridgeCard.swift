@@ -22,6 +22,32 @@ enum ICloudBridgeWorkingCopy {
             : "Text sync is in progress"
     }
 }
+
+struct ICloudSyncTogglePresentation: Equatable {
+    let isOn: Bool
+    let isInteractionDisabled: Bool
+
+    init(isEnabled: Bool, isActivationPending: Bool) {
+        isOn = isEnabled || isActivationPending
+        isInteractionDisabled = isActivationPending
+    }
+}
+
+enum ICloudSyncEnableAction: Equatable {
+    case beginActivation
+    case performSync
+    case ignore
+}
+
+enum ICloudSyncActivationPolicy {
+    static func action(isEnabled: Bool, isActivationPending: Bool) -> ICloudSyncEnableAction {
+        if isActivationPending {
+            return .ignore
+        }
+        return isEnabled ? .performSync : .beginActivation
+    }
+}
+
 struct IPhoneBridgeCard: View {
     let appState: AppState
     let controller: MuesliController

@@ -1828,9 +1828,18 @@ public final class MuesliController: NSObject {
             disableICloudSyncForUnavailableEntitlement()
             return
         }
-        if config.iCloudSyncEnabled {
+
+        switch ICloudSyncActivationPolicy.action(
+            isEnabled: config.iCloudSyncEnabled,
+            isActivationPending: bridgeActivationPending
+        ) {
+        case .ignore:
+            return
+        case .performSync:
             performICloudSync()
             return
+        case .beginActivation:
+            break
         }
 
         bridgeActivationPending = true

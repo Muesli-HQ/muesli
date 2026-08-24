@@ -118,4 +118,48 @@ struct ICloudBridgeWorkingCopyTests {
         #expect(ICloudBridgeWorkingCopy.buttonHelp(isActivationPending: true) == "Sync setup is in progress")
         #expect(ICloudBridgeWorkingCopy.buttonHelp(isActivationPending: false) == "Text sync is in progress")
     }
+
+    @Test("sync toggle stays visibly on and locked while activation is pending")
+    func syncTogglePendingPresentation() {
+        let off = ICloudSyncTogglePresentation(
+            isEnabled: false,
+            isActivationPending: false
+        )
+        #expect(!off.isOn)
+        #expect(!off.isInteractionDisabled)
+
+        let pending = ICloudSyncTogglePresentation(
+            isEnabled: false,
+            isActivationPending: true
+        )
+        #expect(pending.isOn)
+        #expect(pending.isInteractionDisabled)
+
+        let enabled = ICloudSyncTogglePresentation(
+            isEnabled: true,
+            isActivationPending: false
+        )
+        #expect(enabled.isOn)
+        #expect(!enabled.isInteractionDisabled)
+    }
+
+    @Test("duplicate enable requests do not restart pending activation")
+    func duplicateActivationIsIgnored() {
+        #expect(ICloudSyncActivationPolicy.action(
+            isEnabled: false,
+            isActivationPending: false
+        ) == .beginActivation)
+        #expect(ICloudSyncActivationPolicy.action(
+            isEnabled: false,
+            isActivationPending: true
+        ) == .ignore)
+        #expect(ICloudSyncActivationPolicy.action(
+            isEnabled: true,
+            isActivationPending: true
+        ) == .ignore)
+        #expect(ICloudSyncActivationPolicy.action(
+            isEnabled: true,
+            isActivationPending: false
+        ) == .performSync)
+    }
 }
