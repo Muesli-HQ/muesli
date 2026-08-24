@@ -179,7 +179,11 @@ enum PasteController {
 
         let deadline = Date().addingTimeInterval(max(0, timeout))
         while pasteboard.changeCount == originalChangeCount, Date() < deadline {
-            Thread.sleep(forTimeInterval: max(0.001, pollInterval))
+            // Keep the main run loop responsive while the target app services Cmd+C.
+            // Quill begins from a synchronous hotkey callback, so a nested run-loop
+            // wait avoids blocking UI without moving clipboard access off MainActor.
+            let nextPoll = min(deadline, Date().addingTimeInterval(max(0.001, pollInterval)))
+            _ = RunLoop.current.run(mode: .default, before: nextPoll)
         }
         guard pasteboard.changeCount != originalChangeCount else { return nil }
 

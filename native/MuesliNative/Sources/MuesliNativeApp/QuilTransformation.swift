@@ -9,6 +9,7 @@ enum QuilTransformationError: LocalizedError, Equatable {
     case unsupportedModel
     case modelUnavailable
     case emptyResponse
+    case responseTooLong(Int)
     case nonReplacementResponse
 
     var errorDescription: String? {
@@ -29,6 +30,8 @@ enum QuilTransformationError: LocalizedError, Equatable {
             return "The selected Quill model is not downloaded or configured."
         case .emptyResponse:
             return "The model returned an empty replacement, so Quill left the text untouched."
+        case .responseTooLong(let limit):
+            return "The model returned more than \(limit) characters, so Quill left the text untouched."
         case .nonReplacementResponse:
             return "The model returned commentary or alternatives instead of one replacement, so Quill left the text untouched."
         }
@@ -90,8 +93,11 @@ enum QuilTransformationOutput {
         let result = raw.replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !result.isEmpty, result.count <= maximumOutputCharacters else {
+        guard !result.isEmpty else {
             throw QuilTransformationError.emptyResponse
+        }
+        guard result.count <= maximumOutputCharacters else {
+            throw QuilTransformationError.responseTooLong(maximumOutputCharacters)
         }
         guard !looksLikeCommentaryOrAlternatives(result) else {
             throw QuilTransformationError.nonReplacementResponse
@@ -127,6 +133,10 @@ enum QuilModelPolicy {
     static let remoteMaximumInputCharacters = 20_000
     static let localAppContextCharacterLimit = 1_200
     static let remoteAppContextCharacterLimit = 5_000
+    // The remote input limit can legitimately produce a replacement well beyond
+    // the cleanup path's 1K-token budget (for example, translation or expansion).
+    static let remoteMaximumOutputTokens = 12_000
+    static let gemmaMaximumOutputTokens: Int32 = 4_096
 
     static func appContextCharacterLimit(for backend: TranscriptCleanupBackendOption) -> Int {
         backend.isOnDevice ? localAppContextCharacterLimit : remoteAppContextCharacterLimit

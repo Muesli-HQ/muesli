@@ -1408,6 +1408,7 @@ struct AppConfigTests {
             documentContext: "Project Apollo",
             selectedText: "Mercury",
             url: "https://example.com",
+            documentIdentifier: "Project Apollo",
             ocrText: ocrText
         )
         let prompt = DictationContextCapture.formatForPrompt(context)
@@ -2284,6 +2285,28 @@ struct HotkeyMonitorTests {
         monitor.handleCombinationForTests(type: .keyUp, keyCode: 12, flags: .control)
 
         #expect(events == ["prepare", "start", "stop"])
+    }
+
+    @Test("escape cancels a Carbon-style registered combination session")
+    @MainActor
+    func escapeCancelsRegisteredCombinationSession() {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor()
+        monitor.configure(HotkeyConfig.combination(modifiers: [.control], keyCode: 12))
+        monitor.combinationActivation = .pushToTalk
+        var cancelCount = 0
+        monitor.onCancel = { cancelCount += 1 }
+
+        monitor.handleRegisteredHotKeyPressForTests()
+        scheduler.advance(by: 0.30)
+        let consumed = monitor.handleCombinationForTests(
+            type: .keyDown,
+            keyCode: 53,
+            flags: []
+        )
+
+        #expect(consumed)
+        #expect(cancelCount == 1)
     }
 
     @Test("Muesli synthetic copy does not cancel an active Fn hold")

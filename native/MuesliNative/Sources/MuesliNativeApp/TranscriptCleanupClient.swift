@@ -169,6 +169,7 @@ enum TranscriptCleanupClient {
                 systemPrompt: systemPrompt,
                 userPrompt: userPrompt,
                 model: model,
+                maxOutputTokens: maxOutputTokens,
                 logCategory: logCategory
             )
         case .openAI:

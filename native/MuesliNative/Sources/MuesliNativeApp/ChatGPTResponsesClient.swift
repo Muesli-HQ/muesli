@@ -19,13 +19,15 @@ enum ChatGPTResponsesClient {
         systemPrompt: String,
         userPrompt: String,
         model: String,
+        maxOutputTokens: Int? = nil,
         logCategory: String
     ) async throws -> String {
         let (token, accountId) = try await ChatGPTAuthManager.shared.validAccessToken()
         let body = requestBody(
             systemPrompt: systemPrompt,
             userPrompt: userPrompt,
-            model: model
+            model: model,
+            maxOutputTokens: maxOutputTokens
         )
 
         var request = URLRequest(url: whamURL)
@@ -70,7 +72,8 @@ enum ChatGPTResponsesClient {
     static func requestBody(
         systemPrompt: String,
         userPrompt: String,
-        model: String
+        model: String,
+        maxOutputTokens: Int? = nil
     ) -> [String: Any] {
         var body: [String: Any] = [
             "model": model,
@@ -84,6 +87,9 @@ enum ChatGPTResponsesClient {
         ]
         if let effort = SummaryModelPreset.reasoningEffort(for: model) {
             body["reasoning"] = ["effort": effort]
+        }
+        if let maxOutputTokens, maxOutputTokens > 0 {
+            body["max_output_tokens"] = maxOutputTokens
         }
         return body
     }

@@ -374,7 +374,8 @@ actor TranscriptionCoordinator {
             let configuration = Qwen3PostProcessor.Configuration(
                 modelURL: option.modelURL,
                 systemPrompt: QuilTransformationPrompt.system,
-                inputFormat: .configurable
+                inputFormat: .configurable,
+                maxTokenCount: Qwen3PostProcessorConfig.quilMaxContextTokens
             )
             return try await qwen3PostProcessor.generate(userPrompt, configuration: configuration)
         case .gemma4LiteRT:
@@ -383,11 +384,11 @@ actor TranscriptionCoordinator {
             guard Gemma4LiteRTModelStore.isAvailableLocally(model: gemmaModel) else {
                 throw QuilTransformationError.modelUnavailable
             }
-            let transcriber = gemma4LiteRTTranscriber
-            try await transcriber.prepare(model: gemmaModel)
-            return try await transcriber.generateText(
+            return try await gemma4LiteRTTranscriber.generateText(
                 systemPrompt: QuilTransformationPrompt.system,
-                userPrompt: userPrompt
+                userPrompt: userPrompt,
+                model: gemmaModel,
+                maxOutputTokens: QuilModelPolicy.gemmaMaximumOutputTokens
             )
         default:
             return try await TranscriptCleanupClient.generate(
@@ -396,7 +397,7 @@ actor TranscriptionCoordinator {
                 backend: backend,
                 model: resolvedModel,
                 config: config,
-                maxOutputTokens: 2_000,
+                maxOutputTokens: QuilModelPolicy.remoteMaximumOutputTokens,
                 logCategory: "quil"
             )
         }
@@ -1204,14 +1205,11 @@ actor TranscriptionCoordinator {
             return nil
         }
         do {
-            let transcriber = gemma4LiteRTTranscriber
-            try await transcriber.prepare(
-                model: Gemma4LiteRTModel.resolved(postProcessorSnapshot.modelId)
-            )
-            let cleanup = try await transcriber.cleanTranscript(
+            let cleanup = try await gemma4LiteRTTranscriber.cleanTranscript(
                 result.text,
                 systemPrompt: postProcessorSnapshot.systemPrompt,
-                appContext: appContext
+                appContext: appContext,
+                model: Gemma4LiteRTModel.resolved(postProcessorSnapshot.modelId)
             )
             let elapsedMs = cleanup.processingTime * 1000
             let trimmed = cleanup.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1471,9 +1469,7 @@ actor TranscriptionCoordinator {
     ) async throws -> SpeechTranscriptionResult {
         if #available(macOS 15, *) {
             Gemma4LiteRTLogging.log("transcribing \(url.lastPathComponent)")
-            let transcriber = gemma4LiteRTTranscriber
-            try await transcriber.prepare(model: model)
-            let result = try await transcriber.transcribe(wavURL: url)
+            let result = try await gemma4LiteRTTranscriber.transcribe(wavURL: url, model: model)
             Gemma4LiteRTLogging.log("result chars=\(result.text.count), processingTime=\(String(format: "%.3f", result.processingTime))s")
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             return SpeechTranscriptionResult(

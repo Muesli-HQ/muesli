@@ -8076,6 +8076,12 @@ public final class MuesliController: NSObject {
                     capturedContext = nil
                 }
                 try Task.checkCancellation()
+                let contextStillBelongsToSelection = await MainActor.run {
+                    snapshot.isStillCurrent() && snapshot.matches(context: capturedContext)
+                }
+                guard contextStillBelongsToSelection else {
+                    throw QuilTransformationError.selectionChanged
+                }
                 let promptContext = capturedContext.map { DictationContextCapture.formatForPrompt($0) }
                 let replacement = try await self.transcriptionCoordinator.transformSelectedTextForQuil(
                     selectedText: snapshot.text,
@@ -8086,6 +8092,12 @@ public final class MuesliController: NSObject {
                     config: configSnapshot
                 )
                 try Task.checkCancellation()
+                let selectionStillCurrent = await MainActor.run {
+                    snapshot.isStillCurrentForReplacement()
+                }
+                guard selectionStillCurrent else {
+                    throw QuilTransformationError.selectionChanged
+                }
                 await MainActor.run {
                     guard self.quilTaskID == taskID else { return }
                     guard replacement != snapshot.text else {
@@ -8103,10 +8115,6 @@ public final class MuesliController: NSObject {
                             taskID: taskID,
                             message: saved ? "No changes needed" : "No changes needed; Quill history was not saved"
                         )
-                        return
-                    }
-                    guard snapshot.isStillCurrent() else {
-                        self.presentQuilFailure(QuilTransformationError.selectionChanged)
                         return
                     }
                     PasteController.paste(
@@ -8166,6 +8174,7 @@ public final class MuesliController: NSObject {
         guard config.enableScreenContext else { return }
 
         let expectedBundleID = snapshot.application.bundleIdentifier ?? ""
+        let expectedDocumentIdentifier = snapshot.documentIdentifier
         let includeScreenOCR = config.enableDictationOCRContext
             && !isMeetingRecording()
             && CGPreflightScreenCaptureAccess()
@@ -8175,7 +8184,10 @@ public final class MuesliController: NSObject {
                 includeScreenOCR: includeScreenOCR,
                 shouldCaptureScreenOCR: { !Task.isCancelled }
             )
-            guard !Task.isCancelled, context.bundleID == expectedBundleID else { return nil }
+            guard !Task.isCancelled,
+                  context.bundleID == expectedBundleID,
+                  (expectedDocumentIdentifier == nil
+                    || context.documentIdentifier == expectedDocumentIdentifier) else { return nil }
             return context
         }
     }

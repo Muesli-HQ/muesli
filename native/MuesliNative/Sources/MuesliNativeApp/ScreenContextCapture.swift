@@ -10,6 +10,7 @@ struct DictationContext {
     let documentContext: String
     let selectedText: String
     let url: String?
+    let documentIdentifier: String?
     let ocrText: String
 }
 
@@ -28,6 +29,9 @@ enum DictationContextCapture {
         let base = capture()
         guard includeScreenOCR, CGPreflightScreenCaptureAccess() else { return base }
         let screenContext = await ScreenContextCapture.captureVisibleScreen(shouldCapture: shouldCaptureScreenOCR)
+        guard screenContext?.bundleID == base.bundleID,
+              (base.documentIdentifier == nil
+                || screenContext?.documentIdentifier == base.documentIdentifier) else { return base }
         let ocrText = screenContext?.ocrText.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !ocrText.isEmpty else { return base }
         return DictationContext(
@@ -36,6 +40,7 @@ enum DictationContextCapture {
             documentContext: base.documentContext,
             selectedText: base.selectedText,
             url: base.url,
+            documentIdentifier: base.documentIdentifier,
             ocrText: ocrText
         )
     }
@@ -56,6 +61,7 @@ enum DictationContextCapture {
         }
 
         let url = browserURL(for: app)
+        let documentIdentifier = focusedDocumentIdentifier(for: app)
 
         fputs("[muesli-native] dictation context: app=\(appName) docContext=\(docContext.count) chars selectedText=\(selectedText.count) chars url=\(url ?? "none")\n", stderr)
 
@@ -65,6 +71,7 @@ enum DictationContextCapture {
             documentContext: docContext,
             selectedText: selectedText,
             url: url,
+            documentIdentifier: documentIdentifier,
             ocrText: ""
         )
     }
@@ -192,7 +199,7 @@ enum DictationContextCapture {
         return browserBundleIDs.contains(bundleID)
     }
 
-    private static func browserURL(for app: NSRunningApplication?) -> String? {
+    static func browserURL(for app: NSRunningApplication?) -> String? {
         guard let app else { return nil }
         guard isBrowserApplication(app) else { return nil }
 
@@ -213,6 +220,25 @@ enum DictationContextCapture {
         }
         return nil
     }
+
+    /// Stable enough to bind async context capture to the document/window that
+    /// owned the original selection. Browsers usually expose AXDocument (URL);
+    /// native editors commonly expose a focused-window title instead.
+    static func focusedDocumentIdentifier(for app: NSRunningApplication?) -> String? {
+        guard let app else { return nil }
+        let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        var windowRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &windowRef) == .success,
+              let windowRef,
+              CFGetTypeID(windowRef) == AXUIElementGetTypeID() else { return nil }
+        let window = windowRef as! AXUIElement
+        for attribute in [kAXDocumentAttribute as String, kAXTitleAttribute as String] {
+            let value = axStringValue(window, attribute: attribute)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty { return String(value.prefix(500)) }
+        }
+        return nil
+    }
 }
 
 @MainActor
@@ -222,19 +248,22 @@ final class QuilSelectionSnapshot {
     private let element: AXUIElement
     private let selectedRange: CFRange?
     private let usesClipboardFallback: Bool
+    let documentIdentifier: String?
 
     private init(
         text: String,
         application: NSRunningApplication,
         element: AXUIElement,
         selectedRange: CFRange?,
-        usesClipboardFallback: Bool
+        usesClipboardFallback: Bool,
+        documentIdentifier: String?
     ) {
         self.text = text
         self.application = application
         self.element = element
         self.selectedRange = selectedRange
         self.usesClipboardFallback = usesClipboardFallback
+        self.documentIdentifier = documentIdentifier
     }
 
     static func capture() throws -> QuilSelectionSnapshot {
@@ -256,7 +285,8 @@ final class QuilSelectionSnapshot {
             application: application,
             element: element,
             selectedRange: DictationContextCapture.selectedTextRange(element),
-            usesClipboardFallback: usesClipboardFallback
+            usesClipboardFallback: usesClipboardFallback,
+            documentIdentifier: DictationContextCapture.focusedDocumentIdentifier(for: application)
         )
     }
 
@@ -264,7 +294,9 @@ final class QuilSelectionSnapshot {
         guard isTargetStillFocused(),
               let focused = DictationContextCapture.focusedUIElement(for: application) else { return false }
         if usesClipboardFallback {
-            return PasteController.copySelectedText() == text
+            // Google Docs does not expose its selection through AX. Re-copy once,
+            // immediately before replacement, rather than at every lifecycle guard.
+            return true
         }
         guard DictationContextCapture.selectedTextValue(in: focused) == text else { return false }
         guard let selectedRange else { return true }
@@ -273,13 +305,30 @@ final class QuilSelectionSnapshot {
             && currentRange.length == selectedRange.length
     }
 
+    func isStillCurrentForReplacement() -> Bool {
+        guard isStillCurrent() else { return false }
+        if usesClipboardFallback {
+            return PasteController.copySelectedText() == text
+        }
+        return true
+    }
+
+    func matches(context: DictationContext?) -> Bool {
+        guard let context else { return true }
+        guard context.bundleID == application.bundleIdentifier ?? "" else { return false }
+        guard let documentIdentifier else { return true }
+        return context.documentIdentifier == documentIdentifier
+    }
+
     /// Safe to call after Quill has staged its replacement on the clipboard.
     /// Full text equality is checked before staging; this last guard only ensures
     /// focus has not moved during the short paste dispatch delay.
     func isTargetStillFocused() -> Bool {
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier,
               let focused = DictationContextCapture.focusedUIElement(for: application) else { return false }
-        return CFEqual(focused, element)
+        guard CFEqual(focused, element) else { return false }
+        guard let documentIdentifier else { return true }
+        return DictationContextCapture.focusedDocumentIdentifier(for: application) == documentIdentifier
     }
 }
 
@@ -288,6 +337,7 @@ final class QuilSelectionSnapshot {
 struct ScreenContext {
     let appName: String
     let bundleID: String
+    let documentIdentifier: String?
     let ocrText: String
     let capturedAt: Date
 }
@@ -314,6 +364,7 @@ enum ScreenContextCapture {
         let app = NSWorkspace.shared.frontmostApplication
         let appName = app?.localizedName ?? "Unknown"
         let bundleID = app?.bundleIdentifier ?? ""
+        let documentIdentifier = DictationContextCapture.focusedDocumentIdentifier(for: app)
 
         let pid = app?.processIdentifier ?? 0
         let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[CFString: Any]] ?? []
@@ -345,6 +396,7 @@ enum ScreenContextCapture {
             return ScreenContext(
                 appName: appName,
                 bundleID: bundleID,
+                documentIdentifier: documentIdentifier,
                 ocrText: text,
                 capturedAt: Date()
             )

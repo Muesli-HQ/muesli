@@ -60,6 +60,14 @@ struct QuilTransformationTests {
         }
     }
 
+    @Test("Quill rewrite budgets exceed dictation cleanup budgets")
+    @available(macOS 15, *)
+    func rewriteBudgetsAllowLongReplacements() {
+        #expect(Qwen3PostProcessorConfig.quilMaxContextTokens > Qwen3PostProcessorConfig.maxContextTokens)
+        #expect(QuilModelPolicy.gemmaMaximumOutputTokens > Gemma4LiteRTTranscriber.maxCleanupOutputTokens)
+        #expect(QuilModelPolicy.remoteMaximumOutputTokens >= 10_000)
+    }
+
     @Test("output preserves requested Markdown, including code fences")
     func validatesMarkdownOutput() throws {
         #expect(try QuilTransformationOutput.validated("  - one\n- two  ") == "- one\n- two")
@@ -72,6 +80,15 @@ struct QuilTransformationTests {
     func rejectsEmptyOutput() {
         #expect(throws: QuilTransformationError.emptyResponse) {
             try QuilTransformationOutput.validated(" \n ")
+        }
+    }
+
+    @Test("oversized output reports a distinct safety error")
+    func rejectsOversizedOutput() {
+        #expect(throws: QuilTransformationError.responseTooLong(QuilTransformationOutput.maximumOutputCharacters)) {
+            try QuilTransformationOutput.validated(
+                String(repeating: "x", count: QuilTransformationOutput.maximumOutputCharacters + 1)
+            )
         }
     }
 

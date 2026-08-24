@@ -434,14 +434,17 @@ struct Gemma4LiteRTTranscriberTests {
         }
 
         let transcriber = Gemma4LiteRTTranscriber()
-        try await transcriber.prepare()
-        let result = try await transcriber.transcribe(wavURL: URL(fileURLWithPath: samplePath))
+        let result = try await transcriber.transcribe(
+            wavURL: URL(fileURLWithPath: samplePath),
+            model: .e2b
+        )
         #expect(!result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
         let cleanup = try await transcriber.cleanTranscript(
             "Um, this is teh final releese.",
             systemPrompt: PostProcessorOption.defaultSystemPrompt,
-            appContext: nil
+            appContext: nil,
+            model: .e2b
         )
         #expect(!cleanup.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         #expect(cleanup.text.localizedCaseInsensitiveContains("the final release"))

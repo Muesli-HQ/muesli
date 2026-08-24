@@ -127,8 +127,11 @@ final class HotkeyMonitor {
         guard !isRunning else { return }
 
         if isCombinationMode, registersCombinationGlobally {
-            startRegisteredCombination()
-            return
+            if startRegisteredCombination() {
+                startRegisteredCombinationEscapeMonitors()
+                return
+            }
+            fputs("[hotkey] Carbon registration failed; falling back to event monitors\n", stderr)
         }
 
         let hasListenAccess = CGPreflightListenEventAccess()
@@ -441,9 +444,10 @@ final class HotkeyMonitor {
         }
     }
 
-    private func startRegisteredCombination() {
+    @discardableResult
+    private func startRegisteredCombination() -> Bool {
         guard let keyCode = combinationKeyCode,
-              let modifiers = combinationModifiers else { return }
+              let modifiers = combinationModifiers else { return false }
         var eventTypes = [
             EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
             EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
@@ -456,7 +460,7 @@ final class HotkeyMonitor {
             Unmanaged.passUnretained(self).toOpaque(),
             &registeredHotKeyHandler
         )
-        guard status == noErr else { return }
+        guard status == noErr else { return false }
         let hotKeyID = EventHotKeyID(signature: 0x5155494C, id: 1) // "QUIL"
         guard RegisterEventHotKey(
             UInt32(keyCode),
@@ -468,7 +472,21 @@ final class HotkeyMonitor {
         ) == noErr else {
             RemoveEventHandler(registeredHotKeyHandler)
             registeredHotKeyHandler = nil
-            return
+            return false
+        }
+        return true
+    }
+
+    /// Carbon owns the registered combination, but it does not deliver Escape.
+    /// Keep narrow monitors so an active global Quill session remains cancellable.
+    private func startRegisteredCombinationEscapeMonitors() {
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard event.keyCode == 53 else { return }
+            _ = self?.handle(event)
+        }
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard event.keyCode == 53, let self else { return event }
+            return self.handle(event) ? nil : event
         }
     }
 
@@ -780,6 +798,10 @@ final class HotkeyMonitor {
     @discardableResult
     func handleEventForTests(_ event: NSEvent) -> Bool {
         handle(event)
+    }
+
+    func handleRegisteredHotKeyPressForTests() {
+        handleRegisteredHotKey(kind: UInt32(kEventHotKeyPressed))
     }
 }
 

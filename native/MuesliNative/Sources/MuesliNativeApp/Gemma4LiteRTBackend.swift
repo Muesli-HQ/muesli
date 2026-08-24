@@ -334,6 +334,8 @@ actor Gemma4LiteRTTranscriber {
 
     private var loadGeneration = 0
     private var loadWaiters: [CheckedContinuation<Void, Error>] = []
+    private var operationInProgress = false
+    private var operationWaiters: [CheckedContinuation<Void, Never>] = []
 
     enum TranscriberError: Error, LocalizedError, Equatable {
         case modelMissing(path: String)
@@ -381,16 +383,30 @@ actor Gemma4LiteRTTranscriber {
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
+        await acquireOperation()
+        defer { releaseOperation() }
+        try await prepareEngine(
+            model: model,
+            progress: progress,
+            progressSnapshot: progressSnapshot
+        )
+    }
+
+    private func prepareEngine(
+        model: Gemma4LiteRTModel,
+        progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
+    ) async throws {
         if engine != nil {
             if loadedModel == model { return }
-            shutdown()
+            shutdownEngine()
         }
         if isLoading {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 loadWaiters.append(continuation)
             }
             if loadedModel != model {
-                try await prepare(model: model, progress: progress, progressSnapshot: progressSnapshot)
+                try await prepareEngine(model: model, progress: progress, progressSnapshot: progressSnapshot)
             }
             return
         }
@@ -461,7 +477,17 @@ actor Gemma4LiteRTTranscriber {
         )
     }
 
-    func transcribe(wavURL: URL) async throws -> (text: String, processingTime: Double) {
+    func transcribe(
+        wavURL: URL,
+        model: Gemma4LiteRTModel
+    ) async throws -> (text: String, processingTime: Double) {
+        await acquireOperation()
+        defer { releaseOperation() }
+        try await prepareEngine(model: model)
+        return try transcribePrepared(wavURL: wavURL)
+    }
+
+    private func transcribePrepared(wavURL: URL) throws -> (text: String, processingTime: Double) {
         guard let engine else { throw TranscriberError.notLoaded }
         let audioDuration = try Self.validateAudioDuration(wavURL: wavURL)
         Gemma4LiteRTLogging.profile(
@@ -524,8 +550,20 @@ actor Gemma4LiteRTTranscriber {
     func cleanTranscript(
         _ text: String,
         systemPrompt: String,
-        appContext: String?
+        appContext: String?,
+        model: Gemma4LiteRTModel
     ) async throws -> (text: String, rawOutput: String, processingTime: Double) {
+        await acquireOperation()
+        defer { releaseOperation() }
+        try await prepareEngine(model: model)
+        return try cleanTranscriptPrepared(text, systemPrompt: systemPrompt, appContext: appContext)
+    }
+
+    private func cleanTranscriptPrepared(
+        _ text: String,
+        systemPrompt: String,
+        appContext: String?
+    ) throws -> (text: String, rawOutput: String, processingTime: Double) {
         guard let engine else { throw TranscriberError.notLoaded }
         let userInput = Qwen3PostProcessorConfig.formatInput(text, appContext: appContext)
         let effectiveSystemPrompt = TranscriptCleanupClient.systemPromptWithAppContextGuidance(
@@ -621,13 +659,33 @@ actor Gemma4LiteRTTranscriber {
         return (trimmed, rawOutput, elapsed)
     }
 
-    func generateText(systemPrompt: String, userPrompt: String) async throws -> String {
+    func generateText(
+        systemPrompt: String,
+        userPrompt: String,
+        model: Gemma4LiteRTModel,
+        maxOutputTokens: Int32 = Gemma4LiteRTTranscriber.maxCleanupOutputTokens
+    ) async throws -> String {
+        await acquireOperation()
+        defer { releaseOperation() }
+        try await prepareEngine(model: model)
+        return try generateTextPrepared(
+            systemPrompt: systemPrompt,
+            userPrompt: userPrompt,
+            maxOutputTokens: maxOutputTokens
+        )
+    }
+
+    private func generateTextPrepared(
+        systemPrompt: String,
+        userPrompt: String,
+        maxOutputTokens: Int32
+    ) throws -> String {
         guard let engine else { throw TranscriberError.notLoaded }
         guard let sessionConfig = litert_lm_session_config_create() else {
             throw TranscriberError.failedToCreateSessionConfig
         }
         defer { litert_lm_session_config_delete(sessionConfig) }
-        litert_lm_session_config_set_max_output_tokens(sessionConfig, Self.maxCleanupOutputTokens)
+        litert_lm_session_config_set_max_output_tokens(sessionConfig, maxOutputTokens)
         var sampler = LiteRtLmSamplerParams(
             type: kLiteRtLmSamplerTypeTopP,
             top_k: 1,
@@ -673,6 +731,10 @@ actor Gemma4LiteRTTranscriber {
     }
 
     func shutdown() {
+        shutdownEngine()
+    }
+
+    private func shutdownEngine() {
         loadGeneration += 1
         if let engine {
             litert_lm_engine_delete(engine)
@@ -681,6 +743,24 @@ actor Gemma4LiteRTTranscriber {
         loadedModel = nil
         isLoading = false
         completeLoadWaiters(throwing: TranscriberError.notLoaded)
+    }
+
+    private func acquireOperation() async {
+        if !operationInProgress {
+            operationInProgress = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            operationWaiters.append(continuation)
+        }
+    }
+
+    private func releaseOperation() {
+        if operationWaiters.isEmpty {
+            operationInProgress = false
+        } else {
+            operationWaiters.removeFirst().resume()
+        }
     }
 
     static func cleanTranscript(_ text: String) -> String {
