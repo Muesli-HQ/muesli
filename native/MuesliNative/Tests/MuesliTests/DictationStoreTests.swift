@@ -3407,6 +3407,39 @@ struct DictationStoreTests {
         #expect(try store.searchDictations(query: "bullet points").map(\.id).contains(dictationID))
     }
 
+    @Test("Quill generation at cursor persists its mode and spoken instruction")
+    func quilGenerationAtCursorHydrates() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_777_000_100)
+        let dictationID = try store.insertQuilDictation(
+            outputText: "Hi team, just a friendly reminder about tomorrow's meeting.",
+            originalText: "",
+            instruction: "Draft a friendly reminder about tomorrow's meeting",
+            backend: "gemma4LiteRT",
+            model: "gemma-4-e2b-it",
+            durationSeconds: 1.1,
+            targetAppName: "Mail",
+            targetAppBundleID: "com.apple.mail",
+            startedAt: now.addingTimeInterval(-1.1),
+            endedAt: now
+        )
+
+        let row = try #require(try store.dictation(id: dictationID))
+        #expect(row.source == "quil")
+        #expect(row.computerUseTrace?.events.map(\.kind) == [
+            "quil_mode",
+            "quil_instruction",
+            "quil_model",
+        ])
+        #expect(row.computerUseTrace?.events.map(\.body) == [
+            "No highlighted text — generated at cursor",
+            "Draft a friendly reminder about tomorrow's meeting",
+            "gemma4LiteRT · gemma-4-e2b-it",
+        ])
+        #expect(try store.searchDictations(query: "generated at cursor").map(\.id).contains(dictationID))
+        #expect(try store.searchDictations(query: "friendly reminder").map(\.id).contains(dictationID))
+    }
+
     @Test("insertComputerUseTrace replaces existing trace atomically")
     func insertComputerUseTraceReplacesExistingTrace() throws {
         let store = try makeStore()

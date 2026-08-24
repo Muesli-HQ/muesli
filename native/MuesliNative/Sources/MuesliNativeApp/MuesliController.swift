@@ -466,6 +466,7 @@ public final class MuesliController: NSObject {
     private var quilTask: Task<Void, Never>?
     private var quilTaskID: UUID?
     private var quilSelectionSnapshot: QuilSelectionSnapshot?
+    private var quilTargetCaptureError: Error?
     private var quilContextCaptureTask: Task<DictationContext?, Never>?
     private var computerUseFloatingStatusWorkItem: DispatchWorkItem?
     private var computerUseLastFloatingStatusAt = Date.distantPast
@@ -7936,15 +7937,8 @@ public final class MuesliController: NSObject {
 
     private func handleQuilPrepare() {
         guard canPrepareQuil else { return }
-        do {
-            let snapshot = try QuilSelectionSnapshot.capture()
-            quilSelectionSnapshot = snapshot
-            startQuilContextCapture(for: snapshot)
-        } catch {
-            presentQuilFailure(error)
-            quilHotkeyMonitor.cancelToggleMode()
-            return
-        }
+        quilSelectionSnapshot = nil
+        quilTargetCaptureError = nil
         meetingMonitor.suppressWhileActive()
         meetingMonitor.refreshState()
         setState(.preparing)
@@ -7954,20 +7948,6 @@ public final class MuesliController: NSObject {
 
     private func handleQuilStart() {
         guard canStartQuil else { return }
-        if quilSelectionSnapshot == nil {
-            do {
-                let snapshot = try QuilSelectionSnapshot.capture()
-                quilSelectionSnapshot = snapshot
-                startQuilContextCapture(for: snapshot)
-            } catch {
-                presentQuilFailure(error)
-                return
-            }
-        }
-        guard quilSelectionSnapshot?.isStillCurrent() == true else {
-            presentQuilFailure(QuilTransformationError.selectionChanged)
-            return
-        }
         quilStartedAt = Date()
         indicator.powerProvider = { [weak self] in
             self?.quilAudioSessionManager.currentPower() ?? -160
@@ -7979,6 +7959,20 @@ public final class MuesliController: NSObject {
             mediaPauseEnabled: false
         )
         activeQuilAudioSessionID = quilAudioSessionManager.currentSessionID
+    }
+
+    private func captureQuilTargetIfNeeded() {
+        if quilSelectionSnapshot == nil {
+            do {
+                let snapshot = try QuilSelectionSnapshot.capture()
+                quilSelectionSnapshot = snapshot
+                quilTargetCaptureError = nil
+                startQuilContextCapture(for: snapshot)
+            } catch {
+                quilTargetCaptureError = error
+                fputs("[quil] target capture deferred failure: \(error)\n", stderr)
+            }
+        }
     }
 
     private func handleQuilToggleStart() {
@@ -8017,7 +8011,7 @@ public final class MuesliController: NSObject {
     }
 
     private func finishQuilAudioStop(wavURL: URL?, startedAt: Date) {
-        guard let wavURL, let snapshot = quilSelectionSnapshot else {
+        guard let wavURL else {
             handleQuilCancel()
             return
         }
@@ -8025,6 +8019,11 @@ public final class MuesliController: NSObject {
         guard duration >= 0.3 else {
             try? FileManager.default.removeItem(at: wavURL)
             presentQuilFailure(QuilTransformationError.emptyInstruction)
+            return
+        }
+        guard let snapshot = quilSelectionSnapshot else {
+            try? FileManager.default.removeItem(at: wavURL)
+            presentQuilFailure(quilTargetCaptureError ?? QuilTransformationError.noTextTarget)
             return
         }
         guard snapshot.isStillCurrent() else {
@@ -8261,6 +8260,7 @@ public final class MuesliController: NSObject {
         pendingQuilStopSessionID = nil
         pendingQuilStopStartedAt = nil
         quilSelectionSnapshot = nil
+        quilTargetCaptureError = nil
         quilContextCaptureTask?.cancel()
         quilContextCaptureTask = nil
         quilHotkeyMonitor.cancelToggleMode()
@@ -9029,6 +9029,11 @@ public final class MuesliController: NSObject {
             SoundController.playQuillStart(
                 enabled: shouldPlayDictationLifecycleSounds && !isDictationTestMode
             )
+            // Mic activation is the primary Quill interaction. Discover the
+            // selection/insertion target only after the stream and activation cue
+            // are live, so AX or Google Docs clipboard fallback work cannot delay
+            // or suppress recording. A missing target is reported after release.
+            captureQuilTargetIfNeeded()
         case .speechDetected(let sessionID, _):
             guard activeQuilAudioSessionID == sessionID else { break }
         case .noAudioTimeout(let sessionID, _):

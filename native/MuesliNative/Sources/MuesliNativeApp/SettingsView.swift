@@ -989,8 +989,8 @@ struct SettingsView: View {
     private var quilSettingsSection: some View {
         settingsSection("Quill", icon: QuillIcon.image()) {
             settingsRow(
-                "Rewrite highlighted text",
-                description: "Use the Quill shortcut, speak an editing instruction, then release."
+                "Rewrite selected text",
+                description: "Highlight text to transform it. With no selection, Quill generates and pastes at the cursor."
             ) {
                 settingsSwitch(isOn: appState.config.enableQuilMode) { newValue in
                     _ = controller.updateQuilModeEnabled(newValue)

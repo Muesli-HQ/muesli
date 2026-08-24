@@ -305,7 +305,7 @@ final class QuilSelectionSnapshot {
         guard let application = NSWorkspace.shared.frontmostApplication,
               application.processIdentifier != ProcessInfo.processInfo.processIdentifier,
               let element = DictationContextCapture.focusedUIElement(for: application) else {
-            throw QuilTransformationError.noSelection
+            throw QuilTransformationError.noTextTarget
         }
         var text = DictationContextCapture.selectedTextValue(in: element)
         var usesClipboardFallback = false
@@ -313,7 +313,6 @@ final class QuilSelectionSnapshot {
             text = PasteController.copySelectedText() ?? ""
             usesClipboardFallback = !text.isEmpty
         }
-        guard !text.isEmpty else { throw QuilTransformationError.noSelection }
         return QuilSelectionSnapshot(
             text: text,
             application: application,

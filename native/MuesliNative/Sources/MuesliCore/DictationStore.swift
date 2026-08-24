@@ -448,11 +448,17 @@ public final class DictationStore {
                 finalStatus: "done",
                 finalMessage: "\(backend) · \(model)",
                 events: [
-                    ComputerUseTraceEvent(
-                        kind: "quil_original",
-                        title: "Original highlighted text",
-                        body: originalText
-                    ),
+                    originalText.isEmpty
+                        ? ComputerUseTraceEvent(
+                            kind: "quil_mode",
+                            title: "Input",
+                            body: "No highlighted text — generated at cursor"
+                        )
+                        : ComputerUseTraceEvent(
+                            kind: "quil_original",
+                            title: "Original highlighted text",
+                            body: originalText
+                        ),
                     ComputerUseTraceEvent(
                         kind: "quil_instruction",
                         title: "Spoken instruction",
