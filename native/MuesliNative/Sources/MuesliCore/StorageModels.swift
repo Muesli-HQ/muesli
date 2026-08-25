@@ -57,6 +57,9 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
     public var localSource: String?
     public var meetingStatus: MeetingStatus?
     public var engineIdentifier: String?
+    /// Raw ASR text for dictations, preserved across iCloud sync so the
+    /// pipeline inspector can re-run post-processing on the receiving device.
+    public var asrText: String?
     public var createdAt: Date
     public var updatedAt: Date
     public var startedAt: Date?
@@ -91,7 +94,8 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
         isDeleted: Bool = false,
         cloudChangeTag: String? = nil,
         cloudSystemFields: Data? = nil,
-        followUpToRecordName: String? = nil
+        followUpToRecordName: String? = nil,
+        asrText: String? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -114,6 +118,7 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
         self.cloudChangeTag = cloudChangeTag
         self.cloudSystemFields = cloudSystemFields
         self.followUpToRecordName = followUpToRecordName
+        self.asrText = asrText
     }
 }
 

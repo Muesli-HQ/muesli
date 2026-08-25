@@ -3502,7 +3502,7 @@ public final class DictationStore {
         let dictationSQL = """
         SELECT cloud_record_name, raw_text, app_context, timestamp, started_at, ended_at,
                duration_seconds, word_count, source, updated_at, deleted_at, cloud_change_tag,
-               cloud_system_fields
+               cloud_system_fields, asr_text
         FROM dictations
         WHERE cloud_record_name IN (\(placeholders))
         """
@@ -3816,7 +3816,7 @@ public final class DictationStore {
         let dictationSQL = """
         SELECT cloud_record_name, raw_text, app_context, timestamp, started_at, ended_at,
                duration_seconds, word_count, source, updated_at, deleted_at, cloud_change_tag,
-               cloud_system_fields
+               cloud_system_fields, asr_text
         FROM dictations
         WHERE sync_dirty = 1 AND cloud_record_name IS NOT NULL
         ORDER BY updated_at DESC, id DESC
@@ -3922,7 +3922,7 @@ public final class DictationStore {
         let dictationSQL = """
         SELECT cloud_record_name, raw_text, app_context, timestamp, started_at, ended_at,
                duration_seconds, word_count, source, updated_at, deleted_at, cloud_change_tag,
-               cloud_system_fields
+               cloud_system_fields, asr_text
         FROM dictations
         WHERE cloud_record_name IS NOT NULL
         ORDER BY updated_at DESC, id DESC
@@ -4434,7 +4434,8 @@ public final class DictationStore {
             wordCount: Int(sqlite3_column_int(statement, 7)),
             isDeleted: sqlite3_column_type(statement, 10) != SQLITE_NULL,
             cloudChangeTag: optionalStringColumn(statement, index: 11),
-            cloudSystemFields: optionalDataColumn(statement, index: 12)
+            cloudSystemFields: optionalDataColumn(statement, index: 12),
+            asrText: optionalStringColumn(statement, index: 13)
         )
     }
 
@@ -4596,9 +4597,9 @@ public final class DictationStore {
         INSERT INTO dictations (
             timestamp, duration_seconds, raw_text, app_context, word_count, source,
             started_at, ended_at, updated_at, deleted_at, cloud_record_name,
-            cloud_change_tag, cloud_system_fields, last_synced_at, sync_dirty
+            cloud_change_tag, cloud_system_fields, last_synced_at, sync_dirty, asr_text
         )
-        VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+        VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
         ON CONFLICT(cloud_record_name) DO UPDATE SET
             timestamp = excluded.timestamp,
             duration_seconds = excluded.duration_seconds,
@@ -4612,7 +4613,8 @@ public final class DictationStore {
             cloud_change_tag = excluded.cloud_change_tag,
             cloud_system_fields = excluded.cloud_system_fields,
             last_synced_at = excluded.last_synced_at,
-            sync_dirty = 0
+            sync_dirty = 0,
+            asr_text = COALESCE(excluded.asr_text, dictations.asr_text)
         WHERE excluded.updated_at > dictations.updated_at
            OR (excluded.updated_at = dictations.updated_at AND dictations.sync_dirty = 0)
         """
@@ -4636,6 +4638,7 @@ public final class DictationStore {
         bindOptionalText(record.cloudChangeTag, at: 11, statement: statement)
         bindOptionalBlob(record.cloudSystemFields, at: 12, statement: statement)
         sqlite3_bind_double(statement, 13, Date().timeIntervalSince1970)
+        bindOptionalText(record.asrText, at: 14, statement: statement)
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
