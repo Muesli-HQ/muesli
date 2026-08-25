@@ -15,6 +15,12 @@ struct DictationContext {
 }
 
 enum DictationContextCapture {
+    struct FocusedWindowSnapshot {
+        let documentIdentifier: String?
+        let title: String
+        let frame: CGRect?
+    }
+
     private static let browserBundleIDs: Set<String> = [
         "com.google.Chrome", "com.apple.Safari", "company.thebrowser.Browser",
         "org.mozilla.firefox", "com.brave.Browser", "com.microsoft.edgemac",
@@ -256,6 +262,16 @@ enum DictationContextCapture {
         for app: NSRunningApplication?,
         allowTitleFallback: Bool = true
     ) -> String? {
+        focusedWindowSnapshot(
+            for: app,
+            allowTitleFallback: allowTitleFallback
+        )?.documentIdentifier
+    }
+
+    static func focusedWindowSnapshot(
+        for app: NSRunningApplication?,
+        allowTitleFallback: Bool = true
+    ) -> FocusedWindowSnapshot? {
         guard let app else { return nil }
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
         var windowRef: CFTypeRef?
@@ -263,15 +279,47 @@ enum DictationContextCapture {
               let windowRef,
               CFGetTypeID(windowRef) == AXUIElementGetTypeID() else { return nil }
         let window = windowRef as! AXUIElement
+        let title = axStringValue(window, attribute: kAXTitleAttribute as String)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let attributes = allowTitleFallback
             ? [kAXDocumentAttribute as String, kAXTitleAttribute as String]
             : [kAXDocumentAttribute as String]
+        var documentIdentifier: String?
         for attribute in attributes {
             let value = axStringValue(window, attribute: attribute)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !value.isEmpty { return String(value.prefix(500)) }
+            if !value.isEmpty {
+                documentIdentifier = String(value.prefix(500))
+                break
+            }
         }
-        return nil
+
+        var positionRef: CFTypeRef?
+        var sizeRef: CFTypeRef?
+        var frame: CGRect?
+        if AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &positionRef) == .success,
+           AXUIElementCopyAttributeValue(window, kAXSizeAttribute as CFString, &sizeRef) == .success,
+           let positionRef,
+           let sizeRef,
+           CFGetTypeID(positionRef) == AXValueGetTypeID(),
+           CFGetTypeID(sizeRef) == AXValueGetTypeID() {
+            let positionValue = positionRef as! AXValue
+            let sizeValue = sizeRef as! AXValue
+            var position = CGPoint.zero
+            var size = CGSize.zero
+            if AXValueGetValue(positionValue, .cgPoint, &position),
+               AXValueGetValue(sizeValue, .cgSize, &size),
+               size.width > 0,
+               size.height > 0 {
+                frame = CGRect(origin: position, size: size)
+            }
+        }
+
+        return FocusedWindowSnapshot(
+            documentIdentifier: documentIdentifier,
+            title: title,
+            frame: frame
+        )
     }
 }
 
@@ -380,6 +428,12 @@ struct ScreenContext {
 }
 
 enum ScreenContextCapture {
+    struct WindowCandidate {
+        let id: CGWindowID
+        let frame: CGRect
+        let title: String
+    }
+
 
     /// Captures the frontmost app window and runs on-device OCR. The screenshot itself
     /// is not persisted or sent to cleanup backends; only recognized text is used.
@@ -412,20 +466,23 @@ enum ScreenContextCapture {
         let app = NSWorkspace.shared.frontmostApplication
         let appName = app?.localizedName ?? "Unknown"
         let bundleID = app?.bundleIdentifier ?? ""
-        let documentIdentifier = DictationContextCapture.focusedDocumentIdentifier(
+        guard let focusedWindow = DictationContextCapture.focusedWindowSnapshot(
             for: app,
             allowTitleFallback: allowTitleFallback
-        )
+        ), let focusedFrame = focusedWindow.frame else {
+            fputs("[muesli-native] screen context: focused window is not available for \(appName)\n", stderr)
+            return nil
+        }
 
         let pid = app?.processIdentifier ?? 0
         let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[CFString: Any]] ?? []
-        let appWindow = windowList.first(where: { dict in
-            guard let ownerPID = dict[kCGWindowOwnerPID] as? Int32, ownerPID == pid else { return false }
-            guard let layer = dict[kCGWindowLayer] as? Int, layer == 0 else { return false }
-            return true
-        })
-        guard let windowID = appWindow?[kCGWindowNumber] as? CGWindowID else {
-            fputs("[muesli-native] screen context: no window found for \(appName)\n", stderr)
+        let candidates = windowList.compactMap { windowCandidate(from: $0, ownerPID: pid) }
+        guard let windowID = focusedWindowID(
+            from: candidates,
+            focusedFrame: focusedFrame,
+            focusedTitle: focusedWindow.title
+        ) else {
+            fputs("[muesli-native] screen context: focused window could not be bound for \(appName)\n", stderr)
             return nil
         }
         if let shouldCapture, !(await shouldCapture()) {
@@ -447,12 +504,89 @@ enum ScreenContextCapture {
             return ScreenContext(
                 appName: appName,
                 bundleID: bundleID,
-                documentIdentifier: documentIdentifier,
+                documentIdentifier: focusedWindow.documentIdentifier,
                 ocrText: text,
                 capturedAt: Date()
             )
         } catch {
             fputs("[muesli-native] screen context: \(logLabel) failed: \(error)\n", stderr)
+            return nil
+        }
+    }
+
+    static func focusedWindowID(
+        from candidates: [WindowCandidate],
+        focusedFrame: CGRect,
+        focusedTitle: String
+    ) -> CGWindowID? {
+        let frameMatches = candidates.filter { framesRepresentSameWindow($0.frame, focusedFrame) }
+        guard !frameMatches.isEmpty else { return nil }
+
+        let normalizedFocusedTitle = normalizedWindowTitle(focusedTitle)
+        if !normalizedFocusedTitle.isEmpty {
+            let titleMatches = frameMatches.filter {
+                normalizedWindowTitle($0.title) == normalizedFocusedTitle
+            }
+            if titleMatches.count == 1 {
+                return titleMatches[0].id
+            }
+            if titleMatches.count > 1 {
+                return nil
+            }
+        }
+
+        guard frameMatches.count == 1 else { return nil }
+        return frameMatches[0].id
+    }
+
+    private static func windowCandidate(
+        from info: [CFString: Any],
+        ownerPID: pid_t
+    ) -> WindowCandidate? {
+        guard let candidatePID = numericValue(info[kCGWindowOwnerPID]),
+              pid_t(candidatePID) == ownerPID,
+              let layer = numericValue(info[kCGWindowLayer]),
+              Int(layer) == 0,
+              let id = numericValue(info[kCGWindowNumber]),
+              let bounds = info[kCGWindowBounds] as? [String: Any],
+              let x = numericValue(bounds["X"]),
+              let y = numericValue(bounds["Y"]),
+              let width = numericValue(bounds["Width"]),
+              let height = numericValue(bounds["Height"]),
+              width > 0,
+              height > 0 else { return nil }
+        return WindowCandidate(
+            id: CGWindowID(id),
+            frame: CGRect(x: x, y: y, width: width, height: height),
+            title: info[kCGWindowName] as? String ?? ""
+        )
+    }
+
+    private static func framesRepresentSameWindow(_ candidate: CGRect, _ focused: CGRect) -> Bool {
+        let coordinateTolerance: CGFloat = 12
+        let sizeTolerance: CGFloat = 18
+        return abs(candidate.minX - focused.minX) <= coordinateTolerance
+            && abs(candidate.minY - focused.minY) <= coordinateTolerance
+            && abs(candidate.width - focused.width) <= sizeTolerance
+            && abs(candidate.height - focused.height) <= sizeTolerance
+    }
+
+    private static func normalizedWindowTitle(_ title: String) -> String {
+        title.trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+    }
+
+    private static func numericValue(_ value: Any?) -> CGFloat? {
+        switch value {
+        case let number as NSNumber:
+            return CGFloat(truncating: number)
+        case let value as CGFloat:
+            return value
+        case let value as Double:
+            return CGFloat(value)
+        case let value as Int:
+            return CGFloat(value)
+        default:
             return nil
         }
     }

@@ -1491,6 +1491,54 @@ struct AppConfigTests {
         ))
     }
 
+    @Test("screen OCR binds to the focused accessibility window")
+    func screenOCRBindsToFocusedAccessibilityWindow() {
+        let focusedFrame = CGRect(x: 500, y: 80, width: 900, height: 700)
+        let candidates = [
+            ScreenContextCapture.WindowCandidate(
+                id: 41,
+                frame: CGRect(x: 20, y: 80, width: 900, height: 700),
+                title: "Unrelated document"
+            ),
+            ScreenContextCapture.WindowCandidate(
+                id: 42,
+                frame: focusedFrame,
+                title: "Focused document"
+            ),
+        ]
+
+        #expect(ScreenContextCapture.focusedWindowID(
+            from: candidates,
+            focusedFrame: focusedFrame,
+            focusedTitle: "Focused document"
+        ) == 42)
+        #expect(ScreenContextCapture.focusedWindowID(
+            from: candidates,
+            focusedFrame: CGRect(x: 1_500, y: 80, width: 900, height: 700),
+            focusedTitle: "Missing document"
+        ) == nil)
+
+        let ambiguous = [
+            ScreenContextCapture.WindowCandidate(id: 51, frame: focusedFrame, title: ""),
+            ScreenContextCapture.WindowCandidate(id: 52, frame: focusedFrame, title: ""),
+        ]
+        #expect(ScreenContextCapture.focusedWindowID(
+            from: ambiguous,
+            focusedFrame: focusedFrame,
+            focusedTitle: ""
+        ) == nil)
+
+        let titleDisambiguated = [
+            ScreenContextCapture.WindowCandidate(id: 61, frame: focusedFrame, title: "Other document"),
+            ScreenContextCapture.WindowCandidate(id: 62, frame: focusedFrame, title: "Focused document"),
+        ]
+        #expect(ScreenContextCapture.focusedWindowID(
+            from: titleDisambiguated,
+            focusedFrame: focusedFrame,
+            focusedTitle: "focused document"
+        ) == 62)
+    }
+
     @Test("post processor input caps app context")
     func postProcessorInputCapsAppContext() {
         let prompt = Qwen3PostProcessorConfig.formatInput(
