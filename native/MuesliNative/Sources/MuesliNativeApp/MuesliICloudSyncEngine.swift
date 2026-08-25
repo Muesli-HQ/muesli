@@ -1483,6 +1483,67 @@ final class MuesliICloudSyncEngine {
         return false
     }
 
+    /// CKSyncEngine reports record conflicts as a top-level partial failure even
+    /// after `sentRecordZoneChanges` has delivered the individual failures to the
+    /// delegate. A reset-and-reconnect commonly produces this shape because the
+    /// local rows keep stable record IDs while their CloudKit system fields are
+    /// intentionally cleared. Only swallow batches made entirely of resolved
+    /// conflicts and dependent batch failures; any unrelated error remains fatal.
+    static func isResolvedRecordConflictBatch(_ error: Error) -> Bool {
+        let classification = recordConflictBatchClassification(error)
+        return classification.containsConflict && classification.containsOnlyHandledCodes
+    }
+
+    private static func recordConflictBatchClassification(
+        _ error: Error,
+        depth: Int = 0
+    ) -> (containsConflict: Bool, containsOnlyHandledCodes: Bool) {
+        guard depth < 8 else { return (false, false) }
+
+        if let ckError = error as? CKError {
+            switch ckError.code {
+            case .serverRecordChanged:
+                return (true, true)
+            case .batchRequestFailed:
+                return (false, true)
+            case .partialFailure:
+                guard let partialErrors = ckError.partialErrorsByItemID?.values,
+                      !partialErrors.isEmpty else {
+                    return (false, false)
+                }
+                var containsConflict = false
+                for partialError in partialErrors {
+                    let nested = recordConflictBatchClassification(
+                        partialError,
+                        depth: depth + 1
+                    )
+                    guard nested.containsOnlyHandledCodes else { return (false, false) }
+                    containsConflict = containsConflict || nested.containsConflict
+                }
+                return (containsConflict, true)
+            default:
+                return (false, false)
+            }
+        }
+
+        let nsError = error as NSError
+        if nsError.domain == CKError.errorDomain,
+           let code = CKError.Code(rawValue: nsError.code) {
+            switch code {
+            case .serverRecordChanged:
+                return (true, true)
+            case .batchRequestFailed:
+                return (false, true)
+            default:
+                break
+            }
+        }
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? Error {
+            return recordConflictBatchClassification(underlying, depth: depth + 1)
+        }
+        return (false, false)
+    }
+
     static func isChangeTokenExpired(_ error: Error) -> Bool {
         if let ckError = error as? CKError {
             if ckError.code == .changeTokenExpired {

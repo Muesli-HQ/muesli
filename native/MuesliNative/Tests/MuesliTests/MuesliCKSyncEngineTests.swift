@@ -286,6 +286,34 @@ struct MuesliCKSyncEngineTests {
         #expect(!MuesliICloudSyncEngine.isMissingProvenanceRecord(mixed))
     }
 
+    @Test("reset conflicts continue only when every batch error is already handled")
+    func resetConflictBatchClassificationIsStrict() {
+        let firstID = CKRecord.ID(recordName: "stable-first")
+        let secondID = CKRecord.ID(recordName: "stable-second")
+        let conflictOnly = CKError(.partialFailure, userInfo: [
+            CKPartialErrorsByItemIDKey: [
+                firstID: CKError(.serverRecordChanged),
+                secondID: CKError(.batchRequestFailed),
+            ],
+        ])
+        let mixedFailure = CKError(.partialFailure, userInfo: [
+            CKPartialErrorsByItemIDKey: [
+                firstID: CKError(.serverRecordChanged),
+                secondID: CKError(.networkUnavailable),
+            ],
+        ])
+        let dependentFailureOnly = CKError(.partialFailure, userInfo: [
+            CKPartialErrorsByItemIDKey: [
+                firstID: CKError(.batchRequestFailed),
+            ],
+        ])
+
+        #expect(MuesliICloudSyncEngine.isResolvedRecordConflictBatch(conflictOnly))
+        #expect(MuesliICloudSyncEngine.isResolvedRecordConflictBatch(CKError(.serverRecordChanged)))
+        #expect(!MuesliICloudSyncEngine.isResolvedRecordConflictBatch(mixedFailure))
+        #expect(!MuesliICloudSyncEngine.isResolvedRecordConflictBatch(dependentFailureOnly))
+    }
+
     @Test("provenance classification returns only requested correctly typed stable IDs")
     func provenanceClassificationIsExactAndContentFree() throws {
         let zoneID = MuesliICloudSyncEngine.Schema.syncZoneID

@@ -248,7 +248,20 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
                     let options = CKSyncEngine.SendChangesOptions(
                         scope: .zoneIDs([MuesliICloudSyncEngine.Schema.syncZoneID])
                     )
-                    try await syncEngine.sendChanges(options)
+                    do {
+                        try await syncEngine.sendChanges(options)
+                    } catch {
+                        // Resetting the local account link deliberately clears
+                        // CloudKit system fields and requeues the same stable IDs.
+                        // The first save can therefore return serverRecordChanged
+                        // (plus batchRequestFailed siblings). The delegate has
+                        // already resolved each returned conflict or left it in the
+                        // durable outbox, so this batch is progress to be retried,
+                        // not a user-visible sync failure.
+                        guard MuesliICloudSyncEngine.isResolvedRecordConflictBatch(error) else {
+                            throw error
+                        }
+                    }
                 }
             },
             fetch: {
