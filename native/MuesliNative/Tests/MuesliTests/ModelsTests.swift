@@ -1893,61 +1893,30 @@ struct HotkeyMonitorTests {
         #expect(cancelCount == 1)
     }
 
-    @Test("local monitor skips fresh hotkey starts while editing text")
+    @Test("CGEventTap consumes Escape during active hold recording")
     @MainActor
-    func localMonitorSkipsFreshHotkeyStartsWhileEditingText() async throws {
+    func cgeventtapConsumesEscapeDuringActiveHold() async throws {
         let monitor = HotkeyMonitor()
-        let textView = NSTextView()
-
-        #expect(
-            monitor.shouldHandleLocalEventForTests(
-                type: .flagsChanged,
-                keyCode: 55,
-                firstResponder: textView
-            ) == false
-        )
-    }
-
-    @Test("local monitor preserves key-up cleanup after hotkey session is armed")
-    @MainActor
-    func localMonitorPreservesKeyUpCleanupAfterHotkeySessionIsArmed() async throws {
-        let monitor = HotkeyMonitor()
-        let textView = NSTextView()
-        var stopCount = 0
-        monitor.onStop = {
-            stopCount += 1
+        var cancelCount = 0
+        monitor.onCancel = {
+            cancelCount += 1
         }
 
         monitor.setHoldRecordingActiveForTests()
+        let consumed = monitor.handleKeyDown(keyCode: 53)
 
-        #expect(
-            monitor.shouldHandleLocalEventForTests(
-                type: .flagsChanged,
-                keyCode: 55,
-                firstResponder: textView
-            ) == true
-        )
-
-        monitor.handleFlagsChanged(keyCode: 55, flags: [])
-
-        #expect(stopCount == 1)
+        #expect(consumed == true)
+        #expect(cancelCount == 1)
     }
 
-    @Test("local monitor still lets escape cancel active hold dictation while editing text")
+    @Test("CGEventTap does not consume keys when idle")
     @MainActor
-    func localMonitorLetsEscapeCancelActiveHoldDictationWhileEditingText() async throws {
+    func cgeventtapDoesNotConsumeWhenIdle() async throws {
         let monitor = HotkeyMonitor()
-        let textView = NSTextView()
 
-        monitor.setHoldRecordingActiveForTests()
-
-        #expect(
-            monitor.shouldHandleLocalEventForTests(
-                type: .keyDown,
-                keyCode: 53,
-                firstResponder: textView
-            ) == true
-        )
+        // When idle, Escape should not be consumed
+        let consumed = monitor.handleKeyDown(keyCode: 53)
+        #expect(consumed == false)
     }
 
     @Test("trigger threshold derives prepare and start delays")

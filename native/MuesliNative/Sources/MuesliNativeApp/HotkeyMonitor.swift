@@ -43,8 +43,8 @@ final class HotkeyMonitor {
         combinationModifiers != nil && combinationKeyCode != nil
     }
 
-    private var globalMonitor: Any?
-    private var localMonitor: Any?
+    private var eventTap: CFMachPort?
+    private var runLoopSource: CFRunLoopSource?
     private var prepareWorkItem: DispatchWorkItem?
     private var startWorkItem: DispatchWorkItem?
     private var armCancelWorkItem: DispatchWorkItem?
@@ -100,8 +100,13 @@ final class HotkeyMonitor {
     }
 
     func start() {
-        guard globalMonitor == nil, localMonitor == nil else { return }
+        guard eventTap == nil else { return }
 
+        // CGEventTap with .defaultTap can both observe AND consume events.
+        // This replaces the previous dual NSEvent monitor approach (global
+        // observe-only + local consume) with a single tap that handles all
+        // apps uniformly. Requires Accessibility permission (already requested
+        // during onboarding).
         let hasListenAccess = CGPreflightListenEventAccess()
         fputs("[hotkey] listen event access: \(hasListenAccess)\n", stderr)
         if !hasListenAccess {
@@ -109,36 +114,69 @@ final class HotkeyMonitor {
             fputs("[hotkey] requested listen event access: \(requested)\n", stderr)
         }
 
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged, .keyDown, .keyUp]) { [weak self] event in
-            self?.handle(event)
-        }
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .keyDown, .keyUp]) { [weak self] event in
-            guard let self else { return event }
-            if self.shouldHandleLocalEvent(event) {
-                let consumed = self.handle(event)
-                if consumed { return nil }
-            }
-            return event
+        let eventMask = (1 << CGEventType.flagsChanged.rawValue)
+            | (1 << CGEventType.keyDown.rawValue)
+            | (1 << CGEventType.keyUp.rawValue)
+
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: CGEventMask(eventMask),
+            callback: { proxy, type, event, userInfo in
+                guard let userInfo else { return Unmanaged.passUnretained(event) }
+                let monitor = Unmanaged<HotkeyMonitor>.fromOpaque(userInfo).takeUnretainedValue()
+                
+                // The system can disable the tap if the app becomes unresponsive
+                // or after a timeout. Re-enable it automatically.
+                if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                    if let tap = monitor.eventTap {
+                        CGEvent.tapEnable(tap: tap, enable: true)
+                        fputs("[hotkey] CGEventTap re-enabled after timeout\n", stderr)
+                    }
+                    return Unmanaged.passUnretained(event)
+                }
+                
+                // Convert CGEvent to NSEvent for the existing handling logic.
+                guard let nsEvent = NSEvent(cgEvent: event) else {
+                    return Unmanaged.passUnretained(event)
+                }
+                
+                let consumed = monitor.handle(nsEvent)
+                if consumed {
+                    // Returning nil consumes the event — it never reaches
+                    // the frontmost app. This is the key capability that
+                    // NSEvent.addGlobalMonitorForEvents cannot provide.
+                    return nil
+                }
+                return Unmanaged.passUnretained(event)
+            },
+            userInfo: Unmanaged.passUnretained(self).toOpaque()
+        ) else {
+            fputs("[hotkey] failed to create CGEventTap\n", stderr)
+            return
         }
 
-        if globalMonitor != nil || localMonitor != nil {
-            fputs("[hotkey] event monitors started\n", stderr)
-        } else {
-            fputs("[hotkey] failed to start event monitors\n", stderr)
-        }
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+
+        eventTap = tap
+        runLoopSource = source
+        fputs("[hotkey] CGEventTap started\n", stderr)
     }
 
     func stop() {
         finishActiveSessionBeforeReconfigure()
         cancelTimers()
-        if let globalMonitor {
-            NSEvent.removeMonitor(globalMonitor)
+        if let tap = eventTap {
+            CGEvent.tapEnable(tap: tap, enable: false)
         }
-        if let localMonitor {
-            NSEvent.removeMonitor(localMonitor)
+        if let source = runLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
         }
-        globalMonitor = nil
-        localMonitor = nil
+        eventTap = nil
+        runLoopSource = nil
         targetKeyDown = false
         otherKeyPressed = false
         armed = false
@@ -240,7 +278,7 @@ final class HotkeyMonitor {
     }
 
     var isRunning: Bool {
-        globalMonitor != nil || localMonitor != nil
+        eventTap != nil
     }
 
     var isToggleRecording: Bool {
@@ -255,8 +293,11 @@ final class HotkeyMonitor {
         switch event.type {
         case .flagsChanged:
             handleFlagsChanged(keyCode: event.keyCode, flags: event.modifierFlags)
+            // Flags changes are never consumed — the modifier key should still
+            // reach the frontmost app so the OS maintains correct modifier state.
+            return false
         case .keyDown:
-            handleKeyDown(keyCode: event.keyCode)
+            return handleKeyDown(keyCode: event.keyCode)
         default:
             break
         }
@@ -354,31 +395,6 @@ final class HotkeyMonitor {
         }
     }
 
-
-    private func shouldHandleLocalEvent(_ event: NSEvent) -> Bool {
-        shouldHandleLocalEvent(
-            type: event.type,
-            keyCode: event.keyCode,
-            firstResponder: NSApp.keyWindow?.firstResponder
-        )
-    }
-
-    private func shouldHandleLocalEvent(
-        type: NSEvent.EventType,
-        keyCode: UInt16,
-        firstResponder: NSResponder?
-    ) -> Bool {
-        let isTextEditing = firstResponder is NSTextView || firstResponder is NSTextField
-        guard isTextEditing else { return true }
-
-        // Text editing owns fresh hotkey starts, but an already-armed hotkey
-        // session must still receive key-up/Escape cleanup events.
-        if targetKeyDown || armed || prepared || active || toggleActive || combinationKeyDown {
-            return true
-        }
-
-        return type == .keyDown && keyCode == 53
-    }
 
     func handleFlagsChanged(keyCode: UInt16, flags: NSEvent.ModifierFlags) {
         if keyCode == targetKeyCode {
@@ -491,7 +507,8 @@ final class HotkeyMonitor {
         }
     }
 
-    func handleKeyDown(keyCode: UInt16) {
+    @discardableResult
+    func handleKeyDown(keyCode: UInt16) -> Bool {
         // Escape cancels any active recording
         if keyCode == 53 {
             if toggleActive {
@@ -499,7 +516,7 @@ final class HotkeyMonitor {
                 toggleActive = false
                 cancelTimers()
                 onCancel?()
-                return
+                return true
             }
             if active {
                 fputs("[hotkey] escape → cancel hold\n", stderr)
@@ -509,7 +526,7 @@ final class HotkeyMonitor {
                 armed = false
                 cancelTimers()
                 onCancel?()
-                return
+                return true
             }
             if armed || prepared {
                 fputs("[hotkey] escape → cancel armed hold\n", stderr)
@@ -518,8 +535,9 @@ final class HotkeyMonitor {
                 prepared = false
                 cancelTimers()
                 onCancel?()
+                return true
             }
-            return
+            return false
         }
 
         if targetKeyDown && !toggleActive {
@@ -540,8 +558,10 @@ final class HotkeyMonitor {
                 } else if wasArmed {
                     onCancel?()
                 }
+                return true
             }
         }
+        return false
     }
 
     private func scheduleTimers() {
@@ -619,14 +639,6 @@ final class HotkeyMonitor {
     func setHoldRecordingActiveForTests() {
         targetKeyDown = true
         active = true
-    }
-
-    func shouldHandleLocalEventForTests(
-        type: NSEvent.EventType,
-        keyCode: UInt16,
-        firstResponder: NSResponder?
-    ) -> Bool {
-        shouldHandleLocalEvent(type: type, keyCode: keyCode, firstResponder: firstResponder)
     }
 
     @discardableResult
