@@ -301,9 +301,22 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
         _ = try await prepareEngine()
     }
 
+    /// Validates the account and prepares the constant sync zone without
+    /// constructing CKSyncEngine. QR pairing uses the legacy companion record,
+    /// so the automatically syncing text engine should not start until the
+    /// companion has been confirmed.
+    func prepareForBridgeActivation() async throws {
+        try await preparePreflightIfNeeded()
+    }
+
     private func prepareEngine() async throws -> CKSyncEngine {
+        try await preparePreflightIfNeeded()
+        return try makeEngineIfNeeded()
+    }
+
+    private func preparePreflightIfNeeded() async throws {
         if !preparationState.requiresPreparation {
-            return try makeEngineIfNeeded()
+            return
         }
 
         let generation = preparationGeneration
@@ -351,7 +364,6 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
             guard preparationState.isPrepared else {
                 throw CancellationError()
             }
-            return try makeEngineIfNeeded()
         } catch {
             if preparationTaskID == taskID {
                 preparationTask = nil

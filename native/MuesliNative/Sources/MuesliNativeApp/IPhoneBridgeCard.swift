@@ -124,7 +124,6 @@ enum ICloudSyncDisplayStatePolicy {
 }
 
 enum ICloudBridgeInitialSyncFailureAction: Equatable {
-    case waitForCompanion
     case retryNow
     case fail
 }
@@ -134,8 +133,7 @@ enum ICloudBridgeInitialSyncFailurePolicy {
         isActivationPending: Bool,
         isRetryAvailable: Bool,
         isRecoverableFailure: Bool,
-        hasCompanionDevice: Bool,
-        companionDiscoveryState: ICloudBridgeCompanionDiscoveryState
+        hasCompanionDevice: Bool
     ) -> ICloudBridgeInitialSyncFailureAction {
         guard isActivationPending,
               isRetryAvailable,
@@ -145,7 +143,35 @@ enum ICloudBridgeInitialSyncFailurePolicy {
         if hasCompanionDevice {
             return .retryNow
         }
-        return companionDiscoveryState == .waiting ? .waitForCompanion : .fail
+        return .fail
+    }
+}
+
+enum ICloudBridgeActivationSyncAction: Equatable {
+    case waitForCompanion
+    case startSync
+}
+
+enum ICloudBridgeActivationSyncPolicy {
+    static func action(
+        isActivationPending: Bool,
+        hasCompanionDevice: Bool
+    ) -> ICloudBridgeActivationSyncAction {
+        isActivationPending && !hasCompanionDevice
+            ? .waitForCompanion
+            : .startSync
+    }
+
+    static func shouldStartAfterCompanionDiscovery(
+        foundCompanion: Bool,
+        previousDiscoveryState: ICloudBridgeCompanionDiscoveryState,
+        isActivationPending: Bool,
+        isSyncEnabled: Bool
+    ) -> Bool {
+        foundCompanion
+            && previousDiscoveryState == .waiting
+            && isActivationPending
+            && isSyncEnabled
     }
 }
 

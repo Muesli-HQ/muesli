@@ -279,21 +279,53 @@ struct ICloudBridgeWorkingCopyTests {
         ) == .syncing)
     }
 
-    @Test("initial sync waits for pairing before its single retry")
-    func initialSyncFailureWaitsForCompanion() {
-        #expect(ICloudBridgeInitialSyncFailurePolicy.action(
+    @Test("initial activation waits for pairing before its first sync")
+    func initialActivationWaitsForCompanion() {
+        #expect(ICloudBridgeActivationSyncPolicy.action(
             isActivationPending: true,
-            isRetryAvailable: true,
-            isRecoverableFailure: true,
-            hasCompanionDevice: false,
-            companionDiscoveryState: .waiting
+            hasCompanionDevice: false
         ) == .waitForCompanion)
+        #expect(ICloudBridgeActivationSyncPolicy.action(
+            isActivationPending: true,
+            hasCompanionDevice: true
+        ) == .startSync)
+        #expect(ICloudBridgeActivationSyncPolicy.action(
+            isActivationPending: false,
+            hasCompanionDevice: false
+        ) == .startSync)
+        #expect(ICloudBridgeActivationSyncPolicy.shouldStartAfterCompanionDiscovery(
+            foundCompanion: true,
+            previousDiscoveryState: .waiting,
+            isActivationPending: true,
+            isSyncEnabled: true
+        ))
+        #expect(!ICloudBridgeActivationSyncPolicy.shouldStartAfterCompanionDiscovery(
+            foundCompanion: true,
+            previousDiscoveryState: .idle,
+            isActivationPending: true,
+            isSyncEnabled: true
+        ))
+        #expect(!ICloudBridgeActivationSyncPolicy.shouldStartAfterCompanionDiscovery(
+            foundCompanion: false,
+            previousDiscoveryState: .waiting,
+            isActivationPending: true,
+            isSyncEnabled: true
+        ))
+    }
+
+    @Test("post-link initial sync gets one transient retry")
+    func initialSyncFailureRetriesAfterPairing() {
         #expect(ICloudBridgeInitialSyncFailurePolicy.action(
             isActivationPending: true,
             isRetryAvailable: true,
             isRecoverableFailure: true,
-            hasCompanionDevice: true,
-            companionDiscoveryState: .idle
+            hasCompanionDevice: false
+        ) == .fail)
+        #expect(ICloudBridgeInitialSyncFailurePolicy.action(
+            isActivationPending: true,
+            isRetryAvailable: true,
+            isRecoverableFailure: true,
+            hasCompanionDevice: true
         ) == .retryNow)
     }
 
@@ -303,22 +335,19 @@ struct ICloudBridgeWorkingCopyTests {
             isActivationPending: true,
             isRetryAvailable: false,
             isRecoverableFailure: true,
-            hasCompanionDevice: true,
-            companionDiscoveryState: .idle
+            hasCompanionDevice: true
         ) == .fail)
         #expect(ICloudBridgeInitialSyncFailurePolicy.action(
             isActivationPending: true,
             isRetryAvailable: true,
             isRecoverableFailure: false,
-            hasCompanionDevice: true,
-            companionDiscoveryState: .idle
+            hasCompanionDevice: true
         ) == .fail)
         #expect(ICloudBridgeInitialSyncFailurePolicy.action(
             isActivationPending: false,
             isRetryAvailable: true,
             isRecoverableFailure: true,
-            hasCompanionDevice: true,
-            companionDiscoveryState: .idle
+            hasCompanionDevice: true
         ) == .fail)
     }
 
