@@ -149,8 +149,31 @@ enum PasteController {
 
     /// Simulate a Return (Enter) keypress in the frontmost app. Used to submit
     /// the just-pasted prompt in apps like Cursor or Codex.
+    ///
+    /// If `expectedTargetPID` is provided, the Return is only posted when the
+    /// frontmost app at call time still matches that PID. This prevents the
+    /// Return from landing in a different app if the user Cmd-Tabbed away
+    /// during the paste → submit delay.
+    ///
+    /// `frontmostApplicationProvider` is injectable for testing.
     @MainActor
-    static func simulateReturnKey() -> Bool {
+    static func simulateReturnKey(
+        expectedTargetPID: pid_t? = nil,
+        frontmostApplicationProvider: @escaping @MainActor () -> NSRunningApplication? = {
+            NSWorkspace.shared.frontmostApplication
+        }
+    ) -> Bool {
+        // When a target PID is provided, verify the frontmost app still matches
+        // before posting the Return. If the user switched away between paste
+        // and submit, skip the Return rather than sending it to the wrong app.
+        if let expectedPID = expectedTargetPID {
+            let frontmost = frontmostApplicationProvider()
+            guard frontmost?.processIdentifier == expectedPID else {
+                fputs("[muesli-native] skipping return key — frontmost app changed since paste\n", stderr)
+                return false
+            }
+        }
+
         guard let source = CGEventSource(stateID: .combinedSessionState) else {
             fputs("[muesli-native] failed to create event source for return key\n", stderr)
             return false

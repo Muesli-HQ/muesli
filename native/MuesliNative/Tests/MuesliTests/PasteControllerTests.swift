@@ -330,6 +330,66 @@ struct PasteControllerTests {
         #expect(pasteboard.string(forType: .string) == "user-copied-after-paste")
     }
 
+    // MARK: - simulateReturnKey target verification
+
+    @Test("simulateReturnKey without target PID posts unconditionally")
+    func returnKeyWithoutTargetPIDPostsUnconditionally() {
+        // When no expectedTargetPID is provided, the Return should be posted
+        // regardless of the frontmost app (backward-compatible behavior).
+        let result = PasteController.simulateReturnKey(
+            expectedTargetPID: nil,
+            frontmostApplicationProvider: { NSRunningApplication.current }
+        )
+        #expect(result == true)
+    }
+
+    @Test("simulateReturnKey posts when frontmost matches expected PID")
+    func returnKeyPostsWhenFrontmostMatches() {
+        let targetApp = NSRunningApplication.current
+        let result = PasteController.simulateReturnKey(
+            expectedTargetPID: targetApp.processIdentifier,
+            frontmostApplicationProvider: { targetApp }
+        )
+        #expect(result == true)
+    }
+
+    @Test("simulateReturnKey skips when frontmost app changed since paste")
+    func returnKeySkipsWhenFrontmostChanged() {
+        // Simulate: paste went to app with PID 99999, but by the time the
+        // Return fires, the frontmost app has a different PID.
+        let originalApp = NSRunningApplication.current
+        let differentPID: pid_t = 99999
+        // Only proceed if the current app's PID actually differs from our fake PID
+        guard originalApp.processIdentifier != differentPID else {
+            // Extremely unlikely, but guard against it
+            return
+        }
+        let result = PasteController.simulateReturnKey(
+            expectedTargetPID: differentPID,
+            frontmostApplicationProvider: { originalApp }
+        )
+        #expect(result == false)
+    }
+
+    @Test("simulateReturnKey skips when frontmost app is nil")
+    func returnKeySkipsWhenFrontmostIsNil() {
+        let result = PasteController.simulateReturnKey(
+            expectedTargetPID: 12345,
+            frontmostApplicationProvider: { nil }
+        )
+        #expect(result == false)
+    }
+
+    @Test("simulateReturnKey posts when expected PID is nil (no guard)")
+    func returnKeyPostsWhenExpectedPIDIsNil() {
+        // nil PID means "no target verification" — should post unconditionally
+        let result = PasteController.simulateReturnKey(
+            expectedTargetPID: nil,
+            frontmostApplicationProvider: { nil }
+        )
+        #expect(result == true)
+    }
+
     private func makePasteboard() -> NSPasteboard {
         let name = NSPasteboard.Name("com.muesli.tests.PasteController.\(UUID().uuidString)")
         return NSPasteboard(name: name)

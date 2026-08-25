@@ -9142,8 +9142,9 @@ public final class MuesliController: NSObject {
         if pendingSubmitAfterPaste {
             pendingSubmitAfterPaste = false
             if !cleaned.isEmpty {
+                let targetPID = targetApp?.processID
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    PasteController.simulateReturnKey()
+                    PasteController.simulateReturnKey(expectedTargetPID: targetPID)
                 }
             }
         }
@@ -9344,8 +9345,9 @@ public final class MuesliController: NSObject {
                                 )
                                 if self.pendingSubmitAfterPaste {
                                     self.pendingSubmitAfterPaste = false
+                                    let targetPID = completionTargetApp?.processID
                                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                                        PasteController.simulateReturnKey()
+                                        PasteController.simulateReturnKey(expectedTargetPID: targetPID)
                                     }
                                 }
                             },
