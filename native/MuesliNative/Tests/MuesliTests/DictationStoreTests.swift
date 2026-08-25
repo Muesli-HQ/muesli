@@ -3386,6 +3386,7 @@ struct DictationStoreTests {
         let row = try #require(try store.dictation(id: dictationID))
         #expect(row.source == "quil")
         #expect(row.rawText == "- First point\n- Second point")
+        #expect(row.wordCount == 5)
         #expect(row.targetAppName == "Notes")
         #expect(row.computerUseTrace?.events.map(\.title) == [
             "Original highlighted text",
@@ -3405,6 +3406,61 @@ struct DictationStoreTests {
         })
         #expect(try store.searchDictations(query: "First point.").map(\.id).contains(dictationID))
         #expect(try store.searchDictations(query: "bullet points").map(\.id).contains(dictationID))
+    }
+
+    @Test("Quill statistics count only the spoken rewrite instruction")
+    func quillStatisticsCountSpokenInstruction() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_777_000_050)
+        try store.insertDictation(
+            text: "ordinary dictation",
+            durationSeconds: 60,
+            startedAt: now.addingTimeInterval(-60),
+            endedAt: now
+        )
+        try store.insertQuilDictation(
+            outputText: "generated output has many words that must never count",
+            originalText: "highlighted source text must not count either",
+            instruction: "Rewrite this politely",
+            backend: "gemma4LiteRT",
+            model: "gemma-4-e4b-it",
+            durationSeconds: 60,
+            startedAt: now.addingTimeInterval(-60),
+            endedAt: now
+        )
+
+        let stats = try store.dictationStats()
+        #expect(stats.totalWords == 5)
+        #expect(stats.totalSessions == 2)
+        #expect(stats.averageWordsPerSession == 2.5)
+        #expect(stats.averageWPM == 2.5)
+    }
+
+    @Test("migration repairs existing Quill output word counts")
+    func migrationRepairsExistingQuillWordCounts() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_777_000_075)
+        let dictationID = try store.insertQuilDictation(
+            outputText: "a deliberately verbose generated response that should not count",
+            originalText: "source",
+            instruction: "Make concise",
+            backend: "local",
+            model: "qwen35-0.8b",
+            durationSeconds: 1,
+            startedAt: now.addingTimeInterval(-1),
+            endedAt: now
+        )
+
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.databasePath().path, &db) == SQLITE_OK)
+        #expect(sqlite3_exec(db, "UPDATE dictations SET word_count = 99 WHERE id = \(dictationID)", nil, nil, nil) == SQLITE_OK)
+        #expect(sqlite3_exec(db, "DELETE FROM local_migrations WHERE identifier = 'quill_statistics_spoken_instruction_v1'", nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(db)
+
+        try store.migrateIfNeeded()
+
+        #expect(try store.dictation(id: dictationID)?.wordCount == 2)
+        #expect(try store.dictationStats().totalWords == 2)
     }
 
     @Test("Quill generation at cursor persists its mode and spoken instruction")
