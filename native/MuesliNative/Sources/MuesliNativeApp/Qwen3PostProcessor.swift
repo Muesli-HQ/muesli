@@ -174,6 +174,7 @@ enum Qwen3PostProcessorConfig {
     static let legacyDirectoryEnvOverride = "MUESLI_QWEN3_POSTPROC_DIR"
     // Dictation-only cleanup cap. Keep bounded to avoid slow local inference; long dictations may be truncated by LLM.swift.
     static let maxContextTokens: Int32 = 1024
+    static let quilMaxContextTokens: Int32 = 4096
     static let defaultAppContextCharacterLimit = 1_200
 
     static func formatInput(
@@ -272,13 +273,20 @@ private actor Qwen3PostProcessorManager {
     private let modelURL: URL
     private let systemPrompt: String
     private let inputFormat: PostProcessorOption.InputFormat
+    private let maxTokenCount: Int32
     private var bot: LLM?
     private let inferenceGate = InferenceGate()
 
-    init(modelURL: URL, systemPrompt: String, inputFormat: PostProcessorOption.InputFormat) {
+    init(
+        modelURL: URL,
+        systemPrompt: String,
+        inputFormat: PostProcessorOption.InputFormat,
+        maxTokenCount: Int32
+    ) {
         self.modelURL = modelURL
         self.systemPrompt = systemPrompt
         self.inputFormat = inputFormat
+        self.maxTokenCount = maxTokenCount
     }
 
     func warm() throws {
@@ -325,6 +333,22 @@ private actor Qwen3PostProcessorManager {
         }
     }
 
+    func generate(_ userPrompt: String) async throws -> String {
+        try await inferenceGate.acquire()
+        do {
+            try Task.checkCancellation()
+            let bot = try loadBot()
+            defer { bot.reset() }
+            await bot.respond(to: userPrompt, thinking: .suppressed)
+            let raw = bot.output
+            await inferenceGate.release()
+            return raw
+        } catch {
+            await inferenceGate.release()
+            throw error
+        }
+    }
+
     private func loadBot() throws -> LLM {
         if let bot { return bot }
         guard let loaded = LLM(
@@ -336,7 +360,7 @@ private actor Qwen3PostProcessorManager {
             repeatPenalty: 1.0,
             repetitionLookback: 64,
             historyLimit: 0,
-            maxTokenCount: Qwen3PostProcessorConfig.maxContextTokens
+            maxTokenCount: maxTokenCount
         ) else {
             throw NSError(domain: "Qwen3PostProcessor", code: 2, userInfo: [
                 NSLocalizedDescriptionKey: "Failed to load Qwen3 GGUF model at \(modelURL.path)",
@@ -354,6 +378,7 @@ actor Qwen3PostProcessor {
         let modelURL: URL
         let systemPrompt: String
         let inputFormat: PostProcessorOption.InputFormat
+        var maxTokenCount: Int32 = Qwen3PostProcessorConfig.maxContextTokens
     }
 
     private struct LoadTaskState {
@@ -401,13 +426,34 @@ actor Qwen3PostProcessor {
         appContext: String? = nil,
         configuration: Configuration
     ) async throws -> String {
-        let effectiveConfiguration = Configuration(
-            modelURL: Qwen3PostProcessorConfig.devOverrideURL() ?? configuration.modelURL,
-            systemPrompt: configuration.systemPrompt,
-            inputFormat: configuration.inputFormat
-        )
+        let effectiveConfiguration = Self.effectiveConfiguration(for: configuration)
         let manager = try await loadManager(for: effectiveConfiguration)
         return try await manager.process(text, appContext: appContext)
+    }
+
+    func generate(
+        _ userPrompt: String,
+        configuration: Configuration
+    ) async throws -> String {
+        let effectiveConfiguration = Self.effectiveConfiguration(for: configuration)
+        let manager = try await loadManager(for: effectiveConfiguration)
+        defer {
+            // Quill uses a distinct system prompt. Do not retain a second LLM
+            // instance after the one-shot rewrite completes.
+            if effectiveConfiguration != activeConfiguration {
+                managers[effectiveConfiguration] = nil
+            }
+        }
+        return try await manager.generate(userPrompt)
+    }
+
+    nonisolated static func effectiveConfiguration(for configuration: Configuration) -> Configuration {
+        Configuration(
+            modelURL: Qwen3PostProcessorConfig.devOverrideURL() ?? configuration.modelURL,
+            systemPrompt: configuration.systemPrompt,
+            inputFormat: configuration.inputFormat,
+            maxTokenCount: configuration.maxTokenCount
+        )
     }
 
     func shutdown() {
@@ -425,13 +471,19 @@ actor Qwen3PostProcessor {
         let url = configuration.modelURL
         let prompt = configuration.systemPrompt
         let inputFormat = configuration.inputFormat
+        let maxTokenCount = configuration.maxTokenCount
         let task = Task<Qwen3PostProcessorManager, Error> {
             guard FileManager.default.fileExists(atPath: url.path) else {
                 throw NSError(domain: "Qwen3PostProcessor", code: 1, userInfo: [
                     NSLocalizedDescriptionKey: "Post-processor model not found at \(url.path). Download it from the Models tab.",
                 ])
             }
-            let manager = Qwen3PostProcessorManager(modelURL: url, systemPrompt: prompt, inputFormat: inputFormat)
+            let manager = Qwen3PostProcessorManager(
+                modelURL: url,
+                systemPrompt: prompt,
+                inputFormat: inputFormat,
+                maxTokenCount: maxTokenCount
+            )
             try await manager.warm()
             return manager
         }

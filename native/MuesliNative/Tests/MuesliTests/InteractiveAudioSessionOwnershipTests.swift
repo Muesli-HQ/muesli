@@ -12,8 +12,25 @@ struct InteractiveAudioSessionOwnershipTests {
 
         #expect(ownership.canStart(.dictation))
         #expect(ownership.canStart(.computerUse))
+        #expect(ownership.canStart(.quil))
         #expect(!ownership.shouldIgnoreCleanup(for: .dictation))
         #expect(!ownership.shouldIgnoreCleanup(for: .computerUse))
+    }
+
+    @Test("Quill ownership rejects dictation and computer use")
+    func quilWinsOverOtherInteractiveAudio() {
+        let ownership = InteractiveAudioSessionOwnership(
+            dictationIsActive: false,
+            computerUseIsActive: false,
+            quilIsActive: true
+        )
+
+        #expect(!ownership.canStart(.dictation))
+        #expect(!ownership.canStart(.computerUse))
+        #expect(ownership.canStart(.quil))
+        #expect(ownership.shouldIgnoreCleanup(for: .dictation))
+        #expect(ownership.shouldIgnoreCleanup(for: .computerUse))
+        #expect(!ownership.shouldIgnoreCleanup(for: .quil))
     }
 
     @Test("dictation ownership rejects computer use start and cleanup")

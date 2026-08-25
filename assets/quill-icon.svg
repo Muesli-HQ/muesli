@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Quill">
+  <g fill="none" stroke="#000000" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8 57C14 42 20 29 30 19C38 11 47 7 58 6C56 18 51 29 42 38C34 46 24 50 13 50"/>
+    <path d="M8 58C20 43 33 31 51 15"/>
+    <path d="M21 43L20 30"/>
+    <path d="M30 34L29 21"/>
+    <path d="M39 26L50 25"/>
+    <path d="M30 36L42 36"/>
+  </g>
+</svg>

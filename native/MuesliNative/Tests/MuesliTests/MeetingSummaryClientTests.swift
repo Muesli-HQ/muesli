@@ -144,6 +144,18 @@ struct MeetingSummaryClientTests {
         #expect(body["reasoning"] == nil)
     }
 
+    @Test("ChatGPT WHAM requests forward explicit output budgets")
+    func chatGPTWHAMRequestForwardsOutputBudget() {
+        let body = ChatGPTResponsesClient.requestBody(
+            systemPrompt: "System",
+            userPrompt: "User",
+            model: "gpt-5.6-terra",
+            maxOutputTokens: QuilModelPolicy.remoteMaximumOutputTokens
+        )
+
+        #expect(body["max_output_tokens"] as? Int == QuilModelPolicy.remoteMaximumOutputTokens)
+    }
+
     @Test("ChatGPT WHAM parser reads top-level output text")
     func chatGPTWHAMParserReadsTopLevelOutputText() {
         let payload: [String: Any] = [

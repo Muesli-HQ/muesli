@@ -590,6 +590,21 @@ struct Qwen3PostProcessingOutputCleanerTests {
     }
 
     @available(macOS 15, *)
+    @Test("effective local generation configuration preserves the token budget")
+    func effectiveConfigurationPreservesTokenBudget() {
+        let configuration = Qwen3PostProcessor.Configuration(
+            modelURL: URL(fileURLWithPath: "/tmp/muesli-quill-budget-test.gguf"),
+            systemPrompt: QuilTransformationPrompt.system,
+            inputFormat: .configurable,
+            maxTokenCount: Qwen3PostProcessorConfig.quilMaxContextTokens
+        )
+
+        let effective = Qwen3PostProcessor.effectiveConfiguration(for: configuration)
+
+        #expect(effective.maxTokenCount == Qwen3PostProcessorConfig.quilMaxContextTokens)
+    }
+
+    @available(macOS 15, *)
     private func assertMissingModel(
         processor: Qwen3PostProcessor,
         configuration: Qwen3PostProcessor.Configuration,

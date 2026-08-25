@@ -60,27 +60,33 @@ private enum DictationAudioRouteTiming {
 enum InteractiveAudioSessionOwner {
     case dictation
     case computerUse
+    case quil
 }
 
 struct InteractiveAudioSessionOwnership: Equatable {
     let dictationIsActive: Bool
     let computerUseIsActive: Bool
+    var quilIsActive: Bool = false
 
     func canStart(_ owner: InteractiveAudioSessionOwner) -> Bool {
         switch owner {
         case .dictation:
-            return !computerUseIsActive
+            return !computerUseIsActive && !quilIsActive
         case .computerUse:
-            return !dictationIsActive
+            return !dictationIsActive && !quilIsActive
+        case .quil:
+            return !dictationIsActive && !computerUseIsActive
         }
     }
 
     func shouldIgnoreCleanup(for owner: InteractiveAudioSessionOwner) -> Bool {
         switch owner {
         case .dictation:
-            return !dictationIsActive && computerUseIsActive
+            return !dictationIsActive && (computerUseIsActive || quilIsActive)
         case .computerUse:
-            return !computerUseIsActive && dictationIsActive
+            return !computerUseIsActive && (dictationIsActive || quilIsActive)
+        case .quil:
+            return !quilIsActive && (dictationIsActive || computerUseIsActive)
         }
     }
 }
@@ -341,8 +347,10 @@ public final class MuesliController: NSObject {
     let transcriptionCoordinator = TranscriptionCoordinator()
     private let hotkeyMonitor = HotkeyMonitor()
     private let computerUseHotkeyMonitor = HotkeyMonitor()
+    private let quilHotkeyMonitor = HotkeyMonitor()
     private let meetingRecordingHotkeyMonitor = HotkeyMonitor()
     private let computerUseRecorder = RouteAwareDictationRecorder()
+    private let quilRecorder = RouteAwareDictationRecorder()
     private let dictationRecorder = RouteAwareDictationRecorder()
     private let dictationCorrectionMonitor = DictationCorrectionMonitor()
     private let dictionarySuggestionPrompt = DictionarySuggestionPromptController()
@@ -358,6 +366,11 @@ public final class MuesliController: NSObject {
     )
     private lazy var computerUseAudioSessionManager = DictationAudioSessionManager(
         recorder: computerUseRecorder,
+        duckingController: audioDuckingController,
+        routingController: dictationAudioRoutingController
+    )
+    private lazy var quilAudioSessionManager = DictationAudioSessionManager(
+        recorder: quilRecorder,
         duckingController: audioDuckingController,
         routingController: dictationAudioRoutingController
     )
@@ -446,6 +459,15 @@ public final class MuesliController: NSObject {
     private var pendingComputerUseStopSessionID: UUID?
     private var computerUseCommandTask: Task<Void, Never>?
     private var computerUseCommandTaskID: UUID?
+    private var activeQuilAudioSessionID: UUID?
+    private var quilStartedAt: Date?
+    private var pendingQuilStopStartedAt: Date?
+    private var pendingQuilStopSessionID: UUID?
+    private var quilTask: Task<Void, Never>?
+    private var quilTaskID: UUID?
+    private var quilSelectionSnapshot: QuilSelectionSnapshot?
+    private var quilTargetCaptureError: Error?
+    private var quilContextCaptureTask: Task<DictationContext?, Never>?
     private var computerUseFloatingStatusWorkItem: DispatchWorkItem?
     private var computerUseLastFloatingStatusAt = Date.distantPast
     private var computerUseLastFloatingStatus = ""
@@ -584,6 +606,11 @@ public final class MuesliController: NSObject {
                 self?.handleComputerUseAudioSessionEvent(event)
             }
         }
+        quilAudioSessionManager.onEvent = { [weak self] event in
+            Task { @MainActor [weak self] in
+                self?.handleQuilAudioSessionEvent(event)
+            }
+        }
         dictationAudioRoutingController.onPreferredInputDeviceChanged = { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -646,6 +673,16 @@ public final class MuesliController: NSObject {
         computerUseHotkeyMonitor.onToggleStop = { [weak self] in self?.handleComputerUseToggleStop() }
         computerUseHotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
 
+        quilHotkeyMonitor.onPrepare = { [weak self] in self?.handleQuilPrepare() }
+        quilHotkeyMonitor.onStart = { [weak self] in self?.handleQuilStart() }
+        quilHotkeyMonitor.onStop = { [weak self] in self?.handleQuilStop() }
+        quilHotkeyMonitor.onCancel = { [weak self] in self?.handleQuilCancel() }
+        quilHotkeyMonitor.onToggleStart = { [weak self] in self?.handleQuilToggleStart() }
+        quilHotkeyMonitor.onToggleStop = { [weak self] in self?.handleQuilToggleStop() }
+        quilHotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
+        quilHotkeyMonitor.combinationActivation = .pushToTalk
+        quilHotkeyMonitor.registersCombinationGlobally = true
+
         meetingRecordingHotkeyMonitor.onStart = { [weak self] in
             DispatchQueue.main.async { self?.toggleMeetingRecording() }
         }
@@ -668,6 +705,7 @@ public final class MuesliController: NSObject {
             hotkeyMonitor.configure(config.dictationHotkey)
             hotkeyMonitor.start()
             startComputerUseHotkeyMonitorIfNeeded()
+            startQuilHotkeyMonitorIfNeeded()
         }
         if canRunMainApp {
             startMeetingRecordingHotkeyMonitorIfNeeded()
@@ -683,8 +721,12 @@ public final class MuesliController: NSObject {
                 self.hotkeyMonitor.stopToggleMode()
             } else if self.computerUseHotkeyMonitor.isToggleRecording {
                 self.computerUseHotkeyMonitor.stopToggleMode()
+            } else if self.quilHotkeyMonitor.isToggleRecording {
+                self.quilHotkeyMonitor.stopToggleMode()
             } else if self.computerUseCommandStartedAt != nil {
                 self.handleComputerUseStop()
+            } else if self.quilStartedAt != nil {
+                self.handleQuilStop()
             } else {
                 self.handleStop()
             }
@@ -694,6 +736,11 @@ public final class MuesliController: NSObject {
             if self.computerUseHotkeyMonitor.isToggleRecording || self.computerUseCommandStartedAt != nil {
                 self.handleComputerUseCancel()
                 self.computerUseHotkeyMonitor.cancelToggleMode()
+            } else if self.quilHotkeyMonitor.isToggleRecording
+                        || self.quilStartedAt != nil
+                        || self.quilSelectionSnapshot != nil {
+                self.handleQuilCancel()
+                self.quilHotkeyMonitor.cancelToggleMode()
             } else {
                 self.handleCancel()
                 self.hotkeyMonitor.cancelToggleMode()
@@ -889,10 +936,12 @@ public final class MuesliController: NSObject {
         let syncEngineCancellationTask = retireCKSyncEngine()
         hotkeyMonitor.stop()
         computerUseHotkeyMonitor.stop()
+        quilHotkeyMonitor.stop()
         meetingRecordingHotkeyMonitor.stop()
         computerUseCommandTask?.cancel()
         computerUseCommandTask = nil
         computerUseCommandTaskID = nil
+        clearQuilSession(cancelAudioReason: "shutdown")
         activeComputerUseAudioSessionID = nil
         pendingComputerUseStopSessionID = nil
         pendingComputerUseStopStartedAt = nil
@@ -1438,6 +1487,7 @@ public final class MuesliController: NSObject {
             || selectedMeetingTranscriptionBackend.backend == "apple-speech"
         let previousMeetingInputDeviceUID = config.meetingInputDeviceUID
         let previousHotkeyTriggerThresholdMS = config.hotkeyTriggerThresholdMS
+        let previousQuilHotkeyTriggerThresholdMS = config.quilHotkeyTriggerThresholdMS
         let previousComputerUseHotkeyTriggerThresholdMS = config.computerUseHotkeyTriggerThresholdMS
         let previousMeetingRecordingHotkeyTriggerThresholdMS = config.meetingRecordingHotkeyTriggerThresholdMS
         let previousEnableDictionaryCorrectionPrompts = config.enableDictionaryCorrectionPrompts
@@ -1457,9 +1507,11 @@ public final class MuesliController: NSObject {
             dictionarySuggestionPrompt.dismissWithoutNotification()
         }
         config.hotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(config.hotkeyTriggerThresholdMS)
+        config.quilHotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(config.quilHotkeyTriggerThresholdMS)
         config.computerUseHotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(config.computerUseHotkeyTriggerThresholdMS)
         config.meetingRecordingHotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(config.meetingRecordingHotkeyTriggerThresholdMS)
         let hotkeyTriggerThresholdChanged = config.hotkeyTriggerThresholdMS != previousHotkeyTriggerThresholdMS
+            || config.quilHotkeyTriggerThresholdMS != previousQuilHotkeyTriggerThresholdMS
             || config.computerUseHotkeyTriggerThresholdMS != previousComputerUseHotkeyTriggerThresholdMS
             || config.meetingRecordingHotkeyTriggerThresholdMS != previousMeetingRecordingHotkeyTriggerThresholdMS
         MuesliTheme.accentOverrideHex = config.recordingColorHex == "1e1e2e" ? nil : config.recordingColorHex
@@ -1538,6 +1590,7 @@ public final class MuesliController: NSObject {
         indicator.refreshIcon()
         hotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
         computerUseHotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
+        quilHotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
         if hotkeyTriggerThresholdChanged {
             configureHotkeyMonitorTiming()
         }
@@ -2563,7 +2616,8 @@ public final class MuesliController: NSObject {
             return option?.isCompatible(with: selectedBackend) == true
         }
         if selectedPostProcessorBackend == .gemma4LiteRT {
-            return Gemma4LiteRTModelStore.isAvailableLocally()
+            let model = Gemma4LiteRTModel.resolved(config.postProcessorGemmaModel)
+            return Gemma4LiteRTModelStore.isAvailableLocally(model: model)
         }
         return TranscriptCleanupClient.hasRequiredSettings(
             for: selectedPostProcessorBackend,
@@ -2594,7 +2648,9 @@ public final class MuesliController: NSObject {
             }
         }
         if enabled, selectedPostProcessorBackend == .gemma4LiteRT,
-           !Gemma4LiteRTModelStore.isAvailableLocally() {
+           !Gemma4LiteRTModelStore.isAvailableLocally(
+               model: Gemma4LiteRTModel.resolved(config.postProcessorGemmaModel)
+           ) {
             updateConfig { $0.enablePostProcessor = false }
             showModels(category: .postProcessing)
             return
@@ -2657,7 +2713,32 @@ public final class MuesliController: NSObject {
             }
         }
         if option == .gemma4LiteRT, config.enablePostProcessor,
-           !Gemma4LiteRTModelStore.isAvailableLocally() {
+           !Gemma4LiteRTModelStore.isAvailableLocally(
+               model: Gemma4LiteRTModel.resolved(config.postProcessorGemmaModel)
+           ) {
+            updateConfig { $0.enablePostProcessor = false }
+            showModels(category: .postProcessing)
+            return
+        }
+        preloadExperimentalTranscriptionFeatures()
+    }
+
+    func selectGemma4PostProcessor(_ model: Gemma4LiteRTModel) {
+        guard TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: selectedBackend) else {
+            presentErrorAlert(
+                title: "Cleanup model unavailable",
+                message: "Gemma 4 cannot clean up a transcription produced by another Gemma 4 model."
+            )
+            return
+        }
+        updateConfig {
+            $0.postProcessorBackend = TranscriptCleanupBackendOption.gemma4LiteRT.backend
+            $0.postProcessorGemmaModel = model.repoID
+        }
+        selectedPostProcessorBackend = .gemma4LiteRT
+        appState.selectedPostProcessorBackend = .gemma4LiteRT
+        if config.enablePostProcessor,
+           !Gemma4LiteRTModelStore.isAvailableLocally(model: model) {
             updateConfig { $0.enablePostProcessor = false }
             showModels(category: .postProcessing)
             return
@@ -3605,6 +3686,9 @@ public final class MuesliController: NSObject {
 
     @discardableResult
     func updateDictationHotkey(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
+        if config.enableQuilMode, ShortcutHotkeyPolicy.hotkeysConflict(hotkey, config.quilHotkey) {
+            return .conflict(message: ShortcutHotkeyPolicy.conflictMessage)
+        }
         let result = ShortcutHotkeyPolicy.validateDictationHotkey(
             hotkey,
             computerUseHotkey: config.computerUseHotkey,
@@ -3624,6 +3708,9 @@ public final class MuesliController: NSObject {
 
     @discardableResult
     func updateComputerUseHotkey(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
+        if config.enableQuilMode, ShortcutHotkeyPolicy.hotkeysConflict(hotkey, config.quilHotkey) {
+            return .conflict(message: ShortcutHotkeyPolicy.conflictMessage)
+        }
         let result = ShortcutHotkeyPolicy.validateComputerUseHotkey(
             hotkey,
             dictationHotkey: config.dictationHotkey,
@@ -3643,6 +3730,10 @@ public final class MuesliController: NSObject {
     @discardableResult
     func updateComputerUseHotkeyEnabled(_ enabled: Bool) -> ShortcutHotkeyUpdateResult {
         if enabled {
+            if config.enableQuilMode,
+               ShortcutHotkeyPolicy.hotkeysConflict(config.computerUseHotkey, config.quilHotkey) {
+                return .conflict(message: ShortcutHotkeyPolicy.conflictMessage)
+            }
             let resolution = ShortcutHotkeyPolicy.resolvedComputerUseHotkeyWhenEnabling(
                 currentHotkey: config.computerUseHotkey,
                 dictationHotkey: config.dictationHotkey,
@@ -3668,6 +3759,9 @@ public final class MuesliController: NSObject {
 
     @discardableResult
     func updateMeetingRecordingHotkey(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
+        if config.enableQuilMode, ShortcutHotkeyPolicy.hotkeysConflict(hotkey, config.quilHotkey) {
+            return .conflict(message: ShortcutHotkeyPolicy.conflictMessage)
+        }
         let result = ShortcutHotkeyPolicy.validateMeetingRecordingHotkey(
             hotkey,
             dictationHotkey: config.dictationHotkey,
@@ -3686,6 +3780,10 @@ public final class MuesliController: NSObject {
     @discardableResult
     func updateMeetingRecordingHotkeyEnabled(_ enabled: Bool) -> ShortcutHotkeyUpdateResult {
         if enabled {
+            if config.enableQuilMode,
+               ShortcutHotkeyPolicy.hotkeysConflict(config.meetingRecordingHotkey, config.quilHotkey) {
+                return .conflict(message: ShortcutHotkeyPolicy.conflictMessage)
+            }
             let result = ShortcutHotkeyPolicy.validateMeetingRecordingHotkey(
                 config.meetingRecordingHotkey,
                 dictationHotkey: config.dictationHotkey,
@@ -3703,18 +3801,56 @@ public final class MuesliController: NSObject {
         }
     }
 
+    @discardableResult
+    func updateQuilHotkey(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
+        let result = ShortcutHotkeyPolicy.validateQuilHotkey(
+            hotkey,
+            dictationHotkey: config.dictationHotkey,
+            computerUseHotkey: config.computerUseHotkey,
+            isComputerUseEnabled: config.enableComputerUseHotkey,
+            meetingRecordingHotkey: config.meetingRecordingHotkey,
+            isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
+        )
+        guard result.didUpdate else { return result }
+        updateConfig { $0.quilHotkey = hotkey }
+        configureQuilHotkeyMonitor()
+        return result
+    }
+
+    @discardableResult
+    func updateQuilModeEnabled(_ enabled: Bool) -> ShortcutHotkeyUpdateResult {
+        if enabled {
+            let result = ShortcutHotkeyPolicy.validateQuilHotkey(
+                config.quilHotkey,
+                dictationHotkey: config.dictationHotkey,
+                computerUseHotkey: config.computerUseHotkey,
+                isComputerUseEnabled: config.enableComputerUseHotkey,
+                meetingRecordingHotkey: config.meetingRecordingHotkey,
+                isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
+            )
+            guard result.didUpdate else { return result }
+        }
+        updateConfig { $0.enableQuilMode = enabled }
+        configureQuilHotkeyMonitor()
+        return .updated
+    }
+
     func resetShortcutDefaults() {
         updateConfig { config in
             config.dictationHotkey = .default
+            config.quilHotkey = .quilDefault
+            config.enableQuilMode = false
             config.computerUseHotkey = .computerUseDefault
             config.enableComputerUseHotkey = false
             config.meetingRecordingHotkey = .meetingRecordingDefault
             config.enableMeetingRecordingHotkey = false
             config.hotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultThresholdMilliseconds
+            config.quilHotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultThresholdMilliseconds
             config.computerUseHotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultThresholdMilliseconds
             config.meetingRecordingHotkeyTriggerThresholdMS = HotkeyTriggerTiming.defaultMeetingThresholdMilliseconds
         }
         hotkeyMonitor.configure(.default)
+        quilHotkeyMonitor.stop()
         configureComputerUseHotkeyMonitor()
         meetingRecordingHotkeyMonitor.stop()
     }
@@ -7300,7 +7436,8 @@ public final class MuesliController: NSObject {
     }
 
     private var isDictationActivityInProgress: Bool {
-        dictationState != .idle || dictationStartedAt != nil || computerUseCommandStartedAt != nil || isNemotron35Streaming
+        dictationState != .idle || dictationStartedAt != nil || computerUseCommandStartedAt != nil
+            || quilStartedAt != nil || quilTask != nil || isNemotron35Streaming
     }
 
     private var isMeetingAudioProcessing: Bool {
@@ -7334,9 +7471,19 @@ public final class MuesliController: NSObject {
         startComputerUseHotkeyMonitorIfNeeded()
     }
 
+    private func configureQuilHotkeyMonitor() {
+        guard config.enableQuilMode else {
+            quilHotkeyMonitor.stop()
+            return
+        }
+        quilHotkeyMonitor.configure(config.quilHotkey)
+        startQuilHotkeyMonitorIfNeeded()
+    }
+
     private func configureHotkeyMonitorTiming() {
         hotkeyMonitor.configureTriggerThreshold(milliseconds: config.hotkeyTriggerThresholdMS)
         computerUseHotkeyMonitor.configureTriggerThreshold(milliseconds: config.computerUseHotkeyTriggerThresholdMS)
+        quilHotkeyMonitor.configureTriggerThreshold(milliseconds: config.quilHotkeyTriggerThresholdMS)
         meetingRecordingHotkeyMonitor.configureTriggerThreshold(milliseconds: config.meetingRecordingHotkeyTriggerThresholdMS)
     }
 
@@ -7363,6 +7510,25 @@ public final class MuesliController: NSObject {
         computerUseHotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
         computerUseHotkeyMonitor.configure(config.computerUseHotkey)
         computerUseHotkeyMonitor.start()
+    }
+
+    private func startQuilHotkeyMonitorIfNeeded() {
+        guard config.enableQuilMode,
+              config.resolvedOnboardingUseCase.includesDictation else {
+            quilHotkeyMonitor.stop()
+            return
+        }
+        let conflicts = ShortcutHotkeyPolicy.hotkeysConflict(config.quilHotkey, config.dictationHotkey)
+            || (config.enableComputerUseHotkey && ShortcutHotkeyPolicy.hotkeysConflict(config.quilHotkey, config.computerUseHotkey))
+            || (config.enableMeetingRecordingHotkey && ShortcutHotkeyPolicy.hotkeysConflict(config.quilHotkey, config.meetingRecordingHotkey))
+        guard !conflicts else {
+            quilHotkeyMonitor.stop()
+            fputs("[quil] shortcut disabled because it conflicts with another shortcut\n", stderr)
+            return
+        }
+        quilHotkeyMonitor.configure(config.quilHotkey)
+        quilHotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
+        quilHotkeyMonitor.start()
     }
 
     private func startMeetingRecordingHotkeyMonitorIfNeeded() {
@@ -7769,6 +7935,344 @@ public final class MuesliController: NSObject {
         activeComputerUseAudioSessionID = computerUseAudioSessionManager.currentSessionID
     }
 
+    private func handleQuilPrepare() {
+        guard canPrepareQuil else { return }
+        quilSelectionSnapshot = nil
+        quilTargetCaptureError = nil
+        meetingMonitor.suppressWhileActive()
+        meetingMonitor.refreshState()
+        setState(.preparing)
+        quilAudioSessionManager.arm(source: "quil_hotkey_prepare")
+        activeQuilAudioSessionID = quilAudioSessionManager.currentSessionID
+    }
+
+    private func handleQuilStart() {
+        guard canStartQuil else { return }
+        quilStartedAt = Date()
+        indicator.powerProvider = { [weak self] in
+            self?.quilAudioSessionManager.currentPower() ?? -160
+        }
+        setState(.preparing)
+        quilAudioSessionManager.beginRecording(
+            mode: "quil",
+            duckingEnabled: false,
+            mediaPauseEnabled: false
+        )
+        activeQuilAudioSessionID = quilAudioSessionManager.currentSessionID
+    }
+
+    private func captureQuilTargetIfNeeded() {
+        if quilSelectionSnapshot == nil {
+            do {
+                let snapshot = try QuilSelectionSnapshot.capture()
+                quilSelectionSnapshot = snapshot
+                quilTargetCaptureError = nil
+                startQuilContextCapture(for: snapshot)
+            } catch {
+                quilTargetCaptureError = error
+                fputs("[quil] target capture deferred failure: \(error)\n", stderr)
+            }
+        }
+    }
+
+    private func handleQuilToggleStart() {
+        guard canStartQuil else {
+            quilHotkeyMonitor.cancelToggleMode()
+            return
+        }
+        indicator.isToggleDictation = true
+        handleQuilStart()
+    }
+
+    private func handleQuilToggleStop() {
+        indicator.isToggleDictation = false
+        handleQuilStop()
+    }
+
+    private func handleQuilCancel() {
+        guard !interactiveAudioSessionOwnership.shouldIgnoreCleanup(for: .quil) else { return }
+        clearQuilSession(cancelAudioReason: "quil_cancel")
+        resumeAfterQuil()
+    }
+
+    private func handleQuilStop() {
+        guard pendingQuilStopSessionID == nil,
+              let sessionID = activeQuilAudioSessionID,
+              quilAudioSessionManager.currentSessionID == sessionID else { return }
+        SoundController.playQuillRelease(
+            enabled: shouldPlayQuilLifecycleSounds && !isDictationTestMode
+        )
+        let startedAt = quilStartedAt ?? Date()
+        quilStartedAt = nil
+        activeQuilAudioSessionID = nil
+        pendingQuilStopSessionID = sessionID
+        pendingQuilStopStartedAt = startedAt
+        quilAudioSessionManager.stop()
+    }
+
+    private func finishQuilAudioStop(wavURL: URL?, startedAt: Date) {
+        guard let wavURL else {
+            handleQuilCancel()
+            return
+        }
+        let duration = max(Date().timeIntervalSince(startedAt), 0)
+        guard duration >= 0.3 else {
+            try? FileManager.default.removeItem(at: wavURL)
+            presentQuilFailure(QuilTransformationError.emptyInstruction)
+            return
+        }
+        guard let snapshot = quilSelectionSnapshot else {
+            try? FileManager.default.removeItem(at: wavURL)
+            presentQuilFailure(quilTargetCaptureError ?? QuilTransformationError.noTextTarget)
+            return
+        }
+        guard snapshot.isStillCurrent() else {
+            try? FileManager.default.removeItem(at: wavURL)
+            presentQuilFailure(QuilTransformationError.selectionChanged)
+            return
+        }
+        indicator.setTranscribingTitle("Parsing instruction", config: config)
+        setState(.transcribing)
+        let taskID = UUID()
+        quilTaskID = taskID
+        let backend = TranscriptCleanupBackendOption.resolved(config.quilBackend)
+        let configuredModel = config.quilModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let model = configuredModel.isEmpty
+            ? (backend == .local
+                ? PostProcessorOption.defaultQuilOption.id
+                : TranscriptCleanupClient.defaultModel(for: backend))
+            : configuredModel
+        let configSnapshot = config
+        let contextCaptureTask = quilContextCaptureTask
+        quilTask = Task { [weak self] in
+            guard let self else { return }
+            defer { try? FileManager.default.removeItem(at: wavURL) }
+            do {
+                let result = try await self.transcriptionCoordinator.transcribeDictation(
+                    at: wavURL,
+                    backend: self.selectedBackend,
+                    cohereLanguage: configSnapshot.resolvedCohereLanguage,
+                    indicASRLanguage: configSnapshot.resolvedIndicASRLanguage,
+                    whisperLanguage: configSnapshot.resolvedWhisperLanguage,
+                    qwen3AsrLanguage: configSnapshot.resolvedQwen3AsrLanguage,
+                    appleSpeechLanguage: configSnapshot.resolvedAppleSpeechLanguage,
+                    enablePostProcessor: false,
+                    customWords: self.serializedCustomWords(),
+                    appContext: nil
+                )
+                try Task.checkCancellation()
+                let instruction = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !instruction.isEmpty else { throw QuilTransformationError.emptyInstruction }
+                await MainActor.run {
+                    guard self.quilTaskID == taskID else { return }
+                    self.statusBarController?.setStatus("Rewriting selection")
+                    self.indicator.showQuilInstruction(instruction, config: self.config)
+                }
+                let capturedContext: DictationContext?
+                if let contextCaptureTask {
+                    capturedContext = await contextCaptureTask.value
+                } else {
+                    capturedContext = nil
+                }
+                try Task.checkCancellation()
+                let contextStillBelongsToSelection = await MainActor.run {
+                    snapshot.isStillCurrent() && snapshot.matches(context: capturedContext)
+                }
+                guard contextStillBelongsToSelection else {
+                    throw QuilTransformationError.selectionChanged
+                }
+                let promptContext = capturedContext.map { DictationContextCapture.formatForPrompt($0) }
+                let replacement = try await self.transcriptionCoordinator.transformSelectedTextForQuil(
+                    selectedText: snapshot.text,
+                    instruction: instruction,
+                    appContext: promptContext,
+                    backend: backend,
+                    model: model,
+                    config: configSnapshot
+                )
+                try Task.checkCancellation()
+                let selectionStillCurrent = await MainActor.run {
+                    snapshot.isStillCurrentForReplacement()
+                }
+                guard selectionStillCurrent else {
+                    throw QuilTransformationError.selectionChanged
+                }
+                await MainActor.run {
+                    guard self.quilTaskID == taskID else { return }
+                    guard replacement != snapshot.text else {
+                        let saved = self.persistQuilTransformation(
+                            outputText: replacement,
+                            originalText: snapshot.text,
+                            instruction: instruction,
+                            backend: backend,
+                            model: model,
+                            duration: duration,
+                            startedAt: startedAt,
+                            application: snapshot.application
+                        )
+                        self.finishQuilTask(
+                            taskID: taskID,
+                            message: saved ? "No changes needed" : "No changes needed; Quill history was not saved"
+                        )
+                        return
+                    }
+                    PasteController.paste(
+                        text: replacement,
+                        requireStagedClipboardOwnership: true,
+                        targetApplicationProvider: { snapshot.application },
+                        shouldDispatchPaste: { snapshot.isTargetStillFocused() },
+                        onPasteDispatched: {
+                            // The post-dictation correction monitor cannot distinguish a
+                            // user edit from Quill's deliberate rewrite. Once Quill actually
+                            // replaces the selection, the original dictation is no longer a
+                            // valid correction baseline, so end that monitoring session.
+                            self.dictationCorrectionMonitor.cancel()
+                        },
+                        onPasteFinished: { target in
+                            guard self.quilTaskID == taskID else { return }
+                            if target == nil {
+                                self.presentQuilFailure(QuilTransformationError.selectionChanged)
+                            } else {
+                                let saved = self.persistQuilTransformation(
+                                    outputText: replacement,
+                                    originalText: snapshot.text,
+                                    instruction: instruction,
+                                    backend: backend,
+                                    model: model,
+                                    duration: duration,
+                                    startedAt: startedAt,
+                                    application: snapshot.application
+                                )
+                                TelemetryDeck.signal("quil.completed", parameters: [
+                                    "backend": backend.backend,
+                                    "input_chars": String(snapshot.text.count),
+                                    "output_chars": String(replacement.count),
+                                ])
+                                self.finishQuilTask(
+                                    taskID: taskID,
+                                    message: saved ? nil : "Reformatted, but could not save Quill history"
+                                )
+                            }
+                        }
+                    )
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                await MainActor.run {
+                    guard self.quilTaskID == taskID else { return }
+                    self.presentQuilFailure(error)
+                }
+            }
+        }
+    }
+
+    private func startQuilContextCapture(for snapshot: QuilSelectionSnapshot) {
+        quilContextCaptureTask?.cancel()
+        quilContextCaptureTask = nil
+        guard config.enableScreenContext,
+              let expectedDocumentIdentifier = snapshot.contextDocumentIdentifier else { return }
+
+        let expectedBundleID = snapshot.application.bundleIdentifier ?? ""
+        let includeScreenOCR = config.enableDictationOCRContext
+            && !isMeetingRecording()
+            && CGPreflightScreenCaptureAccess()
+        quilContextCaptureTask = Task.detached(priority: .utility) {
+            guard AXIsProcessTrusted(), !Task.isCancelled else { return nil }
+            let context = await DictationContextCapture.capture(
+                includeScreenOCR: includeScreenOCR,
+                shouldCaptureScreenOCR: { !Task.isCancelled },
+                allowTitleFallback: false
+            )
+            guard !Task.isCancelled,
+                  DictationContextCapture.matchesQuilSelection(
+                    context,
+                    bundleID: expectedBundleID,
+                    documentIdentifier: expectedDocumentIdentifier
+                  ) else { return nil }
+            return context
+        }
+    }
+
+    @MainActor
+    @discardableResult
+    private func persistQuilTransformation(
+        outputText: String,
+        originalText: String,
+        instruction: String,
+        backend: TranscriptCleanupBackendOption,
+        model: String,
+        duration: TimeInterval,
+        startedAt: Date,
+        application: NSRunningApplication
+    ) -> Bool {
+        do {
+            _ = try dictationStore.insertQuilDictation(
+                outputText: outputText,
+                originalText: originalText,
+                instruction: instruction,
+                backend: backend.backend,
+                model: model,
+                durationSeconds: duration,
+                targetAppName: application.localizedName,
+                targetAppBundleID: application.bundleIdentifier,
+                startedAt: startedAt,
+                endedAt: Date()
+            )
+            scheduleICloudSyncAfterLocalChange()
+            statusBarController?.refresh()
+            if let historyWindowController {
+                historyWindowController.reload()
+            } else {
+                syncAppState()
+            }
+            return true
+        } catch {
+            fputs("[quil] failed to persist transformation: \(error)\n", stderr)
+            return false
+        }
+    }
+
+    @MainActor
+    private func finishQuilTask(taskID: UUID, message: String?) {
+        guard quilTaskID == taskID else { return }
+        clearQuilSession()
+        if let message { indicator.showWarning(message, icon: "", duration: 2.0) }
+        resumeAfterQuil()
+    }
+
+    @MainActor
+    private func presentQuilFailure(_ error: Error) {
+        clearQuilSession(cancelAudioReason: "quil_failure")
+        resumeAfterQuil()
+        let message = error.localizedDescription
+        statusBarController?.setStatus(message)
+        indicator.showWarning(message, icon: "!", duration: 3.0)
+    }
+
+    private func clearQuilSession(cancelAudioReason: String? = nil) {
+        quilTask?.cancel()
+        quilTask = nil
+        quilTaskID = nil
+        if let cancelAudioReason { quilAudioSessionManager.cancel(reason: cancelAudioReason) }
+        activeQuilAudioSessionID = nil
+        quilStartedAt = nil
+        pendingQuilStopSessionID = nil
+        pendingQuilStopStartedAt = nil
+        quilSelectionSnapshot = nil
+        quilTargetCaptureError = nil
+        quilContextCaptureTask?.cancel()
+        quilContextCaptureTask = nil
+        quilHotkeyMonitor.cancelToggleMode()
+        indicator.isToggleDictation = false
+    }
+
+    private func resumeAfterQuil() {
+        setState(.idle)
+        meetingMonitor.resumeAfterCooldown()
+        meetingMonitor.refreshState()
+    }
+
     private func handleComputerUseStart() {
         guard canStartComputerUseCommand else { return }
         fputs("[cua] recording start\n", stderr)
@@ -7984,6 +8488,10 @@ public final class MuesliController: NSObject {
     }
 
     private var interactiveAudioSessionOwnership: InteractiveAudioSessionOwnership {
+        let quilIsActive = quilAudioSessionManager.hasActiveSession
+            || quilStartedAt != nil
+            || pendingQuilStopSessionID != nil
+            || quilTask != nil
         let computerUseIsActive = computerUseAudioSessionManager.hasActiveSession
             || computerUseCommandStartedAt != nil
             || pendingComputerUseStopSessionID != nil
@@ -7992,11 +8500,34 @@ public final class MuesliController: NSObject {
             || dictationStartedAt != nil
             || pendingDictationStopSessionID != nil
             || isNemotron35Streaming
-            || (!computerUseIsActive && dictationState != .idle)
+            || (!computerUseIsActive && !quilIsActive && dictationState != .idle)
         return InteractiveAudioSessionOwnership(
             dictationIsActive: dictationIsActive,
-            computerUseIsActive: computerUseIsActive
+            computerUseIsActive: computerUseIsActive,
+            quilIsActive: quilIsActive
         )
+    }
+
+    private var canPrepareQuil: Bool {
+        config.enableQuilMode
+            && !isMeetingRecording()
+            && !isDictationTestMode
+            && !isMeetingAudioProcessing
+            && pendingQuilStopSessionID == nil
+            && quilTask == nil
+            && interactiveAudioSessionOwnership.canStart(.quil)
+            && dictationState == .idle
+    }
+
+    private var canStartQuil: Bool {
+        config.enableQuilMode
+            && !isMeetingRecording()
+            && !isDictationTestMode
+            && !isMeetingAudioProcessing
+            && pendingQuilStopSessionID == nil
+            && quilTask == nil
+            && interactiveAudioSessionOwnership.canStart(.quil)
+            && (dictationState == .idle || dictationState == .preparing)
     }
 
     private func shouldRejectDictationForComputerUseActivity() -> Bool {
@@ -8421,7 +8952,15 @@ public final class MuesliController: NSObject {
     }
 
     private var shouldPlayDictationLifecycleSounds: Bool {
-        config.soundEnabled && !dictationAudioRoutingController.isDefaultOutputHeadphoneLike()
+        shouldPlayLifecycleSounds(enabled: config.soundEnabled)
+    }
+
+    private var shouldPlayQuilLifecycleSounds: Bool {
+        shouldPlayLifecycleSounds(enabled: config.quilSoundEnabled)
+    }
+
+    private func shouldPlayLifecycleSounds(enabled: Bool) -> Bool {
+        enabled && !dictationAudioRoutingController.isDefaultOutputHeadphoneLike()
     }
 
     private func handleComputerUseAudioSessionEvent(_ event: DictationAudioSessionEvent) {
@@ -8482,6 +9021,53 @@ public final class MuesliController: NSObject {
             meetingMonitor.refreshState()
         case .latency(let event, _):
             fputs("[cua-audio] \(event)\n", stderr)
+        }
+    }
+
+    private func handleQuilAudioSessionEvent(_ event: DictationAudioSessionEvent) {
+        switch event {
+        case .armed(let sessionID, _):
+            guard activeQuilAudioSessionID == sessionID else { break }
+        case .acquiringAudio(let sessionID):
+            guard activeQuilAudioSessionID == sessionID else { break }
+            setState(.preparing)
+        case .streamActive(let sessionID, _):
+            guard activeQuilAudioSessionID == sessionID, quilStartedAt != nil else { break }
+            setState(.recording)
+            SoundController.playQuillStart(
+                enabled: shouldPlayQuilLifecycleSounds && !isDictationTestMode
+            )
+            // Mic activation is the primary Quill interaction. Discover the
+            // selection/insertion target only after the stream and activation cue
+            // are live, so AX or Google Docs clipboard fallback work cannot delay
+            // or suppress recording. A missing target is reported after release.
+            captureQuilTargetIfNeeded()
+        case .speechDetected(let sessionID, _):
+            guard activeQuilAudioSessionID == sessionID else { break }
+        case .noAudioTimeout(let sessionID, _):
+            guard activeQuilAudioSessionID == sessionID else { break }
+            statusBarController?.setStatus("Mic waiting for instruction")
+        case .stopped(let sessionID, let wavURL):
+            guard pendingQuilStopSessionID == sessionID else {
+                if let wavURL { try? FileManager.default.removeItem(at: wavURL) }
+                break
+            }
+            guard quilAudioSessionManager.currentSessionID == nil else {
+                if let wavURL { try? FileManager.default.removeItem(at: wavURL) }
+                break
+            }
+            let startedAt = pendingQuilStopStartedAt ?? Date()
+            pendingQuilStopSessionID = nil
+            pendingQuilStopStartedAt = nil
+            finishQuilAudioStop(wavURL: wavURL, startedAt: startedAt)
+        case .audioRestored, .cancelled:
+            break
+        case .failed(let sessionID, let error):
+            guard let sessionID,
+                  activeQuilAudioSessionID == sessionID || pendingQuilStopSessionID == sessionID else { break }
+            presentQuilFailure(error)
+        case .latency(let event, _):
+            fputs("[quil-audio] \(event)\n", stderr)
         }
     }
 
@@ -9021,13 +9607,18 @@ public final class MuesliController: NSObject {
 
     private func cancelDictationAudioSessionForMeetingRecordingIfNeeded() {
         let hasComputerUseActivity = interactiveAudioSessionOwnership.computerUseIsActive
+        let hasQuilActivity = interactiveAudioSessionOwnership.quilIsActive
         guard dictationAudioSessionManager.hasActiveSession
             || isNemotron35Streaming
-            || hasComputerUseActivity else { return }
+            || hasComputerUseActivity
+            || hasQuilActivity else { return }
         fputs("[muesli-native] cancelling dictation audio session because meeting is active\n", stderr)
 
         if hasComputerUseActivity {
             handleComputerUseCancel()
+        }
+        if hasQuilActivity {
+            clearQuilSession(cancelAudioReason: "meeting-active")
         }
 
         if isNemotron35Streaming {

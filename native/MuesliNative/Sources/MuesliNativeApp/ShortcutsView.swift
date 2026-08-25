@@ -10,6 +10,7 @@ struct ShortcutsView: View {
     @State private var pendingModifierKeyCode: UInt16?
     @State private var dictationShortcutMessage: String?
     @State private var computerUseShortcutMessage: String?
+    @State private var quilShortcutMessage: String?
     @State private var meetingRecordingShortcutMessage: String?
 
     var body: some View {
@@ -26,6 +27,8 @@ struct ShortcutsView: View {
                 dictationShortcutSection
 
                 computerUseShortcutSection
+
+                quilShortcutSection
 
                 meetingRecordingShortcutSection
 
@@ -46,6 +49,7 @@ struct ShortcutsView: View {
     private enum ShortcutTarget {
         case dictation
         case computerUse
+        case quil
         case meetingRecording
     }
 
@@ -192,6 +196,59 @@ struct ShortcutsView: View {
         )
     }
 
+    private var quilShortcutSection: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                    HStack(spacing: MuesliTheme.spacing8) {
+                        Image(nsImage: QuillIcon.image())
+                            .renderingMode(.template)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 16, height: 16)
+                            .foregroundStyle(MuesliTheme.accent)
+                        Text("Quill")
+                            .font(MuesliTheme.headline())
+                            .foregroundStyle(MuesliTheme.textPrimary)
+                    }
+                    Text("Highlight text, hold to speak an editing instruction, then release to replace")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
+                Spacer()
+                Toggle("", isOn: Binding(
+                    get: { appState.config.enableQuilMode },
+                    set: { newValue in
+                        let result = controller.updateQuilModeEnabled(newValue)
+                        quilShortcutMessage = result.message
+                    }
+                ))
+                .toggleStyle(.switch)
+                .tint(MuesliTheme.accent)
+                .labelsHidden()
+            }
+
+            Divider().background(MuesliTheme.surfaceBorder)
+
+            shortcutControls(
+                target: .quil,
+                threshold: appState.config.quilHotkeyTriggerThresholdMS,
+                isEnabled: appState.config.enableQuilMode
+            ) { value in
+                controller.updateConfig { $0.quilHotkeyTriggerThresholdMS = value }
+            }
+
+            if let quilShortcutMessage { shortcutMessage(quilShortcutMessage) }
+        }
+        .padding(MuesliTheme.spacing16)
+        .background(MuesliTheme.backgroundRaised)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+        .overlay(
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
+                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+        )
+    }
+
     private func hotkeyBadge(_ hotkey: HotkeyConfig) -> some View {
         Text(hotkey.displayLabel)
             .font(.system(size: 12, weight: .medium, design: .rounded))
@@ -234,6 +291,8 @@ struct ShortcutsView: View {
             return appState.config.dictationHotkey
         case .computerUse:
             return appState.config.computerUseHotkey
+        case .quil:
+            return appState.config.quilHotkey
         case .meetingRecording:
             return appState.config.meetingRecordingHotkey
         }
@@ -307,6 +366,8 @@ struct ShortcutsView: View {
         switch target {
         case .meetingRecording:
             return "Press a key or modifier..."
+        case .quil:
+            return "Press one key or a two-key shortcut..."
         case .dictation, .computerUse:
             return "Press a modifier key..."
         }
@@ -319,7 +380,7 @@ struct ShortcutsView: View {
                     Text("Hands-Free Mode")
                         .font(MuesliTheme.headline())
                         .foregroundStyle(MuesliTheme.textPrimary)
-                    Text("Double-tap dictation or CUA to start, tap again to stop")
+                    Text("Double-tap dictation, Quill, or CUA to start; tap again to stop")
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
@@ -350,6 +411,7 @@ struct ShortcutsView: View {
             dictationShortcutMessage = nil
             computerUseShortcutMessage = nil
             meetingRecordingShortcutMessage = nil
+            quilShortcutMessage = nil
         } label: {
             Text("Reset to Defaults")
                 .font(MuesliTheme.body())
@@ -360,10 +422,13 @@ struct ShortcutsView: View {
             appState.config.dictationHotkey == .default
                 && appState.config.computerUseHotkey == .computerUseDefault
                 && !appState.config.enableComputerUseHotkey
+                && appState.config.quilHotkey == .quilDefault
+                && !appState.config.enableQuilMode
                 && appState.config.meetingRecordingHotkey == .meetingRecordingDefault
                 && !appState.config.enableMeetingRecordingHotkey
                 && appState.config.hotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds
                 && appState.config.computerUseHotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds
+                && appState.config.quilHotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds
                 && appState.config.meetingRecordingHotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultMeetingThresholdMilliseconds
         )
     }
@@ -380,10 +445,12 @@ struct ShortcutsView: View {
                     return nil
                 }
                 let mods = HotkeyConfig.supportedCombinationModifiers(from: event.modifierFlags)
-                let hasModifiers = mods.contains(.command) || mods.contains(.control)
-                    || mods.contains(.option)
-                guard target == .meetingRecording,
-                      hasModifiers,
+                let modifierCount = [NSEvent.ModifierFlags.command, .control, .option, .shift]
+                    .filter { mods.contains($0) }.count
+                let allowsCombination = target == .meetingRecording || target == .quil
+                guard allowsCombination,
+                      (target != .quil || modifierCount == 1),
+                      modifierCount > 0,
                       HotkeyConfig.letterLabel(for: event.keyCode) != nil else {
                     return event
                 }
@@ -402,6 +469,7 @@ struct ShortcutsView: View {
             case 56, 60: isDown = flags.contains(.shift)
             case 58, 61: isDown = flags.contains(.option)
             case 59, 62: isDown = flags.contains(.control)
+            case 63: isDown = flags.contains(.function)
             default: isDown = false
             }
             if isDown {
@@ -422,6 +490,8 @@ struct ShortcutsView: View {
             result = controller.updateDictationHotkey(config)
         case .computerUse:
             result = controller.updateComputerUseHotkey(config)
+        case .quil:
+            result = controller.updateQuilHotkey(config)
         case .meetingRecording:
             result = controller.updateMeetingRecordingHotkey(config)
         }
@@ -437,13 +507,16 @@ struct ShortcutsView: View {
         switch target {
         case .dictation:
             dictationShortcutMessage = message
-            if message == nil { computerUseShortcutMessage = nil; meetingRecordingShortcutMessage = nil }
+            if message == nil { computerUseShortcutMessage = nil; meetingRecordingShortcutMessage = nil; quilShortcutMessage = nil }
         case .computerUse:
             computerUseShortcutMessage = message
-            if message == nil { dictationShortcutMessage = nil; meetingRecordingShortcutMessage = nil }
+            if message == nil { dictationShortcutMessage = nil; meetingRecordingShortcutMessage = nil; quilShortcutMessage = nil }
+        case .quil:
+            quilShortcutMessage = message
+            if message == nil { dictationShortcutMessage = nil; computerUseShortcutMessage = nil; meetingRecordingShortcutMessage = nil }
         case .meetingRecording:
             meetingRecordingShortcutMessage = message
-            if message == nil { dictationShortcutMessage = nil; computerUseShortcutMessage = nil }
+            if message == nil { dictationShortcutMessage = nil; computerUseShortcutMessage = nil; quilShortcutMessage = nil }
         }
     }
 

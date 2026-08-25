@@ -79,6 +79,8 @@ tmp-install/
 
 # Audio/data files
 *.wav
+!assets/audio/quill-activate.wav
+!assets/audio/quill-release.wav
 *.sqlite
 *.db
 

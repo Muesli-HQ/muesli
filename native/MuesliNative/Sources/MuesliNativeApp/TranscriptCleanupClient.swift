@@ -36,7 +36,7 @@ enum TranscriptCleanupClient {
 
     static func defaultModel(for backend: TranscriptCleanupBackendOption) -> String {
         if backend == .gemma4LiteRT {
-            return Gemma4LiteRTModelStore.repoID
+            return Gemma4LiteRTModel.e2b.repoID
         }
         switch backend.llmBackend {
         case .some(.chatGPT):
@@ -58,7 +58,7 @@ enum TranscriptCleanupClient {
 
     static func configuredModel(for backend: TranscriptCleanupBackendOption, config: AppConfig) -> String {
         if backend == .gemma4LiteRT {
-            return Gemma4LiteRTModelStore.repoID
+            return Gemma4LiteRTModel.resolved(config.postProcessorGemmaModel).repoID
         }
         let raw: String
         switch backend.llmBackend {
@@ -85,7 +85,8 @@ enum TranscriptCleanupClient {
 
     static func hasRequiredSettings(for backend: TranscriptCleanupBackendOption, config: AppConfig, isChatGPTAuthenticated: Bool) -> Bool {
         if backend == .gemma4LiteRT {
-            return Gemma4LiteRTModelStore.isAvailableLocally()
+            let model = Gemma4LiteRTModel.resolved(config.postProcessorGemmaModel)
+            return Gemma4LiteRTModelStore.isAvailableLocally(model: model)
         }
         switch backend.llmBackend {
         case .some(.chatGPT):
@@ -123,10 +124,6 @@ enum TranscriptCleanupClient {
         backend: TranscriptCleanupBackendOption,
         config: AppConfig
     ) async throws -> TranscriptCleanupResult {
-        guard let llmBackend = backend.llmBackend else {
-            throw TranscriptCleanupError.missingConfiguration("Local cleanup is handled by Qwen3PostProcessor.")
-        }
-
         let model = configuredModel(for: backend, config: config)
         let userPrompt = Qwen3PostProcessorConfig.formatInput(
             text,
@@ -134,69 +131,14 @@ enum TranscriptCleanupClient {
             maxAppContextCharacters: hostedAppContextCharacterLimit
         )
         let effectiveSystemPrompt = systemPromptWithAppContextGuidance(systemPrompt, appContext: appContext)
-        let raw: String
-
-        switch llmBackend {
-        case .chatGPT:
-            raw = try await ChatGPTResponsesClient.respond(
-                systemPrompt: effectiveSystemPrompt,
-                userPrompt: userPrompt,
-                model: model,
-                logCategory: "postproc"
-            )
-        case .openAI:
-            raw = try await cleanWithOpenAI(systemPrompt: effectiveSystemPrompt, userPrompt: userPrompt, model: model, config: config)
-        case .openRouter:
-            let apiKey = resolvedOpenRouterAPIKey(config: config)
-            raw = try await cleanWithChatCompletions(
-                backend: "OpenRouter",
-                requestURL: openRouterURL,
-                apiKey: apiKey,
-                systemPrompt: effectiveSystemPrompt,
-                userPrompt: userPrompt,
-                model: model
-            )
-        case .ollama:
-            raw = try await cleanWithOllama(systemPrompt: effectiveSystemPrompt, userPrompt: userPrompt, model: model, config: config)
-        case .lmStudio:
-            guard let requestURL = MeetingSummaryClient.resolveLMStudioURL(config: cleanupConfig(config, model: model)) else {
-                throw TranscriptCleanupError.missingConfiguration("Invalid LM Studio URL: \(config.lmStudioURL)")
-            }
-            raw = try await cleanWithChatCompletions(
-                backend: "LM Studio",
-                requestURL: requestURL,
-                apiKey: "",
-                systemPrompt: effectiveSystemPrompt,
-                userPrompt: userPrompt,
-                model: model
-            )
-        case .customLLM:
-            let format = CustomLLMFormat(rawValue: config.customLLMFormat) ?? .openAI
-            guard let requestURL = resolveConfiguredCustomLLMURL(config: config, format: format) else {
-                throw TranscriptCleanupError.missingConfiguration("Invalid custom URL: \(config.customLLMURL)")
-            }
-            switch format {
-            case .openAI:
-                raw = try await cleanWithChatCompletions(
-                    backend: "Custom LLM",
-                    requestURL: requestURL,
-                    apiKey: config.customLLMAPIKey,
-                    systemPrompt: effectiveSystemPrompt,
-                    userPrompt: userPrompt,
-                    model: model
-                )
-            case .anthropic:
-                raw = try await cleanWithAnthropic(
-                    requestURL: requestURL,
-                    apiKey: config.customLLMAPIKey,
-                    systemPrompt: effectiveSystemPrompt,
-                    userPrompt: userPrompt,
-                    model: model
-                )
-            }
-        default:
-            throw TranscriptCleanupError.missingConfiguration("Unsupported transcript cleanup backend: \(backend.label)")
-        }
+        let raw = try await generate(
+            systemPrompt: effectiveSystemPrompt,
+            userPrompt: userPrompt,
+            backend: backend,
+            model: model,
+            config: config,
+            logCategory: "postproc"
+        )
 
         let cleaned = cleanOutput(raw)
         let trimmed = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -207,6 +149,86 @@ enum TranscriptCleanupClient {
             throw TranscriptCleanupError.rejectedOutput
         }
         return TranscriptCleanupResult(rawOutput: raw, cleanedOutput: trimmed, model: model)
+    }
+
+    static func generate(
+        systemPrompt: String,
+        userPrompt: String,
+        backend: TranscriptCleanupBackendOption,
+        model: String,
+        config: AppConfig,
+        maxOutputTokens: Int? = nil,
+        logCategory: String = "generation"
+    ) async throws -> String {
+        guard let llmBackend = backend.llmBackend else {
+            throw TranscriptCleanupError.missingConfiguration("Local generation is handled on device.")
+        }
+        switch llmBackend {
+        case .chatGPT:
+            return try await ChatGPTResponsesClient.respond(
+                systemPrompt: systemPrompt,
+                userPrompt: userPrompt,
+                model: model,
+                maxOutputTokens: maxOutputTokens,
+                logCategory: logCategory
+            )
+        case .openAI:
+            return try await cleanWithOpenAI(systemPrompt: systemPrompt, userPrompt: userPrompt, model: model, config: config, maxOutputTokens: maxOutputTokens ?? defaultMaxOutputTokens)
+        case .openRouter:
+            let apiKey = resolvedOpenRouterAPIKey(config: config)
+            return try await cleanWithChatCompletions(
+                backend: "OpenRouter",
+                requestURL: openRouterURL,
+                apiKey: apiKey,
+                systemPrompt: systemPrompt,
+                userPrompt: userPrompt,
+                model: model,
+                maxOutputTokens: maxOutputTokens ?? defaultMaxOutputTokens
+            )
+        case .ollama:
+            return try await cleanWithOllama(systemPrompt: systemPrompt, userPrompt: userPrompt, model: model, config: config, maxOutputTokens: maxOutputTokens ?? defaultMaxOutputTokens)
+        case .lmStudio:
+            guard let requestURL = MeetingSummaryClient.resolveLMStudioURL(config: cleanupConfig(config, model: model)) else {
+                throw TranscriptCleanupError.missingConfiguration("Invalid LM Studio URL: \(config.lmStudioURL)")
+            }
+            return try await cleanWithChatCompletions(
+                backend: "LM Studio",
+                requestURL: requestURL,
+                apiKey: "",
+                systemPrompt: systemPrompt,
+                userPrompt: userPrompt,
+                model: model,
+                maxOutputTokens: maxOutputTokens ?? defaultMaxOutputTokens
+            )
+        case .customLLM:
+            let format = CustomLLMFormat(rawValue: config.customLLMFormat) ?? .openAI
+            guard let requestURL = resolveConfiguredCustomLLMURL(config: config, format: format) else {
+                throw TranscriptCleanupError.missingConfiguration("Invalid custom URL: \(config.customLLMURL)")
+            }
+            switch format {
+            case .openAI:
+                return try await cleanWithChatCompletions(
+                    backend: "Custom LLM",
+                    requestURL: requestURL,
+                    apiKey: config.customLLMAPIKey,
+                    systemPrompt: systemPrompt,
+                    userPrompt: userPrompt,
+                    model: model,
+                    maxOutputTokens: maxOutputTokens ?? defaultMaxOutputTokens
+                )
+            case .anthropic:
+                return try await cleanWithAnthropic(
+                    requestURL: requestURL,
+                    apiKey: config.customLLMAPIKey,
+                    systemPrompt: systemPrompt,
+                    userPrompt: userPrompt,
+                    model: model,
+                    maxOutputTokens: maxOutputTokens ?? defaultMaxOutputTokens
+                )
+            }
+        default:
+            throw TranscriptCleanupError.missingConfiguration("Unsupported transcript cleanup backend: \(backend.label)")
+        }
     }
 
     static func cleanOutput(_ text: String) -> String {
@@ -256,7 +278,8 @@ enum TranscriptCleanupClient {
         systemPrompt: String,
         userPrompt: String,
         model: String,
-        config: AppConfig
+        config: AppConfig,
+        maxOutputTokens: Int = defaultMaxOutputTokens
     ) async throws -> String {
         let key = config.openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let apiKey = key.isEmpty ? (ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? "") : key
@@ -267,7 +290,7 @@ enum TranscriptCleanupClient {
             "model": model,
             "instructions": systemPrompt,
             "input": userPrompt,
-            "max_output_tokens": defaultMaxOutputTokens,
+            "max_output_tokens": maxOutputTokens,
         ]
         if let effort = SummaryModelPreset.reasoningEffort(for: model) {
             body["reasoning"] = ["effort": effort]
@@ -295,7 +318,8 @@ enum TranscriptCleanupClient {
         systemPrompt: String,
         userPrompt: String,
         model: String,
-        config: AppConfig
+        config: AppConfig,
+        maxOutputTokens: Int = defaultMaxOutputTokens
     ) async throws -> String {
         let baseURL = resolveConfiguredOllamaURL(config: config)
         guard let baseURL else {
@@ -309,7 +333,7 @@ enum TranscriptCleanupClient {
                 ["role": "user", "content": userPrompt],
             ],
             "stream": false,
-            "options": ["num_predict": defaultMaxOutputTokens],
+            "options": ["num_predict": maxOutputTokens],
         ]
         var request = URLRequest(url: chatURL)
         request.timeoutInterval = requestTimeout
@@ -352,7 +376,8 @@ enum TranscriptCleanupClient {
         apiKey: String,
         systemPrompt: String,
         userPrompt: String,
-        model: String
+        model: String,
+        maxOutputTokens: Int = defaultMaxOutputTokens
     ) async throws -> String {
         var body: [String: Any] = [
             "model": model,
@@ -362,7 +387,7 @@ enum TranscriptCleanupClient {
             ],
         ]
         let tokenKey = requestURL.host?.contains("openai.com") == true ? "max_completion_tokens" : "max_tokens"
-        body[tokenKey] = defaultMaxOutputTokens
+        body[tokenKey] = maxOutputTokens
         var request = URLRequest(url: requestURL)
         request.timeoutInterval = requestTimeout
         request.httpMethod = "POST"
@@ -390,11 +415,12 @@ enum TranscriptCleanupClient {
         apiKey: String,
         systemPrompt: String,
         userPrompt: String,
-        model: String
+        model: String,
+        maxOutputTokens: Int = defaultMaxOutputTokens
     ) async throws -> String {
         let body: [String: Any] = [
             "model": model,
-            "max_tokens": defaultMaxOutputTokens,
+            "max_tokens": maxOutputTokens,
             "system": systemPrompt,
             "messages": [["role": "user", "content": userPrompt]],
         ]

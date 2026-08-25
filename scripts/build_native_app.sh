@@ -336,6 +336,7 @@ cp "$ROOT/assets/x-logo.png" "$STAGED_APP_DIR/Contents/Resources/x-logo.png"
 cp "$ROOT/assets/linkedin-logo.png" "$STAGED_APP_DIR/Contents/Resources/linkedin-logo.png"
 cp "$ROOT/assets/insights-share-background.png" "$STAGED_APP_DIR/Contents/Resources/insights-share-background.png"
 cp "$ROOT/assets/muesli_app_icon.png" "$STAGED_APP_DIR/Contents/Resources/muesli_app_icon.png"
+cp "$ROOT/assets/quill-icon.svg" "$STAGED_APP_DIR/Contents/Resources/quill-icon.svg"
 if [[ -d "$ROOT/assets/fonts" ]]; then
   ditto "$ROOT/assets/fonts" "$STAGED_APP_DIR/Contents/Resources/fonts"
 fi

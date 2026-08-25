@@ -10,6 +10,7 @@ enum PasteController {
         case targetSnapshotted = "target_snapshotted"
         case pasteDispatched = "paste_dispatched"
         case pasteDispatchFailed = "paste_dispatch_failed"
+        case pasteDispatchCancelled = "paste_dispatch_cancelled"
         case clipboardOwnershipLost = "clipboard_ownership_lost"
         case clipboardRestoreScheduled = "clipboard_restore_scheduled"
         case clipboardRestored = "clipboard_restored"
@@ -61,7 +62,9 @@ enum PasteController {
         targetApplicationProvider: @escaping @MainActor () -> NSRunningApplication? = {
             NSWorkspace.shared.frontmostApplication
         },
+        shouldDispatchPaste: @escaping @MainActor () -> Bool = { true },
         simulatePasteAction: @escaping @MainActor () -> Bool = PasteController.simulatePaste,
+        onPasteDispatched: @escaping @MainActor () -> Void = {},
         onPasteFinished: @escaping @MainActor (NSRunningApplication?) -> Void = { _ in },
         onClipboardSettled: @escaping @MainActor () -> Void = {},
         onLifecycleEvent: @escaping @MainActor (LifecycleEvent) -> Void = { _ in }
@@ -102,8 +105,23 @@ enum PasteController {
                     return
                 }
             }
+            guard shouldDispatchPaste() else {
+                onLifecycleEvent(.pasteDispatchCancelled)
+                if pasteboard.changeCount == pasteChangeCount {
+                    restoreClipboard(pasteboard, from: savedItems)
+                    onLifecycleEvent(.clipboardRestored)
+                } else {
+                    onLifecycleEvent(.clipboardRestoreSkipped)
+                }
+                onPasteFinished(nil)
+                onClipboardSettled()
+                return
+            }
             let didDispatchPaste = simulatePasteAction()
             onLifecycleEvent(didDispatchPaste ? .pasteDispatched : .pasteDispatchFailed)
+            if didDispatchPaste {
+                onPasteDispatched()
+            }
 
             // Arm restoration before completion bookkeeping. The dictation completion callback
             // persists attribution and refreshes UI; neither is allowed to extend how long the
@@ -145,7 +163,62 @@ enum PasteController {
         text.allSatisfy { physicalKeyMap[$0] != nil }
     }
 
+    /// Reads the active application's selection through Cmd+C while preserving the
+    /// user's clipboard. This is a fallback for browser editors such as Google Docs,
+    /// which can render a visible selection without exposing AXSelectedText.
+    @MainActor
+    static func copySelectedText(
+        pasteboard: NSPasteboard = .general,
+        timeout: TimeInterval = 0.35,
+        pollInterval: TimeInterval = 0.01,
+        simulateCopyAction: @MainActor () -> Bool = PasteController.simulateCopy
+    ) -> String? {
+        let savedItems = saveClipboard(pasteboard)
+        let originalChangeCount = pasteboard.changeCount
+        guard simulateCopyAction() else { return nil }
+
+        let deadline = Date().addingTimeInterval(max(0, timeout))
+        while pasteboard.changeCount == originalChangeCount, Date() < deadline {
+            // Keep the main run loop responsive while the target app services Cmd+C.
+            // Quill begins from a synchronous hotkey callback, so a nested run-loop
+            // wait avoids blocking UI without moving clipboard access off MainActor.
+            let nextPoll = min(deadline, Date().addingTimeInterval(max(0.001, pollInterval)))
+            _ = RunLoop.current.run(mode: .default, before: nextPoll)
+        }
+        guard pasteboard.changeCount != originalChangeCount else { return nil }
+
+        let copiedChangeCount = pasteboard.changeCount
+        let copiedText = pasteboard.string(forType: .string)
+        // Do not overwrite a newer clipboard write from another process.
+        if pasteboard.changeCount == copiedChangeCount {
+            restoreClipboard(pasteboard, from: savedItems)
+        }
+        guard let copiedText, !copiedText.isEmpty else { return nil }
+        return copiedText
+    }
+
     // MARK: - Private
+
+    private static func simulateCopy() -> Bool {
+        guard let source = CGEventSource(stateID: .combinedSessionState) else {
+            fputs("[muesli-native] failed to create event source for copy\n", stderr)
+            return false
+        }
+        let keyCode: CGKeyCode = 8 // C
+        guard let commandDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true),
+              let commandUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
+        else {
+            fputs("[muesli-native] failed to create keyboard events for copy\n", stderr)
+            return false
+        }
+        MuesliSyntheticKeyboardEvent.mark(commandDown)
+        MuesliSyntheticKeyboardEvent.mark(commandUp)
+        commandDown.flags = .maskCommand
+        commandUp.flags = .maskCommand
+        commandDown.post(tap: .cghidEventTap)
+        commandUp.post(tap: .cghidEventTap)
+        return true
+    }
 
     private static func simulatePaste() -> Bool {
         guard let source = CGEventSource(stateID: .combinedSessionState) else {
@@ -159,6 +232,8 @@ enum PasteController {
             fputs("[muesli-native] failed to create keyboard events for paste\n", stderr)
             return false
         }
+        MuesliSyntheticKeyboardEvent.mark(commandDown)
+        MuesliSyntheticKeyboardEvent.mark(commandUp)
         commandDown.flags = .maskCommand
         commandUp.flags = .maskCommand
         commandDown.post(tap: .cghidEventTap)
@@ -170,6 +245,8 @@ enum PasteController {
         guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true),
               let keyUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
         else { return }
+        MuesliSyntheticKeyboardEvent.mark(keyDown)
+        MuesliSyntheticKeyboardEvent.mark(keyUp)
         keyDown.flags = flags
         keyUp.flags = flags
         keyDown.post(tap: .cghidEventTap)
@@ -182,6 +259,8 @@ enum PasteController {
             guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
                   let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
             else { return }
+            MuesliSyntheticKeyboardEvent.mark(keyDown)
+            MuesliSyntheticKeyboardEvent.mark(keyUp)
             keyDown.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: buf.baseAddress)
             keyUp.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: buf.baseAddress)
             keyDown.post(tap: .cghidEventTap)

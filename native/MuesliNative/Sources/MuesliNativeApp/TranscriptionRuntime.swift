@@ -294,7 +294,7 @@ actor TranscriptionCoordinator {
         postProcessorConfig = config
 
         if backend == .gemma4LiteRT {
-            postProcessorModelId = Gemma4LiteRTModelStore.repoID
+            postProcessorModelId = Gemma4LiteRTModel.resolved(config.postProcessorGemmaModel).repoID
         } else if let option {
             postProcessorModelURL = option.modelURL
             postProcessorModelId = option.id
@@ -310,6 +310,96 @@ actor TranscriptionCoordinator {
             }
         } else if backend.llmBackend != nil {
             postProcessorModelId = TranscriptCleanupClient.configuredModel(for: backend, config: config)
+        }
+    }
+
+    func transformSelectedTextForQuil(
+        selectedText: String,
+        instruction: String,
+        appContext: String?,
+        backend: TranscriptCleanupBackendOption,
+        model: String,
+        config: AppConfig
+    ) async throws -> String {
+        let trimmedInstruction = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedInstruction.isEmpty else { throw QuilTransformationError.emptyInstruction }
+        let resolvedModel = model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? (backend == .local
+                ? PostProcessorOption.defaultQuilOption.id
+                : TranscriptCleanupClient.defaultModel(for: backend))
+            : model
+        try QuilModelPolicy.validate(selectedText: selectedText, backend: backend, model: resolvedModel)
+        let userPrompt = QuilTransformationPrompt.userPrompt(
+            selectedText: selectedText,
+            instruction: trimmedInstruction,
+            appContext: appContext,
+            maxAppContextCharacters: QuilModelPolicy.appContextCharacterLimit(for: backend)
+        )
+        let raw = try await generateQuilReplacement(
+            userPrompt: userPrompt,
+            backend: backend,
+            resolvedModel: resolvedModel,
+            config: config
+        )
+        do {
+            return try QuilTransformationOutput.validated(raw)
+        } catch QuilTransformationError.nonReplacementResponse {
+            let correctivePrompt = QuilTransformationPrompt.correctiveUserPrompt(userPrompt)
+            let correctedRaw = try await generateQuilReplacement(
+                userPrompt: correctivePrompt,
+                backend: backend,
+                resolvedModel: resolvedModel,
+                config: config
+            )
+            return try QuilTransformationOutput.validated(correctedRaw)
+        }
+    }
+
+    private func generateQuilReplacement(
+        userPrompt: String,
+        backend: TranscriptCleanupBackendOption,
+        resolvedModel: String,
+        config: AppConfig
+    ) async throws -> String {
+        switch backend {
+        case .local:
+            guard #available(macOS 15, *) else {
+                throw QuilTransformationError.unsupportedModel
+            }
+            let option = PostProcessorOption.resolve(id: resolvedModel)
+            guard option.supportsQuil else { throw QuilTransformationError.unsupportedModel }
+            guard option.isDownloaded || Qwen3PostProcessorConfig.devOverrideURL() != nil else {
+                throw QuilTransformationError.modelUnavailable
+            }
+            let configuration = Qwen3PostProcessor.Configuration(
+                modelURL: option.modelURL,
+                systemPrompt: QuilTransformationPrompt.system,
+                inputFormat: .configurable,
+                maxTokenCount: Qwen3PostProcessorConfig.quilMaxContextTokens
+            )
+            return try await qwen3PostProcessor.generate(userPrompt, configuration: configuration)
+        case .gemma4LiteRT:
+            guard #available(macOS 15, *) else { throw QuilTransformationError.unsupportedModel }
+            let gemmaModel = Gemma4LiteRTModel.resolved(resolvedModel)
+            guard Gemma4LiteRTModelStore.isAvailableLocally(model: gemmaModel) else {
+                throw QuilTransformationError.modelUnavailable
+            }
+            return try await gemma4LiteRTTranscriber.generateText(
+                systemPrompt: QuilTransformationPrompt.system,
+                userPrompt: userPrompt,
+                model: gemmaModel,
+                maxOutputTokens: QuilModelPolicy.gemmaMaximumOutputTokens
+            )
+        default:
+            return try await TranscriptCleanupClient.generate(
+                systemPrompt: QuilTransformationPrompt.system,
+                userPrompt: userPrompt,
+                backend: backend,
+                model: resolvedModel,
+                config: config,
+                maxOutputTokens: QuilModelPolicy.remoteMaximumOutputTokens,
+                logCategory: "quil"
+            )
         }
     }
 
@@ -545,10 +635,14 @@ actor TranscriptionCoordinator {
             )
         case "gemma4-litert":
             if #available(macOS 15, *) {
-                try await gemma4LiteRTTranscriber.prepare(progress: progress, progressSnapshot: progressSnapshot)
+                try await gemma4LiteRTTranscriber.prepare(
+                    model: Gemma4LiteRTModel.resolved(backend.model),
+                    progress: progress,
+                    progressSnapshot: progressSnapshot
+                )
             } else {
                 throw NSError(domain: "MuesliTranscriptionRuntime", code: 7, userInfo: [
-                    NSLocalizedDescriptionKey: "Gemma 4 E2B requires macOS 15 or later.",
+                    NSLocalizedDescriptionKey: "\(backend.label) requires macOS 15 or later.",
                 ])
             }
         case "apple-speech":
@@ -782,7 +876,9 @@ actor TranscriptionCoordinator {
             case .local:
                 try await qwen3PostProcessor.prepare()
             case .gemma4LiteRT:
-                try await gemma4LiteRTTranscriber.prepare()
+                try await gemma4LiteRTTranscriber.prepare(
+                    model: Gemma4LiteRTModel.resolved(postProcessorModelId)
+                )
             default:
                 return
             }
@@ -1109,12 +1205,11 @@ actor TranscriptionCoordinator {
             return nil
         }
         do {
-            let transcriber = gemma4LiteRTTranscriber
-            try await transcriber.prepare()
-            let cleanup = try await transcriber.cleanTranscript(
+            let cleanup = try await gemma4LiteRTTranscriber.cleanTranscript(
                 result.text,
                 systemPrompt: postProcessorSnapshot.systemPrompt,
-                appContext: appContext
+                appContext: appContext,
+                model: Gemma4LiteRTModel.resolved(postProcessorSnapshot.modelId)
             )
             let elapsedMs = cleanup.processingTime * 1000
             let trimmed = cleanup.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1274,7 +1369,7 @@ actor TranscriptionCoordinator {
         case "sensevoice":
             return try await transcribeWithSenseVoice(url: url)
         case "gemma4-litert":
-            return try await transcribeWithGemma4LiteRT(url: url)
+            return try await transcribeWithGemma4LiteRT(url: url, model: Gemma4LiteRTModel.resolved(backend.model))
         case "apple-speech":
             if #available(macOS 26.0, *) {
                 return try await transcribeWithAppleSpeech(
@@ -1366,14 +1461,15 @@ actor TranscriptionCoordinator {
         )
     }
 
-    // MARK: - Gemma 4 E2B (LiteRT-LM multimodal)
+    // MARK: - Gemma 4 (LiteRT-LM multimodal)
 
-    private func transcribeWithGemma4LiteRT(url: URL) async throws -> SpeechTranscriptionResult {
+    private func transcribeWithGemma4LiteRT(
+        url: URL,
+        model: Gemma4LiteRTModel
+    ) async throws -> SpeechTranscriptionResult {
         if #available(macOS 15, *) {
             Gemma4LiteRTLogging.log("transcribing \(url.lastPathComponent)")
-            let transcriber = gemma4LiteRTTranscriber
-            try await transcriber.prepare()
-            let result = try await transcriber.transcribe(wavURL: url)
+            let result = try await gemma4LiteRTTranscriber.transcribe(wavURL: url, model: model)
             Gemma4LiteRTLogging.log("result chars=\(result.text.count), processingTime=\(String(format: "%.3f", result.processingTime))s")
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             return SpeechTranscriptionResult(
@@ -1382,7 +1478,7 @@ actor TranscriptionCoordinator {
             )
         } else {
             throw NSError(domain: "MuesliTranscriptionRuntime", code: 7, userInfo: [
-                NSLocalizedDescriptionKey: "Gemma 4 E2B requires macOS 15 or later.",
+                NSLocalizedDescriptionKey: "\(model.label) requires macOS 15 or later.",
             ])
         }
     }
