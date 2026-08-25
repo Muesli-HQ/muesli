@@ -1,5 +1,30 @@
 import Foundation
 
+struct PushToTalkEnablementIntentStore {
+    private let defaults: UserDefaults
+    private let key: String
+
+    init(
+        defaults: UserDefaults = .standard,
+        key: String = "pushToTalk.pendingEnable"
+    ) {
+        self.defaults = defaults
+        self.key = key
+    }
+
+    var isPending: Bool {
+        defaults.bool(forKey: key)
+    }
+
+    func markPending() {
+        defaults.set(true, forKey: key)
+    }
+
+    func clear() {
+        defaults.removeObject(forKey: key)
+    }
+}
+
 enum PushToTalkEnablementPolicy {
     enum Outcome: Equatable {
         case alreadyEnabled

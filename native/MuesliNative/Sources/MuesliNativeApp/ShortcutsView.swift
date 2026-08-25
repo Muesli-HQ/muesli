@@ -42,11 +42,11 @@ struct ShortcutsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .onAppear {
-            controller.completePendingPushToTalkEnableIfReady()
+            controller.reconcilePendingPushToTalkEnableIfReady()
         }
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
             guard !isPushToTalkEnabled else { return }
-            controller.completePendingPushToTalkEnableIfReady()
+            controller.reconcilePendingPushToTalkEnableIfReady()
             if isPushToTalkEnabled {
                 dictationShortcutMessage = nil
             }
