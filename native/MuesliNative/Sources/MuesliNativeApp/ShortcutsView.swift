@@ -356,6 +356,30 @@ struct ShortcutsView: View {
                     .labelsHidden()
                 }
             }
+
+            if appState.config.dictationTriggerMode == .tapToToggle {
+                Divider()
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                        Text("Submit on Enter")
+                            .font(MuesliTheme.headline())
+                            .foregroundStyle(MuesliTheme.textPrimary)
+                        Text("Press Enter to stop dictation and automatically submit the pasted text")
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textSecondary)
+                    }
+                    Spacer()
+                    Toggle("", isOn: Binding(
+                        get: { appState.config.enableSubmitOnEnter },
+                        set: { newValue in
+                            controller.updateConfig { $0.enableSubmitOnEnter = newValue }
+                        }
+                    ))
+                    .toggleStyle(.switch)
+                    .tint(MuesliTheme.accent)
+                    .labelsHidden()
+                }
+            }
         }
         .padding(MuesliTheme.spacing16)
         .background(MuesliTheme.backgroundRaised)

@@ -883,6 +883,7 @@ struct AppConfigTests {
         #expect(config.upcomingMeetingsDayCount == UpcomingMeetingsWindow.defaultDayCount)
         #expect(config.hiddenCalendarEventSourceHints.isEmpty)
         #expect(config.dictationTriggerMode == .holdToRecord)
+        #expect(config.enableSubmitOnEnter == false)
     }
 
     @Test("LM Studio cleanup readiness requires model and valid URL")
@@ -1081,6 +1082,7 @@ struct AppConfigTests {
             "google-event-1": UnifiedCalendarEvent.CalendarSource.googleCalendar.rawValue,
         ]
         config.dictationTriggerMode = .tapToToggle
+        config.enableSubmitOnEnter = true
 
         let data = try JSONEncoder().encode(config)
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
@@ -1156,6 +1158,7 @@ struct AppConfigTests {
         #expect(decoded.upcomingMeetingsDayCount == UpcomingMeetingsWindow.today.dayCount)
         #expect(decoded.hiddenCalendarEventSourceHints == config.hiddenCalendarEventSourceHints)
         #expect(decoded.dictationTriggerMode == .tapToToggle)
+        #expect(decoded.enableSubmitOnEnter == true)
     }
 
     @Test("Automatic diagnostic issue prompts default off when absent")
@@ -2318,6 +2321,73 @@ struct HotkeyMonitorTests {
         monitor.handleFlagsChanged(keyCode: 55, flags: [])
         #expect(toggleStartCount == 1)
         #expect(toggleStopCount == 1)
+        #expect(!monitor.isToggleRecording)
+    }
+
+    // MARK: - Submit on Enter
+
+    @Test("Enter during toggle fires stop-and-submit callback")
+    @MainActor
+    func enterDuringToggleFiresStopAndSubmit() {
+        let monitor = HotkeyMonitor(doubleTapWindow: 0.35)
+        monitor.tapToToggleEnabled = true
+        monitor.submitOnEnterEnabled = true
+        var toggleStartCount = 0
+        var toggleStopCount = 0
+        var submitCount = 0
+        monitor.onToggleStart = { toggleStartCount += 1 }
+        monitor.onToggleStop = { toggleStopCount += 1 }
+        monitor.onToggleStopAndSubmit = { submitCount += 1 }
+
+        // Start toggle (down + up — tap-to-toggle fires on release)
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        #expect(toggleStartCount == 1)
+        #expect(monitor.isToggleRecording)
+
+        // Press Enter → should fire submit, not plain stop
+        let consumed = monitor.handleKeyDown(keyCode: 36)
+        #expect(consumed == true)
+        #expect(submitCount == 1)
+        #expect(toggleStopCount == 0)
+        #expect(!monitor.isToggleRecording)
+    }
+
+    @Test("Enter does nothing when toggle is not active")
+    @MainActor
+    func enterDoesNothingWhenToggleNotActive() {
+        let monitor = HotkeyMonitor()
+        monitor.submitOnEnterEnabled = true
+        var submitCount = 0
+        monitor.onToggleStopAndSubmit = { submitCount += 1 }
+
+        let consumed = monitor.handleKeyDown(keyCode: 36)
+        #expect(consumed == false)
+        #expect(submitCount == 0)
+    }
+
+    @Test("Escape still cancels toggle without firing submit")
+    @MainActor
+    func escapeCancelsToggleWithoutFiringSubmit() {
+        let monitor = HotkeyMonitor(doubleTapWindow: 0.35)
+        monitor.tapToToggleEnabled = true
+        monitor.submitOnEnterEnabled = true
+        var submitCount = 0
+        var cancelCount = 0
+        monitor.onToggleStart = {}
+        monitor.onToggleStopAndSubmit = { submitCount += 1 }
+        monitor.onCancel = { cancelCount += 1 }
+
+        // Start toggle (down + up)
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        #expect(monitor.isToggleRecording)
+
+        // Escape → cancel, not submit
+        let consumed = monitor.handleKeyDown(keyCode: 53)
+        #expect(consumed == true)
+        #expect(cancelCount == 1)
+        #expect(submitCount == 0)
         #expect(!monitor.isToggleRecording)
     }
 }

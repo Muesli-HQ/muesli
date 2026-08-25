@@ -63,7 +63,7 @@ enum PasteController {
         },
         simulatePasteAction: @escaping @MainActor () -> Bool = PasteController.simulatePaste,
         onPasteFinished: @escaping @MainActor (NSRunningApplication?) -> Void = { _ in },
-        onClipboardSettled: @escaping @MainActor () -> Void = {},
+        onClipboardSettled: @escaping @MainActor (Bool) -> Void = { _ in },
         onLifecycleEvent: @escaping @MainActor (LifecycleEvent) -> Void = { _ in }
     ) {
         guard !text.isEmpty else { return }
@@ -92,13 +92,13 @@ enum PasteController {
                         onLifecycleEvent(.clipboardRestoreSkipped)
                     }
                     onPasteFinished(nil)
-                    onClipboardSettled()
+                    onClipboardSettled(false)
                     return
                 }
                 guard pasteboard.changeCount == pasteChangeCount else {
                     onLifecycleEvent(.clipboardOwnershipLost)
                     onPasteFinished(nil)
-                    onClipboardSettled()
+                    onClipboardSettled(false)
                     return
                 }
             }
@@ -116,7 +116,7 @@ enum PasteController {
                 } else {
                     onLifecycleEvent(.clipboardRestoreSkipped)
                 }
-                onClipboardSettled()
+                onClipboardSettled(didDispatchPaste)
             }
 
             onPasteFinished(didDispatchPaste ? targetApplication : nil)
@@ -146,6 +146,44 @@ enum PasteController {
     }
 
     // MARK: - Private
+
+    /// Simulate a Return (Enter) keypress in the frontmost app. Used to submit
+    /// the just-pasted prompt in apps like Cursor or Codex.
+    ///
+    /// If `expectedTargetPID` is provided, the Return is only posted when the
+    /// frontmost app at call time still matches that PID. This prevents the
+    /// Return from landing in a different app if the user Cmd-Tabbed away
+    /// during the paste → submit delay.
+    @MainActor
+    static func simulateReturnKey(
+        expectedTargetPID: pid_t? = nil,
+        frontmostApplicationProvider: @escaping @MainActor () -> NSRunningApplication? = {
+            NSWorkspace.shared.frontmostApplication
+        }
+    ) -> Bool {
+        if let expectedPID = expectedTargetPID {
+            let frontmost = frontmostApplicationProvider()
+            guard frontmost?.processIdentifier == expectedPID else {
+                fputs("[muesli-native] skipping return key — frontmost app changed since paste\n", stderr)
+                return false
+            }
+        }
+
+        guard let source = CGEventSource(stateID: .combinedSessionState) else {
+            fputs("[muesli-native] failed to create event source for return key\n", stderr)
+            return false
+        }
+        let keyCode: CGKeyCode = 36 // Return
+        guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
+        else {
+            fputs("[muesli-native] failed to create keyboard events for return key\n", stderr)
+            return false
+        }
+        keyDown.post(tap: .cghidEventTap)
+        keyUp.post(tap: .cghidEventTap)
+        return true
+    }
 
     private static func simulatePaste() -> Bool {
         guard let source = CGEventSource(stateID: .combinedSessionState) else {

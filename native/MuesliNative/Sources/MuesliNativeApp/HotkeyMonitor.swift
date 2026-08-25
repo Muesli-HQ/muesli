@@ -47,6 +47,7 @@ final class HotkeyMonitor {
     var onCancel: (() -> Void)?
     var onToggleStart: (() -> Void)?
     var onToggleStop: (() -> Void)?
+    var onToggleStopAndSubmit: (() -> Void)?
     var targetKeyCode: UInt16 = 55
     var doubleTapEnabled: Bool = true
     var tapToToggleEnabled: Bool = false
@@ -392,6 +393,17 @@ final class HotkeyMonitor {
             return false
         }
 
+        // Enter during toggle mode: stop dictation and submit (paste + Enter).
+        // Only the dictation monitor has onToggleStopAndSubmit wired — gate on
+        // it so Enter doesn't interfere with computer-use or meeting toggles.
+        if type == .keyDown && keyCode == 36 && toggleActive, onToggleStopAndSubmit != nil {
+            fputs("[hotkey] enter → toggle stop and submit (combination)\n", stderr)
+            toggleActive = false
+            cancelTimers()
+            onToggleStopAndSubmit?()
+            return true
+        }
+
         guard let targetMods = combinationModifiers,
               let targetKey = combinationKeyCode else { return false }
 
@@ -638,6 +650,19 @@ final class HotkeyMonitor {
                 return true
             }
             return false
+        }
+
+        // Enter during toggle mode: stop dictation and submit (paste + Enter).
+        // Only the dictation monitor has onToggleStopAndSubmit wired — gate on
+        // it so Enter doesn't interfere with computer-use or meeting toggles.
+        // The CGEventTap consumes this event so the physical Enter never
+        // reaches the frontmost app.
+        if keyCode == 36 && toggleActive, onToggleStopAndSubmit != nil {
+            fputs("[hotkey] enter → toggle stop and submit\n", stderr)
+            toggleActive = false
+            cancelTimers()
+            onToggleStopAndSubmit?()
+            return true
         }
 
         if targetKeyDown && !toggleActive {

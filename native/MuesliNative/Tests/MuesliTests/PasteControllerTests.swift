@@ -137,7 +137,7 @@ struct PasteControllerTests {
                 onPasteFinished: { _ in
                     events.append("completion_bookkeeping")
                 },
-                onClipboardSettled: {
+                onClipboardSettled: { _ in
                     events.append("clipboard_settled")
                     continuation.resume(returning: events)
                 },
@@ -328,6 +328,98 @@ struct PasteControllerTests {
         try await Task.sleep(nanoseconds: 700_000_000)
 
         #expect(pasteboard.string(forType: .string) == "user-copied-after-paste")
+    }
+
+    // MARK: - simulateReturnKey target verification
+
+    @Test("simulateReturnKey without target PID posts unconditionally")
+    func returnKeyWithoutTargetPIDPostsUnconditionally() {
+        let result = PasteController.simulateReturnKey(
+            expectedTargetPID: nil,
+            frontmostApplicationProvider: { NSRunningApplication.current }
+        )
+        #expect(result == true)
+    }
+
+    @Test("simulateReturnKey posts when frontmost matches expected PID")
+    func returnKeyPostsWhenFrontmostMatches() {
+        let targetApp = NSRunningApplication.current
+        let result = PasteController.simulateReturnKey(
+            expectedTargetPID: targetApp.processIdentifier,
+            frontmostApplicationProvider: { targetApp }
+        )
+        #expect(result == true)
+    }
+
+    @Test("simulateReturnKey skips when frontmost app changed since paste")
+    func returnKeySkipsWhenFrontmostChanged() {
+        let originalApp = NSRunningApplication.current
+        let differentPID: pid_t = 99999
+        guard originalApp.processIdentifier != differentPID else { return }
+        let result = PasteController.simulateReturnKey(
+            expectedTargetPID: differentPID,
+            frontmostApplicationProvider: { originalApp }
+        )
+        #expect(result == false)
+    }
+
+    @Test("simulateReturnKey skips when frontmost app is nil")
+    func returnKeySkipsWhenFrontmostIsNil() {
+        let result = PasteController.simulateReturnKey(
+            expectedTargetPID: 12345,
+            frontmostApplicationProvider: { nil }
+        )
+        #expect(result == false)
+    }
+
+    // MARK: - onClipboardSettled paste success propagation
+
+    @Test("onClipboardSettled reports false when clipboard ownership is lost")
+    func clipboardSettledReportsFalseOnOwnershipLoss() async {
+        let pasteboard = makePasteboard()
+        pasteboard.clearContents()
+        pasteboard.setString("original", forType: .string)
+
+        let pasteSucceeded = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            PasteController.paste(
+                text: "dictated text",
+                pasteboard: pasteboard,
+                requireStagedClipboardOwnership: true,
+                targetApplicationProvider: {
+                    pasteboard.clearContents()
+                    pasteboard.setString("user-copied-during-delay", forType: .string)
+                    return NSRunningApplication.current
+                },
+                simulatePasteAction: { true },
+                onClipboardSettled: { succeeded in
+                    continuation.resume(returning: succeeded)
+                }
+            )
+        }
+
+        #expect(pasteSucceeded == false)
+    }
+
+    @Test("onClipboardSettled reports true after successful paste dispatch")
+    func clipboardSettledReportsTrueOnSuccess() async {
+        let pasteboard = makePasteboard()
+        pasteboard.clearContents()
+        pasteboard.setString("original", forType: .string)
+
+        let pasteSucceeded = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            PasteController.paste(
+                text: "dictated text",
+                pasteboard: pasteboard,
+                requireStagedClipboardOwnership: true,
+                targetApplicationProvider: { NSRunningApplication.current },
+                simulatePasteAction: { true },
+                onClipboardSettled: { succeeded in
+                    continuation.resume(returning: succeeded)
+                }
+            )
+        }
+
+        #expect(pasteSucceeded == true)
     }
 
     private func makePasteboard() -> NSPasteboard {

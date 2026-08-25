@@ -439,6 +439,9 @@ public final class MuesliController: NSObject {
     private var pendingDictationStopStartedAt: Date?
     private var pendingDictationStopSessionID: UUID?
     private var pendingReleaseSoundSessionID: UUID?
+    /// Set when Enter-to-submit is triggered during toggle dictation. After the
+    /// transcript is pasted, a Return keypress is sent to the frontmost app.
+    private var pendingSubmitAfterPaste: Bool = false
     private var pendingPreparingIndicatorWorkItem: DispatchWorkItem?
     private var activeComputerUseAudioSessionID: UUID?
     private var computerUseCommandStartedAt: Date?
@@ -636,6 +639,7 @@ public final class MuesliController: NSObject {
         hotkeyMonitor.onCancel = { [weak self] in self?.handleCancel() }
         hotkeyMonitor.onToggleStart = { [weak self] in self?.handleToggleStart() }
         hotkeyMonitor.onToggleStop = { [weak self] in self?.handleToggleStop() }
+        hotkeyMonitor.onToggleStopAndSubmit = { [weak self] in self?.handleToggleStopAndSubmit() }
         hotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
         hotkeyMonitor.tapToToggleEnabled = config.dictationTriggerMode == .tapToToggle
         configureHotkeyMonitorTiming()
@@ -8689,6 +8693,7 @@ public final class MuesliController: NSObject {
         // backends (see isStreamingDictationBackend) so the double-tap detection window
         // stays clean; beginRecording cold-starts here just like the toggle path.
         fputs("[muesli-native] recording start\n", stderr)
+        pendingSubmitAfterPaste = false
         meetingMonitor.suppressWhileActive()
         beginDictationOutput()
         dictationStartedAt = nil
@@ -8831,6 +8836,7 @@ public final class MuesliController: NSObject {
             return
         }
         fputs("[muesli-native] cancel\n", stderr)
+        pendingSubmitAfterPaste = false
         resetDictationOutputMode()
 
         if isNemotron35Streaming {
@@ -8879,6 +8885,7 @@ public final class MuesliController: NSObject {
             return false
         }
         fputs("[muesli-native] toggle dictation start\n", stderr)
+        pendingSubmitAfterPaste = false
         if dictationLatencyTraceID == nil {
             beginDictationLatencyTrace(reason: "toggle")
         }
@@ -8924,6 +8931,22 @@ public final class MuesliController: NSObject {
 
     private func handleToggleStop() {
         fputs("[muesli-native] toggle dictation stop\n", stderr)
+        indicator.isToggleDictation = false
+        handleStop()
+    }
+
+    /// Called when Enter is pressed during toggle dictation with submit-on-enter
+    /// enabled. Stops dictation (triggering transcription + paste) and arms a
+    /// flag so a Return keypress is sent to the frontmost app after paste settles.
+    /// The physical Enter is consumed by the CGEventTap, so only the synthetic
+    /// Return after paste reaches the target app.
+    private func handleToggleStopAndSubmit() {
+        guard config.enableSubmitOnEnter else {
+            handleToggleStop()
+            return
+        }
+        fputs("[muesli-native] toggle dictation stop and submit\n", stderr)
+        pendingSubmitAfterPaste = true
         indicator.isToggleDictation = false
         handleStop()
     }
@@ -8990,11 +9013,16 @@ public final class MuesliController: NSObject {
     private func handleStop() {
         if isMeetingRecording() {
             cancelDictationAudioSessionForMeetingRecordingIfNeeded()
+            pendingSubmitAfterPaste = false
             return
         }
-        if shouldIgnoreDictationCleanupForComputerUseActivity() { return }
+        if shouldIgnoreDictationCleanupForComputerUseActivity() {
+            pendingSubmitAfterPaste = false
+            return
+        }
         if shouldIgnoreCleanupAfterBlockedDictationStart {
             fputs("[muesli-native] ignoring dictation stop because start was blocked\n", stderr)
+            pendingSubmitAfterPaste = false
             return
         }
         fputs("[muesli-native] stop\n", stderr)
@@ -9130,6 +9158,15 @@ public final class MuesliController: NSObject {
         fputs("[muesli-native] Nemotron streaming done (\(String(format: "%.1f", duration))s)\n", stderr)
         finishDictationLatencyTrace("nemotron_stop")
         syncDictationRecorderWarmup(intent: .idlePrewarm(.backendRecovery))
+        if pendingSubmitAfterPaste {
+            pendingSubmitAfterPaste = false
+            if outputMode == .paste, !cleaned.isEmpty {
+                let targetPID = targetApp?.processID
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    PasteController.simulateReturnKey(expectedTargetPID: targetPID)
+                }
+            }
+        }
     }
 
     /// Releases the user-visible dictation state immediately after Cmd+V. Keep this path
@@ -9181,6 +9218,7 @@ public final class MuesliController: NSObject {
         markDictationLatency("stop_finished")
         guard let wavURL = stoppedWavURL else {
             fputs("[muesli-native] stop without wav\n", stderr)
+            pendingSubmitAfterPaste = false
             clearCapturedDictationSessionContext()
             resetDictationOutputMode()
             setState(.idle)
@@ -9192,6 +9230,7 @@ public final class MuesliController: NSObject {
         let duration = max(Date().timeIntervalSince(startedAt), 0)
         if duration < 0.3 {
             fputs("[muesli-native] discarded short recording\n", stderr)
+            pendingSubmitAfterPaste = false
             try? FileManager.default.removeItem(at: wavURL)
             if isDictationTestMode {
                 dictationTestCallback?("")
@@ -9254,6 +9293,7 @@ public final class MuesliController: NSObject {
                 if isTestMode {
                     await MainActor.run {
                         self.dictationTestCallback?(text)
+                        self.pendingSubmitAfterPaste = false
                         self.clearCapturedDictationSessionContext()
                         self.resetDictationOutputMode()
                         self.setState(.idle)
@@ -9269,6 +9309,7 @@ public final class MuesliController: NSObject {
                 }
                 guard !text.isEmpty else {
                     await MainActor.run {
+                        self.pendingSubmitAfterPaste = false
                         self.clearCapturedDictationSessionContext()
                         self.resetDictationOutputMode()
                         self.setState(.idle)
@@ -9288,7 +9329,8 @@ public final class MuesliController: NSObject {
                                 guard let self else { return }
                                 let targetApp = self.externalDictationTargetApp(from: targetApplication)
                                 completionTargetApp = targetApp
-                                self.releaseStandardDictationState()
+                                self.pendingSubmitAfterPaste = false
+                        self.releaseStandardDictationState()
                                 if self.config.enableDictionaryCorrectionPrompts {
                                     // This opt-in monitor only schedules its first Accessibility
                                     // poll after 100 ms, so starting it here captures immediate
@@ -9306,7 +9348,7 @@ public final class MuesliController: NSObject {
                                     trace: completionLatencyTrace
                                 )
                             },
-                            onClipboardSettled: { [weak self] in
+                            onClipboardSettled: { [weak self] pasteSucceeded in
                                 guard let self else { return }
                                 self.finishStandardDictationBookkeeping(
                                     text: text,
@@ -9321,6 +9363,14 @@ public final class MuesliController: NSObject {
                                     "bookkeeping_completed",
                                     trace: completionLatencyTrace
                                 )
+                                if self.pendingSubmitAfterPaste {
+                                    self.pendingSubmitAfterPaste = false
+                                    guard pasteSucceeded else { return }
+                                    let targetPID = completionTargetApp?.processID
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                        PasteController.simulateReturnKey(expectedTargetPID: targetPID)
+                                    }
+                                }
                             },
                             onLifecycleEvent: { [weak self] event in
                                 self?.markDictationLatency(
@@ -9330,6 +9380,7 @@ public final class MuesliController: NSObject {
                             }
                         )
                     } else {
+                        self.pendingSubmitAfterPaste = false
                         self.releaseStandardDictationState()
                         self.markDictationLatency("user_visible_completion", trace: completionLatencyTrace)
                         self.finishStandardDictationBookkeeping(
@@ -9350,6 +9401,7 @@ public final class MuesliController: NSObject {
             } catch is CancellationError {
                 fputs("[muesli-native] test dictation cancelled\n", stderr)
                 await MainActor.run {
+                    self.pendingSubmitAfterPaste = false
                     self.clearCapturedDictationSessionContext()
                     self.resetDictationOutputMode()
                     self.setState(.idle)
@@ -9360,6 +9412,7 @@ public final class MuesliController: NSObject {
             } catch {
                 fputs("[muesli-native] transcription failed: \(error)\n", stderr)
                 await MainActor.run {
+                    self.pendingSubmitAfterPaste = false
                     if self.isDictationTestMode {
                         self.dictationTestFailureCallback?(self.userFacingDictationTestError(error))
                     } else {
