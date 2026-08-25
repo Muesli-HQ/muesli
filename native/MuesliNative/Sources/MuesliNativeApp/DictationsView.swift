@@ -5,6 +5,7 @@ struct DictationsView: View {
     let appState: AppState
     let controller: MuesliController
     @State private var selectedFilter: HistoryDateFilter = .all
+    @State private var selectedRecord: DictationRecord?
 
     private var groupedDictations: [(id: Date, header: String, records: [DictationRecord])] {
         let calendar = Calendar.current
@@ -125,7 +126,16 @@ struct DictationsView: View {
                                                 controller.deleteDictation(id: record.id)
                                             }
                                         )
+                                        .contentShape(Rectangle())
+                                        .onTapGesture {
+                                            selectedRecord = record
+                                        }
                                         .contextMenu {
+                                            Button {
+                                                selectedRecord = record
+                                            } label: {
+                                                Label("View Pipeline", systemImage: "waveform.path")
+                                            }
                                             Button {
                                                 controller.copyToClipboard(record.rawText)
                                             } label: {
@@ -162,6 +172,9 @@ struct DictationsView: View {
                     .padding(.bottom, MuesliTheme.spacing24)
                 }
             }
+        }
+        .sheet(item: $selectedRecord) { record in
+            DictationDetailView(record: record, controller: controller)
         }
     }
 

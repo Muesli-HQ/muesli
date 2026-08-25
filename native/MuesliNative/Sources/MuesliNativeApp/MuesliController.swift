@@ -8919,6 +8919,26 @@ public final class MuesliController: NSObject {
         }
     }
 
+    /// Re-runs the post-processor on a stored raw ASR text and updates the
+    /// dictation's final text in the database. Called by the pipeline inspector.
+    @MainActor
+    func rerunPostProcessing(for dictationID: Int64) async -> String? {
+        guard let record = try? dictationStore.dictation(id: dictationID),
+              let asrText = record.asrText,
+              !asrText.isEmpty else {
+            return nil
+        }
+        let result = await transcriptionCoordinator.rerunPostProcessing(
+            rawText: asrText,
+            backend: selectedBackend,
+            customWords: serializedCustomWords()
+        )
+        guard !result.isEmpty else { return nil }
+        try? dictationStore.updateDictationText(id: dictationID, text: result)
+        syncAppState()
+        return result
+    }
+
     /// Hands-free dictation start for Shortcuts/App Intents. No-op (returns
     /// false) if dictation is already active or a meeting is recording or
     /// still starting, mirroring the admission guards the hotkey path uses.
@@ -9079,6 +9099,11 @@ public final class MuesliController: NSObject {
         fputs("[muesli-native] Nemotron streaming stop, got \(finalText.count) chars\n", stderr)
         let cleaned = FillerWordFilter.apply(finalText)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        // For Nemotron streaming, the raw ASR text is the pre-filler-filter
+        // output. Store it so the pipeline inspector can show the difference.
+        let nemotronRawASRText = cleaned == finalText.trimmingCharacters(in: .whitespacesAndNewlines)
+            ? nil
+            : finalText.trimmingCharacters(in: .whitespacesAndNewlines)
         let shouldPersistTargetApp = DictationAttributionPolicy.shouldPersist(
             isPasteOutput: outputMode == .paste,
             source: "dictation",
@@ -9097,6 +9122,7 @@ public final class MuesliController: NSObject {
                 durationSeconds: duration,
                 targetAppName: targetApp?.appName,
                 targetAppBundleID: targetApp?.bundleID,
+                asrText: nemotronRawASRText,
                 startedAt: startedAt,
                 endedAt: Date()
             )
@@ -9135,7 +9161,8 @@ public final class MuesliController: NSObject {
         startedAt: Date,
         outputMode: DictationOutputMode,
         targetApp: DictationCorrectionTargetApp?,
-        backend: String
+        backend: String,
+        asrText: String? = nil
     ) {
         _ = try? dictationStore.insertDictation(
             text: text,
@@ -9143,6 +9170,7 @@ public final class MuesliController: NSObject {
             appContext: appContext,
             targetAppName: targetApp?.appName,
             targetAppBundleID: targetApp?.bundleID,
+            asrText: asrText,
             startedAt: startedAt,
             endedAt: Date()
         )
@@ -9229,6 +9257,7 @@ public final class MuesliController: NSObject {
                 // Drop result if test was cancelled (user navigated away)
                 try Task.checkCancellation()
                 let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                let rawASRText = result.rawASRText
                 await MainActor.run {
                     self.markDictationLatency("transcription_completed", trace: completionLatencyTrace)
                 }
@@ -9298,7 +9327,8 @@ public final class MuesliController: NSObject {
                                     startedAt: startedAt,
                                     outputMode: outputMode,
                                     targetApp: completionTargetApp,
-                                    backend: transcriptionBackend.backend
+                                    backend: transcriptionBackend.backend,
+                                    asrText: rawASRText
                                 )
                                 self.finishDictationLatencyTrace(
                                     "bookkeeping_completed",
@@ -9322,7 +9352,8 @@ public final class MuesliController: NSObject {
                             startedAt: startedAt,
                             outputMode: outputMode,
                             targetApp: nil,
-                            backend: transcriptionBackend.backend
+                            backend: transcriptionBackend.backend,
+                            asrText: rawASRText
                         )
                         self.finishDictationLatencyTrace(
                             "bookkeeping_completed",

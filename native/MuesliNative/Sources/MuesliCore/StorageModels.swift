@@ -166,6 +166,7 @@ public struct DictationRecord: Identifiable, Codable, Sendable {
     public let source: String
     public let targetAppName: String?
     public let targetAppBundleID: String?
+    public let asrText: String?
     public let computerUseTrace: ComputerUseTraceRecord?
 
     public init(
@@ -178,6 +179,7 @@ public struct DictationRecord: Identifiable, Codable, Sendable {
         source: String = "dictation",
         targetAppName: String? = nil,
         targetAppBundleID: String? = nil,
+        asrText: String? = nil,
         computerUseTrace: ComputerUseTraceRecord? = nil
     ) {
         self.id = id
@@ -189,6 +191,7 @@ public struct DictationRecord: Identifiable, Codable, Sendable {
         self.source = source
         self.targetAppName = targetAppName
         self.targetAppBundleID = targetAppBundleID
+        self.asrText = asrText
         self.computerUseTrace = computerUseTrace
     }
 }

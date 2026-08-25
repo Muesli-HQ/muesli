@@ -11,6 +11,16 @@ struct SpeechSegment: Sendable {
 struct SpeechTranscriptionResult: Sendable {
     let text: String
     let segments: [SpeechSegment]
+    /// The raw ASR output before post-processing, captured for the pipeline
+    /// inspector. Nil when post-processing is disabled (no point storing a
+    /// duplicate) or for meeting transcriptions (which skip post-processing).
+    var rawASRText: String?
+
+    init(text: String, segments: [SpeechSegment], rawASRText: String? = nil) {
+        self.text = text
+        self.segments = segments
+        self.rawASRText = rawASRText
+    }
 }
 
 actor AppleSpeechUseLifecycle {
@@ -845,6 +855,13 @@ actor TranscriptionCoordinator {
         if !result.text.isEmpty {
             Qwen3PostProcessorLogging.logVerbose("Dictation raw transcript after artifact cleanup: \(result.text)")
         }
+        // Capture the raw ASR text before post-processing so the pipeline
+        // inspector can show what the model heard vs. what the filter produced.
+        // Only store it when post-processing is actually going to run —
+        // otherwise the final text IS the raw text and storing a copy is waste.
+        let rawASRText: String? = enablePostProcessor && !result.text.isEmpty
+            ? result.text
+            : nil
         // Capture this after ASR awaits. The snapshot is then passed through the
         // complete cleanup path, so a model switch cannot change the model or
         // empty-output policy for this dictation.
@@ -856,11 +873,34 @@ actor TranscriptionCoordinator {
             postProcessorSnapshot: postProcessorSnapshot,
             appContext: appContext
         ) ?? removeFillersWithLogging(result)
+        result.rawASRText = rawASRText
         let final = applyCustomWords(result, customWords: customWords)
         if !final.text.isEmpty {
             Qwen3PostProcessorLogging.logVerbose("Dictation final transcript: \(final.text)")
         }
         return final
+    }
+
+    /// Re-runs post-processing on a previously captured raw ASR text.
+    /// Used by the pipeline inspector to re-filter with current settings.
+    func rerunPostProcessing(
+        rawText: String,
+        backend: BackendOption,
+        customWords: [[String: Any]] = [],
+        appContext: String? = nil
+    ) async -> String {
+        var result = SpeechTranscriptionResult(text: rawText, segments: [])
+        result = removeArtifacts(result)
+        let postProcessorSnapshot = currentPostProcessorSnapshot()
+        result = await postProcessDictationIfNeeded(
+            result,
+            backend: backend,
+            enabled: true,
+            postProcessorSnapshot: postProcessorSnapshot,
+            appContext: appContext
+        ) ?? removeFillersWithLogging(result)
+        let final = applyCustomWords(result, customWords: customWords)
+        return final.text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func transcribeMeeting(

@@ -34,7 +34,7 @@ public final class DictationStore {
     private let databaseURL: URL
     private static let dictationColumns = """
     d.id, d.timestamp, d.duration_seconds, d.raw_text, d.app_context, d.word_count, d.source,
-    d.target_app_name, d.target_app_bundle_id,
+    d.target_app_name, d.target_app_bundle_id, d.asr_text,
     t.id, t.final_status, t.final_message, t.trace_json, t.created_at
     """
     private static let meetingColumns = """
@@ -72,6 +72,7 @@ public final class DictationStore {
             source TEXT NOT NULL DEFAULT 'dictation',
             target_app_name TEXT,
             target_app_bundle_id TEXT,
+            asr_text TEXT,
             started_at TEXT,
             ended_at TEXT,
             updated_at REAL NOT NULL DEFAULT 0,
@@ -240,6 +241,7 @@ public final class DictationStore {
             "ALTER TABLE dictations ADD COLUMN sync_dirty INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE dictations ADD COLUMN target_app_name TEXT",
             "ALTER TABLE dictations ADD COLUMN target_app_bundle_id TEXT",
+            "ALTER TABLE dictations ADD COLUMN asr_text TEXT",
             "ALTER TABLE meetings ADD COLUMN updated_at REAL NOT NULL DEFAULT 0",
             "ALTER TABLE meetings ADD COLUMN deleted_at REAL",
             "ALTER TABLE meetings ADD COLUMN cloud_record_name TEXT",
@@ -398,6 +400,7 @@ public final class DictationStore {
         source: String = "dictation",
         targetAppName: String? = nil,
         targetAppBundleID: String? = nil,
+        asrText: String? = nil,
         startedAt: Date,
         endedAt: Date
     ) throws -> Int64 {
@@ -407,8 +410,8 @@ public final class DictationStore {
         let sql = """
         INSERT INTO dictations
         (timestamp, duration_seconds, raw_text, app_context, word_count, source,
-         target_app_name, target_app_bundle_id, started_at, ended_at, updated_at, sync_dirty)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+         target_app_name, target_app_bundle_id, asr_text, started_at, ended_at, updated_at, sync_dirty)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -427,14 +430,48 @@ public final class DictationStore {
         sqlite3_bind_text(statement, 6, (source as NSString).utf8String, -1, nil)
         bindOptionalText(targetAppName, at: 7, statement: statement)
         bindOptionalText(targetAppBundleID, at: 8, statement: statement)
-        sqlite3_bind_text(statement, 9, (started as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(statement, 10, (ended as NSString).utf8String, -1, nil)
-        sqlite3_bind_double(statement, 11, Date().timeIntervalSince1970)
+        bindOptionalText(asrText, at: 9, statement: statement)
+        sqlite3_bind_text(statement, 10, (started as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 11, (ended as NSString).utf8String, -1, nil)
+        sqlite3_bind_double(statement, 12, Date().timeIntervalSince1970)
 
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         return sqlite3_last_insert_rowid(db)
+    }
+
+    /// Updates the final text (and word count) for an existing dictation.
+    /// Used by the pipeline inspector to apply re-run post-processing results.
+    public func updateDictationText(id: Int64, text: String) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+
+        let sql = """
+        UPDATE dictations
+        SET raw_text = ?,
+            word_count = ?,
+            updated_at = ?,
+            sync_dirty = 1
+        WHERE id = ? AND deleted_at IS NULL
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_text(statement, 1, (text as NSString).utf8String, -1, nil)
+        sqlite3_bind_int(statement, 2, Int32(Self.countWords(in: text)))
+        sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970)
+        sqlite3_bind_int64(statement, 4, id)
+
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
+        guard sqlite3_changes(db) > 0 else {
+            throw DictationStoreError.dictationNotFound(id: id)
+        }
     }
 
     public func recentDictations(
@@ -4699,21 +4736,21 @@ public final class DictationStore {
 
     private func makeDictationRecord(_ statement: OpaquePointer?) -> DictationRecord {
         let trace: ComputerUseTraceRecord?
-        if sqlite3_column_type(statement, 9) == SQLITE_NULL {
+        if sqlite3_column_type(statement, 10) == SQLITE_NULL {
             trace = nil
         } else {
-            let traceJSON = stringColumn(statement, index: 12)
+            let traceJSON = stringColumn(statement, index: 13)
             let events = (try? JSONDecoder().decode(
                 [ComputerUseTraceEvent].self,
                 from: Data(traceJSON.utf8)
             )) ?? []
             trace = ComputerUseTraceRecord(
-                id: sqlite3_column_int64(statement, 9),
+                id: sqlite3_column_int64(statement, 10),
                 dictationID: sqlite3_column_int64(statement, 0),
-                finalStatus: stringColumn(statement, index: 10),
-                finalMessage: stringColumn(statement, index: 11),
+                finalStatus: stringColumn(statement, index: 11),
+                finalMessage: stringColumn(statement, index: 12),
                 events: events,
-                createdAt: stringColumn(statement, index: 13)
+                createdAt: stringColumn(statement, index: 14)
             )
         }
 
@@ -4727,6 +4764,7 @@ public final class DictationStore {
             source: stringColumn(statement, index: 6),
             targetAppName: optionalStringColumn(statement, index: 7),
             targetAppBundleID: optionalStringColumn(statement, index: 8),
+            asrText: optionalStringColumn(statement, index: 9),
             computerUseTrace: trace
         )
     }
