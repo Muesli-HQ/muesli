@@ -29,6 +29,11 @@ enum PasteController {
     /// How long to wait after simulating Cmd+V before restoring the clipboard.
     /// The receiving app must have consumed the paste data within this window.
     private static let clipboardRestoreDelay: TimeInterval = 0.5
+    /// Accessibility calls cross a process boundary and can block their caller while
+    /// the target app is busy. Keep both each request and the full menu walk bounded;
+    /// an unavailable command falls back to leaving Quill output on the clipboard.
+    private static let targetPasteAXRequestTimeout: Float = 0.1
+    private static let targetPasteAXTraversalBudget: TimeInterval = 0.35
     private static let physicalKeyMap: [Character: (CGKeyCode, CGEventFlags)] = [
         "a": (0, []), "b": (11, []), "c": (8, []), "d": (2, []), "e": (14, []),
         "f": (3, []), "g": (5, []), "h": (4, []), "i": (34, []), "j": (38, []),
@@ -297,22 +302,33 @@ enum PasteController {
     /// localized menu titles such as "Paste".
     private static func performTargetPasteCommand(in application: NSRunningApplication) -> Bool? {
         guard AXIsProcessTrusted() else { return nil }
+        let deadline = Date().addingTimeInterval(targetPasteAXTraversalBudget)
         let appElement = AXUIElementCreateApplication(application.processIdentifier)
+        configureTargetPasteTimeout(for: appElement)
         guard let menuBar = axElement(appElement, attribute: kAXMenuBarAttribute as String),
-              let pasteItem = standardPasteMenuItem(in: menuBar, maxDepth: 4, visited: [])
+              let pasteItem = standardPasteMenuItem(
+                in: menuBar,
+                maxDepth: 4,
+                deadline: deadline,
+                visited: []
+              ),
+              Date() < deadline
         else { return nil }
-        guard axBool(pasteItem, attribute: kAXEnabledAttribute as String) == true else {
-            return false
-        }
+        // Menu enabled state is lazily validated by AppKit/Electron and can be stale
+        // while the menu is closed. AXPress is the authoritative acceptance signal.
         return AXUIElementPerformAction(pasteItem, kAXPressAction as CFString) == .success
     }
 
     private static func standardPasteMenuItem(
         in element: AXUIElement,
         maxDepth: Int,
+        deadline: Date,
         visited: Set<AXUIElement>
     ) -> AXUIElement? {
-        guard maxDepth >= 0, !visited.contains(element) else { return nil }
+        guard maxDepth >= 0,
+              Date() < deadline,
+              !visited.contains(element) else { return nil }
+        configureTargetPasteTimeout(for: element)
         var visited = visited
         visited.insert(element)
 
@@ -326,15 +342,21 @@ enum PasteController {
         }
 
         for child in axChildren(element) {
+            guard Date() < deadline else { return nil }
             if let match = standardPasteMenuItem(
                 in: child,
                 maxDepth: maxDepth - 1,
+                deadline: deadline,
                 visited: visited
             ) {
                 return match
             }
         }
         return nil
+    }
+
+    private static func configureTargetPasteTimeout(for element: AXUIElement) {
+        _ = AXUIElementSetMessagingTimeout(element, targetPasteAXRequestTimeout)
     }
 
     private static func axElement(_ element: AXUIElement, attribute: String) -> AXUIElement? {
@@ -370,16 +392,6 @@ enum PasteController {
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
               let number = value as? NSNumber else { return nil }
         return number.intValue
-    }
-
-    private static func axBool(_ element: AXUIElement, attribute: String) -> Bool? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
-              let value else { return nil }
-        if CFGetTypeID(value) == CFBooleanGetTypeID() {
-            return CFBooleanGetValue((value as! CFBoolean))
-        }
-        return value as? Bool
     }
 
     private static func postPhysicalKey(source: CGEventSource, keyCode: CGKeyCode, flags: CGEventFlags) {
