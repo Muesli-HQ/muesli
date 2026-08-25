@@ -384,6 +384,20 @@ struct IndicatorFrameSizeTests {
         #expect(quillSize.width > computerUseSize.width)
         #expect(quillSize.height == computerUseSize.height)
     }
+
+    @Test("Quill instruction pill keeps its final wrapped words visible")
+    @MainActor
+    func quillInstructionPillFitsRenderedTextField() {
+        // This ends at an AppKit word-wrap boundary where NSString boundingRect
+        // reports seven lines but NSTextField renders eight.
+        let transcript = "Rewrite this as a concise professional email while preserving every detail and ensuring the final words remain visible in the floating pill please make the tone warm but direct and retain all"
+        let heights = FloatingIndicatorController.quillInstructionTextHeightsForTesting(
+            transcript: transcript,
+            screenWidth: 300
+        )
+
+        #expect(heights.allocated >= heights.required)
+    }
 }
 
 @Suite("Floating meeting transcript")

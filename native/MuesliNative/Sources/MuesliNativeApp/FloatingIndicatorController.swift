@@ -2151,6 +2151,25 @@ final class FloatingIndicatorController: NSObject {
         )
     }
 
+    static func quillInstructionTextHeightsForTesting(
+        transcript: String,
+        screenWidth: CGFloat,
+        screenHeight: CGFloat = 900
+    ) -> (allocated: CGFloat, required: CGFloat) {
+        let normalized = normalizedInstructionTranscript(transcript)
+        let size = quillInstructionPillSizeForTesting(
+            transcript: normalized,
+            screenWidth: screenWidth,
+            screenHeight: screenHeight
+        )
+        let textWidth = max(40, size.width - 80)
+        let font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        return (
+            allocated: max(16, size.height - 24),
+            required: transcriptTextFieldHeight(normalized, font: font, width: textWidth)
+        )
+    }
+
     private static func transcribingPillSize(title: String, screenWidth: CGFloat) -> NSSize {
         let font = NSFont.systemFont(ofSize: 11, weight: .regular)
         let iconWidth: CGFloat = 18
@@ -2178,10 +2197,25 @@ final class FloatingIndicatorController: NSObject {
         let chromeWidth = horizontalPadding + iconWidth + gap + progressWidth + horizontalPadding
         let minWidth = min(CGFloat(280), max(160, screen.width - 48))
         let maxWidth = max(minWidth, min(720, screen.width - 48))
-        let singleLineTextWidth = ceil((normalized as NSString).size(withAttributes: [.font: font]).width) + 2
+        // NSTextFieldCell reserves a little more horizontal drawing room than
+        // NSString reports. Account for it in Quill before deciding that a
+        // prompt fits on one line; otherwise the cell wraps the final word even
+        // when the pill still has room available.
+        let textFieldInsetAllowance: CGFloat = showsProgress ? 6 : 2
+        let singleLineTextWidth = ceil(
+            (normalized as NSString).size(withAttributes: [.font: font]).width
+        ) + textFieldInsetAllowance
         let preferredWidth = min(maxWidth, max(minWidth, chromeWidth + singleLineTextWidth))
         let textWidth = max(40, preferredWidth - chromeWidth)
-        let textHeight = transcriptTextHeight(normalized, font: font, width: textWidth)
+        // Quill keeps the spoken instruction on screen while the model works.
+        // Measure that text through the same AppKit cell used to render it: the
+        // NSString bounding box can disagree with NSTextField at word-wrap
+        // boundaries and leave the final rendered line outside the label frame.
+        // Keep CUA on its existing sizing path until its rendering is addressed
+        // independently.
+        let textHeight = showsProgress
+            ? transcriptTextFieldHeight(normalized, font: font, width: textWidth)
+            : transcriptTextHeight(normalized, font: font, width: textWidth)
         let maxHeight = max(CGFloat(56), screen.height - 48)
         let preferredHeight = max(CGFloat(44), ceil(textHeight) + (verticalPadding * 2))
         return NSSize(width: preferredWidth, height: min(preferredHeight, maxHeight))
@@ -2194,6 +2228,23 @@ final class FloatingIndicatorController: NSObject {
             attributes: [.font: font]
         )
         return max(16, ceil(bounding.height))
+    }
+
+    private static func transcriptTextFieldHeight(
+        _ text: String,
+        font: NSFont,
+        width: CGFloat
+    ) -> CGFloat {
+        let cell = NSTextFieldCell(textCell: text)
+        cell.font = font
+        cell.lineBreakMode = .byWordWrapping
+        cell.usesSingleLineMode = false
+        cell.wraps = true
+        cell.isScrollable = false
+        let size = cell.cellSize(
+            forBounds: NSRect(x: 0, y: 0, width: width, height: 100_000)
+        )
+        return max(16, ceil(size.height))
     }
 
     private static func normalizedInstructionTranscript(_ transcript: String) -> String {
