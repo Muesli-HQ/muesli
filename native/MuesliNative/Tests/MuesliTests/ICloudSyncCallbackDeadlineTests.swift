@@ -279,6 +279,49 @@ struct ICloudBridgeWorkingCopyTests {
         ) == .syncing)
     }
 
+    @Test("initial sync waits for pairing before its single retry")
+    func initialSyncFailureWaitsForCompanion() {
+        #expect(ICloudBridgeInitialSyncFailurePolicy.action(
+            isActivationPending: true,
+            isRetryAvailable: true,
+            isRecoverableFailure: true,
+            hasCompanionDevice: false,
+            companionDiscoveryState: .waiting
+        ) == .waitForCompanion)
+        #expect(ICloudBridgeInitialSyncFailurePolicy.action(
+            isActivationPending: true,
+            isRetryAvailable: true,
+            isRecoverableFailure: true,
+            hasCompanionDevice: true,
+            companionDiscoveryState: .idle
+        ) == .retryNow)
+    }
+
+    @Test("initial sync retry is bounded and preserves actionable failures")
+    func initialSyncRetryIsBounded() {
+        #expect(ICloudBridgeInitialSyncFailurePolicy.action(
+            isActivationPending: true,
+            isRetryAvailable: false,
+            isRecoverableFailure: true,
+            hasCompanionDevice: true,
+            companionDiscoveryState: .idle
+        ) == .fail)
+        #expect(ICloudBridgeInitialSyncFailurePolicy.action(
+            isActivationPending: true,
+            isRetryAvailable: true,
+            isRecoverableFailure: false,
+            hasCompanionDevice: true,
+            companionDiscoveryState: .idle
+        ) == .fail)
+        #expect(ICloudBridgeInitialSyncFailurePolicy.action(
+            isActivationPending: false,
+            isRetryAvailable: true,
+            isRecoverableFailure: true,
+            hasCompanionDevice: true,
+            companionDiscoveryState: .idle
+        ) == .fail)
+    }
+
     @Test("Mac dev builds generate the iOS dev sync scheme")
     func syncQRCodeMatchesBuildLane() {
         #expect(IPhoneBridgeLinks.syncDeepLinkURL(bundleIdentifier: "com.muesli.dev").scheme == "mueslidev")

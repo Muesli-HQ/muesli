@@ -887,6 +887,11 @@ struct SettingsView: View {
         case .checkingICloud:
             return "Checking iCloud…"
         case .syncing:
+            if appState.isICloudBridgeActivationPending {
+                return appState.iCloudBridgeCompanionDeviceName == nil
+                    ? "Setting up sync…"
+                    : "Device linked. Finishing sync…"
+            }
             return "Syncing…"
         case .needsICloud:
             return "Sign in to iCloud to sync."

@@ -123,6 +123,32 @@ enum ICloudSyncDisplayStatePolicy {
     }
 }
 
+enum ICloudBridgeInitialSyncFailureAction: Equatable {
+    case waitForCompanion
+    case retryNow
+    case fail
+}
+
+enum ICloudBridgeInitialSyncFailurePolicy {
+    static func action(
+        isActivationPending: Bool,
+        isRetryAvailable: Bool,
+        isRecoverableFailure: Bool,
+        hasCompanionDevice: Bool,
+        companionDiscoveryState: ICloudBridgeCompanionDiscoveryState
+    ) -> ICloudBridgeInitialSyncFailureAction {
+        guard isActivationPending,
+              isRetryAvailable,
+              isRecoverableFailure else {
+            return .fail
+        }
+        if hasCompanionDevice {
+            return .retryNow
+        }
+        return companionDiscoveryState == .waiting ? .waitForCompanion : .fail
+    }
+}
+
 enum ICloudSyncQRCodePresentationPhase: Equatable {
     case hidden
     case readyToScan
