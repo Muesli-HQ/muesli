@@ -109,6 +109,23 @@ struct ICloudSyncCallbackDeadlineTests {
 
 @Suite("iCloud bridge working copy")
 struct ICloudBridgeWorkingCopyTests {
+    @Test("newer iCloud work invalidates stale asynchronous completions")
+    func iCloudOperationGenerationsRejectStaleCompletions() {
+        var subscriptionGeneration = MuesliICloudOperationGeneration()
+        let cancelledPreparation = subscriptionGeneration.advance()
+        let currentPreparation = subscriptionGeneration.advance()
+
+        #expect(!subscriptionGeneration.isCurrent(cancelledPreparation))
+        #expect(subscriptionGeneration.isCurrent(currentPreparation))
+
+        var recoveryGeneration = MuesliICloudOperationGeneration()
+        let delayedReconnect = recoveryGeneration.advance()
+        let newerReset = recoveryGeneration.advance()
+
+        #expect(!recoveryGeneration.isCurrent(delayedReconnect))
+        #expect(recoveryGeneration.isCurrent(newerReset))
+    }
+
     @Test("iCloud operations serialize recovery behind active work")
     func iCloudOperationsDoNotOverlap() {
         #expect(MuesliICloudOperationPolicy.startDecision(

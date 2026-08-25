@@ -210,6 +210,20 @@ enum MuesliICloudOperationPolicy {
     }
 }
 
+struct MuesliICloudOperationGeneration {
+    private(set) var current: UInt64 = 0
+
+    @discardableResult
+    mutating func advance() -> UInt64 {
+        current &+= 1
+        return current
+    }
+
+    func isCurrent(_ candidate: UInt64) -> Bool {
+        candidate == current
+    }
+}
+
 struct PendingMeetingCompletionNotification {
     let meetingID: Int64?
     let title: String
@@ -546,6 +560,7 @@ public final class MuesliController: NSObject {
     private var iCloudSyncDebounceTask: Task<Void, Never>?
     private var pendingICloudSyncRequests = MuesliCKSyncRequestQueue()
     private var iCloudSubscriptionTask: Task<Void, Never>?
+    private var iCloudSubscriptionGeneration = MuesliICloudOperationGeneration()
     private var hasEnsuredICloudSubscription = false
     private var bridgeActivationPending = false
     private var bridgeDiscoveryPending = false
@@ -553,6 +568,7 @@ public final class MuesliController: NSObject {
     private var bridgeCompanionDiscoveryTask: Task<Void, Never>?
     private var bridgeCompanionDiscoveryActivity: NSObjectProtocol?
     private var pendingICloudRecoveryRequest: ICloudRecoveryRequest?
+    private var iCloudRecoveryGeneration = MuesliICloudOperationGeneration()
     private var hasStarted = false
 
     private enum ICloudRecoveryRequest {
@@ -961,6 +977,7 @@ public final class MuesliController: NSObject {
         cancelActiveICloudSyncTask()
         iCloudSyncDebounceTask?.cancel()
         iCloudSyncDebounceTask = nil
+        iCloudSubscriptionGeneration.advance()
         iCloudSubscriptionTask?.cancel()
         iCloudSubscriptionTask = nil
         let syncEngineCancellationTask = retireCKSyncEngine()
@@ -1939,11 +1956,14 @@ public final class MuesliController: NSObject {
         let generation = iCloudSyncGeneration
         let syncEngine = resolvedCKSyncEngine()
         iCloudSubscriptionTask?.cancel()
+        let subscriptionGeneration = iCloudSubscriptionGeneration.advance()
         iCloudSubscriptionTask = Task { [weak self] in
             do {
                 try await syncEngine.prepare()
                 await MainActor.run {
-                    guard let self, self.iCloudSyncGeneration == generation else { return }
+                    guard let self,
+                          self.iCloudSyncGeneration == generation,
+                          self.iCloudSubscriptionGeneration.isCurrent(subscriptionGeneration) else { return }
                     self.iCloudSubscriptionTask = nil
                     self.hasEnsuredICloudSubscription = true
                     if self.startPendingICloudRecoveryIfNeeded() {
@@ -1956,7 +1976,9 @@ public final class MuesliController: NSObject {
                 }
             } catch is CancellationError {
                 await MainActor.run {
-                    guard let self, self.iCloudSyncGeneration == generation else { return }
+                    guard let self,
+                          self.iCloudSyncGeneration == generation,
+                          self.iCloudSubscriptionGeneration.isCurrent(subscriptionGeneration) else { return }
                     self.iCloudSubscriptionTask = nil
                     self.bridgeActivationPending = false
                     self.appState.isICloudBridgeActivationPending = false
@@ -1965,7 +1987,9 @@ public final class MuesliController: NSObject {
                 }
             } catch {
                 await MainActor.run {
-                    guard let self, self.iCloudSyncGeneration == generation else { return }
+                    guard let self,
+                          self.iCloudSyncGeneration == generation,
+                          self.iCloudSubscriptionGeneration.isCurrent(subscriptionGeneration) else { return }
                     self.iCloudSubscriptionTask = nil
                     self.bridgeActivationPending = false
                     self.appState.isICloudBridgeActivationPending = false
@@ -1985,6 +2009,7 @@ public final class MuesliController: NSObject {
             disableICloudSyncForUnavailableEntitlement()
             return
         }
+        iCloudRecoveryGeneration.advance()
         switch MuesliICloudOperationPolicy.startDecision(
             hasSyncTask: iCloudSyncTask != nil,
             hasSubscriptionTask: iCloudSubscriptionTask != nil
@@ -2012,11 +2037,14 @@ public final class MuesliController: NSObject {
         iCloudSyncGeneration += 1
         let generation = iCloudSyncGeneration
         let syncEngine = resolvedCKSyncEngine()
+        let subscriptionGeneration = iCloudSubscriptionGeneration.advance()
         iCloudSubscriptionTask = Task { [weak self] in
             do {
                 try await syncEngine.reconnectLegacyLibrary()
                 await MainActor.run {
-                    guard let self, self.iCloudSyncGeneration == generation else { return }
+                    guard let self,
+                          self.iCloudSyncGeneration == generation,
+                          self.iCloudSubscriptionGeneration.isCurrent(subscriptionGeneration) else { return }
                     self.iCloudSubscriptionTask = nil
                     self.hasEnsuredICloudSubscription = true
                     self.appState.iCloudSyncStatus = "Reconnected. Syncing your text..."
@@ -2037,7 +2065,9 @@ public final class MuesliController: NSObject {
                 }
             } catch is CancellationError {
                 await MainActor.run {
-                    guard let self, self.iCloudSyncGeneration == generation else { return }
+                    guard let self,
+                          self.iCloudSyncGeneration == generation,
+                          self.iCloudSubscriptionGeneration.isCurrent(subscriptionGeneration) else { return }
                     self.iCloudSubscriptionTask = nil
                     self.bridgeActivationPending = false
                     self.appState.isICloudBridgeActivationPending = false
@@ -2046,7 +2076,9 @@ public final class MuesliController: NSObject {
                 }
             } catch {
                 await MainActor.run {
-                    guard let self, self.iCloudSyncGeneration == generation else { return }
+                    guard let self,
+                          self.iCloudSyncGeneration == generation,
+                          self.iCloudSubscriptionGeneration.isCurrent(subscriptionGeneration) else { return }
                     self.iCloudSubscriptionTask = nil
                     self.bridgeActivationPending = false
                     self.appState.isICloudBridgeActivationPending = false
@@ -2062,6 +2094,7 @@ public final class MuesliController: NSObject {
     }
 
     func resetICloudSync() {
+        iCloudRecoveryGeneration.advance()
         switch MuesliICloudOperationPolicy.startDecision(
             hasSyncTask: iCloudSyncTask != nil,
             hasSubscriptionTask: iCloudSubscriptionTask != nil
@@ -2090,11 +2123,14 @@ public final class MuesliController: NSObject {
         iCloudSyncGeneration += 1
         let generation = iCloudSyncGeneration
         let syncEngine = resolvedCKSyncEngine()
+        let subscriptionGeneration = iCloudSubscriptionGeneration.advance()
         iCloudSubscriptionTask = Task { [weak self] in
             do {
                 try await syncEngine.resetCloudSyncAccount()
                 await MainActor.run {
-                    guard let self, self.iCloudSyncGeneration == generation else { return }
+                    guard let self,
+                          self.iCloudSyncGeneration == generation,
+                          self.iCloudSubscriptionGeneration.isCurrent(subscriptionGeneration) else { return }
                     self.iCloudSubscriptionTask = nil
                     self.appState.isICloudSyncInProgress = false
                     MuesliBridgeDeviceIdentity.clearRemoteDevice()
@@ -2106,6 +2142,7 @@ public final class MuesliController: NSObject {
                     self.updateConfig(iCloudDisableCompletionStatus: completionStatus) {
                         $0.iCloudSyncEnabled = false
                     }
+                    let pendingRecoveryGeneration = self.iCloudRecoveryGeneration.current
                     self.appState.iCloudSyncStatus = completionStatus
                     self.appState.iCloudBridgeState = .notConfigured
                     self.appState.iCloudBridgeMessage = nil
@@ -2113,11 +2150,16 @@ public final class MuesliController: NSObject {
                         "icloud_sync_reset_completed",
                         parameters: ["platform": "macos"]
                     )
-                    self.resumePendingICloudRecoveryAfterResetIfNeeded(pendingRecovery)
+                    self.resumePendingICloudRecoveryAfterResetIfNeeded(
+                        pendingRecovery,
+                        generation: pendingRecoveryGeneration
+                    )
                 }
             } catch is CancellationError {
                 await MainActor.run {
-                    guard let self, self.iCloudSyncGeneration == generation else { return }
+                    guard let self,
+                          self.iCloudSyncGeneration == generation,
+                          self.iCloudSubscriptionGeneration.isCurrent(subscriptionGeneration) else { return }
                     self.iCloudSubscriptionTask = nil
                     self.appState.isICloudSyncInProgress = false
                     self.refreshICloudBridgeStateForConfig()
@@ -2125,7 +2167,9 @@ public final class MuesliController: NSObject {
                 }
             } catch {
                 await MainActor.run {
-                    guard let self, self.iCloudSyncGeneration == generation else { return }
+                    guard let self,
+                          self.iCloudSyncGeneration == generation,
+                          self.iCloudSubscriptionGeneration.isCurrent(subscriptionGeneration) else { return }
                     self.iCloudSubscriptionTask = nil
                     self.appState.isICloudSyncInProgress = false
                     self.presentICloudSyncFailure(error, statusPrefix: "Reset failed")
@@ -2191,11 +2235,13 @@ public final class MuesliController: NSObject {
             return
         }
         let syncEngine = resolvedCKSyncEngine()
+        let subscriptionGeneration = iCloudSubscriptionGeneration.advance()
         iCloudSubscriptionTask = Task { [weak self] in
             do {
                 try await syncEngine.prepare()
                 await MainActor.run {
-                    guard let self else { return }
+                    guard let self,
+                          self.iCloudSubscriptionGeneration.isCurrent(subscriptionGeneration) else { return }
                     self.hasEnsuredICloudSubscription = true
                     self.iCloudSubscriptionTask = nil
                     self.resumePendingICloudWorkAfterSubscription()
@@ -2206,7 +2252,8 @@ public final class MuesliController: NSObject {
                     stderr
                 )
                 await MainActor.run {
-                    guard let self else { return }
+                    guard let self,
+                          self.iCloudSubscriptionGeneration.isCurrent(subscriptionGeneration) else { return }
                     self.iCloudSubscriptionTask = nil
                     self.resumePendingICloudWorkAfterSubscription()
                 }
@@ -2470,7 +2517,8 @@ public final class MuesliController: NSObject {
     }
 
     private func resumePendingICloudRecoveryAfterResetIfNeeded(
-        _ pendingRecovery: ICloudRecoveryRequest?
+        _ pendingRecovery: ICloudRecoveryRequest?,
+        generation: UInt64
     ) {
         guard let pendingRecovery else { return }
         // Disabling sync retires the old engine and intentionally clears pending
@@ -2479,7 +2527,8 @@ public final class MuesliController: NSObject {
         let cancellationTask = ckSyncEngineCancellationTask
         Task { [weak self] in
             await cancellationTask?.value
-            guard let self else { return }
+            guard let self,
+                  self.iCloudRecoveryGeneration.isCurrent(generation) else { return }
             self.pendingICloudRecoveryRequest = pendingRecovery
             self.resumePendingICloudWorkAfterSubscription()
         }
@@ -2520,6 +2569,7 @@ public final class MuesliController: NSObject {
 
     private func cancelActiveICloudSyncTask() {
         iCloudSyncGeneration += 1
+        iCloudRecoveryGeneration.advance()
         iCloudSyncTask?.cancel()
         iCloudSyncTask = nil
         pendingICloudSyncRequests.reset()
@@ -2645,6 +2695,7 @@ public final class MuesliController: NSObject {
     }
 
     private func resetICloudSubscriptionState() {
+        iCloudSubscriptionGeneration.advance()
         iCloudSubscriptionTask?.cancel()
         iCloudSubscriptionTask = nil
         hasEnsuredICloudSubscription = false
