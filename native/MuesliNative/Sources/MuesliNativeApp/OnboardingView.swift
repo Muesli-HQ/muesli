@@ -1653,7 +1653,7 @@ struct OnboardingView: View {
             dictationTestError = nil
             controller.dictationTestBackend = selectedBackend
             controller.dictationTestCohereLanguage = selectedCohereLanguage
-            controller.startHotkeyMonitor(keyCode: selectedHotkey.keyCode)
+            controller.startHotkeyMonitor(keyCode: selectedHotkey.keyCode, requestPermissionIfNeeded: false)
             isDictationTestMonitorActive = true
         }
     }

@@ -3858,11 +3858,11 @@ public final class MuesliController: NSObject {
         setState(.idle)
     }
 
-    func startHotkeyMonitor(keyCode: UInt16? = nil) {
+    func startHotkeyMonitor(keyCode: UInt16? = nil, requestPermissionIfNeeded: Bool = true) {
         if let keyCode {
             hotkeyMonitor.configure(keyCode: keyCode)
         }
-        hotkeyMonitor.start()
+        hotkeyMonitor.start(requestPermissionIfNeeded: requestPermissionIfNeeded)
         startComputerUseHotkeyMonitorIfNeeded()
     }
 

@@ -99,7 +99,7 @@ final class HotkeyMonitor {
         }
     }
 
-    func start() {
+    func start(requestPermissionIfNeeded: Bool = true) {
         guard eventTap == nil else { return }
 
         // CGEventTap with .defaultTap can both observe AND consume events.
@@ -109,7 +109,7 @@ final class HotkeyMonitor {
         // during onboarding).
         let hasListenAccess = CGPreflightListenEventAccess()
         fputs("[hotkey] listen event access: \(hasListenAccess)\n", stderr)
-        if !hasListenAccess {
+        if !hasListenAccess && requestPermissionIfNeeded {
             let requested = CGRequestListenEventAccess()
             fputs("[hotkey] requested listen event access: \(requested)\n", stderr)
         }
@@ -143,7 +143,7 @@ final class HotkeyMonitor {
                 }
                 
                 let consumed = monitor.handle(nsEvent)
-                if consumed {
+                if consumed && type != .flagsChanged {
                     // Returning nil consumes the event — it never reaches
                     // the frontmost app. This is the key capability that
                     // NSEvent.addGlobalMonitorForEvents cannot provide.
