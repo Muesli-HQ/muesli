@@ -3863,7 +3863,7 @@ public final class MuesliController: NSObject {
             hotkeyMonitor.configure(keyCode: keyCode)
         }
         hotkeyMonitor.start(requestPermissionIfNeeded: requestPermissionIfNeeded)
-        startComputerUseHotkeyMonitorIfNeeded()
+        startComputerUseHotkeyMonitorIfNeeded(requestPermissionIfNeeded: requestPermissionIfNeeded)
     }
 
     func stopHotkeyMonitor() {
@@ -7340,7 +7340,7 @@ public final class MuesliController: NSObject {
         meetingRecordingHotkeyMonitor.configureTriggerThreshold(milliseconds: config.meetingRecordingHotkeyTriggerThresholdMS)
     }
 
-    private func startComputerUseHotkeyMonitorIfNeeded() {
+    private func startComputerUseHotkeyMonitorIfNeeded(requestPermissionIfNeeded: Bool = true) {
         guard config.enableComputerUseHotkey else {
             computerUseHotkeyMonitor.stop()
             return
@@ -7362,7 +7362,7 @@ public final class MuesliController: NSObject {
         }
         computerUseHotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
         computerUseHotkeyMonitor.configure(config.computerUseHotkey)
-        computerUseHotkeyMonitor.start()
+        computerUseHotkeyMonitor.start(requestPermissionIfNeeded: requestPermissionIfNeeded)
     }
 
     private func startMeetingRecordingHotkeyMonitorIfNeeded() {
