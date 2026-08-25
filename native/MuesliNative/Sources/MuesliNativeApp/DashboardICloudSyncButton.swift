@@ -66,8 +66,11 @@ struct DashboardICloudSyncButton: View {
                 Image(systemName: hasError ? "icloud.slash" : "icloud")
                     .font(.system(size: 20, weight: .semibold))
 
-                DashboardRotatingSyncGlyph(isAnimating: isSyncing)
-                    .font(.system(size: 8, weight: .bold))
+                RotatingSyncIcon(
+                    systemName: "arrow.triangle.2.circlepath",
+                    isAnimating: isSyncing,
+                    font: .system(size: 8, weight: .bold)
+                )
                     .offset(y: 1)
                     .opacity(hasError ? 0 : 1)
             }
@@ -89,27 +92,25 @@ struct DashboardICloudSyncButton: View {
     }
 }
 
-private struct DashboardRotatingSyncGlyph: View {
+struct RotatingSyncIcon: View {
+    let systemName: String
     let isAnimating: Bool
+    let font: Font
     @State private var rotationDegrees = 0.0
 
     var body: some View {
-        Image(systemName: "arrow.triangle.2.circlepath")
+        Image(systemName: systemName)
+            .font(font)
+            .symbolRenderingMode(.hierarchical)
             .rotationEffect(.degrees(rotationDegrees))
-            .onAppear {
-                updateRotation(animated: false)
-            }
-            .onChange(of: isAnimating) { _, _ in
-                updateRotation(animated: true)
-            }
+            .onAppear { updateRotation(animated: false) }
+            .onChange(of: isAnimating) { _, _ in updateRotation(animated: true) }
     }
 
     private func updateRotation(animated: Bool) {
         guard isAnimating else {
             if animated {
-                withAnimation(.easeOut(duration: 0.15)) {
-                    rotationDegrees = 0
-                }
+                withAnimation(.easeOut(duration: 0.15)) { rotationDegrees = 0 }
             } else {
                 rotationDegrees = 0
             }

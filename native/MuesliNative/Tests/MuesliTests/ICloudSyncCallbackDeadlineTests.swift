@@ -109,43 +109,6 @@ struct ICloudSyncCallbackDeadlineTests {
 
 @Suite("iCloud bridge working copy")
 struct ICloudBridgeWorkingCopyTests {
-    @Test("newer iCloud work invalidates stale asynchronous completions")
-    func iCloudOperationGenerationsRejectStaleCompletions() {
-        var subscriptionGeneration = MuesliICloudOperationGeneration()
-        let cancelledPreparation = subscriptionGeneration.advance()
-        let currentPreparation = subscriptionGeneration.advance()
-
-        #expect(!subscriptionGeneration.isCurrent(cancelledPreparation))
-        #expect(subscriptionGeneration.isCurrent(currentPreparation))
-
-        var recoveryGeneration = MuesliICloudOperationGeneration()
-        let delayedReconnect = recoveryGeneration.advance()
-        let newerReset = recoveryGeneration.advance()
-
-        #expect(!recoveryGeneration.isCurrent(delayedReconnect))
-        #expect(recoveryGeneration.isCurrent(newerReset))
-    }
-
-    @Test("iCloud operations serialize recovery behind active work")
-    func iCloudOperationsDoNotOverlap() {
-        #expect(MuesliICloudOperationPolicy.startDecision(
-            hasSyncTask: false,
-            hasSubscriptionTask: false
-        ) == .start)
-        #expect(MuesliICloudOperationPolicy.startDecision(
-            hasSyncTask: true,
-            hasSubscriptionTask: false
-        ) == .waitForSync)
-        #expect(MuesliICloudOperationPolicy.startDecision(
-            hasSyncTask: false,
-            hasSubscriptionTask: true
-        ) == .waitForSubscription)
-        #expect(MuesliICloudOperationPolicy.startDecision(
-            hasSyncTask: true,
-            hasSubscriptionTask: true
-        ) == .waitForSubscription)
-    }
-
     @Test("linked device presentation distinguishes iPhone and iPad")
     func linkedDevicePresentationUsesPlatformIdentity() {
         let iPhone = ICloudLinkedDevicePresentation(
@@ -257,28 +220,6 @@ struct ICloudBridgeWorkingCopyTests {
         ) == .retry)
     }
 
-    @Test("stale syncing presentation recovers after work has completed")
-    func staleSyncingStateRecovers() {
-        #expect(ICloudSyncDisplayStatePolicy.state(
-            rawState: .syncing,
-            isEnabled: true,
-            isActivationPending: false,
-            isSyncInProgress: false
-        ) == .active)
-        #expect(ICloudSyncDisplayStatePolicy.state(
-            rawState: .syncing,
-            isEnabled: true,
-            isActivationPending: false,
-            isSyncInProgress: true
-        ) == .syncing)
-        #expect(ICloudSyncDisplayStatePolicy.state(
-            rawState: .syncing,
-            isEnabled: true,
-            isActivationPending: true,
-            isSyncInProgress: false
-        ) == .syncing)
-    }
-
     @Test("initial activation waits for pairing before its first sync")
     func initialActivationWaitsForCompanion() {
         #expect(ICloudBridgeActivationSyncPolicy.action(
@@ -311,44 +252,6 @@ struct ICloudBridgeWorkingCopyTests {
             isActivationPending: true,
             isSyncEnabled: true
         ))
-    }
-
-    @Test("post-link initial sync gets one transient retry")
-    func initialSyncFailureRetriesAfterPairing() {
-        #expect(ICloudBridgeInitialSyncFailurePolicy.action(
-            isActivationPending: true,
-            isRetryAvailable: true,
-            isRecoverableFailure: true,
-            hasCompanionDevice: false
-        ) == .fail)
-        #expect(ICloudBridgeInitialSyncFailurePolicy.action(
-            isActivationPending: true,
-            isRetryAvailable: true,
-            isRecoverableFailure: true,
-            hasCompanionDevice: true
-        ) == .retryNow)
-    }
-
-    @Test("initial sync retry is bounded and preserves actionable failures")
-    func initialSyncRetryIsBounded() {
-        #expect(ICloudBridgeInitialSyncFailurePolicy.action(
-            isActivationPending: true,
-            isRetryAvailable: false,
-            isRecoverableFailure: true,
-            hasCompanionDevice: true
-        ) == .fail)
-        #expect(ICloudBridgeInitialSyncFailurePolicy.action(
-            isActivationPending: true,
-            isRetryAvailable: true,
-            isRecoverableFailure: false,
-            hasCompanionDevice: true
-        ) == .fail)
-        #expect(ICloudBridgeInitialSyncFailurePolicy.action(
-            isActivationPending: false,
-            isRetryAvailable: true,
-            isRecoverableFailure: true,
-            hasCompanionDevice: true
-        ) == .fail)
     }
 
     @Test("Mac dev builds generate the iOS dev sync scheme")

@@ -106,47 +106,6 @@ enum ICloudSyncFlowPolicy {
     }
 }
 
-enum ICloudSyncDisplayStatePolicy {
-    static func state(
-        rawState: ICloudBridgeState,
-        isEnabled: Bool,
-        isActivationPending: Bool,
-        isSyncInProgress: Bool
-    ) -> ICloudBridgeState {
-        guard rawState == .syncing,
-              isEnabled,
-              !isActivationPending,
-              !isSyncInProgress else {
-            return rawState
-        }
-        return .active
-    }
-}
-
-enum ICloudBridgeInitialSyncFailureAction: Equatable {
-    case retryNow
-    case fail
-}
-
-enum ICloudBridgeInitialSyncFailurePolicy {
-    static func action(
-        isActivationPending: Bool,
-        isRetryAvailable: Bool,
-        isRecoverableFailure: Bool,
-        hasCompanionDevice: Bool
-    ) -> ICloudBridgeInitialSyncFailureAction {
-        guard isActivationPending,
-              isRetryAvailable,
-              isRecoverableFailure else {
-            return .fail
-        }
-        if hasCompanionDevice {
-            return .retryNow
-        }
-        return .fail
-    }
-}
-
 enum ICloudBridgeActivationSyncAction: Equatable {
     case waitForCompanion
     case startSync
@@ -205,7 +164,7 @@ struct IPhoneBridgeCard: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
-            BridgeSyncIcon(
+            RotatingSyncIcon(
                 systemName: bridgeIcon,
                 isAnimating: bridgeSyncIconIsAnimating,
                 font: .system(size: 18, weight: .semibold)
@@ -228,7 +187,7 @@ struct IPhoneBridgeCard: View {
             Button(action: primaryAction) {
                 HStack(spacing: 6) {
                     Text(buttonTitle)
-                    BridgeSyncIcon(
+                    RotatingSyncIcon(
                         systemName: buttonIcon,
                         isAnimating: buttonIconIsAnimating,
                         font: .system(size: 12, weight: .semibold)
@@ -304,12 +263,7 @@ struct IPhoneBridgeCard: View {
     }
 
     private var bridgeState: ICloudBridgeState {
-        ICloudSyncDisplayStatePolicy.state(
-            rawState: appState.iCloudBridgeState,
-            isEnabled: appState.config.iCloudSyncEnabled,
-            isActivationPending: appState.isICloudBridgeActivationPending,
-            isSyncInProgress: appState.isICloudSyncInProgress
-        )
+        appState.iCloudBridgeState
     }
 
     private var qrCodePresentationPhase: ICloudSyncQRCodePresentationPhase {
@@ -532,38 +486,6 @@ struct IPhoneBridgeCard: View {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
         return formatter.localizedString(for: date, relativeTo: Date())
-    }
-}
-
-private struct BridgeSyncIcon: View {
-    let systemName: String
-    let isAnimating: Bool
-    let font: Font
-    @State private var rotationDegrees = 0.0
-
-    var body: some View {
-        Image(systemName: systemName)
-            .font(font)
-            .symbolRenderingMode(.hierarchical)
-            .rotationEffect(.degrees(rotationDegrees))
-            .onAppear { updateRotation(animated: false) }
-            .onChange(of: isAnimating) { _, _ in updateRotation(animated: true) }
-    }
-
-    private func updateRotation(animated: Bool) {
-        guard isAnimating else {
-            if animated {
-                withAnimation(.easeOut(duration: 0.15)) { rotationDegrees = 0 }
-            } else {
-                rotationDegrees = 0
-            }
-            return
-        }
-
-        rotationDegrees = 0
-        withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) {
-            rotationDegrees = 360
-        }
     }
 }
 
