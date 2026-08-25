@@ -916,6 +916,26 @@ struct MuesliCKSyncEngineTests {
         #expect(state.pendingRecordZoneChanges.isEmpty)
         #expect(await coordinator.currentAccountBoundaryError() == .legacyAccountNeedsReconnection)
 
+        do {
+            _ = try await coordinator.reconnectLegacyLibrary(
+                currentUser: CKRecord.ID(recordName: "different-private-owner")
+            )
+            Issue.record("Reconnect must not adopt a mismatched legacy owner")
+        } catch {
+            #expect(error as? MuesliCKSyncError == .differentProductionAccount)
+        }
+        #expect(try store.cloudSyncStateData(forKey: migration.accountScopeKey)
+            == Data(oldScope.utf8))
+        #expect(try store.cloudSyncStateData(forKey: migration.stateKey)
+            == Data("keep-cursor".utf8))
+        #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.accountScopeKey) == nil)
+        let stillPrivate = try #require(try store.textRecordForSync(recordName: local.id))
+        #expect(stillPrivate.cloudChangeTag == "other-account-tag")
+        #expect(stillPrivate.cloudSystemFields == Data([0x03]))
+        #expect(try !store.hasTextRecordsNeedingSync())
+        #expect(state.pendingRecordZoneChanges.isEmpty)
+        #expect(await coordinator.currentAccountBoundaryError() == .differentProductionAccount)
+
         #expect(try await coordinator.resetCloudSyncAccount())
         #expect(try store.cloudSyncStateData(forKey: migration.accountScopeKey) == nil)
         #expect(try store.cloudSyncStateData(forKey: migration.stateKey) == nil)
@@ -986,12 +1006,6 @@ struct MuesliCKSyncEngineTests {
         let migration = MuesliCKSyncLegacyScopeMigration(
             accountScopeKey: "test.reconnect.legacy.owner",
             stateKey: "test.reconnect.legacy.state"
-        )
-        try store.saveCloudSyncStateData(
-            Data(MuesliCKSyncEngine.accountScope(
-                for: CKRecord.ID(recordName: "unknown-legacy-owner")
-            ).utf8),
-            forKey: migration.accountScopeKey
         )
         try store.saveCloudSyncStateData(
             Data("obsolete-legacy-cursor".utf8),

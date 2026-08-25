@@ -3813,10 +3813,11 @@ public final class DictationStore {
     }
 
     /// Explicitly reconnects an environment-ambiguous legacy library to the
-    /// current account. A previously-bound current-environment owner can only
-    /// confirm the same scope; a mismatch is never overwritten. On first
-    /// adoption, obsolete engine/version metadata is cleared and eligible text
-    /// is requeued without changing authored content, timestamps, or audio paths.
+    /// current account. A previously-bound current-environment or legacy owner
+    /// can only confirm the same scope; a mismatch is never overwritten. On
+    /// first adoption, obsolete engine/version metadata is cleared and eligible
+    /// text is requeued without changing authored content, timestamps, or audio
+    /// paths.
     public func reconnectCloudSyncAccountScope(
         expectedScope: String,
         accountScopeKey: String,
@@ -3855,6 +3856,12 @@ public final class DictationStore {
             if let currentOwner = try stateValue(for: accountScopeKey) {
                 try exec("COMMIT", db: db)
                 return currentOwner == expectedData
+            }
+
+            if let legacyOwner = try stateValue(for: legacyAccountScopeKey),
+               legacyOwner != expectedData {
+                try exec("COMMIT", db: db)
+                return false
             }
 
             let deleteSQL = "DELETE FROM cloud_sync_state WHERE key IN (?, ?, ?)"

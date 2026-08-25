@@ -166,6 +166,46 @@ struct DictationStoreTests {
         #expect(try store.cloudSyncStateData(forKey: "account-owner") == Data("scope-a".utf8))
     }
 
+    @Test("legacy reconnect refuses a different account without mutating sync state")
+    func legacyReconnectCannotCrossAccountBoundary() throws {
+        let store = try makeStore()
+        _ = try store.insertDictation(
+            text: "Keep account A text private",
+            durationSeconds: 1,
+            startedAt: Date().addingTimeInterval(-1),
+            endedAt: Date()
+        )
+        let record = try #require(try store.textRecordsNeedingSync().first)
+        #expect(try store.markTextRecordSynced(
+            kind: record.kind,
+            recordName: record.id,
+            changeTag: "account-a-tag",
+            systemFields: Data([0x01, 0x02]),
+            recordUpdatedAt: record.updatedAt
+        ))
+        try store.saveCloudSyncStateData(Data("scope-a".utf8), forKey: "legacy-owner")
+        try store.saveCloudSyncStateData(Data("legacy-cursor".utf8), forKey: "legacy-state")
+        try store.saveCloudSyncStateData(Data("current-cursor".utf8), forKey: "current-state")
+
+        #expect(try !store.reconnectCloudSyncAccountScope(
+            expectedScope: "scope-b",
+            accountScopeKey: "current-owner",
+            stateKey: "current-state",
+            legacyAccountScopeKey: "legacy-owner",
+            legacyStateKey: "legacy-state"
+        ))
+
+        #expect(try store.cloudSyncStateData(forKey: "current-owner") == nil)
+        #expect(try store.cloudSyncStateData(forKey: "current-state") == Data("current-cursor".utf8))
+        #expect(try store.cloudSyncStateData(forKey: "legacy-owner") == Data("scope-a".utf8))
+        #expect(try store.cloudSyncStateData(forKey: "legacy-state") == Data("legacy-cursor".utf8))
+        #expect(try !store.hasTextRecordsNeedingSync())
+        let preserved = try #require(try store.textRecordForSync(recordName: record.id))
+        #expect(preserved.text == "Keep account A text private")
+        #expect(preserved.cloudChangeTag == "account-a-tag")
+        #expect(preserved.cloudSystemFields == Data([0x01, 0x02]))
+    }
+
     @Test("account verification ignores local-only rows and includes cloud-backed rows")
     func accountVerificationUsesOnlyCloudBackedRecordNames() throws {
         let store = try makeStore()
