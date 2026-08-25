@@ -3812,6 +3812,192 @@ public final class DictationStore {
         }
     }
 
+    /// Explicitly reconnects an environment-ambiguous legacy library to the
+    /// current account. A previously-bound current-environment or legacy owner
+    /// can only confirm the same scope; a mismatch is never overwritten. On
+    /// first adoption, obsolete engine/version metadata is cleared and eligible
+    /// text is requeued without changing authored content, timestamps, or audio
+    /// paths.
+    public func reconnectCloudSyncAccountScope(
+        expectedScope: String,
+        accountScopeKey: String,
+        stateKey: String,
+        legacyAccountScopeKey: String,
+        legacyStateKey: String
+    ) throws -> Bool {
+        guard accountScopeKey != stateKey,
+              accountScopeKey != legacyAccountScopeKey,
+              accountScopeKey != legacyStateKey else { return false }
+
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE TRANSACTION", db: db)
+        do {
+            func stateValue(for key: String) throws -> Data? {
+                let sql = "SELECT value FROM cloud_sync_state WHERE key = ? LIMIT 1"
+                var statement: OpaquePointer?
+                guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+                    throw lastError(db)
+                }
+                defer { sqlite3_finalize(statement) }
+                sqlite3_bind_text(statement, 1, (key as NSString).utf8String, -1, nil)
+                switch sqlite3_step(statement) {
+                case SQLITE_ROW:
+                    guard let bytes = sqlite3_column_blob(statement, 0) else { return Data() }
+                    return Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, 0)))
+                case SQLITE_DONE:
+                    return nil
+                default:
+                    throw lastError(db)
+                }
+            }
+
+            let expectedData = Data(expectedScope.utf8)
+            if let currentOwner = try stateValue(for: accountScopeKey) {
+                try exec("COMMIT", db: db)
+                return currentOwner == expectedData
+            }
+
+            if let legacyOwner = try stateValue(for: legacyAccountScopeKey),
+               legacyOwner != expectedData {
+                try exec("COMMIT", db: db)
+                return false
+            }
+
+            let deleteSQL = "DELETE FROM cloud_sync_state WHERE key IN (?, ?, ?)"
+            var deleteStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, deleteSQL, -1, &deleteStatement, nil) == SQLITE_OK else {
+                throw lastError(db)
+            }
+            sqlite3_bind_text(deleteStatement, 1, (stateKey as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(deleteStatement, 2, (legacyAccountScopeKey as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(deleteStatement, 3, (legacyStateKey as NSString).utf8String, -1, nil)
+            guard sqlite3_step(deleteStatement) == SQLITE_DONE else {
+                sqlite3_finalize(deleteStatement)
+                throw lastError(db)
+            }
+            sqlite3_finalize(deleteStatement)
+
+            let insertSQL = "INSERT INTO cloud_sync_state (key, value, updated_at) VALUES (?, ?, ?)"
+            var insertStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, insertSQL, -1, &insertStatement, nil) == SQLITE_OK else {
+                throw lastError(db)
+            }
+            sqlite3_bind_text(insertStatement, 1, (accountScopeKey as NSString).utf8String, -1, nil)
+            bindOptionalBlob(expectedData, at: 2, statement: insertStatement)
+            sqlite3_bind_double(insertStatement, 3, Date().timeIntervalSince1970)
+            guard sqlite3_step(insertStatement) == SQLITE_DONE else {
+                sqlite3_finalize(insertStatement)
+                throw lastError(db)
+            }
+            sqlite3_finalize(insertStatement)
+
+            try exec(
+                """
+                UPDATE dictations
+                SET cloud_change_tag = NULL,
+                    cloud_system_fields = NULL,
+                    last_synced_at = NULL,
+                    sync_dirty = 1
+                WHERE cloud_record_name IS NOT NULL
+                """,
+                db: db
+            )
+            try exec(
+                """
+                UPDATE meetings
+                SET cloud_change_tag = NULL,
+                    cloud_system_fields = NULL,
+                    last_synced_at = NULL,
+                    sync_dirty = CASE
+                        WHEN meeting_status NOT IN ('recording', 'processing') THEN 1
+                        ELSE sync_dirty
+                    END
+                WHERE cloud_record_name IS NOT NULL
+                """,
+                db: db
+            )
+            try exec("COMMIT", db: db)
+            return true
+        } catch {
+            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
+    }
+
+    /// Resets local CloudKit account state after explicit user confirmation.
+    /// Authored content and audio paths remain untouched. Current and optional
+    /// legacy engine metadata is cleared and eligible text is requeued so the
+    /// next setup can claim the currently signed-in account without inheriting
+    /// stale CloudKit cursors or change tags.
+    public func resetCloudSyncAccountLink(
+        accountScopeKey: String,
+        stateKey: String,
+        legacyAccountScopeKey: String? = nil,
+        legacyStateKey: String? = nil
+    ) throws -> Bool {
+        let orderedKeys = [accountScopeKey, stateKey, legacyAccountScopeKey, legacyStateKey]
+            .compactMap { $0 }
+        guard Set(orderedKeys).count == orderedKeys.count else { return false }
+
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE TRANSACTION", db: db)
+        do {
+            let placeholders = Array(repeating: "?", count: orderedKeys.count).joined(separator: ", ")
+            let deleteSQL = "DELETE FROM cloud_sync_state WHERE key IN (\(placeholders))"
+            var deleteStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, deleteSQL, -1, &deleteStatement, nil) == SQLITE_OK else {
+                throw lastError(db)
+            }
+            for (index, key) in orderedKeys.enumerated() {
+                sqlite3_bind_text(
+                    deleteStatement,
+                    Int32(index + 1),
+                    (key as NSString).utf8String,
+                    -1,
+                    nil
+                )
+            }
+            guard sqlite3_step(deleteStatement) == SQLITE_DONE else {
+                sqlite3_finalize(deleteStatement)
+                throw lastError(db)
+            }
+            sqlite3_finalize(deleteStatement)
+
+            try exec(
+                """
+                UPDATE dictations
+                SET cloud_change_tag = NULL,
+                    cloud_system_fields = NULL,
+                    last_synced_at = NULL,
+                    sync_dirty = 1
+                WHERE cloud_record_name IS NOT NULL
+                """,
+                db: db
+            )
+            try exec(
+                """
+                UPDATE meetings
+                SET cloud_change_tag = NULL,
+                    cloud_system_fields = NULL,
+                    last_synced_at = NULL,
+                    sync_dirty = CASE
+                        WHEN meeting_status NOT IN ('recording', 'processing') THEN 1
+                        ELSE sync_dirty
+                    END
+                WHERE cloud_record_name IS NOT NULL
+                """,
+                db: db
+            )
+            try exec("COMMIT", db: db)
+            return true
+        } catch {
+            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
+    }
+
     /// Atomically claims an environment-scoped CloudKit account boundary.
     /// The first claimant wins; subsequent callers may only confirm the same scope.
     public func claimCloudSyncAccountScope(_ scope: String, forKey key: String) throws -> Bool {

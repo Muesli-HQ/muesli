@@ -261,7 +261,11 @@ struct MeetingsView: View {
         ScrollView {
             let presentation = browserPresentation
             VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
-                PageTitle("Meetings")
+                DashboardPageHeader(
+                    title: "Meetings",
+                    appState: appState,
+                    controller: controller
+                )
 
                 if !appState.upcomingCalendarEvents.isEmpty {
                     comingUpSection

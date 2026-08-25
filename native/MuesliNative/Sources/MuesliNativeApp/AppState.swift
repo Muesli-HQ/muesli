@@ -131,7 +131,15 @@ enum ICloudBridgeState: Equatable {
     case syncing
     case active
     case needsICloud
+    case needsReconnection
+    case needsAccountReplacement
     case error
+}
+
+enum ICloudBridgeCompanionDiscoveryState: Equatable {
+    case idle
+    case waiting
+    case timedOut
 }
 
 struct ActiveMeetingAudioWarning: Equatable {
@@ -204,6 +212,7 @@ final class AppState {
     var iCloudSyncStatus: String?
     var isICloudSyncInProgress: Bool = false
     var isICloudBridgeActivationPending: Bool = false
+    var iCloudBridgeCompanionDiscoveryState: ICloudBridgeCompanionDiscoveryState = .idle
     var iCloudBridgeState: ICloudBridgeState = .notConfigured
     var iCloudBridgeMessage: String?
     var iCloudBridgeRemoteDeviceName: String?

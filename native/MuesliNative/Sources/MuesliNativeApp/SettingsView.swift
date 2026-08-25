@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import SwiftUI
 import MuesliCore
+import TelemetryDeck
 
 private struct MeetingDetectionAppOption: Identifiable {
     let bundleID: String
@@ -16,6 +17,67 @@ private struct MicrophoneOption: Identifiable {
     let label: String
 
     var id: String { uid ?? "__automatic__" }
+}
+
+struct ICloudLinkedDevicePresentation: Equatable {
+    let name: String
+    let platformLabel: String
+    let systemImage: String
+
+    init(name: String, platform: String?) {
+        self.name = name
+        switch platform?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "ipados":
+            platformLabel = "iPad"
+            systemImage = "ipad"
+        case "ios":
+            platformLabel = "iPhone"
+            systemImage = "iphone.gen3"
+        default:
+            platformLabel = "Device"
+            systemImage = "iphone.gen3"
+        }
+    }
+}
+
+private struct ICloudLinkedDeviceRow: View {
+    let device: ICloudLinkedDevicePresentation
+
+    var body: some View {
+        HStack(spacing: MuesliTheme.spacing8) {
+            Image(systemName: device.systemImage)
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(MuesliTheme.accent)
+                .frame(width: 30, height: 30)
+                .background(MuesliTheme.accentSubtle)
+                .clipShape(Circle())
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(device.name)
+                    .font(MuesliTheme.captionMedium())
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                    .lineLimit(1)
+                Text("\(device.platformLabel) · Linked")
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundStyle(MuesliTheme.textSecondary)
+            }
+
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(MuesliTheme.success)
+                .accessibilityHidden(true)
+        }
+        .padding(.horizontal, MuesliTheme.spacing8)
+        .padding(.vertical, 6)
+        .background(MuesliTheme.success.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        .overlay {
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                .strokeBorder(MuesliTheme.success.opacity(0.18), lineWidth: 1)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(device.platformLabel) \(device.name), linked")
+    }
 }
 
 private enum OnDeviceCleanupModel: Identifiable {
@@ -120,6 +182,9 @@ struct SettingsView: View {
     @State private var isLoadingOpenRouterFreeModels = false
     @State private var openRouterFreeModelsError: String?
     @State private var hasRefreshedMeetingCalendarSources = false
+    @State private var isShowingICloudSyncReconnectConfirmation = false
+    @State private var isShowingICloudSyncResetConfirmation = false
+    @State private var isShowingIPhoneBridgeQRCode = false
 
     init(appState: AppState, controller: MuesliController) {
         self.appState = appState
@@ -131,7 +196,6 @@ struct SettingsView: View {
     private let controlWidth: CGFloat = 220
     // Wider controls keep model/provider selections visually consistent in Settings.
     private let meetingControlWidth: CGFloat = 275
-    private let iOSCompanionURL = IPhoneBridgeLinks.installURL
     private let screenContextGrantIntentTimeout: TimeInterval = 15 * 60
     private let meetingDetectionAppOptions: [MeetingDetectionAppOption] = [
         MeetingDetectionAppOption(bundleID: "com.google.Chrome", name: "Chrome", icon: "globe"),
@@ -435,6 +499,36 @@ struct SettingsView: View {
             } message: {
                 Text("Dictionary suggestions briefly read focused app text via Accessibility after dictation. Grant access, then relaunch Muesli to turn suggestions on.")
             }
+            .alert("Reconnect iCloud sync?", isPresented: $isShowingICloudSyncReconnectConfirmation) {
+                Button("Cancel", role: .cancel) {}
+                Button("Reconnect") {
+                    controller.reconnectICloudSyncToCurrentAccount()
+                }
+            } message: {
+                Text("Reconnect with this iCloud account. Local history and audio stay on this Mac.")
+            }
+            .alert("Reset iCloud sync?", isPresented: $isShowingICloudSyncResetConfirmation) {
+                Button("Cancel", role: .cancel) {}
+                Button("Reset sync", role: .destructive) {
+                    controller.resetICloudSync()
+                }
+            } message: {
+                Text("Clear this Mac's sync connection and set it up again. Local history, audio, and CloudKit data won't be deleted.")
+            }
+            .sheet(isPresented: $isShowingIPhoneBridgeQRCode, onDismiss: {
+                controller.cancelIPhoneBridgeDeviceDiscovery()
+            }) {
+                IPhoneBridgeQRCodeSheet(
+                    deepLinkURL: IPhoneBridgeLinks.iOSSyncDeepLinkURL,
+                    installURL: IPhoneBridgeLinks.installURL,
+                    isWaitingForDevice: appState.iCloudBridgeCompanionDiscoveryState == .waiting
+                )
+            }
+            .onChange(of: syncQRCodePresentationPhase) { _, phase in
+                guard phase == .dismiss else { return }
+                isShowingIPhoneBridgeQRCode = false
+                TelemetryDeck.signal("bridge_qr_auto_dismissed", parameters: ["platform": "macos_settings"])
+            }
             .sheet(isPresented: $isCleanupPromptManagerPresented) {
                 TranscriptCleanupPromptsManagerView(
                     appState: appState,
@@ -670,78 +764,156 @@ struct SettingsView: View {
 
     private var syncSettingsPane: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
-            settingsSection("iCloud Text Sync") {
-                settingsRow("Private iCloud sync") {
-                    settingsSwitch(isOn: appState.config.iCloudSyncEnabled) { newValue in
-                        controller.setICloudSyncEnabledFromSettings(newValue)
-                    }
-                }
-                settingsDescription("Sync dictation text, meeting transcripts, notes, summaries, and manual notes with Muesli for iPhone through your private iCloud account. Audio recordings are never synced.")
-
-                Divider().background(MuesliTheme.surfaceBorder)
-
+            settingsSection("iCloud Sync") {
                 HStack(spacing: MuesliTheme.spacing12) {
                     VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                        Text(syncStatusText)
+                        Text("Sync with iPhone or iPad")
                             .font(MuesliTheme.body())
                             .foregroundStyle(MuesliTheme.textPrimary)
+                        Text(syncStatusText)
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textTertiary)
                             .fixedSize(horizontal: false, vertical: true)
                         if let lastSyncedText = syncLastSyncedText {
                             Text("Last synced: \(lastSyncedText)")
                                 .font(MuesliTheme.caption())
                                 .foregroundStyle(MuesliTheme.textTertiary)
                         }
-                        if let linkedDeviceText = syncLinkedDeviceText {
-                            Text(linkedDeviceText)
+                        if let linkedDevice = syncLinkedDevice {
+                            ICloudLinkedDeviceRow(device: linkedDevice)
+                                .padding(.top, MuesliTheme.spacing4)
+                        } else if let unlinkedDeviceText = syncUnlinkedDeviceText {
+                            Text(unlinkedDeviceText)
                                 .font(MuesliTheme.caption())
                                 .foregroundStyle(MuesliTheme.textTertiary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                     Spacer(minLength: MuesliTheme.spacing16)
-                    actionButton("Sync now", systemImage: "arrow.triangle.2.circlepath") {
-                        controller.performICloudSync()
-                    }
-                    .frame(width: controlWidth)
-                    .disabled(!appState.config.iCloudSyncEnabled)
+                    syncFlowControls
+                        .frame(width: controlWidth)
                 }
+
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var syncFlowControls: some View {
+        VStack(spacing: MuesliTheme.spacing8) {
+            switch syncFlowAction {
+            case .setUp:
+                actionButton("Set up sync", systemImage: "icloud") {
+                    showSyncSetupQRCode(source: "macos_settings_setup")
+                    controller.enableIPhoneBridgeSync()
+                }
+            case .continueSetup:
+                actionButton("Continue setup", systemImage: "qrcode") {
+                    showSyncSetupQRCode(source: "macos_settings_continue")
+                    controller.enableIPhoneBridgeSync()
+                }
+            case .connectDevice:
+                actionButton("Connect device", systemImage: "qrcode") {
+                    showSyncSetupQRCode(source: "macos_settings")
+                }
+            case .waitingForDevice:
+                actionButton("Checking…", systemImage: "arrow.triangle.2.circlepath") {}
+                    .disabled(true)
+            case .syncNow:
+                actionButton("Sync now", systemImage: "arrow.triangle.2.circlepath") {
+                    controller.performICloudSync()
+                }
+            case .reconnect:
+                actionButton("Reconnect", systemImage: "arrow.triangle.2.circlepath") {
+                    isShowingICloudSyncReconnectConfirmation = true
+                }
+            case .reset:
+                actionButton("Reset sync", systemImage: "arrow.counterclockwise.icloud") {
+                    isShowingICloudSyncResetConfirmation = true
+                }
+            case .retry:
+                actionButton("Try again", systemImage: "arrow.triangle.2.circlepath") {
+                    controller.enableIPhoneBridgeSync()
+                }
+            case .working:
+                actionButton("Working…", systemImage: "arrow.triangle.2.circlepath") {}
+                    .disabled(true)
             }
 
-            settingsSection("iPhone Bridge") {
-                settingsRow("Show iOS companion prompt") {
-                    settingsSwitch(isOn: appState.config.showIOSCompanionPrompt) { newValue in
-                        controller.updateConfig { $0.showIOSCompanionPrompt = newValue }
-                    }
-                }
-                settingsDescription("Keep the timeline bridge card available while users connect Muesli on iPhone.")
-
-                Divider().background(MuesliTheme.surfaceBorder)
-
-                HStack(spacing: MuesliTheme.spacing12) {
-                    VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                        Text("Muesli for iPhone")
-                            .font(MuesliTheme.body())
-                            .foregroundStyle(MuesliTheme.textPrimary)
-                        Text("Use iPhone for offline meetings, keyboard dictation, and private iCloud text sync with this Mac.")
-                            .font(MuesliTheme.caption())
-                            .foregroundStyle(MuesliTheme.textTertiary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Spacer(minLength: MuesliTheme.spacing16)
-                    actionButton("Open iOS app page") {
-                        NSWorkspace.shared.open(iOSCompanionURL)
-                    }
-                    .frame(width: controlWidth)
+            if shouldOfferICloudSyncReset {
+                actionButton("Reset sync", systemImage: "arrow.counterclockwise.icloud") {
+                    isShowingICloudSyncResetConfirmation = true
                 }
             }
         }
     }
 
+    private func showSyncSetupQRCode(source: String) {
+        isShowingIPhoneBridgeQRCode = true
+        controller.beginIPhoneBridgeDeviceDiscovery()
+        TelemetryDeck.signal("bridge_qr_shown", parameters: ["platform": source])
+    }
+
+    private var syncFlowAction: ICloudSyncFlowAction {
+        ICloudSyncFlowPolicy.action(
+            for: displayedICloudBridgeState,
+            isEnabled: appState.config.iCloudSyncEnabled,
+            hasCompanionDevice: appState.iCloudBridgeCompanionDeviceName != nil,
+            companionDiscoveryState: appState.iCloudBridgeCompanionDiscoveryState
+        )
+    }
+
+    private var syncQRCodePresentationPhase: ICloudSyncQRCodePresentationPhase {
+        ICloudSyncQRCodePresentationPolicy.phase(
+            isPresented: isShowingIPhoneBridgeQRCode,
+            hasCompanionDevice: appState.iCloudBridgeCompanionDeviceName != nil
+        )
+    }
+
+    private var displayedICloudBridgeState: ICloudBridgeState {
+        appState.iCloudBridgeState
+    }
+
     private var syncStatusText: String {
-        if !appState.config.iCloudSyncEnabled {
-            return "Sync is off. Turn it on to bridge this Mac with Muesli for iPhone."
+        switch displayedICloudBridgeState {
+        case .checkingICloud:
+            return "Checking iCloud…"
+        case .syncing:
+            if appState.isICloudBridgeActivationPending {
+                return appState.iCloudBridgeCompanionDeviceName == nil
+                    ? "Setting up sync…"
+                    : "Device linked. Finishing sync…"
+            }
+            return "Syncing…"
+        case .needsICloud:
+            return "Sign in to iCloud to sync."
+        case .needsReconnection:
+            if ICloudSyncRecoveryPolicy.action(for: appState.iCloudBridgeState) == .resetAccountLink {
+                return "Reset sync to start again."
+            }
+            return "Reconnect to keep syncing."
+        case .needsAccountReplacement:
+            return "Reset sync to use this iCloud account."
+        case .error:
+            return appState.iCloudBridgeCompanionDeviceName == nil
+                ? "Setup was interrupted. Continue to pair your device."
+                : "Sync couldn't finish. Try again."
+        case .active:
+            guard appState.config.iCloudSyncEnabled else { return "Sync is off." }
+            if appState.iCloudBridgeCompanionDeviceName != nil {
+                return "Sync is on. Audio stays on this Mac."
+            }
+            switch appState.iCloudBridgeCompanionDiscoveryState {
+            case .waiting:
+                return "Finishing device setup…"
+            case .timedOut:
+                return "Couldn't find your device. Open Muesli there, then try again."
+            case .idle:
+                return "Ready to connect. Audio stays on this Mac."
+            }
+        case .notConfigured:
+            return "Set up private iCloud text sync."
         }
-        return appState.iCloudSyncStatus ?? "Private iCloud text sync is ready."
     }
 
     private var syncLastSyncedText: String? {
@@ -749,26 +921,30 @@ struct SettingsView: View {
         return DateFormatter.localizedString(from: date, dateStyle: .medium, timeStyle: .short)
     }
 
-    private var syncLinkedDeviceText: String? {
-        guard appState.config.iCloudSyncEnabled else { return nil }
-        if let remoteDeviceName = appState.iCloudBridgeCompanionDeviceName {
-            if let platform = appState.iCloudBridgeRemoteDevicePlatform {
-                return "Linked \(syncDeviceLabel(for: platform)): \(remoteDeviceName)"
-            }
-            return "Linked device: \(remoteDeviceName)"
-        }
-        return "No linked iPhone yet."
+    private var syncLinkedDevice: ICloudLinkedDevicePresentation? {
+        guard let remoteDeviceName = appState.iCloudBridgeCompanionDeviceName else { return nil }
+        return ICloudLinkedDevicePresentation(
+            name: remoteDeviceName,
+            platform: appState.iCloudBridgeRemoteDevicePlatform
+        )
     }
 
-    private func syncDeviceLabel(for platform: String) -> String {
-        switch platform.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "ios":
-            return "iPhone"
-        case "ipados":
-            return "iPad"
-        default:
-            return platform
+    private var syncUnlinkedDeviceText: String? {
+        guard appState.config.iCloudSyncEnabled else { return nil }
+        switch appState.iCloudBridgeCompanionDiscoveryState {
+        case .waiting:
+            return "Waiting for iPhone or iPad…"
+        case .timedOut:
+            return "No device found yet."
+        case .idle:
+            return "No linked device yet."
         }
+    }
+
+    private var shouldOfferICloudSyncReset: Bool {
+        appState.config.iCloudSyncEnabled
+            && displayedICloudBridgeState == .active
+            && (syncFlowAction == .syncNow || syncFlowAction == .connectDevice)
     }
 
     private var dictationModelSettingsSection: some View {
