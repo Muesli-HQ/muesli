@@ -426,6 +426,9 @@ public final class DictationStore {
         durationSeconds: Double,
         targetAppName: String? = nil,
         targetAppBundleID: String? = nil,
+        finalStatus: String = "done",
+        finalMessage: String? = nil,
+        additionalTraceEvents: [ComputerUseTraceEvent] = [],
         startedAt: Date,
         endedAt: Date
     ) throws -> Int64 {
@@ -445,8 +448,8 @@ public final class DictationStore {
             )
             try insertComputerUseTrace(
                 dictationID: dictationID,
-                finalStatus: "done",
-                finalMessage: "\(backend) · \(model)",
+                finalStatus: finalStatus,
+                finalMessage: finalMessage ?? "\(backend) · \(model)",
                 events: [
                     originalText.isEmpty
                         ? ComputerUseTraceEvent(
@@ -469,7 +472,7 @@ public final class DictationStore {
                         title: "Model",
                         body: "\(backend) · \(model)"
                     ),
-                ],
+                ] + additionalTraceEvents,
                 db: db
             )
             try exec("COMMIT", db: db)

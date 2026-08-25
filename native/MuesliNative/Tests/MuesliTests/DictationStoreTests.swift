@@ -3440,6 +3440,42 @@ struct DictationStoreTests {
         #expect(try store.searchDictations(query: "friendly reminder").map(\.id).contains(dictationID))
     }
 
+    @Test("Quill persists generated output when automatic paste needs attention")
+    func quilPasteFallbackHydrates() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_777_000_200)
+        let dictationID = try store.insertQuilDictation(
+            outputText: "Generated text ready to paste",
+            originalText: "",
+            instruction: "Draft a short update",
+            backend: "gemma4-litert",
+            model: "gemma-4-e4b-it",
+            durationSeconds: 1.2,
+            targetAppName: "Google Chrome",
+            targetAppBundleID: "com.google.Chrome",
+            finalStatus: "needs_attention",
+            finalMessage: "Generated text is ready for manual paste",
+            additionalTraceEvents: [
+                ComputerUseTraceEvent(
+                    kind: "quil_delivery",
+                    title: "Delivery",
+                    body: "Automatic paste was not accepted; generated text was retained on the clipboard"
+                ),
+            ],
+            startedAt: now.addingTimeInterval(-1.2),
+            endedAt: now
+        )
+
+        let row = try #require(try store.dictation(id: dictationID))
+        let trace = try #require(row.computerUseTrace)
+        #expect(row.rawText == "Generated text ready to paste")
+        #expect(trace.finalStatus == "needs_attention")
+        #expect(trace.finalMessage == "Generated text is ready for manual paste")
+        #expect(trace.events.last?.kind == "quil_delivery")
+        #expect(trace.events.last?.title == "Delivery")
+        #expect(trace.events.last?.body.contains("retained on the clipboard") == true)
+    }
+
     @Test("insertComputerUseTrace replaces existing trace atomically")
     func insertComputerUseTraceReplacesExistingTrace() throws {
         let store = try makeStore()

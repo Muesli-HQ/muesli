@@ -4,10 +4,18 @@ import Foundation
 import MuesliCore
 
 enum PasteController {
+    enum DispatchStrategy: Sendable {
+        case keyboardShortcut
+        case targetApplicationPasteCommand
+    }
+
     enum LifecycleEvent: String, CaseIterable, Sendable {
         case clipboardStaged = "clipboard_staged"
         case clipboardStageFailed = "clipboard_stage_failed"
         case targetSnapshotted = "target_snapshotted"
+        case targetPasteCommandDispatched = "target_paste_command_dispatched"
+        case targetPasteCommandUnavailable = "target_paste_command_unavailable"
+        case targetPasteCommandRejected = "target_paste_command_rejected"
         case pasteDispatched = "paste_dispatched"
         case pasteDispatchFailed = "paste_dispatch_failed"
         case pasteDispatchCancelled = "paste_dispatch_cancelled"
@@ -15,6 +23,7 @@ enum PasteController {
         case clipboardRestoreScheduled = "clipboard_restore_scheduled"
         case clipboardRestored = "clipboard_restored"
         case clipboardRestoreSkipped = "clipboard_restore_skipped"
+        case clipboardRetainedForManualPaste = "clipboard_retained_for_manual_paste"
     }
 
     /// How long to wait after simulating Cmd+V before restoring the clipboard.
@@ -48,12 +57,12 @@ enum PasteController {
 
     /// Paste text into the active app via clipboard, then restore the original clipboard contents.
     ///
-    /// Flow: save clipboard → write text → Cmd+V → restore clipboard after delay.
+    /// Flow: save clipboard → write text → dispatch Paste → restore clipboard after delay.
     /// If the clipboard cannot be saved (e.g. lazy-provided data), falls back to a simple
     /// paste without restoration.
-    /// For nonempty text, completion receives the target app only when the keyboard events
-    /// were posted. When staged-clipboard ownership is required, a failed write or intervening
-    /// clipboard change also completes with `nil` attribution and skips Cmd+V.
+    /// For nonempty text, completion receives the target app only when the selected Paste
+    /// command was accepted. When staged-clipboard ownership is required, a failed write or
+    /// intervening clipboard change also completes with `nil` attribution and skips dispatch.
     @MainActor
     static func paste(
         text: String,
@@ -63,6 +72,11 @@ enum PasteController {
             NSWorkspace.shared.frontmostApplication
         },
         shouldDispatchPaste: @escaping @MainActor () -> Bool = { true },
+        dispatchStrategy: DispatchStrategy = .keyboardShortcut,
+        retainStagedTextOnFailure: Bool = false,
+        targetPasteAction: @escaping @MainActor (NSRunningApplication) -> Bool? = {
+            PasteController.performTargetPasteCommand(in: $0)
+        },
         simulatePasteAction: @escaping @MainActor () -> Bool = PasteController.simulatePaste,
         onPasteDispatched: @escaping @MainActor () -> Void = {},
         onPasteFinished: @escaping @MainActor (NSRunningApplication?) -> Void = { _ in },
@@ -80,10 +94,25 @@ enum PasteController {
         onLifecycleEvent(didStageText ? .clipboardStaged : .clipboardStageFailed)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            // Snapshot immediately before Cmd+V so attribution and the paste event
+            // Snapshot immediately before Paste dispatch so attribution and the command
             // refer to the same frontmost application.
             let targetApplication = targetApplicationProvider()
             onLifecycleEvent(.targetSnapshotted)
+
+            @MainActor
+            func settleFailedDispatch() {
+                if retainStagedTextOnFailure, pasteboard.changeCount == pasteChangeCount {
+                    onLifecycleEvent(.clipboardRetainedForManualPaste)
+                } else if pasteboard.changeCount == pasteChangeCount {
+                    restoreClipboard(pasteboard, from: savedItems)
+                    onLifecycleEvent(.clipboardRestored)
+                } else {
+                    onLifecycleEvent(.clipboardRestoreSkipped)
+                }
+                onPasteFinished(nil)
+                onClipboardSettled()
+            }
+
             if requireStagedClipboardOwnership {
                 guard didStageText else {
                     // Restore only when Muesli still owns the cleared pasteboard. If another
@@ -107,20 +136,39 @@ enum PasteController {
             }
             guard shouldDispatchPaste() else {
                 onLifecycleEvent(.pasteDispatchCancelled)
-                if pasteboard.changeCount == pasteChangeCount {
-                    restoreClipboard(pasteboard, from: savedItems)
-                    onLifecycleEvent(.clipboardRestored)
-                } else {
-                    onLifecycleEvent(.clipboardRestoreSkipped)
-                }
-                onPasteFinished(nil)
-                onClipboardSettled()
+                settleFailedDispatch()
                 return
             }
-            let didDispatchPaste = simulatePasteAction()
+
+            let didDispatchPaste: Bool
+            switch dispatchStrategy {
+            case .keyboardShortcut:
+                didDispatchPaste = simulatePasteAction()
+            case .targetApplicationPasteCommand:
+                guard let targetApplication else {
+                    onLifecycleEvent(.targetPasteCommandUnavailable)
+                    onLifecycleEvent(.pasteDispatchFailed)
+                    settleFailedDispatch()
+                    return
+                }
+                switch targetPasteAction(targetApplication) {
+                case true:
+                    onLifecycleEvent(.targetPasteCommandDispatched)
+                    didDispatchPaste = true
+                case false:
+                    onLifecycleEvent(.targetPasteCommandRejected)
+                    didDispatchPaste = false
+                case nil:
+                    onLifecycleEvent(.targetPasteCommandUnavailable)
+                    didDispatchPaste = false
+                }
+            }
             onLifecycleEvent(didDispatchPaste ? .pasteDispatched : .pasteDispatchFailed)
             if didDispatchPaste {
                 onPasteDispatched()
+            } else {
+                settleFailedDispatch()
+                return
             }
 
             // Arm restoration before completion bookkeeping. The dictation completion callback
@@ -239,6 +287,99 @@ enum PasteController {
         commandDown.post(tap: .cghidEventTap)
         commandUp.post(tap: .cghidEventTap)
         return true
+    }
+
+    /// Invokes the target process's standard Cmd+V menu item through Accessibility.
+    ///
+    /// `true` means the target app accepted AXPress, `false` means the command was
+    /// found but disabled/rejected, and `nil` means the app did not expose a
+    /// standard Paste command. Resolving by shortcut metadata avoids depending on
+    /// localized menu titles such as "Paste".
+    private static func performTargetPasteCommand(in application: NSRunningApplication) -> Bool? {
+        guard AXIsProcessTrusted() else { return nil }
+        let appElement = AXUIElementCreateApplication(application.processIdentifier)
+        guard let menuBar = axElement(appElement, attribute: kAXMenuBarAttribute as String),
+              let pasteItem = standardPasteMenuItem(in: menuBar, maxDepth: 4, visited: [])
+        else { return nil }
+        guard axBool(pasteItem, attribute: kAXEnabledAttribute as String) == true else {
+            return false
+        }
+        return AXUIElementPerformAction(pasteItem, kAXPressAction as CFString) == .success
+    }
+
+    private static func standardPasteMenuItem(
+        in element: AXUIElement,
+        maxDepth: Int,
+        visited: Set<AXUIElement>
+    ) -> AXUIElement? {
+        guard maxDepth >= 0, !visited.contains(element) else { return nil }
+        var visited = visited
+        visited.insert(element)
+
+        let role = axString(element, attribute: kAXRoleAttribute as String)
+        let commandCharacter = axString(element, attribute: kAXMenuItemCmdCharAttribute as String)
+        let commandModifiers = axInt(element, attribute: kAXMenuItemCmdModifiersAttribute as String)
+        if role == (kAXMenuItemRole as String),
+           commandCharacter.caseInsensitiveCompare("V") == .orderedSame,
+           commandModifiers == 0 {
+            return element
+        }
+
+        for child in axChildren(element) {
+            if let match = standardPasteMenuItem(
+                in: child,
+                maxDepth: maxDepth - 1,
+                visited: visited
+            ) {
+                return match
+            }
+        }
+        return nil
+    }
+
+    private static func axElement(_ element: AXUIElement, attribute: String) -> AXUIElement? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
+              let value,
+              CFGetTypeID(value) == AXUIElementGetTypeID()
+        else { return nil }
+        return (value as! AXUIElement)
+    }
+
+    private static func axChildren(_ element: AXUIElement) -> [AXUIElement] {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXChildrenAttribute as CFString,
+            &value
+        ) == .success,
+        let children = value as? [AXUIElement] else { return [] }
+        return children
+    }
+
+    private static func axString(_ element: AXUIElement, attribute: String) -> String {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else {
+            return ""
+        }
+        return value as? String ?? ""
+    }
+
+    private static func axInt(_ element: AXUIElement, attribute: String) -> Int? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
+              let number = value as? NSNumber else { return nil }
+        return number.intValue
+    }
+
+    private static func axBool(_ element: AXUIElement, attribute: String) -> Bool? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
+              let value else { return nil }
+        if CFGetTypeID(value) == CFBooleanGetTypeID() {
+            return CFBooleanGetValue((value as! CFBoolean))
+        }
+        return value as? Bool
     }
 
     private static func postPhysicalKey(source: CGEventSource, keyCode: CGKeyCode, flags: CGEventFlags) {
