@@ -1280,6 +1280,7 @@ final class MuesliICloudSyncEngine {
             cloud["summaryText"] = nil as NSString?
             cloud["manualNotes"] = nil as NSString?
             cloud["followUpToRecordName"] = nil as NSString?
+            cloud["asrText"] = nil as NSString?
             return cloud
         }
         cloud["title"] = record.title as NSString?
@@ -1287,6 +1288,7 @@ final class MuesliICloudSyncEngine {
         cloud["speakerTranscript"] = record.speakerTranscript as NSString?
         cloud["summaryText"] = record.summaryText as NSString?
         cloud["manualNotes"] = record.manualNotes as NSString?
+        cloud["asrText"] = record.asrText as NSString?
         return cloud
     }
 
@@ -1329,7 +1331,8 @@ final class MuesliICloudSyncEngine {
             isDeleted: isDeleted,
             cloudChangeTag: record.recordChangeTag,
             cloudSystemFields: encodedSystemFields(for: record),
-            followUpToRecordName: record["followUpToRecordName"] as? String
+            followUpToRecordName: record["followUpToRecordName"] as? String,
+            asrText: record["asrText"] as? String
         )
     }
 
@@ -1535,6 +1538,7 @@ final class MuesliICloudSyncEngine {
             "meetingStatus",
             "followUpToRecordName",
             "engineIdentifier",
+            "asrText",
             "createdAt",
             "updatedAt",
             "startedAt",
