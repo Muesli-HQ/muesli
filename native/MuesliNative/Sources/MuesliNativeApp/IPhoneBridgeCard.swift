@@ -218,7 +218,9 @@ struct IPhoneBridgeCard: View {
             promptSeen = true
             TelemetryDeck.signal("bridge_prompt_seen", parameters: ["platform": "macos"])
         }
-        .sheet(isPresented: $isQRCodePresented) {
+        .sheet(isPresented: $isQRCodePresented, onDismiss: {
+            controller.cancelIPhoneBridgeDeviceDiscovery()
+        }) {
             IPhoneBridgeQRCodeSheet(
                 deepLinkURL: IPhoneBridgeLinks.iOSSyncDeepLinkURL,
                 installURL: IPhoneBridgeLinks.installURL,

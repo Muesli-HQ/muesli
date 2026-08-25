@@ -109,6 +109,26 @@ struct ICloudSyncCallbackDeadlineTests {
 
 @Suite("iCloud bridge working copy")
 struct ICloudBridgeWorkingCopyTests {
+    @Test("iCloud operations serialize recovery behind active work")
+    func iCloudOperationsDoNotOverlap() {
+        #expect(MuesliICloudOperationPolicy.startDecision(
+            hasSyncTask: false,
+            hasSubscriptionTask: false
+        ) == .start)
+        #expect(MuesliICloudOperationPolicy.startDecision(
+            hasSyncTask: true,
+            hasSubscriptionTask: false
+        ) == .waitForSync)
+        #expect(MuesliICloudOperationPolicy.startDecision(
+            hasSyncTask: false,
+            hasSubscriptionTask: true
+        ) == .waitForSubscription)
+        #expect(MuesliICloudOperationPolicy.startDecision(
+            hasSyncTask: true,
+            hasSubscriptionTask: true
+        ) == .waitForSubscription)
+    }
+
     @Test("linked device presentation distinguishes iPhone and iPad")
     func linkedDevicePresentationUsesPlatformIdentity() {
         let iPhone = ICloudLinkedDevicePresentation(

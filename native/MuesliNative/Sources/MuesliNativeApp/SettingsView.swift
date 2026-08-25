@@ -515,7 +515,9 @@ struct SettingsView: View {
             } message: {
                 Text("Clear this Mac's sync connection and set it up again. Local history, audio, and CloudKit data won't be deleted.")
             }
-            .sheet(isPresented: $isShowingIPhoneBridgeQRCode) {
+            .sheet(isPresented: $isShowingIPhoneBridgeQRCode, onDismiss: {
+                controller.cancelIPhoneBridgeDeviceDiscovery()
+            }) {
                 IPhoneBridgeQRCodeSheet(
                     deepLinkURL: IPhoneBridgeLinks.iOSSyncDeepLinkURL,
                     installURL: IPhoneBridgeLinks.installURL,
