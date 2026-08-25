@@ -77,6 +77,9 @@ final class HotkeyMonitor {
     private var lastTapUpTime: Date?
     private var lastTapWasShort = false
     private var toggleActive = false
+    // Set when a key-down stops an active toggle. Prevents the matching
+    // key-up from immediately re-starting the toggle in tap-to-toggle mode.
+    private var toggleStoppedViaKeyPress = false
 
     private var prepareDelay: TimeInterval
     private var startDelay: TimeInterval
@@ -217,6 +220,7 @@ final class HotkeyMonitor {
         prepared = false
         active = false
         toggleActive = false
+        toggleStoppedViaKeyPress = false
         combinationKeyDown = false
         combinationTriggered = false
     }
@@ -279,6 +283,7 @@ final class HotkeyMonitor {
         prepared = false
         active = false
         toggleActive = false
+        toggleStoppedViaKeyPress = false
         combinationKeyDown = false
         combinationTriggered = false
         lastTapWasShort = false
@@ -463,6 +468,7 @@ final class HotkeyMonitor {
                     if toggleActive {
                         fputs("[hotkey] toggle stop via keypress\n", stderr)
                         toggleActive = false
+                        toggleStoppedViaKeyPress = true
                         cancelTimers()
                         onToggleStop?()
                         return
@@ -522,12 +528,19 @@ final class HotkeyMonitor {
                 // Cmd+C produces Cmd-down → C-down → C-up → Cmd-up, and
                 // otherKeyPressed is true by the time Cmd releases, so the
                 // toggle doesn't fire. A deliberate tap has no intervening keys.
-                if tapToToggleEnabled && wasDown && !otherKeyPressed {
+                //
+                // Also skip if this key-up is the release of a press that
+                // stopped a toggle — otherwise the stop press would immediately
+                // re-start the toggle.
+                if tapToToggleEnabled && wasDown && !otherKeyPressed && !toggleStoppedViaKeyPress {
                     fputs("[hotkey] tap-to-toggle → toggle start (release)\n", stderr)
                     toggleActive = true
                     onToggleStart?()
                     return
                 }
+                // Clear the stop-press flag now that the matching key-up has
+                // been processed. The next key-down/key-up cycle starts fresh.
+                toggleStoppedViaKeyPress = false
 
                 // Track tap timing for double-tap detection. Low trigger thresholds can
                 // enter the prepared state quickly, but a release before recording starts

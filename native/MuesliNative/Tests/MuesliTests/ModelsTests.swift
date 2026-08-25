@@ -2292,8 +2292,35 @@ struct HotkeyMonitorTests {
         #expect(cancelCount == 0)
         #expect(monitor.isToggleRecording)
     }
+
+    @Test("tap-to-toggle stop press does not re-start toggle on key-up")
+    @MainActor
+    func tapToToggleStopPressDoesNotRestartOnKeyUp() {
+        let monitor = HotkeyMonitor(doubleTapWindow: 0.35)
+        monitor.tapToToggleEnabled = true
+        var toggleStartCount = 0
+        var toggleStopCount = 0
+        monitor.onToggleStart = { toggleStartCount += 1 }
+        monitor.onToggleStop = { toggleStopCount += 1 }
+
+        // Start toggle (down + up)
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        #expect(toggleStartCount == 1)
+        #expect(monitor.isToggleRecording)
+
+        // Key-down stops the toggle
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        #expect(toggleStopCount == 1)
+        #expect(!monitor.isToggleRecording)
+
+        // Key-up must NOT re-start the toggle
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        #expect(toggleStartCount == 1)
+        #expect(toggleStopCount == 1)
+        #expect(!monitor.isToggleRecording)
+    }
 }
-struct MeetingResummarizationPolicyTests {
 
     @Test("resummarize preserves the existing meeting title")
     func preservesExistingMeetingTitle() {
