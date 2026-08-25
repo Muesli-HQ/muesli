@@ -35,4 +35,11 @@ enum DictationProvider: String, CaseIterable, Codable, Sendable {
         }
         return provider
     }
+
+    /// Streaming is available only for local dictation. OpenAI uses the
+    /// recorded-audio transcription path even when a streaming-capable local
+    /// model remains selected for the next local session.
+    func usesStreamingBackend(_ backend: BackendOption) -> Bool {
+        self == .local && backend.isStreamingDictationBackend
+    }
 }

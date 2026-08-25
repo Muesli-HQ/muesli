@@ -1415,7 +1415,7 @@ actor TranscriptionCoordinator {
             configuration: OpenAIDictationConfiguration(apiKey: apiKey, model: model)
         )
         let elapsedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
-        fputs("[muesli-native] OpenAI result: \(text.prefix(80)) (took \(String(format: "%.1f", elapsedMs))ms)\n", stderr)
+        fputs("[muesli-native] OpenAI transcription completed (\(text.count) characters, took \(String(format: "%.1f", elapsedMs))ms)\n", stderr)
         return SpeechTranscriptionResult(
             text: text,
             segments: text.isEmpty ? [] : [SpeechSegment(start: 0, end: 0, text: text)]

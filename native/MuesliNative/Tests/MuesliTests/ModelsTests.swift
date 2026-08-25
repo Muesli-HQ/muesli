@@ -331,6 +331,13 @@ struct BackendOptionTests {
         #expect(streaming == [.nemotron35Multilingual])
     }
 
+    @Test("OpenAI never uses local streaming")
+    func providerStreamingRouting() {
+        #expect(DictationProvider.local.usesStreamingBackend(.nemotron35Multilingual))
+        #expect(!DictationProvider.openAI.usesStreamingBackend(.nemotron35Multilingual))
+        #expect(!DictationProvider.local.usesStreamingBackend(.parakeetMultilingual))
+    }
+
     @Test("streaming dictation models are excluded from meeting transcription")
     func streamingDictationModelsAreExcludedFromMeetingTranscription() {
         #expect(!BackendOption.nemotron35Multilingual.supportsMeetingTranscription)
@@ -3145,6 +3152,18 @@ struct OpenAIDictationProviderTests {
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
         #expect(decoded.resolvedDictationProvider == .openAI)
         #expect(decoded.openaiDictationModel == "whisper-1")
+    }
+
+    @Test("AppConfig defaults provider settings when keys are missing or invalid")
+    func configDefaultsForMissingProviderSettings() throws {
+        let missing = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+        #expect(missing.resolvedDictationProvider == .local)
+        #expect(missing.openaiDictationModel == OpenAITranscriptionClient.defaultModel)
+
+        let invalidJSON = Data("{\"dictation_provider\":\"bogus\"}".utf8)
+        let invalid = try JSONDecoder().decode(AppConfig.self, from: invalidJSON)
+        #expect(invalid.resolvedDictationProvider == .local)
+        #expect(invalid.openaiDictationModel == OpenAITranscriptionClient.defaultModel)
     }
 
     @Test("OpenAITranscriptionClient normalizes empty model")

@@ -9356,7 +9356,7 @@ public final class MuesliController: NSObject {
 
     /// Streaming RNNT dictation backend (handsfree live text at cursor).
     private var isStreamingDictationBackend: Bool {
-        selectedBackend.isStreamingDictationBackend
+        selectedDictationProvider.usesStreamingBackend(selectedBackend)
     }
 
     private func ensureDictationBackendReady() -> Bool {
