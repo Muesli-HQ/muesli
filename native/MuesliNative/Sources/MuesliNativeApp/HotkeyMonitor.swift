@@ -468,16 +468,17 @@ final class HotkeyMonitor {
                         return
                     }
 
-                    // Tap-to-toggle: start toggle immediately on key-down.
-                    // Skip arming, hold timers, and double-tap detection —
-                    // a single tap toggles, the next tap stops.
+                    // Tap-to-toggle: defer the toggle-start decision to key-up.
+                    // We arm on key-down but only fire on release if no other key
+                    // was pressed while the modifier was held. This filters out
+                    // incidental modifier presses during keyboard shortcuts like
+                    // Cmd+C / Cmd+V — the maintainer's phantom-press concern.
                     if tapToToggleEnabled {
-                        fputs("[hotkey] tap-to-toggle → toggle start\n", stderr)
+                        fputs("[hotkey] tap-to-toggle armed (waiting for release)\n", stderr)
                         lastTapWasShort = false
                         lastTapUpTime = nil
-                        toggleActive = true
-                        cancelTimers()
-                        onToggleStart?()
+                        // Don't arm or schedule timers — just track the press.
+                        // The toggle fires on key-up if no other key intervened.
                         return
                     }
 
@@ -513,6 +514,18 @@ final class HotkeyMonitor {
 
                 if toggleActive {
                     // Don't stop toggle on key-up — only on next key-down
+                    return
+                }
+
+                // Tap-to-toggle: fire on key-up only if no other key was pressed
+                // while the modifier was held. This is the phantom-press filter:
+                // Cmd+C produces Cmd-down → C-down → C-up → Cmd-up, and
+                // otherKeyPressed is true by the time Cmd releases, so the
+                // toggle doesn't fire. A deliberate tap has no intervening keys.
+                if tapToToggleEnabled && wasDown && !otherKeyPressed {
+                    fputs("[hotkey] tap-to-toggle → toggle start (release)\n", stderr)
+                    toggleActive = true
+                    onToggleStart?()
                     return
                 }
 

@@ -2190,9 +2190,9 @@ struct HotkeyMonitorTests {
 
     // MARK: - Tap-to-Toggle
 
-    @Test("tap-to-toggle starts on first key-down")
+    @Test("tap-to-toggle starts on key-up, not key-down")
     @MainActor
-    func tapToToggleStartsOnFirstKeyDown() {
+    func tapToToggleStartsOnKeyUp() {
         let monitor = HotkeyMonitor(doubleTapWindow: 0.35)
         monitor.tapToToggleEnabled = true
         var toggleStartCount = 0
@@ -2200,9 +2200,33 @@ struct HotkeyMonitorTests {
             toggleStartCount += 1
         }
 
+        // Key-down arms but does not fire — phantom-press filter
         monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        #expect(toggleStartCount == 0)
+        #expect(!monitor.isToggleRecording)
+
+        // Key-up with no intervening keys fires the toggle
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
         #expect(toggleStartCount == 1)
         #expect(monitor.isToggleRecording)
+    }
+
+    @Test("tap-to-toggle does not fire when another key is pressed during the hold")
+    @MainActor
+    func tapToToggleFiltersKeyboardShortcuts() {
+        let monitor = HotkeyMonitor(doubleTapWindow: 0.35)
+        monitor.tapToToggleEnabled = true
+        var toggleStartCount = 0
+        monitor.onToggleStart = { toggleStartCount += 1 }
+
+        // Cmd down
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        // Another key pressed (e.g. Cmd+C) — sets otherKeyPressed
+        monitor.handleKeyDown(keyCode: 8) // 'C' key
+        // Cmd up — should NOT toggle because another key was pressed
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        #expect(toggleStartCount == 0)
+        #expect(!monitor.isToggleRecording)
     }
 
     @Test("tap-to-toggle stops on next key-down")
@@ -2216,11 +2240,8 @@ struct HotkeyMonitorTests {
             toggleStopCount += 1
         }
 
-        // Start toggle
+        // Start toggle (down + up)
         monitor.handleFlagsChanged(keyCode: 55, flags: .command)
-        #expect(monitor.isToggleRecording)
-
-        // Key-up is a no-op in toggle mode
         monitor.handleFlagsChanged(keyCode: 55, flags: [])
         #expect(monitor.isToggleRecording)
 
@@ -2240,7 +2261,7 @@ struct HotkeyMonitorTests {
         monitor.onToggleStart = { toggleStartCount += 1 }
         monitor.onToggleStop = { toggleStopCount += 1 }
 
-        // First tap starts toggle immediately — no double-tap needed
+        // First tap (down + up) starts toggle — no double-tap needed
         monitor.handleFlagsChanged(keyCode: 55, flags: .command)
         monitor.handleFlagsChanged(keyCode: 55, flags: [])
         #expect(toggleStartCount == 1)
@@ -2251,23 +2272,25 @@ struct HotkeyMonitorTests {
         #expect(toggleStartCount == 1)
     }
 
-    @Test("tap-to-toggle cancels on other modifier key")
+    @Test("tap-to-toggle does not cancel on other modifier key during active toggle")
     @MainActor
-    func tapToToggleCancelsOnOtherModifier() {
+    func tapToToggleIgnoresOtherModifierDuringToggle() {
         let monitor = HotkeyMonitor(doubleTapWindow: 0.35)
         monitor.tapToToggleEnabled = true
         var cancelCount = 0
         monitor.onToggleStart = {}
         monitor.onCancel = { cancelCount += 1 }
 
-        // Start toggle
+        // Start toggle (down + up)
         monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
         #expect(monitor.isToggleRecording)
 
-        // Another modifier key cancels toggle
+        // Another modifier key during active toggle should NOT cancel
+        // (tap-to-toggle mode only stops on the target key or Escape)
         monitor.handleFlagsChanged(keyCode: 56, flags: .shift)
-        #expect(cancelCount == 1)
-        #expect(!monitor.isToggleRecording)
+        #expect(cancelCount == 0)
+        #expect(monitor.isToggleRecording)
     }
 }
 struct MeetingResummarizationPolicyTests {
