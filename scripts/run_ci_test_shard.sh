@@ -37,6 +37,7 @@ case "${shard}" in
       ModelDownloadCoordinatorTests
       IndicASRBackendTests
       ContributionMilestoneTests
+      ComputerUseBackgroundInputTests
     )
     ;;
   dictation-transcription)
