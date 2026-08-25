@@ -51,6 +51,10 @@ final class HotkeyMonitor {
     var targetKeyCode: UInt16 = 55
     var doubleTapEnabled: Bool = true
     var tapToToggleEnabled: Bool = false
+    /// When false, Enter during toggle mode stops recording without submitting
+    /// (no synthetic Return). The physical Enter is NOT consumed, so it passes
+    /// through to the frontmost app normally.
+    var submitOnEnterEnabled: Bool = false
 
     // Combination mode (e.g. Cmd+Shift+R)
     var combinationModifiers: NSEvent.ModifierFlags?
@@ -396,7 +400,7 @@ final class HotkeyMonitor {
         // Enter during toggle mode: stop dictation and submit (paste + Enter).
         // Only the dictation monitor has onToggleStopAndSubmit wired — gate on
         // it so Enter doesn't interfere with computer-use or meeting toggles.
-        if type == .keyDown && keyCode == 36 && toggleActive, onToggleStopAndSubmit != nil {
+        if type == .keyDown && keyCode == 36 && toggleActive, onToggleStopAndSubmit != nil, submitOnEnterEnabled {
             fputs("[hotkey] enter → toggle stop and submit (combination)\n", stderr)
             toggleActive = false
             cancelTimers()
@@ -657,7 +661,7 @@ final class HotkeyMonitor {
         // it so Enter doesn't interfere with computer-use or meeting toggles.
         // The CGEventTap consumes this event so the physical Enter never
         // reaches the frontmost app.
-        if keyCode == 36 && toggleActive, onToggleStopAndSubmit != nil {
+        if keyCode == 36 && toggleActive, onToggleStopAndSubmit != nil, submitOnEnterEnabled {
             fputs("[hotkey] enter → toggle stop and submit\n", stderr)
             toggleActive = false
             cancelTimers()

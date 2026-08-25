@@ -442,6 +442,10 @@ public final class MuesliController: NSObject {
     /// Set when Enter-to-submit is triggered during toggle dictation. After the
     /// transcript is pasted, a Return keypress is sent to the frontmost app.
     private var pendingSubmitAfterPaste: Bool = false
+    /// The PID of the app that was frontmost when Enter-to-submit was triggered.
+    /// The synthetic Return is gated on this so focus changes during transcription
+    /// don't send Enter to the wrong app.
+    private var pendingSubmitTargetPID: pid_t?
     private var pendingPreparingIndicatorWorkItem: DispatchWorkItem?
     private var activeComputerUseAudioSessionID: UUID?
     private var computerUseCommandStartedAt: Date?
@@ -642,6 +646,7 @@ public final class MuesliController: NSObject {
         hotkeyMonitor.onToggleStopAndSubmit = { [weak self] in self?.handleToggleStopAndSubmit() }
         hotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
         hotkeyMonitor.tapToToggleEnabled = config.dictationTriggerMode == .tapToToggle
+        hotkeyMonitor.submitOnEnterEnabled = config.enableSubmitOnEnter
         configureHotkeyMonitorTiming()
         computerUseHotkeyMonitor.onPrepare = { [weak self] in self?.handleComputerUsePrepare() }
         computerUseHotkeyMonitor.onStart = { [weak self] in self?.handleComputerUseStart() }
@@ -1447,7 +1452,16 @@ public final class MuesliController: NSObject {
         let previousMeetingRecordingHotkeyTriggerThresholdMS = config.meetingRecordingHotkeyTriggerThresholdMS
         let previousEnableDictionaryCorrectionPrompts = config.enableDictionaryCorrectionPrompts
         let previousEnableLiveStreamingPartials = config.enableLiveStreamingPartials
+        let previousDictationTriggerMode = config.dictationTriggerMode
         mutate(&config)
+        if previousDictationTriggerMode != config.dictationTriggerMode {
+            // Switching trigger modes during an active toggle session leaves
+            // stale toggleActive state. Stop the toggle cleanly so the first
+            // hotkey press in the new mode starts fresh.
+            if hotkeyMonitor.isToggleRecording {
+                hotkeyMonitor.stopToggleMode()
+            }
+        }
         if previousEnableLiveStreamingPartials, !config.enableLiveStreamingPartials {
             preparingMeetingSession?.stopStreamingPartials()
             activeMeetingSession?.stopStreamingPartials()
@@ -1543,6 +1557,7 @@ public final class MuesliController: NSObject {
         indicator.refreshIcon()
         hotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
         hotkeyMonitor.tapToToggleEnabled = config.dictationTriggerMode == .tapToToggle
+        hotkeyMonitor.submitOnEnterEnabled = config.enableSubmitOnEnter
         computerUseHotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
         if hotkeyTriggerThresholdChanged {
             configureHotkeyMonitorTiming()
@@ -8947,6 +8962,7 @@ public final class MuesliController: NSObject {
         }
         fputs("[muesli-native] toggle dictation stop and submit\n", stderr)
         pendingSubmitAfterPaste = true
+        pendingSubmitTargetPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         indicator.isToggleDictation = false
         handleStop()
     }
@@ -9160,10 +9176,11 @@ public final class MuesliController: NSObject {
         syncDictationRecorderWarmup(intent: .idlePrewarm(.backendRecovery))
         if pendingSubmitAfterPaste {
             pendingSubmitAfterPaste = false
-            if outputMode == .paste, !cleaned.isEmpty {
-                let targetPID = targetApp?.processID
+            let submitPID = pendingSubmitTargetPID
+            pendingSubmitTargetPID = nil
+            if outputMode == .paste, !cleaned.isEmpty, let submitPID {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    PasteController.simulateReturnKey(expectedTargetPID: targetPID)
+                    PasteController.simulateReturnKey(expectedTargetPID: submitPID)
                 }
             }
         }
@@ -9322,6 +9339,7 @@ public final class MuesliController: NSObject {
                 await MainActor.run {
                     if outputMode == .paste {
                         var completionTargetApp: DictationCorrectionTargetApp?
+                        var shouldSubmitAfterPaste = false
                         PasteController.paste(
                             text: text,
                             requireStagedClipboardOwnership: true,
@@ -9329,6 +9347,7 @@ public final class MuesliController: NSObject {
                                 guard let self else { return }
                                 let targetApp = self.externalDictationTargetApp(from: targetApplication)
                                 completionTargetApp = targetApp
+                                shouldSubmitAfterPaste = self.pendingSubmitAfterPaste
                                 self.pendingSubmitAfterPaste = false
                         self.releaseStandardDictationState()
                                 if self.config.enableDictionaryCorrectionPrompts {
@@ -9363,10 +9382,10 @@ public final class MuesliController: NSObject {
                                     "bookkeeping_completed",
                                     trace: completionLatencyTrace
                                 )
-                                if self.pendingSubmitAfterPaste {
-                                    self.pendingSubmitAfterPaste = false
+                                if shouldSubmitAfterPaste {
                                     guard pasteSucceeded else { return }
-                                    let targetPID = completionTargetApp?.processID
+                                    let targetPID = self.pendingSubmitTargetPID ?? completionTargetApp?.processID
+                                    self.pendingSubmitTargetPID = nil
                                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                                         PasteController.simulateReturnKey(expectedTargetPID: targetPID)
                                     }
