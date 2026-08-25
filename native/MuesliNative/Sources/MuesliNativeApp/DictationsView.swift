@@ -54,7 +54,11 @@ struct DictationsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            PageTitle("Dictations")
+            DashboardPageHeader(
+                title: "Dictations",
+                appState: appState,
+                controller: controller
+            )
                 .padding(.horizontal, MuesliTheme.spacing24)
                 .padding(.top, MuesliTheme.pageTop)
 
