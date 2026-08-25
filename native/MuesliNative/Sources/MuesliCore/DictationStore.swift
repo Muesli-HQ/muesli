@@ -5155,13 +5155,15 @@ public final class DictationStore {
                 let migrationTime = Date().timeIntervalSince1970
                 while sqlite3_step(select) == SQLITE_ROW {
                     let dictationID = sqlite3_column_int64(select, 0)
-                    let instruction: String
-                    if let traceJSON = optionalStringColumn(select, index: 1),
-                       let data = traceJSON.data(using: .utf8),
-                       let events = try? JSONDecoder().decode([ComputerUseTraceEvent].self, from: data) {
-                        instruction = events.first(where: { $0.kind == "quil_instruction" })?.body ?? ""
-                    } else {
-                        instruction = ""
+                    guard let traceJSON = optionalStringColumn(select, index: 1),
+                          let data = traceJSON.data(using: .utf8),
+                          let events = try? JSONDecoder().decode([ComputerUseTraceEvent].self, from: data),
+                          let instruction = events.first(where: { $0.kind == "quil_instruction" })?.body,
+                          !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    else {
+                        // Computer-use traces are device-local. A synced Quill row can
+                        // legitimately have only the already-correct prompt word count.
+                        continue
                     }
 
                     sqlite3_reset(update)

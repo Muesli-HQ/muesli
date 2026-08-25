@@ -302,6 +302,27 @@ struct PasteControllerTests {
         _ = await waitForClipboardString(in: pasteboard, expected: "original")
     }
 
+    @Test("target Paste Accessibility requests use only the remaining traversal budget")
+    func targetPasteAXTimeoutUsesRemainingBudget() {
+        let now = Date(timeIntervalSince1970: 1_777_000_000)
+
+        #expect(PasteController.targetPasteAXTimeout(
+            until: now.addingTimeInterval(1),
+            now: now
+        ) == 0.1)
+        let nearlyExpired = PasteController.targetPasteAXTimeout(
+            until: now.addingTimeInterval(0.025),
+            now: now
+        )
+        #expect(nearlyExpired != nil)
+        #expect(abs((nearlyExpired ?? 0) - 0.025) < 0.000_001)
+        #expect(PasteController.targetPasteAXTimeout(until: now, now: now) == nil)
+        #expect(PasteController.targetPasteAXTimeout(
+            until: now.addingTimeInterval(-1),
+            now: now
+        ) == nil)
+    }
+
     @Test("rejected target Paste command retains Quill output for manual paste")
     func rejectedTargetPasteCommandRetainsClipboardFallback() async throws {
         let pasteboard = makePasteboard()

@@ -3463,6 +3463,40 @@ struct DictationStoreTests {
         #expect(try store.dictationStats().totalWords == 2)
     }
 
+    @Test("migration preserves synced Quill counts when the local trace is absent")
+    func migrationPreservesTraceFreeSyncedQuillWordCounts() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_777_000_090)
+        let dictationID = try store.insertQuilDictation(
+            outputText: "Generated output that is not available as analytics context",
+            originalText: "source",
+            instruction: "Rewrite with warmth",
+            backend: "gemma4LiteRT",
+            model: "gemma-4-e4b-it",
+            durationSeconds: 1,
+            startedAt: now.addingTimeInterval(-1),
+            endedAt: now
+        )
+
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.databasePath().path, &db) == SQLITE_OK)
+        #expect(sqlite3_exec(
+            db,
+            "UPDATE dictations SET word_count = 3, cloud_record_name = 'quill-sync-test', sync_dirty = 0 WHERE id = \(dictationID)",
+            nil,
+            nil,
+            nil
+        ) == SQLITE_OK)
+        #expect(sqlite3_exec(db, "DELETE FROM computer_use_traces WHERE dictation_id = \(dictationID)", nil, nil, nil) == SQLITE_OK)
+        #expect(sqlite3_exec(db, "DELETE FROM local_migrations WHERE identifier = 'quill_statistics_spoken_instruction_v1'", nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(db)
+
+        try store.migrateIfNeeded()
+
+        #expect(try store.dictation(id: dictationID)?.wordCount == 3)
+        #expect(try store.textRecordsNeedingSync().isEmpty)
+    }
+
     @Test("Quill generation at cursor persists its mode and spoken instruction")
     func quilGenerationAtCursorHydrates() throws {
         let store = try makeStore()

@@ -32,7 +32,7 @@ enum PasteController {
     /// Accessibility calls cross a process boundary and can block their caller while
     /// the target app is busy. Keep both each request and the full menu walk bounded;
     /// an unavailable command falls back to leaving Quill output on the clipboard.
-    private static let targetPasteAXRequestTimeout: Float = 0.1
+    private static let targetPasteAXMaximumRequestTimeout: Float = 0.1
     private static let targetPasteAXTraversalBudget: TimeInterval = 0.35
     private static let physicalKeyMap: [Character: (CGKeyCode, CGEventFlags)] = [
         "a": (0, []), "b": (11, []), "c": (8, []), "d": (2, []), "e": (14, []),
@@ -304,15 +304,18 @@ enum PasteController {
         guard AXIsProcessTrusted() else { return nil }
         let deadline = Date().addingTimeInterval(targetPasteAXTraversalBudget)
         let appElement = AXUIElementCreateApplication(application.processIdentifier)
-        configureTargetPasteTimeout(for: appElement)
-        guard let menuBar = axElement(appElement, attribute: kAXMenuBarAttribute as String),
+        guard let menuBar = axElement(
+            appElement,
+            attribute: kAXMenuBarAttribute as String,
+            deadline: deadline
+        ),
               let pasteItem = standardPasteMenuItem(
                 in: menuBar,
                 maxDepth: 4,
                 deadline: deadline,
                 visited: []
               ),
-              Date() < deadline
+              configureTargetPasteTimeout(for: pasteItem, deadline: deadline)
         else { return nil }
         // Menu enabled state is lazily validated by AppKit/Electron and can be stale
         // while the menu is closed. AXPress is the authoritative acceptance signal.
@@ -328,20 +331,32 @@ enum PasteController {
         guard maxDepth >= 0,
               Date() < deadline,
               !visited.contains(element) else { return nil }
-        configureTargetPasteTimeout(for: element)
         var visited = visited
         visited.insert(element)
 
-        let role = axString(element, attribute: kAXRoleAttribute as String)
-        let commandCharacter = axString(element, attribute: kAXMenuItemCmdCharAttribute as String)
-        let commandModifiers = axInt(element, attribute: kAXMenuItemCmdModifiersAttribute as String)
+        guard let role = axString(
+            element,
+            attribute: kAXRoleAttribute as String,
+            deadline: deadline
+        ),
+              let commandCharacter = axString(
+                element,
+                attribute: kAXMenuItemCmdCharAttribute as String,
+                deadline: deadline
+              ) else { return nil }
+        let commandModifiers = axInt(
+            element,
+            attribute: kAXMenuItemCmdModifiersAttribute as String,
+            deadline: deadline
+        )
         if role == (kAXMenuItemRole as String),
            commandCharacter.caseInsensitiveCompare("V") == .orderedSame,
            commandModifiers == 0 {
             return element
         }
 
-        for child in axChildren(element) {
+        guard let children = axChildren(element, deadline: deadline) else { return nil }
+        for child in children {
             guard Date() < deadline else { return nil }
             if let match = standardPasteMenuItem(
                 in: child,
@@ -355,11 +370,27 @@ enum PasteController {
         return nil
     }
 
-    private static func configureTargetPasteTimeout(for element: AXUIElement) {
-        _ = AXUIElementSetMessagingTimeout(element, targetPasteAXRequestTimeout)
+    static func targetPasteAXTimeout(until deadline: Date, now: Date = Date()) -> Float? {
+        let remaining = Float(deadline.timeIntervalSince(now))
+        guard remaining > 0 else { return nil }
+        return min(targetPasteAXMaximumRequestTimeout, remaining)
     }
 
-    private static func axElement(_ element: AXUIElement, attribute: String) -> AXUIElement? {
+    private static func configureTargetPasteTimeout(
+        for element: AXUIElement,
+        deadline: Date
+    ) -> Bool {
+        guard let timeout = targetPasteAXTimeout(until: deadline) else { return false }
+        return AXUIElementSetMessagingTimeout(element, timeout) == .success
+            && Date() < deadline
+    }
+
+    private static func axElement(
+        _ element: AXUIElement,
+        attribute: String,
+        deadline: Date
+    ) -> AXUIElement? {
+        guard configureTargetPasteTimeout(for: element, deadline: deadline) else { return nil }
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
               let value,
@@ -368,7 +399,8 @@ enum PasteController {
         return (value as! AXUIElement)
     }
 
-    private static func axChildren(_ element: AXUIElement) -> [AXUIElement] {
+    private static func axChildren(_ element: AXUIElement, deadline: Date) -> [AXUIElement]? {
+        guard configureTargetPasteTimeout(for: element, deadline: deadline) else { return nil }
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
             element,
@@ -379,7 +411,12 @@ enum PasteController {
         return children
     }
 
-    private static func axString(_ element: AXUIElement, attribute: String) -> String {
+    private static func axString(
+        _ element: AXUIElement,
+        attribute: String,
+        deadline: Date
+    ) -> String? {
+        guard configureTargetPasteTimeout(for: element, deadline: deadline) else { return nil }
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else {
             return ""
@@ -387,7 +424,12 @@ enum PasteController {
         return value as? String ?? ""
     }
 
-    private static func axInt(_ element: AXUIElement, attribute: String) -> Int? {
+    private static func axInt(
+        _ element: AXUIElement,
+        attribute: String,
+        deadline: Date
+    ) -> Int? {
+        guard configureTargetPasteTimeout(for: element, deadline: deadline) else { return nil }
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
               let number = value as? NSNumber else { return nil }
