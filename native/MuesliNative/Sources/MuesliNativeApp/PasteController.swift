@@ -63,7 +63,7 @@ enum PasteController {
         },
         simulatePasteAction: @escaping @MainActor () -> Bool = PasteController.simulatePaste,
         onPasteFinished: @escaping @MainActor (NSRunningApplication?) -> Void = { _ in },
-        onClipboardSettled: @escaping @MainActor () -> Void = {},
+        onClipboardSettled: @escaping @MainActor (Bool) -> Void = { _ in },
         onLifecycleEvent: @escaping @MainActor (LifecycleEvent) -> Void = { _ in }
     ) {
         guard !text.isEmpty else { return }
@@ -92,13 +92,13 @@ enum PasteController {
                         onLifecycleEvent(.clipboardRestoreSkipped)
                     }
                     onPasteFinished(nil)
-                    onClipboardSettled()
+                    onClipboardSettled(false)
                     return
                 }
                 guard pasteboard.changeCount == pasteChangeCount else {
                     onLifecycleEvent(.clipboardOwnershipLost)
                     onPasteFinished(nil)
-                    onClipboardSettled()
+                    onClipboardSettled(false)
                     return
                 }
             }
@@ -116,7 +116,7 @@ enum PasteController {
                 } else {
                     onLifecycleEvent(.clipboardRestoreSkipped)
                 }
-                onClipboardSettled()
+                onClipboardSettled(didDispatchPaste)
             }
 
             onPasteFinished(didDispatchPaste ? targetApplication : nil)

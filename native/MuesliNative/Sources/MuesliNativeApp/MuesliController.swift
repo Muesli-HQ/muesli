@@ -8835,6 +8835,7 @@ public final class MuesliController: NSObject {
             return
         }
         fputs("[muesli-native] cancel\n", stderr)
+        pendingSubmitAfterPaste = false
         resetDictationOutputMode()
 
         if isNemotron35Streaming {
@@ -9141,7 +9142,7 @@ public final class MuesliController: NSObject {
         syncDictationRecorderWarmup(intent: .idlePrewarm(.backendRecovery))
         if pendingSubmitAfterPaste {
             pendingSubmitAfterPaste = false
-            if !cleaned.isEmpty {
+            if outputMode == .paste, !cleaned.isEmpty {
                 let targetPID = targetApp?.processID
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                     PasteController.simulateReturnKey(expectedTargetPID: targetPID)
@@ -9328,7 +9329,7 @@ public final class MuesliController: NSObject {
                                     trace: completionLatencyTrace
                                 )
                             },
-                            onClipboardSettled: { [weak self] in
+                            onClipboardSettled: { [weak self] pasteSucceeded in
                                 guard let self else { return }
                                 self.finishStandardDictationBookkeeping(
                                     text: text,
@@ -9345,6 +9346,11 @@ public final class MuesliController: NSObject {
                                 )
                                 if self.pendingSubmitAfterPaste {
                                     self.pendingSubmitAfterPaste = false
+                                    // Only send Return when the paste actually delivered text.
+                                    // If clipboard staging failed or ownership was lost, the
+                                    // transcript never reached the target app — sending Return
+                                    // would submit an empty or stale compose box.
+                                    guard pasteSucceeded else { return }
                                     let targetPID = completionTargetApp?.processID
                                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                                         PasteController.simulateReturnKey(expectedTargetPID: targetPID)

@@ -137,7 +137,7 @@ struct PasteControllerTests {
                 onPasteFinished: { _ in
                     events.append("completion_bookkeeping")
                 },
-                onClipboardSettled: {
+                onClipboardSettled: { _ in
                     events.append("clipboard_settled")
                     continuation.resume(returning: events)
                 },
@@ -206,6 +206,56 @@ struct PasteControllerTests {
         #expect(events == ["snapshot", "unattributed"])
         try await Task.sleep(nanoseconds: 700_000_000)
         #expect(pasteboard.string(forType: .string) == "user-copied-during-delay")
+    }
+
+    @Test("onClipboardSettled reports false when clipboard ownership is lost")
+    func clipboardSettledReportsFalseOnOwnershipLoss() async {
+        let pasteboard = makePasteboard()
+        pasteboard.clearContents()
+        pasteboard.setString("original", forType: .string)
+
+        let pasteSucceeded = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            PasteController.paste(
+                text: "dictated text",
+                pasteboard: pasteboard,
+                requireStagedClipboardOwnership: true,
+                targetApplicationProvider: {
+                    // Simulate another app writing to the clipboard between staging and dispatch
+                    pasteboard.clearContents()
+                    pasteboard.setString("user-copied-during-delay", forType: .string)
+                    return NSRunningApplication.current
+                },
+                simulatePasteAction: { true },
+                onClipboardSettled: { succeeded in
+                    continuation.resume(returning: succeeded)
+                }
+            )
+        }
+
+        // When clipboard ownership is lost, paste never dispatched — must report false
+        #expect(pasteSucceeded == false)
+    }
+
+    @Test("onClipboardSettled reports true after successful paste dispatch")
+    func clipboardSettledReportsTrueOnSuccess() async {
+        let pasteboard = makePasteboard()
+        pasteboard.clearContents()
+        pasteboard.setString("original", forType: .string)
+
+        let pasteSucceeded = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            PasteController.paste(
+                text: "dictated text",
+                pasteboard: pasteboard,
+                requireStagedClipboardOwnership: true,
+                targetApplicationProvider: { NSRunningApplication.current },
+                simulatePasteAction: { true },
+                onClipboardSettled: { succeeded in
+                    continuation.resume(returning: succeeded)
+                }
+            )
+        }
+
+        #expect(pasteSucceeded == true)
     }
 
     @Test("shared paste remains ungated unless clipboard ownership is required")
