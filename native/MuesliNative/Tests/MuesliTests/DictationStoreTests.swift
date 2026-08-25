@@ -3386,6 +3386,7 @@ struct DictationStoreTests {
         let row = try #require(try store.dictation(id: dictationID))
         #expect(row.source == "quil")
         #expect(row.rawText == "- First point\n- Second point")
+        #expect(row.wordCount == 5)
         #expect(row.targetAppName == "Notes")
         #expect(row.computerUseTrace?.events.map(\.title) == [
             "Original highlighted text",
@@ -3405,6 +3406,95 @@ struct DictationStoreTests {
         })
         #expect(try store.searchDictations(query: "First point.").map(\.id).contains(dictationID))
         #expect(try store.searchDictations(query: "bullet points").map(\.id).contains(dictationID))
+    }
+
+    @Test("Quill statistics count only the spoken rewrite instruction")
+    func quillStatisticsCountSpokenInstruction() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_777_000_050)
+        try store.insertDictation(
+            text: "ordinary dictation",
+            durationSeconds: 60,
+            startedAt: now.addingTimeInterval(-60),
+            endedAt: now
+        )
+        try store.insertQuilDictation(
+            outputText: "generated output has many words that must never count",
+            originalText: "highlighted source text must not count either",
+            instruction: "Rewrite this politely",
+            backend: "gemma4LiteRT",
+            model: "gemma-4-e4b-it",
+            durationSeconds: 60,
+            startedAt: now.addingTimeInterval(-60),
+            endedAt: now
+        )
+
+        let stats = try store.dictationStats()
+        #expect(stats.totalWords == 5)
+        #expect(stats.totalSessions == 2)
+        #expect(stats.averageWordsPerSession == 2.5)
+        #expect(stats.averageWPM == 2.5)
+    }
+
+    @Test("migration repairs existing Quill output word counts")
+    func migrationRepairsExistingQuillWordCounts() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_777_000_075)
+        let dictationID = try store.insertQuilDictation(
+            outputText: "a deliberately verbose generated response that should not count",
+            originalText: "source",
+            instruction: "Make concise",
+            backend: "local",
+            model: "qwen35-0.8b",
+            durationSeconds: 1,
+            startedAt: now.addingTimeInterval(-1),
+            endedAt: now
+        )
+
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.databasePath().path, &db) == SQLITE_OK)
+        #expect(sqlite3_exec(db, "UPDATE dictations SET word_count = 99 WHERE id = \(dictationID)", nil, nil, nil) == SQLITE_OK)
+        #expect(sqlite3_exec(db, "DELETE FROM local_migrations WHERE identifier = 'quill_statistics_spoken_instruction_v1'", nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(db)
+
+        try store.migrateIfNeeded()
+
+        #expect(try store.dictation(id: dictationID)?.wordCount == 2)
+        #expect(try store.dictationStats().totalWords == 2)
+    }
+
+    @Test("migration preserves synced Quill counts when the local trace is absent")
+    func migrationPreservesTraceFreeSyncedQuillWordCounts() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_777_000_090)
+        let dictationID = try store.insertQuilDictation(
+            outputText: "Generated output that is not available as analytics context",
+            originalText: "source",
+            instruction: "Rewrite with warmth",
+            backend: "gemma4LiteRT",
+            model: "gemma-4-e4b-it",
+            durationSeconds: 1,
+            startedAt: now.addingTimeInterval(-1),
+            endedAt: now
+        )
+
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.databasePath().path, &db) == SQLITE_OK)
+        #expect(sqlite3_exec(
+            db,
+            "UPDATE dictations SET word_count = 3, cloud_record_name = 'quill-sync-test', sync_dirty = 0 WHERE id = \(dictationID)",
+            nil,
+            nil,
+            nil
+        ) == SQLITE_OK)
+        #expect(sqlite3_exec(db, "DELETE FROM computer_use_traces WHERE dictation_id = \(dictationID)", nil, nil, nil) == SQLITE_OK)
+        #expect(sqlite3_exec(db, "DELETE FROM local_migrations WHERE identifier = 'quill_statistics_spoken_instruction_v1'", nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(db)
+
+        try store.migrateIfNeeded()
+
+        #expect(try store.dictation(id: dictationID)?.wordCount == 3)
+        #expect(try store.textRecordsNeedingSync().isEmpty)
     }
 
     @Test("Quill generation at cursor persists its mode and spoken instruction")
@@ -3438,6 +3528,42 @@ struct DictationStoreTests {
         ])
         #expect(try store.searchDictations(query: "generated at cursor").map(\.id).contains(dictationID))
         #expect(try store.searchDictations(query: "friendly reminder").map(\.id).contains(dictationID))
+    }
+
+    @Test("Quill persists generated output when automatic paste needs attention")
+    func quilPasteFallbackHydrates() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_777_000_200)
+        let dictationID = try store.insertQuilDictation(
+            outputText: "Generated text ready to paste",
+            originalText: "",
+            instruction: "Draft a short update",
+            backend: "gemma4-litert",
+            model: "gemma-4-e4b-it",
+            durationSeconds: 1.2,
+            targetAppName: "Google Chrome",
+            targetAppBundleID: "com.google.Chrome",
+            finalStatus: "needs_attention",
+            finalMessage: "Generated text is ready for manual paste",
+            additionalTraceEvents: [
+                ComputerUseTraceEvent(
+                    kind: "quil_delivery",
+                    title: "Delivery",
+                    body: "Automatic paste was not accepted; generated text was retained on the clipboard"
+                ),
+            ],
+            startedAt: now.addingTimeInterval(-1.2),
+            endedAt: now
+        )
+
+        let row = try #require(try store.dictation(id: dictationID))
+        let trace = try #require(row.computerUseTrace)
+        #expect(row.rawText == "Generated text ready to paste")
+        #expect(trace.finalStatus == "needs_attention")
+        #expect(trace.finalMessage == "Generated text is ready for manual paste")
+        #expect(trace.events.last?.kind == "quil_delivery")
+        #expect(trace.events.last?.title == "Delivery")
+        #expect(trace.events.last?.body.contains("retained on the clipboard") == true)
     }
 
     @Test("insertComputerUseTrace replaces existing trace atomically")

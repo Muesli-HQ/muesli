@@ -8116,11 +8116,16 @@ public final class MuesliController: NSObject {
                         )
                         return
                     }
+                    var pasteLifecycleEvents: [PasteController.LifecycleEvent] = []
                     PasteController.paste(
                         text: replacement,
                         requireStagedClipboardOwnership: true,
                         targetApplicationProvider: { snapshot.application },
                         shouldDispatchPaste: { snapshot.isTargetStillFocused() },
+                        dispatchStrategy: DictationContextCapture.isBrowserApplication(snapshot.application)
+                            ? .targetApplicationPasteCommand
+                            : .keyboardShortcut,
+                        retainStagedTextOnFailure: true,
                         onPasteDispatched: {
                             // The post-dictation correction monitor cannot distinguish a
                             // user edit from Quill's deliberate rewrite. Once Quill actually
@@ -8130,19 +8135,48 @@ public final class MuesliController: NSObject {
                         },
                         onPasteFinished: { target in
                             guard self.quilTaskID == taskID else { return }
-                            if target == nil {
-                                self.presentQuilFailure(QuilTransformationError.selectionChanged)
+                            let usedTargetPasteCommand = pasteLifecycleEvents.contains(
+                                .targetPasteCommandDispatched
+                            )
+                            let retainedForManualPaste = pasteLifecycleEvents.contains(
+                                .clipboardRetainedForManualPaste
+                            )
+                            let deliveryStatus: String
+                            let deliveryMessage: String?
+                            let deliveryTraceBody: String
+                            let userMessage: String?
+                            if target != nil {
+                                deliveryStatus = "done"
+                                deliveryMessage = nil
+                                deliveryTraceBody = usedTargetPasteCommand
+                                    ? "Pasted through the target application's standard Paste command"
+                                    : "Paste keyboard command dispatched to the target application"
+                                userMessage = nil
+                            } else if retainedForManualPaste {
+                                deliveryStatus = "needs_attention"
+                                deliveryMessage = "Generated text is ready for manual paste"
+                                deliveryTraceBody = "Automatic paste was not accepted; generated text was retained on the clipboard"
+                                userMessage = "Generated — press ⌘V to paste"
                             } else {
-                                let saved = self.persistQuilTransformation(
-                                    outputText: replacement,
-                                    originalText: snapshot.text,
-                                    instruction: instruction,
-                                    backend: backend,
-                                    model: model,
-                                    duration: duration,
-                                    startedAt: startedAt,
-                                    application: snapshot.application
-                                )
+                                deliveryStatus = "needs_attention"
+                                deliveryMessage = "Automatic paste could not be completed"
+                                deliveryTraceBody = "Automatic paste was not completed and the clipboard changed before fallback could be retained"
+                                userMessage = "Generated, but automatic paste failed; output saved in history"
+                            }
+                            let saved = self.persistQuilTransformation(
+                                outputText: replacement,
+                                originalText: snapshot.text,
+                                instruction: instruction,
+                                backend: backend,
+                                model: model,
+                                duration: duration,
+                                startedAt: startedAt,
+                                application: snapshot.application,
+                                deliveryStatus: deliveryStatus,
+                                deliveryMessage: deliveryMessage,
+                                deliveryTraceBody: deliveryTraceBody
+                            )
+                            if target != nil {
                                 TelemetryDeck.signal("quil.completed", parameters: [
                                     "backend": backend.backend,
                                     "input_chars": String(snapshot.text.count),
@@ -8152,7 +8186,19 @@ public final class MuesliController: NSObject {
                                     taskID: taskID,
                                     message: saved ? nil : "Reformatted, but could not save Quill history"
                                 )
+                            } else {
+                                TelemetryDeck.signal("quil.paste_fallback", parameters: [
+                                    "backend": backend.backend,
+                                    "clipboard_retained": String(retainedForManualPaste),
+                                ])
+                                let message = saved
+                                    ? userMessage
+                                    : "Generated, but paste and Quill history both failed"
+                                self.finishQuilTask(taskID: taskID, message: message)
                             }
+                        },
+                        onLifecycleEvent: { event in
+                            pasteLifecycleEvents.append(event)
                         }
                     )
                 }
@@ -8204,9 +8250,19 @@ public final class MuesliController: NSObject {
         model: String,
         duration: TimeInterval,
         startedAt: Date,
-        application: NSRunningApplication
+        application: NSRunningApplication,
+        deliveryStatus: String = "done",
+        deliveryMessage: String? = nil,
+        deliveryTraceBody: String? = nil
     ) -> Bool {
         do {
+            let additionalTraceEvents = deliveryTraceBody.map {
+                [ComputerUseTraceEvent(
+                    kind: "quil_delivery",
+                    title: "Delivery",
+                    body: $0
+                )]
+            } ?? []
             _ = try dictationStore.insertQuilDictation(
                 outputText: outputText,
                 originalText: originalText,
@@ -8216,6 +8272,9 @@ public final class MuesliController: NSObject {
                 durationSeconds: duration,
                 targetAppName: application.localizedName,
                 targetAppBundleID: application.bundleIdentifier,
+                finalStatus: deliveryStatus,
+                finalMessage: deliveryMessage,
+                additionalTraceEvents: additionalTraceEvents,
                 startedAt: startedAt,
                 endedAt: Date()
             )
