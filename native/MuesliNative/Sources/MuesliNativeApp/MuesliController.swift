@@ -8934,7 +8934,13 @@ public final class MuesliController: NSObject {
             customWords: serializedCustomWords()
         )
         guard !result.isEmpty else { return nil }
-        try? dictationStore.updateDictationText(id: dictationID, text: result)
+        do {
+            try dictationStore.updateDictationText(id: dictationID, text: result)
+        } catch {
+            fputs("[muesli-native] rerun post-processing DB update failed: \(error)\n", stderr)
+            return nil
+        }
+        scheduleICloudSyncAfterLocalChange()
         syncAppState()
         return result
     }

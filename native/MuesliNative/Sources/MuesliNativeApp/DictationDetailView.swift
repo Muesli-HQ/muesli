@@ -8,6 +8,7 @@ struct DictationDetailView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var filteredText: String
+    @State private var wordCount: Int
     @State private var isRerunning = false
     @State private var copiedRaw = false
     @State private var copiedFiltered = false
@@ -16,6 +17,7 @@ struct DictationDetailView: View {
         self.record = record
         self.controller = controller
         _filteredText = State(initialValue: record.rawText)
+        _wordCount = State(initialValue: record.wordCount)
     }
 
     private var hasRawASR: Bool {
@@ -154,6 +156,7 @@ struct DictationDetailView: View {
                         let result = await controller.rerunPostProcessing(for: record.id)
                         if let result {
                             filteredText = result
+                            wordCount = result.split(whereSeparator: \.isWhitespace).count
                         }
                         isRerunning = false
                     }
@@ -172,7 +175,7 @@ struct DictationDetailView: View {
                 .disabled(isRerunning)
             }
             Spacer()
-            Text("\(record.wordCount) words")
+            Text("\(wordCount) words")
                 .font(MuesliTheme.caption())
                 .foregroundStyle(MuesliTheme.textTertiary)
         }
