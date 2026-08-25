@@ -521,8 +521,7 @@ struct SettingsView: View {
                 IPhoneBridgeQRCodeSheet(
                     deepLinkURL: IPhoneBridgeLinks.iOSSyncDeepLinkURL,
                     installURL: IPhoneBridgeLinks.installURL,
-                    isWaitingForDevice: appState.iCloudBridgeCompanionDiscoveryState == .waiting,
-                    presentationPhase: syncQRCodePresentationPhase
+                    isWaitingForDevice: appState.iCloudBridgeCompanionDiscoveryState == .waiting
                 )
             }
             .onChange(of: syncQRCodePresentationPhase) { _, phase in
@@ -867,9 +866,7 @@ struct SettingsView: View {
     private var syncQRCodePresentationPhase: ICloudSyncQRCodePresentationPhase {
         ICloudSyncQRCodePresentationPolicy.phase(
             isPresented: isShowingIPhoneBridgeQRCode,
-            hasCompanionDevice: appState.iCloudBridgeCompanionDeviceName != nil,
-            isSyncInProgress: appState.isICloudSyncInProgress
-                || appState.isICloudBridgeActivationPending
+            hasCompanionDevice: appState.iCloudBridgeCompanionDeviceName != nil
         )
     }
 

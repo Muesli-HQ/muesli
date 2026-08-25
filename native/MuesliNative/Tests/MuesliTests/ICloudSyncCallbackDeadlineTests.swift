@@ -314,27 +314,19 @@ struct ICloudBridgeWorkingCopyTests {
         #expect(IPhoneBridgeLinks.syncDeepLinkURL(bundleIdentifier: "com.muesli.app").scheme == "muesli")
     }
 
-    @Test("QR setup transitions from scanning to syncing before dismissal")
-    func syncQRCodeFollowsConnectionProgress() {
+    @Test("QR setup dismisses as soon as the companion connects")
+    func syncQRCodeClosesAfterConnection() {
         #expect(ICloudSyncQRCodePresentationPolicy.phase(
             isPresented: false,
-            hasCompanionDevice: false,
-            isSyncInProgress: false
+            hasCompanionDevice: false
         ) == .hidden)
         #expect(ICloudSyncQRCodePresentationPolicy.phase(
             isPresented: true,
-            hasCompanionDevice: false,
-            isSyncInProgress: true
+            hasCompanionDevice: false
         ) == .readyToScan)
         #expect(ICloudSyncQRCodePresentationPolicy.phase(
             isPresented: true,
-            hasCompanionDevice: true,
-            isSyncInProgress: true
-        ) == .syncing)
-        #expect(ICloudSyncQRCodePresentationPolicy.phase(
-            isPresented: true,
-            hasCompanionDevice: true,
-            isSyncInProgress: false
+            hasCompanionDevice: true
         ) == .dismiss)
     }
 }

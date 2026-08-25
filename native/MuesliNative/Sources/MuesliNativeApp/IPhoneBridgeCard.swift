@@ -153,19 +153,16 @@ enum ICloudBridgeActivationSyncPolicy {
 enum ICloudSyncQRCodePresentationPhase: Equatable {
     case hidden
     case readyToScan
-    case syncing
     case dismiss
 }
 
 enum ICloudSyncQRCodePresentationPolicy {
     static func phase(
         isPresented: Bool,
-        hasCompanionDevice: Bool,
-        isSyncInProgress: Bool
+        hasCompanionDevice: Bool
     ) -> ICloudSyncQRCodePresentationPhase {
         guard isPresented else { return .hidden }
-        guard hasCompanionDevice else { return .readyToScan }
-        return isSyncInProgress ? .syncing : .dismiss
+        return hasCompanionDevice ? .dismiss : .readyToScan
     }
 }
 
@@ -251,8 +248,7 @@ struct IPhoneBridgeCard: View {
             IPhoneBridgeQRCodeSheet(
                 deepLinkURL: IPhoneBridgeLinks.iOSSyncDeepLinkURL,
                 installURL: IPhoneBridgeLinks.installURL,
-                isWaitingForDevice: appState.iCloudBridgeCompanionDiscoveryState == .waiting,
-                presentationPhase: qrCodePresentationPhase
+                isWaitingForDevice: appState.iCloudBridgeCompanionDiscoveryState == .waiting
             )
         }
         .onChange(of: qrCodePresentationPhase) { _, phase in
@@ -285,9 +281,7 @@ struct IPhoneBridgeCard: View {
     private var qrCodePresentationPhase: ICloudSyncQRCodePresentationPhase {
         ICloudSyncQRCodePresentationPolicy.phase(
             isPresented: isQRCodePresented,
-            hasCompanionDevice: appState.iCloudBridgeCompanionDeviceName != nil,
-            isSyncInProgress: appState.isICloudSyncInProgress
-                || appState.isICloudBridgeActivationPending
+            hasCompanionDevice: appState.iCloudBridgeCompanionDeviceName != nil
         )
     }
 
@@ -509,7 +503,6 @@ struct IPhoneBridgeQRCodeSheet: View {
     let deepLinkURL: URL
     let installURL: URL
     let isWaitingForDevice: Bool
-    let presentationPhase: ICloudSyncQRCodePresentationPhase
     @Environment(\.dismiss) private var dismiss
     @State private var didCopySetupLink = false
 
@@ -520,9 +513,7 @@ struct IPhoneBridgeQRCodeSheet: View {
                     Text("Connect iPhone or iPad")
                         .font(MuesliTheme.title3())
                         .foregroundStyle(MuesliTheme.textPrimary)
-                    Text(presentationPhase == .syncing
-                        ? "Device connected. Finishing sync…"
-                        : "Scan once. This window closes when sync is ready.")
+                    Text("Scan once. This window closes when your device connects.")
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -547,24 +538,6 @@ struct IPhoneBridgeQRCodeSheet: View {
                     .padding(MuesliTheme.spacing8)
                     .background(.white)
                     .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                    .overlay {
-                        if presentationPhase == .syncing {
-                            ZStack {
-                                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                                    .fill(MuesliTheme.backgroundRaised.opacity(0.98))
-                                VStack(spacing: MuesliTheme.spacing8) {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                    Text("Device connected")
-                                        .font(MuesliTheme.body())
-                                        .foregroundStyle(MuesliTheme.textPrimary)
-                                    Text("Syncing…")
-                                        .font(MuesliTheme.caption())
-                                        .foregroundStyle(MuesliTheme.textTertiary)
-                                }
-                            }
-                        }
-                    }
 
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
                     Label("Same iCloud account", systemImage: "icloud")
@@ -575,7 +548,7 @@ struct IPhoneBridgeQRCodeSheet: View {
                 .foregroundStyle(MuesliTheme.textSecondary)
             }
 
-            if isWaitingForDevice && presentationPhase == .readyToScan {
+            if isWaitingForDevice {
                 Divider().background(MuesliTheme.surfaceBorder)
                 HStack(spacing: MuesliTheme.spacing8) {
                     ProgressView()
@@ -601,7 +574,6 @@ struct IPhoneBridgeQRCodeSheet: View {
                 }
                 .buttonStyle(.bordered)
             }
-            .disabled(presentationPhase == .syncing)
         }
         .padding(MuesliTheme.spacing20)
         .frame(width: 430)
