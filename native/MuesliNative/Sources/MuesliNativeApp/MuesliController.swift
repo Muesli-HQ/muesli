@@ -2476,10 +2476,29 @@ public final class MuesliController: NSObject {
                     self.finishIPhoneBridgeDeviceDiscovery(foundCompanion: true)
                 }
                 self.refreshICloudBridgeStateForConfig()
+            },
+            syncZoneFetchDidSucceed: { [weak self, lifecycleID] in
+                guard let self, self.ckSyncEngineLifecycleID == lifecycleID else { return }
+                self.recoverICloudSyncFromSuccessfulEngineActivity()
             }
         )
         ckSyncEngine = created
         return created
+    }
+
+    private func recoverICloudSyncFromSuccessfulEngineActivity() {
+        guard ICloudSyncAutomaticRecoveryPolicy.shouldRecover(
+            state: appState.iCloudBridgeState,
+            isEnabled: config.iCloudSyncEnabled,
+            isSyncInProgress: appState.isICloudSyncInProgress,
+            isActivationPending: appState.isICloudBridgeActivationPending,
+            isSetupInProgress: iCloudSubscriptionTask != nil
+        ) else { return }
+        appState.iCloudBridgeState = .active
+        appState.iCloudBridgeMessage = nil
+        appState.iCloudSyncStatus = "All text is up to date."
+        appState.iCloudLastSyncedAt = Date()
+        refreshUI()
     }
 
     private func retireCKSyncEngine() -> Task<Void, Never>? {

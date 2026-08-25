@@ -38,6 +38,22 @@ enum ICloudSyncActivationPolicy {
     }
 }
 
+enum ICloudSyncAutomaticRecoveryPolicy {
+    static func shouldRecover(
+        state: ICloudBridgeState,
+        isEnabled: Bool,
+        isSyncInProgress: Bool,
+        isActivationPending: Bool,
+        isSetupInProgress: Bool
+    ) -> Bool {
+        guard case .error = state else { return false }
+        return isEnabled
+            && !isSyncInProgress
+            && !isActivationPending
+            && !isSetupInProgress
+    }
+}
+
 enum ICloudSyncRecoveryAction: Equatable {
     case reconnectLegacyLibrary
     case resetAccountLink

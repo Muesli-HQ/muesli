@@ -158,6 +158,59 @@ struct ICloudBridgeWorkingCopyTests {
         ) == .performSync)
     }
 
+    @Test("successful automatic CloudKit activity clears only a settled transient error")
+    func automaticSuccessRecoversOnlyTransientError() {
+        #expect(ICloudSyncAutomaticRecoveryPolicy.shouldRecover(
+            state: .error,
+            isEnabled: true,
+            isSyncInProgress: false,
+            isActivationPending: false,
+            isSetupInProgress: false
+        ))
+        for protectedState in [
+            ICloudBridgeState.needsICloud,
+            .needsReconnection,
+            .needsAccountReplacement,
+            .active,
+        ] {
+            #expect(!ICloudSyncAutomaticRecoveryPolicy.shouldRecover(
+                state: protectedState,
+                isEnabled: true,
+                isSyncInProgress: false,
+                isActivationPending: false,
+                isSetupInProgress: false
+            ))
+        }
+        #expect(!ICloudSyncAutomaticRecoveryPolicy.shouldRecover(
+            state: .error,
+            isEnabled: false,
+            isSyncInProgress: false,
+            isActivationPending: false,
+            isSetupInProgress: false
+        ))
+        #expect(!ICloudSyncAutomaticRecoveryPolicy.shouldRecover(
+            state: .error,
+            isEnabled: true,
+            isSyncInProgress: true,
+            isActivationPending: false,
+            isSetupInProgress: false
+        ))
+        #expect(!ICloudSyncAutomaticRecoveryPolicy.shouldRecover(
+            state: .error,
+            isEnabled: true,
+            isSyncInProgress: false,
+            isActivationPending: true,
+            isSetupInProgress: false
+        ))
+        #expect(!ICloudSyncAutomaticRecoveryPolicy.shouldRecover(
+            state: .error,
+            isEnabled: true,
+            isSyncInProgress: false,
+            isActivationPending: false,
+            isSetupInProgress: true
+        ))
+    }
+
     @Test("legacy ambiguity reconnects while a confirmed account mismatch resets")
     func recoveryActionsRespectAccountBoundaryClassification() {
         #expect(ICloudSyncRecoveryPolicy.action(

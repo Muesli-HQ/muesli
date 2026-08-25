@@ -165,7 +165,9 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
     private var downloaded = ICloudSyncKindCounts()
     private var bridgeRefreshTask: Task<Void, Never>?
     private var bridgeRefreshForceRequested = false
+    private var targetZoneFetchProcessingFailed = false
     private let bridgeRefreshDidFinish: (@MainActor @Sendable () -> Void)?
+    private let syncZoneFetchDidSucceed: (@MainActor @Sendable () -> Void)?
     private let engineCancellationObserver: @Sendable () async -> Void
 
     nonisolated static func isSyncNotification(_ userInfo: [AnyHashable: Any]) -> Bool {
@@ -181,6 +183,7 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
         legacyAccountRecordVerifier: (@Sendable (Set<String>) async throws -> Set<String>)? = nil,
         legacyScopeMigration: MuesliCKSyncLegacyScopeMigration? = MuesliCKSyncEngine.productionLegacyScopeMigration,
         bridgeRefreshDidFinish: (@MainActor @Sendable () -> Void)? = nil,
+        syncZoneFetchDidSucceed: (@MainActor @Sendable () -> Void)? = nil,
         engineCancellationObserver: @escaping @Sendable () async -> Void = {}
     ) {
         self.store = store
@@ -188,6 +191,7 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
         self.legacyAccountRecordVerifier = legacyAccountRecordVerifier
         self.legacyScopeMigration = legacyScopeMigration
         self.bridgeRefreshDidFinish = bridgeRefreshDidFinish
+        self.syncZoneFetchDidSucceed = syncZoneFetchDidSucceed
         self.engineCancellationObserver = engineCancellationObserver
     }
 
@@ -651,10 +655,15 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
 
             case .fetchedRecordZoneChanges(let changes):
                 guard !accountBoundaryBlocked else { break }
-                try handleFetchedRecords(
-                    changes.modifications.map(\.record),
-                    state: syncEngine.state
-                )
+                do {
+                    try handleFetchedRecords(
+                        changes.modifications.map(\.record),
+                        state: syncEngine.state
+                    )
+                } catch {
+                    targetZoneFetchProcessingFailed = true
+                    throw error
+                }
                 // Muesli represents deletion as a saved tombstone. Hard-deletion
                 // notifications are intentionally ignored for this record contract.
 
@@ -694,19 +703,29 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
                 }
 
             case .didFetchRecordZoneChanges(let changes):
-                if changes.zoneID == MuesliICloudSyncEngine.Schema.syncZoneID,
-                   let error = changes.error,
-                   MuesliICloudSyncEngine.isSyncZoneRecoveryError(error) {
-                    await invalidatePreparation(cancelEngine: false)
+                if changes.zoneID == MuesliICloudSyncEngine.Schema.syncZoneID {
+                    let processingFailed = targetZoneFetchProcessingFailed
+                    targetZoneFetchProcessingFailed = false
+                    if let error = changes.error {
+                        if MuesliICloudSyncEngine.isSyncZoneRecoveryError(error) {
+                            await invalidatePreparation(cancelEngine: false)
+                        }
+                    } else if !accountBoundaryBlocked, !processingFailed {
+                        await syncZoneFetchDidSucceed?()
+                    }
                 }
 
             case .sentDatabaseChanges,
                  .willFetchChanges,
-                 .willFetchRecordZoneChanges,
                  .didFetchChanges,
                  .willSendChanges,
                  .didSendChanges:
                 break
+
+            case .willFetchRecordZoneChanges(let changes):
+                if changes.zoneID == MuesliICloudSyncEngine.Schema.syncZoneID {
+                    targetZoneFetchProcessingFailed = false
+                }
 
             @unknown default:
                 break
