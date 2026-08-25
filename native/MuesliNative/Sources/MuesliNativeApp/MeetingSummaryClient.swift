@@ -756,12 +756,22 @@ enum MeetingSummaryClient {
                 message: "No model selected. Enter a model in Settings."
             )
         }
-        let apiKey = config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let apiKey = try await resolveCustomLLMAPIKey(config: config)
         if customLLMRequiresAPIKey(config: config) && apiKey.isEmpty {
             throw MeetingSummaryError.backendFailed(
                 backend: "Custom LLM",
                 statusCode: nil,
-                message: "Enter an API key for the selected Custom LLM format."
+                message: "Enter an API key or API key command for the selected Custom LLM format."
+            )
+        }
+        let extraHeaders: [String: String]
+        do {
+            extraHeaders = try CustomLLMRequestHeaders.validated(config.customLLMHeaders)
+        } catch {
+            throw MeetingSummaryError.backendFailed(
+                backend: "Custom LLM",
+                statusCode: nil,
+                message: error.localizedDescription
             )
         }
 
@@ -780,7 +790,8 @@ enum MeetingSummaryClient {
                 template: template,
                 visualContext: visualContext,
                 previousMeetingNotes: previousMeetingNotes,
-                timeout: customLLMSummaryTimeout
+                timeout: customLLMSummaryTimeout,
+                extraHeaders: extraHeaders
             )
         case .anthropic:
             return try await summarizeWithAnthropicMessages(
@@ -796,7 +807,8 @@ enum MeetingSummaryClient {
                 template: template,
                 visualContext: visualContext,
                 previousMeetingNotes: previousMeetingNotes,
-                timeout: customLLMSummaryTimeout
+                timeout: customLLMSummaryTimeout,
+                extraHeaders: extraHeaders
             )
         }
     }
@@ -812,7 +824,36 @@ enum MeetingSummaryClient {
     static func customLLMHasRequiredSettings(config: AppConfig) -> Bool {
         let model = config.customLLMModel.trimmingCharacters(in: .whitespacesAndNewlines)
         let apiKey = config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !model.isEmpty && (!customLLMRequiresAPIKey(config: config) || !apiKey.isEmpty)
+        let apiKeyCommand = config.customLLMAPIKeyCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasAPIKey = !apiKey.isEmpty || !apiKeyCommand.isEmpty
+        let headersAreValid = (try? CustomLLMRequestHeaders.validated(config.customLLMHeaders)) != nil
+        return headersAreValid
+            && !model.isEmpty
+            && (!customLLMRequiresAPIKey(config: config) || hasAPIKey)
+    }
+
+    /// Resolve the API key for the custom LLM backend.
+    ///
+    /// If `customLLMAPIKeyCommand` is set, it is executed via `/bin/sh -c` and its
+    /// trimmed stdout is used as the API key. This supports credential helpers that
+    /// issue short-lived tokens. The static `customLLMAPIKey` remains the fallback
+    /// when the command is not set, fails, times out, or returns no output.
+    static func resolveCustomLLMAPIKey(config: AppConfig) async throws -> String {
+        try await CredentialCommandRunner.resolve(
+            command: config.customLLMAPIKeyCommand,
+            fallback: config.customLLMAPIKey
+        )
+    }
+
+    static func chatCompletionsTokenKey(model: String, url: URL) -> String {
+        if url.host?.contains("openai.com") == true {
+            return "max_completion_tokens"
+        }
+        let modelName = model.split(separator: "/").last.map(String.init)?.lowercased() ?? model.lowercased()
+        let completionTokenPrefixes = ["gpt-5", "gpt-6", "o1", "o3", "o4"]
+        return completionTokenPrefixes.contains(where: modelName.hasPrefix)
+            ? "max_completion_tokens"
+            : "max_tokens"
     }
 
     private static func summarizeWithChatCompletions(
@@ -828,7 +869,8 @@ enum MeetingSummaryClient {
         template: MeetingTemplateSnapshot,
         visualContext: String?,
         previousMeetingNotes: String?,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        extraHeaders: [String: String] = [:]
     ) async throws -> String {
         let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes, previousMeetingNotes: previousMeetingNotes)
         let userPrompt = summaryUserPrompt(
@@ -839,7 +881,6 @@ enum MeetingSummaryClient {
             visualContext: visualContext,
             previousMeetingNotes: previousMeetingNotes
         )
-        let isOpenAI = requestURL.host?.contains("openai.com") == true
         var body: [String: Any] = [
             "model": model,
             "messages": [
@@ -847,7 +888,10 @@ enum MeetingSummaryClient {
                 ["role": "user", "content": userPrompt],
             ],
         ]
-        body[isOpenAI ? "max_completion_tokens" : "max_tokens"] = defaultSummaryMaxOutputTokens
+        body[chatCompletionsTokenKey(model: model, url: requestURL)] = defaultSummaryMaxOutputTokens
+        if let effort = SummaryModelPreset.reasoningEffort(for: model) {
+            body["reasoning_effort"] = effort
+        }
 
         var request = URLRequest(url: requestURL)
         request.timeoutInterval = timeout
@@ -855,6 +899,9 @@ enum MeetingSummaryClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if !apiKey.isEmpty {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        for (name, value) in extraHeaders {
+            request.setValue(value, forHTTPHeaderField: name)
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
@@ -890,7 +937,8 @@ enum MeetingSummaryClient {
         template: MeetingTemplateSnapshot,
         visualContext: String?,
         previousMeetingNotes: String?,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        extraHeaders: [String: String] = [:]
     ) async throws -> String {
         let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes, previousMeetingNotes: previousMeetingNotes)
         let userPrompt = summaryUserPrompt(
@@ -917,6 +965,9 @@ enum MeetingSummaryClient {
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         if !apiKey.isEmpty {
             request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        }
+        for (name, value) in extraHeaders {
+            request.setValue(value, forHTTPHeaderField: name)
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
@@ -1222,7 +1273,6 @@ enum MeetingSummaryClient {
         systemPrompt: String, userPrompt: String,
         maxTokens: Int?, extraHeaders: [String: String], timeout: TimeInterval? = nil
     ) async -> String? {
-        let isOpenAI = url.host?.contains("openai.com") == true
         var body: [String: Any] = [
             "model": model,
             "messages": [
@@ -1231,10 +1281,9 @@ enum MeetingSummaryClient {
             ],
         ]
         if let maxTokens {
-            // OpenAI newer models require max_completion_tokens; OpenRouter uses max_tokens
-            body[isOpenAI ? "max_completion_tokens" : "max_tokens"] = maxTokens
+            body[chatCompletionsTokenKey(model: model, url: url)] = maxTokens
         }
-        if isOpenAI, let effort = SummaryModelPreset.reasoningEffort(for: model) {
+        if let effort = SummaryModelPreset.reasoningEffort(for: model) {
             body["reasoning_effort"] = effort
         }
 
@@ -1286,6 +1335,7 @@ enum MeetingSummaryClient {
         systemPrompt: String,
         userPrompt: String,
         maxTokens: Int,
+        extraHeaders: [String: String] = [:],
         timeout: TimeInterval? = nil
     ) async -> String? {
         let body: [String: Any] = [
@@ -1306,6 +1356,9 @@ enum MeetingSummaryClient {
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         if !apiKey.isEmpty {
             request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        }
+        for (name, value) in extraHeaders {
+            request.setValue(value, forHTTPHeaderField: name)
         }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
@@ -1368,14 +1421,18 @@ enum MeetingSummaryClient {
     private static func generateTitleWithCustomLLM(transcript: String, config: AppConfig) async -> String? {
         let format = CustomLLMFormat(rawValue: config.customLLMFormat) ?? .openAI
         guard let requestURL = resolveCustomLLMURL(config: config, format: format) else { return nil }
-        let apiKey = config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let apiKey = try? await resolveCustomLLMAPIKey(config: config) else { return nil }
         let configuredModel = config.customLLMModel.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !configuredModel.isEmpty else {
             fputs("[summary] Custom LLM title generation: no model selected\n", stderr)
             return nil
         }
         if customLLMRequiresAPIKey(config: config) && apiKey.isEmpty {
-            fputs("[summary] Custom LLM title generation: no API key configured\n", stderr)
+            fputs("[summary] Custom LLM title generation: no API key or API key command configured\n", stderr)
+            return nil
+        }
+        guard let extraHeaders = try? CustomLLMRequestHeaders.validated(config.customLLMHeaders) else {
+            fputs("[summary] Custom LLM title generation: invalid additional headers\n", stderr)
             return nil
         }
 
@@ -1387,8 +1444,8 @@ enum MeetingSummaryClient {
                 model: configuredModel,
                 systemPrompt: titleInstructions,
                 userPrompt: transcript,
-                maxTokens: 100,
-                extraHeaders: [:],
+                maxTokens: 256,
+                extraHeaders: extraHeaders,
                 timeout: customLLMTitleTimeout
             )
         case .anthropic:
@@ -1398,7 +1455,8 @@ enum MeetingSummaryClient {
                 model: configuredModel,
                 systemPrompt: titleInstructions,
                 userPrompt: transcript,
-                maxTokens: 100,
+                maxTokens: 256,
+                extraHeaders: extraHeaders,
                 timeout: customLLMTitleTimeout
             )
         }

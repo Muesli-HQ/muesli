@@ -734,6 +734,17 @@ struct MeetingSummaryClientTests {
         }
     }
 
+    @Test("Chat Completions token parameter follows model capabilities")
+    func chatCompletionsTokenParameter() throws {
+        let gatewayURL = try #require(URL(string: "https://gateway.example.com/v1/chat/completions"))
+        let openAIURL = try #require(URL(string: "https://api.openai.com/v1/chat/completions"))
+
+        #expect(MeetingSummaryClient.chatCompletionsTokenKey(model: "gpt-5.6-sol", url: gatewayURL) == "max_completion_tokens")
+        #expect(MeetingSummaryClient.chatCompletionsTokenKey(model: "openai/gpt-5.4", url: gatewayURL) == "max_completion_tokens")
+        #expect(MeetingSummaryClient.chatCompletionsTokenKey(model: "baseten/zai-org/GLM-5.2", url: gatewayURL) == "max_tokens")
+        #expect(MeetingSummaryClient.chatCompletionsTokenKey(model: "custom-model", url: openAIURL) == "max_completion_tokens")
+    }
+
     @Test("resolveCustomLLMURL expands OpenAI-compatible endpoints")
     func resolveCustomLLMOpenAIURL() {
         var config = AppConfig()

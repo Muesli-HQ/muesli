@@ -1,4 +1,5 @@
 import Foundation
+import MuesliCore
 
 enum TranscriptCleanupError: LocalizedError {
     case missingConfiguration(String)
@@ -106,9 +107,13 @@ enum TranscriptCleanupClient {
             let model = configuredModel(for: backend, config: config)
             let format = CustomLLMFormat(rawValue: config.customLLMFormat) ?? .openAI
             let key = config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            return !model.isEmpty
+            let keyCommand = config.customLLMAPIKeyCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+            let hasAPIKey = !key.isEmpty || !keyCommand.isEmpty
+            let headersAreValid = (try? CustomLLMRequestHeaders.validated(config.customLLMHeaders)) != nil
+            return headersAreValid
+                && !model.isEmpty
                 && resolveConfiguredCustomLLMURL(config: config, format: format) != nil
-                && (!MeetingSummaryClient.customLLMRequiresAPIKey(config: config) || !key.isEmpty)
+                && (!MeetingSummaryClient.customLLMRequiresAPIKey(config: config) || hasAPIKey)
         case nil:
             return true
         default:
@@ -204,25 +209,34 @@ enum TranscriptCleanupClient {
             guard let requestURL = resolveConfiguredCustomLLMURL(config: config, format: format) else {
                 throw TranscriptCleanupError.missingConfiguration("Invalid custom URL: \(config.customLLMURL)")
             }
+            let apiKey = try await MeetingSummaryClient.resolveCustomLLMAPIKey(config: config)
+            let extraHeaders: [String: String]
+            do {
+                extraHeaders = try CustomLLMRequestHeaders.validated(config.customLLMHeaders)
+            } catch {
+                throw TranscriptCleanupError.missingConfiguration(error.localizedDescription)
+            }
             switch format {
             case .openAI:
                 return try await cleanWithChatCompletions(
                     backend: "Custom LLM",
                     requestURL: requestURL,
-                    apiKey: config.customLLMAPIKey,
+                    apiKey: apiKey,
                     systemPrompt: systemPrompt,
                     userPrompt: userPrompt,
                     model: model,
-                    maxOutputTokens: maxOutputTokens ?? defaultMaxOutputTokens
+                    maxOutputTokens: maxOutputTokens ?? defaultMaxOutputTokens,
+                    extraHeaders: extraHeaders
                 )
             case .anthropic:
                 return try await cleanWithAnthropic(
                     requestURL: requestURL,
-                    apiKey: config.customLLMAPIKey,
+                    apiKey: apiKey,
                     systemPrompt: systemPrompt,
                     userPrompt: userPrompt,
                     model: model,
-                    maxOutputTokens: maxOutputTokens ?? defaultMaxOutputTokens
+                    maxOutputTokens: maxOutputTokens ?? defaultMaxOutputTokens,
+                    extraHeaders: extraHeaders
                 )
             }
         default:
@@ -380,7 +394,8 @@ enum TranscriptCleanupClient {
         systemPrompt: String,
         userPrompt: String,
         model: String,
-        maxOutputTokens: Int = defaultMaxOutputTokens
+        maxOutputTokens: Int = defaultMaxOutputTokens,
+        extraHeaders: [String: String] = [:]
     ) async throws -> String {
         var body: [String: Any] = [
             "model": model,
@@ -389,8 +404,11 @@ enum TranscriptCleanupClient {
                 ["role": "user", "content": userPrompt],
             ],
         ]
-        let tokenKey = requestURL.host?.contains("openai.com") == true ? "max_completion_tokens" : "max_tokens"
+        let tokenKey = MeetingSummaryClient.chatCompletionsTokenKey(model: model, url: requestURL)
         body[tokenKey] = maxOutputTokens
+        if let effort = SummaryModelPreset.reasoningEffort(for: model) {
+            body["reasoning_effort"] = effort
+        }
         var request = URLRequest(url: requestURL)
         request.timeoutInterval = requestTimeout
         request.httpMethod = "POST"
@@ -398,6 +416,9 @@ enum TranscriptCleanupClient {
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedKey.isEmpty {
             request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
+        }
+        for (name, value) in extraHeaders {
+            request.setValue(value, forHTTPHeaderField: name)
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
@@ -419,7 +440,8 @@ enum TranscriptCleanupClient {
         systemPrompt: String,
         userPrompt: String,
         model: String,
-        maxOutputTokens: Int = defaultMaxOutputTokens
+        maxOutputTokens: Int = defaultMaxOutputTokens,
+        extraHeaders: [String: String] = [:]
     ) async throws -> String {
         let body: [String: Any] = [
             "model": model,
@@ -435,6 +457,9 @@ enum TranscriptCleanupClient {
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedKey.isEmpty {
             request.setValue(trimmedKey, forHTTPHeaderField: "x-api-key")
+        }
+        for (name, value) in extraHeaders {
+            request.setValue(value, forHTTPHeaderField: name)
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
