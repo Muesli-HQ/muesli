@@ -480,7 +480,8 @@ enum ScreenContextCapture {
         guard let windowID = focusedWindowID(
             from: candidates,
             focusedFrame: focusedFrame,
-            focusedTitle: focusedWindow.title
+            focusedTitle: focusedWindow.title,
+            requiresTitleMatch: !allowTitleFallback
         ) else {
             fputs("[muesli-native] screen context: focused window could not be bound for \(appName)\n", stderr)
             return nil
@@ -517,12 +518,16 @@ enum ScreenContextCapture {
     static func focusedWindowID(
         from candidates: [WindowCandidate],
         focusedFrame: CGRect,
-        focusedTitle: String
+        focusedTitle: String,
+        requiresTitleMatch: Bool = false
     ) -> CGWindowID? {
         let frameMatches = candidates.filter { framesRepresentSameWindow($0.frame, focusedFrame) }
         guard !frameMatches.isEmpty else { return nil }
 
         let normalizedFocusedTitle = normalizedWindowTitle(focusedTitle)
+        if requiresTitleMatch, normalizedFocusedTitle.isEmpty {
+            return nil
+        }
         if !normalizedFocusedTitle.isEmpty {
             let titleMatches = frameMatches.filter {
                 normalizedWindowTitle($0.title) == normalizedFocusedTitle
@@ -533,8 +538,14 @@ enum ScreenContextCapture {
             if titleMatches.count > 1 {
                 return nil
             }
+            if requiresTitleMatch {
+                return nil
+            }
         }
 
+        // Normal dictation and meeting OCR retain the existing unique-frame
+        // fallback. Quill disables it because its OCR may be sent to a hosted
+        // model under the focused AX document identity.
         guard frameMatches.count == 1 else { return nil }
         return frameMatches[0].id
     }

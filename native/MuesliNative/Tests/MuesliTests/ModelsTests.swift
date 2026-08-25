@@ -1510,7 +1510,8 @@ struct AppConfigTests {
         #expect(ScreenContextCapture.focusedWindowID(
             from: candidates,
             focusedFrame: focusedFrame,
-            focusedTitle: "Focused document"
+            focusedTitle: "Focused document",
+            requiresTitleMatch: true
         ) == 42)
         #expect(ScreenContextCapture.focusedWindowID(
             from: candidates,
@@ -1537,6 +1538,31 @@ struct AppConfigTests {
             focusedFrame: focusedFrame,
             focusedTitle: "focused document"
         ) == 62)
+
+        let frameOnlyCandidate = [
+            ScreenContextCapture.WindowCandidate(
+                id: 71,
+                frame: focusedFrame,
+                title: "Private payroll"
+            ),
+        ]
+        #expect(ScreenContextCapture.focusedWindowID(
+            from: frameOnlyCandidate,
+            focusedFrame: focusedFrame,
+            focusedTitle: "Focused document",
+            requiresTitleMatch: true
+        ) == nil)
+        #expect(ScreenContextCapture.focusedWindowID(
+            from: frameOnlyCandidate,
+            focusedFrame: focusedFrame,
+            focusedTitle: "",
+            requiresTitleMatch: true
+        ) == nil)
+        #expect(ScreenContextCapture.focusedWindowID(
+            from: frameOnlyCandidate,
+            focusedFrame: focusedFrame,
+            focusedTitle: "Focused document"
+        ) == 71)
     }
 
     @Test("post processor input caps app context")
