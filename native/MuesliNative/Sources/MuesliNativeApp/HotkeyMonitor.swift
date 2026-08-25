@@ -121,13 +121,22 @@ final class HotkeyMonitor {
         // CGEventTap with .defaultTap can both observe AND consume events.
         // This replaces the previous dual NSEvent monitor approach (global
         // observe-only + local consume) with a single tap that handles all
-        // apps uniformly. Requires Accessibility permission (already requested
-        // during onboarding).
+        // apps uniformly. Requires Accessibility permission.
         let hasListenAccess = CGPreflightListenEventAccess()
         fputs("[hotkey] listen event access: \(hasListenAccess)\n", stderr)
         if !hasListenAccess && requestPermissionIfNeeded {
             let requested = CGRequestListenEventAccess()
             fputs("[hotkey] requested listen event access: \(requested)\n", stderr)
+        }
+
+        // .defaultTap (consume) requires Accessibility, not just Input Monitoring.
+        // Request it if not already granted so the tap can initialize.
+        let hasAxAccess = AXIsProcessTrusted()
+        fputs("[hotkey] accessibility access: \(hasAxAccess)\n", stderr)
+        if !hasAxAccess && requestPermissionIfNeeded {
+            let options: NSDictionary = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
+            _ = AXIsProcessTrustedWithOptions(options)
+            fputs("[hotkey] requested accessibility access\n", stderr)
         }
 
         let eventMask = (1 << CGEventType.flagsChanged.rawValue)
@@ -155,6 +164,14 @@ final class HotkeyMonitor {
                 
                 // Convert CGEvent to NSEvent for the existing handling logic.
                 guard let nsEvent = NSEvent(cgEvent: event) else {
+                    return Unmanaged.passUnretained(event)
+                }
+                
+                // Preserve the text-editor guard from the old local monitor:
+                // when Muesli's own text field has focus, ignore fresh hotkey
+                // starts so the modifier key works normally for text input.
+                // An already-armed session still receives cleanup events.
+                if !monitor.shouldHandleEvent(nsEvent) {
                     return Unmanaged.passUnretained(event)
                 }
                 
@@ -187,6 +204,7 @@ final class HotkeyMonitor {
         cancelTimers()
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
+            CFMachPortInvalidate(tap)
         }
         if let source = runLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
@@ -299,6 +317,24 @@ final class HotkeyMonitor {
 
     var isToggleRecording: Bool {
         toggleActive
+    }
+
+    /// When Muesli's own text field has focus, ignore fresh hotkey starts so the
+    /// modifier key works normally for text input. An already-armed session still
+    /// receives key-up/Escape cleanup events. This preserves the guard that the
+    /// old NSEvent local monitor provided.
+    private func shouldHandleEvent(_ event: NSEvent) -> Bool {
+        let firstResponder = NSApp.keyWindow?.firstResponder
+        let isTextEditing = firstResponder is NSTextView || firstResponder is NSTextField
+        guard isTextEditing else { return true }
+
+        // Text editing owns fresh hotkey starts, but an already-armed hotkey
+        // session must still receive key-up/Escape cleanup events.
+        if targetKeyDown || armed || prepared || active || toggleActive || combinationKeyDown {
+            return true
+        }
+
+        return event.type == .keyDown && event.keyCode == 53
     }
 
     @discardableResult
@@ -522,8 +558,11 @@ final class HotkeyMonitor {
             } else if wasArmed {
                 onCancel?()
             }
-        } else if toggleActive {
-            // Another modifier key while toggle is active — cancel toggle
+        } else if toggleActive && !tapToToggleEnabled {
+            // In double-tap toggle mode, another modifier key cancels the toggle.
+            // In tap-to-toggle mode, only the target key or Escape stops recording —
+            // unrelated modifier releases (e.g. releasing Shift after Cmd+Tab) must
+            // not cancel an active toggle session.
             fputs("[hotkey] canceled by other modifier key \(keyCode) during toggle\n", stderr)
             toggleActive = false
             cancelTimers()
