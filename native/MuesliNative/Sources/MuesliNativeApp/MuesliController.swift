@@ -637,6 +637,7 @@ public final class MuesliController: NSObject {
         hotkeyMonitor.onToggleStart = { [weak self] in self?.handleToggleStart() }
         hotkeyMonitor.onToggleStop = { [weak self] in self?.handleToggleStop() }
         hotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
+        hotkeyMonitor.tapToToggleEnabled = config.dictationTriggerMode == .tapToToggle
         configureHotkeyMonitorTiming()
         computerUseHotkeyMonitor.onPrepare = { [weak self] in self?.handleComputerUsePrepare() }
         computerUseHotkeyMonitor.onStart = { [weak self] in self?.handleComputerUseStart() }
@@ -1537,6 +1538,7 @@ public final class MuesliController: NSObject {
         statusBarController?.refreshIcon()
         indicator.refreshIcon()
         hotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
+        hotkeyMonitor.tapToToggleEnabled = config.dictationTriggerMode == .tapToToggle
         computerUseHotkeyMonitor.doubleTapEnabled = config.enableDoubleTapDictation
         if hotkeyTriggerThresholdChanged {
             configureHotkeyMonitorTiming()
@@ -8856,11 +8858,26 @@ public final class MuesliController: NSObject {
 
     @discardableResult
     private func handleToggleStart(outputMode: DictationOutputMode? = nil) -> Bool {
-        if shouldRejectDictationForComputerUseActivity() { return false }
-        guard canBeginDictationInteraction else { return false }
-        guard ensureDictationBackendReady() else { return false }
-        if isMeetingRecording() { return false }
-        if blockDictationForMeetingActivityIfNeeded() { return false }
+        if shouldRejectDictationForComputerUseActivity() {
+            hotkeyMonitor.cancelToggleMode()
+            return false
+        }
+        guard canBeginDictationInteraction else {
+            hotkeyMonitor.cancelToggleMode()
+            return false
+        }
+        guard ensureDictationBackendReady() else {
+            hotkeyMonitor.cancelToggleMode()
+            return false
+        }
+        if isMeetingRecording() {
+            hotkeyMonitor.cancelToggleMode()
+            return false
+        }
+        if blockDictationForMeetingActivityIfNeeded() {
+            hotkeyMonitor.cancelToggleMode()
+            return false
+        }
         fputs("[muesli-native] toggle dictation start\n", stderr)
         if dictationLatencyTraceID == nil {
             beginDictationLatencyTrace(reason: "toggle")

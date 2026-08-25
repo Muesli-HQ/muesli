@@ -882,6 +882,7 @@ struct AppConfigTests {
         #expect(config.contributionLinkedInClicked == false)
         #expect(config.upcomingMeetingsDayCount == UpcomingMeetingsWindow.defaultDayCount)
         #expect(config.hiddenCalendarEventSourceHints.isEmpty)
+        #expect(config.dictationTriggerMode == .holdToRecord)
     }
 
     @Test("LM Studio cleanup readiness requires model and valid URL")
@@ -1079,6 +1080,7 @@ struct AppConfigTests {
             "ek-event-1": UnifiedCalendarEvent.CalendarSource.eventKit.rawValue,
             "google-event-1": UnifiedCalendarEvent.CalendarSource.googleCalendar.rawValue,
         ]
+        config.dictationTriggerMode = .tapToToggle
 
         let data = try JSONEncoder().encode(config)
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
@@ -1153,6 +1155,7 @@ struct AppConfigTests {
         #expect(decoded.contributionLinkedInClicked == false)
         #expect(decoded.upcomingMeetingsDayCount == UpcomingMeetingsWindow.today.dayCount)
         #expect(decoded.hiddenCalendarEventSourceHints == config.hiddenCalendarEventSourceHints)
+        #expect(decoded.dictationTriggerMode == .tapToToggle)
     }
 
     @Test("Automatic diagnostic issue prompts default off when absent")
@@ -2184,9 +2187,89 @@ struct HotkeyMonitorTests {
 
         #expect(toggleStartCount == 0)
     }
-}
 
-@Suite("MeetingResummarizationPolicy")
+    // MARK: - Tap-to-Toggle
+
+    @Test("tap-to-toggle starts on first key-down")
+    @MainActor
+    func tapToToggleStartsOnFirstKeyDown() {
+        let monitor = HotkeyMonitor(doubleTapWindow: 0.35)
+        monitor.tapToToggleEnabled = true
+        var toggleStartCount = 0
+        monitor.onToggleStart = {
+            toggleStartCount += 1
+        }
+
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        #expect(toggleStartCount == 1)
+        #expect(monitor.isToggleRecording)
+    }
+
+    @Test("tap-to-toggle stops on next key-down")
+    @MainActor
+    func tapToToggleStopsOnNextKeyDown() {
+        let monitor = HotkeyMonitor(doubleTapWindow: 0.35)
+        monitor.tapToToggleEnabled = true
+        var toggleStopCount = 0
+        monitor.onToggleStart = {}
+        monitor.onToggleStop = {
+            toggleStopCount += 1
+        }
+
+        // Start toggle
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        #expect(monitor.isToggleRecording)
+
+        // Key-up is a no-op in toggle mode
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        #expect(monitor.isToggleRecording)
+
+        // Next key-down stops toggle
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        #expect(toggleStopCount == 1)
+        #expect(!monitor.isToggleRecording)
+    }
+
+    @Test("tap-to-toggle ignores double-tap detection")
+    @MainActor
+    func tapToToggleIgnoresDoubleTapDetection() {
+        let monitor = HotkeyMonitor(doubleTapWindow: 0.35)
+        monitor.tapToToggleEnabled = true
+        var toggleStartCount = 0
+        var toggleStopCount = 0
+        monitor.onToggleStart = { toggleStartCount += 1 }
+        monitor.onToggleStop = { toggleStopCount += 1 }
+
+        // First tap starts toggle immediately — no double-tap needed
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        monitor.handleFlagsChanged(keyCode: 55, flags: [])
+        #expect(toggleStartCount == 1)
+
+        // Second tap stops — not starts a new toggle
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        #expect(toggleStopCount == 1)
+        #expect(toggleStartCount == 1)
+    }
+
+    @Test("tap-to-toggle cancels on other modifier key")
+    @MainActor
+    func tapToToggleCancelsOnOtherModifier() {
+        let monitor = HotkeyMonitor(doubleTapWindow: 0.35)
+        monitor.tapToToggleEnabled = true
+        var cancelCount = 0
+        monitor.onToggleStart = {}
+        monitor.onCancel = { cancelCount += 1 }
+
+        // Start toggle
+        monitor.handleFlagsChanged(keyCode: 55, flags: .command)
+        #expect(monitor.isToggleRecording)
+
+        // Another modifier key cancels toggle
+        monitor.handleFlagsChanged(keyCode: 56, flags: .shift)
+        #expect(cancelCount == 1)
+        #expect(!monitor.isToggleRecording)
+    }
+}
 struct MeetingResummarizationPolicyTests {
 
     @Test("resummarize preserves the existing meeting title")

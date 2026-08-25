@@ -314,25 +314,47 @@ struct ShortcutsView: View {
 
     private var doubleTapSection: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                    Text("Hands-Free Mode")
-                        .font(MuesliTheme.headline())
-                        .foregroundStyle(MuesliTheme.textPrimary)
-                    Text("Double-tap dictation or CUA to start, tap again to stop")
-                        .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.textSecondary)
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                Text("Dictation Trigger")
+                    .font(MuesliTheme.headline())
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                Text("Choose how the hotkey starts and stops dictation")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+            }
+            Picker("", selection: Binding(
+                get: { appState.config.dictationTriggerMode },
+                set: { newValue in
+                    controller.updateConfig { $0.dictationTriggerMode = newValue }
                 }
-                Spacer()
-                Toggle("", isOn: Binding(
-                    get: { appState.config.enableDoubleTapDictation },
-                    set: { newValue in
-                        controller.updateConfig { $0.enableDoubleTapDictation = newValue }
+            )) {
+                ForEach(DictationTriggerMode.allCases, id: \.self) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            if appState.config.dictationTriggerMode == .holdToRecord {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                        Text("Hands-Free Mode")
+                            .font(MuesliTheme.headline())
+                            .foregroundStyle(MuesliTheme.textPrimary)
+                        Text("Double-tap dictation or CUA to start, tap again to stop")
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textSecondary)
                     }
-                ))
-                .toggleStyle(.switch)
-                .tint(MuesliTheme.accent)
-                .labelsHidden()
+                    Spacer()
+                    Toggle("", isOn: Binding(
+                        get: { appState.config.enableDoubleTapDictation },
+                        set: { newValue in
+                            controller.updateConfig { $0.enableDoubleTapDictation = newValue }
+                        }
+                    ))
+                    .toggleStyle(.switch)
+                    .tint(MuesliTheme.accent)
+                    .labelsHidden()
+                }
             }
         }
         .padding(MuesliTheme.spacing16)

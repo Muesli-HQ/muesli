@@ -3,6 +3,21 @@ import ApplicationServices
 import Foundation
 import MuesliCore
 
+/// How the dictation hotkey triggers recording.
+enum DictationTriggerMode: String, CaseIterable, Codable, Sendable {
+    /// Hold the hotkey to record; release to stop and transcribe.
+    case holdToRecord
+    /// Tap the hotkey to start recording; tap again to stop and transcribe.
+    case tapToToggle
+
+    var displayName: String {
+        switch self {
+        case .holdToRecord: "Hold to Record"
+        case .tapToToggle: "Tap to Toggle"
+        }
+    }
+}
+
 enum HotkeyTriggerTiming {
     static let defaultThresholdMilliseconds = 250
     static let defaultMeetingThresholdMilliseconds = 600
@@ -34,6 +49,7 @@ final class HotkeyMonitor {
     var onToggleStop: (() -> Void)?
     var targetKeyCode: UInt16 = 55
     var doubleTapEnabled: Bool = true
+    var tapToToggleEnabled: Bool = false
 
     // Combination mode (e.g. Cmd+Shift+R)
     var combinationModifiers: NSEvent.ModifierFlags?
@@ -416,6 +432,19 @@ final class HotkeyMonitor {
                         return
                     }
 
+                    // Tap-to-toggle: start toggle immediately on key-down.
+                    // Skip arming, hold timers, and double-tap detection —
+                    // a single tap toggles, the next tap stops.
+                    if tapToToggleEnabled {
+                        fputs("[hotkey] tap-to-toggle → toggle start\n", stderr)
+                        lastTapWasShort = false
+                        lastTapUpTime = nil
+                        toggleActive = true
+                        cancelTimers()
+                        onToggleStart?()
+                        return
+                    }
+
                     // Check for double-tap
                     if doubleTapEnabled,
                        lastTapWasShort,
@@ -493,6 +522,12 @@ final class HotkeyMonitor {
             } else if wasArmed {
                 onCancel?()
             }
+        } else if toggleActive {
+            // Another modifier key while toggle is active — cancel toggle
+            fputs("[hotkey] canceled by other modifier key \(keyCode) during toggle\n", stderr)
+            toggleActive = false
+            cancelTimers()
+            onCancel?()
         }
     }
 
