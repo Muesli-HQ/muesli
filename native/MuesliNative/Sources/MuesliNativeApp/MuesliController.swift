@@ -8000,7 +8000,7 @@ public final class MuesliController: NSObject {
               let sessionID = activeQuilAudioSessionID,
               quilAudioSessionManager.currentSessionID == sessionID else { return }
         SoundController.playQuillRelease(
-            enabled: shouldPlayDictationLifecycleSounds && !isDictationTestMode
+            enabled: shouldPlayQuilLifecycleSounds && !isDictationTestMode
         )
         let startedAt = quilStartedAt ?? Date()
         quilStartedAt = nil
@@ -8952,7 +8952,15 @@ public final class MuesliController: NSObject {
     }
 
     private var shouldPlayDictationLifecycleSounds: Bool {
-        config.soundEnabled && !dictationAudioRoutingController.isDefaultOutputHeadphoneLike()
+        shouldPlayLifecycleSounds(enabled: config.soundEnabled)
+    }
+
+    private var shouldPlayQuilLifecycleSounds: Bool {
+        shouldPlayLifecycleSounds(enabled: config.quilSoundEnabled)
+    }
+
+    private func shouldPlayLifecycleSounds(enabled: Bool) -> Bool {
+        enabled && !dictationAudioRoutingController.isDefaultOutputHeadphoneLike()
     }
 
     private func handleComputerUseAudioSessionEvent(_ event: DictationAudioSessionEvent) {
@@ -9027,7 +9035,7 @@ public final class MuesliController: NSObject {
             guard activeQuilAudioSessionID == sessionID, quilStartedAt != nil else { break }
             setState(.recording)
             SoundController.playQuillStart(
-                enabled: shouldPlayDictationLifecycleSounds && !isDictationTestMode
+                enabled: shouldPlayQuilLifecycleSounds && !isDictationTestMode
             )
             // Mic activation is the primary Quill interaction. Discover the
             // selection/insertion target only after the stream and activation cue

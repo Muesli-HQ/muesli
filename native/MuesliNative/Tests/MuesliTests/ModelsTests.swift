@@ -2780,6 +2780,12 @@ struct AppConfigAppearanceTests {
         #expect(config.soundEnabled == true)
     }
 
+    @Test("Quill sounds default to enabled")
+    func quilSoundEnabledDefault() {
+        let config = AppConfig()
+        #expect(config.quilSoundEnabled == true)
+    }
+
     @Test("muteSystemAudioDuringDictation defaults to false")
     func muteSystemAudioDuringDictationDefault() {
         let config = AppConfig()
@@ -2805,6 +2811,17 @@ struct AppConfigAppearanceTests {
         let data = try JSONEncoder().encode(config)
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
         #expect(decoded.soundEnabled == false)
+    }
+
+    @Test("Quill sound preference round-trips independently from dictation sounds")
+    func quilSoundEnabledRoundTrip() throws {
+        var config = AppConfig()
+        config.soundEnabled = true
+        config.quilSoundEnabled = false
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+        #expect(decoded.soundEnabled == true)
+        #expect(decoded.quilSoundEnabled == false)
     }
 
     @Test("muteSystemAudioDuringDictation round-trips through JSON")
@@ -2841,6 +2858,13 @@ struct AppConfigAppearanceTests {
         #expect(decoded.soundEnabled == true)
     }
 
+    @Test("missing Quill sound preference falls back to enabled")
+    func quilSoundEnabledFallsBackOnMissingKey() throws {
+        let json = Data("{}".utf8)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: json)
+        #expect(decoded.quilSoundEnabled == true)
+    }
+
     @Test("unknown JSON keys are ignored — muteSystemAudioDuringDictation falls back to default")
     func muteSystemAudioDuringDictationFallsBackOnMissingKey() throws {
         let json = Data("{}".utf8)
@@ -2869,6 +2893,15 @@ struct AppConfigAppearanceTests {
         let data = try JSONEncoder().encode(config)
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         #expect(json?["sound_enabled"] as? Bool == false)
+    }
+
+    @Test("Quill sound CodingKey is quil_sound_enabled")
+    func quilSoundEnabledCodingKey() throws {
+        var config = AppConfig()
+        config.quilSoundEnabled = false
+        let data = try JSONEncoder().encode(config)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        #expect(json?["quil_sound_enabled"] as? Bool == false)
     }
 
     @Test("muteSystemAudioDuringDictation CodingKey is mute_system_audio_during_dictation")

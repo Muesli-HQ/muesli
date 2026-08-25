@@ -998,6 +998,15 @@ struct SettingsView: View {
             }
             if appState.config.enableQuilMode {
                 Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow(
+                    "Play Quill sounds",
+                    description: "Play the activation and release cues for Quill mode."
+                ) {
+                    settingsSwitch(isOn: appState.config.quilSoundEnabled) { newValue in
+                        controller.updateConfig { $0.quilSoundEnabled = newValue }
+                    }
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Model source", controlWidth: meetingControlWidth) {
                     settingsMenu(
                         selection: selectedQuilModelSource.label,
