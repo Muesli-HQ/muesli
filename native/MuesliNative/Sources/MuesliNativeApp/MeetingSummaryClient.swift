@@ -20,6 +20,55 @@ enum MeetingSummaryError: LocalizedError {
     }
 }
 
+enum LLMConnectionCredentialPrecedence {
+    case environmentFirst
+    case configurationFirst
+}
+
+enum LLMConnectionTestError: LocalizedError, Equatable {
+    case invalidEndpoint
+    case missingModel
+    case missingCredential
+    case timedOut
+    case unreachable
+    case tlsFailure
+    case authenticationFailed
+    case accessDenied
+    case notFound
+    case rateLimited
+    case httpStatus(Int)
+    case invalidResponse
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidEndpoint:
+            return "Enter a valid endpoint before testing the connection."
+        case .missingModel:
+            return "Enter a model before testing the connection."
+        case .missingCredential:
+            return "Configure credentials before testing this connection."
+        case .timedOut:
+            return "The connection test timed out."
+        case .unreachable:
+            return "The configured endpoint could not be reached."
+        case .tlsFailure:
+            return "A secure connection to the endpoint could not be established."
+        case .authenticationFailed:
+            return "Authentication failed. Check the API key or API Key Command."
+        case .accessDenied:
+            return "The configured credential does not have access to this endpoint or model."
+        case .notFound:
+            return "The endpoint or model was not found."
+        case .rateLimited:
+            return "The endpoint is rate limited. Try again later."
+        case let .httpStatus(statusCode):
+            return "The endpoint returned HTTP status \(statusCode)."
+        case .invalidResponse:
+            return "The endpoint returned an incompatible response."
+        }
+    }
+}
+
 enum MeetingSummaryRetryPolicy {
     static let defaultRetryCount = 3
     static let maximumRetryCount = 5
@@ -852,6 +901,330 @@ enum MeetingSummaryClient {
             command: config.customLLMAPIKeyCommand,
             fallback: config.customLLMAPIKey
         )
+    }
+
+    static func chatCompletionsTokenKey(model: String, url: URL) -> String {
+        if url.host?.contains("openai.com") == true {
+            return "max_completion_tokens"
+        }
+        let modelName = model.split(separator: "/").last.map(String.init)?.lowercased() ?? model.lowercased()
+        let completionTokenPrefixes = ["gpt-5", "gpt-6", "o1", "o3", "o4"]
+        return completionTokenPrefixes.contains(where: modelName.hasPrefix)
+            ? "max_completion_tokens"
+            : "max_tokens"
+    }
+
+    typealias ChatGPTConnectionResponder = @Sendable (
+        _ systemPrompt: String,
+        _ userPrompt: String,
+        _ model: String,
+        _ maxOutputTokens: Int?
+    ) async throws -> String
+
+    private enum LLMConnectionResponseShape {
+        case openAIResponses
+        case chatCompletions
+        case anthropicMessages
+        case ollamaChat
+    }
+
+    static func testLLMConnection(
+        backend: LLMBackendOption,
+        config: AppConfig,
+        model: String,
+        requiresExplicitEndpoint: Bool = false,
+        credentialPrecedence: LLMConnectionCredentialPrecedence = .environmentFirst,
+        session: URLSession = .shared,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        chatGPTResponder: ChatGPTConnectionResponder? = nil
+    ) async throws {
+        let configuredModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !configuredModel.isEmpty else {
+            throw LLMConnectionTestError.missingModel
+        }
+
+        if backend == .chatGPT {
+            do {
+                let output: String
+                if let chatGPTResponder {
+                    output = try await chatGPTResponder(
+                        "Reply with OK.",
+                        "Connection test.",
+                        configuredModel,
+                        128
+                    )
+                } else {
+                    output = try await ChatGPTResponsesClient.respond(
+                        systemPrompt: "Reply with OK.",
+                        userPrompt: "Connection test.",
+                        model: configuredModel,
+                        maxOutputTokens: 128,
+                        logCategory: "connection-test"
+                    )
+                }
+                guard !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw LLMConnectionTestError.invalidResponse
+                }
+                return
+            } catch {
+                throw mappedConnectionTestError(error)
+            }
+        }
+
+        let (request, responseShape) = try await connectionTestRequest(
+            backend: backend,
+            config: config,
+            model: configuredModel,
+            requiresExplicitEndpoint: requiresExplicitEndpoint,
+            credentialPrecedence: credentialPrecedence,
+            environment: environment
+        )
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw LLMConnectionTestError.invalidResponse
+            }
+            guard (200..<300).contains(httpResponse.statusCode) else {
+                throw connectionTestError(for: httpResponse.statusCode)
+            }
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  connectionTestResponseIsCompatible(json, shape: responseShape) else {
+                throw LLMConnectionTestError.invalidResponse
+            }
+        } catch {
+            throw mappedConnectionTestError(error)
+        }
+    }
+
+    private static func connectionTestRequest(
+        backend: LLMBackendOption,
+        config: AppConfig,
+        model: String,
+        requiresExplicitEndpoint: Bool,
+        credentialPrecedence: LLMConnectionCredentialPrecedence,
+        environment: [String: String]
+    ) async throws -> (URLRequest, LLMConnectionResponseShape) {
+        var request: URLRequest
+        let body: [String: Any]
+        let responseShape: LLMConnectionResponseShape
+
+        switch backend {
+        case .openAI:
+            let apiKey = connectionTestAPIKey(
+                configured: config.openAIAPIKey,
+                environment: environment["OPENAI_API_KEY"],
+                precedence: credentialPrecedence
+            )
+            guard !apiKey.isEmpty else { throw LLMConnectionTestError.missingCredential }
+            request = URLRequest(url: openAIURL)
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            body = [
+                "model": model,
+                "input": [
+                    ["role": "system", "content": "Reply with OK."],
+                    ["role": "user", "content": "Connection test."],
+                ],
+                "reasoning": ["effort": SummaryModelPreset.reasoningEffort(for: model) ?? "low"],
+                "text": ["verbosity": "low"],
+                "max_output_tokens": 128,
+            ]
+            responseShape = .openAIResponses
+
+        case .openRouter:
+            let apiKey = connectionTestAPIKey(
+                configured: config.openRouterAPIKey,
+                environment: environment["OPENROUTER_API_KEY"],
+                precedence: credentialPrecedence
+            )
+            guard !apiKey.isEmpty else { throw LLMConnectionTestError.missingCredential }
+            request = URLRequest(url: openRouterURL)
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            request.setValue(AppIdentity.displayName, forHTTPHeaderField: "X-OpenRouter-Title")
+            body = chatCompletionsConnectionTestBody(model: model)
+            responseShape = .chatCompletions
+
+        case .ollama:
+            guard let baseURL = resolveOllamaConnectionTestURL(config.ollamaURL) else {
+                throw LLMConnectionTestError.invalidEndpoint
+            }
+            request = URLRequest(url: baseURL.appendingPathComponent("api/chat"))
+            body = [
+                "model": model,
+                "messages": [
+                    ["role": "system", "content": "Reply with OK."],
+                    ["role": "user", "content": "Connection test."],
+                ],
+                "stream": false,
+                "options": ["num_predict": 256],
+            ]
+            responseShape = .ollamaChat
+
+        case .lmStudio:
+            guard let requestURL = resolveLMStudioURL(config: config) else {
+                throw LLMConnectionTestError.invalidEndpoint
+            }
+            request = URLRequest(url: requestURL)
+            body = chatCompletionsConnectionTestBody(model: model)
+            responseShape = .chatCompletions
+
+        case .customLLM:
+            let format = CustomLLMFormat(rawValue: config.customLLMFormat) ?? .openAI
+            if requiresExplicitEndpoint,
+               config.customLLMURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                throw LLMConnectionTestError.invalidEndpoint
+            }
+            guard let requestURL = resolveCustomLLMURL(config: config, format: format) else {
+                throw LLMConnectionTestError.invalidEndpoint
+            }
+            let apiKey = try await resolveCustomLLMAPIKey(config: config)
+            if customLLMRequiresAPIKey(config: config) && apiKey.isEmpty {
+                throw LLMConnectionTestError.missingCredential
+            }
+
+            request = URLRequest(url: requestURL)
+            switch format {
+            case .openAI:
+                if !apiKey.isEmpty {
+                    request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+                }
+                var openAIBody = chatCompletionsConnectionTestBody(model: model)
+                let tokenKey = chatCompletionsTokenKey(model: model, url: requestURL)
+                if tokenKey == "max_completion_tokens" {
+                    openAIBody.removeValue(forKey: "max_tokens")
+                    openAIBody[tokenKey] = 256
+                    openAIBody["reasoning_effort"] = "low"
+                }
+                body = openAIBody
+                responseShape = .chatCompletions
+            case .anthropic:
+                request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+                request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+                body = [
+                    "model": model,
+                    "max_tokens": 256,
+                    "system": "Reply with OK.",
+                    "messages": [
+                        ["role": "user", "content": "Connection test."],
+                    ],
+                ]
+                responseShape = .anthropicMessages
+            }
+            for (name, value) in try CustomLLMRequestHeaders.validated(config.customLLMHeaders) {
+                request.setValue(value, forHTTPHeaderField: name)
+            }
+
+        default:
+            throw LLMConnectionTestError.invalidEndpoint
+        }
+
+        request.timeoutInterval = 120
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return (request, responseShape)
+    }
+
+    private static func connectionTestAPIKey(
+        configured: String,
+        environment: String?,
+        precedence: LLMConnectionCredentialPrecedence
+    ) -> String {
+        let configured = configured.trimmingCharacters(in: .whitespacesAndNewlines)
+        let environment = environment?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        switch precedence {
+        case .environmentFirst:
+            return environment.isEmpty ? configured : environment
+        case .configurationFirst:
+            return configured.isEmpty ? environment : configured
+        }
+    }
+
+    private static func chatCompletionsConnectionTestBody(model: String) -> [String: Any] {
+        [
+            "model": model,
+            "messages": [
+                ["role": "system", "content": "Reply with OK."],
+                ["role": "user", "content": "Connection test."],
+            ],
+            "max_tokens": 256,
+        ]
+    }
+
+    private static func resolveOllamaConnectionTestURL(_ value: String) -> URL? {
+        let rawURL = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let candidate = rawURL.isEmpty ? defaultOllamaBaseURL.absoluteString : rawURL
+        guard let url = URL(string: candidate),
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              components.host?.isEmpty == false else {
+            return nil
+        }
+        return url
+    }
+
+    private static func connectionTestResponseIsCompatible(
+        _ json: [String: Any],
+        shape: LLMConnectionResponseShape
+    ) -> Bool {
+        guard json["error"] == nil else { return false }
+        switch shape {
+        case .openAIResponses:
+            if let status = json["status"] as? String,
+               ["failed", "cancelled", "incomplete"].contains(status.lowercased()) {
+                return false
+            }
+            return extractOpenAIText(from: json)?.isEmpty == false
+        case .chatCompletions:
+            return extractOpenRouterText(from: json)?.isEmpty == false
+        case .anthropicMessages:
+            return extractAnthropicText(from: json)?.isEmpty == false
+        case .ollamaChat:
+            let message = json["message"] as? [String: Any]
+            return (message?["content"] as? String)?.isEmpty == false
+        }
+    }
+
+    private static func mappedConnectionTestError(_ error: Error) -> Error {
+        if error is CancellationError { return CancellationError() }
+        if let error = error as? LLMConnectionTestError { return error }
+        if error is ChatGPTAuthError { return LLMConnectionTestError.authenticationFailed }
+        if let error = error as? ChatGPTResponsesError {
+            switch error {
+            case let .backendFailed(statusCode, _):
+                return connectionTestError(for: statusCode)
+            }
+        }
+        if let error = error as? URLError {
+            switch error.code {
+            case .timedOut:
+                return LLMConnectionTestError.timedOut
+            case .secureConnectionFailed, .serverCertificateHasBadDate,
+                 .serverCertificateUntrusted, .serverCertificateHasUnknownRoot,
+                 .serverCertificateNotYetValid, .clientCertificateRejected,
+                 .clientCertificateRequired:
+                return LLMConnectionTestError.tlsFailure
+            default:
+                return LLMConnectionTestError.unreachable
+            }
+        }
+        return LLMConnectionTestError.unreachable
+    }
+
+    private static func connectionTestError(for statusCode: Int) -> LLMConnectionTestError {
+        switch statusCode {
+        case 401:
+            return .authenticationFailed
+        case 403:
+            return .accessDenied
+        case 404:
+            return .notFound
+        case 429:
+            return .rateLimited
+        default:
+            return .httpStatus(statusCode)
+        }
     }
 
     private static func summarizeWithChatCompletions(

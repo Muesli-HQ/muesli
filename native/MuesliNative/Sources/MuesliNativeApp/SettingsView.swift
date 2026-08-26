@@ -101,6 +101,13 @@ private struct ICloudLinkedDeviceRow: View {
     }
 }
 
+private enum LLMConnectionTestState: Equatable {
+    case idle
+    case testing
+    case connected
+    case failed(String)
+}
+
 private enum OnDeviceCleanupModel: Identifiable {
     case gguf(PostProcessorOption)
     case gemma4(Gemma4LiteRTModel)
@@ -219,6 +226,9 @@ struct SettingsView: View {
     @State private var isShowingIPhoneBridgeQRCode = false
     @State private var openAIDictationAPIKey: String = ""
     @State private var openAITestState: OpenAIConnectionTestState = .idle
+    @State private var llmConnectionTestStates: [String: LLMConnectionTestState] = [:]
+    @State private var llmConnectionTestIDs: [String: UUID] = [:]
+    @State private var llmConnectionTestTasks: [String: Task<Void, Never>] = [:]
 
     init(appState: AppState, controller: MuesliController) {
         self.appState = appState
@@ -1500,6 +1510,16 @@ struct SettingsView: View {
                 ) { value in controller.updateConfig { $0.quilModel = value } }
             }
         }
+        if let llmBackend = backend.llmBackend {
+            let configuredModel = appState.config.quilModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            llmConnectionTestRows(
+                id: "quil",
+                backend: llmBackend,
+                model: configuredModel.isEmpty ? TranscriptCleanupClient.defaultModel(for: backend) : configuredModel,
+                requiresExplicitEndpoint: llmBackend == .customLLM,
+                credentialPrecedence: .configurationFirst
+            )
+        }
     }
 
     private var cohereLanguageMenu: some View {
@@ -1636,6 +1656,15 @@ struct SettingsView: View {
             }
         default:
             EmptyView()
+        }
+        if let llmBackend = backend.llmBackend {
+            llmConnectionTestRows(
+                id: "transcript-cleanup",
+                backend: llmBackend,
+                model: TranscriptCleanupClient.configuredModel(for: backend, config: appState.config),
+                requiresExplicitEndpoint: llmBackend == .customLLM,
+                credentialPrecedence: .configurationFirst
+            )
         }
     }
 
@@ -1783,11 +1812,22 @@ struct SettingsView: View {
                     ) { val in controller.updateConfig { $0.openRouterModel = val } }
                 }
             }
+
+            if let llmBackend = LLMBackendOption.resolved(appState.selectedMeetingSummaryBackend.backend) {
+                llmConnectionTestRows(
+                    id: "meeting-summary",
+                    backend: llmBackend,
+                    model: meetingSummaryConnectionModel(for: appState.selectedMeetingSummaryBackend)
+                )
+            }
         }
     }
 
     @ViewBuilder
-    private func customLLMSettingsRows(model: String, onModelChange: @escaping (String) -> Void) -> some View {
+    private func customLLMSettingsRows(
+        model: String,
+        onModelChange: @escaping (String) -> Void
+    ) -> some View {
         Divider().background(MuesliTheme.surfaceBorder)
         settingsRow("API Format", controlWidth: meetingControlWidth) {
             settingsMenu(
@@ -1805,7 +1845,9 @@ struct SettingsView: View {
                 placeholder: appState.config.customLLMFormat == CustomLLMFormat.anthropic.rawValue
                     ? "https://api.anthropic.com"
                     : "http://localhost:8080/v1",
-                onChange: { val in controller.updateConfig { $0.customLLMURL = val } }
+                onChange: { val in
+                        controller.updateConfig { $0.customLLMURL = val }
+                }
             )
             .frame(height: 22)
         }
@@ -1816,7 +1858,9 @@ struct SettingsView: View {
                 placeholder: appState.config.customLLMFormat == CustomLLMFormat.anthropic.rawValue
                     ? "Required for Anthropic API"
                     : "Optional for local servers",
-                onChange: { val in controller.updateConfig { $0.customLLMAPIKey = val } }
+                onChange: { val in
+                        controller.updateConfig { $0.customLLMAPIKey = val }
+                }
             )
             .frame(height: 22)
         }
@@ -1825,7 +1869,9 @@ struct SettingsView: View {
             PastableTextField(
                 text: appState.config.customLLMAPIKeyCommand,
                 placeholder: "e.g. /opt/homebrew/bin/vault print token",
-                onChange: { val in controller.updateConfig { $0.customLLMAPIKeyCommand = val } }
+                onChange: { val in
+                        controller.updateConfig { $0.customLLMAPIKeyCommand = val }
+                }
             )
             .frame(height: 22)
             .help("Runs via /bin/sh before each request. Use an absolute executable path.")
@@ -1890,7 +1936,211 @@ struct SettingsView: View {
                 placeholder: appState.config.customLLMFormat == CustomLLMFormat.anthropic.rawValue
                     ? "claude-3-5-sonnet-20241022"
                     : "custom-model-id"
-            ) { val in onModelChange(val) }
+            ) { val in
+                onModelChange(val)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func llmConnectionTestRows(
+        id: String,
+        backend: LLMBackendOption,
+        model: String,
+        requiresExplicitEndpoint: Bool = false,
+        credentialPrecedence: LLMConnectionCredentialPrecedence = .environmentFirst
+    ) -> some View {
+        let state = llmConnectionTestStates[id] ?? .idle
+        let fingerprint = llmConnectionTestFingerprint(
+            backend: backend,
+            model: model,
+            requiresExplicitEndpoint: requiresExplicitEndpoint,
+            credentialPrecedence: credentialPrecedence
+        )
+        Divider().background(MuesliTheme.surfaceBorder)
+        settingsRow("Connection", controlWidth: meetingControlWidth) {
+            HStack(spacing: MuesliTheme.spacing8) {
+                switch state {
+                case .idle:
+                    EmptyView()
+                case .testing:
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Testing…")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                case .connected:
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(MuesliTheme.success)
+                    Text("Connected")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.success)
+                case .failed:
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .foregroundStyle(MuesliTheme.recording)
+                    Text("Failed")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.recording)
+                }
+                Spacer(minLength: MuesliTheme.spacing8)
+                if state == .testing {
+                    compactActionButton("Cancel", systemImage: "xmark.circle") {
+                        resetLLMConnectionTest(id: id)
+                    }
+                } else {
+                    compactActionButton("Test Connection", systemImage: "bolt.horizontal.circle") {
+                        testLLMConnection(
+                            id: id,
+                            backend: backend,
+                            model: model,
+                            requiresExplicitEndpoint: requiresExplicitEndpoint,
+                            credentialPrecedence: credentialPrecedence
+                        )
+                    }
+                    .disabled(
+                        model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || (backend == .customLLM
+                                && requiresExplicitEndpoint
+                                && appState.config.customLLMURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    )
+                }
+            }
+            .padding(.vertical, 4)
+        }
+        .onChange(of: fingerprint) { _, _ in
+            resetLLMConnectionTest(id: id)
+        }
+        .onDisappear {
+            resetLLMConnectionTest(id: id)
+        }
+        if case let .failed(message) = state {
+            settingsDescription(message)
+                .padding(.top, 4)
+        } else {
+            settingsDescription("Sends a small request using the current endpoint, model, and credentials. The request may use a small number of model tokens.")
+                .padding(.top, 4)
+        }
+    }
+
+    private func meetingSummaryConnectionModel(for backend: MeetingSummaryBackendOption) -> String {
+        let configured: String
+        let fallback: String
+        switch backend {
+        case .chatGPT:
+            configured = appState.config.chatGPTModel
+            fallback = SummaryModelPreset.chatGPTModels.first?.id ?? "gpt-5.4-mini"
+        case .openAI:
+            configured = appState.config.openAIModel
+            fallback = SummaryModelPreset.openAIModels.first?.id ?? "gpt-5.4-mini"
+        case .openRouter:
+            configured = appState.config.openRouterModel
+            fallback = SummaryModelPreset.openRouterModels.first?.id ?? "stepfun/step-3.5-flash:free"
+        case .ollama:
+            configured = appState.config.ollamaModel
+            fallback = "qwen3.5"
+        case .lmStudio:
+            configured = appState.config.lmStudioModel
+            fallback = ""
+        case .customLLM:
+            configured = appState.config.customLLMModel
+            fallback = ""
+        default:
+            configured = ""
+            fallback = ""
+        }
+        let trimmed = configured.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? fallback : trimmed
+    }
+
+    private func llmConnectionTestFingerprint(
+        backend: LLMBackendOption,
+        model: String,
+        requiresExplicitEndpoint: Bool,
+        credentialPrecedence: LLMConnectionCredentialPrecedence
+    ) -> Int {
+        var hasher = Hasher()
+        hasher.combine(backend.backend)
+        hasher.combine(model)
+        hasher.combine(requiresExplicitEndpoint)
+        switch credentialPrecedence {
+        case .environmentFirst:
+            hasher.combine("environment-first")
+        case .configurationFirst:
+            hasher.combine("configuration-first")
+        }
+        switch backend {
+        case .chatGPT:
+            hasher.combine(appState.isChatGPTAuthenticated)
+        case .openAI:
+            hasher.combine(appState.config.openAIAPIKey)
+        case .openRouter:
+            hasher.combine(appState.config.openRouterAPIKey)
+        case .ollama:
+            hasher.combine(appState.config.ollamaURL)
+        case .lmStudio:
+            hasher.combine(appState.config.lmStudioURL)
+        case .customLLM:
+            hasher.combine(appState.config.customLLMFormat)
+            hasher.combine(appState.config.customLLMURL)
+            hasher.combine(appState.config.customLLMAPIKey)
+            hasher.combine(appState.config.customLLMAPIKeyCommand)
+            for header in appState.config.customLLMHeaders {
+                hasher.combine(header.id)
+                hasher.combine(header.name)
+                hasher.combine(header.value)
+            }
+        default:
+            break
+        }
+        return hasher.finalize()
+    }
+
+    private func resetLLMConnectionTest(id: String) {
+        llmConnectionTestTasks[id]?.cancel()
+        llmConnectionTestTasks[id] = nil
+        llmConnectionTestIDs[id] = nil
+        llmConnectionTestStates[id] = .idle
+    }
+
+    private func testLLMConnection(
+        id: String,
+        backend: LLMBackendOption,
+        model: String,
+        requiresExplicitEndpoint: Bool,
+        credentialPrecedence: LLMConnectionCredentialPrecedence
+    ) {
+        llmConnectionTestTasks[id]?.cancel()
+        let testID = UUID()
+        llmConnectionTestIDs[id] = testID
+        llmConnectionTestStates[id] = .testing
+        let config = appState.config
+
+        llmConnectionTestTasks[id] = Task { @MainActor in
+            do {
+                try await MeetingSummaryClient.testLLMConnection(
+                    backend: backend,
+                    config: config,
+                    model: model,
+                    requiresExplicitEndpoint: requiresExplicitEndpoint,
+                    credentialPrecedence: credentialPrecedence
+                )
+                try Task.checkCancellation()
+                guard llmConnectionTestIDs[id] == testID else { return }
+                llmConnectionTestTasks[id] = nil
+                llmConnectionTestStates[id] = .connected
+            } catch is CancellationError {
+                guard llmConnectionTestIDs[id] == testID else { return }
+                llmConnectionTestTasks[id] = nil
+                llmConnectionTestStates[id] = .idle
+            } catch {
+                guard llmConnectionTestIDs[id] == testID else { return }
+                llmConnectionTestTasks[id] = nil
+                llmConnectionTestStates[id] = .failed(
+                    error.localizedDescription.isEmpty
+                        ? LLMConnectionTestError.invalidResponse.localizedDescription
+                        : error.localizedDescription
+                )
+            }
         }
     }
 
