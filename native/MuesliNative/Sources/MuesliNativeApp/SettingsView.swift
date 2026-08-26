@@ -185,6 +185,7 @@ struct SettingsView: View {
     @State private var openRouterFreeModels: [SummaryModelPreset] = []
     @State private var isLoadingOpenRouterFreeModels = false
     @State private var openRouterFreeModelsError: String?
+    @State private var isUsingCustomOpenRouterModel = false
     @State private var hasRefreshedMeetingCalendarSources = false
     @State private var isShowingICloudSyncReconnectConfirmation = false
     @State private var isShowingICloudSyncResetConfirmation = false
@@ -1566,14 +1567,15 @@ struct SettingsView: View {
                     openRouterAccountControl()
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Free model", controlWidth: meetingControlWidth) {
+                settingsRow("Model", controlWidth: meetingControlWidth) {
                     openRouterFreeModelMenu
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Custom model ID", controlWidth: meetingControlWidth) {
                     settingsModelTextField(
                         currentModel: appState.config.openRouterModel,
-                        placeholder: "provider/model"
+                        placeholder: "provider/model",
+                        onBeginEditing: { isUsingCustomOpenRouterModel = true }
                     ) { val in controller.updateConfig { $0.openRouterModel = val } }
                 }
             }
@@ -2171,41 +2173,59 @@ struct SettingsView: View {
         selectMeetingSummaryBackend: Bool = true
     ) -> some View {
         if appState.isOpenRouterAuthenticated {
-            HStack(spacing: 6) {
+            HStack(spacing: 0) {
                 HStack(spacing: 4) {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(MuesliTheme.success)
                     Text("Connected")
                         .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(MuesliTheme.textSecondary)
                         .lineLimit(1)
                 }
-                .foregroundStyle(MuesliTheme.success)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                Divider()
+                    .background(MuesliTheme.surfaceBorder)
+                    .padding(.vertical, 5)
 
                 Button {
                     controller.manageOpenRouterKey()
                 } label: {
                     Text("Manage key")
                         .font(.system(size: 10))
-                        .foregroundStyle(.blue)
-                        .underline()
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .frame(maxWidth: .infinity, alignment: .center)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .help("Manage this key at OpenRouter")
+
+                Divider()
+                    .background(MuesliTheme.surfaceBorder)
+                    .padding(.vertical, 5)
 
                 Button {
                     controller.signOutOpenRouter()
                 } label: {
                     Text("Disconnect")
                         .font(.system(size: 10))
-                        .foregroundStyle(.red)
-                        .underline()
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .frame(maxWidth: .infinity, alignment: .trailing)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .help("Remove Muesli's local copy of this OpenRouter key")
             }
+            .frame(height: 24)
+            .background(MuesliTheme.surfacePrimary)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            .overlay(
+                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+            )
         } else if isSigningInOpenRouter {
             HStack(spacing: 6) {
                 ProgressView()
@@ -3446,10 +3466,16 @@ struct SettingsView: View {
     }
 
     @ViewBuilder
-    private func settingsModelTextField(currentModel: String, placeholder: String, onChange: @escaping (String) -> Void) -> some View {
+    private func settingsModelTextField(
+        currentModel: String,
+        placeholder: String,
+        onBeginEditing: (() -> Void)? = nil,
+        onChange: @escaping (String) -> Void
+    ) -> some View {
         PastableTextField(
             text: currentModel,
             placeholder: placeholder,
+            onBeginEditing: onBeginEditing,
             onChange: { value in
                 onChange(value.trimmingCharacters(in: .whitespacesAndNewlines))
             }
@@ -3469,10 +3495,37 @@ struct SettingsView: View {
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
         } else if !openRouterFreeModels.isEmpty {
-            settingsModelMenu(
-                currentModel: appState.config.openRouterModel,
-                presets: openRouterFreeModels
-            ) { val in controller.updateConfig { $0.openRouterModel = val } }
+            let configuredModel = appState.config.openRouterModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            let configuredPreset = openRouterFreeModels.first { $0.id == configuredModel }
+            let showsCustomSelection = isUsingCustomOpenRouterModel
+                || (!configuredModel.isEmpty && configuredPreset == nil)
+            let customLabel = configuredModel.isEmpty
+                ? "Custom model ID"
+                : "Custom: \(configuredModel)"
+            let menuPresets = showsCustomSelection
+                ? openRouterFreeModels + [SummaryModelPreset(id: configuredModel, label: customLabel)]
+                : openRouterFreeModels
+            let selectedLabel = showsCustomSelection
+                ? customLabel
+                : (configuredPreset?.label ?? openRouterFreeModels[0].label)
+
+            FixedWidthPopUp(
+                selection: selectedLabel,
+                options: menuPresets.map(\.label),
+                onSelectIndex: { index in
+                    guard index >= 0 && index < menuPresets.count else { return }
+                    if showsCustomSelection && index == openRouterFreeModels.count {
+                        isUsingCustomOpenRouterModel = true
+                        return
+                    }
+                    isUsingCustomOpenRouterModel = false
+                    let selectedID = openRouterFreeModels[index].id
+                    controller.updateConfig {
+                        $0.openRouterModel = selectedID == openRouterFreeModels.first?.id ? "" : selectedID
+                    }
+                }
+            )
+            .frame(height: 24)
         } else {
             HStack(spacing: 8) {
                 if let openRouterFreeModelsError {
@@ -3793,7 +3846,20 @@ struct PastableSecureField: NSViewRepresentable {
 struct PastableTextField: NSViewRepresentable {
     let text: String
     let placeholder: String
+    let onBeginEditing: (() -> Void)?
     let onChange: (String) -> Void
+
+    init(
+        text: String,
+        placeholder: String,
+        onBeginEditing: (() -> Void)? = nil,
+        onChange: @escaping (String) -> Void
+    ) {
+        self.text = text
+        self.placeholder = placeholder
+        self.onBeginEditing = onBeginEditing
+        self.onChange = onChange
+    }
 
     func makeNSView(context: Context) -> EditableNSTextField {
         let field = EditableNSTextField()
@@ -3811,17 +3877,25 @@ struct PastableTextField: NSViewRepresentable {
         if nsView.stringValue != text {
             nsView.stringValue = text
         }
+        context.coordinator.onBeginEditing = onBeginEditing
+        context.coordinator.onChange = onChange
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onChange: onChange)
+        Coordinator(onBeginEditing: onBeginEditing, onChange: onChange)
     }
 
     class Coordinator: NSObject, NSTextFieldDelegate {
-        let onChange: (String) -> Void
+        var onBeginEditing: (() -> Void)?
+        var onChange: (String) -> Void
 
-        init(onChange: @escaping (String) -> Void) {
+        init(onBeginEditing: (() -> Void)?, onChange: @escaping (String) -> Void) {
+            self.onBeginEditing = onBeginEditing
             self.onChange = onChange
+        }
+
+        func controlTextDidBeginEditing(_ obj: Notification) {
+            onBeginEditing?()
         }
 
         func controlTextDidChange(_ obj: Notification) {
