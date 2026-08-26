@@ -20,9 +20,68 @@ enum MeetingSummaryError: LocalizedError {
     }
 }
 
-enum LLMConnectionCredentialPrecedence {
-    case environmentFirst
-    case configurationFirst
+enum LLMConnectionTestContext: Sendable {
+    case meetingSummary
+    case hostedGeneration
+}
+
+private actor ChatGPTConnectionTestGate {
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
+    private var isRunning = false
+    private var waiters: [Waiter] = []
+
+    func run<T: Sendable>(_ operation: @Sendable () async throws -> T) async throws -> T {
+        try await acquire()
+        defer { release() }
+        try Task.checkCancellation()
+        let result = try await operation()
+        try Task.checkCancellation()
+        return result
+    }
+
+    private func acquire() async throws {
+        try Task.checkCancellation()
+        guard isRunning else {
+            isRunning = true
+            return
+        }
+
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                } else {
+                    waiters.append(Waiter(id: id, continuation: continuation))
+                }
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(id: id) }
+        }
+    }
+
+    func queuedWaiterCount() -> Int {
+        waiters.count
+    }
+
+    private func cancelWaiter(id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        let waiter = waiters.remove(at: index)
+        waiter.continuation.resume(throwing: CancellationError())
+    }
+
+    private func release() {
+        if waiters.isEmpty {
+            isRunning = false
+        } else {
+            let waiter = waiters.removeFirst()
+            waiter.continuation.resume()
+        }
+    }
 }
 
 enum LLMConnectionTestError: LocalizedError, Equatable {
@@ -54,7 +113,7 @@ enum LLMConnectionTestError: LocalizedError, Equatable {
         case .tlsFailure:
             return "A secure connection to the endpoint could not be established."
         case .authenticationFailed:
-            return "Authentication failed. Check the API key or API Key Command."
+            return "Authentication failed. Reconnect the account or check the configured credentials."
         case .accessDenied:
             return "The configured credential does not have access to this endpoint or model."
         case .notFound:
@@ -922,10 +981,16 @@ enum MeetingSummaryClient {
     ) async throws -> String
 
     private enum LLMConnectionResponseShape {
-        case openAIResponses
-        case chatCompletions
-        case anthropicMessages
+        case openAIResponses(LLMConnectionTestContext)
+        case chatCompletions(LLMConnectionTestContext)
+        case anthropicMessages(LLMConnectionTestContext)
         case ollamaChat
+    }
+
+    private static let chatGPTConnectionTestGate = ChatGPTConnectionTestGate()
+
+    static func chatGPTConnectionTestWaiterCount() async -> Int {
+        await chatGPTConnectionTestGate.queuedWaiterCount()
     }
 
     static func testLLMConnection(
@@ -933,7 +998,7 @@ enum MeetingSummaryClient {
         config: AppConfig,
         model: String,
         requiresExplicitEndpoint: Bool = false,
-        credentialPrecedence: LLMConnectionCredentialPrecedence = .environmentFirst,
+        context: LLMConnectionTestContext = .meetingSummary,
         session: URLSession = .shared,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         chatGPTResponder: ChatGPTConnectionResponder? = nil
@@ -945,21 +1010,22 @@ enum MeetingSummaryClient {
 
         if backend == .chatGPT {
             do {
-                let output: String
-                if let chatGPTResponder {
-                    output = try await chatGPTResponder(
-                        "Reply with OK.",
-                        "Connection test.",
-                        configuredModel,
-                        128
-                    )
-                } else {
-                    output = try await ChatGPTResponsesClient.respond(
+                let output = try await chatGPTConnectionTestGate.run {
+                    if let chatGPTResponder {
+                        return try await chatGPTResponder(
+                            "Reply with OK.",
+                            "Connection test.",
+                            configuredModel,
+                            128
+                        )
+                    }
+                    return try await ChatGPTResponsesClient.respond(
                         systemPrompt: "Reply with OK.",
                         userPrompt: "Connection test.",
                         model: configuredModel,
                         maxOutputTokens: 128,
-                        logCategory: "connection-test"
+                        logCategory: "connection-test",
+                        logProviderErrorDetails: false
                     )
                 }
                 guard !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -976,7 +1042,7 @@ enum MeetingSummaryClient {
             config: config,
             model: configuredModel,
             requiresExplicitEndpoint: requiresExplicitEndpoint,
-            credentialPrecedence: credentialPrecedence,
+            context: context,
             environment: environment
         )
 
@@ -1002,7 +1068,7 @@ enum MeetingSummaryClient {
         config: AppConfig,
         model: String,
         requiresExplicitEndpoint: Bool,
-        credentialPrecedence: LLMConnectionCredentialPrecedence,
+        context: LLMConnectionTestContext,
         environment: [String: String]
     ) async throws -> (URLRequest, LLMConnectionResponseShape) {
         var request: URLRequest
@@ -1014,35 +1080,55 @@ enum MeetingSummaryClient {
             let apiKey = connectionTestAPIKey(
                 configured: config.openAIAPIKey,
                 environment: environment["OPENAI_API_KEY"],
-                precedence: credentialPrecedence
+                context: context
             )
             guard !apiKey.isEmpty else { throw LLMConnectionTestError.missingCredential }
             request = URLRequest(url: openAIURL)
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-            body = [
-                "model": model,
-                "input": [
-                    ["role": "system", "content": "Reply with OK."],
-                    ["role": "user", "content": "Connection test."],
-                ],
-                "reasoning": ["effort": SummaryModelPreset.reasoningEffort(for: model) ?? "low"],
-                "text": ["verbosity": "low"],
-                "max_output_tokens": 128,
-            ]
-            responseShape = .openAIResponses
+            switch context {
+            case .meetingSummary:
+                body = [
+                    "model": model,
+                    "input": [
+                        ["role": "system", "content": "Reply with OK."],
+                        ["role": "user", "content": "Connection test."],
+                    ],
+                    "reasoning": ["effort": SummaryModelPreset.reasoningEffort(for: model) ?? "low"],
+                    "text": ["verbosity": "low"],
+                    "max_output_tokens": 128,
+                ]
+            case .hostedGeneration:
+                var hostedBody: [String: Any] = [
+                    "model": model,
+                    "instructions": "Reply with OK.",
+                    "input": "Connection test.",
+                    "max_output_tokens": 128,
+                ]
+                if let effort = SummaryModelPreset.reasoningEffort(for: model) {
+                    hostedBody["reasoning"] = ["effort": effort]
+                }
+                body = hostedBody
+            }
+            responseShape = .openAIResponses(context)
 
         case .openRouter:
             let apiKey = connectionTestAPIKey(
                 configured: config.openRouterAPIKey,
                 environment: environment["OPENROUTER_API_KEY"],
-                precedence: credentialPrecedence
+                context: context
             )
             guard !apiKey.isEmpty else { throw LLMConnectionTestError.missingCredential }
             request = URLRequest(url: openRouterURL)
-            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            switch context {
+            case .meetingSummary:
+                request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            case .hostedGeneration:
+                let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
+            }
             request.setValue(AppIdentity.displayName, forHTTPHeaderField: "X-OpenRouter-Title")
-            body = chatCompletionsConnectionTestBody(model: model)
-            responseShape = .chatCompletions
+            body = chatCompletionsConnectionTestBody(model: model, requestURL: openRouterURL)
+            responseShape = .chatCompletions(context)
 
         case .ollama:
             guard let baseURL = resolveOllamaConnectionTestURL(config.ollamaURL) else {
@@ -1065,8 +1151,8 @@ enum MeetingSummaryClient {
                 throw LLMConnectionTestError.invalidEndpoint
             }
             request = URLRequest(url: requestURL)
-            body = chatCompletionsConnectionTestBody(model: model)
-            responseShape = .chatCompletions
+            body = chatCompletionsConnectionTestBody(model: model, requestURL: requestURL)
+            responseShape = .chatCompletions(context)
 
         case .customLLM:
             let format = CustomLLMFormat(rawValue: config.customLLMFormat) ?? .openAI
@@ -1077,6 +1163,7 @@ enum MeetingSummaryClient {
             guard let requestURL = resolveCustomLLMURL(config: config, format: format) else {
                 throw LLMConnectionTestError.invalidEndpoint
             }
+            let extraHeaders = try CustomLLMRequestHeaders.validated(config.customLLMHeaders)
             let apiKey = try await resolveCustomLLMAPIKey(config: config)
             if customLLMRequiresAPIKey(config: config) && apiKey.isEmpty {
                 throw LLMConnectionTestError.missingCredential
@@ -1088,15 +1175,8 @@ enum MeetingSummaryClient {
                 if !apiKey.isEmpty {
                     request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
                 }
-                var openAIBody = chatCompletionsConnectionTestBody(model: model)
-                let tokenKey = chatCompletionsTokenKey(model: model, url: requestURL)
-                if tokenKey == "max_completion_tokens" {
-                    openAIBody.removeValue(forKey: "max_tokens")
-                    openAIBody[tokenKey] = 256
-                    openAIBody["reasoning_effort"] = "low"
-                }
-                body = openAIBody
-                responseShape = .chatCompletions
+                body = chatCompletionsConnectionTestBody(model: model, requestURL: requestURL)
+                responseShape = .chatCompletions(context)
             case .anthropic:
                 request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
                 request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
@@ -1108,9 +1188,9 @@ enum MeetingSummaryClient {
                         ["role": "user", "content": "Connection test."],
                     ],
                 ]
-                responseShape = .anthropicMessages
+                responseShape = .anthropicMessages(context)
             }
-            for (name, value) in try CustomLLMRequestHeaders.validated(config.customLLMHeaders) {
+            for (name, value) in extraHeaders {
                 request.setValue(value, forHTTPHeaderField: name)
             }
 
@@ -1125,30 +1205,33 @@ enum MeetingSummaryClient {
         return (request, responseShape)
     }
 
-    private static func connectionTestAPIKey(
+    static func connectionTestAPIKey(
         configured: String,
         environment: String?,
-        precedence: LLMConnectionCredentialPrecedence
+        context: LLMConnectionTestContext
     ) -> String {
-        let configured = configured.trimmingCharacters(in: .whitespacesAndNewlines)
-        let environment = environment?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        switch precedence {
-        case .environmentFirst:
-            return environment.isEmpty ? configured : environment
-        case .configurationFirst:
-            return configured.isEmpty ? environment : configured
+        switch context {
+        case .meetingSummary:
+            return environment ?? configured
+        case .hostedGeneration:
+            let configured = configured.trimmingCharacters(in: .whitespacesAndNewlines)
+            return configured.isEmpty ? (environment ?? "") : configured
         }
     }
 
-    private static func chatCompletionsConnectionTestBody(model: String) -> [String: Any] {
-        [
+    private static func chatCompletionsConnectionTestBody(
+        model: String,
+        requestURL: URL
+    ) -> [String: Any] {
+        var body: [String: Any] = [
             "model": model,
             "messages": [
                 ["role": "system", "content": "Reply with OK."],
                 ["role": "user", "content": "Connection test."],
             ],
-            "max_tokens": 256,
         ]
+        body[requestURL.host?.contains("openai.com") == true ? "max_completion_tokens" : "max_tokens"] = 256
+        return body
     }
 
     private static func resolveOllamaConnectionTestURL(_ value: String) -> URL? {
@@ -1168,22 +1251,77 @@ enum MeetingSummaryClient {
         _ json: [String: Any],
         shape: LLMConnectionResponseShape
     ) -> Bool {
-        guard json["error"] == nil else { return false }
+        if let error = json["error"], !(error is NSNull) {
+            return false
+        }
         switch shape {
-        case .openAIResponses:
+        case let .openAIResponses(context):
             if let status = json["status"] as? String,
                ["failed", "cancelled", "incomplete"].contains(status.lowercased()) {
                 return false
             }
-            return extractOpenAIText(from: json)?.isEmpty == false
-        case .chatCompletions:
-            return extractOpenRouterText(from: json)?.isEmpty == false
-        case .anthropicMessages:
-            return extractAnthropicText(from: json)?.isEmpty == false
+            switch context {
+            case .meetingSummary:
+                return extractOpenAIText(from: json)?.isEmpty == false
+            case .hostedGeneration:
+                return extractHostedOpenAIText(from: json)?.isEmpty == false
+            }
+        case let .chatCompletions(context):
+            switch context {
+            case .meetingSummary:
+                return extractOpenRouterText(from: json)?.isEmpty == false
+            case .hostedGeneration:
+                return extractHostedChatCompletionsText(from: json)?.isEmpty == false
+            }
+        case let .anthropicMessages(context):
+            switch context {
+            case .meetingSummary:
+                return extractAnthropicText(from: json)?.isEmpty == false
+            case .hostedGeneration:
+                return extractHostedAnthropicText(from: json)?.isEmpty == false
+            }
         case .ollamaChat:
             let message = json["message"] as? [String: Any]
             return (message?["content"] as? String)?.isEmpty == false
         }
+    }
+
+    private static func extractHostedOpenAIText(from payload: [String: Any]) -> String? {
+        if let outputText = payload["output_text"] as? String, !outputText.isEmpty {
+            return outputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard let output = payload["output"] as? [[String: Any]] else { return nil }
+        let parts = output.flatMap { item -> [String] in
+            guard let content = item["content"] as? [[String: Any]] else { return [] }
+            return content.compactMap { $0["text"] as? String }
+        }
+        let joined = parts.joined()
+        return joined.isEmpty ? nil : joined.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func extractHostedChatCompletionsText(from payload: [String: Any]) -> String? {
+        guard let choices = payload["choices"] as? [[String: Any]] else { return nil }
+        for choice in choices {
+            if let message = choice["message"] as? [String: Any],
+               let content = message["content"] as? String,
+               !content.isEmpty {
+                return content.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if let text = choice["text"] as? String, !text.isEmpty {
+                return text.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        return nil
+    }
+
+    private static func extractHostedAnthropicText(from payload: [String: Any]) -> String? {
+        guard let content = payload["content"] as? [[String: Any]] else { return nil }
+        let parts = content.compactMap { item -> String? in
+            guard (item["type"] as? String) == nil || (item["type"] as? String) == "text" else { return nil }
+            return item["text"] as? String
+        }
+        let joined = parts.joined()
+        return joined.isEmpty ? nil : joined.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func mappedConnectionTestError(_ error: Error) -> Error {
@@ -1193,11 +1331,16 @@ enum MeetingSummaryClient {
         if let error = error as? ChatGPTResponsesError {
             switch error {
             case let .backendFailed(statusCode, _):
+                if (200..<300).contains(statusCode) {
+                    return LLMConnectionTestError.invalidResponse
+                }
                 return connectionTestError(for: statusCode)
             }
         }
         if let error = error as? URLError {
             switch error.code {
+            case .cancelled:
+                return CancellationError()
             case .timedOut:
                 return LLMConnectionTestError.timedOut
             case .secureConnectionFailed, .serverCertificateHasBadDate,

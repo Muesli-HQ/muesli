@@ -80,7 +80,8 @@ enum ChatGPTResponsesClient {
         userPrompt: String,
         model: String,
         maxOutputTokens: Int? = nil,
-        logCategory: String
+        logCategory: String,
+        logProviderErrorDetails: Bool = true
     ) async throws -> String {
         let (token, accountId) = try await ChatGPTAuthManager.shared.validAccessToken()
         let body = requestBody(
@@ -104,7 +105,15 @@ enum ChatGPTResponsesClient {
             let message = extractErrorMessage(from: errorData)
                 ?? String(data: errorData, encoding: .utf8)
                 ?? "(unknown)"
-            fputs("[\(logCategory)] ChatGPT Responses: HTTP \(httpStatus): \(String(message.prefix(500)))\n", stderr)
+            fputs(
+                errorLogMessage(
+                    logCategory: logCategory,
+                    statusCode: httpStatus,
+                    message: message,
+                    includeProviderDetails: logProviderErrorDetails
+                ),
+                stderr
+            )
             throw ChatGPTResponsesError.backendFailed(statusCode: httpStatus, message: message)
         }
 
@@ -123,6 +132,18 @@ enum ChatGPTResponsesClient {
         let trimmed = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
         fputs("[\(logCategory)] ChatGPT Responses: collected \(trimmed.count) chars\n", stderr)
         return trimmed
+    }
+
+    static func errorLogMessage(
+        logCategory: String,
+        statusCode: Int,
+        message: String,
+        includeProviderDetails: Bool
+    ) -> String {
+        if includeProviderDetails {
+            return "[\(logCategory)] ChatGPT Responses: HTTP \(statusCode): \(String(message.prefix(500)))\n"
+        }
+        return "[\(logCategory)] ChatGPT Responses: HTTP \(statusCode)\n"
     }
 
     static func requestBody(

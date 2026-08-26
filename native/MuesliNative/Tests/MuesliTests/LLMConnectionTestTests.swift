@@ -28,6 +28,19 @@ private final class LLMConnectionURLProtocol: URLProtocol {
     struct Response {
         let statusCode: Int
         let data: Data
+        let error: Error?
+
+        init(statusCode: Int, data: Data) {
+            self.statusCode = statusCode
+            self.data = data
+            error = nil
+        }
+
+        init(error: Error) {
+            statusCode = 0
+            data = Data()
+            self.error = error
+        }
     }
 
     private static let lock = NSLock()
@@ -58,6 +71,10 @@ private final class LLMConnectionURLProtocol: URLProtocol {
             client?.urlProtocol(self, didFailWithError: URLError(.badURL))
             return
         }
+        if let error = response.error {
+            client?.urlProtocol(self, didFailWithError: error)
+            return
+        }
 
         let httpResponse = HTTPURLResponse(
             url: url,
@@ -73,6 +90,24 @@ private final class LLMConnectionURLProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
+private actor ChatGPTConnectionTestProbe {
+    private(set) var firstStarted = false
+    private(set) var secondStarted = false
+    private(set) var secondEnteredResponder = false
+
+    func markFirstStarted() {
+        firstStarted = true
+    }
+
+    func markSecondStarted() {
+        secondStarted = true
+    }
+
+    func markSecondEnteredResponder() {
+        secondEnteredResponder = true
+    }
+}
+
 @Suite("LLM connection test", .serialized)
 struct LLMConnectionTests {
     @Test("OpenAI Responses test uses configured key and reasoning model")
@@ -82,8 +117,11 @@ struct LLMConnectionTests {
             #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer openai-key")
             let body = connectionTestRequestBody(request)
             #expect(body?["model"] as? String == "gpt-5.6-sol")
+            #expect(body?["input"] as? [[String: Any]] != nil)
+            #expect(body?["instructions"] == nil)
             #expect(body?["max_output_tokens"] as? Int == 128)
             #expect((body?["reasoning"] as? [String: Any])?["effort"] as? String == "high")
+            #expect((body?["text"] as? [String: Any])?["verbosity"] as? String == "low")
             return .init(
                 statusCode: 200,
                 data: Data(#"{"status":"completed","output":[{"type":"message","content":[{"text":"OK"}]}]}"#.utf8)
@@ -97,6 +135,35 @@ struct LLMConnectionTests {
             backend: .openAI,
             config: config,
             model: "gpt-5.6-sol",
+            session: makeSession(),
+            environment: [:]
+        )
+    }
+
+    @Test("Hosted OpenAI test mirrors cleanup request and response contracts")
+    func hostedOpenAIRequest() async throws {
+        LLMConnectionURLProtocol.install { request in
+            let body = connectionTestRequestBody(request)
+            #expect(body?["model"] as? String == "gpt-5.6-sol")
+            #expect(body?["instructions"] as? String == "Reply with OK.")
+            #expect(body?["input"] as? String == "Connection test.")
+            #expect(body?["text"] == nil)
+            #expect(body?["max_output_tokens"] as? Int == 128)
+            #expect((body?["reasoning"] as? [String: Any])?["effort"] as? String == "high")
+            return .init(
+                statusCode: 200,
+                data: Data(#"{"error":null,"output":[{"content":[{"text":"O"},{"text":"K"}]}]}"#.utf8)
+            )
+        }
+        defer { LLMConnectionURLProtocol.uninstall() }
+
+        var config = AppConfig()
+        config.openAIAPIKey = "openai-key"
+        try await MeetingSummaryClient.testLLMConnection(
+            backend: .openAI,
+            config: config,
+            model: "gpt-5.6-sol",
+            context: .hostedGeneration,
             session: makeSession(),
             environment: [:]
         )
@@ -193,13 +260,14 @@ struct LLMConnectionTests {
         )
     }
 
-    @Test("Custom gateway GPT model uses max completion tokens")
-    func customGatewayGPTRequest() async throws {
+    @Test("Custom OpenAI-compatible test mirrors production token fields without reasoning effort")
+    func customOpenAIProductionFields() async throws {
         LLMConnectionURLProtocol.install { request in
             let body = connectionTestRequestBody(request)
+            #expect(request.url?.absoluteString == "https://api.openai.com/v1/chat/completions")
             #expect(body?["max_completion_tokens"] as? Int == 256)
             #expect(body?["max_tokens"] == nil)
-            #expect(body?["reasoning_effort"] as? String == "low")
+            #expect(body?["reasoning_effort"] == nil)
             return .init(
                 statusCode: 200,
                 data: Data(#"{"choices":[{"message":{"content":"OK"}}]}"#.utf8)
@@ -208,7 +276,7 @@ struct LLMConnectionTests {
         defer { LLMConnectionURLProtocol.uninstall() }
 
         var config = AppConfig()
-        config.customLLMURL = "https://gateway.example.com/v1"
+        config.customLLMURL = "https://api.openai.com/v1"
         config.customLLMAPIKey = "static-key"
         try await MeetingSummaryClient.testLLMConnection(
             backend: .customLLM,
@@ -218,26 +286,38 @@ struct LLMConnectionTests {
         )
     }
 
-    @Test("Custom gateway reasoning model has enough output budget")
-    func customGatewayReasoningModel() async throws {
-        LLMConnectionURLProtocol.install { request in
-            #expect(connectionTestRequestBody(request)?["max_tokens"] as? Int == 256)
-            return .init(
-                statusCode: 200,
-                data: Data(#"{"choices":[{"message":{"content":"OK","reasoning_content":"reasoning"},"finish_reason":"stop"}]}"#.utf8)
-            )
+    @Test("Invalid Custom headers are rejected before running the API Key Command or sending")
+    func invalidCustomHeadersPreflightCredentialCommand() async {
+        let commandSentinel = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-connection-command-\(UUID().uuidString)")
+        let requestSentinel = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-connection-request-\(UUID().uuidString)")
+        defer {
+            try? FileManager.default.removeItem(at: commandSentinel)
+            try? FileManager.default.removeItem(at: requestSentinel)
+        }
+
+        LLMConnectionURLProtocol.install { _ in
+            _ = FileManager.default.createFile(atPath: requestSentinel.path, contents: Data())
+            return .init(statusCode: 200, data: Data(#"{"choices":[{"message":{"content":"OK"}}]}"#.utf8))
         }
         defer { LLMConnectionURLProtocol.uninstall() }
 
         var config = AppConfig()
         config.customLLMURL = "https://gateway.example.com/v1"
-        config.customLLMAPIKey = "static-key"
-        try await MeetingSummaryClient.testLLMConnection(
-            backend: .customLLM,
-            config: config,
-            model: "baseten/zai-org/GLM-5.2",
-            session: makeSession()
-        )
+        config.customLLMAPIKeyCommand = "printf ran > '\(commandSentinel.path)'"
+        config.customLLMHeaders = [CustomLLMRequestHeader(name: "Authorization", value: "invalid")]
+
+        await #expect(throws: CustomLLMRequestHeaderError.self) {
+            try await MeetingSummaryClient.testLLMConnection(
+                backend: .customLLM,
+                config: config,
+                model: "custom-model",
+                session: makeSession()
+            )
+        }
+        #expect(!FileManager.default.fileExists(atPath: commandSentinel.path))
+        #expect(!FileManager.default.fileExists(atPath: requestSentinel.path))
     }
 
     @Test("Custom Anthropic test uses static credential and Messages endpoint")
@@ -296,8 +376,122 @@ struct LLMConnectionTests {
         }
     }
 
-    @Test("authentication failure is sanitized")
+    @Test("ChatGPT connection-test error logging omits provider details while normal logging keeps them")
+    func chatGPTErrorLoggingPrivacy() {
+        let normalLog = ChatGPTResponsesClient.errorLogMessage(
+            logCategory: "summary",
+            statusCode: 401,
+            message: "provider secret diagnostic",
+            includeProviderDetails: true
+        )
+        #expect(normalLog.contains("HTTP 401"))
+        #expect(normalLog.contains("provider secret diagnostic"))
+
+        let connectionLog = ChatGPTResponsesClient.errorLogMessage(
+            logCategory: "connection-test",
+            statusCode: 401,
+            message: "provider secret diagnostic",
+            includeProviderDetails: false
+        )
+        #expect(connectionLog.contains("HTTP 401"))
+        #expect(!connectionLog.contains("provider secret diagnostic"))
+    }
+
+    @Test("ChatGPT malformed HTTP 200 responses map to an incompatible response")
+    func chatGPTMalformedSuccessResponse() async {
+        await #expect(throws: LLMConnectionTestError.invalidResponse) {
+            try await MeetingSummaryClient.testLLMConnection(
+                backend: .chatGPT,
+                config: AppConfig(),
+                model: "gpt-5.4-mini",
+                chatGPTResponder: { _, _, _, _ in
+                    throw ChatGPTResponsesError.backendFailed(
+                        statusCode: 200,
+                        message: "Malformed ChatGPT stream payload."
+                    )
+                }
+            )
+        }
+    }
+
+    @Test("A waiting ChatGPT connection test can be cancelled without entering its responder")
+    func chatGPTGateWaitingCancellation() async {
+        let probe = ChatGPTConnectionTestProbe()
+        let first = Task {
+            try await MeetingSummaryClient.testLLMConnection(
+                backend: .chatGPT,
+                config: AppConfig(),
+                model: "gpt-5.4-mini",
+                chatGPTResponder: { _, _, _, _ in
+                    await probe.markFirstStarted()
+                    try await Task.sleep(nanoseconds: 5_000_000_000)
+                    return "OK"
+                }
+            )
+        }
+
+        while !(await probe.firstStarted) {
+            await Task.yield()
+        }
+
+        let second = Task {
+            await probe.markSecondStarted()
+            try await MeetingSummaryClient.testLLMConnection(
+                backend: .chatGPT,
+                config: AppConfig(),
+                model: "gpt-5.4-mini",
+                chatGPTResponder: { _, _, _, _ in
+                    await probe.markSecondEnteredResponder()
+                    return "OK"
+                }
+            )
+        }
+
+        while !(await probe.secondStarted) {
+            await Task.yield()
+        }
+        for _ in 0..<100 {
+            if await MeetingSummaryClient.chatGPTConnectionTestWaiterCount() == 1 { break }
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        #expect(await MeetingSummaryClient.chatGPTConnectionTestWaiterCount() == 1)
+        second.cancel()
+        await #expect(throws: CancellationError.self) {
+            try await second.value
+        }
+        #expect(await MeetingSummaryClient.chatGPTConnectionTestWaiterCount() == 0)
+        #expect(await probe.secondEnteredResponder == false)
+
+        first.cancel()
+        await #expect(throws: CancellationError.self) {
+            try await first.value
+        }
+    }
+
+    @Test("URLSession cancellation is preserved for non-ChatGPT connection tests")
+    func urlSessionCancellation() async {
+        LLMConnectionURLProtocol.install { _ in
+            .init(error: URLError(.cancelled))
+        }
+        defer { LLMConnectionURLProtocol.uninstall() }
+
+        var config = AppConfig()
+        config.openRouterAPIKey = "openrouter-key"
+        await #expect(throws: CancellationError.self) {
+            try await MeetingSummaryClient.testLLMConnection(
+                backend: .openRouter,
+                config: config,
+                model: "provider/model",
+                session: makeSession(),
+                environment: [:]
+            )
+        }
+    }
+
+    @Test("authentication failure is sanitized with provider-neutral recovery guidance")
     func authenticationFailure() async {
+        #expect(LLMConnectionTestError.authenticationFailed.localizedDescription ==
+            "Authentication failed. Reconnect the account or check the configured credentials.")
         LLMConnectionURLProtocol.install { _ in
             .init(statusCode: 401, data: Data(#"{"error":{"message":"secret diagnostic"}}"#.utf8))
         }
@@ -338,13 +532,13 @@ struct LLMConnectionTests {
         )
     }
 
-    @Test("cleanup and Quill contexts give configured credentials precedence")
+    @Test("cleanup and Quill contexts use configured credentials and hosted response parsing")
     func configurationFirstCredentialPrecedence() async throws {
         LLMConnectionURLProtocol.install { request in
             #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer configured-key")
             return .init(
                 statusCode: 200,
-                data: Data(#"{"choices":[{"message":{"content":"OK"}}]}"#.utf8)
+                data: Data(#"{"choices":[{"text":"OK"}]}"#.utf8)
             )
         }
         defer { LLMConnectionURLProtocol.uninstall() }
@@ -355,18 +549,85 @@ struct LLMConnectionTests {
             backend: .openRouter,
             config: config,
             model: "provider/model",
-            credentialPrecedence: .configurationFirst,
+            context: .hostedGeneration,
             session: makeSession(),
             environment: ["OPENROUTER_API_KEY": "environment-key"]
         )
     }
 
-    @Test("provider failure in a successful HTTP response is rejected")
+    @Test("hosted OpenRouter trims the environment fallback credential in Authorization")
+    func hostedOpenRouterTrimsEnvironmentFallbackCredential() async throws {
+        LLMConnectionURLProtocol.install { request in
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer environment-key")
+            return .init(
+                statusCode: 200,
+                data: Data(#"{"choices":[{"text":"OK"}]}"#.utf8)
+            )
+        }
+        defer { LLMConnectionURLProtocol.uninstall() }
+
+        var config = AppConfig()
+        config.openRouterAPIKey = ""
+        try await MeetingSummaryClient.testLLMConnection(
+            backend: .openRouter,
+            config: config,
+            model: "provider/model",
+            context: .hostedGeneration,
+            session: makeSession(),
+            environment: ["OPENROUTER_API_KEY": "  \n environment-key \n  "]
+        )
+    }
+
+    @Test("connection credentials preserve each production context's optional and whitespace semantics")
+    func credentialBoundarySemantics() {
+        #expect(MeetingSummaryClient.connectionTestAPIKey(
+            configured: "  configured-key  ",
+            environment: nil,
+            context: .meetingSummary
+        ) == "  configured-key  ")
+        #expect(MeetingSummaryClient.connectionTestAPIKey(
+            configured: "configured-key",
+            environment: "",
+            context: .meetingSummary
+        ).isEmpty)
+        #expect(MeetingSummaryClient.connectionTestAPIKey(
+            configured: "configured-key",
+            environment: "  environment-key  ",
+            context: .meetingSummary
+        ) == "  environment-key  ")
+        #expect(MeetingSummaryClient.connectionTestAPIKey(
+            configured: "  configured-key  ",
+            environment: "environment-key",
+            context: .hostedGeneration
+        ) == "configured-key")
+        #expect(MeetingSummaryClient.connectionTestAPIKey(
+            configured: "   ",
+            environment: "  environment-key  ",
+            context: .hostedGeneration
+        ) == "  environment-key  ")
+    }
+
+    @Test("summary treats an explicitly empty environment credential as present")
+    func emptySummaryEnvironmentCredentialDoesNotFallBack() async {
+        var config = AppConfig()
+        config.openRouterAPIKey = "configured-key"
+        await #expect(throws: LLMConnectionTestError.missingCredential) {
+            try await MeetingSummaryClient.testLLMConnection(
+                backend: .openRouter,
+                config: config,
+                model: "provider/model",
+                session: makeSession(),
+                environment: ["OPENROUTER_API_KEY": ""]
+            )
+        }
+    }
+
+    @Test("a non-null provider error in a successful HTTP response is rejected")
     func providerFailureResponse() async {
         LLMConnectionURLProtocol.install { _ in
             .init(
                 statusCode: 200,
-                data: Data(#"{"status":"failed","output":[],"error":{"message":"provider failed"}}"#.utf8)
+                data: Data(#"{"status":"completed","output":[{"type":"message","content":[{"text":"OK"}]}],"error":{"message":"provider failed"}}"#.utf8)
             )
         }
         defer { LLMConnectionURLProtocol.uninstall() }

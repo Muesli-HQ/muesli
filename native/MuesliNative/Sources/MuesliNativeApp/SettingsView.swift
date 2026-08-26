@@ -1517,7 +1517,7 @@ struct SettingsView: View {
                 backend: llmBackend,
                 model: configuredModel.isEmpty ? TranscriptCleanupClient.defaultModel(for: backend) : configuredModel,
                 requiresExplicitEndpoint: llmBackend == .customLLM,
-                credentialPrecedence: .configurationFirst
+                context: .hostedGeneration
             )
         }
     }
@@ -1663,7 +1663,7 @@ struct SettingsView: View {
                 backend: llmBackend,
                 model: TranscriptCleanupClient.configuredModel(for: backend, config: appState.config),
                 requiresExplicitEndpoint: llmBackend == .customLLM,
-                credentialPrecedence: .configurationFirst
+                context: .hostedGeneration
             )
         }
     }
@@ -1948,14 +1948,14 @@ struct SettingsView: View {
         backend: LLMBackendOption,
         model: String,
         requiresExplicitEndpoint: Bool = false,
-        credentialPrecedence: LLMConnectionCredentialPrecedence = .environmentFirst
+        context: LLMConnectionTestContext = .meetingSummary
     ) -> some View {
         let state = llmConnectionTestStates[id] ?? .idle
         let fingerprint = llmConnectionTestFingerprint(
             backend: backend,
             model: model,
             requiresExplicitEndpoint: requiresExplicitEndpoint,
-            credentialPrecedence: credentialPrecedence
+            context: context
         )
         Divider().background(MuesliTheme.surfaceBorder)
         settingsRow("Connection", controlWidth: meetingControlWidth) {
@@ -1972,12 +1972,14 @@ struct SettingsView: View {
                 case .connected:
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(MuesliTheme.success)
+                        .accessibilityHidden(true)
                     Text("Connected")
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.success)
                 case .failed:
                     Image(systemName: "exclamationmark.circle.fill")
                         .foregroundStyle(MuesliTheme.recording)
+                        .accessibilityHidden(true)
                     Text("Failed")
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.recording)
@@ -1994,7 +1996,7 @@ struct SettingsView: View {
                             backend: backend,
                             model: model,
                             requiresExplicitEndpoint: requiresExplicitEndpoint,
-                            credentialPrecedence: credentialPrecedence
+                            context: context
                         )
                     }
                     .disabled(
@@ -2056,17 +2058,17 @@ struct SettingsView: View {
         backend: LLMBackendOption,
         model: String,
         requiresExplicitEndpoint: Bool,
-        credentialPrecedence: LLMConnectionCredentialPrecedence
+        context: LLMConnectionTestContext
     ) -> Int {
         var hasher = Hasher()
         hasher.combine(backend.backend)
         hasher.combine(model)
         hasher.combine(requiresExplicitEndpoint)
-        switch credentialPrecedence {
-        case .environmentFirst:
-            hasher.combine("environment-first")
-        case .configurationFirst:
-            hasher.combine("configuration-first")
+        switch context {
+        case .meetingSummary:
+            hasher.combine("meeting-summary")
+        case .hostedGeneration:
+            hasher.combine("hosted-generation")
         }
         switch backend {
         case .chatGPT:
@@ -2107,7 +2109,7 @@ struct SettingsView: View {
         backend: LLMBackendOption,
         model: String,
         requiresExplicitEndpoint: Bool,
-        credentialPrecedence: LLMConnectionCredentialPrecedence
+        context: LLMConnectionTestContext
     ) {
         llmConnectionTestTasks[id]?.cancel()
         let testID = UUID()
@@ -2122,7 +2124,7 @@ struct SettingsView: View {
                     config: config,
                     model: model,
                     requiresExplicitEndpoint: requiresExplicitEndpoint,
-                    credentialPrecedence: credentialPrecedence
+                    context: context
                 )
                 try Task.checkCancellation()
                 guard llmConnectionTestIDs[id] == testID else { return }
