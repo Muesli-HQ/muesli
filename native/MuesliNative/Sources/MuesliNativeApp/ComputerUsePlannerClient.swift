@@ -24,7 +24,6 @@ enum ComputerUsePlannerError: LocalizedError, Equatable {
 }
 
 enum ComputerUsePlannerClient {
-    private static let whamURL = URL(string: "https://chatgpt.com/backend-api/wham/responses")!
     static let defaultModel = "gpt-5.6-sol"
 
     static var instructions: String {
@@ -64,7 +63,7 @@ enum ComputerUsePlannerClient {
         config: AppConfig
     ) async throws -> ComputerUsePlannerResponse {
         do {
-            return try await callWHAM(
+            return try await callChatGPTResponses(
                 systemPrompt: instructions,
                 userPrompt: requestPrompt(for: request),
                 imageDataURL: request.latestWindowState.screenshot?.imageDataURL,
@@ -93,7 +92,7 @@ enum ComputerUsePlannerClient {
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 
-    private static func callWHAM(
+    private static func callChatGPTResponses(
         systemPrompt: String,
         userPrompt: String,
         imageDataURL: String?,
@@ -107,14 +106,11 @@ enum ComputerUsePlannerClient {
             model: model
         )
 
-        var urlRequest = URLRequest(url: whamURL)
-        urlRequest.httpMethod = "POST"
-        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        if !accountId.isEmpty {
-            urlRequest.setValue(accountId, forHTTPHeaderField: "ChatGPT-Account-Id")
-        }
-        urlRequest.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let urlRequest = try ChatGPTResponsesTransport.makeRequest(
+            body: body,
+            token: token,
+            accountId: accountId
+        )
 
         let (bytes, response) = try await URLSession.shared.bytes(for: urlRequest)
         let httpStatus = (response as? HTTPURLResponse)?.statusCode ?? 0

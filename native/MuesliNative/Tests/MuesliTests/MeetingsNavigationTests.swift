@@ -1275,6 +1275,50 @@ struct MeetingsNavigationTests {
         #expect(!controller.appState.config.enablePostProcessor)
     }
 
+    @Test("disconnecting OpenRouter replaces every active OpenRouter provider")
+    func disconnectingOpenRouterFallsBackSafely() throws {
+        let supportDirectory = makeSupportDirectory()
+        let configStore = ConfigStore(supportDirectory: supportDirectory)
+        let credentialStore = OpenRouterCredentialStore(supportDirectory: supportDirectory)
+        let openRouterAuth = OpenRouterAuthManager(
+            credentialStore: credentialStore,
+            loadData: { _ in throw URLError(.unsupportedURL) },
+            openURL: { _ in false }
+        )
+        try openRouterAuth.storeManualAPIKey("sk-or-v1-test")
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            configStore: configStore,
+            openRouterAuth: openRouterAuth
+        )
+        controller.updateConfig {
+            $0.meetingSummaryBackend = MeetingSummaryBackendOption.openRouter.backend
+            $0.postProcessorBackend = LLMBackendOption.openRouter.backend
+            $0.quilBackend = LLMBackendOption.openRouter.backend
+            $0.quilModel = "openai/gpt-5.4"
+        }
+
+        controller.signOutOpenRouter()
+
+        #expect(!openRouterAuth.isAuthenticated)
+        #expect(controller.selectedMeetingSummaryBackend == .openAI)
+        #expect(controller.config.meetingSummaryBackend == MeetingSummaryBackendOption.openAI.backend)
+        #expect(controller.selectedPostProcessorBackend == .local)
+        #expect(controller.config.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
+        #expect(controller.config.quilBackend == TranscriptCleanupBackendOption.local.backend)
+        #expect(controller.config.quilModel == PostProcessorOption.defaultQuilOption.id)
+
+        let persisted = configStore.load()
+        #expect(persisted.meetingSummaryBackend == MeetingSummaryBackendOption.openAI.backend)
+        #expect(persisted.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
+        #expect(persisted.quilBackend == TranscriptCleanupBackendOption.local.backend)
+    }
+
     @Test("startup repairs a persisted Gemma dictation and cleanup conflict")
     func startupRepairsPersistedGemmaConflict() {
         let configStore = ConfigStore(supportDirectory: makeSupportDirectory())

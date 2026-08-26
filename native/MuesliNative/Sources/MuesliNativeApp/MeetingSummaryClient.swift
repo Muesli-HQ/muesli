@@ -160,7 +160,8 @@ enum MeetingSummaryClient {
         existingNotes: String? = nil,
         manualNotesToRetain: String? = nil,
         visualContext: String? = nil,
-        previousMeetingNotes: String? = nil
+        previousMeetingNotes: String? = nil,
+        openRouterAPIKeyOverride: String? = nil
     ) async throws -> String {
         try await withSummaryRetries(maxRetries: config.meetingSummaryRetryCount) {
             try await summarizeOnce(
@@ -171,7 +172,8 @@ enum MeetingSummaryClient {
                 existingNotes: existingNotes,
                 manualNotesToRetain: manualNotesToRetain,
                 visualContext: visualContext,
-                previousMeetingNotes: previousMeetingNotes
+                previousMeetingNotes: previousMeetingNotes,
+                openRouterAPIKeyOverride: openRouterAPIKeyOverride
             )
         }
     }
@@ -211,7 +213,8 @@ enum MeetingSummaryClient {
         existingNotes: String?,
         manualNotesToRetain: String?,
         visualContext: String?,
-        previousMeetingNotes: String?
+        previousMeetingNotes: String?,
+        openRouterAPIKeyOverride: String?
     ) async throws -> String {
         let backend = (config.meetingSummaryBackend.isEmpty ? MeetingSummaryBackendOption.chatGPT.backend : config.meetingSummaryBackend).lowercased()
         let generatedNotes: String
@@ -237,7 +240,8 @@ enum MeetingSummaryClient {
                 config: config,
                 template: template,
                 visualContext: visualContext,
-                previousMeetingNotes: previousMeetingNotes
+                previousMeetingNotes: previousMeetingNotes,
+                apiKeyOverride: openRouterAPIKeyOverride
             )
             return notesByRetainingManualNotes(generatedNotes: generatedNotes, manualNotes: manualNotesToRetain)
         }
@@ -532,9 +536,12 @@ enum MeetingSummaryClient {
         config: AppConfig,
         template: MeetingTemplateSnapshot,
         visualContext: String? = nil,
-        previousMeetingNotes: String? = nil
+        previousMeetingNotes: String? = nil,
+        apiKeyOverride: String? = nil
     ) async throws -> String {
-        let apiKey = ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"] ?? config.openRouterAPIKey
+        let apiKey = apiKeyOverride ?? OpenRouterCredentialResolver.resolvedAPIKey(
+            legacyAPIKey: config.openRouterAPIKey
+        )
         guard !apiKey.isEmpty else {
             return rawTranscriptFallback(transcript: transcript, meetingTitle: meetingTitle)
         }
@@ -1097,11 +1104,25 @@ enum MeetingSummaryClient {
         return false
     }
 
-    static func generateTitle(transcript: String, config: AppConfig) async -> String? {
-        await generateTitle(transcript: transcript, manualNotes: nil, config: config)
+    static func generateTitle(
+        transcript: String,
+        config: AppConfig,
+        openRouterAPIKeyOverride: String? = nil
+    ) async -> String? {
+        await generateTitle(
+            transcript: transcript,
+            manualNotes: nil,
+            config: config,
+            openRouterAPIKeyOverride: openRouterAPIKeyOverride
+        )
     }
 
-    static func generateTitle(transcript: String, manualNotes: String?, config: AppConfig) async -> String? {
+    static func generateTitle(
+        transcript: String,
+        manualNotes: String?,
+        config: AppConfig,
+        openRouterAPIKeyOverride: String? = nil
+    ) async -> String? {
         let backend = (config.meetingSummaryBackend.isEmpty ? MeetingSummaryBackendOption.chatGPT.backend : config.meetingSummaryBackend).lowercased()
 
         let excerpt = titlePrompt(transcript: transcript, manualNotes: manualNotes)
@@ -1111,7 +1132,9 @@ enum MeetingSummaryClient {
         }
 
         if backend == MeetingSummaryBackendOption.openRouter.backend {
-            let apiKey = ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"] ?? config.openRouterAPIKey
+            let apiKey = openRouterAPIKeyOverride ?? OpenRouterCredentialResolver.resolvedAPIKey(
+                legacyAPIKey: config.openRouterAPIKey
+            )
             guard !apiKey.isEmpty else { return nil }
             let configuredModel = config.openRouterModel.trimmingCharacters(in: .whitespacesAndNewlines)
             let model = configuredModel.isEmpty ? defaultOpenRouterModel : configuredModel

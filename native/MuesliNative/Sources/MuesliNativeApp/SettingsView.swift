@@ -158,6 +158,10 @@ struct SettingsView: View {
 
     @State private var chatGPTSignInError: String?
     @State private var isSigningInChatGPT = false
+    @State private var openRouterSignInError: String?
+    @State private var isSigningInOpenRouter = false
+    @State private var isEnteringOpenRouterAPIKey = false
+    @State private var manualOpenRouterAPIKey = ""
     @State private var googleCalSignInError: String?
     @State private var isSigningInGoogleCal = false
     @State private var pendingDataDestruction: PendingDataDestruction?
@@ -1256,12 +1260,8 @@ struct SettingsView: View {
             }
         } else if backend == .hosted(.openRouter) {
             Divider().background(MuesliTheme.surfaceBorder)
-            settingsRow("API Key", controlWidth: meetingControlWidth) {
-                PastableSecureField(
-                    text: appState.config.openRouterAPIKey,
-                    placeholder: "sk-or-...",
-                    onChange: { value in controller.updateConfig { $0.openRouterAPIKey = value } }
-                ).frame(height: 22)
+            settingsRow("Account", controlWidth: meetingControlWidth) {
+                openRouterAccountControl(selectMeetingSummaryBackend: false)
             }
         } else if backend == .hosted(.ollama) {
             Divider().background(MuesliTheme.surfaceBorder)
@@ -1374,13 +1374,8 @@ struct SettingsView: View {
             keyStatusRow(key: appState.config.openAIAPIKey)
         case .some(.openRouter):
             Divider().background(MuesliTheme.surfaceBorder)
-            settingsRow("API Key", controlWidth: meetingControlWidth) {
-                PastableSecureField(
-                    text: appState.config.openRouterAPIKey,
-                    placeholder: "sk-or-...",
-                    onChange: { val in controller.updateConfig { $0.openRouterAPIKey = val } }
-                )
-                .frame(height: 22)
+            settingsRow("Account", controlWidth: meetingControlWidth) {
+                openRouterAccountControl(selectMeetingSummaryBackend: false)
             }
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Model preset", controlWidth: meetingControlWidth) {
@@ -1396,7 +1391,6 @@ struct SettingsView: View {
                     placeholder: "provider/model"
                 ) { controller.updatePostProcessorModel($0, for: backend) }
             }
-            keyStatusRow(key: appState.config.openRouterAPIKey)
         case .some(.ollama):
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Ollama URL", controlWidth: meetingControlWidth) {
@@ -1568,19 +1562,13 @@ struct SettingsView: View {
                     val in controller.updateConfig { $0.customLLMModel = val }
                 }
             } else {
-                settingsRow("API Key", controlWidth: meetingControlWidth) {
-                    PastableSecureField(
-                        text: appState.config.openRouterAPIKey,
-                        placeholder: "sk-or-...",
-                        onChange: { val in controller.updateConfig { $0.openRouterAPIKey = val } }
-                    )
-                    .frame(height: 22)
+                settingsRow("Account", controlWidth: meetingControlWidth) {
+                    openRouterAccountControl()
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Model", controlWidth: meetingControlWidth) {
                     openRouterFreeModelMenu
                 }
-                keyStatusRow(key: appState.config.openRouterAPIKey)
             }
         }
     }
@@ -2163,6 +2151,118 @@ struct SettingsView: View {
 
                 if let chatGPTSignInError {
                     Text(chatGPTSignInError)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func openRouterAccountControl(
+        selectMeetingSummaryBackend: Bool = true
+    ) -> some View {
+        if appState.isOpenRouterAuthenticated {
+            VStack(alignment: .trailing, spacing: 4) {
+                Button {
+                    controller.signOutOpenRouter()
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "network")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.white)
+                        Text("Connected · Disconnect")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(MuesliTheme.success)
+                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                }
+                .buttonStyle(.plain)
+                .help("Disconnect removes Muesli's local copy. Revoke the key from OpenRouter's key page.")
+
+                Button("Manage key at OpenRouter") {
+                    controller.manageOpenRouterKey()
+                }
+                .buttonStyle(.link)
+                .font(.system(size: 10))
+            }
+        } else if isSigningInOpenRouter {
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Connecting...")
+                    .font(.system(size: 11))
+                    .foregroundStyle(MuesliTheme.textSecondary)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 5) {
+                Button {
+                    isSigningInOpenRouter = true
+                    openRouterSignInError = nil
+                    Task {
+                        let error = await controller.signInWithOpenRouter(
+                            selectMeetingSummaryBackend: selectMeetingSummaryBackend
+                        )
+                        isSigningInOpenRouter = false
+                        openRouterSignInError = error
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "network")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.white)
+                        Text("Connect OpenRouter")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(MuesliTheme.accent)
+                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                }
+                .buttonStyle(.plain)
+
+                Button(isEnteringOpenRouterAPIKey ? "Cancel manual key" : "Enter API key manually") {
+                    isEnteringOpenRouterAPIKey.toggle()
+                    manualOpenRouterAPIKey = ""
+                    openRouterSignInError = nil
+                }
+                .buttonStyle(.link)
+                .font(.system(size: 10))
+
+                if isEnteringOpenRouterAPIKey {
+                    HStack(spacing: 6) {
+                        PastableSecureField(
+                            text: manualOpenRouterAPIKey,
+                            placeholder: "sk-or-...",
+                            onChange: { manualOpenRouterAPIKey = $0 }
+                        )
+                        .frame(height: 22)
+
+                        Button("Save") {
+                            openRouterSignInError = controller.storeManualOpenRouterAPIKey(
+                                manualOpenRouterAPIKey,
+                                selectMeetingSummaryBackend: selectMeetingSummaryBackend
+                            )
+                            if openRouterSignInError == nil {
+                                manualOpenRouterAPIKey = ""
+                                isEnteringOpenRouterAPIKey = false
+                            }
+                        }
+                        .disabled(manualOpenRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+
+                if let openRouterSignInError {
+                    Text(openRouterSignInError)
                         .font(.system(size: 10))
                         .foregroundStyle(.red)
                         .lineLimit(2)

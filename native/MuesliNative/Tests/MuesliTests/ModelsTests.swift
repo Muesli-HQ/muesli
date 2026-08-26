@@ -1000,21 +1000,35 @@ struct AppConfigTests {
         ))
     }
 
-    @Test("OpenRouter cleanup key falls back to environment")
-    func openRouterCleanupKeyFallsBackToEnvironment() {
+    @Test("OpenRouter cleanup key uses environment, stored credential, then legacy config")
+    func openRouterCleanupKeyPrecedence() throws {
+        let supportDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-openrouter-resolution-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: supportDirectory) }
+        let credentialStore = OpenRouterCredentialStore(supportDirectory: supportDirectory)
         var config = AppConfig()
         config.openRouterAPIKey = ""
 
         #expect(TranscriptCleanupClient.resolvedOpenRouterAPIKey(
             config: config,
-            environment: ["OPENROUTER_API_KEY": "sk-or-env"]
+            environment: ["OPENROUTER_API_KEY": "sk-or-env"],
+            credentialStore: credentialStore
         ) == "sk-or-env")
 
+        try credentialStore.save(OpenRouterCredential(apiKey: "sk-or-stored", userID: nil))
         config.openRouterAPIKey = " sk-or-config "
 
         #expect(TranscriptCleanupClient.resolvedOpenRouterAPIKey(
             config: config,
-            environment: ["OPENROUTER_API_KEY": "sk-or-env"]
+            environment: [:],
+            credentialStore: credentialStore
+        ) == "sk-or-stored")
+
+        try credentialStore.delete()
+        #expect(TranscriptCleanupClient.resolvedOpenRouterAPIKey(
+            config: config,
+            environment: [:],
+            credentialStore: credentialStore
         ) == "sk-or-config")
     }
 

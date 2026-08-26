@@ -1139,8 +1139,22 @@ struct CLISummaryConfig: Decodable {
     static func load(from supportDirectory: URL) -> CLISummaryConfig {
         let url = supportDirectory.appendingPathComponent("config.json")
         guard let data = try? Data(contentsOf: url),
-              let config = try? JSONDecoder().decode(CLISummaryConfig.self, from: data) else {
+              var config = try? JSONDecoder().decode(CLISummaryConfig.self, from: data) else {
             return CLISummaryConfig()
+        }
+        if config.openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            struct StoredOpenRouterCredential: Decodable {
+                let apiKey: String
+
+                enum CodingKeys: String, CodingKey {
+                    case apiKey = "api_key"
+                }
+            }
+            let credentialURL = supportDirectory.appendingPathComponent("openrouter-auth.json")
+            if let credentialData = try? Data(contentsOf: credentialURL),
+               let credential = try? JSONDecoder().decode(StoredOpenRouterCredential.self, from: credentialData) {
+                config.openRouterAPIKey = credential.apiKey
+            }
         }
         return config
     }
