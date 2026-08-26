@@ -719,6 +719,74 @@ struct ModelDownloadCoordinatorTests {
         #expect(plan.isComplete())
     }
 
+    @Test("failed fallback restores reused files from a mirror cache")
+    func failedFallbackRestoresReusedMirrorCache() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let reusedData = Data("reused mirror artifact".utf8)
+        let mirrorData = Data("mirror model".utf8)
+        let mirrorManifest = try JSONSerialization.data(withJSONObject: [
+            "format": "muesli-r2-model-manifest-v1",
+            "modelID": "acme/asr",
+            "version": "mirror-v1",
+            "files": [
+                [
+                    "relativePath": "a-reused.bin",
+                    "objectKey": "models/acme/asr/mirror-v1/files/a-reused.bin",
+                    "bytes": reusedData.count,
+                    "sha256": sha256(reusedData),
+                ],
+                [
+                    "relativePath": "model.bin",
+                    "objectKey": "models/acme/asr/mirror-v1/files/model.bin",
+                    "bytes": mirrorData.count,
+                    "sha256": sha256(mirrorData),
+                ],
+            ],
+        ])
+        ModelDownloadTestURLProtocol.install { request in
+            guard let url = request.url else { fatalError("Expected request URL") }
+            if url.host == "assets.muesli.works", url.lastPathComponent == "manifest.json" {
+                return ModelDownloadTestURLProtocol.Response(data: mirrorManifest)
+            }
+            if url.host == "assets.muesli.works", url.path.hasSuffix("/files/model.bin") {
+                return ModelDownloadTestURLProtocol.Response(statusCode: 503)
+            }
+            if url.path.contains("/tree/") {
+                return ModelDownloadTestURLProtocol.Response(statusCode: 503)
+            }
+            Issue.record("Unexpected failed fallback request \(url.absoluteString)")
+            return ModelDownloadTestURLProtocol.Response(statusCode: 500)
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let plan = ManagedASRModelPlan(
+            modelID: "acme/asr",
+            repository: "acme/asr",
+            cacheDirectory: root.appendingPathComponent("model", isDirectory: true),
+            selections: [HuggingFaceModelSelection(includedPaths: ["model.bin"])],
+            requiredArtifactAlternatives: [["model.bin"]],
+            mirror: MuesliModelMirror(manifestURL: try #require(URL(string: "https://assets.muesli.works/models/acme/asr/mirror-v1/manifest.json")))
+        )
+        let reusedURL = plan.cacheDirectory.appendingPathComponent("a-reused.bin")
+        try FileManager.default.createDirectory(at: plan.cacheDirectory, withIntermediateDirectories: true)
+        try reusedData.write(to: reusedURL)
+
+        await #expect(throws: Error.self) {
+            try await ManagedASRModelDownloader.downloadIfNeeded(
+                plan,
+                resolver: HuggingFaceModelManifestResolver(configuration: makeSessionConfiguration()),
+                mirrorResolver: MuesliModelMirrorManifestResolver(configuration: makeSessionConfiguration()),
+                coordinator: makeCoordinator()
+            )
+        }
+
+        #expect(try Data(contentsOf: reusedURL) == reusedData)
+        #expect(!FileManager.default.fileExists(
+            atPath: plan.cacheDirectory.appendingPathComponent("model.bin").path
+        ))
+    }
+
     @Test("cancelling mirror manifest resolution does not fall back to Hugging Face")
     func cancellingMirrorManifestResolutionDoesNotFallBack() async throws {
         let mirrorTracker = DownloadTestTracker()

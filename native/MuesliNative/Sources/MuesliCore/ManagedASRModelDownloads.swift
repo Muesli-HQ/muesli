@@ -552,6 +552,7 @@ public enum ManagedASRModelDownloader {
         }
 
         var mirrorTransferStarted = false
+        var fallbackCacheBackup: URL?
         if let mirror = plan.mirror {
             do {
                 report("Checking Muesli model mirror...")
@@ -560,8 +561,8 @@ public enum ManagedASRModelDownloader {
                     mirror: mirror,
                     maximumConcurrency: plan.maximumConcurrency
                 )
-                // Once a mirror transfer starts, any interrupted cache must
-                // be cleared before Hugging Face is allowed to use it.
+                // Once a mirror transfer starts, Hugging Face must not resume
+                // any files in the same directory against another revision.
                 mirrorTransferStarted = true
                 try await download(manifest)
                 try plan.recordSuccessfulInstallation(manifest)
@@ -572,12 +573,12 @@ public enum ManagedASRModelDownloader {
             } catch {
                 if isCancellation(error) { throw CancellationError() }
                 if mirrorTransferStarted {
-                    // Never resume mirror bytes, or stale partial files from
-                    // an earlier Hugging Face attempt, against the fallback
-                    // revision. The plan owns this cache directory, so clear
-                    // it completely before resolving Hugging Face. If cleanup
-                    // cannot complete, fail closed rather than mixing bytes.
-                    try plan.delete()
+                    // Download the fallback into a new directory so it cannot
+                    // resume mirror bytes or stale partial files. Keep the
+                    // prior directory aside until the fallback succeeds: valid
+                    // files reused by the failed mirror remain available if
+                    // Hugging Face is unavailable too.
+                    fallbackCacheBackup = try moveCacheAside(plan.cacheDirectory)
                 }
                 report("Muesli mirror unavailable; trying Hugging Face...")
             }
@@ -585,19 +586,56 @@ public enum ManagedASRModelDownloader {
             report("Finding model files...")
         }
 
-        let manifest = try await resolver.resolve(
-            modelID: plan.modelID,
-            repository: plan.repository,
-            revision: plan.revision,
-            selections: plan.selections,
-            maximumConcurrency: plan.maximumConcurrency
-        )
-        try await download(manifest)
-        try plan.recordSuccessfulInstallation(manifest)
-        guard plan.isComplete() else {
-            throw HuggingFaceModelManifestError.emptySelection(plan.repository)
+        do {
+            let manifest = try await resolver.resolve(
+                modelID: plan.modelID,
+                repository: plan.repository,
+                revision: plan.revision,
+                selections: plan.selections,
+                maximumConcurrency: plan.maximumConcurrency
+            )
+            try await download(manifest)
+            try plan.recordSuccessfulInstallation(manifest)
+            guard plan.isComplete() else {
+                throw HuggingFaceModelManifestError.emptySelection(plan.repository)
+            }
+        } catch {
+            if let fallbackCacheBackup {
+                try restoreCache(from: fallbackCacheBackup, to: plan.cacheDirectory)
+            }
+            throw error
+        }
+
+        // The fallback's completion marker has made the replacement durable.
+        // A failed best-effort cleanup does not invalidate the new install.
+        if let fallbackCacheBackup {
+            try? FileManager.default.removeItem(at: fallbackCacheBackup)
         }
         return plan.cacheDirectory
+    }
+
+    /// Moves a plan-owned cache out of the fallback's destination directory.
+    /// The unique sibling avoids sharing resumable state between origins.
+    private static func moveCacheAside(_ cacheDirectory: URL) throws -> URL? {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: cacheDirectory.path) else { return nil }
+
+        let backup = cacheDirectory.deletingLastPathComponent().appendingPathComponent(
+            ".\(cacheDirectory.lastPathComponent).muesli-mirror-fallback-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try fileManager.moveItem(at: cacheDirectory, to: backup)
+        return backup
+    }
+
+    /// Restores a pre-fallback cache after Hugging Face fails. Removing the
+    /// fallback attempt first prevents incomplete fallback bytes surviving.
+    private static func restoreCache(from backup: URL, to cacheDirectory: URL) throws {
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: cacheDirectory.path) {
+            try fileManager.removeItem(at: cacheDirectory)
+        }
+        try fileManager.moveItem(at: backup, to: cacheDirectory)
     }
 
     private static func isCancellation(_ error: Error) -> Bool {
