@@ -711,7 +711,8 @@ struct ModelsView: View {
                 downloadProgressView(
                     for: option.id,
                     fallbackProgress: progress,
-                    fallbackMessage: downloadMessages[option.id]
+                    fallbackMessage: downloadMessages[option.id],
+                    isDownloading: isDownloading
                 )
             }
 
@@ -787,6 +788,7 @@ struct ModelsView: View {
         let isDownloading = downloadingModels.contains(selectedOption.model)
         let progress = downloadProgress[selectedOption.model] ?? 0
         let showsDownloadStatus = shouldShowDownloadStatus(for: selectedOption.model, isDownloading: isDownloading)
+        let incompatibilityReason = isDownloaded ? nil : selectedOption.incompatibilityReason
 
         return VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
             HStack(alignment: .top, spacing: MuesliTheme.spacing12) {
@@ -858,15 +860,28 @@ struct ModelsView: View {
                 }
             }
 
-            if showsDownloadStatus {
+            if showsDownloadStatus, incompatibilityReason == nil {
                 downloadProgressView(
                     for: selectedOption.model,
                     fallbackProgress: progress,
-                    fallbackMessage: downloadMessages[selectedOption.model]
+                    fallbackMessage: downloadMessages[selectedOption.model],
+                    isDownloading: isDownloading
                 )
             }
 
-            actionButtons(for: selectedOption, isActive: isActive, isDownloaded: isDownloaded, isDownloading: isDownloading)
+            if let incompatibilityReason {
+                Label(incompatibilityReason, systemImage: "exclamationmark.triangle")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+            }
+
+            actionButtons(
+                for: selectedOption,
+                isActive: isActive,
+                isDownloaded: isDownloaded,
+                isDownloading: isDownloading,
+                incompatibilityReason: incompatibilityReason
+            )
         }
         .padding(MuesliTheme.spacing16)
         .background(MuesliTheme.backgroundRaised)
@@ -899,7 +914,12 @@ struct ModelsView: View {
     }
 
     @ViewBuilder
-    private func downloadProgressView(for modelID: String, fallbackProgress: Double, fallbackMessage: String? = nil) -> some View {
+    private func downloadProgressView(
+        for modelID: String,
+        fallbackProgress: Double,
+        fallbackMessage: String? = nil,
+        isDownloading: Bool = true
+    ) -> some View {
         if let snapshot = downloadSnapshots[modelID] {
             VStack(alignment: .leading, spacing: 4) {
                 if snapshot.phase != .preparing {
@@ -925,8 +945,14 @@ struct ModelsView: View {
             }
         } else {
             VStack(alignment: .leading, spacing: 4) {
-                ProgressView(value: fallbackProgress)
-                    .tint(MuesliTheme.accent)
+                // A stale error message can outlive the download attempt (e.g. an OS-compatibility
+                // check that failed instantly, before any progress snapshot arrived). Don't show a
+                // dead, non-animating progress bar next to it — only render one while a download is
+                // actually in flight. See issue #479.
+                if isDownloading {
+                    ProgressView(value: fallbackProgress)
+                        .tint(MuesliTheme.accent)
+                }
                 Text(fallbackMessage ?? "\(Int(fallbackProgress * 100))% downloading...")
                     .font(.system(size: 11))
                     .foregroundStyle(MuesliTheme.textTertiary)
@@ -1038,6 +1064,7 @@ struct ModelsView: View {
         isDownloading: Bool,
         actionTitle: String = "Set Active",
         activationDisabledReason: String? = nil,
+        incompatibilityReason: String? = nil,
         onSetActive: (() -> Void)? = nil
     ) -> some View {
         HStack(spacing: MuesliTheme.spacing8) {
@@ -1089,11 +1116,13 @@ struct ModelsView: View {
                 }
                 .buttonStyle(.plain)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(MuesliTheme.accent)
+                .foregroundStyle(incompatibilityReason == nil ? MuesliTheme.accent : MuesliTheme.textTertiary)
                 .padding(.horizontal, MuesliTheme.spacing12)
                 .padding(.vertical, 4)
-                .background(MuesliTheme.accentSubtle)
+                .background(incompatibilityReason == nil ? MuesliTheme.accentSubtle : MuesliTheme.surfacePrimary)
                 .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                .disabled(incompatibilityReason != nil)
+                .help(incompatibilityReason ?? "Download")
             }
         }
     }
@@ -1114,6 +1143,10 @@ struct ModelsView: View {
         let isDownloading = downloadingModels.contains(option.model)
         let progress = downloadProgress[option.model] ?? 0
         let showsDownloadStatus = shouldShowDownloadStatus(for: option.model, isDownloading: isDownloading)
+        // Models gated to a newer macOS (e.g. Qwen3 ASR requires macOS 15+) should never show a
+        // clickable Download button or a progress bar that's doomed to fail — surface the reason
+        // up front instead. See issue #479.
+        let incompatibilityReason = isDownloaded ? nil : option.incompatibilityReason
 
         return VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
             HStack(alignment: .top, spacing: MuesliTheme.spacing12) {
@@ -1289,16 +1322,22 @@ struct ModelsView: View {
                 }
             }
 
-            // Progress bar when downloading
-            if showsDownloadStatus {
+            // Progress bar when downloading. Never shown for an OS-incompatible model — the
+            // download can't start, so there's nothing in progress (see issue #479).
+            if showsDownloadStatus, incompatibilityReason == nil {
                 downloadProgressView(
                     for: option.model,
                     fallbackProgress: progress,
-                    fallbackMessage: downloadMessages[option.model]
+                    fallbackMessage: downloadMessages[option.model],
+                    isDownloading: isDownloading
                 )
             }
 
-            if let activationDisabledReason, isDownloaded, !isActive {
+            if let incompatibilityReason {
+                Label(incompatibilityReason, systemImage: "exclamationmark.triangle")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+            } else if let activationDisabledReason, isDownloaded, !isActive {
                 Label(activationDisabledReason, systemImage: "exclamationmark.lock")
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textTertiary)
@@ -1311,6 +1350,7 @@ struct ModelsView: View {
                 isDownloading: isDownloading,
                 actionTitle: actionTitle,
                 activationDisabledReason: activationDisabledReason,
+                incompatibilityReason: incompatibilityReason,
                 onSetActive: onSetActive
             )
         }

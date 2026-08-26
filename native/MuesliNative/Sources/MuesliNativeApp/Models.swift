@@ -283,6 +283,34 @@ struct BackendOption: Equatable {
         backend == "apple-speech"
     }
 
+    /// Human-readable reason this model cannot be downloaded on the current system, or `nil`
+    /// if it's compatible. Lets the Models tab disable Download and explain why *before* a doomed
+    /// download attempt, instead of only discovering incompatibility after the download starts
+    /// (see issue #479). Message shape matches the existing `#available`-gated error strings
+    /// elsewhere in the codebase (e.g. `TranscriptionRuntime`) by design — see PR description for
+    /// the known duplication this doesn't consolidate.
+    var incompatibilityReason: String? {
+        switch backend {
+        case "nemotron35", "qwen", "cohere", "indicasr", "gemma4-litert":
+            if #available(macOS 15, *) {
+                return nil
+            }
+            return "\(label) requires macOS 15 or later (you're on macOS \(Self.currentOSVersionLabel))."
+        case "apple-speech":
+            if #available(macOS 26.0, *) {
+                return nil
+            }
+            return "\(label) requires macOS 26 or later (you're on macOS \(Self.currentOSVersionLabel))."
+        default:
+            return nil
+        }
+    }
+
+    private static var currentOSVersionLabel: String {
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        return "\(version.majorVersion).\(version.minorVersion)"
+    }
+
     /// Multilingual WhisperKit models expose language selection (auto-detect or pinned code).
     /// English-only `.en` variants do not.
     var supportsWhisperLanguageSelection: Bool {

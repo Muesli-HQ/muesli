@@ -90,6 +90,55 @@ struct BackendOptionTests {
         #expect(BackendOption.qwen3Asr.description.contains("2–3 second"))
     }
 
+    // Issue #479: incompatibilityReason lets the Models tab disable Download and explain why
+    // *before* a doomed attempt, instead of only discovering it after a download starts (which
+    // left a stuck, empty progress bar behind — see ModelsView's downloadProgressView).
+    @Test(
+        "macOS-15-gated backends report an incompatibility reason exactly when unavailable",
+        arguments: [
+            BackendOption.nemotron35Multilingual,
+            BackendOption.qwen3Asr,
+            BackendOption.cohereTranscribe,
+            BackendOption.indicASR,
+            BackendOption.gemma4E2BLiteRT,
+            BackendOption.gemma4E4BLiteRT,
+        ]
+    )
+    func macOS15GatedBackendsMatchAvailability(_ option: BackendOption) {
+        if #available(macOS 15, *) {
+            #expect(option.incompatibilityReason == nil, "\(option.label) should be compatible on macOS 15+")
+        } else {
+            let reason = option.incompatibilityReason
+            #expect(reason != nil, "\(option.label) should report an incompatibility reason below macOS 15")
+            #expect(reason?.contains("macOS 15") == true)
+        }
+    }
+
+    @Test("apple-speech reports an incompatibility reason exactly when below macOS 26")
+    func appleSpeechIncompatibilityMatchesAvailability() {
+        if #available(macOS 26.0, *) {
+            #expect(BackendOption.appleSpeechAnalyzer.incompatibilityReason == nil)
+        } else {
+            let reason = BackendOption.appleSpeechAnalyzer.incompatibilityReason
+            #expect(reason != nil)
+            #expect(reason?.contains("macOS 26") == true)
+        }
+    }
+
+    @Test(
+        "backends with no OS gate are always compatible",
+        arguments: [
+            BackendOption.parakeetMultilingual,
+            BackendOption.parakeetUnified,
+            BackendOption.parakeetEnglish,
+            BackendOption.whisperTiny,
+            BackendOption.senseVoiceSmall,
+        ]
+    )
+    func ungatedBackendsAreAlwaysCompatible(_ option: BackendOption) {
+        #expect(option.incompatibilityReason == nil, "\(option.label) has no OS requirement and should never be marked incompatible")
+    }
+
     @Test("model descriptions explain usage without implementation jargon")
     func modelDescriptionsAreProductFacing() {
         let implementationTerms = ["INT8", "CoreML", "ANE", "RNNT", "FluidAudio", "LiteRT-LM", "quantized", "GGUF"]
