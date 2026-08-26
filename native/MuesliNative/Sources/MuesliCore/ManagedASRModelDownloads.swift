@@ -656,7 +656,9 @@ private actor ManagedASRModelOperations {
         let task: Task<URL, Error>
     }
 
-    private var operations: [String: [UUID: Operation]] = [:]
+    // A model's mirror and fallback state transitions share one cache
+    // directory, so callers for the same model must share one operation.
+    private var operations: [String: Operation] = [:]
     private var deletionTokens: [String: UUID] = [:]
 
     func run(
@@ -664,10 +666,18 @@ private actor ManagedASRModelOperations {
         operation: @escaping @Sendable () async throws -> URL
     ) async throws -> URL {
         guard deletionTokens[modelID] == nil else { throw CancellationError() }
+        if let active = operations[modelID] {
+            return try await active.task.value
+        }
+
         let id = UUID()
         let task = Task { try await operation() }
-        operations[modelID, default: [:]][id] = Operation(id: id, task: task)
-        defer { operations[modelID]?[id] = nil }
+        operations[modelID] = Operation(id: id, task: task)
+        defer {
+            if operations[modelID]?.id == id {
+                operations[modelID] = nil
+            }
+        }
         return try await withTaskCancellationHandler {
             try await task.value
         } onCancel: {
@@ -676,16 +686,13 @@ private actor ManagedASRModelOperations {
     }
 
     func cancel(modelID: String) {
-        guard let active = operations[modelID]?.values else { return }
-        for operation in active {
-            operation.task.cancel()
-        }
+        operations[modelID]?.task.cancel()
     }
 
     func cancelAndWait(modelID: String) async {
-        let active = operations[modelID].map { Array($0.values) } ?? []
-        for operation in active { operation.task.cancel() }
-        for operation in active { _ = try? await operation.task.value }
+        guard let active = operations[modelID] else { return }
+        active.task.cancel()
+        _ = try? await active.task.value
     }
 
     func beginDeletion(modelID: String) async -> ManagedASRModelDeletionToken {
