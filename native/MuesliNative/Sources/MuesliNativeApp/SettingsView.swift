@@ -1566,8 +1566,15 @@ struct SettingsView: View {
                     openRouterAccountControl()
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Model", controlWidth: meetingControlWidth) {
+                settingsRow("Free model", controlWidth: meetingControlWidth) {
                     openRouterFreeModelMenu
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Custom model ID", controlWidth: meetingControlWidth) {
+                    settingsModelTextField(
+                        currentModel: appState.config.openRouterModel,
+                        placeholder: "provider/model"
+                    ) { val in controller.updateConfig { $0.openRouterModel = val } }
                 }
             }
         }
@@ -2164,38 +2171,40 @@ struct SettingsView: View {
         selectMeetingSummaryBackend: Bool = true
     ) -> some View {
         if appState.isOpenRouterAuthenticated {
-            VStack(alignment: .center, spacing: 4) {
-                Button {
-                    controller.signOutOpenRouter()
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "network")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.white)
-                        Text("Connected · Disconnect")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.white)
-                            .lineLimit(1)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(MuesliTheme.success)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            HStack(spacing: 6) {
+                HStack(spacing: 4) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text("Connected")
+                        .font(.system(size: 10, weight: .medium))
+                        .lineLimit(1)
                 }
-                .buttonStyle(.plain)
-                .help("Disconnect removes Muesli's local copy. Revoke the key from OpenRouter's key page.")
+                .foregroundStyle(MuesliTheme.success)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 Button {
                     controller.manageOpenRouterKey()
                 } label: {
-                    Text("Manage key at OpenRouter")
+                    Text("Manage key")
                         .font(.system(size: 10))
                         .foregroundStyle(.blue)
                         .underline()
                 }
                 .buttonStyle(.plain)
                 .frame(maxWidth: .infinity, alignment: .center)
+                .help("Manage this key at OpenRouter")
+
+                Button {
+                    controller.signOutOpenRouter()
+                } label: {
+                    Text("Disconnect")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.red)
+                        .underline()
+                }
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .help("Remove Muesli's local copy of this OpenRouter key")
             }
         } else if isSigningInOpenRouter {
             HStack(spacing: 6) {
