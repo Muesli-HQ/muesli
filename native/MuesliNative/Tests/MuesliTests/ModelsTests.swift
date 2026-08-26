@@ -489,6 +489,18 @@ struct PostProcessorOptionTests {
         #expect(PostProcessorOption.resolve(id: "missing") == PostProcessorOption.defaultOption)
     }
 
+    @Test("cached legacy v2 remains runnable but is not downloadable")
+    func cachedLegacyV2RemainsRunnable() {
+        #expect(!PostProcessorOption.all.contains(PostProcessorOption.legacyV2))
+        #expect(!PostProcessorOption.legacyV2.isDownloadable)
+        #expect(PostProcessorOption.resolve(id: PostProcessorOption.legacyV2.id) == PostProcessorOption.legacyV2)
+        #expect(PostProcessorOption.runtimeOption(
+            id: PostProcessorOption.legacyV2.id,
+            downloadedIDs: [PostProcessorOption.legacyV2.id],
+            hasDevOverride: false
+        ) == PostProcessorOption.legacyV2)
+    }
+
     @Test("resolveDownloaded prefers selected downloaded option")
     func resolveDownloadedPrefersSelected() {
         let downloadedIDs: Set<String> = [

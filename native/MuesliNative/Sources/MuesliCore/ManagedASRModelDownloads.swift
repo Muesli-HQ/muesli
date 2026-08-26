@@ -551,7 +551,7 @@ public enum ManagedASRModelDownloader {
             }
         }
 
-        var mirrorDownloadWasAttempted = false
+        var failedMirrorManifest: ModelDownloadManifest?
         if let mirror = plan.mirror {
             do {
                 report("Checking Muesli model mirror...")
@@ -560,16 +560,29 @@ public enum ManagedASRModelDownloader {
                     mirror: mirror,
                     maximumConcurrency: plan.maximumConcurrency
                 )
-                mirrorDownloadWasAttempted = true
+                // Preserve the exact mirror manifest until this transfer has
+                // succeeded. If the mirror fails partway through, it is the
+                // only complete record of files that may need removing before
+                // a Hugging Face fallback begins.
+                failedMirrorManifest = manifest
                 try await download(manifest)
                 try plan.recordSuccessfulInstallation(manifest)
                 guard plan.isComplete() else {
                     throw MuesliModelMirrorManifestError.invalidManifest(mirror.manifestURL)
                 }
                 return plan.cacheDirectory
-            } catch is CancellationError {
-                throw CancellationError()
             } catch {
+                if isCancellation(error) { throw CancellationError() }
+                if let failedMirrorManifest {
+                    // Never resume a mirror's partial bytes against a Hugging
+                    // Face revision. The mirror manifest includes files that
+                    // may not exist in the fallback manifest, so clean it
+                    // before resolving Hugging Face.
+                    try? await coordinator.removeDownload(
+                        failedMirrorManifest,
+                        at: plan.cacheDirectory
+                    )
+                }
                 report("Muesli mirror unavailable; trying Hugging Face...")
             }
         } else {
@@ -583,17 +596,18 @@ public enum ManagedASRModelDownloader {
             selections: plan.selections,
             maximumConcurrency: plan.maximumConcurrency
         )
-        if mirrorDownloadWasAttempted {
-            // Do not resume bytes from a failed mirror against a mutable Hugging Face
-            // revision. A fresh fallback avoids mixing two independently served files.
-            try? await coordinator.removeDownload(manifest, at: plan.cacheDirectory)
-        }
         try await download(manifest)
         try plan.recordSuccessfulInstallation(manifest)
         guard plan.isComplete() else {
             throw HuggingFaceModelManifestError.emptySelection(plan.repository)
         }
         return plan.cacheDirectory
+    }
+
+    private static func isCancellation(_ error: Error) -> Bool {
+        Task.isCancelled
+            || error is CancellationError
+            || (error as? URLError)?.code == .cancelled
     }
 }
 

@@ -628,7 +628,7 @@ struct ModelsView: View {
                     gemmaCleanupModelCard(model)
                 }
 
-                ForEach(PostProcessorOption.all) { option in
+                ForEach(displayedPostProcessorOptions) { option in
                     postProcModelCard(option)
                 }
             }
@@ -750,7 +750,7 @@ struct ModelsView: View {
                             .frame(width: 20, height: 20)
                     }
                     .buttonStyle(.plain)
-                } else {
+                } else if option.isDownloadable {
                     Button("Download") {
                         startPostProcDownload(option)
                     }
@@ -761,6 +761,10 @@ struct ModelsView: View {
                     .padding(.vertical, 4)
                     .background(MuesliTheme.accentSubtle)
                     .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                } else {
+                    Text("No longer available")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
                 }
             }
         }
@@ -1365,6 +1369,7 @@ struct ModelsView: View {
     // MARK: - Post-Processor Actions
 
     private func startPostProcDownload(_ option: PostProcessorOption) {
+        guard option.isDownloadable else { return }
         withAnimation { _ = downloadingPostProcModels.insert(option.id) }
         downloadProgressPostProc[option.id] = 0.02
         downloadMessages.removeValue(forKey: option.id)
@@ -1512,11 +1517,21 @@ struct ModelsView: View {
 
     private func checkDownloadedPostProcModels() {
         downloadedPostProcModels.removeAll()
-        for option in PostProcessorOption.all {
+        for option in PostProcessorOption.downloaded {
             if option.isDownloaded {
                 downloadedPostProcModels.insert(option.id)
             }
         }
+    }
+
+    /// The retired v2 cleanup model stays visible only for people who already
+    /// have it installed. Deleting it removes the card, and the model cannot
+    /// be downloaded again.
+    private var displayedPostProcessorOptions: [PostProcessorOption] {
+        PostProcessorOption.all
+            + (downloadedPostProcModels.contains(PostProcessorOption.legacyV2.id)
+                ? [.legacyV2]
+                : [])
     }
 
     // MARK: - Actions
