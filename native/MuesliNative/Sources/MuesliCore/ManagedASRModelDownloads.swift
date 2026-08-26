@@ -659,6 +659,7 @@ private actor ManagedASRModelOperations {
     // A model's mirror and fallback state transitions share one cache
     // directory, so callers for the same model must share one operation.
     private var operations: [String: Operation] = [:]
+    private var completionWaiters: [UUID: [UUID: CheckedContinuation<URL, Error>]] = [:]
     private var deletionTokens: [String: UUID] = [:]
 
     func run(
@@ -667,22 +668,23 @@ private actor ManagedASRModelOperations {
     ) async throws -> URL {
         guard deletionTokens[modelID] == nil else { throw CancellationError() }
         if let active = operations[modelID] {
-            return try await active.task.value
+            return try await waitForCompletion(of: active)
         }
 
         let id = UUID()
         let task = Task { try await operation() }
-        operations[modelID] = Operation(id: id, task: task)
-        defer {
-            if operations[modelID]?.id == id {
-                operations[modelID] = nil
+        let active = Operation(id: id, task: task)
+        operations[modelID] = active
+        Task { [weak self] in
+            let result: Result<URL, Error>
+            do {
+                result = .success(try await task.value)
+            } catch {
+                result = .failure(error)
             }
+            await self?.finish(modelID: modelID, operationID: id, result: result)
         }
-        return try await withTaskCancellationHandler {
-            try await task.value
-        } onCancel: {
-            task.cancel()
-        }
+        return try await waitForCompletion(of: active)
     }
 
     func cancel(modelID: String) {
@@ -705,6 +707,46 @@ private actor ManagedASRModelOperations {
     func endDeletion(_ token: ManagedASRModelDeletionToken) {
         guard deletionTokens[token.modelID] == token.id else { return }
         deletionTokens[token.modelID] = nil
+    }
+
+    /// Each caller waits independently. Cancelling a caller therefore detaches
+    /// it from the shared model operation; only explicit model cancellation
+    /// above stops the transfer for every caller.
+    private func waitForCompletion(of operation: Operation) async throws -> URL {
+        let callerID = UUID()
+        return try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                } else {
+                    completionWaiters[operation.id, default: [:]][callerID] = continuation
+                }
+            }
+        }, onCancel: {
+            Task { await self.cancelWaiter(callerID, for: operation.id) }
+        })
+    }
+
+    private func cancelWaiter(_ callerID: UUID, for operationID: UUID) {
+        guard let continuation = completionWaiters[operationID]?[callerID] else { return }
+        completionWaiters[operationID]?[callerID] = nil
+        if completionWaiters[operationID]?.isEmpty == true {
+            completionWaiters[operationID] = nil
+        }
+        continuation.resume(throwing: CancellationError())
+    }
+
+    private func finish(
+        modelID: String,
+        operationID: UUID,
+        result: Result<URL, Error>
+    ) {
+        guard operations[modelID]?.id == operationID else { return }
+        operations[modelID] = nil
+        let waiters = completionWaiters.removeValue(forKey: operationID) ?? [:]
+        for continuation in waiters.values {
+            continuation.resume(with: result)
+        }
     }
 }
 

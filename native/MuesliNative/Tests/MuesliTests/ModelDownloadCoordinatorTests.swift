@@ -859,6 +859,91 @@ struct ModelDownloadCoordinatorTests {
         #expect(try Data(contentsOf: plan.cacheDirectory.appendingPathComponent("model.bin")) == data)
     }
 
+    @Test("cancelling the owner caller preserves a shared model operation")
+    func cancellingOwnerCallerPreservesSharedModelOperation() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let data = Data(repeating: 0x42, count: 512 * 1024)
+        let mirrorManifest = try JSONSerialization.data(withJSONObject: [
+            "format": "muesli-r2-model-manifest-v1",
+            "modelID": "owner-cancellation",
+            "version": "mirror-v1",
+            "files": [[
+                "relativePath": "model.bin",
+                "objectKey": "models/acme/asr/mirror-v1/files/model.bin",
+                "bytes": data.count,
+                "sha256": sha256(data),
+            ]],
+        ])
+        let modelTracker = DownloadTestTracker()
+        ModelDownloadTestURLProtocol.install { request in
+            guard let url = request.url else { fatalError("Expected request URL") }
+            if url.host == "assets.muesli.works", url.lastPathComponent == "manifest.json" {
+                return ModelDownloadTestURLProtocol.Response(data: mirrorManifest)
+            }
+            if url.host == "assets.muesli.works", url.path.hasSuffix("/files/model.bin") {
+                return ModelDownloadTestURLProtocol.Response(
+                    data: data,
+                    chunkSize: 4 * 1024,
+                    delay: 0.002,
+                    tracker: modelTracker
+                )
+            }
+            Issue.record("Unexpected owner-cancellation request \(url.absoluteString)")
+            return ModelDownloadTestURLProtocol.Response(statusCode: 500)
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let plan = ManagedASRModelPlan(
+            modelID: "owner-cancellation",
+            repository: "acme/asr",
+            cacheDirectory: root.appendingPathComponent("model", isDirectory: true),
+            selections: [HuggingFaceModelSelection(includedPaths: ["model.bin"])],
+            requiredArtifactAlternatives: [["model.bin"]],
+            mirror: MuesliModelMirror(manifestURL: try #require(URL(string: "https://assets.muesli.works/models/acme/asr/mirror-v1/manifest.json")))
+        )
+        let resolver = HuggingFaceModelManifestResolver(configuration: makeSessionConfiguration())
+        let mirrorResolver = MuesliModelMirrorManifestResolver(configuration: makeSessionConfiguration())
+        let coordinator = makeCoordinator()
+        let firstReturned = DownloadCompletionFlag()
+        let first = Task {
+            do {
+                let directory = try await ManagedASRModelDownloader.downloadIfNeeded(
+                    plan,
+                    resolver: resolver,
+                    mirrorResolver: mirrorResolver,
+                    coordinator: coordinator
+                )
+                firstReturned.markCompleted()
+                return directory
+            } catch {
+                firstReturned.markCompleted()
+                throw error
+            }
+        }
+        #expect(modelTracker.waitUntilRequestStarts())
+        let second = Task {
+            try await ManagedASRModelDownloader.downloadIfNeeded(
+                plan,
+                resolver: resolver,
+                mirrorResolver: mirrorResolver,
+                coordinator: coordinator
+            )
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        first.cancel()
+
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(firstReturned.isCompleted)
+        let secondDirectory = try await second.value
+        await #expect(throws: CancellationError.self) {
+            try await first.value
+        }
+        #expect(secondDirectory == plan.cacheDirectory)
+        #expect(modelTracker.requestCount == 1)
+        #expect(try Data(contentsOf: plan.cacheDirectory.appendingPathComponent("model.bin")) == data)
+    }
+
     @Test("cancelling mirror manifest resolution does not fall back to Hugging Face")
     func cancellingMirrorManifestResolutionDoesNotFallBack() async throws {
         let mirrorTracker = DownloadTestTracker()
