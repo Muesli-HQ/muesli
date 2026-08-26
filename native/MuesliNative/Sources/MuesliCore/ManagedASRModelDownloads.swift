@@ -23,6 +23,8 @@ public struct ManagedASRModelPlan: Sendable {
     public let revision: String
     public let cacheDirectory: URL
     public let selections: [HuggingFaceModelSelection]
+    /// Optional immutable Muesli mirror used before Hugging Face discovery.
+    public let mirror: MuesliModelMirror?
     /// Every inner group is an either/or requirement; every group must be satisfied.
     public let requiredArtifactAlternatives: [[String]]
     public let maximumConcurrency: Int
@@ -34,6 +36,7 @@ public struct ManagedASRModelPlan: Sendable {
         cacheDirectory: URL,
         selections: [HuggingFaceModelSelection],
         requiredArtifactAlternatives: [[String]],
+        mirror: MuesliModelMirror? = nil,
         maximumConcurrency: Int = 2
     ) {
         self.modelID = modelID
@@ -42,6 +45,7 @@ public struct ManagedASRModelPlan: Sendable {
         self.cacheDirectory = cacheDirectory
         self.selections = selections
         self.requiredArtifactAlternatives = requiredArtifactAlternatives
+        self.mirror = mirror
         self.maximumConcurrency = maximumConcurrency
     }
 
@@ -216,6 +220,7 @@ public enum ManagedASRModelPlans {
             repository: "FluidInference/parakeet-tdt-0.6b-v2-coreml",
             directoryName: "parakeet-tdt-0.6b-v2",
             required: required,
+            mirror: MuesliModelMirror(manifestURL: URL(string: "https://assets.muesli.works/models/fluidaudio/parakeet-tdt-0.6b-v2/legacy-local-v1/manifest.json")!),
             modelsRoot: modelsRoot
         )
     }
@@ -346,6 +351,7 @@ public enum ManagedASRModelPlans {
         repository: String,
         directoryName: String,
         required: [String],
+        mirror: MuesliModelMirror? = nil,
         modelsRoot: URL?
     ) -> ManagedASRModelPlan {
         let directory = (modelsRoot ?? fluidAudioModelsRoot())
@@ -355,7 +361,8 @@ public enum ManagedASRModelPlans {
             repository: repository,
             cacheDirectory: directory,
             selections: [HuggingFaceModelSelection(includedPaths: Set(required))],
-            requiredArtifactAlternatives: completenessRequirements(for: required)
+            requiredArtifactAlternatives: completenessRequirements(for: required),
+            mirror: mirror
         )
     }
 
@@ -382,6 +389,7 @@ public enum ManagedASRModelDownloader {
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil,
         resolver: HuggingFaceModelManifestResolver = .shared,
+        mirrorResolver: MuesliModelMirrorManifestResolver = .shared,
         coordinator: ModelDownloadCoordinator = .shared
     ) async throws -> URL {
         try await operations.run(modelID: plan.modelID) {
@@ -392,6 +400,7 @@ public enum ManagedASRModelDownloader {
                 progress: progress,
                 progressSnapshot: progressSnapshot,
                 resolver: resolver,
+                mirrorResolver: mirrorResolver,
                 coordinator: coordinator
             )
         }
@@ -406,6 +415,7 @@ public enum ManagedASRModelDownloader {
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil,
         resolver: HuggingFaceModelManifestResolver = .shared,
+        mirrorResolver: MuesliModelMirrorManifestResolver = .shared,
         coordinator: ModelDownloadCoordinator = .shared,
         load: (URL) async throws -> T
     ) async throws -> T {
@@ -415,6 +425,7 @@ public enum ManagedASRModelDownloader {
             progress: progress,
             progressSnapshot: progressSnapshot,
             resolver: resolver,
+            mirrorResolver: mirrorResolver,
             coordinator: coordinator
         )
 
@@ -446,6 +457,7 @@ public enum ManagedASRModelDownloader {
                 progress: progress,
                 progressSnapshot: progressSnapshot,
                 resolver: resolver,
+                mirrorResolver: mirrorResolver,
                 coordinator: coordinator
             )
             return try await load(repairedDirectory)
@@ -490,16 +502,53 @@ public enum ManagedASRModelDownloader {
         progress: ((Double, String?) -> Void)?,
         progressSnapshot: ModelDownloadProgressHandler?,
         resolver: HuggingFaceModelManifestResolver,
+        mirrorResolver: MuesliModelMirrorManifestResolver,
         coordinator: ModelDownloadCoordinator
     ) async throws -> URL {
         try Task.checkCancellation()
 
         let scalarProgress = ManagedASRScalarProgressRelay(progress)
-        scalarProgress.call(0.01, "Finding model files...")
-        progressSnapshot?(ModelDownloadProgress.preparing(
-            modelID: plan.modelID,
-            message: "Finding model files..."
-        ))
+        func report(_ message: String) {
+            scalarProgress.call(0.01, message)
+            progressSnapshot?(ModelDownloadProgress.preparing(
+                modelID: plan.modelID,
+                message: message
+            ))
+        }
+        func download(_ manifest: ModelDownloadManifest) async throws {
+            try await coordinator.download(manifest, to: plan.cacheDirectory) { snapshot in
+                if let fraction = snapshot.fractionCompleted {
+                    scalarProgress.call(fraction, snapshot.message)
+                }
+                progressSnapshot?(snapshot)
+            }
+        }
+
+        var mirrorDownloadWasAttempted = false
+        if let mirror = plan.mirror {
+            do {
+                report("Checking Muesli model mirror...")
+                let manifest = try await mirrorResolver.resolve(
+                    modelID: plan.modelID,
+                    mirror: mirror,
+                    maximumConcurrency: plan.maximumConcurrency
+                )
+                mirrorDownloadWasAttempted = true
+                try await download(manifest)
+                try plan.recordSuccessfulInstallation(manifest)
+                guard plan.isComplete() else {
+                    throw MuesliModelMirrorManifestError.invalidManifest(mirror.manifestURL)
+                }
+                return plan.cacheDirectory
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                report("Muesli mirror unavailable; trying Hugging Face...")
+            }
+        } else {
+            report("Finding model files...")
+        }
+
         let manifest = try await resolver.resolve(
             modelID: plan.modelID,
             repository: plan.repository,
@@ -507,12 +556,12 @@ public enum ManagedASRModelDownloader {
             selections: plan.selections,
             maximumConcurrency: plan.maximumConcurrency
         )
-        try await coordinator.download(manifest, to: plan.cacheDirectory) { snapshot in
-            if let fraction = snapshot.fractionCompleted {
-                scalarProgress.call(fraction, snapshot.message)
-            }
-            progressSnapshot?(snapshot)
+        if mirrorDownloadWasAttempted {
+            // Do not resume bytes from a failed mirror against a mutable Hugging Face
+            // revision. A fresh fallback avoids mixing two independently served files.
+            try? await coordinator.removeDownload(manifest, at: plan.cacheDirectory)
         }
+        try await download(manifest)
         try plan.recordSuccessfulInstallation(manifest)
         guard plan.isComplete() else {
             throw HuggingFaceModelManifestError.emptySelection(plan.repository)
