@@ -551,7 +551,7 @@ public enum ManagedASRModelDownloader {
             }
         }
 
-        var failedMirrorManifest: ModelDownloadManifest?
+        var mirrorTransferStarted = false
         if let mirror = plan.mirror {
             do {
                 report("Checking Muesli model mirror...")
@@ -560,11 +560,9 @@ public enum ManagedASRModelDownloader {
                     mirror: mirror,
                     maximumConcurrency: plan.maximumConcurrency
                 )
-                // Preserve the exact mirror manifest until this transfer has
-                // succeeded. If the mirror fails partway through, it is the
-                // only complete record of files that may need removing before
-                // a Hugging Face fallback begins.
-                failedMirrorManifest = manifest
+                // Once a mirror transfer starts, any interrupted cache must
+                // be cleared before Hugging Face is allowed to use it.
+                mirrorTransferStarted = true
                 try await download(manifest)
                 try plan.recordSuccessfulInstallation(manifest)
                 guard plan.isComplete() else {
@@ -573,16 +571,13 @@ public enum ManagedASRModelDownloader {
                 return plan.cacheDirectory
             } catch {
                 if isCancellation(error) { throw CancellationError() }
-                if let failedMirrorManifest {
-                    // Never resume a mirror's partial bytes against a Hugging
-                    // Face revision. The mirror manifest includes files that
-                    // may not exist in the fallback manifest, so clean it
-                    // before resolving Hugging Face. If cleanup cannot
-                    // complete, fail closed rather than mixing revisions.
-                    try await coordinator.removeDownload(
-                        failedMirrorManifest,
-                        at: plan.cacheDirectory
-                    )
+                if mirrorTransferStarted {
+                    // Never resume mirror bytes, or stale partial files from
+                    // an earlier Hugging Face attempt, against the fallback
+                    // revision. The plan owns this cache directory, so clear
+                    // it completely before resolving Hugging Face. If cleanup
+                    // cannot complete, fail closed rather than mixing bytes.
+                    try plan.delete()
                 }
                 report("Muesli mirror unavailable; trying Hugging Face...")
             }

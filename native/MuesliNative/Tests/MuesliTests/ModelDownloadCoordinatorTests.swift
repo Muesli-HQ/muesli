@@ -633,6 +633,7 @@ struct ModelDownloadCoordinatorTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let mirroredData = Data("mirror".utf8)
         let fallbackData = Data("fallback".utf8)
+        let fallbackOnlyData = Data("fallback-only".utf8)
         let mirrorOnlyData = Data("mirror-only".utf8)
         let mirrorManifest = try JSONSerialization.data(withJSONObject: [
             "format": "muesli-r2-model-manifest-v1",
@@ -655,6 +656,11 @@ struct ModelDownloadCoordinatorTests {
         ])
         let tree = try JSONSerialization.data(withJSONObject: [[
             "type": "file",
+            "path": "fallback-only.bin",
+            "size": fallbackOnlyData.count,
+            "oid": "fallback-only-oid",
+        ], [
+            "type": "file",
             "path": "model.bin",
             "size": fallbackData.count,
             "oid": "fallback-oid",
@@ -674,6 +680,10 @@ struct ModelDownloadCoordinatorTests {
                 return ModelDownloadTestURLProtocol.Response(data: tree)
             }
             if url.path.contains("/resolve/") {
+                if url.lastPathComponent == "fallback-only.bin" {
+                    #expect(request.value(forHTTPHeaderField: "Range") == nil)
+                    return ModelDownloadTestURLProtocol.Response(data: fallbackOnlyData)
+                }
                 return ModelDownloadTestURLProtocol.Response(data: fallbackData)
             }
             Issue.record("Unexpected transfer fallback request \(url.absoluteString)")
@@ -685,10 +695,14 @@ struct ModelDownloadCoordinatorTests {
             modelID: "acme/asr",
             repository: "acme/asr",
             cacheDirectory: root.appendingPathComponent("model", isDirectory: true),
-            selections: [HuggingFaceModelSelection(includedPaths: ["model.bin"])],
+            selections: [HuggingFaceModelSelection(includedPaths: ["model.bin", "fallback-only.bin"])],
             requiredArtifactAlternatives: [["model.bin"]],
             mirror: MuesliModelMirror(manifestURL: try #require(URL(string: "https://assets.muesli.works/models/acme/asr/mirror-v1/manifest.json")))
         )
+        let staleFallbackPartialURL = plan.cacheDirectory.appendingPathComponent("fallback-only.bin.part")
+        try FileManager.default.createDirectory(at: plan.cacheDirectory, withIntermediateDirectories: true)
+        try Data("stale fallback bytes".utf8).write(to: staleFallbackPartialURL)
+
         let directory = try await ManagedASRModelDownloader.downloadIfNeeded(
             plan,
             resolver: HuggingFaceModelManifestResolver(configuration: makeSessionConfiguration()),
@@ -697,6 +711,8 @@ struct ModelDownloadCoordinatorTests {
         )
 
         #expect(try Data(contentsOf: directory.appendingPathComponent("model.bin")) == fallbackData)
+        #expect(try Data(contentsOf: directory.appendingPathComponent("fallback-only.bin")) == fallbackOnlyData)
+        #expect(!FileManager.default.fileExists(atPath: staleFallbackPartialURL.path))
         #expect(!FileManager.default.fileExists(
             atPath: directory.appendingPathComponent("a-mirror-only.bin").path
         ))
