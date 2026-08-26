@@ -2680,8 +2680,16 @@ public final class MuesliController: NSObject {
         return "\(counts.total) (\(parts.joined(separator: ", ")))"
     }
 
-    func availableDictationInputDevices() -> [AudioInputDeviceInfo] {
-        dictationAudioRoutingController.availableInputDevices()
+    func cachedDictationInputDevices() -> [AudioInputDeviceInfo] {
+        dictationAudioRoutingController.cachedAvailableInputDevices()
+    }
+
+    func refreshDictationInputDevices() async -> [AudioInputDeviceInfo] {
+        await withCheckedContinuation { continuation in
+            dictationAudioRoutingController.refreshAvailableInputDevices { devices in
+                continuation.resume(returning: devices)
+            }
+        }
     }
 
     func selectDictationInputDeviceUID(_ uid: String?) {

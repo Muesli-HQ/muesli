@@ -193,6 +193,7 @@ struct SettingsView: View {
     @State private var downloadedPostProcOptions: [PostProcessorOption] = []
     @State private var downloadedMeetingLiveCaptionBackends: [MeetingLiveCaptionBackend] = []
     @State private var audioInputDevices: [AudioInputDeviceInfo] = []
+    @State private var audioInputDeviceRefreshTask: Task<Void, Never>?
     @State private var permissionPollTimer: Timer?
     @State private var isCleanupPromptManagerPresented = false
     @State private var micGranted = false
@@ -449,6 +450,8 @@ struct SettingsView: View {
             .onDisappear {
                 SoundController.stopMaraudersMapClip()
                 isPreviewingClip = false
+                audioInputDeviceRefreshTask?.cancel()
+                audioInputDeviceRefreshTask = nil
                 stopPermissionPolling()
             }
             .onChange(of: appState.selectedTab) { _, tab in
@@ -465,7 +468,7 @@ struct SettingsView: View {
             .onChange(of: selectedPane) { _, pane in
                 appState.selectedSettingsPane = pane
                 if pane == .dictation || pane == .meetings {
-                    refreshAudioInputDevices()
+                    loadCachedAudioInputDevices()
                 }
                 scrollToFeatureTourTarget(activeFeatureTourTarget, using: scrollProxy)
             }
@@ -583,7 +586,17 @@ struct SettingsView: View {
     }
 
     private func refreshAudioInputDevices() {
-        audioInputDevices = controller.availableDictationInputDevices()
+        loadCachedAudioInputDevices()
+        audioInputDeviceRefreshTask?.cancel()
+        audioInputDeviceRefreshTask = Task { @MainActor in
+            let devices = await controller.refreshDictationInputDevices()
+            guard !Task.isCancelled else { return }
+            audioInputDevices = devices
+        }
+    }
+
+    private func loadCachedAudioInputDevices() {
+        audioInputDevices = controller.cachedDictationInputDevices()
     }
 
     private func backendOptions(including selection: BackendOption) -> [BackendOption] {
@@ -1024,7 +1037,7 @@ struct SettingsView: View {
                     onSelectIndex: { index in
                         guard options.indices.contains(index) else { return }
                         controller.selectMeetingInputDeviceUID(options[index].uid)
-                        refreshAudioInputDevices()
+                        loadCachedAudioInputDevices()
                     }
                 )
                 .frame(height: 24)
@@ -1664,7 +1677,7 @@ struct SettingsView: View {
                         onSelectIndex: { index in
                             guard index >= 0, index < options.count else { return }
                             controller.selectDictationInputDeviceUID(options[index].uid)
-                            refreshAudioInputDevices()
+                            loadCachedAudioInputDevices()
                         }
                     )
                     .frame(height: 24)
