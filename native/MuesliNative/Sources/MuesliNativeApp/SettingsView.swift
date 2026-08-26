@@ -2164,7 +2164,7 @@ struct SettingsView: View {
         selectMeetingSummaryBackend: Bool = true
     ) -> some View {
         if appState.isOpenRouterAuthenticated {
-            VStack(alignment: .trailing, spacing: 4) {
+            VStack(alignment: .center, spacing: 4) {
                 Button {
                     controller.signOutOpenRouter()
                 } label: {
@@ -2186,11 +2186,16 @@ struct SettingsView: View {
                 .buttonStyle(.plain)
                 .help("Disconnect removes Muesli's local copy. Revoke the key from OpenRouter's key page.")
 
-                Button("Manage key at OpenRouter") {
+                Button {
                     controller.manageOpenRouterKey()
+                } label: {
+                    Text("Manage key at OpenRouter")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.blue)
+                        .underline()
                 }
-                .buttonStyle(.link)
-                .font(.system(size: 10))
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .center)
             }
         } else if isSigningInOpenRouter {
             HStack(spacing: 6) {
