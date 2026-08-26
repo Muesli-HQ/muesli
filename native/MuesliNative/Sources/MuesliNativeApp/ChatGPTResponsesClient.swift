@@ -66,7 +66,6 @@ enum ChatGPTResponsesTransport {
         if backend == .codex {
             request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
             request.setValue(originator, forHTTPHeaderField: "originator")
-            request.setValue(appVersion, forHTTPHeaderField: "version")
             request.setValue("Muesli/\(appVersion)", forHTTPHeaderField: "User-Agent")
             request.setValue(sessionID.uuidString.lowercased(), forHTTPHeaderField: "session_id")
         }

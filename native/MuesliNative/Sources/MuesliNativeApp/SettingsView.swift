@@ -1739,20 +1739,18 @@ struct SettingsView: View {
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Timeout", controlWidth: meetingControlWidth) {
-                    Stepper(
+                    integerInput(
+                        label: "Computer use timeout",
                         value: Binding(
                             get: { max(appState.config.computerUseTimeoutSeconds, 1) },
                             set: { newValue in
                                 controller.updateConfig { $0.computerUseTimeoutSeconds = max(newValue, 1) }
                             }
                         ),
-                        in: 1...600,
-                        step: 15
-                    ) {
-                        Text("\(max(appState.config.computerUseTimeoutSeconds, 1)) seconds")
-                            .font(MuesliTheme.body())
-                            .foregroundStyle(MuesliTheme.textPrimary)
-                    }
+                        range: 1...600,
+                        step: 15,
+                        unit: { $0 == 1 ? "second" : "seconds" }
+                    )
                 }
             }
         }
@@ -1776,7 +1774,8 @@ struct SettingsView: View {
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Summary retries", controlWidth: meetingControlWidth) {
-                    Stepper(
+                    integerInput(
+                        label: "Summary retries",
                         value: Binding(
                             get: {
                                 MeetingSummaryRetryPolicy.clampedRetryCount(appState.config.meetingSummaryRetryCount)
@@ -1787,12 +1786,9 @@ struct SettingsView: View {
                                 }
                             }
                         ),
-                        in: 0...MeetingSummaryRetryPolicy.maximumRetryCount
-                    ) {
-                        Text(summaryRetryLabel(appState.config.meetingSummaryRetryCount))
-                            .font(MuesliTheme.body())
-                            .foregroundStyle(MuesliTheme.textPrimary)
-                    }
+                        range: 0...MeetingSummaryRetryPolicy.maximumRetryCount,
+                        unit: { $0 == 1 ? "retry" : "retries" }
+                    )
                 }
                 settingsDescription("Retry transient AI summary failures before saving failed notes.")
                 Divider().background(MuesliTheme.surfaceBorder)
@@ -2962,18 +2958,6 @@ struct SettingsView: View {
             .padding(.bottom, MuesliTheme.spacing8)
     }
 
-    private func summaryRetryLabel(_ retryCount: Int) -> String {
-        let clamped = MeetingSummaryRetryPolicy.clampedRetryCount(retryCount)
-        switch clamped {
-        case 0:
-            return "No retries"
-        case 1:
-            return "1 retry"
-        default:
-            return "\(clamped) retries"
-        }
-    }
-
     // MARK: - Controls
 
     @ViewBuilder
@@ -3484,20 +3468,48 @@ struct SettingsView: View {
     }
 
     private var meetingHookTimeoutControl: some View {
-        Stepper(
+        integerInput(
+            label: "Meeting hook timeout",
             value: Binding(
                 get: { max(appState.config.meetingHookTimeoutSeconds, 1) },
                 set: { newValue in
                     controller.updateConfig { $0.meetingHookTimeoutSeconds = max(newValue, 1) }
                 }
             ),
-            in: 1...600
-        ) {
-            Text("\(max(appState.config.meetingHookTimeoutSeconds, 1)) seconds")
-                .font(MuesliTheme.body())
-                .foregroundStyle(MuesliTheme.textPrimary)
+            range: 1...600,
+            unit: { $0 == 1 ? "second" : "seconds" }
+        )
+    }
+
+    private func integerInput(
+        label: String,
+        value: Binding<Int>,
+        range: ClosedRange<Int>,
+        step: Int = 1,
+        unit: @escaping (Int) -> String
+    ) -> some View {
+        let clampedValue = min(max(value.wrappedValue, range.lowerBound), range.upperBound)
+        let clampedBinding = Binding(
+            get: { min(max(value.wrappedValue, range.lowerBound), range.upperBound) },
+            set: { value.wrappedValue = min(max($0, range.lowerBound), range.upperBound) }
+        )
+
+        return HStack(spacing: MuesliTheme.spacing8) {
+            TextField(label, value: clampedBinding, format: .number)
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing)
                 .monospacedDigit()
-                .frame(minWidth: 92, alignment: .trailing)
+                .frame(width: 72)
+                .accessibilityLabel(label)
+
+            Text(unit(clampedValue))
+                .font(MuesliTheme.body())
+                .foregroundStyle(MuesliTheme.textSecondary)
+                .frame(width: 58, alignment: .leading)
+
+            Stepper(label, value: clampedBinding, in: range, step: step)
+                .labelsHidden()
+                .fixedSize()
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
     }

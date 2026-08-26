@@ -24,7 +24,7 @@ struct ChatGPTResponsesTransportTests {
         #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer access-token")
         #expect(request.value(forHTTPHeaderField: "ChatGPT-Account-Id") == "account-123")
         #expect(request.value(forHTTPHeaderField: "originator") == "muesli")
-        #expect(request.value(forHTTPHeaderField: "version") == "1.2.3")
+        #expect(request.value(forHTTPHeaderField: "version") == nil)
         #expect(request.value(forHTTPHeaderField: "User-Agent") == "Muesli/1.2.3")
         #expect(request.value(forHTTPHeaderField: "session_id") == sessionID.uuidString.lowercased())
         #expect(request.value(forHTTPHeaderField: "OpenAI-Beta") == nil)
@@ -48,7 +48,7 @@ struct ChatGPTResponsesTransportTests {
 
         #expect(request.value(forHTTPHeaderField: "ChatGPT-Account-Id") == nil)
         #expect(request.value(forHTTPHeaderField: "originator") == "muesli")
-        #expect(request.value(forHTTPHeaderField: "version") == "2.0.0")
+        #expect(request.value(forHTTPHeaderField: "version") == nil)
     }
 
     @Test("creates a fresh session ID for every request")
