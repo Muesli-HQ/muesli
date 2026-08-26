@@ -51,6 +51,38 @@ struct CustomLLMAPIKeyResolutionTests {
         #expect(result == "sk-final-token")
     }
 
+    @Test("successful command terminates background descendants")
+    func successfulCommandTerminatesBackgroundDescendants() async throws {
+        let pidFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-credential-success-child-\(UUID().uuidString).pid")
+        defer { try? FileManager.default.removeItem(at: pidFile) }
+
+        let result = try await CredentialCommandRunner.resolve(
+            command: "sleep 30 & child=$!; printf \"$child\" > '\(pidFile.path)'; printf sk-dynamic-token",
+            fallback: "sk-static-key"
+        )
+        let childPID = try #require(Int32(String(contentsOf: pidFile, encoding: .utf8)))
+
+        #expect(result == "sk-dynamic-token")
+        #expect(await processDisappears(childPID, within: 2))
+    }
+
+    @Test("nonzero command terminates background descendants")
+    func nonzeroCommandTerminatesBackgroundDescendants() async throws {
+        let pidFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-credential-failure-child-\(UUID().uuidString).pid")
+        defer { try? FileManager.default.removeItem(at: pidFile) }
+
+        let result = try await CredentialCommandRunner.resolve(
+            command: "sleep 30 & child=$!; printf \"$child\" > '\(pidFile.path)'; exit 7",
+            fallback: "sk-static-key"
+        )
+        let childPID = try #require(Int32(String(contentsOf: pidFile, encoding: .utf8)))
+
+        #expect(result == "sk-static-key")
+        #expect(await processDisappears(childPID, within: 2))
+    }
+
     @Test("timeout falls back promptly and terminates shell descendants")
     func timeoutTerminatesShellDescendants() async throws {
         let pidFile = FileManager.default.temporaryDirectory
@@ -102,6 +134,49 @@ struct CustomLLMAPIKeyResolutionTests {
 
         let result = try await MeetingSummaryClient.resolveCustomLLMAPIKey(config: config)
         #expect(result == "sk-app-token")
+    }
+
+    @Test("invalid headers prevent app credential command execution")
+    func invalidHeadersPreventCredentialCommandExecution() async {
+        let sentinel = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-credential-preflight-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: sentinel) }
+
+        var config = AppConfig()
+        config.meetingSummaryBackend = MeetingSummaryBackendOption.customLLM.backend
+        config.customLLMURL = "https://example.invalid/v1"
+        config.customLLMModel = "custom-model"
+        config.customLLMAPIKeyCommand = "/usr/bin/touch '\(sentinel.path)'"
+        config.customLLMHeaders = [
+            CustomLLMRequestHeader(name: "Authorization", value: "forbidden"),
+        ]
+
+        await #expect(throws: (any Error).self) {
+            try await MeetingSummaryClient.summarize(
+                transcript: "Test transcript",
+                meetingTitle: "Test",
+                config: config
+            )
+        }
+        #expect(!FileManager.default.fileExists(atPath: sentinel.path))
+
+        let title = await MeetingSummaryClient.generateTitle(
+            transcript: "Test transcript",
+            config: config
+        )
+        #expect(title == nil)
+        #expect(!FileManager.default.fileExists(atPath: sentinel.path))
+
+        await #expect(throws: (any Error).self) {
+            try await TranscriptCleanupClient.generate(
+                systemPrompt: "Clean the text.",
+                userPrompt: "raw text",
+                backend: .hosted(.customLLM),
+                model: "custom-model",
+                config: config
+            )
+        }
+        #expect(!FileManager.default.fileExists(atPath: sentinel.path))
     }
 
     @Test("Anthropic readiness accepts a command as credential")

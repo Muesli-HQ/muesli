@@ -209,12 +209,28 @@ enum TranscriptCleanupClient {
             guard let requestURL = resolveConfiguredCustomLLMURL(config: config, format: format) else {
                 throw TranscriptCleanupError.missingConfiguration("Invalid custom URL: \(config.customLLMURL)")
             }
-            let apiKey = try await MeetingSummaryClient.resolveCustomLLMAPIKey(config: config)
+            let configuredModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !configuredModel.isEmpty else {
+                throw TranscriptCleanupError.missingConfiguration("No model selected. Enter a model in Settings.")
+            }
+            if MeetingSummaryClient.customLLMRequiresAPIKey(config: config),
+               config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               config.customLLMAPIKeyCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                throw TranscriptCleanupError.missingConfiguration(
+                    "Enter an API key or API key command for the selected Custom LLM format."
+                )
+            }
             let extraHeaders: [String: String]
             do {
                 extraHeaders = try CustomLLMRequestHeaders.validated(config.customLLMHeaders)
             } catch {
                 throw TranscriptCleanupError.missingConfiguration(error.localizedDescription)
+            }
+            let apiKey = try await MeetingSummaryClient.resolveCustomLLMAPIKey(config: config)
+            if MeetingSummaryClient.customLLMRequiresAPIKey(config: config) && apiKey.isEmpty {
+                throw TranscriptCleanupError.missingConfiguration(
+                    "Enter an API key or API key command for the selected Custom LLM format."
+                )
             }
             switch format {
             case .openAI:
@@ -224,7 +240,7 @@ enum TranscriptCleanupClient {
                     apiKey: apiKey,
                     systemPrompt: systemPrompt,
                     userPrompt: userPrompt,
-                    model: model,
+                    model: configuredModel,
                     maxOutputTokens: maxOutputTokens ?? defaultMaxOutputTokens,
                     extraHeaders: extraHeaders
                 )
@@ -234,7 +250,7 @@ enum TranscriptCleanupClient {
                     apiKey: apiKey,
                     systemPrompt: systemPrompt,
                     userPrompt: userPrompt,
-                    model: model,
+                    model: configuredModel,
                     maxOutputTokens: maxOutputTokens ?? defaultMaxOutputTokens,
                     extraHeaders: extraHeaders
                 )
@@ -404,11 +420,8 @@ enum TranscriptCleanupClient {
                 ["role": "user", "content": userPrompt],
             ],
         ]
-        let tokenKey = MeetingSummaryClient.chatCompletionsTokenKey(model: model, url: requestURL)
+        let tokenKey = requestURL.host?.contains("openai.com") == true ? "max_completion_tokens" : "max_tokens"
         body[tokenKey] = maxOutputTokens
-        if let effort = SummaryModelPreset.reasoningEffort(for: model) {
-            body["reasoning_effort"] = effort
-        }
         var request = URLRequest(url: requestURL)
         request.timeoutInterval = requestTimeout
         request.httpMethod = "POST"
@@ -478,6 +491,11 @@ enum TranscriptCleanupClient {
     private static func validateHTTPResponse(_ response: URLResponse, data: Data, backend: String) throws {
         guard let http = response as? HTTPURLResponse else { return }
         guard (200..<300).contains(http.statusCode) else {
+            if backend == "Custom LLM" {
+                throw TranscriptCleanupError.backendFailed(
+                    "Custom LLM cleanup failed with HTTP \(http.statusCode)."
+                )
+            }
             let message = extractErrorMessage(from: data)
                 ?? String(data: data, encoding: .utf8)
                 ?? "HTTP \(http.statusCode)"

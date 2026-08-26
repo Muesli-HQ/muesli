@@ -1098,7 +1098,6 @@ struct CLISummaryConfig: Decodable {
     var lmStudioModel = ""
     var customLLMURL = ""
     var customLLMAPIKey = ""
-    var customLLMAPIKeyCommand = ""
     var customLLMHeaders: [CustomLLMRequestHeader] = []
     var customLLMModel = ""
     var customLLMFormat = "openai"
@@ -1115,7 +1114,6 @@ struct CLISummaryConfig: Decodable {
         case lmStudioModel = "lmstudio_model"
         case customLLMURL = "custom_llm_url"
         case customLLMAPIKey = "custom_llm_api_key"
-        case customLLMAPIKeyCommand = "custom_llm_api_key_command"
         case customLLMHeaders = "custom_llm_headers"
         case customLLMModel = "custom_llm_model"
         case customLLMFormat = "custom_llm_format"
@@ -1136,7 +1134,6 @@ struct CLISummaryConfig: Decodable {
         lmStudioModel = try container.decodeIfPresent(String.self, forKey: .lmStudioModel) ?? lmStudioModel
         customLLMURL = try container.decodeIfPresent(String.self, forKey: .customLLMURL) ?? customLLMURL
         customLLMAPIKey = try container.decodeIfPresent(String.self, forKey: .customLLMAPIKey) ?? customLLMAPIKey
-        customLLMAPIKeyCommand = try container.decodeIfPresent(String.self, forKey: .customLLMAPIKeyCommand) ?? customLLMAPIKeyCommand
         customLLMHeaders = try container.decodeIfPresent([CustomLLMRequestHeader].self, forKey: .customLLMHeaders) ?? customLLMHeaders
         customLLMModel = try container.decodeIfPresent(String.self, forKey: .customLLMModel) ?? customLLMModel
         customLLMFormat = try container.decodeIfPresent(String.self, forKey: .customLLMFormat) ?? customLLMFormat
@@ -1241,7 +1238,6 @@ enum CLISummaryClient {
             guard !config.customLLMModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw CLISummaryError.unavailable("Custom LLM summary settings are missing a selected model.")
             }
-            let apiKey = try await resolveAPIKey(staticKey: config.customLLMAPIKey, command: config.customLLMAPIKeyCommand)
             let extraHeaders: [String: String]
             do {
                 extraHeaders = try CustomLLMRequestHeaders.validated(config.customLLMHeaders)
@@ -1249,11 +1245,14 @@ enum CLISummaryClient {
                 throw CLISummaryError.unavailable(error.localizedDescription)
             }
             if config.customLLMFormat == "anthropic" {
-                guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                    throw CLISummaryError.unavailable("Custom Anthropic summary settings are missing an API key.")
-                }
                 guard let url = resolveEndpointURL(config.customLLMURL.isEmpty ? "https://api.anthropic.com" : config.customLLMURL, endpointSuffix: "v1/messages") else {
                     throw CLISummaryError.unavailable("Invalid Custom LLM URL.")
+                }
+                let apiKey = ProcessInfo.processInfo.environment["CUSTOM_LLM_API_KEY"]
+                    .flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+                    ?? config.customLLMAPIKey
+                guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw CLISummaryError.unavailable("Custom Anthropic summary settings are missing an API key.")
                 }
                 return try await anthropicSummary(
                     url: url,
@@ -1267,6 +1266,9 @@ enum CLISummaryClient {
             guard let url = resolveEndpointURL(config.customLLMURL.isEmpty ? "http://localhost:8080" : config.customLLMURL, endpointSuffix: "v1/chat/completions") else {
                 throw CLISummaryError.unavailable("Invalid Custom LLM URL.")
             }
+            let apiKey = ProcessInfo.processInfo.environment["CUSTOM_LLM_API_KEY"]
+                .flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+                ?? config.customLLMAPIKey
             return try await chatCompletionsSummary(
                 backend: "Custom LLM",
                 url: url,
@@ -1324,17 +1326,6 @@ enum CLISummaryClient {
         return text
     }
 
-    private static func chatCompletionsTokenKey(model: String, url: URL) -> String {
-        if url.host?.contains("openai.com") == true {
-            return "max_completion_tokens"
-        }
-        let modelName = model.split(separator: "/").last.map(String.init)?.lowercased() ?? model.lowercased()
-        let completionTokenPrefixes = ["gpt-5", "gpt-6", "o1", "o3", "o4"]
-        return completionTokenPrefixes.contains(where: modelName.hasPrefix)
-            ? "max_completion_tokens"
-            : "max_tokens"
-    }
-
     private static func chatCompletionsSummary(
         backend: String,
         url: URL,
@@ -1344,14 +1335,14 @@ enum CLISummaryClient {
         title: String,
         extraHeaders: [String: String] = [:]
     ) async throws -> String {
-        var body: [String: Any] = [
+        let body: [String: Any] = [
             "model": model,
             "messages": [
                 ["role": "system", "content": systemPrompt()],
                 ["role": "user", "content": userPrompt(transcript: transcript, title: title)],
             ],
+            "max_tokens": defaultSummaryMaxOutputTokens,
         ]
-        body[chatCompletionsTokenKey(model: model, url: url)] = defaultSummaryMaxOutputTokens
         let data = try await postJSON(
             url: url,
             apiKey: apiKey,
@@ -1449,6 +1440,11 @@ enum CLISummaryClient {
     private static func send(request: URLRequest, backend: String) async throws -> Data {
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            if backend == "Custom LLM" {
+                throw CLISummaryError.backendFailed(
+                    "Custom LLM summary failed with HTTP \(http.statusCode)."
+                )
+            }
             let message = extractErrorMessage(from: data)
                 ?? String(data: data, encoding: .utf8)
                 ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
@@ -1520,9 +1516,5 @@ enum CLISummaryClient {
             return pathParts.count >= suffixParts.count && pathParts.last == "messages"
         }
         return false
-    }
-
-    private static func resolveAPIKey(staticKey: String, command: String) async throws -> String {
-        try await CredentialCommandRunner.resolve(command: command, fallback: staticKey)
     }
 }

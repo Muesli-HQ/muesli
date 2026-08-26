@@ -64,9 +64,10 @@ public enum CredentialCommandRunner {
         }
 
         let waitResult = waitForProcess(spawned.processIdentifier, timeout: timeout)
-        if waitResult.timedOut {
-            terminateProcessGroup(spawned.processIdentifier)
-        }
+        terminateProcessGroup(
+            spawned.processIdentifier,
+            reapLeader: waitResult.timedOut
+        )
         spawned.stdout.finishAfterProcessExit()
 
         if waitResult.timedOut {
@@ -190,7 +191,7 @@ public enum CredentialCommandRunner {
         return WaitResult(exitCode: -1, timedOut: true)
     }
 
-    private static func terminateProcessGroup(_ processIdentifier: pid_t) {
+    private static func terminateProcessGroup(_ processIdentifier: pid_t, reapLeader: Bool = true) {
         guard processIdentifier > 0 else { return }
         let processGroup = -processIdentifier
         kill(processGroup, SIGTERM)
@@ -207,8 +208,10 @@ public enum CredentialCommandRunner {
             kill(processGroup, SIGKILL)
         }
 
-        var status: Int32 = 0
-        while waitpid(processIdentifier, &status, 0) == -1, errno == EINTR {}
+        if reapLeader {
+            var status: Int32 = 0
+            while waitpid(processIdentifier, &status, 0) == -1, errno == EINTR {}
+        }
     }
 
     private static func exitCode(from waitStatus: Int32) -> Int32 {

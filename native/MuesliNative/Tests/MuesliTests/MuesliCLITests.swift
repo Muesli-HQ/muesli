@@ -99,7 +99,6 @@ struct MuesliCLITests {
         #expect(cliConfig.meetingSummaryBackend == "custom_llm")
         #expect(cliConfig.customLLMURL == "https://gateway.example.com/v1")
         #expect(cliConfig.customLLMAPIKey == "static-key")
-        #expect(cliConfig.customLLMAPIKeyCommand == "/usr/local/bin/credential-helper")
         #expect(cliConfig.customLLMHeaders.map(\.name) == ["source"])
         #expect(cliConfig.customLLMHeaders.map(\.value) == ["muesli"])
         #expect(cliConfig.customLLMModel == "custom-model")
