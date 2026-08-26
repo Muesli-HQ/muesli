@@ -1347,6 +1347,8 @@ public final class MuesliController: NSObject {
         indicator.setMeetingRecordingPaused(appState.isMeetingRecordingPaused, config: config)
         appState.isChatGPTAuthenticated = chatGPTAuth.isAuthenticated
         appState.isOpenRouterAuthenticated = openRouterAuth.isAuthenticated
+        appState.isOpenRouterEnvironmentManaged = openRouterAuth.hasEnvironmentCredential
+        appState.hasStoredOpenRouterCredential = openRouterAuth.hasStoredCredential
         appState.isGoogleCalendarAvailable = googleCalAuth.isAvailable
         appState.isGoogleCalendarVerified = googleCalAuth.isVerified
         appState.isGoogleCalendarAuthenticated = googleCalAuth.isAuthenticated
@@ -1625,6 +1627,8 @@ public final class MuesliController: NSObject {
         appState.config = config
         appState.isChatGPTAuthenticated = chatGPTAuth.isAuthenticated
         appState.isOpenRouterAuthenticated = openRouterAuth.isAuthenticated
+        appState.isOpenRouterEnvironmentManaged = openRouterAuth.hasEnvironmentCredential
+        appState.hasStoredOpenRouterCredential = openRouterAuth.hasStoredCredential
         syncCalendarMonitor()
         syncMeetingDetectionMonitor()
         updateMeetingNotificationVisibility()
@@ -3303,8 +3307,18 @@ public final class MuesliController: NSObject {
         }
     }
 
-    func signOutOpenRouter() {
-        openRouterAuth.signOut()
+    func signOutOpenRouter() -> String? {
+        do {
+            try openRouterAuth.signOut()
+        } catch {
+            syncAppState()
+            return error.localizedDescription
+        }
+
+        guard !openRouterAuth.isAuthenticated else {
+            syncAppState()
+            return nil
+        }
 
         if selectedMeetingSummaryBackend == .openRouter {
             // Match ChatGPT sign-out: move summaries to the existing API-key fallback.
@@ -3322,6 +3336,7 @@ public final class MuesliController: NSObject {
             }
         }
         syncAppState()
+        return nil
     }
 
     func manageOpenRouterKey() {

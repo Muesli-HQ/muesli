@@ -15,6 +15,7 @@ enum OpenRouterAuthError: Error, LocalizedError, Equatable {
     case keyExchangeFailed(statusCode: Int?)
     case invalidKeyExchangeResponse
     case credentialStorageFailed
+    case credentialDeletionFailed
 
     var errorDescription: String? {
         switch self {
@@ -41,6 +42,8 @@ enum OpenRouterAuthError: Error, LocalizedError, Equatable {
             return "OpenRouter key exchange returned an invalid response"
         case .credentialStorageFailed:
             return "Could not store the OpenRouter credential"
+        case .credentialDeletionFailed:
+            return "Could not remove the local OpenRouter credential"
         }
     }
 }
@@ -133,26 +136,38 @@ final class OpenRouterAuthManager {
     private let credentialStore: OpenRouterCredentialStore
     private let loadData: (URLRequest) async throws -> (Data, URLResponse)
     private let openURL: (URL) -> Bool
+    private let environment: () -> [String: String]
+    private let deleteCredential: () throws -> Void
 
     init(
         credentialStore: OpenRouterCredentialStore = OpenRouterCredentialStore(),
         loadData: @escaping (URLRequest) async throws -> (Data, URLResponse) = {
             try await URLSession.shared.data(for: $0)
         },
-        openURL: @escaping (URL) -> Bool = { NSWorkspace.shared.open($0) }
+        openURL: @escaping (URL) -> Bool = { NSWorkspace.shared.open($0) },
+        environment: @escaping () -> [String: String] = { ProcessInfo.processInfo.environment },
+        deleteCredential: (() throws -> Void)? = nil
     ) {
         self.credentialStore = credentialStore
         self.loadData = loadData
         self.openURL = openURL
+        self.environment = environment
+        self.deleteCredential = deleteCredential ?? { try credentialStore.delete() }
+    }
+
+    var hasEnvironmentCredential: Bool {
+        let key = environment()["OPENROUTER_API_KEY"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return !key.isEmpty
+    }
+
+    var hasStoredCredential: Bool {
+        guard let credential = try? credentialStore.load() else { return false }
+        return !credential.apiKey.isEmpty
     }
 
     var isAuthenticated: Bool {
-        do {
-            guard let credential = try credentialStore.load() else { return false }
-            return !credential.apiKey.isEmpty
-        } catch {
-            return false
-        }
+        hasEnvironmentCredential || hasStoredCredential
     }
 
     func credential() throws -> OpenRouterCredential {
@@ -183,13 +198,11 @@ final class OpenRouterAuthManager {
 
     /// Removes only Muesli's local credential. The user-controlled key remains
     /// active at OpenRouter until the user deletes it from OpenRouter's key page.
-    func signOut() {
+    func signOut() throws {
         do {
-            try credentialStore.delete()
+            try deleteCredential()
         } catch {
-            // Sign-out has local-only semantics. Avoid reflecting file paths or
-            // credential material into logs; the next state sync will still
-            // accurately report whether a credential remains.
+            throw OpenRouterAuthError.credentialDeletionFailed
         }
     }
 
@@ -213,8 +226,12 @@ final class OpenRouterAuthManager {
     }
 
     var manageKeyURL: URL? {
-        guard let credential = try? credential() else { return nil }
-        return Self.manageKeyURL(for: credential.apiKey)
+        let apiKey = OpenRouterCredentialResolver.resolvedAPIKey(
+            environment: environment(),
+            credentialStore: credentialStore
+        )
+        guard !apiKey.isEmpty else { return nil }
+        return Self.manageKeyURL(for: apiKey)
     }
 
     nonisolated static func manageKeyURL(for apiKey: String) -> URL {

@@ -2207,59 +2207,79 @@ struct SettingsView: View {
         selectMeetingSummaryBackend: Bool = true
     ) -> some View {
         if appState.isOpenRouterAuthenticated {
-            HStack(spacing: 0) {
-                HStack(spacing: 4) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(MuesliTheme.success)
-                    Text("Connected")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(MuesliTheme.textSecondary)
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 0) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(MuesliTheme.success)
+                        Text(appState.isOpenRouterEnvironmentManaged ? "Environment key" : "Connected")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(MuesliTheme.textSecondary)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                Divider()
-                    .background(MuesliTheme.surfaceBorder)
-                    .padding(.vertical, 5)
+                    Divider()
+                        .background(MuesliTheme.surfaceBorder)
+                        .padding(.vertical, 5)
 
-                Button {
-                    controller.manageOpenRouterKey()
-                } label: {
-                    Text("Manage key")
-                        .font(.system(size: 10))
-                        .foregroundStyle(MuesliTheme.textSecondary)
+                    Button {
+                        controller.manageOpenRouterKey()
+                    } label: {
+                        Text("Manage key")
+                            .font(.system(size: 10))
+                            .foregroundStyle(MuesliTheme.textSecondary)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .help("Manage this key at OpenRouter")
+
+                    Divider()
+                        .background(MuesliTheme.surfaceBorder)
+                        .padding(.vertical, 5)
+
+                    if appState.hasStoredOpenRouterCredential {
+                        Button {
+                            openRouterSignInError = controller.signOutOpenRouter()
+                            if openRouterSignInError == nil && !appState.isOpenRouterAuthenticated {
+                                isUsingCustomOpenRouterModel = false
+                            }
+                        } label: {
+                            Text(appState.isOpenRouterEnvironmentManaged ? "Forget local" : "Disconnect")
+                                .font(.system(size: 10))
+                                .foregroundStyle(MuesliTheme.textSecondary)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .contentShape(Rectangle())
+                        .help("Remove Muesli's local copy of this OpenRouter key")
+                    } else {
+                        Text("Managed externally")
+                            .font(.system(size: 10))
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .lineLimit(1)
+                    }
                 }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .help("Manage this key at OpenRouter")
+                .frame(height: 24)
+                .background(MuesliTheme.surfacePrimary)
+                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                .overlay(
+                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                        .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                )
 
-                Divider()
-                    .background(MuesliTheme.surfaceBorder)
-                    .padding(.vertical, 5)
-
-                Button {
-                    controller.signOutOpenRouter()
-                } label: {
-                    Text("Disconnect")
+                if let openRouterSignInError {
+                    Text(openRouterSignInError)
                         .font(.system(size: 10))
-                        .foregroundStyle(MuesliTheme.textSecondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .contentShape(Rectangle())
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
                 }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .help("Remove Muesli's local copy of this OpenRouter key")
             }
-            .frame(height: 24)
-            .background(MuesliTheme.surfacePrimary)
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-            .overlay(
-                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-            )
         } else if isSigningInOpenRouter {
             HStack(spacing: 6) {
                 ProgressView()
@@ -2615,18 +2635,28 @@ struct SettingsView: View {
                     "System Audio",
                     granted: systemAudioGranted,
                     action: {
+                        guard !isCheckingSystemAudioPermission else { return }
+                        isCheckingSystemAudioPermission = true
                         Task { @MainActor in
+                            defer { isCheckingSystemAudioPermission = false }
                             systemAudioGranted = await CoreAudioSystemRecorder.requestSystemAudioAccess()
                         }
                     },
-                    pane: "Privacy_ScreenCapture"
+                    pane: "Privacy_ScreenCapture",
+                    isBusy: isCheckingSystemAudioPermission
                 )
             }
         }
     }
 
     @ViewBuilder
-    private func permissionStatusRow(_ name: String, granted: Bool, action: @escaping () -> Void, pane: String) -> some View {
+    private func permissionStatusRow(
+        _ name: String,
+        granted: Bool,
+        action: @escaping () -> Void,
+        pane: String,
+        isBusy: Bool = false
+    ) -> some View {
         HStack {
             HStack(spacing: 8) {
                 Circle()
@@ -2642,9 +2672,10 @@ struct SettingsView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(MuesliTheme.success)
             } else {
-                Button("Grant") {
+                Button(isBusy ? "Checking…" : "Grant") {
                     action()
                 }
+                .disabled(isBusy)
                 .buttonStyle(.plain)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(MuesliTheme.accent)
@@ -3564,7 +3595,7 @@ struct SettingsView: View {
                     isUsingCustomOpenRouterModel = false
                     let selectedID = openRouterFreeModels[index].id
                     controller.updateConfig {
-                        $0.openRouterModel = selectedID == openRouterFreeModels.first?.id ? "" : selectedID
+                        $0.openRouterModel = OpenRouterModelSelection.persistedModelID(for: selectedID)
                     }
                 }
             )

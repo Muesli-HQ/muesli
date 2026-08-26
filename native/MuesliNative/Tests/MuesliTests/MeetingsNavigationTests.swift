@@ -4,6 +4,10 @@ import Foundation
 import MuesliCore
 @testable import MuesliNativeApp
 
+private enum OpenRouterDisconnectTestError: Error {
+    case expected
+}
+
 @MainActor
 @Suite("Meetings navigation")
 struct MeetingsNavigationTests {
@@ -1283,7 +1287,8 @@ struct MeetingsNavigationTests {
         let openRouterAuth = OpenRouterAuthManager(
             credentialStore: credentialStore,
             loadData: { _ in throw URLError(.unsupportedURL) },
-            openURL: { _ in false }
+            openURL: { _ in false },
+            environment: { [:] }
         )
         try openRouterAuth.storeManualAPIKey("sk-or-v1-test")
         let controller = MuesliController(
@@ -1303,7 +1308,7 @@ struct MeetingsNavigationTests {
             $0.quilModel = "openai/gpt-5.4"
         }
 
-        controller.signOutOpenRouter()
+        #expect(controller.signOutOpenRouter() == nil)
 
         #expect(!openRouterAuth.isAuthenticated)
         #expect(controller.selectedMeetingSummaryBackend == .openAI)
@@ -1317,6 +1322,83 @@ struct MeetingsNavigationTests {
         #expect(persisted.meetingSummaryBackend == MeetingSummaryBackendOption.openAI.backend)
         #expect(persisted.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
         #expect(persisted.quilBackend == TranscriptCleanupBackendOption.local.backend)
+    }
+
+    @Test("failed OpenRouter credential deletion preserves provider selections")
+    func failedOpenRouterDisconnectPreservesSelections() throws {
+        let supportDirectory = makeSupportDirectory()
+        let configStore = ConfigStore(supportDirectory: supportDirectory)
+        let credentialStore = OpenRouterCredentialStore(supportDirectory: supportDirectory)
+        try credentialStore.save(OpenRouterCredential(apiKey: "sk-or-v1-retained", userID: nil))
+        let openRouterAuth = OpenRouterAuthManager(
+            credentialStore: credentialStore,
+            loadData: { _ in throw URLError(.unsupportedURL) },
+            openURL: { _ in false },
+            environment: { [:] },
+            deleteCredential: { throw OpenRouterDisconnectTestError.expected }
+        )
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            configStore: configStore,
+            openRouterAuth: openRouterAuth
+        )
+        controller.updateConfig {
+            $0.meetingSummaryBackend = MeetingSummaryBackendOption.openRouter.backend
+            $0.postProcessorBackend = LLMBackendOption.openRouter.backend
+            $0.quilBackend = LLMBackendOption.openRouter.backend
+        }
+
+        let error = controller.signOutOpenRouter()
+
+        #expect(error == OpenRouterAuthError.credentialDeletionFailed.errorDescription)
+        #expect(openRouterAuth.isAuthenticated)
+        #expect(controller.selectedMeetingSummaryBackend == .openRouter)
+        #expect(controller.selectedPostProcessorBackend == .hosted(.openRouter))
+        #expect(controller.config.quilBackend == LLMBackendOption.openRouter.backend)
+    }
+
+    @Test("environment OpenRouter credential survives local disconnect without resetting providers")
+    func environmentOpenRouterCredentialPreservesSelections() throws {
+        let supportDirectory = makeSupportDirectory()
+        let configStore = ConfigStore(supportDirectory: supportDirectory)
+        let credentialStore = OpenRouterCredentialStore(supportDirectory: supportDirectory)
+        let openRouterAuth = OpenRouterAuthManager(
+            credentialStore: credentialStore,
+            loadData: { _ in throw URLError(.unsupportedURL) },
+            openURL: { _ in false },
+            environment: { ["OPENROUTER_API_KEY": "sk-or-v1-environment"] }
+        )
+        try openRouterAuth.storeManualAPIKey("sk-or-v1-local")
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            configStore: configStore,
+            openRouterAuth: openRouterAuth
+        )
+        controller.updateConfig {
+            $0.meetingSummaryBackend = MeetingSummaryBackendOption.openRouter.backend
+            $0.postProcessorBackend = LLMBackendOption.openRouter.backend
+            $0.quilBackend = LLMBackendOption.openRouter.backend
+        }
+
+        #expect(controller.signOutOpenRouter() == nil)
+
+        #expect(openRouterAuth.isAuthenticated)
+        #expect(openRouterAuth.hasEnvironmentCredential)
+        #expect(!openRouterAuth.hasStoredCredential)
+        #expect(controller.appState.isOpenRouterEnvironmentManaged)
+        #expect(controller.selectedMeetingSummaryBackend == .openRouter)
+        #expect(controller.selectedPostProcessorBackend == .hosted(.openRouter))
+        #expect(controller.config.quilBackend == LLMBackendOption.openRouter.backend)
     }
 
     @Test("startup repairs a persisted Gemma dictation and cleanup conflict")

@@ -714,6 +714,18 @@ struct SummaryModelPresetTests {
         #expect(menuPresets.count == SummaryModelPreset.openRouterModels.count)
     }
 
+    @Test("OpenRouter catalog selections always persist their exact model ID")
+    func openRouterCatalogSelectionPersistsModelID() {
+        let dynamicFirstModel = "provider/dynamic-first-model:free"
+
+        #expect(
+            OpenRouterModelSelection.persistedModelID(for: dynamicFirstModel) == dynamicFirstModel
+        )
+        #expect(
+            OpenRouterModelSelection.persistedModelID(for: "  \(dynamicFirstModel)  ") == dynamicFirstModel
+        )
+    }
+
     @Test("OpenRouter catalog filters free text generation models")
     func openRouterCatalogFiltersFreeTextModels() throws {
         let payload = """

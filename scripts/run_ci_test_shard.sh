@@ -25,6 +25,7 @@ case "${shard}" in
       ChatGPTResponsesTransportTests
       ChatGPTTokenStorageTests
       OpenRouterAuthTests
+      SettingsPermissionRefreshReasonTests
       FloatingIndicatorVisibilityTests
       IndicatorFrameSizeTests
       WindowAppearanceTests

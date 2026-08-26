@@ -8,6 +8,7 @@ struct SettingsPermissionRefreshReasonTests {
         #expect(SettingsPermissionRefreshReason.periodicPoll.refreshesSystemAudio == false)
         #expect(SettingsPermissionRefreshReason.periodicPoll.refreshesLaunchAtLogin == false)
         #expect(SettingsPermissionRefreshReason.permissionRequested.refreshesSystemAudio == false)
+        #expect(SettingsPermissionRefreshReason.permissionRequested.refreshesLaunchAtLogin == false)
     }
 
     @Test("settings lifecycle boundaries refresh system-audio permission")

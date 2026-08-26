@@ -168,14 +168,51 @@ struct OpenRouterAuthTests {
         let auth = OpenRouterAuthManager(
             credentialStore: store,
             loadData: openRouterUnusedLoader,
-            openURL: { _ in false }
+            openURL: { _ in false },
+            environment: { [:] }
         )
         let manageURL = auth.manageKeyURL
-        auth.signOut()
+        try auth.signOut()
 
         #expect(manageURL == OpenRouterAuthManager.manageKeyURL(for: credential.apiKey))
         #expect(!auth.isAuthenticated)
         #expect(!FileManager.default.fileExists(atPath: store.fileURL.path))
+    }
+
+    @Test("sign-out reports deletion failure and preserves authentication")
+    @MainActor
+    func signOutDeletionFailure() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-openrouter-delete-failure-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = OpenRouterCredentialStore(supportDirectory: root)
+        try store.save(OpenRouterCredential(apiKey: "sk-or-v1-retained", userID: nil))
+        let auth = OpenRouterAuthManager(
+            credentialStore: store,
+            loadData: openRouterUnusedLoader,
+            openURL: { _ in false },
+            environment: { [:] },
+            deleteCredential: { throw OpenRouterDeletionTestError.expected }
+        )
+
+        #expect(throws: OpenRouterAuthError.credentialDeletionFailed) {
+            try auth.signOut()
+        }
+        #expect(auth.isAuthenticated)
+        #expect(try store.load()?.apiKey == "sk-or-v1-retained")
+    }
+
+    @Test("environment credentials are authenticated and managed explicitly")
+    @MainActor
+    func environmentCredentialState() {
+        let auth = makeAuth(environment: { ["OPENROUTER_API_KEY": "  sk-or-v1-environment  "] })
+
+        #expect(auth.hasEnvironmentCredential)
+        #expect(!auth.hasStoredCredential)
+        #expect(auth.isAuthenticated)
+        #expect(
+            auth.manageKeyURL == OpenRouterAuthManager.manageKeyURL(for: "sk-or-v1-environment")
+        )
     }
 
     @Test("manage-key URL is the lowercase SHA256 key hash")
@@ -195,7 +232,8 @@ struct OpenRouterAuthTests {
         let auth = OpenRouterAuthManager(
             credentialStore: OpenRouterCredentialStore(supportDirectory: root),
             loadData: openRouterUnusedLoader,
-            openURL: { _ in false }
+            openURL: { _ in false },
+            environment: { [:] }
         )
 
         #expect(auth.resolvedAPIKey(environment: ["OPENROUTER_API_KEY": " env-key "]) == "env-key")
@@ -207,17 +245,23 @@ struct OpenRouterAuthTests {
 
     @MainActor
     private func makeAuth(
-        loadData: @escaping (URLRequest) async throws -> (Data, URLResponse) = openRouterUnusedLoader
+        loadData: @escaping (URLRequest) async throws -> (Data, URLResponse) = openRouterUnusedLoader,
+        environment: @escaping () -> [String: String] = { [:] }
     ) -> OpenRouterAuthManager {
         let supportDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("unused-openrouter-auth-\(UUID().uuidString)", isDirectory: true)
         return OpenRouterAuthManager(
             credentialStore: OpenRouterCredentialStore(supportDirectory: supportDirectory),
             loadData: loadData,
-            openURL: { _ in false }
+            openURL: { _ in false },
+            environment: environment
         )
     }
 
+}
+
+private enum OpenRouterDeletionTestError: Error {
+    case expected
 }
 
 private func openRouterUnusedLoader(_ request: URLRequest) async throws -> (Data, URLResponse) {

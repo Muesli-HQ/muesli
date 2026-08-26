@@ -200,6 +200,8 @@ final class AppState {
     var isVoiceNoteRecording: Bool = false
     var isChatGPTAuthenticated: Bool = false
     var isOpenRouterAuthenticated: Bool = false
+    var isOpenRouterEnvironmentManaged: Bool = false
+    var hasStoredOpenRouterCredential: Bool = false
     var isGoogleCalendarAvailable: Bool = false
     var isGoogleCalendarVerified: Bool = false
     var isGoogleCalendarAuthenticated: Bool = false
