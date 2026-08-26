@@ -3359,11 +3359,14 @@ public final class MuesliController: NSObject {
         syncAppState()
     }
 
-    /// Refresh the EventKit-available calendars list. Cheap (no network), safe
-    /// to call frequently — driven by Settings panel onAppear and by the
-    /// EKEventStoreChangedNotification handler.
-    func refreshAvailableEventKitCalendars() {
-        appState.availableEventKitCalendars = calendarMonitor.availableCalendars()
+    /// Refresh the EventKit-available calendars list without making the main
+    /// actor wait for EventKit's synchronous calendar-store enumeration.
+    func refreshAvailableEventKitCalendars() async {
+        let calendars = await Task.detached(priority: .utility) {
+            CalendarMonitor.availableCalendars()
+        }.value
+        guard !Task.isCancelled else { return }
+        appState.availableEventKitCalendars = calendars
     }
 
     /// Refresh the Google calendar list via the Calendar API. No-op when OAuth
@@ -3518,7 +3521,7 @@ public final class MuesliController: NSObject {
         calendarMonitor.onCalendarChanged = { [weak self] in
             guard let self else { return }
             Task { @MainActor in
-                self.refreshAvailableEventKitCalendars()
+                await self.refreshAvailableEventKitCalendars()
                 let refreshed = await self.refreshUpcomingCalendarEvents()
                 guard refreshed else { return }
                 await self.reconcilePendingEventKitCalendarAttendees(
@@ -3540,7 +3543,7 @@ public final class MuesliController: NSObject {
             guard let self else { return }
             Task { @MainActor in
                 self.calendarMonitor.start()
-                self.refreshAvailableEventKitCalendars()
+                await self.refreshAvailableEventKitCalendars()
                 let refreshed = await self.refreshUpcomingCalendarEvents()
                 guard refreshed else { return }
                 self.checkUpcomingCalendarNotifications()
@@ -3551,7 +3554,7 @@ public final class MuesliController: NSObject {
         // Run one initial reconciliation so changes made while Muesli was not
         // running are reflected without waiting for another EventKit change.
         Task { @MainActor in
-            self.refreshAvailableEventKitCalendars()
+            await self.refreshAvailableEventKitCalendars()
             let refreshed = await self.refreshUpcomingCalendarEvents()
             guard refreshed else { return }
             await self.reconcilePendingEventKitCalendarAttendees(

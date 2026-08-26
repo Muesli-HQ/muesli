@@ -3134,19 +3134,20 @@ struct SettingsView: View {
     }
 
     private var calendarSourcesControl: some View {
-        VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
+        let sourceGroups = calendarSourceGroups
+        return VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
             Text("Calendar sources are listed first, with their calendars underneath. Disabled calendars are hidden from Muesli — no notifications, no Coming Up, no meeting detection.")
                 .font(MuesliTheme.caption())
                 .foregroundStyle(MuesliTheme.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            if calendarSourceGroups.isEmpty {
+            if sourceGroups.isEmpty {
                 Text("No calendars detected. Make sure Calendar permission is granted in System Settings > Privacy & Security > Calendars.")
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                ForEach(calendarSourceGroups) { group in
+                ForEach(sourceGroups) { group in
                     calendarSourceGroupView(group)
                 }
             }
@@ -3285,8 +3286,11 @@ struct SettingsView: View {
     private func refreshMeetingCalendarSourcesIfNeeded() {
         guard !hasRefreshedMeetingCalendarSources else { return }
         hasRefreshedMeetingCalendarSources = true
-        controller.refreshAvailableEventKitCalendars()
-        Task { await controller.refreshGoogleCalendarList() }
+        Task {
+            async let eventKitRefresh: Void = controller.refreshAvailableEventKitCalendars()
+            async let googleRefresh: Void = controller.refreshGoogleCalendarList()
+            _ = await (eventKitRefresh, googleRefresh)
+        }
     }
 
     private func updateDisabledCalendar(_ calendarID: String, isDisabled: Bool) {
