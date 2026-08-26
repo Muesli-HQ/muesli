@@ -159,7 +159,6 @@ struct QuilTransformationTests {
     func localModelCapability() {
         for model in [
             PostProcessorOption.s1Mini,
-            PostProcessorOption.finetunedV2,
             PostProcessorOption.finetunedV3,
         ] {
             #expect(throws: QuilTransformationError.unsupportedModel) {

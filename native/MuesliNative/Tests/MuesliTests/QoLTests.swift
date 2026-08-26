@@ -147,11 +147,11 @@ struct FloatingIndicatorVisibilityTests {
     func postProcessorRoundTrip() throws {
         var config = AppConfig()
         config.enablePostProcessor = true
-        config.activePostProcessorId = PostProcessorOption.finetunedV2.id
+        config.activePostProcessorId = PostProcessorOption.finetunedV3.id
         let data = try JSONEncoder().encode(config)
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
         #expect(decoded.enablePostProcessor == true)
-        #expect(decoded.activePostProcessorId == PostProcessorOption.finetunedV2.id)
+        #expect(decoded.activePostProcessorId == PostProcessorOption.finetunedV3.id)
     }
 
     @Test("post processor decodes from snake_case JSON")
