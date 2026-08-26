@@ -19,6 +19,27 @@ private struct MicrophoneOption: Identifiable {
     var id: String { uid ?? "__automatic__" }
 }
 
+enum SettingsPermissionRefreshReason {
+    case initialDisplay
+    case periodicPoll
+    case permissionRequested
+    case settingsSelected
+    case appActivated
+
+    var refreshesLaunchAtLogin: Bool {
+        self == .appActivated
+    }
+
+    var refreshesSystemAudio: Bool {
+        switch self {
+        case .initialDisplay, .settingsSelected, .appActivated:
+            true
+        case .periodicPoll, .permissionRequested:
+            false
+        }
+    }
+}
+
 struct ICloudLinkedDevicePresentation: Equatable {
     let name: String
     let platformLabel: String
@@ -435,7 +456,7 @@ struct SettingsView: View {
                     selectedPane = appState.selectedSettingsPane
                     refreshDownloadedModelOptions()
                     refreshAudioInputDevices()
-                    refreshPermissionStatuses()
+                    refreshPermissionStatuses(for: .settingsSelected)
                 }
             }
             .onChange(of: appState.selectedSettingsPane) { _, pane in
@@ -454,7 +475,7 @@ struct SettingsView: View {
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                 guard appState.selectedTab == .settings else { return }
                 refreshAudioInputDevices()
-                refreshPermissionStatuses(refreshLaunchAtLogin: true)
+                refreshPermissionStatuses(for: .appActivated)
             }
             .onChange(of: appState.selectedBackend) { _, _ in
                 refreshDownloadedModelOptions()
@@ -2581,7 +2602,9 @@ struct SettingsView: View {
                     "System Audio",
                     granted: systemAudioGranted,
                     action: {
-                        Task { await CoreAudioSystemRecorder.requestSystemAudioAccess() }
+                        Task { @MainActor in
+                            systemAudioGranted = await CoreAudioSystemRecorder.requestSystemAudioAccess()
+                        }
                     },
                     pane: "Privacy_ScreenCapture"
                 )
@@ -2673,7 +2696,7 @@ struct SettingsView: View {
         } else {
             Button {
                 _ = CGRequestScreenCaptureAccess()
-                refreshPermissionStatuses()
+                refreshPermissionStatuses(for: .permissionRequested)
             } label: {
                 Text("Grant")
                     .font(.system(size: 13, weight: .semibold))
@@ -2720,12 +2743,13 @@ struct SettingsView: View {
     }
 
     private func startPermissionPolling() {
-        // Startup already synchronizes this state. Querying SMAppService here can
-        // block the main thread long enough to make Settings appear unresponsive.
-        refreshPermissionStatuses()
+        // Keep the 1 Hz poll limited to cheap TCC snapshots. SMAppService can block
+        // the main thread, while probing system audio creates a CoreAudio process
+        // tap and can perturb the HAL. Refresh those only at lifecycle boundaries.
+        refreshPermissionStatuses(for: .initialDisplay)
         permissionPollTimer?.invalidate()
         let timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-            refreshPermissionStatuses()
+            refreshPermissionStatuses(for: .periodicPoll)
         }
         RunLoop.main.add(timer, forMode: .common)
         permissionPollTimer = timer
@@ -2736,13 +2760,13 @@ struct SettingsView: View {
         permissionPollTimer = nil
     }
 
-    private func refreshPermissionStatuses(refreshLaunchAtLogin: Bool = false) {
+    private func refreshPermissionStatuses(for reason: SettingsPermissionRefreshReason) {
         micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         accessibilityGranted = AXIsProcessTrusted()
         controller.reconcilePendingDictionaryCorrectionAccessibilityEnable()
         inputMonitoringGranted = CGPreflightListenEventAccess()
         screenRecordingGranted = CGPreflightScreenCaptureAccess()
-        if refreshLaunchAtLogin {
+        if reason.refreshesLaunchAtLogin {
             controller.refreshLaunchAtLoginState()
         }
         if accessibilityGranted && pendingScreenContextEnable {
@@ -2768,7 +2792,9 @@ struct SettingsView: View {
             accessibilityGranted: accessibilityGranted,
             inputMonitoringGranted: inputMonitoringGranted
         )
-        refreshSystemAudioPermissionIfNeeded()
+        if reason.refreshesSystemAudio {
+            refreshSystemAudioPermissionIfNeeded()
+        }
     }
 
     private var isPendingScreenContextGrantExpired: Bool {
