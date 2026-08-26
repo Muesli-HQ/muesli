@@ -235,6 +235,9 @@ public enum ManagedASRModelPlans {
             repository: "FluidInference/parakeet-tdt-0.6b-v3-coreml",
             directoryName: "parakeet-tdt-0.6b-v3",
             required: required,
+            mirror: muesliMirror(
+                "models/fluidaudio/parakeet-tdt-0.6b-v3/legacy-local-v1/manifest.json"
+            ),
             modelsRoot: modelsRoot
         )
     }
@@ -254,6 +257,9 @@ public enum ManagedASRModelPlans {
             repository: "FluidInference/parakeet-unified-en-0.6b-coreml",
             directoryName: "parakeet-unified-en-0.6b-coreml",
             required: required,
+            mirror: muesliMirror(
+                "models/fluidaudio/parakeet-unified-en-0.6b/legacy-local-v1/manifest.json"
+            ),
             modelsRoot: modelsRoot
         )
     }
@@ -342,8 +348,29 @@ public enum ManagedASRModelPlans {
                 remoteDirectory: fullName,
                 includedPaths: Set(requiredFiles)
             )],
-            requiredArtifactAlternatives: completenessRequirements(for: requiredFiles)
+            requiredArtifactAlternatives: completenessRequirements(for: requiredFiles),
+            mirror: whisperKitMirror(fullName: fullName)
         )
+    }
+
+    private static func muesliMirror(_ path: String) -> MuesliModelMirror {
+        MuesliModelMirror(manifestURL: URL(string: "https://assets.muesli.works/\(path)")!)
+    }
+
+    /// Only variants that Muesli has copied and checksum-pinned in R2 are
+    /// eligible for the first-party transport. Unknown WhisperKit paths keep
+    /// using the normal Hugging Face discovery flow.
+    private static func whisperKitMirror(fullName: String) -> MuesliModelMirror? {
+        let mirroredVariants: Set<String> = [
+            "openai_whisper-tiny",
+            "openai_whisper-tiny.en",
+            "openai_whisper-small",
+            "openai_whisper-small.en",
+            "openai_whisper-medium.en",
+            "openai_whisper-large-v3-v20240930_626MB",
+        ]
+        guard mirroredVariants.contains(fullName) else { return nil }
+        return muesliMirror("models/whisperkit/\(fullName)/legacy-local-v1/manifest.json")
     }
 
     private static func fluidAudioPlan(

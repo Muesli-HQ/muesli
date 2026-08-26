@@ -663,11 +663,37 @@ struct ModelDownloadCoordinatorTests {
         let parakeet = ManagedASRModelPlans.parakeetV2(modelsRoot: root)
         #expect(parakeet.mirror?.manifestURL.absoluteString == "https://assets.muesli.works/models/fluidaudio/parakeet-tdt-0.6b-v2/legacy-local-v1/manifest.json")
 
+        let parakeetV3 = ManagedASRModelPlans.parakeetV3(modelsRoot: root)
+        #expect(parakeetV3.mirror?.manifestURL.absoluteString == "https://assets.muesli.works/models/fluidaudio/parakeet-tdt-0.6b-v3/legacy-local-v1/manifest.json")
+
+        let unified = ManagedASRModelPlans.parakeetUnified(modelsRoot: root)
+        #expect(unified.mirror?.manifestURL.absoluteString == "https://assets.muesli.works/models/fluidaudio/parakeet-unified-en-0.6b/legacy-local-v1/manifest.json")
+
         let whisper = ManagedASRModelPlans.whisperKit(modelName: "tiny", downloadRoot: root)
         #expect(whisper.selections[0].includedPaths.contains("AudioEncoder.mlmodelc"))
         #expect(whisper.selections[0].includedPaths.contains("config.json"))
         #expect(whisper.selections[0].includedPaths.contains("generation_config.json"))
         #expect(!whisper.selections[0].includedPaths.contains("AudioEncoder.mlpackage"))
+        #expect(whisper.mirror?.manifestURL.absoluteString == "https://assets.muesli.works/models/whisperkit/openai_whisper-tiny/legacy-local-v1/manifest.json")
+    }
+
+    @Test("supported WhisperKit variants have immutable Muesli mirrors")
+    func mirroredWhisperKitVariants() {
+        let expectedPaths = [
+            "tiny": "openai_whisper-tiny",
+            "tiny.en": "openai_whisper-tiny.en",
+            "small": "openai_whisper-small",
+            "small.en": "openai_whisper-small.en",
+            "medium.en": "openai_whisper-medium.en",
+            "large-v3-v20240930_626MB": "openai_whisper-large-v3-v20240930_626MB",
+        ]
+
+        for (modelName, remoteDirectory) in expectedPaths {
+            let plan = ManagedASRModelPlans.whisperKit(modelName: modelName)
+            #expect(plan.mirror?.manifestURL.absoluteString == "https://assets.muesli.works/models/whisperkit/\(remoteDirectory)/legacy-local-v1/manifest.json")
+        }
+
+        #expect(ManagedASRModelPlans.whisperKit(modelName: "distil-large-v3").mirror == nil)
     }
 
     @Test("English-only Whisper checkpoints use their exact downloadable cache identities")
