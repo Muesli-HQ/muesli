@@ -151,7 +151,7 @@ struct ModelsView: View {
                 postProcModelToDelete = nil
             }
         } message: {
-            Text("The downloaded model files will be removed from this Mac. You can download the model again later.")
+            Text(postProcessorDeleteMessage)
         }
         .alert(
             "Delete \"\(MeetingLiveCaptionModelStore.label)\"?",
@@ -171,6 +171,13 @@ struct ModelsView: View {
             get: { appState.selectedModelsCategory },
             set: { appState.selectedModelsCategory = $0 }
         )
+    }
+
+    private var postProcessorDeleteMessage: String {
+        guard let option = postProcModelToDelete, !option.isDownloadable else {
+            return "The downloaded model files will be removed from this Mac. You can download the model again later."
+        }
+        return "The downloaded model files will be removed from this Mac. This legacy model is no longer available to download, so deleting it is permanent."
     }
 
     @ViewBuilder

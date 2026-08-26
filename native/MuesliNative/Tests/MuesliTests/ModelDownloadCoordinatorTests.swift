@@ -448,6 +448,90 @@ struct ModelDownloadCoordinatorTests {
         #expect(manifest.files[0].sha256 == sha256(data))
     }
 
+    @Test("Muesli mirror manifests reject an untrusted origin")
+    func muesliMirrorManifestRejectsUntrustedOrigin() async throws {
+        let resolver = MuesliModelMirrorManifestResolver(configuration: makeSessionConfiguration())
+
+        await #expect(throws: MuesliModelMirrorManifestError.self) {
+            try await resolver.resolve(
+                modelID: "acme/asr",
+                mirror: MuesliModelMirror(manifestURL: try #require(URL(string: "https://example.com/models/acme/asr/mirror-v1/manifest.json")))
+            )
+        }
+    }
+
+    @Test("Muesli mirror manifests reject unsafe entries")
+    func muesliMirrorManifestRejectsUnsafeEntries() async throws {
+        let manifestURL = try #require(URL(string: "https://assets.muesli.works/models/acme/asr/mirror-v1/manifest.json"))
+        let validSHA256 = String(repeating: "a", count: 64)
+        let cases: [(name: String, files: [[String: Any]])] = [
+            (
+                "path traversal",
+                [[
+                    "relativePath": "../escape.bin",
+                    "objectKey": "models/acme/asr/mirror-v1/files/escape.bin",
+                    "bytes": 1,
+                    "sha256": validSHA256,
+                ]]
+            ),
+            (
+                "cross-release object key",
+                [[
+                    "relativePath": "model.bin",
+                    "objectKey": "models/acme/other/mirror-v1/files/model.bin",
+                    "bytes": 1,
+                    "sha256": validSHA256,
+                ]]
+            ),
+            (
+                "invalid checksum",
+                [[
+                    "relativePath": "model.bin",
+                    "objectKey": "models/acme/asr/mirror-v1/files/model.bin",
+                    "bytes": 1,
+                    "sha256": "not-a-sha256",
+                ]]
+            ),
+            (
+                "duplicate path",
+                [
+                    [
+                        "relativePath": "model.bin",
+                        "objectKey": "models/acme/asr/mirror-v1/files/model.bin",
+                        "bytes": 1,
+                        "sha256": validSHA256,
+                    ],
+                    [
+                        "relativePath": "model.bin",
+                        "objectKey": "models/acme/asr/mirror-v1/files/second.bin",
+                        "bytes": 1,
+                        "sha256": validSHA256,
+                    ],
+                ]
+            ),
+        ]
+
+        for testCase in cases {
+            let manifestData = try JSONSerialization.data(withJSONObject: [
+                "format": "muesli-r2-model-manifest-v1",
+                "modelID": "acme/asr",
+                "version": "mirror-v1",
+                "files": testCase.files,
+            ])
+            ModelDownloadTestURLProtocol.install { _ in
+                ModelDownloadTestURLProtocol.Response(data: manifestData)
+            }
+            let resolver = MuesliModelMirrorManifestResolver(configuration: makeSessionConfiguration())
+            await #expect(throws: MuesliModelMirrorManifestError.self) {
+                try await resolver.resolve(
+                    modelID: "acme/asr",
+                    mirror: MuesliModelMirror(manifestURL: manifestURL)
+                )
+            }
+            ModelDownloadTestURLProtocol.uninstall()
+        }
+    }
+
     @Test("managed downloads prefer the Muesli mirror without contacting Hugging Face")
     func managedDownloadPrefersMuesliMirror() async throws {
         let root = try makeTemporaryDirectory()
@@ -1135,6 +1219,47 @@ struct ModelDownloadCoordinatorTests {
         }
         try await first.value
         #expect(tracker.requestCount == 1)
+    }
+
+    @Test("removal fails while a download owns the destination")
+    func removalFailsWhileDownloadIsActive() async throws {
+        let tracker = DownloadTestTracker()
+        ModelDownloadTestURLProtocol.install { _ in
+            ModelDownloadTestURLProtocol.Response(
+                data: Data(repeating: 0x42, count: 512 * 1024),
+                chunkSize: 4 * 1024,
+                delay: 0.002,
+                tracker: tracker
+            )
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let coordinator = makeCoordinator()
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let manifest = ModelDownloadManifest(
+            id: "active-removal",
+            version: "1",
+            files: [ModelDownloadFile(
+                relativePath: "model.bin",
+                remoteURL: try #require(URL(string: "https://example.com/model")),
+                expectedByteCount: 512 * 1024
+            )],
+            maximumConcurrency: 1
+        )
+        let task = Task { try await coordinator.download(manifest, to: directory) }
+        #expect(tracker.waitUntilRequestStarts())
+
+        await #expect(throws: ModelDownloadError.self) {
+            try await coordinator.removeDownload(manifest, at: directory)
+        }
+        await coordinator.cancelAndWait(modelID: manifest.id)
+        do {
+            try await task.value
+            Issue.record("Cancellation unexpectedly completed")
+        } catch is CancellationError {
+            // Expected.
+        }
     }
 
     @Test("cancelling one duplicate caller does not cancel the shared transfer")

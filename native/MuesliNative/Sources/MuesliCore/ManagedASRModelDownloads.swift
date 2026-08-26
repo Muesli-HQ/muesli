@@ -577,8 +577,9 @@ public enum ManagedASRModelDownloader {
                     // Never resume a mirror's partial bytes against a Hugging
                     // Face revision. The mirror manifest includes files that
                     // may not exist in the fallback manifest, so clean it
-                    // before resolving Hugging Face.
-                    try? await coordinator.removeDownload(
+                    // before resolving Hugging Face. If cleanup cannot
+                    // complete, fail closed rather than mixing revisions.
+                    try await coordinator.removeDownload(
                         failedMirrorManifest,
                         at: plan.cacheDirectory
                     )
