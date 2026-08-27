@@ -818,6 +818,7 @@ struct PostProcessorOption: Identifiable, Equatable {
     let downloadURL: URL
     let filename: String
     let inputFormat: InputFormat
+    let isDownloadable: Bool
 
     init(
         id: String,
@@ -826,7 +827,8 @@ struct PostProcessorOption: Identifiable, Equatable {
         description: String,
         downloadURL: URL,
         filename: String,
-        inputFormat: InputFormat = .configurable
+        inputFormat: InputFormat = .configurable,
+        isDownloadable: Bool = true
     ) {
         self.id = id
         self.label = label
@@ -835,6 +837,7 @@ struct PostProcessorOption: Identifiable, Equatable {
         self.downloadURL = downloadURL
         self.filename = filename
         self.inputFormat = inputFormat
+        self.isDownloadable = isDownloadable
     }
 
     var cacheDirectory: URL {
@@ -871,15 +874,17 @@ struct PostProcessorOption: Identifiable, Equatable {
         inputFormat != .s1Mini || transcriptionBackend != .indicASR
     }
 
-    // Fine-tuned Qwen3-0.6B trained on Muesli dictation correction data.
-    // HF repo must be public (or token-gated) before distributing alpha builds.
-    static let finetunedV2 = PostProcessorOption(
+    /// Retained only so existing installs keep working. This option is not in
+    /// the download catalogue; once its local cache is deleted, it cannot be
+    /// downloaded again.
+    static let legacyV2 = PostProcessorOption(
         id: "qwen3-postproc-v2",
         label: "Muesli Cleanup (Legacy)",
         sizeLabel: "~390 MB",
         description: "An earlier cleanup model for Muesli dictation. It handles filler words, corrections, and spoken lists, but is less consistent than the current model.",
         downloadURL: URL(string: "https://huggingface.co/phequals/qwen3-postproc-v2/resolve/main/qwen3-postproc-v2-q4_k_m.gguf")!,
-        filename: "qwen3-postproc-v2-q4_k_m.gguf"
+        filename: "qwen3-postproc-v2-q4_k_m.gguf",
+        isDownloadable: false
     )
 
     // Vanilla Qwen3.5-0.8B. Stable for basic cleanup; does not reliably convert spoken list cues.
@@ -912,12 +917,17 @@ struct PostProcessorOption: Identifiable, Equatable {
         inputFormat: .s1Mini
     )
 
-    static let all: [PostProcessorOption] = [.finetunedV3, .s1Mini, .finetunedV2, .qwen35_0_8b]
+    static let all: [PostProcessorOption] = [.finetunedV3, .s1Mini, .qwen35_0_8b]
     static let defaultOption: PostProcessorOption = .finetunedV3
     static let defaultQuilOption: PostProcessorOption = .qwen35_0_8b
 
+    /// Includes retired options that remain runnable when they are already
+    /// cached locally. Keep this separate from `all` so retired models never
+    /// appear as downloadable catalogue entries.
+    private static let knownOptions: [PostProcessorOption] = all + [.legacyV2]
+
     static var downloaded: [PostProcessorOption] {
-        all.filter(\.isDownloaded)
+        knownOptions.filter(\.isDownloaded)
     }
 
     static var downloadedIDs: Set<String> {
@@ -925,7 +935,7 @@ struct PostProcessorOption: Identifiable, Equatable {
     }
 
     static func resolve(id: String) -> PostProcessorOption {
-        all.first { $0.id == id } ?? defaultOption
+        knownOptions.first { $0.id == id } ?? defaultOption
     }
 
     static func firstDownloaded(excluding excludedID: String? = nil) -> PostProcessorOption? {
@@ -933,7 +943,7 @@ struct PostProcessorOption: Identifiable, Equatable {
     }
 
     static func firstDownloaded(excluding excludedID: String? = nil, downloadedIDs: Set<String>) -> PostProcessorOption? {
-        all.first { option in
+        knownOptions.first { option in
             option.id != excludedID && downloadedIDs.contains(option.id)
         }
     }

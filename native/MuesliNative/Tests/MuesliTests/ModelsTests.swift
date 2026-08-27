@@ -489,10 +489,22 @@ struct PostProcessorOptionTests {
         #expect(PostProcessorOption.resolve(id: "missing") == PostProcessorOption.defaultOption)
     }
 
+    @Test("cached legacy v2 remains runnable but is not downloadable")
+    func cachedLegacyV2RemainsRunnable() {
+        #expect(!PostProcessorOption.all.contains(PostProcessorOption.legacyV2))
+        #expect(!PostProcessorOption.legacyV2.isDownloadable)
+        #expect(PostProcessorOption.resolve(id: PostProcessorOption.legacyV2.id) == PostProcessorOption.legacyV2)
+        #expect(PostProcessorOption.runtimeOption(
+            id: PostProcessorOption.legacyV2.id,
+            downloadedIDs: [PostProcessorOption.legacyV2.id],
+            hasDevOverride: false
+        ) == PostProcessorOption.legacyV2)
+    }
+
     @Test("resolveDownloaded prefers selected downloaded option")
     func resolveDownloadedPrefersSelected() {
         let downloadedIDs: Set<String> = [
-            PostProcessorOption.finetunedV2.id,
+            PostProcessorOption.s1Mini.id,
             PostProcessorOption.qwen35_0_8b.id,
         ]
         #expect(PostProcessorOption.resolveDownloaded(
@@ -503,17 +515,17 @@ struct PostProcessorOptionTests {
 
     @Test("resolveDownloaded falls back to first downloaded option")
     func resolveDownloadedFallsBack() {
-        let downloadedIDs: Set<String> = [PostProcessorOption.finetunedV2.id]
+        let downloadedIDs: Set<String> = [PostProcessorOption.s1Mini.id]
         #expect(PostProcessorOption.resolveDownloaded(
             id: PostProcessorOption.finetunedV3.id,
             downloadedIDs: downloadedIDs
-        ) == PostProcessorOption.finetunedV2)
+        ) == PostProcessorOption.s1Mini)
     }
 
     @Test("runtimeOption prefers selected downloaded option")
     func runtimeOptionPrefersSelectedDownloadedOption() {
         let downloadedIDs: Set<String> = [
-            PostProcessorOption.finetunedV2.id,
+            PostProcessorOption.s1Mini.id,
             PostProcessorOption.qwen35_0_8b.id,
         ]
         #expect(PostProcessorOption.runtimeOption(
@@ -525,12 +537,12 @@ struct PostProcessorOptionTests {
 
     @Test("runtimeOption falls back to first downloaded option")
     func runtimeOptionFallsBackToFirstDownloadedOption() {
-        let downloadedIDs: Set<String> = [PostProcessorOption.finetunedV2.id]
+        let downloadedIDs: Set<String> = [PostProcessorOption.s1Mini.id]
         #expect(PostProcessorOption.runtimeOption(
             id: PostProcessorOption.finetunedV3.id,
             downloadedIDs: downloadedIDs,
             hasDevOverride: false
-        ) == PostProcessorOption.finetunedV2)
+        ) == PostProcessorOption.s1Mini)
     }
 
     @Test("runtimeOption accepts configured option with dev override")
@@ -555,12 +567,12 @@ struct PostProcessorOptionTests {
     func firstDownloadedExcludingDeleted() {
         let downloadedIDs: Set<String> = [
             PostProcessorOption.finetunedV3.id,
-            PostProcessorOption.finetunedV2.id,
+            PostProcessorOption.s1Mini.id,
         ]
         #expect(PostProcessorOption.firstDownloaded(
             excluding: PostProcessorOption.finetunedV3.id,
             downloadedIDs: downloadedIDs
-        ) == PostProcessorOption.finetunedV2)
+        ) == PostProcessorOption.s1Mini)
     }
 }
 
