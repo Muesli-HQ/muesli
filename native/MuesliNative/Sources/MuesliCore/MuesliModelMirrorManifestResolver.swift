@@ -73,6 +73,9 @@ public final class MuesliModelMirrorManifestResolver: @unchecked Sendable {
         }
 
         let (data, response) = try await session.data(from: mirror.manifestURL)
+        // See the Hugging Face resolver: a completed URLSession request does
+        // not by itself mean the enclosing model operation is still wanted.
+        try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse else {
             throw MuesliModelMirrorManifestError.invalidManifest(mirror.manifestURL)
         }
