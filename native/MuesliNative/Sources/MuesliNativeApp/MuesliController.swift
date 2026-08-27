@@ -2770,11 +2770,21 @@ public final class MuesliController: NSObject {
     }
 
     func selectBackend(_ option: BackendOption) {
+        selectBackend(option, makePrimaryDictationModel: false)
+    }
+
+    private func selectBackend(
+        _ option: BackendOption,
+        makePrimaryDictationModel: Bool
+    ) {
         let replacesGemmaCleanup = !selectedPostProcessorBackend.isCompatible(with: option)
         let hasLocalCleanupModel = PostProcessorOption.runtimeOption(id: config.activePostProcessorId) != nil
         updateConfig {
             $0.sttBackend = option.backend
             $0.sttModel = option.model
+            if makePrimaryDictationModel {
+                $0.dictationProvider = DictationProvider.local.rawValue
+            }
             if replacesGemmaCleanup {
                 $0.postProcessorBackend = TranscriptCleanupBackendOption.local.backend
                 if !hasLocalCleanupModel {
@@ -2817,12 +2827,17 @@ public final class MuesliController: NSObject {
 
     // MARK: - Dictation Provider (Local / OpenAI)
 
+    private func canChangePrimaryDictationModel() -> Bool {
+        guard !dictationAudioSessionManager.hasActiveSession, dictationStartedAt == nil else {
+            statusBarController?.setStatus("Finish the current dictation before changing models")
+            return false
+        }
+        return true
+    }
+
     func selectDictationProvider(_ provider: DictationProvider) {
         guard provider != selectedDictationProvider else { return }
-        guard !dictationAudioSessionManager.hasActiveSession, dictationStartedAt == nil else {
-            statusBarController?.setStatus("Finish the current dictation before changing providers")
-            return
-        }
+        guard canChangePrimaryDictationModel() else { return }
         updateConfig { $0.dictationProvider = provider.rawValue }
         if provider == .openAI {
             dictationBackendReadiness = .ready
@@ -4979,16 +4994,26 @@ public final class MuesliController: NSObject {
         }
     }
 
-    @objc func selectBackendFromMenu(_ sender: NSMenuItem) {
+    @objc func selectLocalDictationModelFromMenu(_ sender: NSMenuItem) {
         guard let label = sender.representedObject as? String,
               let option = BackendOption.all.first(where: { $0.label == label }) else { return }
-        selectBackend(option)
+        guard selectedDictationProvider != .local || selectedBackend != option else { return }
+        guard canChangePrimaryDictationModel() else { return }
+        selectBackend(option, makePrimaryDictationModel: true)
     }
 
-    @objc func selectDictationProviderFromMenu(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String,
-              let provider = DictationProvider(rawValue: raw) else { return }
-        selectDictationProvider(provider)
+    @objc func selectOpenAIDictationModelFromMenu(_ sender: NSMenuItem) {
+        guard let model = sender.representedObject as? String else { return }
+        let normalizedModel = OpenAITranscriptionClient.normalizeModel(model)
+        guard selectedDictationProvider != .openAI
+            || config.openaiDictationModel != normalizedModel else { return }
+        guard canChangePrimaryDictationModel() else { return }
+        updateConfig {
+            $0.dictationProvider = DictationProvider.openAI.rawValue
+            $0.openaiDictationModel = normalizedModel
+        }
+        dictationBackendReadiness = .ready
+        statusBarController?.refresh()
     }
 
     @objc func selectMeetingSummaryBackendFromMenu(_ sender: NSMenuItem) {
