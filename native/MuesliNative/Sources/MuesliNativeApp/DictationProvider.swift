@@ -2,7 +2,7 @@ import Foundation
 
 /// Selects which transcription engine handles dictation. Local models run on
 /// device via CoreML; OpenAI runs the user's own API key through the OpenAI
-/// audio transcriptions endpoint. The local model selection (`sttBackend` /
+/// Realtime transcription WebSocket. The local model selection (`sttBackend` /
 /// `sttModel`) is preserved so users can switch back and fall back at any time.
 enum DictationProvider: String, CaseIterable, Codable, Sendable {
     case local
@@ -25,7 +25,7 @@ enum DictationProvider: String, CaseIterable, Codable, Sendable {
         case .local:
             return "Runs on your Mac. Private, free, low latency."
         case .openAI:
-            return "Uses your OpenAI API key. Best accuracy for long-form dictation."
+            return "Streams audio over OpenAI Realtime using your API key."
         }
     }
 
@@ -36,9 +36,9 @@ enum DictationProvider: String, CaseIterable, Codable, Sendable {
         return provider
     }
 
-    /// Streaming is available only for local dictation. OpenAI uses the
-    /// recorded-audio transcription path even when a streaming-capable local
-    /// model remains selected for the next local session.
+    /// This flag is specifically for the local live-at-cursor backend. OpenAI
+    /// streams audio to its hosted service while retaining the normal recorder
+    /// lifecycle and final paste behavior.
     func usesStreamingBackend(_ backend: BackendOption) -> Bool {
         self == .local && backend.isStreamingDictationBackend
     }

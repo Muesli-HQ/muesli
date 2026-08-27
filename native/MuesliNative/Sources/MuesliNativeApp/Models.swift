@@ -143,19 +143,6 @@ struct BackendOption: Equatable {
         recommended: false
     )
 
-    /// OpenAI cloud dictation provider. The model is user-configurable, so this
-    /// is built dynamically at selection time rather than being a fixed static.
-    static func openAITranscription(model: String = OpenAITranscriptionClient.defaultModel) -> BackendOption {
-        BackendOption(
-            backend: "openai",
-            model: OpenAITranscriptionClient.normalizeModel(model),
-            label: "OpenAI",
-            sizeLabel: "Cloud",
-            description: "OpenAI Speech-to-Text using your own API key. Requires an OpenAI API key in Settings → Dictation.",
-            recommended: false
-        )
-    }
-
     static let gemma4E4BLiteRT = BackendOption(
         backend: "gemma4-litert",
         model: Gemma4LiteRTModel.e4b.repoID,

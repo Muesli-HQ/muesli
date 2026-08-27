@@ -226,7 +226,6 @@ struct SettingsView: View {
         self.appState = appState
         self.controller = controller
         _selectedPane = State(initialValue: appState.selectedSettingsPane)
-        _openAIDictationAPIKey = State(initialValue: controller.openAIDictationAPIKey())
     }
 
     // Uniform width for standard right-side controls.
@@ -1013,7 +1012,7 @@ struct SettingsView: View {
                 openAIDictationSettingsRows
                 Divider().background(MuesliTheme.surfaceBorder)
             }
-            settingsRow("Dictation model", controlWidth: meetingControlWidth) {
+            settingsRow(appState.dictationProvider == .openAI ? "Fallback model" : "Dictation model", controlWidth: meetingControlWidth) {
                 settingsMenu(
                     selection: appState.selectedBackend.label,
                     options: dictationBackendOptions.map(\.label),
@@ -1025,7 +1024,7 @@ struct SettingsView: View {
                 }
             }
             if appState.dictationProvider == .openAI {
-                settingsDescription("Local model used when Local is selected.")
+                settingsDescription("Used automatically if the Realtime connection fails.")
             }
             if !disabledDictationBackendLabels.isEmpty {
                 settingsDescription("Gemma 4 dictation is unavailable while Gemma 4 is the cleanup backend.")
@@ -1055,10 +1054,10 @@ struct SettingsView: View {
     private var openAIDictationSettingsRows: some View {
         settingsRow("API Key", controlWidth: meetingControlWidth) {
             PastableSecureField(
-                text: openAIDictationAPIKey,
+                text: appState.config.openAIAPIKey,
                 placeholder: "sk-...",
                 onChange: { val in
-                    openAIDictationAPIKey = val
+                    openAITestState = .idle
                     controller.setOpenAIDictationAPIKey(val)
                 }
             )

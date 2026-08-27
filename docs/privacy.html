@@ -128,7 +128,7 @@
   <h2>Data That Stays on Your Device</h2>
   <p>The following data is created and stored locally on your Mac. It is not transmitted to any external server unless you explicitly enable an optional cloud service described below:</p>
   <ul>
-    <li><strong>Audio recordings</strong> &mdash; microphone and system audio captured during dictation and meetings; dictation audio is sent directly to OpenAI only while the optional OpenAI dictation provider is selected</li>
+    <li><strong>Audio recordings</strong> &mdash; microphone and system audio captured during dictation and meetings; microphone audio is streamed directly to OpenAI only while the optional OpenAI dictation provider is selected</li>
     <li><strong>Transcripts and meeting notes</strong> &mdash; stored in a local SQLite database</li>
     <li><strong>Configuration and preferences</strong> &mdash; stored in a local JSON file</li>
     <li><strong>Speech-to-text models</strong> &mdash; downloaded once from public model repositories (HuggingFace) and cached locally</li>
@@ -137,7 +137,7 @@
   <h2>Optional Cloud Services</h2>
   <p>Muesli offers optional integrations that connect to external services. These are opt-in and require explicit user action:</p>
   <ul>
-    <li><strong>OpenAI dictation (OpenAI API)</strong> &mdash; if you select OpenAI as your dictation provider and add your own API key, the recorded dictation audio is sent directly to OpenAI's transcription API. OpenAI's API data controls explain how API data is used, retained, and excluded from model training by default; see <a href="https://platform.openai.com/docs/models/default-usage-policies-by-endpoint">OpenAI's API data-controls documentation</a> for the current retention and data-sharing settings.</li>
+    <li><strong>OpenAI dictation (OpenAI API)</strong> &mdash; if you select OpenAI as your dictation provider and add your own API key, microphone audio is streamed directly to OpenAI's Realtime transcription API. OpenAI's API data controls explain how API data is used, retained, and excluded from model training by default; see <a href="https://platform.openai.com/docs/models/default-usage-policies-by-endpoint">OpenAI's API data-controls documentation</a> for the current retention and data-sharing settings.</li>
     <li><strong>Meeting summarization (OpenAI API / OpenRouter)</strong> &mdash; if configured, meeting transcripts are sent to the selected API provider to generate summaries. This is governed by the respective provider's privacy policy.</li>
     <li><strong>Meeting summarization (ChatGPT subscription)</strong> &mdash; if you sign in with your ChatGPT account, transcripts are sent to OpenAI's API for summarization using your existing subscription.</li>
     <li><strong>Sparkle update checks</strong> &mdash; Muesli checks for new versions via an appcast feed hosted on GitHub. No personal data is transmitted.</li>

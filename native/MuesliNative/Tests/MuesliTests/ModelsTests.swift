@@ -3108,29 +3108,6 @@ struct ParakeetLanguageTests {
 
 @Suite("OpenAIDictationProvider")
 struct OpenAIDictationProviderTests {
-    @Test("openAITranscription backend is openai")
-    func openAITranscriptionBackend() {
-        let option = BackendOption.openAITranscription()
-        #expect(option.backend == "openai")
-        #expect(option.label == "OpenAI")
-    }
-
-    @Test("openAITranscription keeps configured model")
-    func openAITranscriptionKeepsModel() {
-        #expect(BackendOption.openAITranscription(model: "whisper-1").model == "whisper-1")
-    }
-
-    @Test("openai backend requires no download")
-    func openAIIsDownloaded() {
-        #expect(BackendOption.openAITranscription().isDownloaded)
-    }
-
-    @Test("openai backend is excluded from meeting transcription")
-    func openAIExcludedFromMeetings() {
-        #expect(!BackendOption.openAITranscription().supportsMeetingTranscription)
-        #expect(!BackendOption.openAITranscription().isStreamingDictationBackend)
-    }
-
     @Test("DictationProvider resolves raw values")
     func providerResolution() {
         #expect(DictationProvider.resolved("local") == .local)
@@ -3143,15 +3120,15 @@ struct OpenAIDictationProviderTests {
     func configRoundTrip() throws {
         var config = AppConfig()
         config.dictationProvider = DictationProvider.openAI.rawValue
-        config.openaiDictationModel = "whisper-1"
+        config.openaiDictationModel = "gpt-transcribe"
         let data = try JSONEncoder().encode(config)
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         #expect(json?["dictation_provider"] as? String == "openAI")
-        #expect(json?["openai_dictation_model"] as? String == "whisper-1")
+        #expect(json?["openai_dictation_model"] as? String == "gpt-transcribe")
 
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
         #expect(decoded.resolvedDictationProvider == .openAI)
-        #expect(decoded.openaiDictationModel == "whisper-1")
+        #expect(decoded.openaiDictationModel == "gpt-transcribe")
     }
 
     @Test("AppConfig defaults provider settings when keys are missing or invalid")
@@ -3169,25 +3146,47 @@ struct OpenAIDictationProviderTests {
     @Test("OpenAITranscriptionClient normalizes empty model")
     func normalizeModel() {
         #expect(OpenAITranscriptionClient.normalizeModel("") == OpenAITranscriptionClient.defaultModel)
-        #expect(OpenAITranscriptionClient.normalizeModel("  whisper-1  ") == "whisper-1")
+        #expect(OpenAITranscriptionClient.normalizeModel("  gpt-transcribe  ") == "gpt-transcribe")
     }
 
-    @Test("OpenAI multipart body includes required fields and audio")
-    func multipartBody() {
-        let audio = Data([0x00, 0x01, 0xFF])
-        let body = OpenAITranscriptionClient.makeMultipartBody(
-            boundary: "test-boundary",
-            filename: "dictation.wav",
-            fileData: audio,
-            model: "gpt-4o-mini-transcribe"
-        )
-        let text = String(decoding: body, as: UTF8.self)
+    @Test("Realtime session update uses current transcription schema")
+    func realtimeSessionUpdate() throws {
+        let data = try #require(OpenAIRealtimeProtocol.sessionUpdate(model: "gpt-live-transcribe").data(using: .utf8))
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(json["type"] as? String == "session.update")
+        let session = try #require(json["session"] as? [String: Any])
+        #expect(session["type"] as? String == "transcription")
+        let audio = try #require(session["audio"] as? [String: Any])
+        let input = try #require(audio["input"] as? [String: Any])
+        let format = try #require(input["format"] as? [String: Any])
+        #expect(format["type"] as? String == "audio/pcm")
+        #expect(format["rate"] as? Int == 24_000)
+        let transcription = try #require(input["transcription"] as? [String: Any])
+        #expect(transcription["model"] as? String == "gpt-live-transcribe")
+        #expect(input["turn_detection"] is NSNull)
+    }
 
-        #expect(text.contains("name=\"model\""))
-        #expect(text.contains("gpt-4o-mini-transcribe"))
-        #expect(text.contains("name=\"response_format\""))
-        #expect(text.contains("filename=\"dictation.wav\""))
-        #expect(text.contains("Content-Type: audio/wav"))
-        #expect(body.range(of: audio) != nil)
+    @Test("Realtime PCM encoder resamples and clips")
+    func realtimePCMEncoder() {
+        var encoder = OpenAIRealtimePCMEncoder()
+        let first = encoder.encode([-2, 0, 2])
+        let second = encoder.encode([0, 0])
+        #expect(!first.isEmpty)
+        #expect(!second.isEmpty)
+        #expect(first.count.isMultiple(of: 2))
+        let firstPCM = first.withUnsafeBytes { $0.loadUnaligned(as: Int16.self) }
+        #expect(Int16(littleEndian: firstPCM) == Int16.min)
+
+        let samples = (0..<257).map { index in
+            Float(sin(Double(index) * 0.07))
+        }
+        var oneShotEncoder = OpenAIRealtimePCMEncoder()
+        let oneShot = oneShotEncoder.encode(samples)
+        var chunkedEncoder = OpenAIRealtimePCMEncoder()
+        var chunked = Data()
+        chunked.append(chunkedEncoder.encode(Array(samples[..<79])))
+        chunked.append(chunkedEncoder.encode(Array(samples[79..<181])))
+        chunked.append(chunkedEncoder.encode(Array(samples[181...])))
+        #expect(chunked == oneShot)
     }
 }
