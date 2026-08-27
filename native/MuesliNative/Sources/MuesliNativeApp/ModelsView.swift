@@ -892,6 +892,10 @@ struct ModelsView: View {
                     .pickerStyle(.menu)
                     .frame(maxWidth: 220, alignment: .leading)
                 }
+
+                Text("Script filter: keeps the chosen language's writing script in the transcript. Parakeet v3 only — v2 ignores this setting.")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
             }
 
             if showsDownloadStatus {
