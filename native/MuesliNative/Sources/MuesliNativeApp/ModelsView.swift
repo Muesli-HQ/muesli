@@ -600,6 +600,13 @@ struct ModelsView: View {
         )
     }
 
+    private var parakeetLanguageSelection: Binding<ParakeetLanguage> {
+        Binding(
+            get: { appState.config.resolvedParakeetLanguage },
+            set: { controller.selectParakeetLanguage($0) }
+        )
+    }
+
     private var qwen3AsrLanguageSelection: Binding<Qwen3AsrLanguage> {
         Binding(
             get: { appState.config.resolvedQwen3AsrLanguage },
@@ -867,6 +874,28 @@ struct ModelsView: View {
                     .pickerStyle(.menu)
                     .frame(maxWidth: 220, alignment: .leading)
                 }
+            }
+
+            if selectedOption.backend == BackendOption.parakeetMultilingual.backend {
+                HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
+                    Text("Language")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .frame(width: 64, alignment: .leading)
+
+                    Picker("", selection: parakeetLanguageSelection) {
+                        ForEach(ParakeetLanguage.allCases, id: \.self) { language in
+                            Text(language.label).tag(language)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 220, alignment: .leading)
+                }
+
+                Text("Script filter: keeps the chosen language's writing script in the transcript. Parakeet v3 only — v2 ignores this setting.")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
             }
 
             if showsDownloadStatus {

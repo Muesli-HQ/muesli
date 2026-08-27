@@ -22,7 +22,7 @@ struct BackendOption: Equatable {
         model: "FluidInference/parakeet-unified-en-0.6b-coreml",
         label: "Parakeet Unified",
         sizeLabel: "~565 MB",
-        description: "The newest Parakeet generation and the best choice for English dictation: a lower error rate than Parakeet v3 with a newer architecture. English-focused; pick Parakeet v3 for multilingual needs.",
+        description: "The best English dictation. Lowest error rate, newest architecture, instant. For other languages, choose Parakeet v3.",
         recommended: true
     )
 
@@ -31,7 +31,7 @@ struct BackendOption: Equatable {
         model: "FluidInference/parakeet-tdt-0.6b-v3-coreml",
         label: "Parakeet v3",
         sizeLabel: "~450 MB",
-        description: "The multilingual Parakeet: quick enough to feel responsive, reliable in normal rooms, and able to follow 25 languages.",
+        description: "Fast, reliable dictation in 25 languages.",
         recommended: false
     )
 
@@ -209,7 +209,9 @@ struct BackendOption: Equatable {
             + [.cohereTranscribe]
             + streaming
             + experimental
-        let onboardingDefault = systemManaged.first ?? .parakeetUnified
+        // Parakeet Unified (English) and v3 (multilingual) are the preferred
+        // onboarding models; Apple Speech remains available in the catalog.
+        let onboardingDefault: BackendOption = .parakeetUnified
         let onboardingCandidates: [BackendOption] = [
             onboardingDefault,
             .parakeetUnified,
@@ -245,8 +247,9 @@ struct BackendOption: Equatable {
     /// Models available for download and use.
     static let all = currentCatalog.all
 
-    /// The first-run default uses the system-managed backend when the OS exposes it.
-    /// Parakeet remains the deterministic fallback for older or unsupported Macs.
+    /// The first-run default is Parakeet Unified (English), with Parakeet v3
+    /// (multilingual) as the second candidate; Apple Speech remains available
+    /// in the catalog but is not the onboarding default.
     static let onboardingDefault = currentCatalog.onboardingDefault
 
     /// Curated first-run choices. Experimental models are excluded by default.
@@ -458,6 +461,97 @@ enum Qwen3AsrLanguage: Hashable, Sendable {
             return .pinned(language)
         }
         return defaultLanguage
+    }
+
+    static func resolvedCode(_ rawValue: String?) -> String {
+        resolved(rawValue).rawValue
+    }
+}
+
+/// Language selection for Parakeet TDT v2/v3.
+/// `auto` leaves decoding unfiltered; explicit codes enable FluidAudio's
+/// script-level token filter (v3 joint decoder; v2 ignores the hint).
+enum ParakeetLanguage: String, CaseIterable, Codable, Sendable {
+    case auto = "auto"
+    case english = "en"
+    case spanish = "es"
+    case french = "fr"
+    case german = "de"
+    case italian = "it"
+    case portuguese = "pt"
+    case romanian = "ro"
+    case dutch = "nl"
+    case danish = "da"
+    case swedish = "sv"
+    case finnish = "fi"
+    case hungarian = "hu"
+    case estonian = "et"
+    case latvian = "lv"
+    case lithuanian = "lt"
+    case maltese = "mt"
+    case polish = "pl"
+    case czech = "cs"
+    case slovak = "sk"
+    case slovenian = "sl"
+    case croatian = "hr"
+    case bosnian = "bs"
+    case russian = "ru"
+    case ukrainian = "uk"
+    case belarusian = "be"
+    case bulgarian = "bg"
+    case serbian = "sr"
+    case greek = "el"
+
+    static let defaultLanguage: Self = .auto
+
+    var label: String {
+        switch self {
+        case .auto: return "Auto-detect"
+        case .english: return "English"
+        case .spanish: return "Spanish"
+        case .french: return "French"
+        case .german: return "German"
+        case .italian: return "Italian"
+        case .portuguese: return "Portuguese"
+        case .romanian: return "Romanian"
+        case .dutch: return "Dutch"
+        case .danish: return "Danish"
+        case .swedish: return "Swedish"
+        case .finnish: return "Finnish"
+        case .hungarian: return "Hungarian"
+        case .estonian: return "Estonian"
+        case .latvian: return "Latvian"
+        case .lithuanian: return "Lithuanian"
+        case .maltese: return "Maltese"
+        case .polish: return "Polish"
+        case .czech: return "Czech"
+        case .slovak: return "Slovak"
+        case .slovenian: return "Slovenian"
+        case .croatian: return "Croatian"
+        case .bosnian: return "Bosnian"
+        case .russian: return "Russian"
+        case .ukrainian: return "Ukrainian"
+        case .belarusian: return "Belarusian"
+        case .bulgarian: return "Bulgarian"
+        case .serbian: return "Serbian"
+        case .greek: return "Greek"
+        }
+    }
+
+    /// ISO code passed to FluidAudio's token language filter, or nil for auto.
+    var isoCode: String? {
+        switch self {
+        case .auto: return nil
+        default: return rawValue
+        }
+    }
+
+    static func resolved(_ rawValue: String?) -> Self {
+        guard let rawValue,
+              let language = Self(rawValue: rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) else {
+            return defaultLanguage
+        }
+        return language
     }
 
     static func resolvedCode(_ rawValue: String?) -> String {
@@ -1324,6 +1418,7 @@ struct AppConfig: Codable {
     var nemotron35Language: String = Nemotron35Language.defaultLanguage.rawValue
     var whisperLanguage: String = WhisperKitLanguage.defaultLanguage.rawValue
     var qwen3AsrLanguage: String = Qwen3AsrLanguage.defaultLanguage.rawValue
+    var parakeetLanguage: String = ParakeetLanguage.defaultLanguage.rawValue
     var appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier
     var meetingTranscriptionBackend: String = BackendOption.whisper.backend
     var meetingTranscriptionModel: String = BackendOption.whisper.model
@@ -1458,6 +1553,7 @@ struct AppConfig: Codable {
         case nemotron35Language = "nemotron35_language"
         case whisperLanguage = "whisper_language"
         case qwen3AsrLanguage = "qwen3_asr_language"
+        case parakeetLanguage = "parakeet_language"
         case appleSpeechLanguage = "apple_speech_language"
         case meetingTranscriptionBackend = "meeting_transcription_backend"
         case meetingTranscriptionModel = "meeting_transcription_model"
@@ -1598,6 +1694,7 @@ struct AppConfig: Codable {
         nemotron35Language = Nemotron35Language.resolvedCode(try? c.decode(String.self, forKey: .nemotron35Language))
         whisperLanguage = WhisperKitLanguage.resolvedCode(try? c.decode(String.self, forKey: .whisperLanguage))
         qwen3AsrLanguage = Qwen3AsrLanguage.resolvedCode(try? c.decode(String.self, forKey: .qwen3AsrLanguage))
+        parakeetLanguage = ParakeetLanguage.resolvedCode(try? c.decode(String.self, forKey: .parakeetLanguage))
         appleSpeechLanguage = AppleSpeechLanguageOption.normalize(try? c.decode(String.self, forKey: .appleSpeechLanguage))
         meetingTranscriptionBackend = (try? c.decode(String.self, forKey: .meetingTranscriptionBackend)) ?? sttBackend
         meetingTranscriptionModel = (try? c.decode(String.self, forKey: .meetingTranscriptionModel)) ?? sttModel
@@ -1804,6 +1901,10 @@ struct AppConfig: Codable {
 
     var resolvedQwen3AsrLanguage: Qwen3AsrLanguage {
         Qwen3AsrLanguage.resolved(qwen3AsrLanguage)
+    }
+
+    var resolvedParakeetLanguage: ParakeetLanguage {
+        ParakeetLanguage.resolved(parakeetLanguage)
     }
 
     var resolvedAppleSpeechLanguage: String {

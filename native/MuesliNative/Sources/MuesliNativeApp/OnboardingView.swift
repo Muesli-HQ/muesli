@@ -91,10 +91,7 @@ struct OnboardingView: View {
     }
 
     private var onboardingModelDescription: String {
-        if BackendOption.onboardingDefault == .appleSpeechAnalyzer {
-            return "Use Apple Speech, or choose another local model to download while you continue setup."
-        }
-        return "Start with a fast local model. Larger models can download while you continue setup."
+        "Start with a fast local model. Larger models can download while you continue setup."
     }
 
     init(

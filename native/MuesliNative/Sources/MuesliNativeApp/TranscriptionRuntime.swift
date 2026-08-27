@@ -909,6 +909,7 @@ actor TranscriptionCoordinator {
         indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage,
         whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
         qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
+        parakeetLanguage: ParakeetLanguage = ParakeetLanguage.defaultLanguage,
         appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier,
         enablePostProcessor: Bool = false,
         customWords: [[String: Any]] = [],
@@ -935,6 +936,7 @@ actor TranscriptionCoordinator {
             indicASRLanguage: indicASRLanguage,
             whisperLanguage: whisperLanguage,
             qwen3AsrLanguage: qwen3AsrLanguage,
+            parakeetLanguage: parakeetLanguage,
             appleSpeechLanguage: appleSpeechLanguage
         )
         result = removeArtifacts(result)
@@ -966,6 +968,7 @@ actor TranscriptionCoordinator {
         indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage,
         whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
         qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
+        parakeetLanguage: ParakeetLanguage = ParakeetLanguage.defaultLanguage,
         appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier
     ) async throws -> SpeechTranscriptionResult {
         // Meetings intentionally skip Qwen/custom-word post-processing. Keep deterministic artifact/filler cleanup only.
@@ -976,6 +979,7 @@ actor TranscriptionCoordinator {
             indicASRLanguage: indicASRLanguage,
             whisperLanguage: whisperLanguage,
             qwen3AsrLanguage: qwen3AsrLanguage,
+            parakeetLanguage: parakeetLanguage,
             appleSpeechLanguage: appleSpeechLanguage
         ))
     }
@@ -987,6 +991,7 @@ actor TranscriptionCoordinator {
         indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage,
         whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
         qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
+        parakeetLanguage: ParakeetLanguage = ParakeetLanguage.defaultLanguage,
         appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier
     ) async throws -> SpeechTranscriptionResult {
         // Meeting chunks intentionally skip Qwen/custom-word post-processing for reconciliation.
@@ -1010,6 +1015,7 @@ actor TranscriptionCoordinator {
             indicASRLanguage: indicASRLanguage,
             whisperLanguage: whisperLanguage,
             qwen3AsrLanguage: qwen3AsrLanguage,
+            parakeetLanguage: parakeetLanguage,
             appleSpeechLanguage: appleSpeechLanguage
         ))
     }
@@ -1348,6 +1354,7 @@ actor TranscriptionCoordinator {
         indicASRLanguage: IndicASRLanguage,
         whisperLanguage: WhisperKitLanguage,
         qwen3AsrLanguage: Qwen3AsrLanguage,
+        parakeetLanguage: ParakeetLanguage,
         appleSpeechLanguage: String
     ) async throws -> SpeechTranscriptionResult {
         switch backend.backend {
@@ -1379,15 +1386,15 @@ actor TranscriptionCoordinator {
             }
             throw AppleSpeechAnalyzerError.unavailable
         default:
-            return try await transcribeWithFluidAudio(url: url)
+            return try await transcribeWithFluidAudio(url: url, language: parakeetLanguage)
         }
     }
 
     // MARK: - FluidAudio (Parakeet on ANE)
 
-    private func transcribeWithFluidAudio(url: URL) async throws -> SpeechTranscriptionResult {
+    private func transcribeWithFluidAudio(url: URL, language: ParakeetLanguage) async throws -> SpeechTranscriptionResult {
         fputs("[muesli-native] transcribing with FluidAudio: \(url.lastPathComponent)\n", stderr)
-        let result = try await fluidTranscriber.transcribe(wavURL: url)
+        let result = try await fluidTranscriber.transcribe(wavURL: url, language: language.isoCode)
         fputs("[muesli-native] FluidAudio result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let segments = (result.tokenTimings ?? []).map { timing in
