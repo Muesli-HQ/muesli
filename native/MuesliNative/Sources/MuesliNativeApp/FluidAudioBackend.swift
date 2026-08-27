@@ -58,10 +58,13 @@ actor FluidAudioTranscriber {
     }
 
     /// Transcribe a WAV file URL directly.
-    func transcribe(wavURL: URL) async throws -> ASRResult {
+    /// `language` is an optional ISO code enabling FluidAudio's script-level
+    /// token filter on the v3 joint decoder (v2 ignores the hint; nil = auto).
+    func transcribe(wavURL: URL, language: String? = nil) async throws -> ASRResult {
         guard let asrManager else { throw TranscriberError.notLoaded }
+        let languageHint = language.flatMap(Language.init(rawValue:))
         var decoderState = TdtDecoderState.make(decoderLayers: await asrManager.decoderLayerCount)
-        return try await asrManager.transcribe(wavURL, decoderState: &decoderState)
+        return try await asrManager.transcribe(wavURL, decoderState: &decoderState, language: languageHint)
     }
 
     func shutdown() {

@@ -2910,6 +2910,12 @@ public final class MuesliController: NSObject {
         }
     }
 
+    func selectParakeetLanguage(_ language: ParakeetLanguage) {
+        updateConfig {
+            $0.parakeetLanguage = language.rawValue
+        }
+    }
+
     func selectIndicASRLanguage(_ language: IndicASRLanguage) {
         updateConfig {
             $0.indicASRLanguage = language.rawValue
@@ -5017,6 +5023,7 @@ public final class MuesliController: NSObject {
                     indicASRLanguage: self.config.resolvedIndicASRLanguage,
                     whisperLanguage: self.config.resolvedWhisperLanguage,
                     qwen3AsrLanguage: self.config.resolvedQwen3AsrLanguage,
+                    parakeetLanguage: self.config.resolvedParakeetLanguage,
                     appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage
                 )
                 let rawTranscript = transcription.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -8887,6 +8894,7 @@ public final class MuesliController: NSObject {
                     indicASRLanguage: self.config.resolvedIndicASRLanguage,
                     whisperLanguage: self.config.resolvedWhisperLanguage,
                     qwen3AsrLanguage: self.config.resolvedQwen3AsrLanguage,
+                    parakeetLanguage: self.config.resolvedParakeetLanguage,
                     appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage,
                     enablePostProcessor: false,
                     customWords: self.serializedCustomWords(),
@@ -10312,6 +10320,7 @@ public final class MuesliController: NSObject {
                     indicASRLanguage: indicTranscriptionLanguage,
                     whisperLanguage: whisperTranscriptionLanguage,
                     qwen3AsrLanguage: self.config.resolvedQwen3AsrLanguage,
+                    parakeetLanguage: self.config.resolvedParakeetLanguage,
                     appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage,
                     enablePostProcessor: enableTranscriptCleanup,
                     customWords: self.serializedCustomWords(),

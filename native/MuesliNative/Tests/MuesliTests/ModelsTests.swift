@@ -305,9 +305,11 @@ struct BackendOptionTests {
         #expect(!BackendOption.experimental.contains(.cohereTranscribe))
     }
 
-    @Test("onboarding defaults to Apple Speech when available and keeps conservative alternatives")
+    @Test("onboarding prefers Parakeet Unified and v3 over Apple Speech")
     func onboardingModelChoices() {
         #expect(BackendOption.onboarding.first == BackendOption.onboardingDefault)
+        #expect(BackendOption.onboardingDefault == .parakeetUnified)
+        #expect(BackendOption.onboarding.contains(.parakeetUnified))
         #expect(BackendOption.onboarding.contains(.parakeetMultilingual))
         #expect(BackendOption.onboarding.contains(.whisperTiny))
         #expect(BackendOption.onboarding.contains(.whisperSmall))
@@ -317,10 +319,8 @@ struct BackendOptionTests {
         }
         #expect(BackendOption.onboarding.contains(.nemotron35Multilingual))
         if #available(macOS 26.0, *), AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem {
-            #expect(BackendOption.onboardingDefault == .appleSpeechAnalyzer)
-            #expect(BackendOption.onboarding.contains(.appleSpeechAnalyzer))
+            #expect(!BackendOption.onboarding.contains(.appleSpeechAnalyzer))
         } else {
-            #expect(BackendOption.onboardingDefault == .parakeetUnified)
             #expect(!BackendOption.onboarding.contains(.appleSpeechAnalyzer))
         }
     }
@@ -3063,5 +3063,38 @@ struct ParakeetUnifiedPlanTests {
                 .appendingPathComponent("parakeet_unified_encoder_int8.mlmodelc/weights/weight.bin")
         )
         #expect(!plan.isAvailableLocally(fileManager: fm))
+    }
+}
+
+struct ParakeetLanguageTests {
+
+    @Test("ParakeetLanguage resolves auto and pinned ISO codes")
+    func resolvesAutoAndPinned() {
+        #expect(ParakeetLanguage.resolved(nil) == .auto)
+        #expect(ParakeetLanguage.resolved("") == .auto)
+        #expect(ParakeetLanguage.resolved("auto") == .auto)
+        #expect(ParakeetLanguage.resolved("en") == .english)
+        #expect(ParakeetLanguage.resolved("EL") == .greek)
+        #expect(ParakeetLanguage.resolved("bogus") == .auto)
+    }
+
+    @Test("ParakeetLanguage exposes labels and ISO codes")
+    func exposesLabelsAndCodes() {
+        #expect(ParakeetLanguage.auto.isoCode == nil)
+        #expect(ParakeetLanguage.auto.label == "Auto-detect")
+        #expect(ParakeetLanguage.english.isoCode == "en")
+        #expect(ParakeetLanguage.english.label == "English")
+        #expect(ParakeetLanguage.allCases.count == 29)
+    }
+
+    @Test("ParakeetLanguage selection survives config encode/decode round-trip")
+    func persistenceRoundTrip() throws {
+        var config = AppConfig()
+        config.parakeetLanguage = ParakeetLanguage.german.rawValue
+
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+
+        #expect(decoded.resolvedParakeetLanguage == .german)
     }
 }
