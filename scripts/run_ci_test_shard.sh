@@ -22,7 +22,10 @@ case "${shard}" in
       MuesliCKSyncEngineTests
       MuesliCLITests
       ChatGPTAuthTests
+      ChatGPTResponsesTransportTests
       ChatGPTTokenStorageTests
+      OpenRouterAuthTests
+      SettingsPermissionRefreshReasonTests
       FloatingIndicatorVisibilityTests
       IndicatorFrameSizeTests
       WindowAppearanceTests

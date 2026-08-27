@@ -53,6 +53,26 @@ struct MuesliCLITests {
         #expect(context.databaseURL.path == "/tmp/muesli-support/muesli.db")
     }
 
+    @Test("summary config reads the app's persisted OpenRouter selection and protected credential")
+    func summaryConfigReadsAppOpenRouterSettings() throws {
+        let supportDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-cli-openrouter-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: supportDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: supportDirectory) }
+
+        try Data(
+            #"{"meeting_summary_backend":"openrouter","openrouter_model":"openai/gpt-oss-120b:free"}"#.utf8
+        )
+            .write(to: supportDirectory.appendingPathComponent("config.json"))
+        try Data(#"{"api_key":"sk-or-cli-test","user_id":"user_test"}"#.utf8)
+            .write(to: supportDirectory.appendingPathComponent("openrouter-auth.json"))
+
+        let config = CLISummaryConfig.load(from: supportDirectory)
+        #expect(config.meetingSummaryBackend == "openrouter")
+        #expect(config.openRouterModel == "openai/gpt-oss-120b:free")
+        #expect(config.openRouterAPIKey == "sk-or-cli-test")
+    }
+
     @Test("migration runs before a read so a legacy database gains new columns")
     func migrationWarningsUpgradesLegacyDatabase() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())

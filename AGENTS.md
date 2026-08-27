@@ -27,32 +27,25 @@ Local build scripts resolve a shared SwiftPM scratch path through `scripts/muesl
 
 - If `MUESLI_SWIFTPM_SCRATCH_PATH` is set, that explicit path wins.
 - If `MUESLI_SWIFTPM_SCRATCH_CHANNEL` is set, scripts use that channel under the resolved cache root.
-- If `MUESLI_EXTERNAL_SPM_CACHE_ROOT` is set, it replaces the default `/Volumes/MuesliBuildCache/muesli-spm` external cache root.
-- Otherwise, if `/Volumes/MuesliBuildCache/muesli-spm` is mounted, scripts use that external APFS cache.
-- Otherwise, scripts fall back to `$HOME/Library/Caches/muesli-spm`.
+- If `MUESLI_EXTERNAL_SPM_CACHE_ROOT` is set, it opts into that explicitly provided cache root when the directory exists.
+- Otherwise, use `$HOME/Library/Caches/muesli-spm`; older resolver versions may still recognize a pre-existing legacy volume, but agents must not attach or create one.
 - Set `MUESLI_DISABLE_SWIFTPM_SCRATCH_PATH=1` to intentionally use SwiftPM's package-local `.build`; this takes precedence over all scratch path settings.
 
-The external cache lives in an APFS sparse bundle at `/Volumes/eSSD/MuesliBuildCache.sparsebundle`; attach it before build-heavy work:
-
-```bash
-hdiutil attach /Volumes/eSSD/MuesliBuildCache.sparsebundle
-```
-
-`/Volumes/eSSD/MuesliBuildCache.sparsebundle` is the maintainer's local SSD path. Contributors can substitute their own volume path or skip the attach step; scripts fall back to `~/Library/Caches/muesli-spm` when the external cache is not mounted.
+`$HOME/Library/Caches/muesli-spm` is the canonical maintainer cache. The retired eSSD sparse bundle and `/Volumes/MuesliBuildCache` are no longer part of the local workflow. Use `MUESLI_EXTERNAL_SPM_CACHE_ROOT` only when the user explicitly provides another cache root; do not discover or attach external volumes during ordinary builds.
 
 Default channels:
 
 ```bash
-./scripts/dev-test.sh                 # /Volumes/MuesliBuildCache/muesli-spm/worktrees/<worktree>/dev when mounted
-./scripts/build_native_app.sh release # /Volumes/MuesliBuildCache/muesli-spm/release when mounted
-./scripts/release-preprod.sh          # /Volumes/MuesliBuildCache/muesli-spm/preprod when mounted
+./scripts/dev-test.sh                 # ~/Library/Caches/muesli-spm/worktrees/<worktree>/dev
+./scripts/build_native_app.sh release # ~/Library/Caches/muesli-spm/release
+./scripts/release-preprod.sh          # ~/Library/Caches/muesli-spm/preprod
 ```
 
 For direct or concurrent worktree builds, pass a specific path:
 
 ```bash
-MUESLI_SWIFTPM_SCRATCH_PATH="/Volumes/MuesliBuildCache/muesli-spm/worktrees/pr182/dev" ./scripts/dev-test.sh
-swift test --package-path native/MuesliNative --scratch-path "/Volumes/MuesliBuildCache/muesli-spm/worktrees/pr182/test"
+MUESLI_SWIFTPM_SCRATCH_PATH="$HOME/Library/Caches/muesli-spm/worktrees/pr182/dev" ./scripts/dev-test.sh
+swift test --package-path native/MuesliNative --scratch-path "$HOME/Library/Caches/muesli-spm/worktrees/pr182/test"
 ```
 
 Caveat: do not run concurrent builds from different worktrees into the same scratch path. Use separate paths per channel, agent, or simultaneous build, such as `worktrees/pr182/dev`, `worktrees/pr188/dev`, or `agent-1`.
@@ -84,5 +77,30 @@ Deleting a scratch path only removes rebuildable SwiftPM artifacts. It does not 
 For direct SwiftPM test runs, pass the scratch path yourself:
 
 ```bash
-swift test --package-path native/MuesliNative --scratch-path "/Volumes/MuesliBuildCache/muesli-spm/test"
+swift test --package-path native/MuesliNative --scratch-path "$HOME/Library/Caches/muesli-spm/test"
 ```
+
+## LocalVQE Runtime
+
+Every signed Muesli package, including `MuesliDev`, fixed dev lanes, preproduction, and stable builds, must include a complete LocalVQE runtime. The committed `.gguf` model is not sufficient by itself; packaging also requires `liblocalvqe`, the `libggml` umbrella library, `libggml-base`, and every referenced ggml backend library.
+
+The generated runtime under `native/MuesliNative/LocalVQE/lib/` is gitignored and is not part of the SwiftPM or Xcode cache. A fresh worktree can therefore have a warm build cache while still lacking LocalVQE. Before a signed build:
+
+```bash
+source scripts/localvqe_runtime.sh
+if ! muesli_localvqe_runtime_is_complete native/MuesliNative/LocalVQE/lib; then
+  ./scripts/build_localvqe.sh
+fi
+./scripts/dev-test.sh --lane B
+```
+
+`scripts/build_native_app.sh` fails closed when a signed package lacks the complete runtime. Do not use `MUESLI_ALLOW_MISSING_LOCALVQE=1` for normal dev, preproduction, or release builds; that override is only for explicitly requested unsigned diagnostic packaging.
+
+After packaging, verify the installed bundle rather than assuming the source directory was copied correctly:
+
+```bash
+source scripts/localvqe_runtime.sh
+muesli_localvqe_runtime_is_complete /Applications/MuesliDevB.app/Contents/MacOS
+```
+
+For cross-worktree reuse, prefer a pinned-ref- and architecture-specific runtime under `$HOME/Library/Caches/muesli-localvqe/` and pass it through `MUESLI_LOCALVQE_LIB_DIR`. Until the repository resolves that layout automatically, never copy an unvalidated partial dylib set between worktrees, and do not treat `/tmp/LocalVQE` as durable storage.

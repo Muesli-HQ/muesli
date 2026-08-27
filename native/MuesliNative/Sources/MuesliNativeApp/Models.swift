@@ -650,6 +650,12 @@ struct OpenRouterModelCatalog: Decodable {
     let data: [OpenRouterModel]
 }
 
+enum OpenRouterModelSelection {
+    static func persistedModelID(for selectedID: String) -> String {
+        selectedID.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 struct OpenRouterModel: Decodable {
     let id: String
     let name: String

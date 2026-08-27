@@ -399,6 +399,7 @@ public final class MuesliController: NSObject {
     private let meetingSourceWindowLocator = MeetingSourceWindowLocator()
 
     private let chatGPTAuth = ChatGPTAuthManager.shared
+    private let openRouterAuth: OpenRouterAuthManager
     private let googleCalAuth = GoogleCalendarAuthManager.shared
     private let googleCalClient = GoogleCalendarClient()
     private var calendarCheckTimer: Timer?
@@ -545,9 +546,11 @@ public final class MuesliController: NSObject {
         meetingMarkdownAutoExporter: MeetingMarkdownAutoExporting = MeetingMarkdownAutoExporter(),
         launchAtLoginManager: LaunchAtLoginManaging = SystemLaunchAtLoginManager(),
         audioDuckingController: AudioDuckingManaging = AudioDuckingController(),
-        dictationAudioRoutingController: DictationAudioRouting = DictationAudioRouteController()
+        dictationAudioRoutingController: DictationAudioRouting = DictationAudioRouteController(),
+        openRouterAuth: OpenRouterAuthManager? = nil
     ) {
         self.configStore = configStore
+        self.openRouterAuth = openRouterAuth ?? .shared
         var loadedConfig = configStore.load()
         let loadedBackend = BackendOption.all.first(where: {
             $0.backend == loadedConfig.sttBackend && $0.model == loadedConfig.sttModel
@@ -1343,6 +1346,9 @@ public final class MuesliController: NSObject {
         appState.activeMeetingAudioWarning = activeMeetingAudioWarning
         indicator.setMeetingRecordingPaused(appState.isMeetingRecordingPaused, config: config)
         appState.isChatGPTAuthenticated = chatGPTAuth.isAuthenticated
+        appState.isOpenRouterAuthenticated = openRouterAuth.isAuthenticated
+        appState.isOpenRouterEnvironmentManaged = openRouterAuth.hasEnvironmentCredential
+        appState.hasStoredOpenRouterCredential = openRouterAuth.hasStoredCredential
         appState.isGoogleCalendarAvailable = googleCalAuth.isAvailable
         appState.isGoogleCalendarVerified = googleCalAuth.isVerified
         appState.isGoogleCalendarAuthenticated = googleCalAuth.isAuthenticated
@@ -1620,6 +1626,9 @@ public final class MuesliController: NSObject {
         appState.selectedPostProcessorBackend = selectedPostProcessorBackend
         appState.config = config
         appState.isChatGPTAuthenticated = chatGPTAuth.isAuthenticated
+        appState.isOpenRouterAuthenticated = openRouterAuth.isAuthenticated
+        appState.isOpenRouterEnvironmentManaged = openRouterAuth.hasEnvironmentCredential
+        appState.hasStoredOpenRouterCredential = openRouterAuth.hasStoredCredential
         syncCalendarMonitor()
         syncMeetingDetectionMonitor()
         updateMeetingNotificationVisibility()
@@ -2675,8 +2684,16 @@ public final class MuesliController: NSObject {
         return "\(counts.total) (\(parts.joined(separator: ", ")))"
     }
 
-    func availableDictationInputDevices() -> [AudioInputDeviceInfo] {
-        dictationAudioRoutingController.availableInputDevices()
+    func cachedDictationInputDevices() -> [AudioInputDeviceInfo] {
+        dictationAudioRoutingController.cachedAvailableInputDevices()
+    }
+
+    func refreshDictationInputDevices() async -> [AudioInputDeviceInfo] {
+        await withCheckedContinuation { continuation in
+            dictationAudioRoutingController.refreshAvailableInputDevices { devices in
+                continuation.resume(returning: devices)
+            }
+        }
     }
 
     func selectDictationInputDeviceUID(_ uid: String?) {
@@ -3255,6 +3272,78 @@ public final class MuesliController: NSObject {
         syncAppState()
     }
 
+    /// Returns nil on success, or an error message on failure.
+    func signInWithOpenRouter(
+        selectMeetingSummaryBackend shouldSelectMeetingSummaryBackend: Bool = true
+    ) async -> String? {
+        do {
+            try await openRouterAuth.signIn()
+            if shouldSelectMeetingSummaryBackend {
+                selectMeetingSummaryBackend(.openRouter)
+            }
+            syncAppState()
+            return nil
+        } catch {
+            fputs("[muesli-native] OpenRouter sign-in failed: \(error.localizedDescription)\n", stderr)
+            return error.localizedDescription
+        }
+    }
+
+    /// Stores a legacy/manual OpenRouter key in the same protected credential
+    /// file used by the browser sign-in flow.
+    func storeManualOpenRouterAPIKey(
+        _ apiKey: String,
+        selectMeetingSummaryBackend shouldSelectMeetingSummaryBackend: Bool = true
+    ) -> String? {
+        do {
+            try openRouterAuth.storeManualAPIKey(apiKey)
+            if shouldSelectMeetingSummaryBackend {
+                selectMeetingSummaryBackend(.openRouter)
+            }
+            syncAppState()
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    func signOutOpenRouter() -> String? {
+        do {
+            try openRouterAuth.signOut()
+        } catch {
+            syncAppState()
+            return error.localizedDescription
+        }
+
+        guard !openRouterAuth.isAuthenticated else {
+            syncAppState()
+            return nil
+        }
+
+        if selectedMeetingSummaryBackend == .openRouter {
+            // Match ChatGPT sign-out: move summaries to the existing API-key fallback.
+            selectMeetingSummaryBackend(.openAI)
+        }
+        if selectedPostProcessorBackend == .hosted(.openRouter) {
+            // Reuse the cleanup selector so local-model availability and the
+            // enabled state are normalized exactly as for a manual switch.
+            selectPostProcessorBackend(.local)
+        }
+        if TranscriptCleanupBackendOption.resolved(config.quilBackend) == .hosted(.openRouter) {
+            updateConfig {
+                $0.quilBackend = TranscriptCleanupBackendOption.local.backend
+                $0.quilModel = PostProcessorOption.defaultQuilOption.id
+            }
+        }
+        syncAppState()
+        return nil
+    }
+
+    func manageOpenRouterKey() {
+        guard let url = openRouterAuth.manageKeyURL else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     // MARK: - Google Calendar
 
     func signInWithGoogleCalendar() async -> String? {
@@ -3285,11 +3374,14 @@ public final class MuesliController: NSObject {
         syncAppState()
     }
 
-    /// Refresh the EventKit-available calendars list. Cheap (no network), safe
-    /// to call frequently — driven by Settings panel onAppear and by the
-    /// EKEventStoreChangedNotification handler.
-    func refreshAvailableEventKitCalendars() {
-        appState.availableEventKitCalendars = calendarMonitor.availableCalendars()
+    /// Refresh the EventKit-available calendars list without making the main
+    /// actor wait for EventKit's synchronous calendar-store enumeration.
+    func refreshAvailableEventKitCalendars() async {
+        let calendars = await Task.detached(priority: .utility) {
+            CalendarMonitor.availableCalendars()
+        }.value
+        guard !Task.isCancelled else { return }
+        appState.availableEventKitCalendars = calendars
     }
 
     /// Refresh the Google calendar list via the Calendar API. No-op when OAuth
@@ -3444,7 +3536,7 @@ public final class MuesliController: NSObject {
         calendarMonitor.onCalendarChanged = { [weak self] in
             guard let self else { return }
             Task { @MainActor in
-                self.refreshAvailableEventKitCalendars()
+                await self.refreshAvailableEventKitCalendars()
                 let refreshed = await self.refreshUpcomingCalendarEvents()
                 guard refreshed else { return }
                 await self.reconcilePendingEventKitCalendarAttendees(
@@ -3466,7 +3558,7 @@ public final class MuesliController: NSObject {
             guard let self else { return }
             Task { @MainActor in
                 self.calendarMonitor.start()
-                self.refreshAvailableEventKitCalendars()
+                await self.refreshAvailableEventKitCalendars()
                 let refreshed = await self.refreshUpcomingCalendarEvents()
                 guard refreshed else { return }
                 self.checkUpcomingCalendarNotifications()
@@ -3477,7 +3569,7 @@ public final class MuesliController: NSObject {
         // Run one initial reconciliation so changes made while Muesli was not
         // running are reflected without waiting for another EventKit change.
         Task { @MainActor in
-            self.refreshAvailableEventKitCalendars()
+            await self.refreshAvailableEventKitCalendars()
             let refreshed = await self.refreshUpcomingCalendarEvents()
             guard refreshed else { return }
             await self.reconcilePendingEventKitCalendarAttendees(
@@ -4467,6 +4559,15 @@ public final class MuesliController: NSObject {
         summaryBackend: MeetingSummaryBackendOption?,
         apiKey: String?
     ) {
+        var shouldRetainLegacyOpenRouterKey = false
+        if summaryBackend == .openRouter,
+           let apiKey,
+           !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            shouldRetainLegacyOpenRouterKey = storeManualOpenRouterAPIKey(
+                apiKey,
+                selectMeetingSummaryBackend: false
+            ) != nil
+        }
         updateConfig { config in
             config.hasCompletedOnboarding = true
             config.userName = userName
@@ -4486,10 +4587,12 @@ public final class MuesliController: NSObject {
             if let apiKey, !apiKey.isEmpty {
                 if summaryBackend == .openAI {
                     config.openAIAPIKey = apiKey
-                } else if summaryBackend == .openRouter {
+                } else if summaryBackend == .openRouter,
+                          shouldRetainLegacyOpenRouterKey {
+                    // ConfigStore retries the migration and preserves this
+                    // fallback if protected credential storage remains unavailable.
                     config.openRouterAPIKey = apiKey
                 }
-                // ChatGPT backend uses OAuth tokens stored in app support dir, not an API key
             }
         }
         selectBackend(backend)

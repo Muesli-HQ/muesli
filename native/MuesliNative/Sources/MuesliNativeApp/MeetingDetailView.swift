@@ -1346,7 +1346,9 @@ struct MeetingDetailView: View {
         } else if appState.selectedMeetingSummaryBackend == .customLLM {
             return MeetingSummaryClient.customLLMHasRequiredSettings(config: config)
         } else {
-            return !config.openRouterAPIKey.isEmpty || ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"] != nil
+            return !OpenRouterCredentialResolver.resolvedAPIKey(
+                legacyAPIKey: config.openRouterAPIKey
+            ).isEmpty
         }
     }
 
