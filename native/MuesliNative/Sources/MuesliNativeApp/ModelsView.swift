@@ -945,10 +945,9 @@ struct ModelsView: View {
             }
         } else {
             VStack(alignment: .leading, spacing: 4) {
-                // A stale error message can outlive the download attempt (e.g. an OS-compatibility
-                // check that failed instantly, before any progress snapshot arrived). Don't show a
-                // dead, non-animating progress bar next to it — only render one while a download is
-                // actually in flight. See issue #479.
+                // Only show a moving bar while a download is actually in flight — a failure with
+                // no snapshot (e.g. an instant OS-compatibility rejection) can leave a stale
+                // message behind with nothing in progress to animate.
                 if isDownloading {
                     ProgressView(value: fallbackProgress)
                         .tint(MuesliTheme.accent)
@@ -1143,9 +1142,7 @@ struct ModelsView: View {
         let isDownloading = downloadingModels.contains(option.model)
         let progress = downloadProgress[option.model] ?? 0
         let showsDownloadStatus = shouldShowDownloadStatus(for: option.model, isDownloading: isDownloading)
-        // Models gated to a newer macOS (e.g. Qwen3 ASR requires macOS 15+) should never show a
-        // clickable Download button or a progress bar that's doomed to fail — surface the reason
-        // up front instead. See issue #479.
+        // Don't flag a model already on disk as incompatible, even if the OS check would fail.
         let incompatibilityReason = isDownloaded ? nil : option.incompatibilityReason
 
         return VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
@@ -1322,8 +1319,7 @@ struct ModelsView: View {
                 }
             }
 
-            // Progress bar when downloading. Never shown for an OS-incompatible model — the
-            // download can't start, so there's nothing in progress (see issue #479).
+            // Progress bar when downloading.
             if showsDownloadStatus, incompatibilityReason == nil {
                 downloadProgressView(
                     for: option.model,

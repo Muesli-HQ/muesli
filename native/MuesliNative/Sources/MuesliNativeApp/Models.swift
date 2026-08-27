@@ -284,11 +284,11 @@ struct BackendOption: Equatable {
     }
 
     /// Human-readable reason this model cannot be downloaded on the current system, or `nil`
-    /// if it's compatible. Lets the Models tab disable Download and explain why *before* a doomed
-    /// download attempt, instead of only discovering incompatibility after the download starts
-    /// (see issue #479). Message shape matches the existing `#available`-gated error strings
-    /// elsewhere in the codebase (e.g. `TranscriptionRuntime`) by design — see PR description for
-    /// the known duplication this doesn't consolidate.
+    /// if it's compatible. Lets the Models tab disable Download and explain why upfront, instead
+    /// of only discovering incompatibility after the download starts (see issue #479). Message
+    /// shape matches the existing `#available`-gated error strings elsewhere in the codebase
+    /// (e.g. `TranscriptionRuntime`) by design — see PR description for the known duplication
+    /// this doesn't consolidate.
     var incompatibilityReason: String? {
         switch backend {
         case "nemotron35", "qwen", "cohere", "indicasr", "gemma4-litert":
