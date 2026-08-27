@@ -876,7 +876,7 @@ struct ModelsView: View {
                 }
             }
 
-            if selectedOption.backend == "fluidaudio" {
+            if selectedOption.backend == BackendOption.parakeetMultilingual.backend {
                 HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
                     Text("Language")
                         .font(MuesliTheme.caption())

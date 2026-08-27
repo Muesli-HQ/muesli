@@ -781,6 +781,7 @@ final class MeetingSession {
                         cohereLanguage: config.resolvedCohereLanguage,
                         indicASRLanguage: config.resolvedIndicASRLanguage,
                         whisperLanguage: config.resolvedWhisperLanguage,
+                        parakeetLanguage: config.resolvedParakeetLanguage,
                         appleSpeechLanguage: config.resolvedAppleSpeechLanguage
                     )
                     let normalizedSegments = normalizeSystemTranscription(
@@ -1080,6 +1081,7 @@ final class MeetingSession {
                     cohereLanguage: config.resolvedCohereLanguage,
                     indicASRLanguage: config.resolvedIndicASRLanguage,
                     whisperLanguage: config.resolvedWhisperLanguage,
+                    parakeetLanguage: config.resolvedParakeetLanguage,
                     appleSpeechLanguage: config.resolvedAppleSpeechLanguage
                 )
                 if !result.text.isEmpty {
@@ -1312,6 +1314,7 @@ final class MeetingSession {
                 cohereLanguage: config.resolvedCohereLanguage,
                 indicASRLanguage: config.resolvedIndicASRLanguage,
                 whisperLanguage: config.resolvedWhisperLanguage,
+                parakeetLanguage: config.resolvedParakeetLanguage,
                 appleSpeechLanguage: config.resolvedAppleSpeechLanguage
             )
             if !result.text.isEmpty {
@@ -1421,6 +1424,7 @@ final class MeetingSession {
                         cohereLanguage: config.resolvedCohereLanguage,
                         indicASRLanguage: config.resolvedIndicASRLanguage,
                         whisperLanguage: config.resolvedWhisperLanguage,
+                        parakeetLanguage: config.resolvedParakeetLanguage,
                         appleSpeechLanguage: config.resolvedAppleSpeechLanguage
                     )
                     repairedSegments.append(contentsOf: normalizeSystemTranscription(
@@ -1455,6 +1459,7 @@ final class MeetingSession {
                 cohereLanguage: config.resolvedCohereLanguage,
                 indicASRLanguage: config.resolvedIndicASRLanguage,
                 whisperLanguage: config.resolvedWhisperLanguage,
+                parakeetLanguage: config.resolvedParakeetLanguage,
                 appleSpeechLanguage: config.resolvedAppleSpeechLanguage
             )
             return normalizeSystemTranscription(

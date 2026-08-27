@@ -8503,6 +8503,7 @@ public final class MuesliController: NSObject {
                     indicASRLanguage: configSnapshot.resolvedIndicASRLanguage,
                     whisperLanguage: configSnapshot.resolvedWhisperLanguage,
                     qwen3AsrLanguage: configSnapshot.resolvedQwen3AsrLanguage,
+                    parakeetLanguage: configSnapshot.resolvedParakeetLanguage,
                     appleSpeechLanguage: configSnapshot.resolvedAppleSpeechLanguage,
                     enablePostProcessor: false,
                     customWords: self.serializedCustomWords(),

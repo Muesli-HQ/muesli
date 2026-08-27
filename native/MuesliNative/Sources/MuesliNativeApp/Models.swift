@@ -247,8 +247,9 @@ struct BackendOption: Equatable {
     /// Models available for download and use.
     static let all = currentCatalog.all
 
-    /// The first-run default uses the system-managed backend when the OS exposes it.
-    /// Parakeet remains the deterministic fallback for older or unsupported Macs.
+    /// The first-run default is Parakeet Unified (English), with Parakeet v3
+    /// (multilingual) as the second candidate; Apple Speech remains available
+    /// in the catalog but is not the onboarding default.
     static let onboardingDefault = currentCatalog.onboardingDefault
 
     /// Curated first-run choices. Experimental models are excluded by default.
