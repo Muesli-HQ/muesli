@@ -694,7 +694,19 @@ private actor ManagedASRModelOperations {
     func cancelAndWait(modelID: String) async {
         guard let active = operations[modelID] else { return }
         active.task.cancel()
-        _ = try? await active.task.value
+        let result: Result<URL, Error>
+        do {
+            result = .success(try await active.task.value)
+        } catch {
+            result = .failure(error)
+        }
+
+        // The detached completion observer also calls `finish`, but a caller
+        // that awaits cancellation must not return while this cancelled
+        // operation is still eligible for a new caller to join. The operation
+        // ID guard in `finish` makes this safe if the observer already ran or
+        // a newer operation has since replaced it.
+        finish(modelID: modelID, operationID: active.id, result: result)
     }
 
     func beginDeletion(modelID: String) async -> ManagedASRModelDeletionToken {
