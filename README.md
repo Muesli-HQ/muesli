@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  <strong>Local-first dictation & meeting transcription for macOS</strong><br>
-  Local-first speech-to-text · Optional OpenAI BYOK dictation · Privacy by default
+  <strong>Local-by-default dictation & meeting transcription for macOS</strong><br>
+  On-device speech-to-text by default · Optional OpenAI BYOK dictation · Privacy by default
 </p>
 
 <p align="center">
