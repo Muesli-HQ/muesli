@@ -655,9 +655,6 @@ actor TranscriptionCoordinator {
             } else {
                 throw AppleSpeechAnalyzerError.unavailable
             }
-        case "openai":
-            // Cloud provider — nothing to download or warm up locally.
-            break
         default:
             throw NSError(domain: "MuesliTranscriptionRuntime", code: 5, userInfo: [
                 NSLocalizedDescriptionKey: "Unknown transcription backend: \(backend.backend)",

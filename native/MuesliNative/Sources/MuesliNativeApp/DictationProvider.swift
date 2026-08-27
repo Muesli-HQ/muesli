@@ -19,16 +19,6 @@ enum DictationProvider: String, CaseIterable, Codable, Sendable {
         }
     }
 
-    /// Descriptive subtitle shown in Settings.
-    var settingsDescription: String {
-        switch self {
-        case .local:
-            return "Runs on your Mac. Private, free, low latency."
-        case .openAI:
-            return "Streams audio over OpenAI Realtime using your API key."
-        }
-    }
-
     static func resolved(_ rawValue: String?) -> Self {
         guard let rawValue, let provider = Self(rawValue: rawValue) else {
             return defaultProvider

@@ -3898,32 +3898,6 @@ struct SettingsView: View {
 /// Required because the app runs as .accessory (no menu bar), so key equivalents
 /// don't route to text fields by default.
 class EditableNSSecureTextField: NSSecureTextField {
-    private var outsideClickMonitor: Any?
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        removeOutsideClickMonitor()
-        guard window != nil else { return }
-
-        outsideClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
-            guard let self,
-                  self.currentEditor() != nil,
-                  event.window === self.window else {
-                return event
-            }
-
-            let hitView = event.window?.contentView?.hitTest(event.locationInWindow)
-            guard !Self.isTextInputView(hitView) else { return event }
-
-            self.window?.makeFirstResponder(nil)
-            return event
-        }
-    }
-
-    deinit {
-        removeOutsideClickMonitor()
-    }
-
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.modifierFlags.contains(.command) {
             switch event.charactersIgnoringModifiers {
@@ -3940,24 +3914,6 @@ class EditableNSSecureTextField: NSSecureTextField {
             }
         }
         return super.performKeyEquivalent(with: event)
-    }
-
-    private func removeOutsideClickMonitor() {
-        if let outsideClickMonitor {
-            NSEvent.removeMonitor(outsideClickMonitor)
-            self.outsideClickMonitor = nil
-        }
-    }
-
-    private static func isTextInputView(_ view: NSView?) -> Bool {
-        var candidate = view
-        while let current = candidate {
-            if current is NSTextField || current is NSTextView {
-                return true
-            }
-            candidate = current.superview
-        }
-        return false
     }
 }
 

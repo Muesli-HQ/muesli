@@ -279,7 +279,7 @@ struct BackendOption: Equatable {
     }
 
     var supportsMeetingTranscription: Bool {
-        !isStreamingDictationBackend && backend != "openai"
+        !isStreamingDictationBackend
     }
 
     var isSystemManaged: Bool {
@@ -338,9 +338,6 @@ struct BackendOption: Equatable {
                 return AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem
             }
             return false
-        case "openai":
-            // Cloud provider — no local download required.
-            return true
         default:
             return false
         }

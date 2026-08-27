@@ -7,7 +7,6 @@ struct OpenAIDictationConfiguration: Sendable {
 
 enum OpenAITranscriptionError: LocalizedError, @unchecked Sendable {
     case missingAPIKey
-    case invalidModel
     case emptyTranscript
     case timedOut
     case audioBackpressure
@@ -18,8 +17,6 @@ enum OpenAITranscriptionError: LocalizedError, @unchecked Sendable {
         switch self {
         case .missingAPIKey:
             return "No OpenAI API key is configured. Add one in Settings → Dictation."
-        case .invalidModel:
-            return "The OpenAI transcription model is not configured."
         case .emptyTranscript:
             return "OpenAI returned an empty transcript."
         case .timedOut:
@@ -48,7 +45,6 @@ enum OpenAIRealtimeProtocol {
 
     static func sessionUpdate(model: String) throws -> String {
         let normalized = OpenAITranscriptionClient.normalizeModel(model)
-        guard !normalized.isEmpty else { throw OpenAITranscriptionError.invalidModel }
         return try encode([
             "type": "session.update",
             "session": [
