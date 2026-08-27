@@ -427,6 +427,7 @@ public final class MuesliController: NSObject {
 
     private(set) var config: AppConfig
     private(set) var selectedBackend: BackendOption
+    private(set) var selectedDictationProvider: DictationProvider
     private(set) var selectedMeetingTranscriptionBackend: BackendOption
     private(set) var selectedMeetingSummaryBackend: MeetingSummaryBackendOption
     private(set) var selectedPostProcessorBackend: TranscriptCleanupBackendOption
@@ -452,6 +453,7 @@ public final class MuesliController: NSObject {
     private var dictationState: DictationState = .idle
     private var dictationBackendReadiness: DictationBackendReadiness = .preparing
     private var dictationStartedAt: Date?
+    private var openAIRealtimeStream: OpenAIRealtimeDictationStream?
     private var dictationLatencyTraceID: UUID?
     private var dictationLatencyTraceStartedAt: Date?
     private var currentDictationOutputMode: DictationOutputMode = .paste
@@ -587,6 +589,7 @@ public final class MuesliController: NSObject {
             MuesliTheme.accentOverrideHex = loadedConfig.recordingColorHex
         }
         self.selectedBackend = loadedBackend
+        self.selectedDictationProvider = loadedConfig.resolvedDictationProvider
         let configuredMeetingBackend = BackendOption.resolve(
             backend: loadedConfig.meetingTranscriptionBackend,
             model: loadedConfig.meetingTranscriptionModel
@@ -876,13 +879,17 @@ public final class MuesliController: NSObject {
                     )
                 }
                 let dictationBackend = self.selectedBackend
-                guard await self.prepareDictationBackend(dictationBackend) else { return }
-                await self.preloadOptionalTranscriptionResources(
-                    for: dictationBackend,
-                    enablePostProcessor: self.canRunTranscriptCleanup(option: ppOption),
-                    includeMeetingHelpers: includesMeetings,
-                    meetingHelperTrigger: .appLaunch
-                )
+                if self.selectedDictationProvider == .openAI {
+                    self.dictationBackendReadiness = .ready
+                } else {
+                    guard await self.prepareDictationBackend(dictationBackend) else { return }
+                    await self.preloadOptionalTranscriptionResources(
+                        for: dictationBackend,
+                        enablePostProcessor: self.canRunTranscriptCleanup(option: ppOption),
+                        includeMeetingHelpers: includesMeetings,
+                        meetingHelperTrigger: .appLaunch
+                    )
+                }
                 if includesMeetings, self.selectedMeetingTranscriptionBackend != self.selectedBackend {
                     await self.transcriptionCoordinator.preload(
                         backend: self.selectedMeetingTranscriptionBackend,
@@ -1334,6 +1341,7 @@ public final class MuesliController: NSObject {
             totalMeetings: appState.meetingStats.totalMeetings
         )
         appState.selectedBackend = selectedBackend
+        appState.dictationProvider = selectedDictationProvider
         appState.selectedMeetingTranscriptionBackend = selectedMeetingTranscriptionBackend
         appState.selectedMeetingSummaryBackend = selectedMeetingSummaryBackend
         appState.selectedPostProcessorBackend = selectedPostProcessorBackend
@@ -1535,6 +1543,7 @@ public final class MuesliController: NSObject {
         selectedBackend = BackendOption.all.first(where: {
             $0.backend == config.sttBackend && $0.model == config.sttModel
         }) ?? .whisper
+        selectedDictationProvider = config.resolvedDictationProvider
         let configuredPostProcessorBackend = TranscriptCleanupBackendOption.resolved(config.postProcessorBackend)
         let activePostProcessor = PostProcessorOption.resolve(id: config.activePostProcessorId)
         if configuredPostProcessorBackend == .local,
@@ -1621,6 +1630,7 @@ public final class MuesliController: NSObject {
         applyAppThemeAppearance()
         refreshIndicatorVisibility()
         appState.selectedBackend = selectedBackend
+        appState.dictationProvider = selectedDictationProvider
         appState.selectedMeetingTranscriptionBackend = selectedMeetingTranscriptionBackend
         appState.selectedMeetingSummaryBackend = selectedMeetingSummaryBackend
         appState.selectedPostProcessorBackend = selectedPostProcessorBackend
@@ -2760,11 +2770,21 @@ public final class MuesliController: NSObject {
     }
 
     func selectBackend(_ option: BackendOption) {
+        selectBackend(option, makePrimaryDictationModel: false)
+    }
+
+    private func selectBackend(
+        _ option: BackendOption,
+        makePrimaryDictationModel: Bool
+    ) {
         let replacesGemmaCleanup = !selectedPostProcessorBackend.isCompatible(with: option)
         let hasLocalCleanupModel = PostProcessorOption.runtimeOption(id: config.activePostProcessorId) != nil
         updateConfig {
             $0.sttBackend = option.backend
             $0.sttModel = option.model
+            if makePrimaryDictationModel {
+                $0.dictationProvider = DictationProvider.local.rawValue
+            }
             if replacesGemmaCleanup {
                 $0.postProcessorBackend = TranscriptCleanupBackendOption.local.backend
                 if !hasLocalCleanupModel {
@@ -2803,6 +2823,73 @@ public final class MuesliController: NSObject {
                 self.historyWindowController?.updateBackendLabel()
             }
         }
+    }
+
+    // MARK: - Dictation Provider (Local / OpenAI)
+
+    private func canChangePrimaryDictationModel() -> Bool {
+        guard !dictationAudioSessionManager.hasActiveSession, dictationStartedAt == nil else {
+            statusBarController?.setStatus("Finish the current dictation before changing models")
+            return false
+        }
+        return true
+    }
+
+    func selectDictationProvider(_ provider: DictationProvider) {
+        guard provider != selectedDictationProvider else { return }
+        guard canChangePrimaryDictationModel() else { return }
+        updateConfig { $0.dictationProvider = provider.rawValue }
+        if provider == .openAI {
+            dictationBackendReadiness = .ready
+            statusBarController?.refresh()
+            return
+        }
+
+        dictationBackendReadiness = .preparing
+        let option = selectedBackend
+        Task { [weak self] in
+            guard let self else { return }
+            await self.transcriptionCoordinator.setNemotron35PromptId(self.config.resolvedNemotron35Language.promptId)
+            let prepared = await self.prepareDictationBackend(option)
+            if prepared {
+                await self.preloadOptionalTranscriptionResources(
+                    for: option,
+                    enablePostProcessor: self.canRunTranscriptCleanup(option: self.runtimePostProcessorOption()),
+                    includeMeetingHelpers: self.config.resolvedOnboardingUseCase.includesMeetings,
+                    meetingHelperTrigger: .backendChange
+                )
+            }
+            await MainActor.run {
+                self.statusBarController?.refresh()
+                self.historyWindowController?.updateBackendLabel()
+            }
+        }
+    }
+
+    // MARK: - OpenAI Dictation Configuration
+
+    func setOpenAIDictationAPIKey(_ apiKey: String) {
+        let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        updateConfig { $0.openAIAPIKey = trimmed }
+    }
+
+    func selectOpenAIDictationModel(_ model: String) {
+        updateConfig { $0.openaiDictationModel = OpenAITranscriptionClient.normalizeModel(model) }
+    }
+
+    func testOpenAIConnection() async throws {
+        try await OpenAITranscriptionClient.testConnection(configuration: OpenAIDictationConfiguration(
+            apiKey: resolvedOpenAIAPIKey(),
+            model: config.openaiDictationModel
+        ))
+    }
+
+    private func resolvedOpenAIAPIKey() -> String {
+        let configuredKey = config.openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !configuredKey.isEmpty { return configuredKey }
+        let environmentKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return environmentKey
     }
 
     private func prepareDictationBackend(_ backend: BackendOption) async -> Bool {
@@ -4907,10 +4994,26 @@ public final class MuesliController: NSObject {
         }
     }
 
-    @objc func selectBackendFromMenu(_ sender: NSMenuItem) {
+    @objc func selectLocalDictationModelFromMenu(_ sender: NSMenuItem) {
         guard let label = sender.representedObject as? String,
               let option = BackendOption.all.first(where: { $0.label == label }) else { return }
-        selectBackend(option)
+        guard selectedDictationProvider != .local || selectedBackend != option else { return }
+        guard canChangePrimaryDictationModel() else { return }
+        selectBackend(option, makePrimaryDictationModel: true)
+    }
+
+    @objc func selectOpenAIDictationModelFromMenu(_ sender: NSMenuItem) {
+        guard let model = sender.representedObject as? String else { return }
+        let normalizedModel = OpenAITranscriptionClient.normalizeModel(model)
+        guard selectedDictationProvider != .openAI
+            || config.openaiDictationModel != normalizedModel else { return }
+        guard canChangePrimaryDictationModel() else { return }
+        updateConfig {
+            $0.dictationProvider = DictationProvider.openAI.rawValue
+            $0.openaiDictationModel = normalizedModel
+        }
+        dictationBackendReadiness = .ready
+        statusBarController?.refresh()
     }
 
     @objc func selectMeetingSummaryBackendFromMenu(_ sender: NSMenuItem) {
@@ -9286,7 +9389,7 @@ public final class MuesliController: NSObject {
 
     /// Streaming RNNT dictation backend (handsfree live text at cursor).
     private var isStreamingDictationBackend: Bool {
-        selectedBackend.isStreamingDictationBackend
+        selectedDictationProvider.usesStreamingBackend(selectedBackend)
     }
 
     private func ensureDictationBackendReady() -> Bool {
@@ -9611,7 +9714,8 @@ public final class MuesliController: NSObject {
             let startedAt = pendingDictationStopStartedAt ?? dictationStartedAt ?? Date()
             pendingDictationStopSessionID = nil
             pendingDictationStopStartedAt = nil
-            finishStandardDictationStop(wavURL: wavURL, startedAt: startedAt)
+            let openAIStream = detachOpenAIRealtimeDictation()
+            finishStandardDictationStop(wavURL: wavURL, startedAt: startedAt, openAIStream: openAIStream)
         case .audioRestored(let eventSessionID):
             guard pendingReleaseSoundSessionID == eventSessionID else { break }
             pendingReleaseSoundSessionID = nil
@@ -9623,6 +9727,7 @@ public final class MuesliController: NSObject {
             break
         case .failed(_, let error):
             fputs("[muesli-native] recorder start failed: \(error)\n", stderr)
+            cancelOpenAIRealtimeDictation()
             if !isDictationTestMode {
                 recordDiagnosticIncident(
                     kind: .dictationAudioFailed,
@@ -9764,6 +9869,41 @@ public final class MuesliController: NSObject {
         externalDictationTargetApp(from: NSWorkspace.shared.frontmostApplication)
     }
 
+    /// Starts the hosted connection before microphone capture and forwards the
+    /// authoritative route-aware recorder buffers through a bounded serial pump.
+    /// The recorder still writes its WAV so a network failure can fall back locally.
+    private func beginOpenAIRealtimeDictationIfNeeded() -> Bool {
+        guard !isDictationTestMode, selectedDictationProvider == .openAI else { return true }
+        let apiKey = resolvedOpenAIAPIKey()
+        guard !apiKey.isEmpty else {
+            let message = "OpenAI API key not configured. Add one in Settings → Dictation."
+            statusBarController?.setStatus(message)
+            indicator.showWarning("OpenAI not configured", icon: "!", duration: 3)
+            return false
+        }
+
+        cancelOpenAIRealtimeDictation()
+        let stream = OpenAIRealtimeDictationStream(configuration: OpenAIDictationConfiguration(
+            apiKey: apiKey,
+            model: config.openaiDictationModel
+        ))
+        openAIRealtimeStream = stream
+        dictationAudioSessionManager.onAudioBuffer = { [weak stream] samples in
+            stream?.append(samples)
+        }
+        return true
+    }
+
+    private func detachOpenAIRealtimeDictation() -> OpenAIRealtimeDictationStream? {
+        dictationAudioSessionManager.onAudioBuffer = nil
+        defer { openAIRealtimeStream = nil }
+        return openAIRealtimeStream
+    }
+
+    private func cancelOpenAIRealtimeDictation() {
+        detachOpenAIRealtimeDictation()?.cancel()
+    }
+
     private func captureDictationCorrectionTargetApp() {
         capturedDictationCorrectionTargetApp = currentExternalDictationTargetApp()
     }
@@ -9774,6 +9914,7 @@ public final class MuesliController: NSObject {
         guard ensureDictationBackendReady() else { return }
         if isMeetingRecording() { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
+        guard beginOpenAIRealtimeDictationIfNeeded() else { return }
 
         // Nemotron backends support hold-to-talk (record → transcribe on release) in
         // addition to double-tap handsfree streaming. The hold path uses the normal
@@ -9924,6 +10065,7 @@ public final class MuesliController: NSObject {
             return
         }
         fputs("[muesli-native] cancel\n", stderr)
+        cancelOpenAIRealtimeDictation()
         resetDictationOutputMode()
 
         if isNemotron35Streaming {
@@ -9956,6 +10098,7 @@ public final class MuesliController: NSObject {
         guard ensureDictationBackendReady() else { return false }
         if isMeetingRecording() { return false }
         if blockDictationForMeetingActivityIfNeeded() { return false }
+        guard beginOpenAIRealtimeDictationIfNeeded() else { return false }
         fputs("[muesli-native] toggle dictation start\n", stderr)
         if dictationLatencyTraceID == nil {
             beginDictationLatencyTrace(reason: "toggle")
@@ -10122,6 +10265,7 @@ public final class MuesliController: NSObject {
             || hasComputerUseActivity
             || hasQuilActivity else { return }
         fputs("[muesli-native] cancelling dictation audio session because meeting is active\n", stderr)
+        cancelOpenAIRealtimeDictation()
 
         if hasComputerUseActivity {
             handleComputerUseCancel()
@@ -10260,9 +10404,14 @@ public final class MuesliController: NSObject {
         ])
     }
 
-    private func finishStandardDictationStop(wavURL stoppedWavURL: URL?, startedAt: Date) {
+    private func finishStandardDictationStop(
+        wavURL stoppedWavURL: URL?,
+        startedAt: Date,
+        openAIStream: OpenAIRealtimeDictationStream?
+    ) {
         markDictationLatency("stop_finished")
         guard let wavURL = stoppedWavURL else {
+            openAIStream?.cancel()
             fputs("[muesli-native] stop without wav\n", stderr)
             clearCapturedDictationSessionContext()
             resetDictationOutputMode()
@@ -10274,6 +10423,7 @@ public final class MuesliController: NSObject {
         }
         let duration = max(Date().timeIntervalSince(startedAt), 0)
         if duration < 0.3 {
+            openAIStream?.cancel()
             fputs("[muesli-native] discarded short recording\n", stderr)
             try? FileManager.default.removeItem(at: wavURL)
             if isDictationTestMode {
@@ -10294,7 +10444,16 @@ public final class MuesliController: NSObject {
         syncDictationRecorderWarmup(intent: .postDictation(.dictationStop))
         let isTestMode = isDictationTestMode
         let outputMode = currentDictationOutputMode
+        // Test mode always exercises the selected local model. Normal dictation
+        // uses the configured provider while retaining the local selection for
+        // an instant switch back.
         let transcriptionBackend = isTestMode ? (dictationTestBackend ?? selectedBackend) : selectedBackend
+        let openAIFallbackBackend = isTestMode || openAIStream == nil
+            ? nil
+            : BackendOption.resolveOpenAIFallback(
+                selected: selectedBackend,
+                available: BackendOption.downloaded
+            )
         let transcriptionLanguage = isTestMode ? (dictationTestCohereLanguage ?? config.resolvedCohereLanguage) : config.resolvedCohereLanguage
         let indicTranscriptionLanguage = config.resolvedIndicASRLanguage
         let whisperTranscriptionLanguage = config.resolvedWhisperLanguage
@@ -10311,25 +10470,63 @@ public final class MuesliController: NSObject {
             }
 
             do {
-                let ppOption = self.runtimePostProcessorOption()
-                await self.configureTranscriptCleanupForRuntime(option: ppOption)
-                let enableTranscriptCleanup = self.canRunTranscriptCleanup(option: ppOption)
-                let result = try await self.transcriptionCoordinator.transcribeDictation(
-                    at: wavURL,
-                    backend: transcriptionBackend,
-                    cohereLanguage: transcriptionLanguage,
-                    indicASRLanguage: indicTranscriptionLanguage,
-                    whisperLanguage: whisperTranscriptionLanguage,
-                    qwen3AsrLanguage: self.config.resolvedQwen3AsrLanguage,
-                    parakeetLanguage: self.config.resolvedParakeetLanguage,
-                    appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage,
-                    enablePostProcessor: enableTranscriptCleanup,
-                    customWords: self.serializedCustomWords(),
-                    appContext: promptContext
-                )
+                let rawText: String
+                let completionBackend: String
+                if let openAIStream {
+                    do {
+                        // OpenAI transcription models already produce normalized
+                        // prose, so hosted success intentionally bypasses cleanup.
+                        rawText = try await openAIStream.finish()
+                        completionBackend = "openai-realtime"
+                    } catch {
+                        guard let fallbackBackend = openAIFallbackBackend else { throw error }
+                        fputs("[openai-realtime] stream failed; falling back locally: \(error)\n", stderr)
+                        try await self.transcriptionCoordinator.preloadRequired(
+                            backend: fallbackBackend,
+                            enablePostProcessor: false,
+                            includeMeetingHelpers: false,
+                            appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage
+                        )
+                        let ppOption = self.runtimePostProcessorOption()
+                        await self.configureTranscriptCleanupForRuntime(option: ppOption)
+                        let result = try await self.transcriptionCoordinator.transcribeDictation(
+                            at: wavURL,
+                            backend: fallbackBackend,
+                            cohereLanguage: transcriptionLanguage,
+                            indicASRLanguage: indicTranscriptionLanguage,
+                            whisperLanguage: whisperTranscriptionLanguage,
+                            qwen3AsrLanguage: self.config.resolvedQwen3AsrLanguage,
+                            parakeetLanguage: self.config.resolvedParakeetLanguage,
+                            appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage,
+                            enablePostProcessor: self.canRunTranscriptCleanup(option: ppOption),
+                            customWords: self.serializedCustomWords(),
+                            appContext: promptContext
+                        )
+                        rawText = result.text
+                        completionBackend = fallbackBackend.backend
+                    }
+                } else {
+                    let ppOption = self.runtimePostProcessorOption()
+                    await self.configureTranscriptCleanupForRuntime(option: ppOption)
+                    let result = try await self.transcriptionCoordinator.transcribeDictation(
+                        at: wavURL,
+                        backend: transcriptionBackend,
+                        cohereLanguage: transcriptionLanguage,
+                        indicASRLanguage: indicTranscriptionLanguage,
+                        whisperLanguage: whisperTranscriptionLanguage,
+                        qwen3AsrLanguage: self.config.resolvedQwen3AsrLanguage,
+                        parakeetLanguage: self.config.resolvedParakeetLanguage,
+                        appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage,
+                        enablePostProcessor: self.canRunTranscriptCleanup(option: ppOption),
+                        customWords: self.serializedCustomWords(),
+                        appContext: promptContext
+                    )
+                    rawText = result.text
+                    completionBackend = transcriptionBackend.backend
+                }
                 // Drop result if test was cancelled (user navigated away)
                 try Task.checkCancellation()
-                let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
                 await MainActor.run {
                     self.markDictationLatency("transcription_completed", trace: completionLatencyTrace)
                 }
@@ -10399,7 +10596,7 @@ public final class MuesliController: NSObject {
                                     startedAt: startedAt,
                                     outputMode: outputMode,
                                     targetApp: completionTargetApp,
-                                    backend: transcriptionBackend.backend
+                                    backend: completionBackend
                                 )
                                 self.finishDictationLatencyTrace(
                                     "bookkeeping_completed",
@@ -10423,7 +10620,7 @@ public final class MuesliController: NSObject {
                             startedAt: startedAt,
                             outputMode: outputMode,
                             targetApp: nil,
-                            backend: transcriptionBackend.backend
+                            backend: completionBackend
                         )
                         self.finishDictationLatencyTrace(
                             "bookkeeping_completed",

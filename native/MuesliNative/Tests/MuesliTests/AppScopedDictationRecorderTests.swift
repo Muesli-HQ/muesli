@@ -5,6 +5,26 @@ import Testing
 
 @Suite("AppScopedDictationRecorder")
 struct AppScopedDictationRecorderTests {
+    @Test("audio buffers are forwarded without changing capture callbacks")
+    func audioBuffersAreForwarded() throws {
+        let streamingRecorder = FakeStreamingRecorder()
+        let recorder = AppScopedDictationRecorder(
+            recorder: streamingRecorder,
+            prepareQueue: DispatchQueue(label: "test.app-scoped-dictation.audio-forwarding")
+        )
+        var received: [[Float]] = []
+        var firstBufferCount = 0
+        recorder.onAudioBuffer = { received.append($0) }
+        recorder.onFirstCapturedAudioBuffer = { _ in firstBufferCount += 1 }
+
+        _ = try recorder.start()
+        streamingRecorder.onAudioBuffer?([0.25, -0.5])
+        streamingRecorder.onAudioBuffer?([0.75])
+
+        #expect(received == [[0.25, -0.5], [0.75]])
+        #expect(firstBufferCount == 1)
+    }
+
     @Test("cancelled queued explicit warmup does not prepare microphone")
     func cancelledQueuedExplicitWarmupDoesNotPrepareMicrophone() {
         let streamingRecorder = FakeStreamingRecorder()

@@ -331,6 +331,34 @@ struct BackendOptionTests {
         #expect(streaming == [.nemotron35Multilingual])
     }
 
+    @Test("OpenAI never uses local streaming")
+    func providerStreamingRouting() {
+        #expect(DictationProvider.local.usesStreamingBackend(.nemotron35Multilingual))
+        #expect(!DictationProvider.openAI.usesStreamingBackend(.nemotron35Multilingual))
+        #expect(!DictationProvider.local.usesStreamingBackend(.parakeetMultilingual))
+    }
+
+    @Test("OpenAI fallback excludes streaming backends")
+    func openAIFallbackResolution() {
+        let available: [BackendOption] = [
+            .nemotron35Multilingual,
+            .parakeetUnified,
+            .whisperSmall,
+        ]
+        #expect(BackendOption.resolveOpenAIFallback(
+            selected: .nemotron35Multilingual,
+            available: available
+        ) == .parakeetUnified)
+        #expect(BackendOption.resolveOpenAIFallback(
+            selected: .whisperSmall,
+            available: available
+        ) == .whisperSmall)
+        #expect(BackendOption.resolveOpenAIFallback(
+            selected: .nemotron35Multilingual,
+            available: [.nemotron35Multilingual]
+        ) == nil)
+    }
+
     @Test("streaming dictation models are excluded from meeting transcription")
     func streamingDictationModelsAreExcludedFromMeetingTranscription() {
         #expect(!BackendOption.nemotron35Multilingual.supportsMeetingTranscription)
@@ -3096,5 +3124,90 @@ struct ParakeetLanguageTests {
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
 
         #expect(decoded.resolvedParakeetLanguage == .german)
+    }
+}
+
+@Suite("OpenAIDictationProvider")
+struct OpenAIDictationProviderTests {
+    @Test("DictationProvider resolves raw values")
+    func providerResolution() {
+        #expect(DictationProvider.resolved("local") == .local)
+        #expect(DictationProvider.resolved("openAI") == .openAI)
+        #expect(DictationProvider.resolved(nil) == .local)
+        #expect(DictationProvider.resolved("bogus") == .local)
+    }
+
+    @Test("AppConfig persists provider settings")
+    func configRoundTrip() throws {
+        var config = AppConfig()
+        config.dictationProvider = DictationProvider.openAI.rawValue
+        config.openaiDictationModel = "gpt-transcribe"
+        let data = try JSONEncoder().encode(config)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        #expect(json?["dictation_provider"] as? String == "openAI")
+        #expect(json?["openai_dictation_model"] as? String == "gpt-transcribe")
+
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+        #expect(decoded.resolvedDictationProvider == .openAI)
+        #expect(decoded.openaiDictationModel == "gpt-transcribe")
+    }
+
+    @Test("AppConfig defaults provider settings when keys are missing or invalid")
+    func configDefaultsForMissingProviderSettings() throws {
+        let missing = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+        #expect(missing.resolvedDictationProvider == .local)
+        #expect(missing.openaiDictationModel == OpenAITranscriptionClient.defaultModel)
+
+        let invalidJSON = Data("{\"dictation_provider\":\"bogus\"}".utf8)
+        let invalid = try JSONDecoder().decode(AppConfig.self, from: invalidJSON)
+        #expect(invalid.resolvedDictationProvider == .local)
+        #expect(invalid.openaiDictationModel == OpenAITranscriptionClient.defaultModel)
+    }
+
+    @Test("OpenAITranscriptionClient normalizes empty model")
+    func normalizeModel() {
+        #expect(OpenAITranscriptionClient.normalizeModel("") == OpenAITranscriptionClient.defaultModel)
+        #expect(OpenAITranscriptionClient.normalizeModel("  gpt-transcribe  ") == "gpt-transcribe")
+    }
+
+    @Test("Realtime session update uses current transcription schema")
+    func realtimeSessionUpdate() throws {
+        let data = try #require(OpenAIRealtimeProtocol.sessionUpdate(model: "gpt-live-transcribe").data(using: .utf8))
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(json["type"] as? String == "session.update")
+        let session = try #require(json["session"] as? [String: Any])
+        #expect(session["type"] as? String == "transcription")
+        let audio = try #require(session["audio"] as? [String: Any])
+        let input = try #require(audio["input"] as? [String: Any])
+        let format = try #require(input["format"] as? [String: Any])
+        #expect(format["type"] as? String == "audio/pcm")
+        #expect(format["rate"] as? Int == 24_000)
+        let transcription = try #require(input["transcription"] as? [String: Any])
+        #expect(transcription["model"] as? String == "gpt-live-transcribe")
+        #expect(input["turn_detection"] is NSNull)
+    }
+
+    @Test("Realtime PCM encoder resamples and clips")
+    func realtimePCMEncoder() {
+        var encoder = OpenAIRealtimePCMEncoder()
+        let first = encoder.encode([-2, 0, 2])
+        let second = encoder.encode([0, 0])
+        #expect(!first.isEmpty)
+        #expect(!second.isEmpty)
+        #expect(first.count.isMultiple(of: 2))
+        let firstPCM = first.withUnsafeBytes { $0.loadUnaligned(as: Int16.self) }
+        #expect(Int16(littleEndian: firstPCM) == Int16.min)
+
+        let samples = (0..<257).map { index in
+            Float(sin(Double(index) * 0.07))
+        }
+        var oneShotEncoder = OpenAIRealtimePCMEncoder()
+        let oneShot = oneShotEncoder.encode(samples)
+        var chunkedEncoder = OpenAIRealtimePCMEncoder()
+        var chunked = Data()
+        chunked.append(chunkedEncoder.encode(Array(samples[..<79])))
+        chunked.append(chunkedEncoder.encode(Array(samples[79..<181])))
+        chunked.append(chunkedEncoder.encode(Array(samples[181...])))
+        #expect(chunked == oneShot)
     }
 }

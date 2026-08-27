@@ -70,6 +70,7 @@ case "${shard}" in
       PasteControllerTests
       QuilTransformationTests
       BackendOptionTests
+      OpenAIDictationProviderTests
       SummaryModelPresetTests
       HotkeyMonitorTests
       InteractiveAudioSessionOwnershipTests

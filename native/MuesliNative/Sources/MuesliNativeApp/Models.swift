@@ -278,6 +278,18 @@ struct BackendOption: Equatable {
         Self.streaming.contains(self)
     }
 
+    var supportsOpenAIFallback: Bool {
+        !isStreamingDictationBackend
+    }
+
+    static func resolveOpenAIFallback(
+        selected: BackendOption,
+        available: [BackendOption]
+    ) -> BackendOption? {
+        let compatible = available.filter(\.supportsOpenAIFallback)
+        return compatible.contains(selected) ? selected : compatible.first
+    }
+
     var supportsMeetingTranscription: Bool {
         !isStreamingDictationBackend
     }
@@ -1411,6 +1423,8 @@ struct AppConfig: Codable {
     var computerUseTimeoutSeconds: Int = 120
     var sttBackend: String = BackendOption.parakeetUnified.backend
     var sttModel: String = BackendOption.parakeetUnified.model
+    var dictationProvider: String = DictationProvider.defaultProvider.rawValue
+    var openaiDictationModel: String = OpenAITranscriptionClient.defaultModel
     var dictationInputDeviceUID: String? = nil
     var meetingInputDeviceUID: String? = nil
     var cohereLanguage: String = CohereTranscribeLanguage.defaultLanguage.rawValue
@@ -1546,6 +1560,8 @@ struct AppConfig: Codable {
         case computerUseTimeoutSeconds = "computer_use_timeout_seconds"
         case sttBackend = "stt_backend"
         case sttModel = "stt_model"
+        case dictationProvider = "dictation_provider"
+        case openaiDictationModel = "openai_dictation_model"
         case dictationInputDeviceUID = "dictation_input_device_uid"
         case meetingInputDeviceUID = "meeting_input_device_uid"
         case cohereLanguage = "cohere_language"
@@ -1687,6 +1703,8 @@ struct AppConfig: Codable {
         computerUseTimeoutSeconds = (try? c.decode(Int.self, forKey: .computerUseTimeoutSeconds)) ?? defaults.computerUseTimeoutSeconds
         sttBackend = (try? c.decode(String.self, forKey: .sttBackend)) ?? defaults.sttBackend
         sttModel = (try? c.decode(String.self, forKey: .sttModel)) ?? defaults.sttModel
+        dictationProvider = DictationProvider.resolved(try? c.decode(String.self, forKey: .dictationProvider)).rawValue
+        openaiDictationModel = (try? c.decode(String.self, forKey: .openaiDictationModel)) ?? defaults.openaiDictationModel
         dictationInputDeviceUID = try? c.decode(String.self, forKey: .dictationInputDeviceUID)
         meetingInputDeviceUID = try? c.decode(String.self, forKey: .meetingInputDeviceUID)
         cohereLanguage = CohereTranscribeLanguage.resolvedCode(try? c.decode(String.self, forKey: .cohereLanguage))
@@ -1885,6 +1903,10 @@ struct AppConfig: Codable {
 
     var resolvedCohereLanguage: CohereTranscribeLanguage {
         CohereTranscribeLanguage.resolved(cohereLanguage)
+    }
+
+    var resolvedDictationProvider: DictationProvider {
+        DictationProvider.resolved(dictationProvider)
     }
 
     var resolvedIndicASRLanguage: IndicASRLanguage {

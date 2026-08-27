@@ -2,7 +2,7 @@
 
 # Muesli
 
-Local-first macOS app for **dictation** and **meeting transcription** on Apple Silicon. All speech-to-text runs on-device via CoreML/Neural Engine. Native Swift/AppKit — no Electron, no Python runtime, no cloud STT costs.
+Local-first macOS app for **dictation** and **meeting transcription** on Apple Silicon. Speech-to-text runs on-device via CoreML/Neural Engine by default; users can explicitly opt into BYOK OpenAI Realtime dictation. Native Swift/AppKit — no Electron or Python runtime.
 
 **Status:** Live and public. Available at [GitHub Releases](https://github.com/Muesli-HQ/muesli/releases). Signed, notarized, stapled.
 
