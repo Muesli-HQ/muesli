@@ -33,7 +33,7 @@ Muesli is a **lightweight native macOS app** that combines **WisprFlow-style dic
 ### Dictation
 Hold your hotkey (or double-tap for hands-free mode) → speak → release → transcribed text is pasted at your cursor. **~0.13 second latency** via Parakeet TDT on the Apple Neural Engine.
 
-By default, dictation uses an on-device model. You can instead opt into OpenAI Speech-to-Text with your own API key; in that mode, microphone audio is streamed directly to OpenAI over a Realtime WebSocket for transcription. Muesli retains the local recording only long enough to fall back to your selected on-device model if the hosted request fails.
+By default, dictation uses an on-device model. You can instead opt into OpenAI Speech-to-Text with your own API key; in that mode, microphone audio is streamed directly to OpenAI over a Realtime WebSocket for transcription. Muesli retains the local recording only long enough to fall back to a compatible installed on-device model if the hosted request fails; streaming-only models are excluded from fallback.
 
 ### Meeting Transcription
 Start a meeting recording → Muesli captures your mic (You) and system audio (Others) simultaneously → VAD-driven chunked transcription happens during the meeting at natural speech boundaries → speaker diarization identifies individual remote speakers (Speaker 1, Speaker 2, etc.) → when you stop, the transcript is ready in seconds, not minutes. Generate structured meeting notes via OpenAI, free OpenRouter models, your ChatGPT Plus/Pro subscription, or local Ollama models.

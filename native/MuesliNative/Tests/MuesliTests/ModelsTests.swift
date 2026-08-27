@@ -338,6 +338,27 @@ struct BackendOptionTests {
         #expect(!DictationProvider.local.usesStreamingBackend(.parakeetMultilingual))
     }
 
+    @Test("OpenAI fallback excludes streaming backends")
+    func openAIFallbackResolution() {
+        let available: [BackendOption] = [
+            .nemotron35Multilingual,
+            .parakeetUnified,
+            .whisperSmall,
+        ]
+        #expect(BackendOption.resolveOpenAIFallback(
+            selected: .nemotron35Multilingual,
+            available: available
+        ) == .parakeetUnified)
+        #expect(BackendOption.resolveOpenAIFallback(
+            selected: .whisperSmall,
+            available: available
+        ) == .whisperSmall)
+        #expect(BackendOption.resolveOpenAIFallback(
+            selected: .nemotron35Multilingual,
+            available: [.nemotron35Multilingual]
+        ) == nil)
+    }
+
     @Test("streaming dictation models are excluded from meeting transcription")
     func streamingDictationModelsAreExcludedFromMeetingTranscription() {
         #expect(!BackendOption.nemotron35Multilingual.supportsMeetingTranscription)

@@ -247,7 +247,18 @@ struct SettingsView: View {
     ]
 
     private var dictationBackendOptions: [BackendOption] {
-        backendOptions(including: appState.selectedBackend)
+        guard appState.dictationProvider == .openAI else {
+            return backendOptions(including: appState.selectedBackend)
+        }
+        return downloadedBackendOptions.filter(\.supportsOpenAIFallback)
+    }
+
+    private var displayedDictationBackend: BackendOption? {
+        guard appState.dictationProvider == .openAI else { return appState.selectedBackend }
+        return BackendOption.resolveOpenAIFallback(
+            selected: appState.selectedBackend,
+            available: dictationBackendOptions
+        )
     }
 
     private var disabledDictationBackendLabels: Set<String> {
@@ -1013,35 +1024,44 @@ struct SettingsView: View {
                 Divider().background(MuesliTheme.surfaceBorder)
             }
             settingsRow(appState.dictationProvider == .openAI ? "Fallback model" : "Dictation model", controlWidth: meetingControlWidth) {
-                settingsMenu(
-                    selection: appState.selectedBackend.label,
-                    options: dictationBackendOptions.map(\.label),
-                    disabledOptions: disabledDictationBackendLabels
-                ) { label in
-                    if let option = dictationBackendOptions.first(where: { $0.label == label }) {
-                        controller.selectBackend(option)
+                if let displayedDictationBackend {
+                    settingsMenu(
+                        selection: displayedDictationBackend.label,
+                        options: dictationBackendOptions.map(\.label),
+                        disabledOptions: disabledDictationBackendLabels
+                    ) { label in
+                        if let option = dictationBackendOptions.first(where: { $0.label == label }) {
+                            controller.selectBackend(option)
+                        }
                     }
+                } else {
+                    Text("No compatible model installed")
+                        .foregroundStyle(.secondary)
                 }
             }
             if appState.dictationProvider == .openAI {
-                settingsDescription("Used automatically if the Realtime connection fails.")
+                settingsDescription(
+                    displayedDictationBackend == nil
+                        ? "Download a non-streaming local model to enable automatic fallback."
+                        : "Used automatically if the Realtime connection fails."
+                )
             }
             if !disabledDictationBackendLabels.isEmpty {
                 settingsDescription("Gemma 4 dictation is unavailable while Gemma 4 is the cleanup backend.")
             }
-            if appState.selectedBackend.backend == BackendOption.cohereTranscribe.backend {
+            if displayedDictationBackend?.backend == BackendOption.cohereTranscribe.backend {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Cohere language", controlWidth: meetingControlWidth) {
                     cohereLanguageMenu
                 }
             }
-            if appState.selectedBackend.backend == BackendOption.indicASR.backend {
+            if displayedDictationBackend?.backend == BackendOption.indicASR.backend {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Indic language", controlWidth: meetingControlWidth) {
                     indicLanguageMenu
                 }
             }
-            if appState.selectedBackend.supportsWhisperLanguageSelection {
+            if displayedDictationBackend?.supportsWhisperLanguageSelection == true {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Whisper language", controlWidth: meetingControlWidth) {
                     whisperLanguageMenu

@@ -278,6 +278,18 @@ struct BackendOption: Equatable {
         Self.streaming.contains(self)
     }
 
+    var supportsOpenAIFallback: Bool {
+        !isStreamingDictationBackend
+    }
+
+    static func resolveOpenAIFallback(
+        selected: BackendOption,
+        available: [BackendOption]
+    ) -> BackendOption? {
+        let compatible = available.filter(\.supportsOpenAIFallback)
+        return compatible.contains(selected) ? selected : compatible.first
+    }
+
     var supportsMeetingTranscription: Bool {
         !isStreamingDictationBackend
     }

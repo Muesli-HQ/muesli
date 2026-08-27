@@ -10423,6 +10423,12 @@ public final class MuesliController: NSObject {
         // uses the configured provider while retaining the local selection for
         // an instant switch back.
         let transcriptionBackend = isTestMode ? (dictationTestBackend ?? selectedBackend) : selectedBackend
+        let openAIFallbackBackend = isTestMode || openAIStream == nil
+            ? nil
+            : BackendOption.resolveOpenAIFallback(
+                selected: selectedBackend,
+                available: BackendOption.downloaded
+            )
         let transcriptionLanguage = isTestMode ? (dictationTestCohereLanguage ?? config.resolvedCohereLanguage) : config.resolvedCohereLanguage
         let indicTranscriptionLanguage = config.resolvedIndicASRLanguage
         let whisperTranscriptionLanguage = config.resolvedWhisperLanguage
@@ -10448,9 +10454,10 @@ public final class MuesliController: NSObject {
                         rawText = try await openAIStream.finish()
                         completionBackend = "openai-realtime"
                     } catch {
+                        guard let fallbackBackend = openAIFallbackBackend else { throw error }
                         fputs("[openai-realtime] stream failed; falling back locally: \(error)\n", stderr)
                         try await self.transcriptionCoordinator.preloadRequired(
-                            backend: transcriptionBackend,
+                            backend: fallbackBackend,
                             enablePostProcessor: false,
                             includeMeetingHelpers: false,
                             appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage
@@ -10459,7 +10466,7 @@ public final class MuesliController: NSObject {
                         await self.configureTranscriptCleanupForRuntime(option: ppOption)
                         let result = try await self.transcriptionCoordinator.transcribeDictation(
                             at: wavURL,
-                            backend: transcriptionBackend,
+                            backend: fallbackBackend,
                             cohereLanguage: transcriptionLanguage,
                             indicASRLanguage: indicTranscriptionLanguage,
                             whisperLanguage: whisperTranscriptionLanguage,
@@ -10471,7 +10478,7 @@ public final class MuesliController: NSObject {
                             appContext: promptContext
                         )
                         rawText = result.text
-                        completionBackend = transcriptionBackend.backend
+                        completionBackend = fallbackBackend.backend
                     }
                 } else {
                     let ppOption = self.runtimePostProcessorOption()
