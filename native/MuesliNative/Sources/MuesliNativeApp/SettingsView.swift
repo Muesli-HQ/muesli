@@ -1986,11 +1986,16 @@ struct SettingsView: View {
             }
 
             settingsSection("Appearance") {
-                settingsRow("Dark mode") {
-                    settingsSwitch(isOn: appState.config.darkMode) { newValue in
-                        controller.updateConfig { $0.darkMode = newValue }
+                settingsRow("Appearance") {
+                    settingsMenu(
+                        selection: appState.config.themeMode.label,
+                        options: ThemeMode.allCases.map(\.label)
+                    ) { label in
+                        guard let mode = ThemeMode.allCases.first(where: { $0.label == label }) else { return }
+                        controller.updateConfig { $0.themeMode = mode }
                     }
                 }
+                settingsDescription("“System” follows macOS’s own appearance setting — including its Automatic mode (System Settings → Appearance) if you’ve turned that on, which already switches with sunrise/sunset.")
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Menu bar icon") {
                     menuBarIconPicker

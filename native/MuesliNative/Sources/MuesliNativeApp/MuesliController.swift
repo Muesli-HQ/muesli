@@ -786,7 +786,6 @@ public final class MuesliController: NSObject {
             }
         }
         installICloudPersistentSyncObservers()
-
         statusBarController = StatusBarController(controller: self, runtime: runtime)
         preferencesWindowController = PreferencesWindowController(controller: self)
         historyWindowController = RecentHistoryWindowController(store: dictationStore, controller: self)
