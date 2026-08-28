@@ -71,6 +71,7 @@ case "${shard}" in
       QuilTransformationTests
       BackendOptionTests
       OpenAIDictationProviderTests
+      OpenRouterTranscriptionClientTests
       SummaryModelPresetTests
       HotkeyMonitorTests
       InteractiveAudioSessionOwnershipTests

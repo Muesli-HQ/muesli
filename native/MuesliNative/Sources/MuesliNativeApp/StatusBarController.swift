@@ -176,6 +176,33 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             item.representedObject = model
             dictationModelMenu.addItem(item)
         }
+
+        controller.loadOpenRouterModels(.transcription)
+        dictationModelMenu.addItem(.separator())
+        dictationModelMenu.addItem(.sectionHeader(title: "OpenRouter"))
+        let openRouterModels = OpenRouterModelSelection.presetsIncludingConfiguredModel(
+            controller.appState.openRouterTranscriptionModels,
+            configuredModel: controller.config.openRouterDictationModel
+        )
+        if openRouterModels.isEmpty {
+            let item = NSMenuItem(title: "Choose a model in Settings…", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            dictationModelMenu.addItem(item)
+        } else {
+            for preset in openRouterModels {
+                let isSelected = controller.selectedDictationProvider == .openRouter
+                    && controller.config.openRouterDictationModel == preset.id
+                let prefix = isSelected ? "✓ " : ""
+                let item = NSMenuItem(
+                    title: "\(prefix)\(preset.label)",
+                    action: #selector(MuesliController.selectOpenRouterDictationModelFromMenu(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = controller
+                item.representedObject = preset.id
+                dictationModelMenu.addItem(item)
+            }
+        }
         menu.setSubmenu(dictationModelMenu, for: dictationModelItem)
         menu.addItem(dictationModelItem)
 

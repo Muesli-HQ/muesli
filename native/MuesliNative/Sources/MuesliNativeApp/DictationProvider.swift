@@ -1,12 +1,13 @@
 import Foundation
 
 /// Selects which transcription engine handles dictation. Local models run on
-/// device via CoreML; OpenAI runs the user's own API key through the OpenAI
-/// Realtime transcription WebSocket. The local model selection (`sttBackend` /
-/// `sttModel`) is preserved so users can switch back and fall back at any time.
+/// device via CoreML; hosted providers use the user's own provider credential.
+/// The local model selection (`sttBackend` / `sttModel`) is preserved so users
+/// can switch back and fall back at any time.
 enum DictationProvider: String, CaseIterable, Codable, Sendable {
     case local
     case openAI
+    case openRouter
 
     static let defaultProvider: Self = .local
 
@@ -16,8 +17,12 @@ enum DictationProvider: String, CaseIterable, Codable, Sendable {
             return "Local"
         case .openAI:
             return "OpenAI"
+        case .openRouter:
+            return "OpenRouter"
         }
     }
+
+    var isHosted: Bool { self != .local }
 
     static func resolved(_ rawValue: String?) -> Self {
         guard let rawValue, let provider = Self(rawValue: rawValue) else {
@@ -31,5 +36,12 @@ enum DictationProvider: String, CaseIterable, Codable, Sendable {
     /// lifecycle and final paste behavior.
     func usesStreamingBackend(_ backend: BackendOption) -> Bool {
         self == .local && backend.isStreamingDictationBackend
+    }
+}
+
+enum OpenRouterDictationModelSelection {
+    static func applyStatusMenuSelection(_ model: String, to config: inout AppConfig) {
+        config.dictationProvider = DictationProvider.openRouter.rawValue
+        config.openRouterDictationModel = OpenRouterTranscriptionClient.normalizedModel(model)
     }
 }

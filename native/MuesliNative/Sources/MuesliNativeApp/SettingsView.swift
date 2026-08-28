@@ -211,10 +211,8 @@ struct SettingsView: View {
     @AppStorage("settings.pendingScreenContextRequestedAt") private var pendingScreenContextRequestedAt = 0.0
     @State private var systemAudioGranted = false
     @State private var isCheckingSystemAudioPermission = false
-    @State private var openRouterFreeModels: [SummaryModelPreset] = []
-    @State private var isLoadingOpenRouterFreeModels = false
-    @State private var openRouterFreeModelsError: String?
     @State private var isUsingCustomOpenRouterModel = false
+    @State private var isUsingCustomOpenRouterDictationModel = false
     @State private var hasRefreshedMeetingCalendarSources = false
     @State private var isShowingICloudSyncReconnectConfirmation = false
     @State private var isShowingICloudSyncResetConfirmation = false
@@ -247,15 +245,15 @@ struct SettingsView: View {
     ]
 
     private var dictationBackendOptions: [BackendOption] {
-        guard appState.dictationProvider == .openAI else {
+        guard appState.dictationProvider.isHosted else {
             return backendOptions(including: appState.selectedBackend)
         }
-        return downloadedBackendOptions.filter(\.supportsOpenAIFallback)
+        return downloadedBackendOptions.filter(\.supportsHostedDictationFallback)
     }
 
     private var displayedDictationBackend: BackendOption? {
-        guard appState.dictationProvider == .openAI else { return appState.selectedBackend }
-        return BackendOption.resolveOpenAIFallback(
+        guard appState.dictationProvider.isHosted else { return appState.selectedBackend }
+        return BackendOption.resolveHostedDictationFallback(
             selected: appState.selectedBackend,
             available: dictationBackendOptions
         )
@@ -464,6 +462,9 @@ struct SettingsView: View {
                 startPermissionPolling()
                 if appState.selectedMeetingSummaryBackend == .openRouter {
                     loadOpenRouterFreeModelsIfNeeded()
+                }
+                if appState.dictationProvider == .openRouter {
+                    loadOpenRouterTranscriptionModelsIfNeeded()
                 }
                 scrollToFeatureTourTarget(activeFeatureTourTarget, using: scrollProxy)
             }
@@ -1022,8 +1023,11 @@ struct SettingsView: View {
             if appState.dictationProvider == .openAI {
                 openAIDictationSettingsRows
                 Divider().background(MuesliTheme.surfaceBorder)
+            } else if appState.dictationProvider == .openRouter {
+                openRouterDictationSettingsRows
+                Divider().background(MuesliTheme.surfaceBorder)
             }
-            settingsRow(appState.dictationProvider == .openAI ? "Fallback model" : "Dictation model", controlWidth: meetingControlWidth) {
+            settingsRow(appState.dictationProvider.isHosted ? "Fallback model" : "Dictation model", controlWidth: meetingControlWidth) {
                 if let displayedDictationBackend {
                     settingsMenu(
                         selection: displayedDictationBackend.label,
@@ -1039,11 +1043,11 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            if appState.dictationProvider == .openAI {
+            if appState.dictationProvider.isHosted {
                 settingsDescription(
                     displayedDictationBackend == nil
                         ? "Download a non-streaming local model to enable automatic fallback."
-                        : "Used automatically if the Realtime connection fails."
+                        : "Used automatically if \(appState.dictationProvider.label) transcription fails."
                 )
             }
             if !disabledDictationBackendLabels.isEmpty {
@@ -1098,6 +1102,25 @@ struct SettingsView: View {
 
     private var openAIDictationModelPresets: [SummaryModelPreset] {
         OpenAITranscriptionClient.modelPresets.map { SummaryModelPreset(id: $0, label: $0) }
+    }
+
+    @ViewBuilder
+    private var openRouterDictationSettingsRows: some View {
+        settingsRow("Account", controlWidth: meetingControlWidth) {
+            openRouterAccountControl(selectMeetingSummaryBackend: false)
+        }
+        Divider().background(MuesliTheme.surfaceBorder)
+        settingsRow("Model", controlWidth: meetingControlWidth) {
+            openRouterTranscriptionModelMenu
+        }
+        Divider().background(MuesliTheme.surfaceBorder)
+        settingsRow("Custom model ID", controlWidth: meetingControlWidth) {
+            settingsModelTextField(
+                currentModel: appState.config.openRouterDictationModel,
+                placeholder: "provider/model",
+                onBeginEditing: { isUsingCustomOpenRouterDictationModel = true }
+            ) { controller.selectOpenRouterDictationModel($0) }
+        }
     }
 
     @ViewBuilder
@@ -2377,6 +2400,7 @@ struct SettingsView: View {
                             openRouterSignInError = controller.signOutOpenRouter()
                             if openRouterSignInError == nil && !appState.isOpenRouterAuthenticated {
                                 isUsingCustomOpenRouterModel = false
+                                isUsingCustomOpenRouterDictationModel = false
                             }
                         } label: {
                             Text(appState.isOpenRouterEnvironmentManaged ? "Forget local" : "Disconnect")
@@ -3706,7 +3730,8 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var openRouterFreeModelMenu: some View {
-        if isLoadingOpenRouterFreeModels {
+        if appState.openRouterSummaryCatalogState == .loading,
+           appState.openRouterSummaryModels.isEmpty {
             HStack(spacing: 8) {
                 ProgressView()
                     .controlSize(.small)
@@ -3715,7 +3740,8 @@ struct SettingsView: View {
                     .foregroundStyle(MuesliTheme.textTertiary)
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
-        } else if !openRouterFreeModels.isEmpty {
+        } else if !appState.openRouterSummaryModels.isEmpty {
+            let openRouterFreeModels = appState.openRouterSummaryModels
             let configuredModel = appState.config.openRouterModel.trimmingCharacters(in: .whitespacesAndNewlines)
             let configuredPreset = openRouterFreeModels.first { $0.id == configuredModel }
             let showsCustomSelection = isUsingCustomOpenRouterModel
@@ -3730,33 +3756,41 @@ struct SettingsView: View {
                 ? customLabel
                 : (configuredPreset?.label ?? openRouterFreeModels[0].label)
 
-            FixedWidthPopUp(
-                selection: selectedLabel,
-                options: menuPresets.map(\.label),
-                onSelectIndex: { index in
-                    guard index >= 0 && index < menuPresets.count else { return }
-                    if showsCustomSelection && index == openRouterFreeModels.count {
-                        isUsingCustomOpenRouterModel = true
-                        return
+            HStack(spacing: 8) {
+                FixedWidthPopUp(
+                    selection: selectedLabel,
+                    options: menuPresets.map(\.label),
+                    onSelectIndex: { index in
+                        guard index >= 0 && index < menuPresets.count else { return }
+                        if showsCustomSelection && index == openRouterFreeModels.count {
+                            isUsingCustomOpenRouterModel = true
+                            return
+                        }
+                        isUsingCustomOpenRouterModel = false
+                        let selectedID = openRouterFreeModels[index].id
+                        controller.updateConfig {
+                            $0.openRouterModel = OpenRouterModelSelection.persistedModelID(for: selectedID)
+                        }
                     }
-                    isUsingCustomOpenRouterModel = false
-                    let selectedID = openRouterFreeModels[index].id
-                    controller.updateConfig {
-                        $0.openRouterModel = OpenRouterModelSelection.persistedModelID(for: selectedID)
+                )
+                .frame(height: 24)
+                if case .failed = appState.openRouterSummaryCatalogState {
+                    Button("Retry") {
+                        controller.loadOpenRouterModels(.text, force: true)
                     }
+                    .font(.system(size: 11, weight: .medium))
                 }
-            )
-            .frame(height: 24)
+            }
         } else {
             HStack(spacing: 8) {
-                if let openRouterFreeModelsError {
-                    Text(openRouterFreeModelsError)
+                if case .failed(let message) = appState.openRouterSummaryCatalogState {
+                    Text(message)
                         .font(.system(size: 11))
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .lineLimit(1)
                 }
-                Button("Load") {
-                    loadOpenRouterFreeModels(force: true)
+                Button(appState.openRouterSummaryCatalogState == .idle ? "Load" : "Retry") {
+                    controller.loadOpenRouterModels(.text, force: true)
                 }
                 .font(.system(size: 12, weight: .medium))
             }
@@ -3765,39 +3799,54 @@ struct SettingsView: View {
     }
 
     private func loadOpenRouterFreeModelsIfNeeded() {
-        guard openRouterFreeModels.isEmpty, !isLoadingOpenRouterFreeModels else { return }
-        loadOpenRouterFreeModels(force: false)
+        controller.loadOpenRouterModels(.text)
     }
 
-    private func loadOpenRouterFreeModels(force: Bool) {
-        guard force || openRouterFreeModels.isEmpty else { return }
-        isLoadingOpenRouterFreeModels = true
-        openRouterFreeModelsError = nil
+    @ViewBuilder
+    private var openRouterTranscriptionModelMenu: some View {
+        let placeholder = "Choose a model…"
+        let customOption = "Custom model ID"
+        let configured = OpenRouterTranscriptionClient.normalizedModel(
+            appState.config.openRouterDictationModel
+        )
+        let presets = appState.openRouterTranscriptionModels
+        let configuredPreset = presets.first(where: { $0.id == configured })
+        let options = [placeholder] + presets.map(\.label) + [customOption]
+        let selected = isUsingCustomOpenRouterDictationModel
+            ? customOption
+            : (configured.isEmpty ? placeholder : (configuredPreset?.label ?? customOption))
 
-        Task {
-            do {
-                let url = URL(string: "https://openrouter.ai/api/v1/models?output_modalities=text")!
-                let (data, response) = try await URLSession.shared.data(from: url)
-                if let httpResponse = response as? HTTPURLResponse,
-                   !(200..<300).contains(httpResponse.statusCode) {
-                    throw URLError(.badServerResponse)
+        HStack(spacing: 8) {
+            if appState.openRouterTranscriptionCatalogState == .loading, presets.isEmpty {
+                ProgressView().controlSize(.small)
+            }
+            FixedWidthPopUp(
+                selection: selected,
+                options: options,
+                disabledOptions: [placeholder],
+                onSelectIndex: { index in
+                    guard index > 0 else { return }
+                    if index == options.count - 1 {
+                        isUsingCustomOpenRouterDictationModel = true
+                        return
+                    }
+                    isUsingCustomOpenRouterDictationModel = false
+                    controller.selectOpenRouterDictationModel(presets[index - 1].id)
                 }
-                let catalog = try JSONDecoder().decode(OpenRouterModelCatalog.self, from: data)
-                let presets = OpenRouterModelCatalogFilter.freeTextSummaryPresets(from: catalog.data)
+            )
+            .frame(height: 24)
 
-                await MainActor.run {
-                    openRouterFreeModels = presets
-                    openRouterFreeModelsError = presets.isEmpty ? "No free text models found" : nil
-                    isLoadingOpenRouterFreeModels = false
+            if case .failed = appState.openRouterTranscriptionCatalogState {
+                Button("Retry") {
+                    controller.loadOpenRouterModels(.transcription, force: true)
                 }
-            } catch {
-                await MainActor.run {
-                    openRouterFreeModels = []
-                    openRouterFreeModelsError = "Could not load"
-                    isLoadingOpenRouterFreeModels = false
-                }
+                .font(.system(size: 11, weight: .medium))
             }
         }
+    }
+
+    private func loadOpenRouterTranscriptionModelsIfNeeded() {
+        controller.loadOpenRouterModels(.transcription)
     }
 
     @ViewBuilder

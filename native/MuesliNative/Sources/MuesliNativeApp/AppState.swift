@@ -147,6 +147,13 @@ struct ActiveMeetingAudioWarning: Equatable {
     let message: String
 }
 
+enum OpenRouterModelCatalogLoadState: Equatable {
+    case idle
+    case loading
+    case loaded
+    case failed(String)
+}
+
 @MainActor
 @Observable
 final class AppState {
@@ -203,6 +210,10 @@ final class AppState {
     var isOpenRouterAuthenticated: Bool = false
     var isOpenRouterEnvironmentManaged: Bool = false
     var hasStoredOpenRouterCredential: Bool = false
+    var openRouterSummaryModels: [SummaryModelPreset] = []
+    var openRouterSummaryCatalogState: OpenRouterModelCatalogLoadState = .idle
+    var openRouterTranscriptionModels: [SummaryModelPreset] = []
+    var openRouterTranscriptionCatalogState: OpenRouterModelCatalogLoadState = .idle
     var isGoogleCalendarAvailable: Bool = false
     var isGoogleCalendarVerified: Bool = false
     var isGoogleCalendarAuthenticated: Bool = false
