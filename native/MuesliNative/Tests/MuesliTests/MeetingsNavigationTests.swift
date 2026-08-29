@@ -1306,11 +1306,15 @@ struct MeetingsNavigationTests {
             $0.postProcessorBackend = LLMBackendOption.openRouter.backend
             $0.quilBackend = LLMBackendOption.openRouter.backend
             $0.quilModel = "openai/gpt-5.4"
+            $0.dictationProvider = DictationProvider.openRouter.rawValue
+            $0.openRouterDictationModel = "provider/transcribe"
         }
 
         #expect(controller.signOutOpenRouter() == nil)
 
         #expect(!openRouterAuth.isAuthenticated)
+        #expect(controller.selectedDictationProvider == .local)
+        #expect(controller.dictationBackendReadiness == .preparing)
         #expect(controller.selectedMeetingSummaryBackend == .openAI)
         #expect(controller.config.meetingSummaryBackend == MeetingSummaryBackendOption.openAI.backend)
         #expect(controller.selectedPostProcessorBackend == .local)
@@ -1322,6 +1326,8 @@ struct MeetingsNavigationTests {
         #expect(persisted.meetingSummaryBackend == MeetingSummaryBackendOption.openAI.backend)
         #expect(persisted.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
         #expect(persisted.quilBackend == TranscriptCleanupBackendOption.local.backend)
+        #expect(persisted.resolvedDictationProvider == .local)
+        #expect(persisted.openRouterDictationModel == "provider/transcribe")
     }
 
     @Test("failed OpenRouter credential deletion preserves provider selections")

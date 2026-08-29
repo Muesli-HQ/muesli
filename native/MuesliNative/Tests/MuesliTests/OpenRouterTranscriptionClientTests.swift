@@ -168,6 +168,30 @@ struct OpenRouterTranscriptionClientTests {
         }
     }
 
+    @Test("a finalizing hosted session can still cancel its in-flight upload")
+    func finalizingSessionCancellation() async throws {
+        let wavURL = try temporaryWAV(Data([1]))
+        defer { try? FileManager.default.removeItem(at: wavURL) }
+        let probe = OpenRouterCancellationProbe()
+        let client = OpenRouterTranscriptionClient { _ in
+            await probe.markStarted()
+            try await Task.sleep(for: .seconds(30))
+            throw URLError(.timedOut)
+        }
+        let session = OpenRouterHostedDictationSession(
+            configuration: .init(apiKey: "key", model: "provider/model"),
+            client: client
+        )
+        let task = Task { try await session.finish(recordedWAVURL: wavURL) }
+
+        await probe.waitUntilStarted()
+        session.cancel()
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await task.value
+        }
+    }
+
     @Test("all non-cancellation hosted failures qualify for local fallback")
     func fallbackPolicy() {
         #expect(HostedDictationFallbackPolicy.shouldFallback(
@@ -298,5 +322,24 @@ private actor OpenRouterRequestRecorder {
 
     func record(_ request: URLRequest) {
         self.request = request
+    }
+}
+
+private actor OpenRouterCancellationProbe {
+    private var hasStarted = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func markStarted() {
+        hasStarted = true
+        let pendingWaiters = waiters
+        waiters.removeAll()
+        pendingWaiters.forEach { $0.resume() }
+    }
+
+    func waitUntilStarted() async {
+        if hasStarted { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
     }
 }

@@ -23,12 +23,18 @@ Add OpenRouter as an opt-in hosted dictation provider while keeping Muesli local
 
 ## Verification
 
-- Focused OpenRouter dictation suite: 14 tests passed.
+- Focused OpenRouter dictation suite: 15 tests passed.
 - OpenRouter OAuth suite: 11 tests passed.
 - Provider/config suite: 6 tests passed.
-- Full native suite: 1,936 tests across 173 suites passed.
+- Full native suite: 1,937 tests across 173 suites passed.
 - Changed-file classification, CI shard assignment, update-flow verification with DMG skipped, and `git diff --check` passed.
 - Dev lane B was rebuilt through the canonical shared SwiftPM cache, installed with bundle ID `com.muesli.dev.b`, and launched. Both the source and installed LocalVQE runtimes passed completeness validation.
+- Three consecutive Dev B dictations using `fish-audio/transcribe-1` completed through OpenRouter with HTTP 200 responses; no local fallback ran.
+
+## Review follow-up
+
+- OpenRouter disconnect now moves dictation to Local and immediately starts preparing the selected local backend while retaining the OpenRouter model for reconnection.
+- Standard dictation finalization retains its task and detached hosted session until completion. Cancelling during transcription now cancels the OpenRouter upload, and stale cancellation completion cannot reset a newer dictation.
 
 ## Deferred scope
 
