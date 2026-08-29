@@ -3175,6 +3175,39 @@ struct OpenAIDictationProviderTests {
         #expect(OpenAITranscriptionClient.normalizeModel("  gpt-transcribe  ") == "gpt-transcribe")
     }
 
+    @Test("hosted model menus are hidden without provider credentials")
+    func hostedModelVisibilityWithoutCredentials() {
+        let visibility = HostedDictationModelVisibility.resolve(
+            openAIAPIKey: "  ",
+            isOpenRouterAuthenticated: false
+        )
+
+        #expect(visibility.visibleProviders.isEmpty)
+        #expect(!visibility.shows(.openAI))
+        #expect(!visibility.shows(.openRouter))
+    }
+
+    @Test("hosted model menus show only providers with credentials")
+    func hostedModelVisibilityWithProviderCredentials() {
+        let openAIOnly = HostedDictationModelVisibility.resolve(
+            openAIAPIKey: " sk-openai ",
+            isOpenRouterAuthenticated: false
+        )
+        #expect(openAIOnly.visibleProviders == [.openAI])
+
+        let openRouterOnly = HostedDictationModelVisibility.resolve(
+            openAIAPIKey: "",
+            isOpenRouterAuthenticated: true
+        )
+        #expect(openRouterOnly.visibleProviders == [.openRouter])
+
+        let both = HostedDictationModelVisibility.resolve(
+            openAIAPIKey: "sk-openai",
+            isOpenRouterAuthenticated: true
+        )
+        #expect(both.visibleProviders == [.openAI, .openRouter])
+    }
+
     @Test("Realtime session update uses current transcription schema")
     func realtimeSessionUpdate() throws {
         let data = try #require(OpenAIRealtimeProtocol.sessionUpdate(model: "gpt-live-transcribe").data(using: .utf8))

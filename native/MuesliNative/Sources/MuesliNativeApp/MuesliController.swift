@@ -2853,7 +2853,8 @@ public final class MuesliController: NSObject {
         updateConfig { $0.dictationProvider = provider.rawValue }
         if provider.isHosted {
             dictationBackendReadiness = .ready
-            if provider == .openRouter {
+            if provider == .openRouter,
+               hostedDictationModelVisibility.shows(.openRouter) {
                 loadOpenRouterModels(.transcription)
             }
             statusBarController?.refresh()
@@ -2914,6 +2915,13 @@ public final class MuesliController: NSObject {
         let environmentKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"]?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return environmentKey
+    }
+
+    var hostedDictationModelVisibility: HostedDictationModelVisibility {
+        HostedDictationModelVisibility.resolve(
+            openAIAPIKey: resolvedOpenAIAPIKey(),
+            isOpenRouterAuthenticated: openRouterAuth.isAuthenticated
+        )
     }
 
     private func prepareDictationBackend(_ backend: BackendOption) async -> Bool {
@@ -3437,6 +3445,8 @@ public final class MuesliController: NSObject {
             return nil
         }
 
+        clearOpenRouterTranscriptionCatalog()
+
         if selectedMeetingSummaryBackend == .openRouter {
             // Match ChatGPT sign-out: move summaries to the existing API-key fallback.
             selectMeetingSummaryBackend(.openAI)
@@ -3497,6 +3507,10 @@ public final class MuesliController: NSObject {
                 }
             }
         case .transcription:
+            guard hostedDictationModelVisibility.shows(.openRouter) else {
+                clearOpenRouterTranscriptionCatalog()
+                return
+            }
             guard force || (
                 appState.openRouterTranscriptionModels.isEmpty
                     && appState.openRouterTranscriptionCatalogState == .idle
@@ -3508,6 +3522,7 @@ public final class MuesliController: NSObject {
                 defer { self.openRouterTranscriptionCatalogTask = nil }
                 do {
                     let models = try await self.openRouterModelCatalogClient.load(.transcription)
+                    guard self.hostedDictationModelVisibility.shows(.openRouter) else { return }
                     self.appState.openRouterTranscriptionModels = models
                     self.appState.openRouterTranscriptionCatalogState = models.isEmpty
                         ? .failed("No transcription models found")
@@ -3520,6 +3535,13 @@ public final class MuesliController: NSObject {
                 self.statusBarController?.refresh()
             }
         }
+    }
+
+    private func clearOpenRouterTranscriptionCatalog() {
+        openRouterTranscriptionCatalogTask?.cancel()
+        openRouterTranscriptionCatalogTask = nil
+        appState.openRouterTranscriptionModels = []
+        appState.openRouterTranscriptionCatalogState = .idle
     }
 
     // MARK: - Google Calendar

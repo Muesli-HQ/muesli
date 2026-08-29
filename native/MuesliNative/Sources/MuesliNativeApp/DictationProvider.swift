@@ -45,3 +45,25 @@ enum OpenRouterDictationModelSelection {
         config.openRouterDictationModel = OpenRouterTranscriptionClient.normalizedModel(model)
     }
 }
+
+struct HostedDictationModelVisibility: Equatable {
+    let visibleProviders: [DictationProvider]
+
+    static func resolve(
+        openAIAPIKey: String,
+        isOpenRouterAuthenticated: Bool
+    ) -> Self {
+        var providers: [DictationProvider] = []
+        if !openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            providers.append(.openAI)
+        }
+        if isOpenRouterAuthenticated {
+            providers.append(.openRouter)
+        }
+        return Self(visibleProviders: providers)
+    }
+
+    func shows(_ provider: DictationProvider) -> Bool {
+        visibleProviders.contains(provider)
+    }
+}

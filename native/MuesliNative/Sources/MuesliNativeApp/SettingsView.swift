@@ -463,7 +463,8 @@ struct SettingsView: View {
                 if appState.selectedMeetingSummaryBackend == .openRouter {
                     loadOpenRouterFreeModelsIfNeeded()
                 }
-                if appState.dictationProvider == .openRouter {
+                if appState.dictationProvider == .openRouter,
+                   controller.hostedDictationModelVisibility.shows(.openRouter) {
                     loadOpenRouterTranscriptionModelsIfNeeded()
                 }
                 scrollToFeatureTourTarget(activeFeatureTourTarget, using: scrollProxy)
@@ -1087,16 +1088,18 @@ struct SettingsView: View {
             )
             .frame(height: 22)
         }
-        Divider().background(MuesliTheme.surfaceBorder)
-        settingsRow("Model", controlWidth: meetingControlWidth) {
-            settingsModelMenu(
-                currentModel: appState.config.openaiDictationModel,
-                presets: openAIDictationModelPresets
-            ) { controller.selectOpenAIDictationModel($0) }
-        }
-        Divider().background(MuesliTheme.surfaceBorder)
-        settingsRow("Connection", controlWidth: meetingControlWidth) {
-            openAITestControl
+        if controller.hostedDictationModelVisibility.shows(.openAI) {
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("Model", controlWidth: meetingControlWidth) {
+                settingsModelMenu(
+                    currentModel: appState.config.openaiDictationModel,
+                    presets: openAIDictationModelPresets
+                ) { controller.selectOpenAIDictationModel($0) }
+            }
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("Connection", controlWidth: meetingControlWidth) {
+                openAITestControl
+            }
         }
     }
 
@@ -1109,17 +1112,19 @@ struct SettingsView: View {
         settingsRow("Account", controlWidth: meetingControlWidth) {
             openRouterAccountControl(selectMeetingSummaryBackend: false)
         }
-        Divider().background(MuesliTheme.surfaceBorder)
-        settingsRow("Model", controlWidth: meetingControlWidth) {
-            openRouterTranscriptionModelMenu
-        }
-        Divider().background(MuesliTheme.surfaceBorder)
-        settingsRow("Custom model ID", controlWidth: meetingControlWidth) {
-            settingsModelTextField(
-                currentModel: appState.config.openRouterDictationModel,
-                placeholder: "provider/model",
-                onBeginEditing: { isUsingCustomOpenRouterDictationModel = true }
-            ) { controller.selectOpenRouterDictationModel($0) }
+        if controller.hostedDictationModelVisibility.shows(.openRouter) {
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("Model", controlWidth: meetingControlWidth) {
+                openRouterTranscriptionModelMenu
+            }
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("Custom model ID", controlWidth: meetingControlWidth) {
+                settingsModelTextField(
+                    currentModel: appState.config.openRouterDictationModel,
+                    placeholder: "provider/model",
+                    onBeginEditing: { isUsingCustomOpenRouterDictationModel = true }
+                ) { controller.selectOpenRouterDictationModel($0) }
+            }
         }
     }
 
@@ -2454,6 +2459,9 @@ struct SettingsView: View {
                         )
                         isSigningInOpenRouter = false
                         openRouterSignInError = error
+                        if error == nil, appState.dictationProvider == .openRouter {
+                            loadOpenRouterTranscriptionModelsIfNeeded()
+                        }
                     }
                 } label: {
                     HStack(spacing: 5) {
@@ -2498,6 +2506,9 @@ struct SettingsView: View {
                             if openRouterSignInError == nil {
                                 manualOpenRouterAPIKey = ""
                                 isEnteringOpenRouterAPIKey = false
+                                if appState.dictationProvider == .openRouter {
+                                    loadOpenRouterTranscriptionModelsIfNeeded()
+                                }
                             }
                         }
                         .disabled(manualOpenRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

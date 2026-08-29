@@ -25,6 +25,20 @@ private final class DisconnectHostedDictationSessionSpy: HostedDictationSession 
     }
 }
 
+private actor OpenRouterCatalogVisibilityProbe {
+    private(set) var requestCount = 0
+
+    func recordRequest() {
+        requestCount += 1
+    }
+
+    func waitForRequest() async {
+        for _ in 0..<100 where requestCount == 0 {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+}
+
 @MainActor
 @Suite("Meetings navigation")
 struct MeetingsNavigationTests {
@@ -1355,6 +1369,65 @@ struct MeetingsNavigationTests {
         #expect(persisted.quilBackend == TranscriptCleanupBackendOption.local.backend)
         #expect(persisted.resolvedDictationProvider == .local)
         #expect(persisted.openRouterDictationModel == "provider/transcribe")
+    }
+
+    @Test("OpenRouter transcription catalog stays hidden until authentication")
+    func openRouterCatalogRequiresAuthentication() async throws {
+        let supportDirectory = makeSupportDirectory()
+        let openRouterAuth = OpenRouterAuthManager(
+            credentialStore: OpenRouterCredentialStore(supportDirectory: supportDirectory),
+            loadData: { _ in throw URLError(.unsupportedURL) },
+            openURL: { _ in false },
+            environment: { [:] }
+        )
+        let probe = OpenRouterCatalogVisibilityProbe()
+        let catalogClient = OpenRouterModelCatalogClient { request in
+            await probe.recordRequest()
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+            )!
+            let data = Data("""
+            {"data":[
+              {"id":"provider/asr","name":"Provider ASR","pricing":{},"architecture":{"output_modalities":["transcription"]}}
+            ]}
+            """.utf8)
+            return (data, response)
+        }
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            configStore: ConfigStore(supportDirectory: supportDirectory),
+            openRouterAuth: openRouterAuth,
+            openRouterModelCatalogClient: catalogClient
+        )
+        controller.appState.openRouterTranscriptionModels = [
+            SummaryModelPreset(id: "stale/model", label: "Stale")
+        ]
+        controller.appState.openRouterTranscriptionCatalogState = .loaded
+
+        controller.loadOpenRouterModels(.transcription, force: true)
+        await Task.yield()
+
+        let unauthenticatedRequestCount = await probe.requestCount
+        #expect(unauthenticatedRequestCount == 0)
+        #expect(controller.appState.openRouterTranscriptionModels.isEmpty)
+        #expect(controller.appState.openRouterTranscriptionCatalogState == .idle)
+
+        try openRouterAuth.storeManualAPIKey("sk-or-v1-test")
+        controller.loadOpenRouterModels(.transcription, force: true)
+        await probe.waitForRequest()
+        for _ in 0..<100 where controller.appState.openRouterTranscriptionCatalogState != .loaded {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        let authenticatedRequestCount = await probe.requestCount
+        #expect(authenticatedRequestCount == 1)
+        #expect(controller.appState.openRouterTranscriptionModels.map(\.id) == ["provider/asr"])
+        #expect(controller.appState.openRouterTranscriptionCatalogState == .loaded)
     }
 
     @Test("failed OpenRouter credential deletion preserves provider selections")
