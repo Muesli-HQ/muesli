@@ -127,7 +127,7 @@ final class ChatGPTAuthManager {
             URLQueryItem(name: "code_challenge_method", value: "S256"),
             URLQueryItem(name: "id_token_add_organizations", value: "true"),
             URLQueryItem(name: "codex_cli_simplified_flow", value: "true"),
-            URLQueryItem(name: "originator", value: "opencode"),
+            URLQueryItem(name: "originator", value: "muesli"),
         ]
         return components.url
     }

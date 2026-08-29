@@ -177,6 +177,7 @@ final class AppState {
 
     // Config-driven state
     var selectedBackend: BackendOption = .whisper
+    var dictationProvider: DictationProvider = .local
     var selectedMeetingTranscriptionBackend: BackendOption = .whisper
     var selectedMeetingSummaryBackend: MeetingSummaryBackendOption = .chatGPT
     var selectedPostProcessorBackend: TranscriptCleanupBackendOption = .local
@@ -199,6 +200,9 @@ final class AppState {
     var dictationState: DictationState = .idle
     var isVoiceNoteRecording: Bool = false
     var isChatGPTAuthenticated: Bool = false
+    var isOpenRouterAuthenticated: Bool = false
+    var isOpenRouterEnvironmentManaged: Bool = false
+    var hasStoredOpenRouterCredential: Bool = false
     var isGoogleCalendarAvailable: Bool = false
     var isGoogleCalendarVerified: Bool = false
     var isGoogleCalendarAuthenticated: Bool = false

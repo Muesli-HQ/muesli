@@ -95,8 +95,7 @@ enum TranscriptCleanupClient {
             return !config.openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 || ProcessInfo.processInfo.environment["OPENAI_API_KEY"] != nil
         case .some(.openRouter):
-            return !config.openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"] != nil
+            return !resolvedOpenRouterAPIKey(config: config).isEmpty
         case .some(.ollama):
             return resolveConfiguredOllamaURL(config: config) != nil
         case .some(.lmStudio):
@@ -255,10 +254,14 @@ enum TranscriptCleanupClient {
 
     static func resolvedOpenRouterAPIKey(
         config: AppConfig,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        credentialStore: OpenRouterCredentialStore = OpenRouterCredentialStore()
     ) -> String {
-        let key = config.openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        return key.isEmpty ? (environment["OPENROUTER_API_KEY"] ?? "") : key
+        OpenRouterCredentialResolver.resolvedAPIKey(
+            legacyAPIKey: config.openRouterAPIKey,
+            environment: environment,
+            credentialStore: credentialStore
+        )
     }
 
     private static func cleanupConfig(_ config: AppConfig, model: String) -> AppConfig {

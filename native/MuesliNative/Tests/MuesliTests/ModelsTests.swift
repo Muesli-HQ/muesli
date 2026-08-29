@@ -354,9 +354,11 @@ struct BackendOptionTests {
         #expect(!BackendOption.experimental.contains(.cohereTranscribe))
     }
 
-    @Test("onboarding defaults to Apple Speech when available and keeps conservative alternatives")
+    @Test("onboarding prefers Parakeet Unified and v3 over Apple Speech")
     func onboardingModelChoices() {
         #expect(BackendOption.onboarding.first == BackendOption.onboardingDefault)
+        #expect(BackendOption.onboardingDefault == .parakeetUnified)
+        #expect(BackendOption.onboarding.contains(.parakeetUnified))
         #expect(BackendOption.onboarding.contains(.parakeetMultilingual))
         #expect(BackendOption.onboarding.contains(.whisperTiny))
         #expect(BackendOption.onboarding.contains(.whisperSmall))
@@ -366,10 +368,8 @@ struct BackendOptionTests {
         }
         #expect(BackendOption.onboarding.contains(.nemotron35Multilingual))
         if #available(macOS 26.0, *), AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem {
-            #expect(BackendOption.onboardingDefault == .appleSpeechAnalyzer)
-            #expect(BackendOption.onboarding.contains(.appleSpeechAnalyzer))
+            #expect(!BackendOption.onboarding.contains(.appleSpeechAnalyzer))
         } else {
-            #expect(BackendOption.onboardingDefault == .parakeetUnified)
             #expect(!BackendOption.onboarding.contains(.appleSpeechAnalyzer))
         }
     }
@@ -378,6 +378,34 @@ struct BackendOptionTests {
     func streamingDictationBackends() {
         let streaming = BackendOption.all.filter(\.isStreamingDictationBackend)
         #expect(streaming == [.nemotron35Multilingual])
+    }
+
+    @Test("OpenAI never uses local streaming")
+    func providerStreamingRouting() {
+        #expect(DictationProvider.local.usesStreamingBackend(.nemotron35Multilingual))
+        #expect(!DictationProvider.openAI.usesStreamingBackend(.nemotron35Multilingual))
+        #expect(!DictationProvider.local.usesStreamingBackend(.parakeetMultilingual))
+    }
+
+    @Test("OpenAI fallback excludes streaming backends")
+    func openAIFallbackResolution() {
+        let available: [BackendOption] = [
+            .nemotron35Multilingual,
+            .parakeetUnified,
+            .whisperSmall,
+        ]
+        #expect(BackendOption.resolveOpenAIFallback(
+            selected: .nemotron35Multilingual,
+            available: available
+        ) == .parakeetUnified)
+        #expect(BackendOption.resolveOpenAIFallback(
+            selected: .whisperSmall,
+            available: available
+        ) == .whisperSmall)
+        #expect(BackendOption.resolveOpenAIFallback(
+            selected: .nemotron35Multilingual,
+            available: [.nemotron35Multilingual]
+        ) == nil)
     }
 
     @Test("streaming dictation models are excluded from meeting transcription")
@@ -538,10 +566,22 @@ struct PostProcessorOptionTests {
         #expect(PostProcessorOption.resolve(id: "missing") == PostProcessorOption.defaultOption)
     }
 
+    @Test("cached legacy v2 remains runnable but is not downloadable")
+    func cachedLegacyV2RemainsRunnable() {
+        #expect(!PostProcessorOption.all.contains(PostProcessorOption.legacyV2))
+        #expect(!PostProcessorOption.legacyV2.isDownloadable)
+        #expect(PostProcessorOption.resolve(id: PostProcessorOption.legacyV2.id) == PostProcessorOption.legacyV2)
+        #expect(PostProcessorOption.runtimeOption(
+            id: PostProcessorOption.legacyV2.id,
+            downloadedIDs: [PostProcessorOption.legacyV2.id],
+            hasDevOverride: false
+        ) == PostProcessorOption.legacyV2)
+    }
+
     @Test("resolveDownloaded prefers selected downloaded option")
     func resolveDownloadedPrefersSelected() {
         let downloadedIDs: Set<String> = [
-            PostProcessorOption.finetunedV2.id,
+            PostProcessorOption.s1Mini.id,
             PostProcessorOption.qwen35_0_8b.id,
         ]
         #expect(PostProcessorOption.resolveDownloaded(
@@ -552,17 +592,17 @@ struct PostProcessorOptionTests {
 
     @Test("resolveDownloaded falls back to first downloaded option")
     func resolveDownloadedFallsBack() {
-        let downloadedIDs: Set<String> = [PostProcessorOption.finetunedV2.id]
+        let downloadedIDs: Set<String> = [PostProcessorOption.s1Mini.id]
         #expect(PostProcessorOption.resolveDownloaded(
             id: PostProcessorOption.finetunedV3.id,
             downloadedIDs: downloadedIDs
-        ) == PostProcessorOption.finetunedV2)
+        ) == PostProcessorOption.s1Mini)
     }
 
     @Test("runtimeOption prefers selected downloaded option")
     func runtimeOptionPrefersSelectedDownloadedOption() {
         let downloadedIDs: Set<String> = [
-            PostProcessorOption.finetunedV2.id,
+            PostProcessorOption.s1Mini.id,
             PostProcessorOption.qwen35_0_8b.id,
         ]
         #expect(PostProcessorOption.runtimeOption(
@@ -574,12 +614,12 @@ struct PostProcessorOptionTests {
 
     @Test("runtimeOption falls back to first downloaded option")
     func runtimeOptionFallsBackToFirstDownloadedOption() {
-        let downloadedIDs: Set<String> = [PostProcessorOption.finetunedV2.id]
+        let downloadedIDs: Set<String> = [PostProcessorOption.s1Mini.id]
         #expect(PostProcessorOption.runtimeOption(
             id: PostProcessorOption.finetunedV3.id,
             downloadedIDs: downloadedIDs,
             hasDevOverride: false
-        ) == PostProcessorOption.finetunedV2)
+        ) == PostProcessorOption.s1Mini)
     }
 
     @Test("runtimeOption accepts configured option with dev override")
@@ -604,12 +644,12 @@ struct PostProcessorOptionTests {
     func firstDownloadedExcludingDeleted() {
         let downloadedIDs: Set<String> = [
             PostProcessorOption.finetunedV3.id,
-            PostProcessorOption.finetunedV2.id,
+            PostProcessorOption.s1Mini.id,
         ]
         #expect(PostProcessorOption.firstDownloaded(
             excluding: PostProcessorOption.finetunedV3.id,
             downloadedIDs: downloadedIDs
-        ) == PostProcessorOption.finetunedV2)
+        ) == PostProcessorOption.s1Mini)
     }
 }
 
@@ -761,6 +801,18 @@ struct SummaryModelPresetTests {
         )
 
         #expect(menuPresets.count == SummaryModelPreset.openRouterModels.count)
+    }
+
+    @Test("OpenRouter catalog selections always persist their exact model ID")
+    func openRouterCatalogSelectionPersistsModelID() {
+        let dynamicFirstModel = "provider/dynamic-first-model:free"
+
+        #expect(
+            OpenRouterModelSelection.persistedModelID(for: dynamicFirstModel) == dynamicFirstModel
+        )
+        #expect(
+            OpenRouterModelSelection.persistedModelID(for: "  \(dynamicFirstModel)  ") == dynamicFirstModel
+        )
     }
 
     @Test("OpenRouter catalog filters free text generation models")
@@ -1049,21 +1101,35 @@ struct AppConfigTests {
         ))
     }
 
-    @Test("OpenRouter cleanup key falls back to environment")
-    func openRouterCleanupKeyFallsBackToEnvironment() {
+    @Test("OpenRouter cleanup key uses environment, stored credential, then legacy config")
+    func openRouterCleanupKeyPrecedence() throws {
+        let supportDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-openrouter-resolution-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: supportDirectory) }
+        let credentialStore = OpenRouterCredentialStore(supportDirectory: supportDirectory)
         var config = AppConfig()
         config.openRouterAPIKey = ""
 
         #expect(TranscriptCleanupClient.resolvedOpenRouterAPIKey(
             config: config,
-            environment: ["OPENROUTER_API_KEY": "sk-or-env"]
+            environment: ["OPENROUTER_API_KEY": "sk-or-env"],
+            credentialStore: credentialStore
         ) == "sk-or-env")
 
+        try credentialStore.save(OpenRouterCredential(apiKey: "sk-or-stored", userID: nil))
         config.openRouterAPIKey = " sk-or-config "
 
         #expect(TranscriptCleanupClient.resolvedOpenRouterAPIKey(
             config: config,
-            environment: ["OPENROUTER_API_KEY": "sk-or-env"]
+            environment: [:],
+            credentialStore: credentialStore
+        ) == "sk-or-stored")
+
+        try credentialStore.delete()
+        #expect(TranscriptCleanupClient.resolvedOpenRouterAPIKey(
+            config: config,
+            environment: [:],
+            credentialStore: credentialStore
         ) == "sk-or-config")
     }
 
@@ -3074,5 +3140,123 @@ struct ParakeetUnifiedPlanTests {
                 .appendingPathComponent("parakeet_unified_encoder_int8.mlmodelc/weights/weight.bin")
         )
         #expect(!plan.isAvailableLocally(fileManager: fm))
+    }
+}
+
+struct ParakeetLanguageTests {
+
+    @Test("ParakeetLanguage resolves auto and pinned ISO codes")
+    func resolvesAutoAndPinned() {
+        #expect(ParakeetLanguage.resolved(nil) == .auto)
+        #expect(ParakeetLanguage.resolved("") == .auto)
+        #expect(ParakeetLanguage.resolved("auto") == .auto)
+        #expect(ParakeetLanguage.resolved("en") == .english)
+        #expect(ParakeetLanguage.resolved("EL") == .greek)
+        #expect(ParakeetLanguage.resolved("bogus") == .auto)
+    }
+
+    @Test("ParakeetLanguage exposes labels and ISO codes")
+    func exposesLabelsAndCodes() {
+        #expect(ParakeetLanguage.auto.isoCode == nil)
+        #expect(ParakeetLanguage.auto.label == "Auto-detect")
+        #expect(ParakeetLanguage.english.isoCode == "en")
+        #expect(ParakeetLanguage.english.label == "English")
+        #expect(ParakeetLanguage.allCases.count == 29)
+    }
+
+    @Test("ParakeetLanguage selection survives config encode/decode round-trip")
+    func persistenceRoundTrip() throws {
+        var config = AppConfig()
+        config.parakeetLanguage = ParakeetLanguage.german.rawValue
+
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+
+        #expect(decoded.resolvedParakeetLanguage == .german)
+    }
+}
+
+@Suite("OpenAIDictationProvider")
+struct OpenAIDictationProviderTests {
+    @Test("DictationProvider resolves raw values")
+    func providerResolution() {
+        #expect(DictationProvider.resolved("local") == .local)
+        #expect(DictationProvider.resolved("openAI") == .openAI)
+        #expect(DictationProvider.resolved(nil) == .local)
+        #expect(DictationProvider.resolved("bogus") == .local)
+    }
+
+    @Test("AppConfig persists provider settings")
+    func configRoundTrip() throws {
+        var config = AppConfig()
+        config.dictationProvider = DictationProvider.openAI.rawValue
+        config.openaiDictationModel = "gpt-transcribe"
+        let data = try JSONEncoder().encode(config)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        #expect(json?["dictation_provider"] as? String == "openAI")
+        #expect(json?["openai_dictation_model"] as? String == "gpt-transcribe")
+
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+        #expect(decoded.resolvedDictationProvider == .openAI)
+        #expect(decoded.openaiDictationModel == "gpt-transcribe")
+    }
+
+    @Test("AppConfig defaults provider settings when keys are missing or invalid")
+    func configDefaultsForMissingProviderSettings() throws {
+        let missing = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+        #expect(missing.resolvedDictationProvider == .local)
+        #expect(missing.openaiDictationModel == OpenAITranscriptionClient.defaultModel)
+
+        let invalidJSON = Data("{\"dictation_provider\":\"bogus\"}".utf8)
+        let invalid = try JSONDecoder().decode(AppConfig.self, from: invalidJSON)
+        #expect(invalid.resolvedDictationProvider == .local)
+        #expect(invalid.openaiDictationModel == OpenAITranscriptionClient.defaultModel)
+    }
+
+    @Test("OpenAITranscriptionClient normalizes empty model")
+    func normalizeModel() {
+        #expect(OpenAITranscriptionClient.normalizeModel("") == OpenAITranscriptionClient.defaultModel)
+        #expect(OpenAITranscriptionClient.normalizeModel("  gpt-transcribe  ") == "gpt-transcribe")
+    }
+
+    @Test("Realtime session update uses current transcription schema")
+    func realtimeSessionUpdate() throws {
+        let data = try #require(OpenAIRealtimeProtocol.sessionUpdate(model: "gpt-live-transcribe").data(using: .utf8))
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(json["type"] as? String == "session.update")
+        let session = try #require(json["session"] as? [String: Any])
+        #expect(session["type"] as? String == "transcription")
+        let audio = try #require(session["audio"] as? [String: Any])
+        let input = try #require(audio["input"] as? [String: Any])
+        let format = try #require(input["format"] as? [String: Any])
+        #expect(format["type"] as? String == "audio/pcm")
+        #expect(format["rate"] as? Int == 24_000)
+        let transcription = try #require(input["transcription"] as? [String: Any])
+        #expect(transcription["model"] as? String == "gpt-live-transcribe")
+        #expect(input["turn_detection"] is NSNull)
+    }
+
+    @Test("Realtime PCM encoder resamples and clips")
+    func realtimePCMEncoder() {
+        var encoder = OpenAIRealtimePCMEncoder()
+        let first = encoder.encode([-2, 0, 2])
+        let second = encoder.encode([0, 0])
+        #expect(!first.isEmpty)
+        #expect(!second.isEmpty)
+        #expect(first.count.isMultiple(of: 2))
+        let firstPCM = first.withUnsafeBytes { $0.loadUnaligned(as: Int16.self) }
+        #expect(Int16(littleEndian: firstPCM) == Int16.min)
+
+        let samples = (0..<257).map { index in
+            Float(sin(Double(index) * 0.07))
+        }
+        var oneShotEncoder = OpenAIRealtimePCMEncoder()
+        let oneShot = oneShotEncoder.encode(samples)
+        var chunkedEncoder = OpenAIRealtimePCMEncoder()
+        var chunked = Data()
+        chunked.append(chunkedEncoder.encode(Array(samples[..<79])))
+        chunked.append(chunkedEncoder.encode(Array(samples[79..<181])))
+        chunked.append(chunkedEncoder.encode(Array(samples[181...])))
+        #expect(chunked == oneShot)
     }
 }

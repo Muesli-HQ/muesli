@@ -71,7 +71,7 @@ struct ChatGPTAuthTests {
         #expect(params["code_challenge_method"] == "S256")
         #expect(params["id_token_add_organizations"] == "true")
         #expect(params["codex_cli_simplified_flow"] == "true")
-        #expect(params["originator"] == "opencode")
+        #expect(params["originator"] == "muesli")
     }
 
     @Test("authorization URL points to auth.openai.com")

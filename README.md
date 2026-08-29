@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  <strong>Local-first dictation & meeting transcription for macOS</strong><br>
-  100% on-device speech-to-text · Zero cloud costs · Privacy by default
+  <strong>Local-by-default dictation & meeting transcription for macOS</strong><br>
+  On-device speech-to-text by default · Optional OpenAI BYOK dictation · Privacy by default
 </p>
 
 <p align="center">
@@ -24,7 +24,7 @@
 
 ## What is Muesli?
 
-Muesli is a **lightweight native macOS app** that combines **WisprFlow-style dictation** and **Granola-style meeting transcription** in one tool. All transcription runs locally on Apple Silicon — your audio never leaves your device unless you choose a cloud-backed meeting summary provider.
+Muesli is a **lightweight native macOS app** that combines **WisprFlow-style dictation** and **Granola-style meeting transcription** in one tool. Dictation and meeting transcription run locally on Apple Silicon by default. Audio leaves your device only when you explicitly select the optional OpenAI BYOK dictation provider; cloud-backed cleanup and meeting-summary providers can also receive the text you choose to send them.
 
 <p align="center">
   <img src="assets/muesli-github-ss.png" alt="Muesli interface showing dictations and meeting history" width="900" />
@@ -32,6 +32,8 @@ Muesli is a **lightweight native macOS app** that combines **WisprFlow-style dic
 
 ### Dictation
 Hold your hotkey (or double-tap for hands-free mode) → speak → release → transcribed text is pasted at your cursor. **~0.13 second latency** via Parakeet TDT on the Apple Neural Engine.
+
+By default, dictation uses an on-device model. You can instead opt into OpenAI Speech-to-Text with your own API key; in that mode, microphone audio is streamed directly to OpenAI over a Realtime WebSocket for transcription. Muesli retains the local recording only long enough to fall back to a compatible installed on-device model if the hosted request fails; streaming-only models are excluded from fallback.
 
 ### Meeting Transcription
 Start a meeting recording → Muesli captures your mic (You) and system audio (Others) simultaneously → VAD-driven chunked transcription happens during the meeting at natural speech boundaries → speaker diarization identifies individual remote speakers (Speaker 1, Speaker 2, etc.) → when you stop, the transcript is ready in seconds, not minutes. Generate structured meeting notes via OpenAI, free OpenRouter models, your ChatGPT Plus/Pro subscription, or local Ollama models.

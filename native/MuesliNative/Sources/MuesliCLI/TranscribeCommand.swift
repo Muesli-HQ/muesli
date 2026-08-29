@@ -1102,19 +1102,19 @@ struct CLISummaryConfig: Decodable {
     var customLLMFormat = "openai"
 
     enum CodingKeys: String, CodingKey {
-        case meetingSummaryBackend
-        case openAIAPIKey
-        case openRouterAPIKey
-        case openAIModel
-        case openRouterModel
-        case ollamaURL
-        case ollamaModel
-        case lmStudioURL
-        case lmStudioModel
-        case customLLMURL
-        case customLLMAPIKey
-        case customLLMModel
-        case customLLMFormat
+        case meetingSummaryBackend = "meeting_summary_backend"
+        case openAIAPIKey = "openai_api_key"
+        case openRouterAPIKey = "openrouter_api_key"
+        case openAIModel = "openai_model"
+        case openRouterModel = "openrouter_model"
+        case ollamaURL = "ollama_url"
+        case ollamaModel = "ollama_model"
+        case lmStudioURL = "lmstudio_url"
+        case lmStudioModel = "lmstudio_model"
+        case customLLMURL = "custom_llm_url"
+        case customLLMAPIKey = "custom_llm_api_key"
+        case customLLMModel = "custom_llm_model"
+        case customLLMFormat = "custom_llm_format"
     }
 
     init() {}
@@ -1139,8 +1139,22 @@ struct CLISummaryConfig: Decodable {
     static func load(from supportDirectory: URL) -> CLISummaryConfig {
         let url = supportDirectory.appendingPathComponent("config.json")
         guard let data = try? Data(contentsOf: url),
-              let config = try? JSONDecoder().decode(CLISummaryConfig.self, from: data) else {
+              var config = try? JSONDecoder().decode(CLISummaryConfig.self, from: data) else {
             return CLISummaryConfig()
+        }
+        if config.openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            struct StoredOpenRouterCredential: Decodable {
+                let apiKey: String
+
+                enum CodingKeys: String, CodingKey {
+                    case apiKey = "api_key"
+                }
+            }
+            let credentialURL = supportDirectory.appendingPathComponent("openrouter-auth.json")
+            if let credentialData = try? Data(contentsOf: credentialURL),
+               let credential = try? JSONDecoder().decode(StoredOpenRouterCredential.self, from: credentialData) {
+                config.openRouterAPIKey = credential.apiKey
+            }
         }
         return config
     }

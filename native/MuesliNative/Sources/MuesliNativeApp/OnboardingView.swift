@@ -17,6 +17,10 @@ struct OnboardingView: View {
     @State private var isSigningInChatGPT = false
     @State private var chatGPTSignInDone = false
     @State private var chatGPTSignInError: String?
+    @State private var isSigningInOpenRouter = false
+    @State private var openRouterSignInDone = false
+    @State private var openRouterSignInError: String?
+    @State private var isEnteringOpenRouterAPIKey = false
 
     // Permission states — polled from OS every second
     @State private var micGranted = false
@@ -87,10 +91,7 @@ struct OnboardingView: View {
     }
 
     private var onboardingModelDescription: String {
-        if BackendOption.onboardingDefault == .appleSpeechAnalyzer {
-            return "Use Apple Speech, or choose another local model to download while you continue setup."
-        }
-        return "Start with a fast local model. Larger models can download while you continue setup."
+        "Start with a fast local model. Larger models can download while you continue setup."
     }
 
     init(
@@ -1574,13 +1575,84 @@ struct OnboardingView: View {
                             .foregroundStyle(MuesliTheme.success)
                     }
                 }
-            } else {
-                if summaryBackend == .openRouter {
-                    Text("OpenRouter supports many model providers through one API key.")
-                        .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.textTertiary)
-                }
+            } else if summaryBackend == .openRouter {
+                Text("Connect OpenRouter in your browser. Muesli receives a dedicated API key after you approve access.")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                    .multilineTextAlignment(.center)
 
+                if appState.isOpenRouterAuthenticated || openRouterSignInDone {
+                    HStack(spacing: 6) {
+                        Image(systemName: "network")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("OpenRouter connected")
+                            .font(.system(size: 13, weight: .medium))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(MuesliTheme.success)
+                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                } else if isSigningInOpenRouter {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Connecting...")
+                            .font(.system(size: 12))
+                            .foregroundStyle(MuesliTheme.textSecondary)
+                    }
+                } else {
+                    Button {
+                        isSigningInOpenRouter = true
+                        openRouterSignInError = nil
+                        apiKey = ""
+                        isEnteringOpenRouterAPIKey = false
+                        Task {
+                            let error = await controller.signInWithOpenRouter()
+                            isSigningInOpenRouter = false
+                            openRouterSignInDone = OpenRouterAuthManager.shared.isAuthenticated
+                            openRouterSignInError = error
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "network")
+                                .font(.system(size: 13, weight: .semibold))
+                            Text("Connect OpenRouter")
+                                .font(.system(size: 13, weight: .medium))
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(MuesliTheme.accent)
+                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                    }
+                    .buttonStyle(.plain)
+
+                    Button(isEnteringOpenRouterAPIKey ? "Cancel manual key" : "Enter API key manually") {
+                        isEnteringOpenRouterAPIKey.toggle()
+                        apiKey = ""
+                        openRouterSignInError = nil
+                    }
+                    .buttonStyle(.link)
+                    .font(.system(size: 11))
+
+                    if isEnteringOpenRouterAPIKey {
+                        PastableSecureField(
+                            text: apiKey,
+                            placeholder: "sk-or-...",
+                            onChange: { apiKey = $0 }
+                        )
+                        .frame(width: 320, height: 28)
+                    }
+
+                    if let openRouterSignInError {
+                        Text(openRouterSignInError)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.red)
+                            .lineLimit(2)
+                    }
+                }
+            } else {
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
                     Text("API Key")
                         .font(MuesliTheme.caption())
@@ -1588,7 +1660,7 @@ struct OnboardingView: View {
 
                     PastableSecureField(
                         text: apiKey,
-                        placeholder: summaryBackend == .openAI ? "sk-..." : "sk-or-...",
+                        placeholder: "sk-...",
                         onChange: { apiKey = $0 }
                     )
                     .frame(width: 320, height: 28)

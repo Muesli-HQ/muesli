@@ -151,7 +151,7 @@ struct ModelsView: View {
                 postProcModelToDelete = nil
             }
         } message: {
-            Text("The downloaded model files will be removed from this Mac. You can download the model again later.")
+            Text(postProcessorDeleteMessage)
         }
         .alert(
             "Delete \"\(MeetingLiveCaptionModelStore.label)\"?",
@@ -171,6 +171,13 @@ struct ModelsView: View {
             get: { appState.selectedModelsCategory },
             set: { appState.selectedModelsCategory = $0 }
         )
+    }
+
+    private var postProcessorDeleteMessage: String {
+        guard let option = postProcModelToDelete, !option.isDownloadable else {
+            return "The downloaded model files will be removed from this Mac. You can download the model again later."
+        }
+        return "The downloaded model files will be removed from this Mac. This legacy model is no longer available to download, so deleting it is permanent."
     }
 
     @ViewBuilder
@@ -593,6 +600,13 @@ struct ModelsView: View {
         )
     }
 
+    private var parakeetLanguageSelection: Binding<ParakeetLanguage> {
+        Binding(
+            get: { appState.config.resolvedParakeetLanguage },
+            set: { controller.selectParakeetLanguage($0) }
+        )
+    }
+
     private var qwen3AsrLanguageSelection: Binding<Qwen3AsrLanguage> {
         Binding(
             get: { appState.config.resolvedQwen3AsrLanguage },
@@ -628,7 +642,7 @@ struct ModelsView: View {
                     gemmaCleanupModelCard(model)
                 }
 
-                ForEach(PostProcessorOption.all) { option in
+                ForEach(displayedPostProcessorOptions) { option in
                     postProcModelCard(option)
                 }
             }
@@ -751,7 +765,7 @@ struct ModelsView: View {
                             .frame(width: 20, height: 20)
                     }
                     .buttonStyle(.plain)
-                } else {
+                } else if option.isDownloadable {
                     Button("Download") {
                         startPostProcDownload(option)
                     }
@@ -762,6 +776,10 @@ struct ModelsView: View {
                     .padding(.vertical, 4)
                     .background(MuesliTheme.accentSubtle)
                     .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                } else {
+                    Text("No longer available")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
                 }
             }
         }
@@ -858,6 +876,28 @@ struct ModelsView: View {
                     .pickerStyle(.menu)
                     .frame(maxWidth: 220, alignment: .leading)
                 }
+            }
+
+            if selectedOption.backend == BackendOption.parakeetMultilingual.backend {
+                HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
+                    Text("Language")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .frame(width: 64, alignment: .leading)
+
+                    Picker("", selection: parakeetLanguageSelection) {
+                        ForEach(ParakeetLanguage.allCases, id: \.self) { language in
+                            Text(language.label).tag(language)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 220, alignment: .leading)
+                }
+
+                Text("Script filter: keeps the chosen language's writing script in the transcript. Parakeet v3 only — v2 ignores this setting.")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
             }
 
             if showsDownloadStatus, incompatibilityReason == nil {
@@ -1401,6 +1441,7 @@ struct ModelsView: View {
     // MARK: - Post-Processor Actions
 
     private func startPostProcDownload(_ option: PostProcessorOption) {
+        guard option.isDownloadable else { return }
         withAnimation { _ = downloadingPostProcModels.insert(option.id) }
         downloadProgressPostProc[option.id] = 0.02
         downloadMessages.removeValue(forKey: option.id)
@@ -1548,11 +1589,21 @@ struct ModelsView: View {
 
     private func checkDownloadedPostProcModels() {
         downloadedPostProcModels.removeAll()
-        for option in PostProcessorOption.all {
+        for option in PostProcessorOption.downloaded {
             if option.isDownloaded {
                 downloadedPostProcModels.insert(option.id)
             }
         }
+    }
+
+    /// The retired v2 cleanup model stays visible only for people who already
+    /// have it installed. Deleting it removes the card, and the model cannot
+    /// be downloaded again.
+    private var displayedPostProcessorOptions: [PostProcessorOption] {
+        PostProcessorOption.all
+            + (downloadedPostProcModels.contains(PostProcessorOption.legacyV2.id)
+                ? [.legacyV2]
+                : [])
     }
 
     // MARK: - Actions

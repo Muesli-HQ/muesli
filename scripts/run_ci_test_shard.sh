@@ -22,7 +22,10 @@ case "${shard}" in
       MuesliCKSyncEngineTests
       MuesliCLITests
       ChatGPTAuthTests
+      ChatGPTResponsesTransportTests
       ChatGPTTokenStorageTests
+      OpenRouterAuthTests
+      SettingsPermissionRefreshReasonTests
       FloatingIndicatorVisibilityTests
       IndicatorFrameSizeTests
       WindowAppearanceTests
@@ -67,6 +70,7 @@ case "${shard}" in
       PasteControllerTests
       QuilTransformationTests
       BackendOptionTests
+      OpenAIDictationProviderTests
       SummaryModelPresetTests
       HotkeyMonitorTests
       InteractiveAudioSessionOwnershipTests
