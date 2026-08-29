@@ -3453,6 +3453,11 @@ public final class MuesliController: NSObject {
             }
         }
         if selectedDictationProvider == .openRouter {
+            // Disconnect is an explicit withdrawal of permission to send audio
+            // through OpenRouter. Stop both a live recording session and any
+            // upload already finalizing with the credential snapshot.
+            cancelHostedDictation()
+            cancelInFlightDictationTranscription()
             // Keep the selected OpenRouter model for a future reconnect, but
             // never leave dictation pointed at an unauthenticated provider.
             updateConfig { $0.dictationProvider = DictationProvider.local.rawValue }
@@ -10046,6 +10051,16 @@ public final class MuesliController: NSObject {
         dictationTranscriptionTask?.id == id
     }
 
+    #if DEBUG
+    func installHostedDictationSessionsForTesting(
+        recording: (any HostedDictationSession)? = nil,
+        finalizing: (any HostedDictationSession)? = nil
+    ) {
+        hostedDictationSession = recording
+        finalizingHostedDictationSession = finalizing.map { (UUID(), $0) }
+    }
+    #endif
+
     private func captureDictationCorrectionTargetApp() {
         capturedDictationCorrectionTargetApp = currentExternalDictationTargetApp()
     }
@@ -10632,7 +10647,12 @@ public final class MuesliController: NSObject {
                         rawText = result.text
                         completionBackend = result.backend
                     } catch {
-                        guard HostedDictationFallbackPolicy.shouldFallback(after: error),
+                        guard HostedDictationFallbackPolicy.shouldFallback(
+                            after: error,
+                            taskIsCancelled: Task.isCancelled,
+                            isCurrentSession: isTestMode
+                                || self.isCurrentDictationTranscription(id: transcriptionTaskID)
+                        ),
                               let fallbackBackend = hostedFallbackBackend else { throw error }
                         fputs("[hosted-dictation] transcription failed; falling back locally: \(error)\n", stderr)
                         try await self.transcriptionCoordinator.preloadRequired(

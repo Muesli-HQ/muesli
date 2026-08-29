@@ -205,6 +205,22 @@ struct OpenRouterTranscriptionClientTests {
         #expect(!HostedDictationFallbackPolicy.shouldFallback(after: URLError(.cancelled)))
     }
 
+    @Test("cancelled or stale hosted work cannot start local fallback")
+    func staleCompletionDoesNotFallback() {
+        let lateFailure = URLError(.timedOut)
+
+        #expect(!HostedDictationFallbackPolicy.shouldFallback(
+            after: lateFailure,
+            taskIsCancelled: true,
+            isCurrentSession: true
+        ))
+        #expect(!HostedDictationFallbackPolicy.shouldFallback(
+            after: lateFailure,
+            taskIsCancelled: false,
+            isCurrentSession: false
+        ))
+    }
+
     @Test("catalog scopes use separate endpoint queries")
     func catalogScopes() {
         #expect(

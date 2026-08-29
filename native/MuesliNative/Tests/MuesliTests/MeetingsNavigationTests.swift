@@ -8,6 +8,23 @@ private enum OpenRouterDisconnectTestError: Error {
     case expected
 }
 
+private final class DisconnectHostedDictationSessionSpy: HostedDictationSession {
+    let acceptsLiveAudio = false
+    private(set) var cancelCount = 0
+    private(set) var finishCount = 0
+
+    func append(_: [Float]) {}
+
+    func finish(recordedWAVURL _: URL) async throws -> HostedDictationResult {
+        finishCount += 1
+        return HostedDictationResult(text: "unexpected", backend: "test")
+    }
+
+    func cancel() {
+        cancelCount += 1
+    }
+}
+
 @MainActor
 @Suite("Meetings navigation")
 struct MeetingsNavigationTests {
@@ -1309,10 +1326,20 @@ struct MeetingsNavigationTests {
             $0.dictationProvider = DictationProvider.openRouter.rawValue
             $0.openRouterDictationModel = "provider/transcribe"
         }
+        let recordingSession = DisconnectHostedDictationSessionSpy()
+        let finalizingSession = DisconnectHostedDictationSessionSpy()
+        controller.installHostedDictationSessionsForTesting(
+            recording: recordingSession,
+            finalizing: finalizingSession
+        )
 
         #expect(controller.signOutOpenRouter() == nil)
 
         #expect(!openRouterAuth.isAuthenticated)
+        #expect(recordingSession.cancelCount == 1)
+        #expect(recordingSession.finishCount == 0)
+        #expect(finalizingSession.cancelCount == 1)
+        #expect(finalizingSession.finishCount == 0)
         #expect(controller.selectedDictationProvider == .local)
         #expect(controller.dictationBackendReadiness == .preparing)
         #expect(controller.selectedMeetingSummaryBackend == .openAI)

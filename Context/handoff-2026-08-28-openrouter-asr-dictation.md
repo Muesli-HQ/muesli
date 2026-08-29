@@ -18,15 +18,15 @@ Add OpenRouter as an opt-in hosted dictation provider while keeping Muesli local
 - Provider and model values are snapshotted in the in-flight hosted session, so settings changes cannot reroute a transcription already being finalized.
 - OpenRouter text-summary and transcription catalogs use separate shared caches. The STT catalog is discovered through `output_modalities=transcription`, retains the configured custom ID, and exposes retry after failures.
 - Settings reuse the existing OpenRouter account control and add explicit STT model/custom model selection plus the generalized hosted fallback row. The status menu exposes dynamic OpenRouter models and applies provider plus model atomically.
-- Disconnecting an actively selected OpenRouter dictation account returns dictation to Local while retaining the chosen OpenRouter model.
+- Disconnecting an actively selected OpenRouter dictation account cancels live or finalizing OpenRouter work, returns dictation to Local, and retains the chosen OpenRouter model.
 - README, privacy, and terms describe optional OpenAI/OpenRouter dictation and the OpenRouter upstream data path while preserving local-by-default language.
 
 ## Verification
 
-- Focused OpenRouter dictation suite: 15 tests passed.
+- Focused OpenRouter dictation suite: 16 tests passed.
 - OpenRouter OAuth suite: 11 tests passed.
 - Provider/config suite: 6 tests passed.
-- Full native suite: 1,937 tests across 173 suites passed.
+- Full native suite: 1,938 tests across 173 suites passed.
 - Changed-file classification, CI shard assignment, update-flow verification with DMG skipped, and `git diff --check` passed.
 - Dev lane B was rebuilt through the canonical shared SwiftPM cache, installed with bundle ID `com.muesli.dev.b`, and launched. Both the source and installed LocalVQE runtimes passed completeness validation.
 - Three consecutive Dev B dictations using `fish-audio/transcribe-1` completed through OpenRouter with HTTP 200 responses; no local fallback ran.
@@ -35,6 +35,7 @@ Add OpenRouter as an opt-in hosted dictation provider while keeping Muesli local
 
 - OpenRouter disconnect now moves dictation to Local and immediately starts preparing the selected local backend while retaining the OpenRouter model for reconnection.
 - Standard dictation finalization retains its task and detached hosted session until completion. Cancelling during transcription now cancels the OpenRouter upload, and stale cancellation completion cannot reset a newer dictation.
+- Disconnect is treated as withdrawal of permission to send audio: it cancels both an active OpenRouter recording session and any upload already finalizing from a credential snapshot. Cancelled or stale work is also barred from starting local fallback.
 
 ## Deferred scope
 

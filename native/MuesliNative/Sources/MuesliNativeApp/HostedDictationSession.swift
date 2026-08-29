@@ -73,7 +73,12 @@ final class OpenRouterHostedDictationSession: HostedDictationSession, @unchecked
 }
 
 enum HostedDictationFallbackPolicy {
-    static func shouldFallback(after error: Error) -> Bool {
+    static func shouldFallback(
+        after error: Error,
+        taskIsCancelled: Bool = false,
+        isCurrentSession: Bool = true
+    ) -> Bool {
+        guard !taskIsCancelled, isCurrentSession else { return false }
         if error is CancellationError { return false }
         if let urlError = error as? URLError, urlError.code == .cancelled { return false }
         return true
