@@ -1310,7 +1310,7 @@ struct MeetingsNavigationTests {
         #expect(!controller.appState.config.enablePostProcessor)
     }
 
-    @Test("disconnecting OpenRouter replaces every active OpenRouter provider")
+    @Test("disconnecting OpenRouter updates future providers without interrupting active dictation")
     func disconnectingOpenRouterFallsBackSafely() throws {
         let supportDirectory = makeSupportDirectory()
         let configStore = ConfigStore(supportDirectory: supportDirectory)
@@ -1350,10 +1350,12 @@ struct MeetingsNavigationTests {
         #expect(controller.signOutOpenRouter() == nil)
 
         #expect(!openRouterAuth.isAuthenticated)
-        #expect(recordingSession.cancelCount == 1)
+        #expect(recordingSession.cancelCount == 0)
         #expect(recordingSession.finishCount == 0)
-        #expect(finalizingSession.cancelCount == 1)
+        #expect(finalizingSession.cancelCount == 0)
         #expect(finalizingSession.finishCount == 0)
+        #expect(controller.hostedDictationSessionPresenceForTesting.recording)
+        #expect(controller.hostedDictationSessionPresenceForTesting.finalizing)
         #expect(controller.selectedDictationProvider == .local)
         #expect(controller.dictationBackendReadiness == .preparing)
         #expect(controller.selectedMeetingSummaryBackend == .openAI)

@@ -19,7 +19,7 @@ Add OpenRouter as an opt-in hosted dictation provider while keeping Muesli local
 - OpenRouter text-summary and transcription catalogs use separate shared caches. The STT catalog is discovered through `output_modalities=transcription`, retains the configured custom ID, and exposes retry after failures.
 - Settings reuse the existing OpenRouter account control and add explicit STT model/custom model selection plus the generalized hosted fallback row. The status menu exposes dynamic OpenRouter models and applies provider plus model atomically.
 - Hosted model selectors are credential-gated in both Settings and the status menu. With no hosted credentials only Local models are listed; an OpenAI key exposes only OpenAI presets, and an authenticated OpenRouter account exposes only its discovered/custom choices. OpenRouter catalog loading is also suppressed and cleared while unauthenticated.
-- Disconnecting an actively selected OpenRouter dictation account cancels live or finalizing OpenRouter work, returns dictation to Local, and retains the chosen OpenRouter model.
+- Disconnecting an actively selected OpenRouter account returns future dictations to Local and retains the chosen OpenRouter model. A dictation that already began through OpenRouter keeps its snapshotted provider, model, and credential and is allowed to finish, matching ordinary mid-dictation provider changes.
 - README, privacy, and terms describe optional OpenAI/OpenRouter dictation and the OpenRouter upstream data path while preserving local-by-default language.
 
 ## Verification
@@ -37,7 +37,7 @@ Add OpenRouter as an opt-in hosted dictation provider while keeping Muesli local
 
 - OpenRouter disconnect now moves dictation to Local and immediately starts preparing the selected local backend while retaining the OpenRouter model for reconnection.
 - Standard dictation finalization retains its task and detached hosted session until completion. Cancelling during transcription now cancels the OpenRouter upload, and stale cancellation completion cannot reset a newer dictation.
-- Disconnect is treated as withdrawal of permission to send audio: it cancels both an active OpenRouter recording session and any upload already finalizing from a credential snapshot. Cancelled or stale work is also barred from starting local fallback.
+- Provider changes and account disconnects apply to the next dictation. An active dictation keeps the provider, model, and credential selected when it began; the explicit dictation Cancel action still cancels its upload, and cancelled or stale work is barred from starting local fallback.
 
 ## Deferred scope
 

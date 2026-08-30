@@ -3463,13 +3463,13 @@ public final class MuesliController: NSObject {
             }
         }
         if selectedDictationProvider == .openRouter {
-            // Disconnect is an explicit withdrawal of permission to send audio
-            // through OpenRouter. Stop both a live recording session and any
-            // upload already finalizing with the credential snapshot.
-            cancelHostedDictation()
-            cancelInFlightDictationTranscription()
+            // The active dictation already captured its provider, model, and
+            // credential when recording began. Preserve that session just like
+            // any other mid-dictation provider change; disconnect applies to
+            // subsequent dictations only.
+            //
             // Keep the selected OpenRouter model for a future reconnect, but
-            // never leave dictation pointed at an unauthenticated provider.
+            // never leave future dictation pointed at an unauthenticated provider.
             updateConfig { $0.dictationProvider = DictationProvider.local.rawValue }
             prepareSelectedLocalDictationBackend()
         }
@@ -10080,6 +10080,10 @@ public final class MuesliController: NSObject {
     ) {
         hostedDictationSession = recording
         finalizingHostedDictationSession = finalizing.map { (UUID(), $0) }
+    }
+
+    var hostedDictationSessionPresenceForTesting: (recording: Bool, finalizing: Bool) {
+        (hostedDictationSession != nil, finalizingHostedDictationSession != nil)
     }
     #endif
 
