@@ -338,22 +338,22 @@ struct BackendOptionTests {
         #expect(!DictationProvider.local.usesStreamingBackend(.parakeetMultilingual))
     }
 
-    @Test("OpenAI fallback excludes streaming backends")
+    @Test("Hosted dictation fallback excludes streaming backends")
     func openAIFallbackResolution() {
         let available: [BackendOption] = [
             .nemotron35Multilingual,
             .parakeetUnified,
             .whisperSmall,
         ]
-        #expect(BackendOption.resolveOpenAIFallback(
+        #expect(BackendOption.resolveHostedDictationFallback(
             selected: .nemotron35Multilingual,
             available: available
         ) == .parakeetUnified)
-        #expect(BackendOption.resolveOpenAIFallback(
+        #expect(BackendOption.resolveHostedDictationFallback(
             selected: .whisperSmall,
             available: available
         ) == .whisperSmall)
-        #expect(BackendOption.resolveOpenAIFallback(
+        #expect(BackendOption.resolveHostedDictationFallback(
             selected: .nemotron35Multilingual,
             available: [.nemotron35Multilingual]
         ) == nil)
@@ -3133,6 +3133,7 @@ struct OpenAIDictationProviderTests {
     func providerResolution() {
         #expect(DictationProvider.resolved("local") == .local)
         #expect(DictationProvider.resolved("openAI") == .openAI)
+        #expect(DictationProvider.resolved("openRouter") == .openRouter)
         #expect(DictationProvider.resolved(nil) == .local)
         #expect(DictationProvider.resolved("bogus") == .local)
     }
@@ -3140,16 +3141,19 @@ struct OpenAIDictationProviderTests {
     @Test("AppConfig persists provider settings")
     func configRoundTrip() throws {
         var config = AppConfig()
-        config.dictationProvider = DictationProvider.openAI.rawValue
+        config.dictationProvider = DictationProvider.openRouter.rawValue
         config.openaiDictationModel = "gpt-transcribe"
+        config.openRouterDictationModel = "provider/transcribe"
         let data = try JSONEncoder().encode(config)
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        #expect(json?["dictation_provider"] as? String == "openAI")
+        #expect(json?["dictation_provider"] as? String == "openRouter")
         #expect(json?["openai_dictation_model"] as? String == "gpt-transcribe")
+        #expect(json?["openrouter_dictation_model"] as? String == "provider/transcribe")
 
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
-        #expect(decoded.resolvedDictationProvider == .openAI)
+        #expect(decoded.resolvedDictationProvider == .openRouter)
         #expect(decoded.openaiDictationModel == "gpt-transcribe")
+        #expect(decoded.openRouterDictationModel == "provider/transcribe")
     }
 
     @Test("AppConfig defaults provider settings when keys are missing or invalid")
@@ -3157,6 +3161,7 @@ struct OpenAIDictationProviderTests {
         let missing = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
         #expect(missing.resolvedDictationProvider == .local)
         #expect(missing.openaiDictationModel == OpenAITranscriptionClient.defaultModel)
+        #expect(missing.openRouterDictationModel.isEmpty)
 
         let invalidJSON = Data("{\"dictation_provider\":\"bogus\"}".utf8)
         let invalid = try JSONDecoder().decode(AppConfig.self, from: invalidJSON)
@@ -3168,6 +3173,39 @@ struct OpenAIDictationProviderTests {
     func normalizeModel() {
         #expect(OpenAITranscriptionClient.normalizeModel("") == OpenAITranscriptionClient.defaultModel)
         #expect(OpenAITranscriptionClient.normalizeModel("  gpt-transcribe  ") == "gpt-transcribe")
+    }
+
+    @Test("hosted model menus are hidden without provider credentials")
+    func hostedModelVisibilityWithoutCredentials() {
+        let visibility = HostedDictationModelVisibility.resolve(
+            openAIAPIKey: "  ",
+            openRouterAPIKey: "  "
+        )
+
+        #expect(visibility.visibleProviders.isEmpty)
+        #expect(!visibility.shows(.openAI))
+        #expect(!visibility.shows(.openRouter))
+    }
+
+    @Test("hosted model menus show only providers with credentials")
+    func hostedModelVisibilityWithProviderCredentials() {
+        let openAIOnly = HostedDictationModelVisibility.resolve(
+            openAIAPIKey: " sk-openai ",
+            openRouterAPIKey: ""
+        )
+        #expect(openAIOnly.visibleProviders == [.openAI])
+
+        let openRouterOnly = HostedDictationModelVisibility.resolve(
+            openAIAPIKey: "",
+            openRouterAPIKey: " sk-or-legacy "
+        )
+        #expect(openRouterOnly.visibleProviders == [.openRouter])
+
+        let both = HostedDictationModelVisibility.resolve(
+            openAIAPIKey: "sk-openai",
+            openRouterAPIKey: "sk-or-oauth"
+        )
+        #expect(both.visibleProviders == [.openAI, .openRouter])
     }
 
     @Test("Realtime session update uses current transcription schema")
