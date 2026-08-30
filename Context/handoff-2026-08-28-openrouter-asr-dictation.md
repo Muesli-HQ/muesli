@@ -19,6 +19,8 @@ Add OpenRouter as an opt-in hosted dictation provider while keeping Muesli local
 - OpenRouter text-summary and transcription catalogs use separate shared caches. The STT catalog is discovered through `output_modalities=transcription`, retains the configured custom ID, and exposes retry after failures.
 - Settings reuse the existing OpenRouter account control and add explicit STT model/custom model selection plus the generalized hosted fallback row. The status menu exposes dynamic OpenRouter models and applies provider plus model atomically.
 - Hosted model selectors are credential-gated in both Settings and the status menu. With no hosted credentials only Local models are listed; an OpenAI key exposes only OpenAI presets, and an authenticated OpenRouter account exposes only its discovered/custom choices. OpenRouter catalog loading is also suppressed and cleared while unauthenticated.
+- OpenRouter model visibility uses the same environment, protected-store, and legacy credential resolution as actual transcription, so a recoverable legacy credential cannot leave working dictation hidden from the UI.
+- Transcription catalog loads carry a generation token. A cancelled request from before disconnect cannot clear or overwrite a newer reconnect/reload, while normal catalogs remain cached once per app process with no periodic refresh.
 - Disconnecting an actively selected OpenRouter account returns future dictations to Local and retains the chosen OpenRouter model. A dictation that already began through OpenRouter keeps its snapshotted provider, model, and credential and is allowed to finish, matching ordinary mid-dictation provider changes.
 - README, privacy, and terms describe optional OpenAI/OpenRouter dictation and the OpenRouter upstream data path while preserving local-by-default language.
 
@@ -28,7 +30,7 @@ Add OpenRouter as an opt-in hosted dictation provider while keeping Muesli local
 - Focused hosted-provider visibility and catalog checks: 26 tests passed.
 - OpenRouter OAuth suite: 11 tests passed.
 - Provider/config suite: 6 tests passed.
-- Full native suite: 1,941 tests across 173 suites passed.
+- Full native suite: 1,943 tests across 173 suites passed.
 - Changed-file classification, CI shard assignment, update-flow verification with DMG skipped, and `git diff --check` passed.
 - Dev lane B was rebuilt through the canonical shared SwiftPM cache, installed with bundle ID `com.muesli.dev.b`, and launched. Both the source and installed LocalVQE runtimes passed completeness validation.
 - Three consecutive Dev B dictations using `fish-audio/transcribe-1` completed through OpenRouter with HTTP 200 responses; no local fallback ran.

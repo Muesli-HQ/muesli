@@ -51,13 +51,13 @@ struct HostedDictationModelVisibility: Equatable {
 
     static func resolve(
         openAIAPIKey: String,
-        isOpenRouterAuthenticated: Bool
+        openRouterAPIKey: String
     ) -> Self {
         var providers: [DictationProvider] = []
         if !openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             providers.append(.openAI)
         }
-        if isOpenRouterAuthenticated {
+        if !openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             providers.append(.openRouter)
         }
         return Self(visibleProviders: providers)

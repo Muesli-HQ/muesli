@@ -39,6 +39,58 @@ private actor OpenRouterCatalogVisibilityProbe {
     }
 }
 
+private actor OpenRouterCatalogRaceProbe {
+    private struct PendingResponse {
+        let url: URL
+        let continuation: CheckedContinuation<(Data, URLResponse), Never>
+    }
+
+    private var nextRequestID = 0
+    private var pendingResponses: [Int: PendingResponse] = [:]
+    private var returnedRequestIDs = Set<Int>()
+
+    func load(_ request: URLRequest) async -> (id: Int, data: Data, response: URLResponse) {
+        nextRequestID += 1
+        let requestID = nextRequestID
+        let result = await withCheckedContinuation { continuation in
+            pendingResponses[requestID] = PendingResponse(
+                url: request.url!,
+                continuation: continuation
+            )
+        }
+        returnedRequestIDs.insert(requestID)
+        return (requestID, result.0, result.1)
+    }
+
+    func waitForRequestCount(_ count: Int) async {
+        for _ in 0..<100 where nextRequestID < count {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func waitForReturn(_ requestID: Int) async {
+        for _ in 0..<100 where !returnedRequestIDs.contains(requestID) {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func complete(_ requestID: Int, modelID: String, name: String) {
+        guard let pending = pendingResponses.removeValue(forKey: requestID) else { return }
+        let data = Data("""
+        {"data":[
+          {"id":"\(modelID)","name":"\(name)","pricing":{},"architecture":{"output_modalities":["transcription"]}}
+        ]}
+        """.utf8)
+        let response = HTTPURLResponse(
+            url: pending.url,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: nil
+        )!
+        pending.continuation.resume(returning: (data, response))
+    }
+}
+
 @MainActor
 @Suite("Meetings navigation")
 struct MeetingsNavigationTests {
@@ -1429,6 +1481,80 @@ struct MeetingsNavigationTests {
         let authenticatedRequestCount = await probe.requestCount
         #expect(authenticatedRequestCount == 1)
         #expect(controller.appState.openRouterTranscriptionModels.map(\.id) == ["provider/asr"])
+        #expect(controller.appState.openRouterTranscriptionCatalogState == .loaded)
+    }
+
+    @Test("legacy OpenRouter credentials expose the same model controls as stored credentials")
+    func legacyOpenRouterCredentialShowsModels() {
+        let configDirectory = makeSupportDirectory()
+        let authDirectory = makeSupportDirectory()
+        let openRouterAuth = OpenRouterAuthManager(
+            credentialStore: OpenRouterCredentialStore(supportDirectory: authDirectory),
+            loadData: { _ in throw URLError(.unsupportedURL) },
+            openURL: { _ in false },
+            environment: { [:] }
+        )
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            configStore: ConfigStore(supportDirectory: configDirectory),
+            openRouterAuth: openRouterAuth
+        )
+        controller.updateConfig { $0.openRouterAPIKey = " sk-or-v1-legacy " }
+
+        #expect(!openRouterAuth.isAuthenticated)
+        #expect(controller.hostedDictationModelVisibility.shows(.openRouter))
+    }
+
+    @Test("an older cancelled catalog request cannot overwrite a newer reload")
+    func staleOpenRouterCatalogLoadCannotReplaceNewerModels() async throws {
+        let supportDirectory = makeSupportDirectory()
+        let openRouterAuth = OpenRouterAuthManager(
+            credentialStore: OpenRouterCredentialStore(supportDirectory: supportDirectory),
+            loadData: { _ in throw URLError(.unsupportedURL) },
+            openURL: { _ in false },
+            environment: { [:] }
+        )
+        try openRouterAuth.storeManualAPIKey("sk-or-v1-first")
+        let probe = OpenRouterCatalogRaceProbe()
+        let catalogClient = OpenRouterModelCatalogClient { request in
+            let result = await probe.load(request)
+            return (result.data, result.response)
+        }
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            configStore: ConfigStore(supportDirectory: supportDirectory),
+            openRouterAuth: openRouterAuth,
+            openRouterModelCatalogClient: catalogClient
+        )
+
+        controller.loadOpenRouterModels(.transcription, force: true)
+        await probe.waitForRequestCount(1)
+        #expect(controller.signOutOpenRouter() == nil)
+
+        try openRouterAuth.storeManualAPIKey("sk-or-v1-second")
+        controller.loadOpenRouterModels(.transcription, force: true)
+        await probe.waitForRequestCount(2)
+        await probe.complete(2, modelID: "new/model", name: "New Model")
+        for _ in 0..<100 where controller.appState.openRouterTranscriptionCatalogState != .loaded {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(controller.appState.openRouterTranscriptionModels.map(\.id) == ["new/model"])
+
+        await probe.complete(1, modelID: "stale/model", name: "Stale Model")
+        await probe.waitForReturn(1)
+        for _ in 0..<20 { await Task.yield() }
+
+        #expect(controller.appState.openRouterTranscriptionModels.map(\.id) == ["new/model"])
         #expect(controller.appState.openRouterTranscriptionCatalogState == .loaded)
     }
 

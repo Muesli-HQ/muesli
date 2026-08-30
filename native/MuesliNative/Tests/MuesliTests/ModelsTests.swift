@@ -3179,7 +3179,7 @@ struct OpenAIDictationProviderTests {
     func hostedModelVisibilityWithoutCredentials() {
         let visibility = HostedDictationModelVisibility.resolve(
             openAIAPIKey: "  ",
-            isOpenRouterAuthenticated: false
+            openRouterAPIKey: "  "
         )
 
         #expect(visibility.visibleProviders.isEmpty)
@@ -3191,19 +3191,19 @@ struct OpenAIDictationProviderTests {
     func hostedModelVisibilityWithProviderCredentials() {
         let openAIOnly = HostedDictationModelVisibility.resolve(
             openAIAPIKey: " sk-openai ",
-            isOpenRouterAuthenticated: false
+            openRouterAPIKey: ""
         )
         #expect(openAIOnly.visibleProviders == [.openAI])
 
         let openRouterOnly = HostedDictationModelVisibility.resolve(
             openAIAPIKey: "",
-            isOpenRouterAuthenticated: true
+            openRouterAPIKey: " sk-or-legacy "
         )
         #expect(openRouterOnly.visibleProviders == [.openRouter])
 
         let both = HostedDictationModelVisibility.resolve(
             openAIAPIKey: "sk-openai",
-            isOpenRouterAuthenticated: true
+            openRouterAPIKey: "sk-or-oauth"
         )
         #expect(both.visibleProviders == [.openAI, .openRouter])
     }

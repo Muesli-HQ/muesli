@@ -415,6 +415,7 @@ public final class MuesliController: NSObject {
     private var onboardingModelPreparationTask: Task<Void, Never>?
     private var openRouterSummaryCatalogTask: Task<Void, Never>?
     private var openRouterTranscriptionCatalogTask: Task<Void, Never>?
+    private var openRouterTranscriptionCatalogGeneration = 0
     private var maraudersMapCountdown: MaraudersMapCountdownController?
 
     private var statusBarController: StatusBarController?
@@ -2920,7 +2921,9 @@ public final class MuesliController: NSObject {
     var hostedDictationModelVisibility: HostedDictationModelVisibility {
         HostedDictationModelVisibility.resolve(
             openAIAPIKey: resolvedOpenAIAPIKey(),
-            isOpenRouterAuthenticated: openRouterAuth.isAuthenticated
+            openRouterAPIKey: openRouterAuth.resolvedAPIKey(
+                legacyAPIKey: config.openRouterAPIKey
+            )
         )
     }
 
@@ -3516,28 +3519,39 @@ public final class MuesliController: NSObject {
                     && appState.openRouterTranscriptionCatalogState == .idle
             ) else { return }
             guard openRouterTranscriptionCatalogTask == nil else { return }
+            openRouterTranscriptionCatalogGeneration &+= 1
+            let catalogGeneration = openRouterTranscriptionCatalogGeneration
             appState.openRouterTranscriptionCatalogState = .loading
             openRouterTranscriptionCatalogTask = Task { [weak self] in
                 guard let self else { return }
-                defer { self.openRouterTranscriptionCatalogTask = nil }
+                defer {
+                    if self.openRouterTranscriptionCatalogGeneration == catalogGeneration {
+                        self.openRouterTranscriptionCatalogTask = nil
+                    }
+                }
                 do {
                     let models = try await self.openRouterModelCatalogClient.load(.transcription)
-                    guard self.hostedDictationModelVisibility.shows(.openRouter) else { return }
+                    guard self.openRouterTranscriptionCatalogGeneration == catalogGeneration,
+                          self.hostedDictationModelVisibility.shows(.openRouter) else { return }
                     self.appState.openRouterTranscriptionModels = models
                     self.appState.openRouterTranscriptionCatalogState = models.isEmpty
                         ? .failed("No transcription models found")
                         : .loaded
                 } catch is CancellationError {
+                    guard self.openRouterTranscriptionCatalogGeneration == catalogGeneration else { return }
                     self.appState.openRouterTranscriptionCatalogState = .idle
                 } catch {
+                    guard self.openRouterTranscriptionCatalogGeneration == catalogGeneration else { return }
                     self.appState.openRouterTranscriptionCatalogState = .failed("Could not load")
                 }
+                guard self.openRouterTranscriptionCatalogGeneration == catalogGeneration else { return }
                 self.statusBarController?.refresh()
             }
         }
     }
 
     private func clearOpenRouterTranscriptionCatalog() {
+        openRouterTranscriptionCatalogGeneration &+= 1
         openRouterTranscriptionCatalogTask?.cancel()
         openRouterTranscriptionCatalogTask = nil
         appState.openRouterTranscriptionModels = []
