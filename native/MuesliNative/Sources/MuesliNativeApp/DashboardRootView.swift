@@ -1,36 +1,108 @@
 import SwiftUI
 import MuesliCore
 
+enum DashboardWindowLayout {
+    /// Narrow enough to sit beside a call window while preserving a useful
+    /// notes editor when the sidebar is collapsed or hidden.
+    static let minimumContentWidth: CGFloat = 520
+    static let minimumContentHeight: CGFloat = 600
+    static let compactQuickNotesThreshold: CGFloat = 600
+
+    static func usesCompactQuickNotes(width: CGFloat, hasOpenMeeting: Bool) -> Bool {
+        hasOpenMeeting && width < compactQuickNotesThreshold
+    }
+}
+
+private struct CompactQuickNotesEnvironmentKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var usesCompactQuickNotes: Bool {
+        get { self[CompactQuickNotesEnvironmentKey.self] }
+        set { self[CompactQuickNotesEnvironmentKey.self] = newValue }
+    }
+}
+
+@Observable
+final class DashboardSidebarPresentation {
+    var isCollapsed = false
+
+    func toggle() {
+        isCollapsed.toggle()
+    }
+}
+
+struct DashboardContentLayout<SidebarContent: View, DetailContent: View>: View {
+    let usesCompactQuickNotes: Bool
+    @ViewBuilder let sidebar: () -> SidebarContent
+    @ViewBuilder let detail: () -> DetailContent
+
+    var body: some View {
+        HSplitView {
+            if !usesCompactQuickNotes {
+                sidebar()
+            }
+
+            detail()
+                .environment(\.usesCompactQuickNotes, usesCompactQuickNotes)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(MuesliTheme.backgroundBase)
+        }
+    }
+}
+
 struct DashboardRootView: View {
     let appState: AppState
     let controller: MuesliController
     @State private var featureTourTargetFrames: [FeatureTourTarget: CGRect] = [:]
-    @State private var isSidebarCollapsed = false
+    @State private var sidebarPresentation: DashboardSidebarPresentation
+
+    init(
+        appState: AppState,
+        controller: MuesliController,
+        sidebarPresentation: DashboardSidebarPresentation = DashboardSidebarPresentation()
+    ) {
+        self.appState = appState
+        self.controller = controller
+        _sidebarPresentation = State(initialValue: sidebarPresentation)
+    }
+
+    var sidebarView: SidebarView {
+        SidebarView(
+            appState: appState,
+            controller: controller,
+            isCollapsed: sidebarPresentation.isCollapsed,
+            onToggleCollapsed: {
+                withAnimation(.easeInOut(duration: 0.22)) {
+                    sidebarPresentation.toggle()
+                }
+            }
+        )
+    }
 
     var body: some View {
-        NavigationSplitView {
-            SidebarView(
-                appState: appState,
-                controller: controller,
-                isCollapsed: isSidebarCollapsed,
-                onToggleCollapsed: {
-                    withAnimation(.easeInOut(duration: 0.22)) {
-                        isSidebarCollapsed.toggle()
-                    }
-                }
+        GeometryReader { proxy in
+            let usesCompactQuickNotes = DashboardWindowLayout.usesCompactQuickNotes(
+                width: proxy.size.width,
+                hasOpenMeeting: hasOpenMeeting
             )
-            .navigationSplitViewColumnWidth(
-                min: isSidebarCollapsed ? 68 : 240,
-                ideal: isSidebarCollapsed ? 68 : 260,
-                max: isSidebarCollapsed ? 68 : 300
-            )
-        } detail: {
-            detailContent
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(MuesliTheme.backgroundBase)
+
+            DashboardContentLayout(usesCompactQuickNotes: usesCompactQuickNotes) {
+                sidebarView
+                .frame(
+                    minWidth: sidebarPresentation.isCollapsed ? 68 : 240,
+                    idealWidth: sidebarPresentation.isCollapsed ? 68 : 260,
+                    maxWidth: sidebarPresentation.isCollapsed ? 68 : 300
+                )
+            } detail: {
+                detailContent
+            }
         }
-        .navigationSplitViewStyle(.balanced)
-        .frame(minWidth: 900, minHeight: 600)
+        .frame(
+            minWidth: DashboardWindowLayout.minimumContentWidth,
+            minHeight: DashboardWindowLayout.minimumContentHeight
+        )
         .preferredColorScheme(appState.config.darkMode ? .dark : .light)
         .onPreferenceChange(FeatureTourTargetPreferenceKey.self) { frames in
             guard FeatureTourFrameTracking.hasMeaningfulChange(
@@ -121,6 +193,13 @@ struct DashboardRootView: View {
                 onDismiss: { controller.dismissDiagnosticIncidentPrompt() }
             )
         }
+    }
+
+    private var hasOpenMeeting: Bool {
+        if case .document = appState.meetingsNavigationState {
+            return true
+        }
+        return false
     }
 
     @ViewBuilder
