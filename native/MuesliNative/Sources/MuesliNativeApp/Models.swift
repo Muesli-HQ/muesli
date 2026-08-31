@@ -278,15 +278,15 @@ struct BackendOption: Equatable {
         Self.streaming.contains(self)
     }
 
-    var supportsOpenAIFallback: Bool {
+    var supportsHostedDictationFallback: Bool {
         !isStreamingDictationBackend
     }
 
-    static func resolveOpenAIFallback(
+    static func resolveHostedDictationFallback(
         selected: BackendOption,
         available: [BackendOption]
     ) -> BackendOption? {
-        let compatible = available.filter(\.supportsOpenAIFallback)
+        let compatible = available.filter(\.supportsHostedDictationFallback)
         return compatible.contains(selected) ? selected : compatible.first
     }
 
@@ -788,6 +788,17 @@ enum OpenRouterModelSelection {
     static func persistedModelID(for selectedID: String) -> String {
         selectedID.trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    static func presetsIncludingConfiguredModel(
+        _ presets: [SummaryModelPreset],
+        configuredModel: String
+    ) -> [SummaryModelPreset] {
+        let model = persistedModelID(for: configuredModel)
+        guard !model.isEmpty, !presets.contains(where: { $0.id == model }) else {
+            return presets
+        }
+        return presets + [SummaryModelPreset(id: model, label: "Custom: \(model)")]
+    }
 }
 
 struct OpenRouterModel: Decodable {
@@ -844,12 +855,18 @@ extension OpenRouterModel {
         return outputModalities == ["text"]
     }
 
+    var producesTranscription: Bool {
+        architecture?.outputModalities?.contains("transcription") == true
+    }
+
     var summaryPresetLabel: String {
         if let contextLength, contextLength > 0 {
             return "\(name) (\(Self.formatContextLength(contextLength)) ctx)"
         }
         return name
     }
+
+    var transcriptionPresetLabel: String { name }
 
     private static func formatContextLength(_ value: Int) -> String {
         if value >= 1000 {
@@ -876,6 +893,18 @@ enum OpenRouterModelCatalogFilter {
                 return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
             }
             .map { SummaryModelPreset(id: $0.id, label: $0.summaryPresetLabel) }
+    }
+
+    static func transcriptionPresets(from models: [OpenRouterModel]) -> [SummaryModelPreset] {
+        models
+            .filter(\.producesTranscription)
+            .sorted {
+                if $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedSame {
+                    return $0.id < $1.id
+                }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+            .map { SummaryModelPreset(id: $0.id, label: $0.transcriptionPresetLabel) }
     }
 }
 
@@ -1453,6 +1482,7 @@ struct AppConfig: Codable {
     var sttModel: String = BackendOption.parakeetUnified.model
     var dictationProvider: String = DictationProvider.defaultProvider.rawValue
     var openaiDictationModel: String = OpenAITranscriptionClient.defaultModel
+    var openRouterDictationModel: String = ""
     var dictationInputDeviceUID: String? = nil
     var meetingInputDeviceUID: String? = nil
     var cohereLanguage: String = CohereTranscribeLanguage.defaultLanguage.rawValue
@@ -1590,6 +1620,7 @@ struct AppConfig: Codable {
         case sttModel = "stt_model"
         case dictationProvider = "dictation_provider"
         case openaiDictationModel = "openai_dictation_model"
+        case openRouterDictationModel = "openrouter_dictation_model"
         case dictationInputDeviceUID = "dictation_input_device_uid"
         case meetingInputDeviceUID = "meeting_input_device_uid"
         case cohereLanguage = "cohere_language"
@@ -1733,6 +1764,8 @@ struct AppConfig: Codable {
         sttModel = (try? c.decode(String.self, forKey: .sttModel)) ?? defaults.sttModel
         dictationProvider = DictationProvider.resolved(try? c.decode(String.self, forKey: .dictationProvider)).rawValue
         openaiDictationModel = (try? c.decode(String.self, forKey: .openaiDictationModel)) ?? defaults.openaiDictationModel
+        openRouterDictationModel = (try? c.decode(String.self, forKey: .openRouterDictationModel))
+            ?? defaults.openRouterDictationModel
         dictationInputDeviceUID = try? c.decode(String.self, forKey: .dictationInputDeviceUID)
         meetingInputDeviceUID = try? c.decode(String.self, forKey: .meetingInputDeviceUID)
         cohereLanguage = CohereTranscribeLanguage.resolvedCode(try? c.decode(String.self, forKey: .cohereLanguage))

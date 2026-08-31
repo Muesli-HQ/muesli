@@ -217,9 +217,11 @@ final class OpenRouterAuthManager {
     }
 
     func resolvedAPIKey(
+        legacyAPIKey: String = "",
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> String {
         OpenRouterCredentialResolver.resolvedAPIKey(
+            legacyAPIKey: legacyAPIKey,
             environment: environment,
             credentialStore: credentialStore
         )

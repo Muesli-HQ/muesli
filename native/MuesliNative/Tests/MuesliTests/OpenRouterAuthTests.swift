@@ -237,9 +237,11 @@ struct OpenRouterAuthTests {
         )
 
         #expect(auth.resolvedAPIKey(environment: ["OPENROUTER_API_KEY": " env-key "]) == "env-key")
+        #expect(auth.resolvedAPIKey(legacyAPIKey: " legacy-key ", environment: [:]) == "legacy-key")
         try auth.storeManualAPIKey("  manual-key\n")
         #expect(auth.resolvedAPIKey(environment: ["OPENROUTER_API_KEY": "env-key"]) == "env-key")
         #expect(auth.resolvedAPIKey(environment: [:]) == "manual-key")
+        #expect(auth.resolvedAPIKey(legacyAPIKey: "legacy-key", environment: [:]) == "manual-key")
         #expect(auth.isAuthenticated)
     }
 

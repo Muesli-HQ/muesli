@@ -400,6 +400,7 @@ public final class MuesliController: NSObject {
 
     private let chatGPTAuth = ChatGPTAuthManager.shared
     private let openRouterAuth: OpenRouterAuthManager
+    private let openRouterModelCatalogClient: OpenRouterModelCatalogClient
     private let googleCalAuth = GoogleCalendarAuthManager.shared
     private let googleCalClient = GoogleCalendarClient()
     private var calendarCheckTimer: Timer?
@@ -412,6 +413,9 @@ public final class MuesliController: NSObject {
 
     private var searchTask: Task<Void, Never>?
     private var onboardingModelPreparationTask: Task<Void, Never>?
+    private var openRouterSummaryCatalogTask: Task<Void, Never>?
+    private var openRouterTranscriptionCatalogTask: Task<Void, Never>?
+    private var openRouterTranscriptionCatalogGeneration = 0
     private var maraudersMapCountdown: MaraudersMapCountdownController?
 
     private var statusBarController: StatusBarController?
@@ -451,9 +455,14 @@ public final class MuesliController: NSObject {
     private let liveManualNotesPersistInterval: TimeInterval = 0.75
     private var staleLiveMeetingRecoveryFailures = Set<Int64>()
     private var dictationState: DictationState = .idle
-    private var dictationBackendReadiness: DictationBackendReadiness = .preparing
+    private(set) var dictationBackendReadiness: DictationBackendReadiness = .preparing
     private var dictationStartedAt: Date?
-    private var openAIRealtimeStream: OpenAIRealtimeDictationStream?
+    private var hostedDictationSession: (any HostedDictationSession)?
+    private var finalizingHostedDictationSession: (
+        id: UUID,
+        session: any HostedDictationSession
+    )?
+    private var dictationTranscriptionTask: (id: UUID, task: Task<Void, Never>)?
     private var dictationLatencyTraceID: UUID?
     private var dictationLatencyTraceStartedAt: Date?
     private var currentDictationOutputMode: DictationOutputMode = .paste
@@ -549,10 +558,12 @@ public final class MuesliController: NSObject {
         launchAtLoginManager: LaunchAtLoginManaging = SystemLaunchAtLoginManager(),
         audioDuckingController: AudioDuckingManaging = AudioDuckingController(),
         dictationAudioRoutingController: DictationAudioRouting = DictationAudioRouteController(),
-        openRouterAuth: OpenRouterAuthManager? = nil
+        openRouterAuth: OpenRouterAuthManager? = nil,
+        openRouterModelCatalogClient: OpenRouterModelCatalogClient = OpenRouterModelCatalogClient()
     ) {
         self.configStore = configStore
         self.openRouterAuth = openRouterAuth ?? .shared
+        self.openRouterModelCatalogClient = openRouterModelCatalogClient
         var loadedConfig = configStore.load()
         let loadedBackend = BackendOption.all.first(where: {
             $0.backend == loadedConfig.sttBackend && $0.model == loadedConfig.sttModel
@@ -879,7 +890,7 @@ public final class MuesliController: NSObject {
                     )
                 }
                 let dictationBackend = self.selectedBackend
-                if self.selectedDictationProvider == .openAI {
+                if self.selectedDictationProvider.isHosted {
                     self.dictationBackendReadiness = .ready
                 } else {
                     guard await self.prepareDictationBackend(dictationBackend) else { return }
@@ -959,6 +970,8 @@ public final class MuesliController: NSObject {
         computerUseCommandTask?.cancel()
         computerUseCommandTask = nil
         computerUseCommandTaskID = nil
+        cancelHostedDictation()
+        cancelInFlightDictationTranscription()
         clearQuilSession(cancelAudioReason: "shutdown")
         activeComputerUseAudioSessionID = nil
         pendingComputerUseStopSessionID = nil
@@ -2825,7 +2838,7 @@ public final class MuesliController: NSObject {
         }
     }
 
-    // MARK: - Dictation Provider (Local / OpenAI)
+    // MARK: - Dictation Provider
 
     private func canChangePrimaryDictationModel() -> Bool {
         guard !dictationAudioSessionManager.hasActiveSession, dictationStartedAt == nil else {
@@ -2839,12 +2852,20 @@ public final class MuesliController: NSObject {
         guard provider != selectedDictationProvider else { return }
         guard canChangePrimaryDictationModel() else { return }
         updateConfig { $0.dictationProvider = provider.rawValue }
-        if provider == .openAI {
+        if provider.isHosted {
             dictationBackendReadiness = .ready
+            if provider == .openRouter,
+               hostedDictationModelVisibility.shows(.openRouter) {
+                loadOpenRouterModels(.transcription)
+            }
             statusBarController?.refresh()
             return
         }
 
+        prepareSelectedLocalDictationBackend()
+    }
+
+    private func prepareSelectedLocalDictationBackend() {
         dictationBackendReadiness = .preparing
         let option = selectedBackend
         Task { [weak self] in
@@ -2877,6 +2898,11 @@ public final class MuesliController: NSObject {
         updateConfig { $0.openaiDictationModel = OpenAITranscriptionClient.normalizeModel(model) }
     }
 
+    func selectOpenRouterDictationModel(_ model: String) {
+        let normalizedModel = OpenRouterTranscriptionClient.normalizedModel(model)
+        updateConfig { $0.openRouterDictationModel = normalizedModel }
+    }
+
     func testOpenAIConnection() async throws {
         try await OpenAITranscriptionClient.testConnection(configuration: OpenAIDictationConfiguration(
             apiKey: resolvedOpenAIAPIKey(),
@@ -2890,6 +2916,15 @@ public final class MuesliController: NSObject {
         let environmentKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"]?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return environmentKey
+    }
+
+    var hostedDictationModelVisibility: HostedDictationModelVisibility {
+        HostedDictationModelVisibility.resolve(
+            openAIAPIKey: resolvedOpenAIAPIKey(),
+            openRouterAPIKey: openRouterAuth.resolvedAPIKey(
+                legacyAPIKey: config.openRouterAPIKey
+            )
+        )
     }
 
     private func prepareDictationBackend(_ backend: BackendOption) async -> Bool {
@@ -3413,6 +3448,8 @@ public final class MuesliController: NSObject {
             return nil
         }
 
+        clearOpenRouterTranscriptionCatalog()
+
         if selectedMeetingSummaryBackend == .openRouter {
             // Match ChatGPT sign-out: move summaries to the existing API-key fallback.
             selectMeetingSummaryBackend(.openAI)
@@ -3428,6 +3465,17 @@ public final class MuesliController: NSObject {
                 $0.quilModel = PostProcessorOption.defaultQuilOption.id
             }
         }
+        if selectedDictationProvider == .openRouter {
+            // The active dictation already captured its provider, model, and
+            // credential when recording began. Preserve that session just like
+            // any other mid-dictation provider change; disconnect applies to
+            // subsequent dictations only.
+            //
+            // Keep the selected OpenRouter model for a future reconnect, but
+            // never leave future dictation pointed at an unauthenticated provider.
+            updateConfig { $0.dictationProvider = DictationProvider.local.rawValue }
+            prepareSelectedLocalDictationBackend()
+        }
         syncAppState()
         return nil
     }
@@ -3435,6 +3483,79 @@ public final class MuesliController: NSObject {
     func manageOpenRouterKey() {
         guard let url = openRouterAuth.manageKeyURL else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    func loadOpenRouterModels(_ scope: OpenRouterModelCatalogScope, force: Bool = false) {
+        switch scope {
+        case .text:
+            guard force || (
+                appState.openRouterSummaryModels.isEmpty
+                    && appState.openRouterSummaryCatalogState == .idle
+            ) else { return }
+            guard openRouterSummaryCatalogTask == nil else { return }
+            appState.openRouterSummaryCatalogState = .loading
+            openRouterSummaryCatalogTask = Task { [weak self] in
+                guard let self else { return }
+                defer { self.openRouterSummaryCatalogTask = nil }
+                do {
+                    let models = try await self.openRouterModelCatalogClient.load(.text)
+                    self.appState.openRouterSummaryModels = models
+                    self.appState.openRouterSummaryCatalogState = models.isEmpty
+                        ? .failed("No free text models found")
+                        : .loaded
+                } catch is CancellationError {
+                    self.appState.openRouterSummaryCatalogState = .idle
+                } catch {
+                    self.appState.openRouterSummaryCatalogState = .failed("Could not load")
+                }
+            }
+        case .transcription:
+            guard hostedDictationModelVisibility.shows(.openRouter) else {
+                clearOpenRouterTranscriptionCatalog()
+                return
+            }
+            guard force || (
+                appState.openRouterTranscriptionModels.isEmpty
+                    && appState.openRouterTranscriptionCatalogState == .idle
+            ) else { return }
+            guard openRouterTranscriptionCatalogTask == nil else { return }
+            openRouterTranscriptionCatalogGeneration &+= 1
+            let catalogGeneration = openRouterTranscriptionCatalogGeneration
+            appState.openRouterTranscriptionCatalogState = .loading
+            openRouterTranscriptionCatalogTask = Task { [weak self] in
+                guard let self else { return }
+                defer {
+                    if self.openRouterTranscriptionCatalogGeneration == catalogGeneration {
+                        self.openRouterTranscriptionCatalogTask = nil
+                    }
+                }
+                do {
+                    let models = try await self.openRouterModelCatalogClient.load(.transcription)
+                    guard self.openRouterTranscriptionCatalogGeneration == catalogGeneration,
+                          self.hostedDictationModelVisibility.shows(.openRouter) else { return }
+                    self.appState.openRouterTranscriptionModels = models
+                    self.appState.openRouterTranscriptionCatalogState = models.isEmpty
+                        ? .failed("No transcription models found")
+                        : .loaded
+                } catch is CancellationError {
+                    guard self.openRouterTranscriptionCatalogGeneration == catalogGeneration else { return }
+                    self.appState.openRouterTranscriptionCatalogState = .idle
+                } catch {
+                    guard self.openRouterTranscriptionCatalogGeneration == catalogGeneration else { return }
+                    self.appState.openRouterTranscriptionCatalogState = .failed("Could not load")
+                }
+                guard self.openRouterTranscriptionCatalogGeneration == catalogGeneration else { return }
+                self.statusBarController?.refresh()
+            }
+        }
+    }
+
+    private func clearOpenRouterTranscriptionCatalog() {
+        openRouterTranscriptionCatalogGeneration &+= 1
+        openRouterTranscriptionCatalogTask?.cancel()
+        openRouterTranscriptionCatalogTask = nil
+        appState.openRouterTranscriptionModels = []
+        appState.openRouterTranscriptionCatalogState = .idle
     }
 
     // MARK: - Google Calendar
@@ -4743,11 +4864,14 @@ public final class MuesliController: NSObject {
         presentHistoryWindow(tab: tab)
     }
 
-    private func presentHistoryWindow(tab: DashboardTab) {
+    private func presentHistoryWindow(
+        tab: DashboardTab,
+        presentation: DashboardWindowPresentation = .restored
+    ) {
         appState.selectedTab = tab
         syncAppState()
         DispatchQueue.main.async { [weak self] in
-            self?.historyWindowController?.show()
+            self?.historyWindowController?.show(presentation: presentation)
         }
     }
 
@@ -5011,6 +5135,20 @@ public final class MuesliController: NSObject {
         updateConfig {
             $0.dictationProvider = DictationProvider.openAI.rawValue
             $0.openaiDictationModel = normalizedModel
+        }
+        dictationBackendReadiness = .ready
+        statusBarController?.refresh()
+    }
+
+    @objc func selectOpenRouterDictationModelFromMenu(_ sender: NSMenuItem) {
+        guard let model = sender.representedObject as? String else { return }
+        let normalizedModel = OpenRouterTranscriptionClient.normalizedModel(model)
+        guard !normalizedModel.isEmpty else { return }
+        guard selectedDictationProvider != .openRouter
+            || config.openRouterDictationModel != normalizedModel else { return }
+        guard canChangePrimaryDictationModel() else { return }
+        updateConfig {
+            OpenRouterDictationModelSelection.applyStatusMenuSelection(normalizedModel, to: &$0)
         }
         dictationBackendReadiness = .ready
         statusBarController?.refresh()
@@ -5953,6 +6091,12 @@ public final class MuesliController: NSObject {
         }
     }
 
+    @objc func startMeetingRecordingFromMenuBar() {
+        startMeetingRecordingFromEntryPoint(
+            dashboardWindowPresentation: .compactMeetingTrailing
+        )
+    }
+
     @objc func toggleMeetingRecordingPause() {
         if isMeetingRecordingPaused() {
             resumeMeetingRecording()
@@ -5992,13 +6136,17 @@ public final class MuesliController: NSObject {
                 calendarOccurrence: payload.calendarOccurrence,
                 endDate: payload.endDate,
                 autoStopSource: payload.autoStopSource,
-                startOrigin: .scheduledMeetingPrompt
+                startOrigin: .scheduledMeetingPrompt,
+                dashboardWindowPresentation: .compactMeetingTrailing
             )
             return
         }
 
         guard let title = sender.representedObject as? String else { return }
-        startMeetingRecordingFromEntryPoint(title: title)
+        startMeetingRecordingFromEntryPoint(
+            title: title,
+            dashboardWindowPresentation: .compactMeetingTrailing
+        )
     }
 
     @discardableResult
@@ -6009,12 +6157,16 @@ public final class MuesliController: NSObject {
         endDate: Date? = nil,
         autoStopSource: MeetingAutoStopSource? = nil,
         presentation: MeetingStartPresentation = .foregroundNotes,
-        startOrigin: MeetingRecordingStartOrigin = .manual
+        startOrigin: MeetingRecordingStartOrigin = .manual,
+        dashboardWindowPresentation: DashboardWindowPresentation = .restored
     ) -> Bool {
         guard ensureBasicDictationPermissionsBeforeDashboard() else { return false }
         if isMeetingRecording() {
             if presentation.presentsHistoryWindow {
-                presentHistoryWindow(tab: .meetings)
+                presentHistoryWindow(
+                    tab: .meetings,
+                    presentation: dashboardWindowPresentation
+                )
             }
             return false
         }
@@ -6030,7 +6182,10 @@ public final class MuesliController: NSObject {
         )
         guard didStart else { return false }
         if presentation.presentsHistoryWindow {
-            presentHistoryWindow(tab: .meetings)
+            presentHistoryWindow(
+                tab: .meetings,
+                presentation: dashboardWindowPresentation
+            )
         }
         return true
     }
@@ -9394,6 +9549,19 @@ public final class MuesliController: NSObject {
 
     private func ensureDictationBackendReady() -> Bool {
         guard !isDictationTestMode else { return true }
+        if let message = HostedDictationActivationPolicy.blockingMessage(
+            provider: selectedDictationProvider,
+            openAIAPIKey: resolvedOpenAIAPIKey(),
+            openRouterAPIKey: openRouterAuth.resolvedAPIKey(legacyAPIKey: config.openRouterAPIKey),
+            openRouterModel: config.openRouterDictationModel
+        ) {
+            return blockHostedDictationStart(
+                status: message,
+                warning: selectedDictationProvider == .openRouter
+                    ? "OpenRouter not ready"
+                    : "OpenAI not configured"
+            )
+        }
         guard !dictationBackendReadiness.allowsDictation else { return true }
         guard let message = dictationBackendReadiness.blockingMessage(
             backendLabel: selectedBackend.label
@@ -9409,6 +9577,13 @@ public final class MuesliController: NSObject {
         case .ready:
             break
         }
+        return false
+    }
+
+    private func blockHostedDictationStart(status: String, warning: String) -> Bool {
+        statusBarController?.setStatus(status)
+        statusBarController?.refresh()
+        indicator.showWarning(warning, icon: "!", duration: 3)
         return false
     }
 
@@ -9714,8 +9889,8 @@ public final class MuesliController: NSObject {
             let startedAt = pendingDictationStopStartedAt ?? dictationStartedAt ?? Date()
             pendingDictationStopSessionID = nil
             pendingDictationStopStartedAt = nil
-            let openAIStream = detachOpenAIRealtimeDictation()
-            finishStandardDictationStop(wavURL: wavURL, startedAt: startedAt, openAIStream: openAIStream)
+            let hostedSession = detachHostedDictation()
+            finishStandardDictationStop(wavURL: wavURL, startedAt: startedAt, hostedSession: hostedSession)
         case .audioRestored(let eventSessionID):
             guard pendingReleaseSoundSessionID == eventSessionID else { break }
             pendingReleaseSoundSessionID = nil
@@ -9727,7 +9902,7 @@ public final class MuesliController: NSObject {
             break
         case .failed(_, let error):
             fputs("[muesli-native] recorder start failed: \(error)\n", stderr)
-            cancelOpenAIRealtimeDictation()
+            cancelHostedDictation()
             if !isDictationTestMode {
                 recordDiagnosticIncident(
                     kind: .dictationAudioFailed,
@@ -9869,40 +10044,82 @@ public final class MuesliController: NSObject {
         externalDictationTargetApp(from: NSWorkspace.shared.frontmostApplication)
     }
 
-    /// Starts the hosted connection before microphone capture and forwards the
-    /// authoritative route-aware recorder buffers through a bounded serial pump.
+    /// Snapshots the hosted provider configuration before microphone capture and,
+    /// when supported, forwards authoritative route-aware recorder buffers live.
     /// The recorder still writes its WAV so a network failure can fall back locally.
-    private func beginOpenAIRealtimeDictationIfNeeded() -> Bool {
-        guard !isDictationTestMode, selectedDictationProvider == .openAI else { return true }
-        let apiKey = resolvedOpenAIAPIKey()
-        guard !apiKey.isEmpty else {
-            let message = "OpenAI API key not configured. Add one in Settings → Dictation."
-            statusBarController?.setStatus(message)
-            indicator.showWarning("OpenAI not configured", icon: "!", duration: 3)
-            return false
-        }
+    private func beginHostedDictationIfNeeded() -> Bool {
+        guard !isDictationTestMode, selectedDictationProvider.isHosted else { return true }
+        cancelHostedDictation()
 
-        cancelOpenAIRealtimeDictation()
-        let stream = OpenAIRealtimeDictationStream(configuration: OpenAIDictationConfiguration(
-            apiKey: apiKey,
-            model: config.openaiDictationModel
-        ))
-        openAIRealtimeStream = stream
-        dictationAudioSessionManager.onAudioBuffer = { [weak stream] samples in
-            stream?.append(samples)
+        let session: any HostedDictationSession
+        switch selectedDictationProvider {
+        case .local:
+            return true
+        case .openAI:
+            session = OpenAIHostedDictationSession(configuration: OpenAIDictationConfiguration(
+                apiKey: resolvedOpenAIAPIKey(),
+                model: config.openaiDictationModel
+            ))
+        case .openRouter:
+            session = OpenRouterHostedDictationSession(configuration: OpenRouterDictationConfiguration(
+                apiKey: openRouterAuth.resolvedAPIKey(legacyAPIKey: config.openRouterAPIKey),
+                model: config.openRouterDictationModel
+            ))
+        }
+        hostedDictationSession = session
+        if session.acceptsLiveAudio {
+            dictationAudioSessionManager.onAudioBuffer = { [weak session] samples in
+                session?.append(samples)
+            }
         }
         return true
     }
 
-    private func detachOpenAIRealtimeDictation() -> OpenAIRealtimeDictationStream? {
+    private func detachHostedDictation() -> (any HostedDictationSession)? {
         dictationAudioSessionManager.onAudioBuffer = nil
-        defer { openAIRealtimeStream = nil }
-        return openAIRealtimeStream
+        defer { hostedDictationSession = nil }
+        return hostedDictationSession
     }
 
-    private func cancelOpenAIRealtimeDictation() {
-        detachOpenAIRealtimeDictation()?.cancel()
+    private func cancelHostedDictation() {
+        detachHostedDictation()?.cancel()
     }
+
+    private func cancelInFlightDictationTranscription() {
+        let hostedSession = finalizingHostedDictationSession?.session
+        let transcriptionTask = dictationTranscriptionTask?.task
+        finalizingHostedDictationSession = nil
+        dictationTranscriptionTask = nil
+        hostedSession?.cancel()
+        transcriptionTask?.cancel()
+    }
+
+    private func clearInFlightDictationTranscription(id: UUID) {
+        if finalizingHostedDictationSession?.id == id {
+            finalizingHostedDictationSession = nil
+        }
+        if dictationTranscriptionTask?.id == id {
+            dictationTranscriptionTask = nil
+        }
+    }
+
+    private func isCurrentDictationTranscription(id: UUID) -> Bool {
+        dictationTranscriptionTask?.id == id
+    }
+
+    #if DEBUG
+    func installHostedDictationSessionsForTesting(
+        recording: (any HostedDictationSession)? = nil,
+        finalizing: (any HostedDictationSession)? = nil
+    ) {
+        hostedDictationSession = recording
+        finalizingHostedDictationSession = finalizing.map { (UUID(), $0) }
+    }
+
+    var hostedDictationSessionPresenceForTesting: (recording: Bool, finalizing: Bool) {
+        (hostedDictationSession != nil, finalizingHostedDictationSession != nil)
+    }
+    #endif
 
     private func captureDictationCorrectionTargetApp() {
         capturedDictationCorrectionTargetApp = currentExternalDictationTargetApp()
@@ -9914,7 +10131,7 @@ public final class MuesliController: NSObject {
         guard ensureDictationBackendReady() else { return }
         if isMeetingRecording() { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
-        guard beginOpenAIRealtimeDictationIfNeeded() else { return }
+        guard beginHostedDictationIfNeeded() else { return }
 
         // Nemotron backends support hold-to-talk (record → transcribe on release) in
         // addition to double-tap handsfree streaming. The hold path uses the normal
@@ -10060,12 +10277,15 @@ public final class MuesliController: NSObject {
     private func handleCancel() {
         if isMeetingRecording() { return }
         if shouldIgnoreDictationCleanupForComputerUseActivity() { return }
-        if shouldIgnoreCleanupAfterBlockedDictationStart {
+        let isCancellingTranscription = dictationState == .transcribing
+            && dictationTranscriptionTask != nil
+        if shouldIgnoreCleanupAfterBlockedDictationStart && !isCancellingTranscription {
             fputs("[muesli-native] ignoring dictation cancel because start was blocked\n", stderr)
             return
         }
         fputs("[muesli-native] cancel\n", stderr)
-        cancelOpenAIRealtimeDictation()
+        cancelHostedDictation()
+        cancelInFlightDictationTranscription()
         resetDictationOutputMode()
 
         if isNemotron35Streaming {
@@ -10098,7 +10318,7 @@ public final class MuesliController: NSObject {
         guard ensureDictationBackendReady() else { return false }
         if isMeetingRecording() { return false }
         if blockDictationForMeetingActivityIfNeeded() { return false }
-        guard beginOpenAIRealtimeDictationIfNeeded() else { return false }
+        guard beginHostedDictationIfNeeded() else { return false }
         fputs("[muesli-native] toggle dictation start\n", stderr)
         if dictationLatencyTraceID == nil {
             beginDictationLatencyTrace(reason: "toggle")
@@ -10265,7 +10485,7 @@ public final class MuesliController: NSObject {
             || hasComputerUseActivity
             || hasQuilActivity else { return }
         fputs("[muesli-native] cancelling dictation audio session because meeting is active\n", stderr)
-        cancelOpenAIRealtimeDictation()
+        cancelHostedDictation()
 
         if hasComputerUseActivity {
             handleComputerUseCancel()
@@ -10407,11 +10627,11 @@ public final class MuesliController: NSObject {
     private func finishStandardDictationStop(
         wavURL stoppedWavURL: URL?,
         startedAt: Date,
-        openAIStream: OpenAIRealtimeDictationStream?
+        hostedSession: (any HostedDictationSession)?
     ) {
         markDictationLatency("stop_finished")
         guard let wavURL = stoppedWavURL else {
-            openAIStream?.cancel()
+            hostedSession?.cancel()
             fputs("[muesli-native] stop without wav\n", stderr)
             clearCapturedDictationSessionContext()
             resetDictationOutputMode()
@@ -10423,7 +10643,7 @@ public final class MuesliController: NSObject {
         }
         let duration = max(Date().timeIntervalSince(startedAt), 0)
         if duration < 0.3 {
-            openAIStream?.cancel()
+            hostedSession?.cancel()
             fputs("[muesli-native] discarded short recording\n", stderr)
             try? FileManager.default.removeItem(at: wavURL)
             if isDictationTestMode {
@@ -10448,9 +10668,9 @@ public final class MuesliController: NSObject {
         // uses the configured provider while retaining the local selection for
         // an instant switch back.
         let transcriptionBackend = isTestMode ? (dictationTestBackend ?? selectedBackend) : selectedBackend
-        let openAIFallbackBackend = isTestMode || openAIStream == nil
+        let hostedFallbackBackend = isTestMode || hostedSession == nil
             ? nil
-            : BackendOption.resolveOpenAIFallback(
+            : BackendOption.resolveHostedDictationFallback(
                 selected: selectedBackend,
                 available: BackendOption.downloaded
             )
@@ -10463,24 +10683,38 @@ public final class MuesliController: NSObject {
         let storageContext = capturedContext.map { DictationContextCapture.formatForStorage($0) }
             ?? startingTargetApp?.appContext
             ?? ""
+        let transcriptionTaskID = UUID()
+        if !isTestMode, let hostedSession {
+            finalizingHostedDictationSession = (transcriptionTaskID, hostedSession)
+        }
         let task = Task { [weak self] in
             guard let self else { return }
             defer {
                 try? FileManager.default.removeItem(at: wavURL)
+                if !isTestMode {
+                    self.clearInFlightDictationTranscription(id: transcriptionTaskID)
+                }
             }
 
             do {
                 let rawText: String
                 let completionBackend: String
-                if let openAIStream {
+                if let hostedSession {
                     do {
-                        // OpenAI transcription models already produce normalized
+                        // Hosted transcription models already produce normalized
                         // prose, so hosted success intentionally bypasses cleanup.
-                        rawText = try await openAIStream.finish()
-                        completionBackend = "openai-realtime"
+                        let result = try await hostedSession.finish(recordedWAVURL: wavURL)
+                        rawText = result.text
+                        completionBackend = result.backend
                     } catch {
-                        guard let fallbackBackend = openAIFallbackBackend else { throw error }
-                        fputs("[openai-realtime] stream failed; falling back locally: \(error)\n", stderr)
+                        guard HostedDictationFallbackPolicy.shouldFallback(
+                            after: error,
+                            taskIsCancelled: Task.isCancelled,
+                            isCurrentSession: isTestMode
+                                || self.isCurrentDictationTranscription(id: transcriptionTaskID)
+                        ),
+                              let fallbackBackend = hostedFallbackBackend else { throw error }
+                        fputs("[hosted-dictation] transcription failed; falling back locally: \(error)\n", stderr)
                         try await self.transcriptionCoordinator.preloadRequired(
                             backend: fallbackBackend,
                             enablePostProcessor: false,
@@ -10526,6 +10760,9 @@ public final class MuesliController: NSObject {
                 }
                 // Drop result if test was cancelled (user navigated away)
                 try Task.checkCancellation()
+                guard isTestMode || self.isCurrentDictationTranscription(id: transcriptionTaskID) else {
+                    return
+                }
                 let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
                 await MainActor.run {
                     self.markDictationLatency("transcription_completed", trace: completionLatencyTrace)
@@ -10630,6 +10867,9 @@ public final class MuesliController: NSObject {
                 }
             } catch is CancellationError {
                 fputs("[muesli-native] test dictation cancelled\n", stderr)
+                guard isTestMode || self.isCurrentDictationTranscription(id: transcriptionTaskID) else {
+                    return
+                }
                 await MainActor.run {
                     self.clearCapturedDictationSessionContext()
                     self.resetDictationOutputMode()
@@ -10640,6 +10880,9 @@ public final class MuesliController: NSObject {
                 }
             } catch {
                 fputs("[muesli-native] transcription failed: \(error)\n", stderr)
+                guard isTestMode || self.isCurrentDictationTranscription(id: transcriptionTaskID) else {
+                    return
+                }
                 await MainActor.run {
                     if self.isDictationTestMode {
                         self.dictationTestFailureCallback?(self.userFacingDictationTestError(error))
@@ -10660,7 +10903,11 @@ public final class MuesliController: NSObject {
                 }
             }
         }
-        if isTestMode { dictationTestTask = task }
+        if isTestMode {
+            dictationTestTask = task
+        } else {
+            dictationTranscriptionTask = (transcriptionTaskID, task)
+        }
     }
 
     private func userFacingDictationTestError(_ error: Error) -> String {
