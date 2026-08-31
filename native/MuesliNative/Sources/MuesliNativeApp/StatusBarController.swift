@@ -117,7 +117,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             menu.addItem(actionItem(title: "Stop Meeting Recording", action: #selector(MuesliController.toggleMeetingRecording)))
             menu.addItem(actionItem(title: "Discard Meeting Recording...", action: #selector(MuesliController.discardMeetingWithConfirmation)))
         } else {
-            menu.addItem(actionItem(title: "Start Meeting Recording", action: #selector(MuesliController.toggleMeetingRecording)))
+            menu.addItem(actionItem(
+                title: "Start Meeting Recording",
+                action: #selector(MuesliController.startMeetingRecordingFromMenuBar)
+            ))
         }
         menu.addItem(.separator())
 

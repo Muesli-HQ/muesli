@@ -4864,11 +4864,14 @@ public final class MuesliController: NSObject {
         presentHistoryWindow(tab: tab)
     }
 
-    private func presentHistoryWindow(tab: DashboardTab) {
+    private func presentHistoryWindow(
+        tab: DashboardTab,
+        presentation: DashboardWindowPresentation = .restored
+    ) {
         appState.selectedTab = tab
         syncAppState()
         DispatchQueue.main.async { [weak self] in
-            self?.historyWindowController?.show()
+            self?.historyWindowController?.show(presentation: presentation)
         }
     }
 
@@ -6088,6 +6091,12 @@ public final class MuesliController: NSObject {
         }
     }
 
+    @objc func startMeetingRecordingFromMenuBar() {
+        startMeetingRecordingFromEntryPoint(
+            dashboardWindowPresentation: .compactMeetingTrailing
+        )
+    }
+
     @objc func toggleMeetingRecordingPause() {
         if isMeetingRecordingPaused() {
             resumeMeetingRecording()
@@ -6127,13 +6136,17 @@ public final class MuesliController: NSObject {
                 calendarOccurrence: payload.calendarOccurrence,
                 endDate: payload.endDate,
                 autoStopSource: payload.autoStopSource,
-                startOrigin: .scheduledMeetingPrompt
+                startOrigin: .scheduledMeetingPrompt,
+                dashboardWindowPresentation: .compactMeetingTrailing
             )
             return
         }
 
         guard let title = sender.representedObject as? String else { return }
-        startMeetingRecordingFromEntryPoint(title: title)
+        startMeetingRecordingFromEntryPoint(
+            title: title,
+            dashboardWindowPresentation: .compactMeetingTrailing
+        )
     }
 
     @discardableResult
@@ -6144,12 +6157,16 @@ public final class MuesliController: NSObject {
         endDate: Date? = nil,
         autoStopSource: MeetingAutoStopSource? = nil,
         presentation: MeetingStartPresentation = .foregroundNotes,
-        startOrigin: MeetingRecordingStartOrigin = .manual
+        startOrigin: MeetingRecordingStartOrigin = .manual,
+        dashboardWindowPresentation: DashboardWindowPresentation = .restored
     ) -> Bool {
         guard ensureBasicDictationPermissionsBeforeDashboard() else { return false }
         if isMeetingRecording() {
             if presentation.presentsHistoryWindow {
-                presentHistoryWindow(tab: .meetings)
+                presentHistoryWindow(
+                    tab: .meetings,
+                    presentation: dashboardWindowPresentation
+                )
             }
             return false
         }
@@ -6165,7 +6182,10 @@ public final class MuesliController: NSObject {
         )
         guard didStart else { return false }
         if presentation.presentsHistoryWindow {
-            presentHistoryWindow(tab: .meetings)
+            presentHistoryWindow(
+                tab: .meetings,
+                presentation: dashboardWindowPresentation
+            )
         }
         return true
     }

@@ -26,6 +26,33 @@ struct WindowAppearanceTests {
         #expect(DashboardWindowLayout.minimumContentHeight == 600)
     }
 
+    @Test("menu bar meeting placement uses the top-right of the active display")
+    func menuBarMeetingPlacementUsesTopRightOfDisplay() {
+        let visibleFrame = NSRect(x: -1920, y: 23, width: 1920, height: 1057)
+        let frame = DashboardWindowPlacement.compactTrailingFrame(
+            currentFrame: NSRect(x: 180, y: 140, width: 1120, height: 790),
+            visibleFrame: visibleFrame,
+            targetFrameWidth: DashboardWindowLayout.minimumContentWidth
+        )
+
+        #expect(frame.maxX == visibleFrame.maxX)
+        #expect(frame.maxY == visibleFrame.maxY)
+        #expect(frame.width == DashboardWindowLayout.minimumContentWidth)
+        #expect(frame.height == 790)
+    }
+
+    @Test("menu bar meeting placement stays inside a smaller display")
+    func menuBarMeetingPlacementClampsToDisplay() {
+        let visibleFrame = NSRect(x: 0, y: 25, width: 500, height: 575)
+        let frame = DashboardWindowPlacement.compactTrailingFrame(
+            currentFrame: NSRect(x: 100, y: 100, width: 1120, height: 790),
+            visibleFrame: visibleFrame,
+            targetFrameWidth: DashboardWindowLayout.minimumContentWidth
+        )
+
+        #expect(frame == visibleFrame)
+    }
+
     @Test("compact quick notes hides the sidebar only for an open meeting")
     func compactQuickNotesPresentationPolicy() {
         #expect(DashboardWindowLayout.usesCompactQuickNotes(width: 520, hasOpenMeeting: true))
