@@ -72,6 +72,7 @@ struct MeetingDetailView: View {
     let appState: AppState
     let onBack: (() -> Void)?
     let backLabel: String
+    @Environment(\.usesCompactQuickNotes) private var usesCompactQuickNotes
     @State private var isSummarizing = false
     @State private var isRetranscribing = false
     @State private var isEditingNotes = false
@@ -204,8 +205,16 @@ struct MeetingDetailView: View {
 
     @ViewBuilder
     private func header(_ meeting: MeetingRecord) -> some View {
+        if usesCompactQuickNotes {
+            compactQuickNotesHeader(meeting)
+        } else {
+            standardHeader(meeting)
+        }
+    }
+
+    private func standardHeader(_ meeting: MeetingRecord) -> some View {
         let appliedTemplate = controller.meetingTemplateSnapshot(for: meeting)
-        VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
+        return VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
             if let onBack {
                 Button(action: onBack) {
                     HStack(spacing: 6) {
@@ -247,6 +256,137 @@ struct MeetingDetailView: View {
         .padding(.horizontal, 40)
         .padding(.vertical, 24)
         .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    private func compactQuickNotesHeader(_ meeting: MeetingRecord) -> some View {
+        let appliedTemplate = controller.meetingTemplateSnapshot(for: meeting)
+        return VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+            HStack(alignment: .center, spacing: MuesliTheme.spacing8) {
+                if let onBack {
+                    Button(action: onBack) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(MuesliTheme.textSecondary)
+                            .frame(width: 30, height: 30)
+                            .background(MuesliTheme.backgroundRaised)
+                            .clipShape(Circle())
+                            .overlay {
+                                Circle().strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .help(backLabel)
+                    .accessibilityLabel(backLabel)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    MarqueeTitleTextField(
+                        text: $editableTitle,
+                        titleSize: 24,
+                        onSubmit: {
+                            controller.updateMeetingTitle(id: meeting.id, title: editableTitle)
+                        },
+                        onTextChange: {
+                            debounceSaveTitle(meetingID: meeting.id)
+                        }
+                    )
+
+                    HStack(spacing: 6) {
+                        metadataItem(
+                            systemImage: "calendar",
+                            text: MeetingBrowserLogic.formatStartTime(meeting.startTime)
+                        )
+                        metadataDivider
+                        metadataItem(systemImage: "clock", text: formatDuration(meeting.durationSeconds))
+                    }
+                    .lineLimit(1)
+                }
+                .layoutPriority(1)
+
+                if showsManualNotesEditor(for: meeting) {
+                    compactRecordingControls(for: meeting)
+                } else {
+                    compactHeaderActions(for: meeting, appliedTemplate: appliedTemplate)
+                }
+            }
+
+            HStack(alignment: .center, spacing: MuesliTheme.spacing8) {
+                folderPill(for: meeting)
+                    .frame(maxWidth: 150)
+                MeetingParticipantsView(meetingID: meeting.id, controller: controller)
+                    .frame(maxWidth: 150)
+                Spacer(minLength: 0)
+                detailModePicker(for: meeting)
+                if showsManualNotesEditor(for: meeting) {
+                    compactFormattingMenu
+                }
+            }
+
+            threadBreadcrumb
+
+            activeMeetingAudioWarningBanner(for: meeting)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+    }
+
+    @ViewBuilder
+    private func compactRecordingControls(for meeting: MeetingRecord) -> some View {
+        if meeting.status == .recording, !isPreparingThisMeeting(meeting) {
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(appState.isMeetingRecordingPaused ? MuesliTheme.transcribing : MuesliTheme.recording)
+                    .frame(width: 7, height: 7)
+                    .help(appState.isMeetingRecordingPaused ? "Recording paused" : "Recording")
+                pauseResumeRecordingButton
+                    .fixedSize()
+                stopRecordingButton
+                    .fixedSize()
+                Menu {
+                    Button("Discard meeting", role: .destructive) {
+                        controller.discardMeetingWithConfirmation()
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                        .frame(width: 28, height: 28)
+                        .background(MuesliTheme.backgroundRaised)
+                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("More recording actions")
+            }
+        } else {
+            recordingControlGroup(for: meeting)
+        }
+    }
+
+    private var compactFormattingMenu: some View {
+        Menu {
+            Button("Heading") { manualEditorCommand = MarkdownEditorCommand(kind: .heading) }
+            Button("Bold") { manualEditorCommand = MarkdownEditorCommand(kind: .bold) }
+            Button("Bullet list") { manualEditorCommand = MarkdownEditorCommand(kind: .bullet) }
+            Button("Checklist") { manualEditorCommand = MarkdownEditorCommand(kind: .checkbox) }
+        } label: {
+            Image(systemName: "textformat")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(MuesliTheme.textSecondary)
+                .frame(width: 28, height: 28)
+                .background(MuesliTheme.backgroundRaised)
+                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                .overlay {
+                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                        .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Formatting")
     }
 
     private func meetingIdentity(for meeting: MeetingRecord) -> some View {
@@ -400,8 +540,10 @@ struct MeetingDetailView: View {
                         }
 
                         VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
-                            manualNotesToolbar(for: meeting)
-                                .disabled(!isManualNotesEditable)
+                            if !usesCompactQuickNotes {
+                                manualNotesToolbar(for: meeting)
+                                    .disabled(!isManualNotesEditable)
+                            }
                             MarkdownRichTextEditor(
                                 text: $editableManualNotes,
                                 command: $manualEditorCommand,
@@ -413,17 +555,13 @@ struct MeetingDetailView: View {
                                 }
                             )
                             .background(MuesliTheme.backgroundBase)
-                            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-                            )
+                            .manualNotesEditorChrome(compact: usesCompactQuickNotes)
                             .frame(maxHeight: hasPersistedNotes ? 260 : .infinity)
                         }
                         .frame(maxWidth: 980, maxHeight: hasPersistedNotes ? nil : .infinity, alignment: .topLeading)
                     }
-                    .padding(.horizontal, 40)
-                    .padding(.top, 12)
+                    .padding(.horizontal, usesCompactQuickNotes ? 24 : 40)
+                    .padding(.top, usesCompactQuickNotes ? 0 : 12)
                     .padding(.bottom, 24)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     .opacity(recordingMode == .notes ? 1 : 0)
@@ -440,8 +578,10 @@ struct MeetingDetailView: View {
             } else {
                 let isManualNotesEditable = canEditManualNotes(for: meeting)
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
-                    manualNotesToolbar(for: meeting)
-                        .disabled(!isManualNotesEditable)
+                    if !usesCompactQuickNotes {
+                        manualNotesToolbar(for: meeting)
+                            .disabled(!isManualNotesEditable)
+                    }
 
                     MarkdownRichTextEditor(
                         text: $editableManualNotes,
@@ -455,14 +595,10 @@ struct MeetingDetailView: View {
                     )
                     .frame(maxWidth: 980, maxHeight: .infinity, alignment: .topLeading)
                     .background(MuesliTheme.backgroundBase)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                            .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-                    )
+                    .manualNotesEditorChrome(compact: usesCompactQuickNotes)
                 }
-                .padding(.horizontal, 40)
-                .padding(.top, 12)
+                .padding(.horizontal, usesCompactQuickNotes ? 24 : 40)
+                .padding(.top, usesCompactQuickNotes ? 0 : 12)
                 .padding(.bottom, 24)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
@@ -547,7 +683,7 @@ struct MeetingDetailView: View {
         }
         .pickerStyle(.segmented)
         .tint(MuesliTheme.accent)
-        .frame(width: 180)
+        .frame(width: usesCompactQuickNotes ? 124 : 180)
     }
 
     private func showsManualNotesEditor(for meeting: MeetingRecord) -> Bool {
@@ -1709,10 +1845,24 @@ private extension View {
                     .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
             )
     }
+
+    @ViewBuilder
+    func manualNotesEditorChrome(compact: Bool) -> some View {
+        if compact {
+            self
+        } else {
+            clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                .overlay(
+                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                        .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                )
+        }
+    }
 }
 
 private struct MarqueeTitleTextField: View {
     @Binding var text: String
+    var titleSize: CGFloat = 30
     let onSubmit: () -> Void
     let onTextChange: () -> Void
 
@@ -1723,7 +1873,7 @@ private struct MarqueeTitleTextField: View {
     @State private var marqueeRunID = UUID()
     @FocusState private var isTitleFocused: Bool
 
-    private let titleFont = Font.system(size: 30, weight: .bold)
+    private var titleFont: Font { .system(size: titleSize, weight: .bold) }
 
     var body: some View {
         ZStack(alignment: .leading) {

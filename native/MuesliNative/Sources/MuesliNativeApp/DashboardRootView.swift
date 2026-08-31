@@ -4,8 +4,24 @@ import MuesliCore
 enum DashboardWindowLayout {
     /// Narrow enough to sit beside a call window while preserving a useful
     /// notes editor when the sidebar is collapsed or hidden.
-    static let minimumContentWidth: CGFloat = 620
+    static let minimumContentWidth: CGFloat = 520
     static let minimumContentHeight: CGFloat = 600
+    static let compactQuickNotesThreshold: CGFloat = 600
+
+    static func usesCompactQuickNotes(width: CGFloat, hasOpenMeeting: Bool) -> Bool {
+        hasOpenMeeting && width < compactQuickNotesThreshold
+    }
+}
+
+private struct CompactQuickNotesEnvironmentKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var usesCompactQuickNotes: Bool {
+        get { self[CompactQuickNotesEnvironmentKey.self] }
+        set { self[CompactQuickNotesEnvironmentKey.self] = newValue }
+    }
 }
 
 struct DashboardRootView: View {
@@ -15,26 +31,38 @@ struct DashboardRootView: View {
     @State private var isSidebarCollapsed = false
 
     var body: some View {
-        HSplitView {
-            SidebarView(
-                appState: appState,
-                controller: controller,
-                isCollapsed: isSidebarCollapsed,
-                onToggleCollapsed: {
-                    withAnimation(.easeInOut(duration: 0.22)) {
-                        isSidebarCollapsed.toggle()
-                    }
-                }
-            )
-            .frame(
-                minWidth: isSidebarCollapsed ? 68 : 240,
-                idealWidth: isSidebarCollapsed ? 68 : 260,
-                maxWidth: isSidebarCollapsed ? 68 : 300
-            )
+        GeometryReader { proxy in
+            if DashboardWindowLayout.usesCompactQuickNotes(
+                width: proxy.size.width,
+                hasOpenMeeting: hasOpenMeeting
+            ) {
+                detailContent
+                    .environment(\.usesCompactQuickNotes, true)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(MuesliTheme.backgroundBase)
+            } else {
+                HSplitView {
+                    SidebarView(
+                        appState: appState,
+                        controller: controller,
+                        isCollapsed: isSidebarCollapsed,
+                        onToggleCollapsed: {
+                            withAnimation(.easeInOut(duration: 0.22)) {
+                                isSidebarCollapsed.toggle()
+                            }
+                        }
+                    )
+                    .frame(
+                        minWidth: isSidebarCollapsed ? 68 : 240,
+                        idealWidth: isSidebarCollapsed ? 68 : 260,
+                        maxWidth: isSidebarCollapsed ? 68 : 300
+                    )
 
-            detailContent
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(MuesliTheme.backgroundBase)
+                    detailContent
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(MuesliTheme.backgroundBase)
+                }
+            }
         }
         .frame(
             minWidth: DashboardWindowLayout.minimumContentWidth,
@@ -130,6 +158,13 @@ struct DashboardRootView: View {
                 onDismiss: { controller.dismissDiagnosticIncidentPrompt() }
             )
         }
+    }
+
+    private var hasOpenMeeting: Bool {
+        if case .document = appState.meetingsNavigationState {
+            return true
+        }
+        return false
     }
 
     @ViewBuilder

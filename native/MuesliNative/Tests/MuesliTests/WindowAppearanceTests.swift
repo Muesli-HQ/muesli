@@ -20,9 +20,16 @@ struct WindowAppearanceTests {
 
     @Test("dashboard can shrink beside a call window")
     func dashboardUsesCompactMinimumWidth() {
-        #expect(DashboardWindowLayout.minimumContentWidth == 620)
+        #expect(DashboardWindowLayout.minimumContentWidth == 520)
         #expect(DashboardWindowLayout.minimumContentWidth < 900)
         #expect(DashboardWindowLayout.minimumContentHeight == 600)
+    }
+
+    @Test("compact quick notes hides the sidebar only for an open meeting")
+    func compactQuickNotesPresentationPolicy() {
+        #expect(DashboardWindowLayout.usesCompactQuickNotes(width: 520, hasOpenMeeting: true))
+        #expect(!DashboardWindowLayout.usesCompactQuickNotes(width: 600, hasOpenMeeting: true))
+        #expect(!DashboardWindowLayout.usesCompactQuickNotes(width: 520, hasOpenMeeting: false))
     }
 
     @Test("dashboard renders one working custom sidebar toggle")
