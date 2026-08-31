@@ -172,8 +172,8 @@ struct WindowAppearanceTests {
         return lifecycle.appearanceCount > 0
     }
 
-    @Test("dashboard renders the production compact meeting composition")
-    func dashboardRendersProductionCompactMeetingComposition() {
+    @Test("dashboard wires the production sidebar toggle and compact meeting header")
+    func dashboardWiresProductionSidebarAndCompactMeetingComposition() {
         let supportDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("muesli-window-test-\(UUID().uuidString)", isDirectory: true)
         let databaseURL = supportDirectory.appendingPathComponent("muesli.db")
@@ -205,12 +205,22 @@ struct WindowAppearanceTests {
         controller.appState.selectedMeetingRecord = meeting
         controller.appState.meetingsNavigationState = .document(meeting.id)
 
+        let sidebarPresentation = DashboardSidebarPresentation()
+        let rootView = DashboardRootView(
+            appState: controller.appState,
+            controller: controller,
+            sidebarPresentation: sidebarPresentation
+        )
+        let productionSidebar = rootView.sidebarView
+        #expect(!productionSidebar.isCollapsed)
+        #expect(SidebarToggleButton.accessibilityIdentifier == "dashboard.sidebar.toggle")
+
+        productionSidebar.onToggleCollapsed()
+        #expect(sidebarPresentation.isCollapsed)
+        #expect(rootView.sidebarView.isCollapsed)
+
         let renderer = ImageRenderer(
-            content: DashboardRootView(
-                appState: controller.appState,
-                controller: controller
-            )
-            .frame(
+            content: rootView.frame(
                 width: DashboardWindowLayout.minimumContentWidth,
                 height: DashboardWindowLayout.minimumContentHeight
             )

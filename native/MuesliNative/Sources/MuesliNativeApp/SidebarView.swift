@@ -2,6 +2,8 @@ import SwiftUI
 import MuesliCore
 
 struct SidebarToggleButton: View {
+    static let accessibilityIdentifier = "dashboard.sidebar.toggle"
+
     let isCollapsed: Bool
     let action: () -> Void
 
@@ -22,6 +24,7 @@ struct SidebarToggleButton: View {
         .buttonStyle(.plain)
         .help(accessibilityTitle)
         .accessibilityLabel(accessibilityTitle)
+        .accessibilityIdentifier(Self.accessibilityIdentifier)
     }
 }
 

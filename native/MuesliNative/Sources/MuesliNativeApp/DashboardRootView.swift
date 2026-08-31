@@ -24,6 +24,15 @@ extension EnvironmentValues {
     }
 }
 
+@Observable
+final class DashboardSidebarPresentation {
+    var isCollapsed = false
+
+    func toggle() {
+        isCollapsed.toggle()
+    }
+}
+
 struct DashboardContentLayout<SidebarContent: View, DetailContent: View>: View {
     let usesCompactQuickNotes: Bool
     @ViewBuilder let sidebar: () -> SidebarContent
@@ -47,7 +56,30 @@ struct DashboardRootView: View {
     let appState: AppState
     let controller: MuesliController
     @State private var featureTourTargetFrames: [FeatureTourTarget: CGRect] = [:]
-    @State private var isSidebarCollapsed = false
+    @State private var sidebarPresentation: DashboardSidebarPresentation
+
+    init(
+        appState: AppState,
+        controller: MuesliController,
+        sidebarPresentation: DashboardSidebarPresentation = DashboardSidebarPresentation()
+    ) {
+        self.appState = appState
+        self.controller = controller
+        _sidebarPresentation = State(initialValue: sidebarPresentation)
+    }
+
+    var sidebarView: SidebarView {
+        SidebarView(
+            appState: appState,
+            controller: controller,
+            isCollapsed: sidebarPresentation.isCollapsed,
+            onToggleCollapsed: {
+                withAnimation(.easeInOut(duration: 0.22)) {
+                    sidebarPresentation.toggle()
+                }
+            }
+        )
+    }
 
     var body: some View {
         GeometryReader { proxy in
@@ -57,20 +89,11 @@ struct DashboardRootView: View {
             )
 
             DashboardContentLayout(usesCompactQuickNotes: usesCompactQuickNotes) {
-                SidebarView(
-                    appState: appState,
-                    controller: controller,
-                    isCollapsed: isSidebarCollapsed,
-                    onToggleCollapsed: {
-                        withAnimation(.easeInOut(duration: 0.22)) {
-                            isSidebarCollapsed.toggle()
-                        }
-                    }
-                )
+                sidebarView
                 .frame(
-                    minWidth: isSidebarCollapsed ? 68 : 240,
-                    idealWidth: isSidebarCollapsed ? 68 : 260,
-                    maxWidth: isSidebarCollapsed ? 68 : 300
+                    minWidth: sidebarPresentation.isCollapsed ? 68 : 240,
+                    idealWidth: sidebarPresentation.isCollapsed ? 68 : 260,
+                    maxWidth: sidebarPresentation.isCollapsed ? 68 : 300
                 )
             } detail: {
                 detailContent
