@@ -107,6 +107,16 @@ struct WindowAppearanceTests {
         #expect(selection.names == ["compact"])
     }
 
+    @Test("compact formatting follows editable note-taking workflows")
+    func compactFormattingPolicy() {
+        #expect(CompactMeetingFormattingPolicy.showsFormattingControls(for: .recording, isPreparing: false))
+        #expect(!CompactMeetingFormattingPolicy.showsFormattingControls(for: .recording, isPreparing: true))
+        #expect(CompactMeetingFormattingPolicy.showsFormattingControls(for: .noteOnly, isPreparing: false))
+        #expect(!CompactMeetingFormattingPolicy.showsFormattingControls(for: .failed, isPreparing: false))
+        #expect(!CompactMeetingFormattingPolicy.showsFormattingControls(for: .processing, isPreparing: false))
+        #expect(!CompactMeetingFormattingPolicy.showsFormattingControls(for: .completed, isPreparing: false))
+    }
+
     @Test("compact threshold preserves dashboard detail identity")
     func compactThresholdPreservesDashboardDetailIdentity() async {
         let presentation = DashboardLayoutPresentation()
@@ -121,9 +131,16 @@ struct WindowAppearanceTests {
             origin: .zero,
             size: NSSize(width: 700, height: DashboardWindowLayout.minimumContentHeight)
         )
+        let window = NSWindow(
+            contentRect: hostingView.frame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
 
         hostingView.layoutSubtreeIfNeeded()
-        await Task.yield()
+        #expect(await waitForAppearance(lifecycle))
         #expect(lifecycle.appearanceCount == 1)
         #expect(lifecycle.disappearanceCount == 0)
 
@@ -142,6 +159,17 @@ struct WindowAppearanceTests {
 
         #expect(lifecycle.appearanceCount == 1)
         #expect(lifecycle.disappearanceCount == 0)
+    }
+
+    private func waitForAppearance(_ lifecycle: DashboardDetailLifecycleRecorder) async -> Bool {
+        for _ in 0..<50 {
+            if lifecycle.appearanceCount > 0 {
+                return true
+            }
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return lifecycle.appearanceCount > 0
     }
 
     @Test("dashboard renders the production compact meeting composition")

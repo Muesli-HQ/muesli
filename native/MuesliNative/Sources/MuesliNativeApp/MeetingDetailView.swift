@@ -27,6 +27,19 @@ enum MeetingHeaderLayout {
     static let contextControlHeight: CGFloat = 28
 }
 
+enum CompactMeetingFormattingPolicy {
+    static func showsFormattingControls(for status: MeetingStatus, isPreparing: Bool) -> Bool {
+        switch status {
+        case .recording:
+            return !isPreparing
+        case .noteOnly:
+            return true
+        case .processing, .completed, .failed:
+            return false
+        }
+    }
+}
+
 struct ResponsiveHorizontalLayout<Wide: View, Compact: View>: View {
     let wideIdentifier: String
     let compactIdentifier: String
@@ -315,12 +328,15 @@ struct MeetingDetailView: View {
             HStack(alignment: .center, spacing: MuesliTheme.spacing8) {
                 folderPill(for: meeting)
                     .frame(maxWidth: 150)
-                if meeting.status != .recording || isPreparingThisMeeting(meeting) {
-                    MeetingParticipantsView(meetingID: meeting.id, controller: controller)
-                        .frame(maxWidth: 150)
-                } else if showsManualNotesEditor(for: meeting) {
+                if CompactMeetingFormattingPolicy.showsFormattingControls(
+                    for: meeting.status,
+                    isPreparing: isPreparingThisMeeting(meeting)
+                ) {
                     compactFormattingToolbar
                         .disabled(!canEditManualNotes(for: meeting))
+                } else {
+                    MeetingParticipantsView(meetingID: meeting.id, controller: controller)
+                        .frame(maxWidth: 150)
                 }
                 Spacer(minLength: 0)
                 detailModePicker(for: meeting)
