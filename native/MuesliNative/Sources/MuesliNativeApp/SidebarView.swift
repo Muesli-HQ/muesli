@@ -1,6 +1,30 @@
 import SwiftUI
 import MuesliCore
 
+struct SidebarToggleButton: View {
+    let isCollapsed: Bool
+    let action: () -> Void
+
+    var accessibilityTitle: String {
+        isCollapsed ? "Expand sidebar" : "Collapse sidebar"
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "sidebar.left")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(MuesliTheme.textSecondary)
+                .frame(width: 36, height: 36)
+                .background(MuesliTheme.backgroundRaised.opacity(0.72))
+                .clipShape(Circle())
+                .overlay(Circle().strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .help(accessibilityTitle)
+        .accessibilityLabel(accessibilityTitle)
+    }
+}
+
 struct SidebarView: View {
     private let sidebarIconColumnWidth: CGFloat = 20
     private let meetingsTrailingColumnWidth: CGFloat = 24
@@ -137,18 +161,7 @@ struct SidebarView: View {
     }
 
     private var sidebarToggleButton: some View {
-        Button(action: onToggleCollapsed) {
-            Image(systemName: "sidebar.left")
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(MuesliTheme.textSecondary)
-                .frame(width: 36, height: 36)
-                .background(MuesliTheme.backgroundRaised.opacity(0.72))
-                .clipShape(Circle())
-                .overlay(Circle().strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-        .help(isCollapsed ? "Expand sidebar" : "Collapse sidebar")
-        .accessibilityLabel(isCollapsed ? "Expand sidebar" : "Collapse sidebar")
+        SidebarToggleButton(isCollapsed: isCollapsed, action: onToggleCollapsed)
     }
 
     private func collapsedItem(tab: DashboardTab, icon: String, label: String) -> some View {

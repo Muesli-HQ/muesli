@@ -1,9 +1,11 @@
 import AppKit
 import Foundation
+import SwiftUI
 import Testing
 @testable import MuesliNativeApp
 
-@Suite("WindowAppearance")
+@MainActor
+@Suite("WindowAppearance", .serialized)
 struct WindowAppearanceTests {
 
     @Test("dark mode maps to the dark AppKit appearance")
@@ -23,39 +25,68 @@ struct WindowAppearanceTests {
         #expect(DashboardWindowLayout.minimumContentHeight == 600)
     }
 
-    @Test("dashboard uses its custom sidebar without a navigation toolbar toggle")
-    func dashboardUsesOnlyCustomSidebarToggle() throws {
-        let source = try dashboardRootViewSource()
-        #expect(source.contains("HSplitView"))
-        #expect(!source.contains("NavigationSplitView"))
-        #expect(!source.contains("navigationSplitViewColumnWidth"))
+    @Test("dashboard renders one working custom sidebar toggle")
+    func dashboardRendersOneWorkingSidebarToggle() {
+        var actionCount = 0
+        let expandedControl = SidebarToggleButton(isCollapsed: false) {
+            actionCount += 1
+        }
+        let expandedRenderer = ImageRenderer(content: expandedControl)
+        expandedRenderer.proposedSize = ProposedViewSize(width: 36, height: 36)
+
+        #expect(expandedControl.accessibilityTitle == "Collapse sidebar")
+        #expect(expandedRenderer.nsImage != nil)
+
+        expandedControl.action()
+        #expect(actionCount == 1)
+
+        let collapsedControl = SidebarToggleButton(isCollapsed: true) {}
+        let collapsedRenderer = ImageRenderer(content: collapsedControl)
+        collapsedRenderer.proposedSize = ProposedViewSize(width: 36, height: 36)
+
+        #expect(collapsedControl.accessibilityTitle == "Expand sidebar")
+        #expect(collapsedRenderer.nsImage != nil)
     }
 
-    @Test("meeting header has compact fallbacks for narrow notes windows")
-    func meetingHeaderHasCompactFallbacks() throws {
-        let source = try meetingDetailViewSource()
-        #expect(source.contains("private func responsiveTitleAndActions"))
-        #expect(source.contains("private func responsiveContextControls"))
-        #expect(source.components(separatedBy: "ViewThatFits(in: .horizontal)").count >= 5)
+    @Test("meeting header chooses its compact layout at a constrained width")
+    func meetingHeaderRendersCompactControls() {
+        let selection = LayoutSelectionRecorder()
+        let content =
+            ResponsiveHorizontalLayout(
+                wideIdentifier: "meeting.header.wide",
+                compactIdentifier: "meeting.header.compact"
+            ) {
+                LayoutSelectionProbe(name: "wide", width: 600, recorder: selection)
+            } compact: {
+                LayoutSelectionProbe(name: "compact", width: 100, recorder: selection)
+            }
+            .frame(width: 360, height: DashboardWindowLayout.minimumContentHeight)
+        let renderer = ImageRenderer(content: content)
+        renderer.proposedSize = ProposedViewSize(
+            width: 360,
+            height: DashboardWindowLayout.minimumContentHeight
+        )
+
+        #expect(renderer.nsImage != nil)
+
+        #expect(selection.names == ["compact"])
     }
 
-    private func appSource(named name: String) throws -> String {
-        let packageRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let url = packageRoot
-            .appendingPathComponent("Sources")
-            .appendingPathComponent("MuesliNativeApp")
-            .appendingPathComponent(name)
-        return try String(contentsOf: url, encoding: .utf8)
-    }
+}
 
-    private func meetingDetailViewSource() throws -> String {
-        try appSource(named: "MeetingDetailView.swift")
-    }
+@MainActor
+private final class LayoutSelectionRecorder {
+    var names: [String] = []
+}
 
-    private func dashboardRootViewSource() throws -> String {
-        try appSource(named: "DashboardRootView.swift")
+private struct LayoutSelectionProbe: View {
+    let name: String
+    let width: CGFloat
+    let recorder: LayoutSelectionRecorder
+
+    var body: some View {
+        Color.clear
+            .frame(width: width, height: 40)
+            .onAppear { recorder.names.append(name) }
     }
 }

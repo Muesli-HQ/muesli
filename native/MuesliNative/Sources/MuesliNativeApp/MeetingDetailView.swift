@@ -27,6 +27,24 @@ enum MeetingHeaderLayout {
     static let contextControlHeight: CGFloat = 28
 }
 
+struct ResponsiveHorizontalLayout<Wide: View, Compact: View>: View {
+    let wideIdentifier: String
+    let compactIdentifier: String
+    @ViewBuilder let wide: () -> Wide
+    @ViewBuilder let compact: () -> Compact
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            wide()
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier(wideIdentifier)
+            compact()
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier(compactIdentifier)
+        }
+    }
+}
+
 // Wrapper views that isolate observation of liveMeetingTranscript.
 // Without these, MeetingDetailView.body would observe the property and
 // re-evaluate on every chunk (every ~5s), re-rendering the entire detail view.
@@ -275,7 +293,10 @@ struct MeetingDetailView: View {
         for meeting: MeetingRecord,
         appliedTemplate: MeetingTemplateSnapshot
     ) -> some View {
-        ViewThatFits(in: .horizontal) {
+        ResponsiveHorizontalLayout(
+            wideIdentifier: "meeting.header.wide",
+            compactIdentifier: "meeting.header.compact"
+        ) {
             HStack(alignment: .top, spacing: MuesliTheme.spacing24) {
                 meetingIdentity(for: meeting)
                     .frame(minWidth: 260)
@@ -286,7 +307,7 @@ struct MeetingDetailView: View {
                     meetingHeaderActions(for: meeting, appliedTemplate: appliedTemplate)
                 }
             }
-
+        } compact: {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
                 meetingIdentity(for: meeting)
                 meetingHeaderActions(for: meeting, appliedTemplate: appliedTemplate)
@@ -298,7 +319,10 @@ struct MeetingDetailView: View {
     /// Folder/people controls and the Notes/Live picker share a row when space
     /// permits, then split into two rows for the compact meeting-notes window.
     private func responsiveContextControls(for meeting: MeetingRecord) -> some View {
-        ViewThatFits(in: .horizontal) {
+        ResponsiveHorizontalLayout(
+            wideIdentifier: "meeting.context.wide",
+            compactIdentifier: "meeting.context.compact"
+        ) {
             HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
                 meetingContextStrip(for: meeting)
                     .frame(minWidth: 280, alignment: .leading)
@@ -307,7 +331,7 @@ struct MeetingDetailView: View {
                 detailModePicker(for: meeting)
                     .fixedSize(horizontal: true, vertical: false)
             }
-
+        } compact: {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
                 meetingContextStrip(for: meeting)
                     .frame(maxWidth: .infinity, alignment: .leading)
