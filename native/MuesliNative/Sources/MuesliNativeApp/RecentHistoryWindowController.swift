@@ -129,6 +129,10 @@ final class RecentHistoryWindowController: NSObject, NSWindowDelegate {
         window.title = AppIdentity.displayName
         window.isReleasedWhenClosed = false
         window.delegate = self
+        window.contentMinSize = NSSize(
+            width: DashboardWindowLayout.minimumContentWidth,
+            height: DashboardWindowLayout.minimumContentHeight
+        )
         // Opaque titlebar: with .fullSizeContentView a transparent titlebar
         // renders the system chrome material over the detail column, and that
         // material follows the OS theme rather than the app's (dark strip with

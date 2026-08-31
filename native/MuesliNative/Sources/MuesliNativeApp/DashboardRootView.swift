@@ -1,6 +1,13 @@
 import SwiftUI
 import MuesliCore
 
+enum DashboardWindowLayout {
+    /// Narrow enough to sit beside a call window while preserving a useful
+    /// notes editor when the sidebar is collapsed or hidden.
+    static let minimumContentWidth: CGFloat = 620
+    static let minimumContentHeight: CGFloat = 600
+}
+
 struct DashboardRootView: View {
     let appState: AppState
     let controller: MuesliController
@@ -8,7 +15,7 @@ struct DashboardRootView: View {
     @State private var isSidebarCollapsed = false
 
     var body: some View {
-        NavigationSplitView {
+        HSplitView {
             SidebarView(
                 appState: appState,
                 controller: controller,
@@ -19,18 +26,20 @@ struct DashboardRootView: View {
                     }
                 }
             )
-            .navigationSplitViewColumnWidth(
-                min: isSidebarCollapsed ? 68 : 240,
-                ideal: isSidebarCollapsed ? 68 : 260,
-                max: isSidebarCollapsed ? 68 : 300
+            .frame(
+                minWidth: isSidebarCollapsed ? 68 : 240,
+                idealWidth: isSidebarCollapsed ? 68 : 260,
+                maxWidth: isSidebarCollapsed ? 68 : 300
             )
-        } detail: {
+
             detailContent
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(MuesliTheme.backgroundBase)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(MuesliTheme.backgroundBase)
         }
-        .navigationSplitViewStyle(.balanced)
-        .frame(minWidth: 900, minHeight: 600)
+        .frame(
+            minWidth: DashboardWindowLayout.minimumContentWidth,
+            minHeight: DashboardWindowLayout.minimumContentHeight
+        )
         .preferredColorScheme(appState.config.darkMode ? .dark : .light)
         .onPreferenceChange(FeatureTourTargetPreferenceKey.self) { frames in
             guard FeatureTourFrameTracking.hasMeaningfulChange(

@@ -201,48 +201,9 @@ struct MeetingDetailView: View {
                 .buttonStyle(.plain)
             }
 
-            HStack(alignment: .top, spacing: MuesliTheme.spacing24) {
-                VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
-                    MarqueeTitleTextField(
-                        text: $editableTitle,
-                        onSubmit: {
-                            controller.updateMeetingTitle(id: meeting.id, title: editableTitle)
-                        },
-                        onTextChange: {
-                            debounceSaveTitle(meetingID: meeting.id)
-                        }
-                    )
+            responsiveTitleAndActions(for: meeting, appliedTemplate: appliedTemplate)
 
-                    HStack(spacing: MuesliTheme.spacing8) {
-                        metadataItem(systemImage: "calendar", text: MeetingBrowserLogic.formatStartTime(meeting.startTime))
-                        metadataDivider
-                        metadataItem(systemImage: "clock", text: formatDuration(meeting.durationSeconds))
-                        metadataDivider
-                        metadataItem(systemImage: "doc.text", text: "\(meeting.wordCount) words")
-                        if let label = SyncOriginDisplay.badgeLabel(forMeetingSource: meeting.source) {
-                            SyncOriginBadge(label: label)
-                        }
-                    }
-                }
-
-                Spacer(minLength: MuesliTheme.spacing16)
-
-                VStack(alignment: .trailing, spacing: 10) {
-                    if showsManualNotesEditor(for: meeting) {
-                        recordingControlGroup(for: meeting)
-                    } else {
-                        compactHeaderActions(for: meeting, appliedTemplate: appliedTemplate)
-                    }
-                }
-            }
-
-            HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
-                meetingContextStrip(for: meeting)
-                    .layoutPriority(1)
-                Spacer(minLength: MuesliTheme.spacing12)
-                detailModePicker(for: meeting)
-                    .fixedSize(horizontal: true, vertical: false)
-            }
+            responsiveContextControls(for: meeting)
             .padding(MuesliTheme.spacing8)
             .background(MuesliTheme.surfacePrimary)
             .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
@@ -268,6 +229,92 @@ struct MeetingDetailView: View {
         .padding(.horizontal, 40)
         .padding(.vertical, 24)
         .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    private func meetingIdentity(for meeting: MeetingRecord) -> some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+            MarqueeTitleTextField(
+                text: $editableTitle,
+                onSubmit: {
+                    controller.updateMeetingTitle(id: meeting.id, title: editableTitle)
+                },
+                onTextChange: {
+                    debounceSaveTitle(meetingID: meeting.id)
+                }
+            )
+
+            HStack(spacing: MuesliTheme.spacing8) {
+                metadataItem(systemImage: "calendar", text: MeetingBrowserLogic.formatStartTime(meeting.startTime))
+                metadataDivider
+                metadataItem(systemImage: "clock", text: formatDuration(meeting.durationSeconds))
+                metadataDivider
+                metadataItem(systemImage: "doc.text", text: "\(meeting.wordCount) words")
+                if let label = SyncOriginDisplay.badgeLabel(forMeetingSource: meeting.source) {
+                    SyncOriginBadge(label: label)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func meetingHeaderActions(
+        for meeting: MeetingRecord,
+        appliedTemplate: MeetingTemplateSnapshot
+    ) -> some View {
+        if showsManualNotesEditor(for: meeting) {
+            recordingControlGroup(for: meeting)
+        } else {
+            compactHeaderActions(for: meeting, appliedTemplate: appliedTemplate)
+        }
+    }
+
+    /// The wide dashboard keeps identity and recording actions on one row. In
+    /// a side-by-side call layout, stack the actions below the title instead of
+    /// forcing the window back to its old 900pt minimum.
+    private func responsiveTitleAndActions(
+        for meeting: MeetingRecord,
+        appliedTemplate: MeetingTemplateSnapshot
+    ) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: MuesliTheme.spacing24) {
+                meetingIdentity(for: meeting)
+                    .frame(minWidth: 260)
+
+                Spacer(minLength: MuesliTheme.spacing16)
+
+                VStack(alignment: .trailing, spacing: 10) {
+                    meetingHeaderActions(for: meeting, appliedTemplate: appliedTemplate)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+                meetingIdentity(for: meeting)
+                meetingHeaderActions(for: meeting, appliedTemplate: appliedTemplate)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    /// Folder/people controls and the Notes/Live picker share a row when space
+    /// permits, then split into two rows for the compact meeting-notes window.
+    private func responsiveContextControls(for meeting: MeetingRecord) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
+                meetingContextStrip(for: meeting)
+                    .frame(minWidth: 280, alignment: .leading)
+                    .layoutPriority(1)
+                Spacer(minLength: MuesliTheme.spacing12)
+                detailModePicker(for: meeting)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                meetingContextStrip(for: meeting)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                detailModePicker(for: meeting)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+        }
     }
 
     private func meetingContextStrip(for meeting: MeetingRecord) -> some View {
@@ -1211,6 +1258,8 @@ struct MeetingDetailView: View {
                     .font(.system(size: 10))
                 Text(currentFolder?.name ?? "Add to folder")
                     .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
             .foregroundStyle(hasFolder ? MuesliTheme.accent : MuesliTheme.textSecondary)
             .padding(.horizontal, MuesliTheme.spacing8)
