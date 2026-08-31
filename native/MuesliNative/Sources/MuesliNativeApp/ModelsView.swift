@@ -806,7 +806,7 @@ struct ModelsView: View {
         let isDownloading = downloadingModels.contains(selectedOption.model)
         let progress = downloadProgress[selectedOption.model] ?? 0
         let showsDownloadStatus = shouldShowDownloadStatus(for: selectedOption.model, isDownloading: isDownloading)
-        let incompatibilityReason = isDownloaded ? nil : selectedOption.incompatibilityReason
+        let incompatibilityReason = selectedOption.incompatibilityReason()
 
         return VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
             HStack(alignment: .top, spacing: MuesliTheme.spacing12) {
@@ -850,6 +850,7 @@ struct ModelsView: View {
                 .labelsHidden()
                 .pickerStyle(.menu)
                 .frame(maxWidth: 220, alignment: .leading)
+                .disabled(incompatibilityReason != nil)
 
                 Text(selectedOption.sizeLabel)
                     .font(MuesliTheme.caption())
@@ -858,7 +859,7 @@ struct ModelsView: View {
 
             Text(selectedOption.description)
                 .font(MuesliTheme.caption())
-                .foregroundStyle(MuesliTheme.textSecondary)
+                .foregroundStyle(incompatibilityReason == nil ? MuesliTheme.textSecondary : MuesliTheme.textTertiary)
 
             if selectedOption.supportsWhisperLanguageSelection {
                 HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
@@ -875,6 +876,7 @@ struct ModelsView: View {
                     .labelsHidden()
                     .pickerStyle(.menu)
                     .frame(maxWidth: 220, alignment: .leading)
+                    .disabled(incompatibilityReason != nil)
                 }
             }
 
@@ -893,6 +895,7 @@ struct ModelsView: View {
                     .labelsHidden()
                     .pickerStyle(.menu)
                     .frame(maxWidth: 220, alignment: .leading)
+                    .disabled(incompatibilityReason != nil)
                 }
 
                 Text("Script filter: keeps the chosen language's writing script in the transcript. Parakeet v3 only — v2 ignores this setting.")
@@ -1120,6 +1123,7 @@ struct ModelsView: View {
                 .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
             } else if isDownloaded {
                 if !isActive {
+                    let disabledReason = incompatibilityReason ?? activationDisabledReason
                     Button(actionTitle) {
                         if let onSetActive {
                             onSetActive()
@@ -1129,13 +1133,13 @@ struct ModelsView: View {
                     }
                     .buttonStyle(.plain)
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(activationDisabledReason == nil ? MuesliTheme.accent : MuesliTheme.textTertiary)
+                    .foregroundStyle(disabledReason == nil ? MuesliTheme.accent : MuesliTheme.textTertiary)
                     .padding(.horizontal, MuesliTheme.spacing12)
                     .padding(.vertical, 4)
-                    .background(activationDisabledReason == nil ? MuesliTheme.accentSubtle : MuesliTheme.surfacePrimary)
+                    .background(disabledReason == nil ? MuesliTheme.accentSubtle : MuesliTheme.surfacePrimary)
                     .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                    .disabled(activationDisabledReason != nil)
-                    .help(activationDisabledReason ?? actionTitle)
+                    .disabled(disabledReason != nil)
+                    .help(disabledReason ?? actionTitle)
                 }
 
                 if !option.isSystemManaged {
@@ -1182,8 +1186,7 @@ struct ModelsView: View {
         let isDownloading = downloadingModels.contains(option.model)
         let progress = downloadProgress[option.model] ?? 0
         let showsDownloadStatus = shouldShowDownloadStatus(for: option.model, isDownloading: isDownloading)
-        // Don't flag a model already on disk as incompatible, even if the OS check would fail.
-        let incompatibilityReason = isDownloaded ? nil : option.incompatibilityReason
+        let incompatibilityReason = option.incompatibilityReason()
 
         return VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
             HStack(alignment: .top, spacing: MuesliTheme.spacing12) {
@@ -1192,7 +1195,7 @@ struct ModelsView: View {
                     HStack(spacing: MuesliTheme.spacing8) {
                         Text(option.label)
                             .font(MuesliTheme.headline())
-                            .foregroundStyle(MuesliTheme.textPrimary)
+                            .foregroundStyle(incompatibilityReason == nil ? MuesliTheme.textPrimary : MuesliTheme.textTertiary)
 
                         if option.recommended {
                             Text("Recommended")
@@ -1211,13 +1214,22 @@ struct ModelsView: View {
 
                     Text(description ?? option.description)
                         .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.textSecondary)
+                        .foregroundStyle(incompatibilityReason == nil ? MuesliTheme.textSecondary : MuesliTheme.textTertiary)
                 }
 
                 Spacer()
 
-                // Status badge
-                if isActive {
+                // Status badge — Incompatible takes priority over Active/Downloaded.
+                if let incompatibilityReason {
+                    Text("Incompatible")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(MuesliTheme.surfacePrimary)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .help(incompatibilityReason)
+                } else if isActive {
                     Text(activeLabel)
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(MuesliTheme.success)
@@ -1251,6 +1263,7 @@ struct ModelsView: View {
                     .labelsHidden()
                     .pickerStyle(.menu)
                     .frame(maxWidth: 220, alignment: .leading)
+                    .disabled(incompatibilityReason != nil)
                 }
             }
 
@@ -1269,6 +1282,7 @@ struct ModelsView: View {
                     .labelsHidden()
                     .pickerStyle(.menu)
                     .frame(maxWidth: 220, alignment: .leading)
+                    .disabled(incompatibilityReason != nil)
                 }
             }
 
@@ -1287,6 +1301,7 @@ struct ModelsView: View {
                     .labelsHidden()
                     .pickerStyle(.menu)
                     .frame(maxWidth: 220, alignment: .leading)
+                    .disabled(incompatibilityReason != nil)
                 }
             }
 
@@ -1305,6 +1320,7 @@ struct ModelsView: View {
                     .labelsHidden()
                     .pickerStyle(.menu)
                     .frame(maxWidth: 220, alignment: .leading)
+                    .disabled(incompatibilityReason != nil)
                 }
             }
 
@@ -1341,6 +1357,7 @@ struct ModelsView: View {
                     .labelsHidden()
                     .pickerStyle(.menu)
                     .frame(maxWidth: 220, alignment: .leading)
+                    .disabled(incompatibilityReason != nil)
                 }
 
                 if isDownloaded && nemotron35UpdateAvailable && !isDownloading {

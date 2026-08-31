@@ -712,24 +712,48 @@
   </table>
 
   <h3>Model Card — Incompatible State</h3>
-  <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">Models tab: a model gated to a newer macOS than the current system shows a disabled Download button and an inline reason instead of a doomed download attempt (issue #479). No progress bar is ever shown for this state.</p>
-  <div class="component-preview" style="padding:0">
+  <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">Models tab: a model gated to a newer macOS than the current system is marked <strong>Incompatible</strong> — the title, status badge, description text, Download/Set&nbsp;Active button, and any language picker all read as disabled (<code>textTertiary</code>), with an inline reason instead of a doomed download attempt (issue #479). No progress bar is ever shown for this state. The Incompatible badge takes priority even when the model happens to be downloaded or active already (e.g. downloaded on a newer macOS, then this system was downgraded).</p>
+  <div class="component-preview" style="padding:0;display:flex;gap:16px;flex-wrap:wrap">
     <div class="card-demo" style="max-width:420px">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
         <div>
           <div style="display:flex;align-items:center;gap:8px">
-            <span style="font-size:15px;font-weight:600">Qwen3 ASR</span>
-            <span style="font-size:11px;color:var(--text-tertiary)">~1.3 GB</span>
+            <span style="font-size:15px;font-weight:600;color:var(--text-tertiary)">Nemotron 3.5 Multilingual</span>
+            <span style="font-size:11px;color:var(--text-tertiary)">~665 MB</span>
           </div>
-          <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;max-width:280px">Experimental multilingual transcription across 52 languages.</div>
+          <div style="font-size:12px;color:var(--text-tertiary);margin-top:4px;max-width:280px">Live text appears as you speak in more than 100 locales, with language auto-detection and punctuation.</div>
         </div>
+        <div style="font-size:11px;font-weight:500;color:var(--text-tertiary);background:var(--surface-primary);padding:3px 8px;border-radius:4px;white-space:nowrap">Incompatible</div>
       </div>
       <div style="display:flex;align-items:center;gap:6px;margin-top:10px;font-size:12px;color:var(--text-tertiary)">
         <span>&#x26A0;&#xFE0F;</span>
-        <span>Qwen3 ASR requires macOS 15 or later (you're on macOS 14.8).</span>
+        <span>Nemotron 3.5 Multilingual requires macOS 15 or later (you're on macOS 14.8).</span>
       </div>
       <div style="margin-top:10px">
-        <div class="btn-disabled" title="Qwen3 ASR requires macOS 15 or later (you're on macOS 14.8).">Download</div>
+        <div class="btn-disabled" title="Nemotron 3.5 Multilingual requires macOS 15 or later (you're on macOS 14.8).">Download</div>
+      </div>
+    </div>
+    <div class="card-demo" style="max-width:420px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+        <div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="font-size:15px;font-weight:600;color:var(--text-tertiary)">Cohere Transcribe</span>
+            <span style="font-size:11px;color:var(--text-tertiary)">~3.8 GB</span>
+          </div>
+          <div style="font-size:12px;color:var(--text-tertiary);margin-top:4px;max-width:280px">The most deliberate option for difficult accents and tricky audio.</div>
+        </div>
+        <div style="font-size:11px;font-weight:500;color:var(--text-tertiary);background:var(--surface-primary);padding:3px 8px;border-radius:4px;white-space:nowrap">Incompatible</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:10px;opacity:0.5">
+        <span style="font-size:12px;color:var(--text-tertiary);width:64px">Language</span>
+        <div style="font-size:12px;color:var(--text-secondary);border:1px solid var(--border);border-radius:6px;padding:4px 10px">French &#9662;</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;margin-top:10px;font-size:12px;color:var(--text-tertiary)">
+        <span>&#x26A0;&#xFE0F;</span>
+        <span>Cohere Transcribe requires macOS 15 or later (you're on macOS 14.8).</span>
+      </div>
+      <div style="margin-top:10px">
+        <div class="btn-disabled" title="Cohere Transcribe requires macOS 15 or later (you're on macOS 14.8).">Set Active</div>
       </div>
     </div>
   </div>
