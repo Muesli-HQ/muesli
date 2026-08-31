@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import MuesliCore
 import SwiftUI
 import Testing
 @testable import MuesliNativeApp
@@ -79,6 +80,97 @@ struct WindowAppearanceTests {
         #expect(selection.names == ["compact"])
     }
 
+    @Test("compact threshold preserves dashboard detail identity")
+    func compactThresholdPreservesDashboardDetailIdentity() async {
+        let presentation = DashboardLayoutPresentation()
+        let lifecycle = DashboardDetailLifecycleRecorder()
+        let hostingView = NSHostingView(
+            rootView: DashboardLayoutIdentityHarness(
+                presentation: presentation,
+                lifecycle: lifecycle
+            )
+        )
+        hostingView.frame = NSRect(
+            origin: .zero,
+            size: NSSize(width: 700, height: DashboardWindowLayout.minimumContentHeight)
+        )
+
+        hostingView.layoutSubtreeIfNeeded()
+        await Task.yield()
+        #expect(lifecycle.appearanceCount == 1)
+        #expect(lifecycle.disappearanceCount == 0)
+
+        presentation.usesCompactQuickNotes = true
+        hostingView.frame.size.width = DashboardWindowLayout.minimumContentWidth
+        hostingView.layoutSubtreeIfNeeded()
+        await Task.yield()
+
+        #expect(lifecycle.appearanceCount == 1)
+        #expect(lifecycle.disappearanceCount == 0)
+
+        presentation.usesCompactQuickNotes = false
+        hostingView.frame.size.width = 700
+        hostingView.layoutSubtreeIfNeeded()
+        await Task.yield()
+
+        #expect(lifecycle.appearanceCount == 1)
+        #expect(lifecycle.disappearanceCount == 0)
+    }
+
+    @Test("dashboard renders the production compact meeting composition")
+    func dashboardRendersProductionCompactMeetingComposition() {
+        let supportDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-window-test-\(UUID().uuidString)", isDirectory: true)
+        let databaseURL = supportDirectory.appendingPathComponent("muesli.db")
+        let store = DictationStore(databaseURL: databaseURL)
+        try? store.migrateIfNeeded()
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            dictationStore: store,
+            configStore: ConfigStore(supportDirectory: supportDirectory)
+        )
+        let meeting = MeetingRecord(
+            id: 42,
+            title: "Compact Header Test",
+            startTime: ISO8601DateFormatter().string(from: Date()),
+            durationSeconds: 0,
+            rawTranscript: "",
+            formattedNotes: "",
+            wordCount: 0,
+            folderID: nil,
+            status: .recording
+        )
+        controller.appState.selectedTab = .meetings
+        controller.appState.selectedMeetingID = meeting.id
+        controller.appState.selectedMeetingRecord = meeting
+        controller.appState.meetingsNavigationState = .document(meeting.id)
+
+        let renderer = ImageRenderer(
+            content: DashboardRootView(
+                appState: controller.appState,
+                controller: controller
+            )
+            .frame(
+                width: DashboardWindowLayout.minimumContentWidth,
+                height: DashboardWindowLayout.minimumContentHeight
+            )
+        )
+        renderer.proposedSize = ProposedViewSize(
+            width: DashboardWindowLayout.minimumContentWidth,
+            height: DashboardWindowLayout.minimumContentHeight
+        )
+
+        let image = renderer.nsImage
+        #expect(image != nil)
+        #expect(image?.size.width == DashboardWindowLayout.minimumContentWidth)
+        #expect(image?.size.height == DashboardWindowLayout.minimumContentHeight)
+    }
+
 }
 
 @MainActor
@@ -95,5 +187,43 @@ private struct LayoutSelectionProbe: View {
         Color.clear
             .frame(width: width, height: 40)
             .onAppear { recorder.names.append(name) }
+    }
+}
+
+@MainActor
+@Observable
+private final class DashboardLayoutPresentation {
+    var usesCompactQuickNotes = false
+}
+
+@MainActor
+private final class DashboardDetailLifecycleRecorder {
+    var appearanceCount = 0
+    var disappearanceCount = 0
+}
+
+private struct DashboardLayoutIdentityHarness: View {
+    let presentation: DashboardLayoutPresentation
+    let lifecycle: DashboardDetailLifecycleRecorder
+
+    var body: some View {
+        DashboardContentLayout(
+            usesCompactQuickNotes: presentation.usesCompactQuickNotes
+        ) {
+            Color.clear
+                .frame(minWidth: 240, idealWidth: 260, maxWidth: 300)
+        } detail: {
+            DashboardDetailIdentityProbe(lifecycle: lifecycle)
+        }
+    }
+}
+
+private struct DashboardDetailIdentityProbe: View {
+    let lifecycle: DashboardDetailLifecycleRecorder
+
+    var body: some View {
+        Color.clear
+            .onAppear { lifecycle.appearanceCount += 1 }
+            .onDisappear { lifecycle.disappearanceCount += 1 }
     }
 }

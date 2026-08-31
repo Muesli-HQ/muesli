@@ -256,6 +256,8 @@ struct MeetingDetailView: View {
         .padding(.horizontal, 40)
         .padding(.vertical, 24)
         .frame(maxWidth: .infinity, alignment: .center)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("meeting.header.standard")
     }
 
     private func compactQuickNotesHeader(_ meeting: MeetingRecord) -> some View {
@@ -313,13 +315,15 @@ struct MeetingDetailView: View {
             HStack(alignment: .center, spacing: MuesliTheme.spacing8) {
                 folderPill(for: meeting)
                     .frame(maxWidth: 150)
-                MeetingParticipantsView(meetingID: meeting.id, controller: controller)
-                    .frame(maxWidth: 150)
+                if meeting.status != .recording || isPreparingThisMeeting(meeting) {
+                    MeetingParticipantsView(meetingID: meeting.id, controller: controller)
+                        .frame(maxWidth: 150)
+                } else if showsManualNotesEditor(for: meeting) {
+                    compactFormattingToolbar
+                        .disabled(!canEditManualNotes(for: meeting))
+                }
                 Spacer(minLength: 0)
                 detailModePicker(for: meeting)
-                if showsManualNotesEditor(for: meeting) {
-                    compactFormattingMenu
-                }
             }
 
             threadBreadcrumb
@@ -329,6 +333,8 @@ struct MeetingDetailView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("meeting.header.compact")
     }
 
     @ViewBuilder
@@ -343,50 +349,35 @@ struct MeetingDetailView: View {
                     .fixedSize()
                 stopRecordingButton
                     .fixedSize()
-                Menu {
-                    Button("Discard meeting", role: .destructive) {
+                MeetingParticipantsView(
+                    meetingID: meeting.id,
+                    controller: controller,
+                    compactDiscardAction: {
                         controller.discardMeetingWithConfirmation()
                     }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(MuesliTheme.textSecondary)
-                        .frame(width: 28, height: 28)
-                        .background(MuesliTheme.backgroundRaised)
-                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("More recording actions")
+                )
             }
         } else {
             recordingControlGroup(for: meeting)
         }
     }
 
-    private var compactFormattingMenu: some View {
-        Menu {
-            Button("Heading") { manualEditorCommand = MarkdownEditorCommand(kind: .heading) }
-            Button("Bold") { manualEditorCommand = MarkdownEditorCommand(kind: .bold) }
-            Button("Bullet list") { manualEditorCommand = MarkdownEditorCommand(kind: .bullet) }
-            Button("Checklist") { manualEditorCommand = MarkdownEditorCommand(kind: .checkbox) }
-        } label: {
-            Image(systemName: "textformat")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(MuesliTheme.textSecondary)
-                .frame(width: 28, height: 28)
-                .background(MuesliTheme.backgroundRaised)
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                .overlay {
-                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                        .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-                }
+    private var compactFormattingToolbar: some View {
+        HStack(spacing: 4) {
+            markdownToolbarButton(systemImage: "textformat.size", label: "Heading") {
+                manualEditorCommand = MarkdownEditorCommand(kind: .heading)
+            }
+            markdownToolbarButton(systemImage: "bold", label: "Bold") {
+                manualEditorCommand = MarkdownEditorCommand(kind: .bold)
+            }
+            markdownToolbarButton(systemImage: "list.bullet", label: "Bullet") {
+                manualEditorCommand = MarkdownEditorCommand(kind: .bullet)
+            }
+            markdownToolbarButton(systemImage: "checklist", label: "Checkbox") {
+                manualEditorCommand = MarkdownEditorCommand(kind: .checkbox)
+            }
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
         .fixedSize()
-        .help("Formatting")
     }
 
     private func meetingIdentity(for meeting: MeetingRecord) -> some View {
@@ -1052,6 +1043,7 @@ struct MeetingDetailView: View {
         }
         .buttonStyle(.plain)
         .help(label)
+        .accessibilityLabel(label)
     }
 
     @ViewBuilder

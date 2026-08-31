@@ -24,6 +24,25 @@ extension EnvironmentValues {
     }
 }
 
+struct DashboardContentLayout<SidebarContent: View, DetailContent: View>: View {
+    let usesCompactQuickNotes: Bool
+    @ViewBuilder let sidebar: () -> SidebarContent
+    @ViewBuilder let detail: () -> DetailContent
+
+    var body: some View {
+        HSplitView {
+            if !usesCompactQuickNotes {
+                sidebar()
+            }
+
+            detail()
+                .environment(\.usesCompactQuickNotes, usesCompactQuickNotes)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(MuesliTheme.backgroundBase)
+        }
+    }
+}
+
 struct DashboardRootView: View {
     let appState: AppState
     let controller: MuesliController
@@ -32,36 +51,29 @@ struct DashboardRootView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            if DashboardWindowLayout.usesCompactQuickNotes(
+            let usesCompactQuickNotes = DashboardWindowLayout.usesCompactQuickNotes(
                 width: proxy.size.width,
                 hasOpenMeeting: hasOpenMeeting
-            ) {
-                detailContent
-                    .environment(\.usesCompactQuickNotes, true)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(MuesliTheme.backgroundBase)
-            } else {
-                HSplitView {
-                    SidebarView(
-                        appState: appState,
-                        controller: controller,
-                        isCollapsed: isSidebarCollapsed,
-                        onToggleCollapsed: {
-                            withAnimation(.easeInOut(duration: 0.22)) {
-                                isSidebarCollapsed.toggle()
-                            }
-                        }
-                    )
-                    .frame(
-                        minWidth: isSidebarCollapsed ? 68 : 240,
-                        idealWidth: isSidebarCollapsed ? 68 : 260,
-                        maxWidth: isSidebarCollapsed ? 68 : 300
-                    )
+            )
 
-                    detailContent
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(MuesliTheme.backgroundBase)
-                }
+            DashboardContentLayout(usesCompactQuickNotes: usesCompactQuickNotes) {
+                SidebarView(
+                    appState: appState,
+                    controller: controller,
+                    isCollapsed: isSidebarCollapsed,
+                    onToggleCollapsed: {
+                        withAnimation(.easeInOut(duration: 0.22)) {
+                            isSidebarCollapsed.toggle()
+                        }
+                    }
+                )
+                .frame(
+                    minWidth: isSidebarCollapsed ? 68 : 240,
+                    idealWidth: isSidebarCollapsed ? 68 : 260,
+                    maxWidth: isSidebarCollapsed ? 68 : 300
+                )
+            } detail: {
+                detailContent
             }
         }
         .frame(
