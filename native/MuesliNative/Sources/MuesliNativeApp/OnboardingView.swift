@@ -34,6 +34,7 @@ struct OnboardingView: View {
     @State private var recentlyGrantedPermissionName: String?
     @State private var permissionAdvanceTask: Task<Void, Never>?
     @State private var permissionAdvanceGeneration: UUID?
+    @State private var hasCompletedPermissionsStep: Bool
     @State private var selectionBeforeEverything: OnboardingUseCase?
 
     // Hotkey recorder
@@ -144,6 +145,9 @@ struct OnboardingView: View {
         let effectiveInitialStep = OnboardingFlow.normalizedStep(permissionGatedInitialStep, for: initialUseCase)
 
         _currentStep = State(initialValue: effectiveInitialStep)
+        _hasCompletedPermissionsStep = State(initialValue: OnboardingFlow.hasCompletedPermissionsStep(
+            resumingAt: effectiveInitialStep
+        ))
         _userName = State(initialValue: initialUserName)
         _selectedUseCase = State(initialValue: initialUseCase)
         let sanitizedInitialBackend = BackendOption.onboarding.contains(initialBackend)
@@ -227,7 +231,10 @@ struct OnboardingView: View {
         .onChange(of: userName) { _, _ in
             saveProgress(atStep: currentStep)
         }
-        .onChange(of: selectedUseCase) { _, _ in
+        .onChange(of: selectedUseCase) { previousUseCase, newUseCase in
+            if previousUseCase != newUseCase {
+                hasCompletedPermissionsStep = false
+            }
             if !orderedSteps.contains(currentStep) {
                 currentStep = OnboardingFlow.normalizedStep(currentStep, for: selectedUseCase)
             }
@@ -1151,9 +1158,12 @@ struct OnboardingView: View {
     }
 
     private func schedulePermissionAdvanceIfReady() {
-        guard currentStep == Self.permissionsStep,
-              requiredPermissionsGranted,
-              permissionAdvanceTask == nil else { return }
+        guard OnboardingFlow.shouldSchedulePermissionAdvance(
+            currentStep: currentStep,
+            requiredPermissionsGranted: requiredPermissionsGranted,
+            hasCompletedPermissionsStep: hasCompletedPermissionsStep,
+            hasScheduledTask: permissionAdvanceTask != nil
+        ) else { return }
 
         let generation = UUID()
         permissionAdvanceGeneration = generation
@@ -1181,11 +1191,14 @@ struct OnboardingView: View {
     private func advancePastPermissions() {
         cancelScheduledPermissionAdvance()
         controller.dismissSystemPermissionGuide()
-        switch OnboardingFlow.permissionAdvanceAction(
+        let action = OnboardingFlow.permissionAdvanceAction(
             for: selectedUseCase,
             currentStepIndex: currentStepIndex,
-            orderedStepCount: orderedSteps.count
-        ) {
+            orderedStepCount: orderedSteps.count,
+            hasCompletedPermissionsStep: hasCompletedPermissionsStep
+        )
+        hasCompletedPermissionsStep = true
+        switch action {
         case .restartForDictationTest:
             saveProgressAndRestart()
         case .finish:

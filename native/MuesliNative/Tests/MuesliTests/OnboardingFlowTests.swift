@@ -126,6 +126,39 @@ struct OnboardingFlowTests {
             currentStepIndex: 2,
             orderedStepCount: 5
         ) == .next)
+        #expect(OnboardingFlow.permissionAdvanceAction(
+            for: .dictation,
+            currentStepIndex: 3,
+            orderedStepCount: 5,
+            hasCompletedPermissionsStep: true
+        ) == .next)
+    }
+
+    @Test("completed permission steps do not auto-advance again on re-entry")
+    func completedPermissionStepDoesNotAutoAdvanceAgain() {
+        let resumedAfterPermissions = OnboardingFlow.hasCompletedPermissionsStep(
+            resumingAt: OnboardingFlow.Step.dictationTest.rawValue
+        )
+        let resumedAtPermissions = OnboardingFlow.hasCompletedPermissionsStep(
+            resumingAt: OnboardingFlow.Step.permissions.rawValue
+        )
+        let schedulesAfterCompletion = OnboardingFlow.shouldSchedulePermissionAdvance(
+            currentStep: OnboardingFlow.Step.permissions.rawValue,
+            requiredPermissionsGranted: true,
+            hasCompletedPermissionsStep: true,
+            hasScheduledTask: false
+        )
+        let schedulesInitialCompletion = OnboardingFlow.shouldSchedulePermissionAdvance(
+            currentStep: OnboardingFlow.Step.permissions.rawValue,
+            requiredPermissionsGranted: true,
+            hasCompletedPermissionsStep: false,
+            hasScheduledTask: false
+        )
+
+        #expect(resumedAfterPermissions)
+        #expect(!resumedAtPermissions)
+        #expect(!schedulesAfterCompletion)
+        #expect(schedulesInitialCompletion)
     }
 
     @Test("automatic dictation reclassification applies only to legacy Voice Notes")

@@ -30,6 +30,22 @@ enum OnboardingFlow {
 
     static let dictationTestStep = Step.dictationTest.rawValue
 
+    static func hasCompletedPermissionsStep(resumingAt step: Int) -> Bool {
+        step > Step.permissions.rawValue
+    }
+
+    static func shouldSchedulePermissionAdvance(
+        currentStep: Int,
+        requiredPermissionsGranted: Bool,
+        hasCompletedPermissionsStep: Bool,
+        hasScheduledTask: Bool
+    ) -> Bool {
+        currentStep == Step.permissions.rawValue
+            && requiredPermissionsGranted
+            && !hasCompletedPermissionsStep
+            && !hasScheduledTask
+    }
+
     static func toggling(
         _ capability: OnboardingCapability,
         in state: UseCaseSelectionState
@@ -57,8 +73,12 @@ enum OnboardingFlow {
     static func permissionAdvanceAction(
         for useCase: OnboardingUseCase,
         currentStepIndex: Int,
-        orderedStepCount: Int
+        orderedStepCount: Int,
+        hasCompletedPermissionsStep: Bool = false
     ) -> PermissionAdvanceAction {
+        if hasCompletedPermissionsStep {
+            return currentStepIndex == orderedStepCount - 1 ? .finish : .next
+        }
         if useCase.includesPushToTalk { return .restartForDictationTest }
         if currentStepIndex == orderedStepCount - 1 { return .finish }
         return .next
