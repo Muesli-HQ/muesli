@@ -12,12 +12,50 @@ struct AccessibilityPermissionGuideTests {
         #expect(settingsWindow.contains(frames.guide))
         #expect(frames.guide.contains(frames.dragSource))
         #expect(frames.guide.contains(frames.completedGuide))
+        #expect(settingsWindow.contains(frames.permissionListDropRegion))
+        #expect(!frames.guide.intersects(frames.permissionListDropRegion))
+        #expect(frames.permissionListDropRegion.height > frames.dragSource.height)
         #expect(frames.guide.height == 128)
         #expect(frames.guide.width <= 640)
         #expect(frames.dragSource.height == 70)
         #expect(frames.dragSource.minY - frames.guide.minY == 12)
         #expect(frames.guide.minX > settingsWindow.minX + 250)
         #expect(frames.dragDirection == .up)
+    }
+
+    @Test("completes only for an accepted drop in the active System Settings permission list")
+    func validatesPermissionListDrop() throws {
+        let settingsWindow = CGRect(x: 100, y: 80, width: 1_000, height: 800)
+        let frames = try #require(AccessibilityPermissionGuideLayout.frames(for: settingsWindow))
+        let targetPoint = CGPoint(
+            x: frames.permissionListDropRegion.midX,
+            y: frames.permissionListDropRegion.midY
+        )
+
+        #expect(AccessibilityPermissionGuideDropPolicy.isPermissionListDrop(
+            operationAccepted: true,
+            dropPoint: targetPoint,
+            frontmostBundleID: AccessibilityPermissionGuidePresentationPolicy.systemSettingsBundleID,
+            settingsWindow: settingsWindow
+        ))
+        #expect(!AccessibilityPermissionGuideDropPolicy.isPermissionListDrop(
+            operationAccepted: false,
+            dropPoint: targetPoint,
+            frontmostBundleID: AccessibilityPermissionGuidePresentationPolicy.systemSettingsBundleID,
+            settingsWindow: settingsWindow
+        ))
+        #expect(!AccessibilityPermissionGuideDropPolicy.isPermissionListDrop(
+            operationAccepted: true,
+            dropPoint: CGPoint(x: frames.dragSource.midX, y: frames.dragSource.midY),
+            frontmostBundleID: AccessibilityPermissionGuidePresentationPolicy.systemSettingsBundleID,
+            settingsWindow: settingsWindow
+        ))
+        #expect(!AccessibilityPermissionGuideDropPolicy.isPermissionListDrop(
+            operationAccepted: true,
+            dropPoint: targetPoint,
+            frontmostBundleID: "com.apple.finder",
+            settingsWindow: settingsWindow
+        ))
     }
 
     @Test("does not present when System Settings is too small")
@@ -63,6 +101,41 @@ struct AccessibilityPermissionGuideTests {
             isGranted: false,
             frontmostBundleID: settingsBundleID,
             hasSettingsWindow: false
+        ))
+    }
+
+    @Test("keeps onboarding suppressed while an unrelated app is frontmost")
+    func suppressionPolicy() {
+        let settingsBundleID = AccessibilityPermissionGuidePresentationPolicy.systemSettingsBundleID
+        let muesliBundleID = "com.muesli.dev.b"
+
+        #expect(AccessibilityPermissionGuideSuppressionPolicy.shouldSuppressOnboarding(
+            isRequested: true,
+            isGranted: false,
+            frontmostBundleID: settingsBundleID,
+            muesliBundleID: muesliBundleID,
+            isCurrentlySuppressed: false
+        ))
+        #expect(AccessibilityPermissionGuideSuppressionPolicy.shouldSuppressOnboarding(
+            isRequested: true,
+            isGranted: false,
+            frontmostBundleID: "com.apple.finder",
+            muesliBundleID: muesliBundleID,
+            isCurrentlySuppressed: true
+        ))
+        #expect(!AccessibilityPermissionGuideSuppressionPolicy.shouldSuppressOnboarding(
+            isRequested: true,
+            isGranted: false,
+            frontmostBundleID: muesliBundleID,
+            muesliBundleID: muesliBundleID,
+            isCurrentlySuppressed: true
+        ))
+        #expect(!AccessibilityPermissionGuideSuppressionPolicy.shouldSuppressOnboarding(
+            isRequested: true,
+            isGranted: true,
+            frontmostBundleID: settingsBundleID,
+            muesliBundleID: muesliBundleID,
+            isCurrentlySuppressed: true
         ))
     }
 

@@ -6,6 +6,7 @@ struct AccessibilityPermissionGuideFrames: Equatable {
     let guide: CGRect
     let dragSource: CGRect
     let completedGuide: CGRect
+    let permissionListDropRegion: CGRect
     let dragDirection: PermissionGuideDragDirection
 }
 
@@ -57,12 +58,50 @@ enum AccessibilityPermissionGuideLayout {
             height: 56
         )
 
+        let dragDirection: PermissionGuideDragDirection = guide.midY <= settingsWindow.midY ? .up : .down
+        let contentTop = settingsWindow.maxY - 88
+        let contentBottom = settingsWindow.minY + 64
+        let permissionListDropRegion: CGRect
+        if dragDirection == .up {
+            permissionListDropRegion = CGRect(
+                x: dragSource.minX,
+                y: guide.maxY + 8,
+                width: dragSource.width,
+                height: max(0, contentTop - guide.maxY - 8)
+            )
+        } else {
+            permissionListDropRegion = CGRect(
+                x: dragSource.minX,
+                y: contentBottom,
+                width: dragSource.width,
+                height: max(0, guide.minY - contentBottom - 8)
+            )
+        }
+
         return AccessibilityPermissionGuideFrames(
             guide: guide.integral,
             dragSource: dragSource.integral,
             completedGuide: completedGuide.integral,
-            dragDirection: guide.midY <= settingsWindow.midY ? .up : .down
+            permissionListDropRegion: permissionListDropRegion.integral,
+            dragDirection: dragDirection
         )
+    }
+}
+
+enum AccessibilityPermissionGuideDropPolicy {
+    static func isPermissionListDrop(
+        operationAccepted: Bool,
+        dropPoint: CGPoint,
+        frontmostBundleID: String?,
+        settingsWindow: CGRect?
+    ) -> Bool {
+        guard operationAccepted,
+              frontmostBundleID == AccessibilityPermissionGuidePresentationPolicy.systemSettingsBundleID,
+              let settingsWindow,
+              let frames = AccessibilityPermissionGuideLayout.frames(for: settingsWindow) else {
+            return false
+        }
+        return frames.permissionListDropRegion.contains(dropPoint)
     }
 }
 
@@ -93,6 +132,25 @@ enum AccessibilityPermissionGuidePresentationPolicy {
             && !isGranted
             && frontmostBundleID == systemSettingsBundleID
             && hasSettingsWindow
+    }
+}
+
+enum AccessibilityPermissionGuideSuppressionPolicy {
+    static func shouldSuppressOnboarding(
+        isRequested: Bool,
+        isGranted: Bool,
+        frontmostBundleID: String?,
+        muesliBundleID: String?,
+        isCurrentlySuppressed: Bool
+    ) -> Bool {
+        guard isRequested, !isGranted else { return false }
+        if frontmostBundleID == AccessibilityPermissionGuidePresentationPolicy.systemSettingsBundleID {
+            return true
+        }
+        if frontmostBundleID == muesliBundleID {
+            return false
+        }
+        return isCurrentlySuppressed
     }
 }
 
@@ -218,6 +276,13 @@ final class AccessibilityPermissionGuideController {
         }
 
         let frontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        setPresenting(AccessibilityPermissionGuideSuppressionPolicy.shouldSuppressOnboarding(
+            isRequested: true,
+            isGranted: false,
+            frontmostBundleID: frontmostBundleID,
+            muesliBundleID: Bundle.main.bundleIdentifier,
+            isCurrentlySuppressed: isPresenting
+        ))
         let settingsWindow = SystemSettingsWindowLocator.mainWindowFrame()
         guard AccessibilityPermissionGuidePresentationPolicy.shouldShow(
             isRequested: true,
@@ -227,12 +292,10 @@ final class AccessibilityPermissionGuideController {
         ), let settingsWindow,
            let frames = AccessibilityPermissionGuideLayout.frames(for: settingsWindow) else {
             hidePanels()
-            setPresenting(false)
             return
         }
 
         ensurePanels()
-        setPresenting(true)
         model.dragDirection = frames.dragDirection
         if model.didCompleteDrag {
             guidePanel?.setFrame(frames.completedGuide, display: true)
@@ -266,8 +329,19 @@ final class AccessibilityPermissionGuideController {
                 appName: appName,
                 appIcon: appIcon
             )
-            dragView.onDragEnded = { [weak self] in
+            dragView.onDragEnded = { [weak self] screenPoint, operation in
                 guard let self else { return }
+                let isPermissionListDrop = AccessibilityPermissionGuideDropPolicy.isPermissionListDrop(
+                    operationAccepted: !operation.isEmpty,
+                    dropPoint: screenPoint,
+                    frontmostBundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+                    settingsWindow: SystemSettingsWindowLocator.mainWindowFrame()
+                )
+                guard isPermissionListDrop else {
+                    self.model.didCompleteDrag = false
+                    self.refreshPresentation()
+                    return
+                }
                 self.model.didCompleteDrag = true
                 self.refreshPresentation()
             }
@@ -493,7 +567,7 @@ private struct PermissionGuideAppRow: View {
 
 @MainActor
 private final class AccessibilityPermissionDragSourceView: NSView, NSDraggingSource {
-    var onDragEnded: (() -> Void)?
+    var onDragEnded: ((NSPoint, NSDragOperation) -> Void)?
 
     private let appURL: URL
     private var mouseDownLocation: CGPoint?
@@ -588,9 +662,7 @@ private final class AccessibilityPermissionDragSourceView: NSView, NSDraggingSou
         mouseDownLocation = nil
         hasStartedDrag = false
         NSCursor.openHand.set()
-        if !operation.isEmpty {
-            onDragEnded?()
-        }
+        onDragEnded?(screenPoint, operation)
     }
 
     private func dragImage() -> NSImage {

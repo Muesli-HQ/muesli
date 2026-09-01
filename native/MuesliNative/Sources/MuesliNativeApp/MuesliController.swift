@@ -4627,6 +4627,23 @@ public final class MuesliController: NSObject {
 
     var isDictationTestMode: Bool { dictationTestCallback != nil }
 
+    func clearDictationTestLifecycle() {
+        dictationTestCallback = nil
+        dictationTestFailureCallback = nil
+        dictationTestRecordingStarted = nil
+        dictationTestRecordingStopped = nil
+        dictationTestBackend = nil
+        dictationTestCohereLanguage = nil
+    }
+
+    @discardableResult
+    func transitionStoppedDictationTestToTranscribing() -> Bool {
+        guard isDictationTestMode else { return false }
+        dictationTestRecordingStopped?()
+        setState(.transcribing)
+        return true
+    }
+
     func cancelTestDictation() {
         dictationTestTask?.cancel()
         dictationTestTask = nil
@@ -4808,12 +4825,7 @@ public final class MuesliController: NSObject {
         selectBackend(backend)
         hotkeyMonitor.configure(keyCode: hotkey.keyCode)
         configureComputerUseHotkeyMonitor()
-        dictationTestCallback = nil
-        dictationTestFailureCallback = nil
-        dictationTestRecordingStarted = nil
-        dictationTestRecordingStopped = nil
-        dictationTestBackend = nil
-        dictationTestCohereLanguage = nil
+        clearDictationTestLifecycle()
 
         systemPermissionGuideController.dismiss()
         onboardingWindowController?.close()
@@ -10439,10 +10451,7 @@ public final class MuesliController: NSObject {
         fputs("[muesli-native] stop\n", stderr)
         let startedAt = dictationStartedAt ?? Date()
         dictationStartedAt = nil
-        if isDictationTestMode {
-            dictationTestRecordingStopped?()
-            setState(.transcribing)
-        }
+        transitionStoppedDictationTestToTranscribing()
 
         // Nemotron streaming: text already typed — just finalize and store
         if isNemotron35Streaming {

@@ -1057,6 +1057,7 @@ struct OnboardingView: View {
         grantingPermissionName = nil
         nativePermissionPromptName = nil
         recentlyGrantedPermissionName = nil
+        controller.dismissSystemPermissionGuide()
         selectedUseCase = selectedUseCase.replacingDictationWithVoiceNotes
         currentStep = OnboardingFlow.normalizedStep(currentStep, for: selectedUseCase)
         saveProgress(atStep: currentStep)
@@ -1515,12 +1516,7 @@ struct OnboardingView: View {
             // Cancel any in-flight recording before clearing callbacks to prevent
             // the transcription Task from falling through to the production paste path
             controller.cancelTestDictation()
-            controller.dictationTestCallback = nil
-            controller.dictationTestFailureCallback = nil
-            controller.dictationTestRecordingStarted = nil
-            controller.dictationTestRecordingStopped = nil
-            controller.dictationTestBackend = nil
-            controller.dictationTestCohereLanguage = nil
+            controller.clearDictationTestLifecycle()
             // Stop the test monitor while moving through onboarding, but leave the
             // production monitor running when finishing from the dictation test.
             if !hasFinishedOnboarding {
