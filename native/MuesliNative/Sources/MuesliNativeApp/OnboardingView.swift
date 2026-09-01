@@ -984,7 +984,10 @@ struct OnboardingView: View {
         }
         .frame(maxWidth: .infinity)
         .onAppear { startPermissionPolling() }
-        .onDisappear { stopPermissionPolling() }
+        .onDisappear {
+            stopPermissionPolling()
+            controller.dismissAccessibilityPermissionGuide()
+        }
     }
 
     private func permissionButtonTitle(for permissionName: String, isConfirmingGrant: Bool) -> String {
@@ -1000,6 +1003,7 @@ struct OnboardingView: View {
 
     private func requestAccessibilityPermission() {
         nativePermissionPromptName = "Accessibility"
+        controller.beginAccessibilityPermissionGuide()
         controller.prepareOnboardingForNativePermissionPrompt()
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
@@ -1141,6 +1145,9 @@ struct OnboardingView: View {
     @MainActor
     private func notePermissionGranted(_ permissionName: String) {
         guard recentlyGrantedPermissionName != permissionName else { return }
+        if permissionName == "Accessibility" {
+            controller.dismissAccessibilityPermissionGuide()
+        }
         grantingPermissionName = nil
         nativePermissionPromptName = nil
         recentlyGrantedPermissionName = permissionName
@@ -1187,6 +1194,9 @@ struct OnboardingView: View {
             nativePermissionPromptName = nil
             recentlyGrantedPermissionName = nil
             saveProgress(atStep: currentStep)
+            if steps[permissionIndex].name == "Accessibility" {
+                controller.beginAccessibilityPermissionGuide()
+            }
         }
         openSystemSettings(systemSettingsPane(for: permissionIndex))
     }

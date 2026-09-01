@@ -422,6 +422,7 @@ public final class MuesliController: NSObject {
     private var historyWindowController: RecentHistoryWindowController?
     private var preferencesWindowController: PreferencesWindowController?
     private var onboardingWindowController: OnboardingWindowController?
+    private lazy var accessibilityPermissionGuideController = AccessibilityPermissionGuideController()
     private let featureTourStore = FeatureTourStore()
     private var isFeatureTourPresentationQueued = false
     var updaterController: SPUStandardUpdaterController?
@@ -940,6 +941,7 @@ public final class MuesliController: NSObject {
     }
 
     func shutdown() async {
+        accessibilityPermissionGuideController.dismiss()
         if let workspaceObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver)
             self.workspaceObserver = nil
@@ -4494,6 +4496,16 @@ public final class MuesliController: NSObject {
     }
 
     @MainActor
+    func beginAccessibilityPermissionGuide() {
+        accessibilityPermissionGuideController.showWhenSystemSettingsIsAvailable()
+    }
+
+    @MainActor
+    func dismissAccessibilityPermissionGuide() {
+        accessibilityPermissionGuideController.dismiss()
+    }
+
+    @MainActor
     func prepareOnboardingForNativePermissionPrompt() {
         onboardingWindowController?.prepareForNativePermissionPrompt()
     }
@@ -4794,6 +4806,7 @@ public final class MuesliController: NSObject {
         dictationTestBackend = nil
         dictationTestCohereLanguage = nil
 
+        accessibilityPermissionGuideController.dismiss()
         onboardingWindowController?.close()
         onboardingWindowController = nil
         if hasRequiredStartupPermissions(for: onboardingUseCase) {
