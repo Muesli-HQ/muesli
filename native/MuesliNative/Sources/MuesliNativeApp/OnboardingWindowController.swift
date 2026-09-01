@@ -21,6 +21,8 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
     }
 
     func bringToFront() {
+        window?.alphaValue = 1
+        window?.ignoresMouseEvents = false
         window?.level = .floating
         window?.makeKeyAndOrderFront(nil)
         window?.orderFrontRegardless()
@@ -34,18 +36,24 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
     func setSuppressedForSystemSettings(_ isSuppressed: Bool) {
         guard let window else { return }
         if isSuppressed {
-            // Keep onboarding alive but entirely out of the way while the compact
-            // guide is attached to System Settings. Restoring with orderFront below
-            // avoids the macOS 26 orderBack behavior that can strand the window.
-            window.orderOut(nil)
+            // Keep the SwiftUI hierarchy mounted while the guide is attached to
+            // System Settings. Ordering the window out fires OnboardingView's
+            // onDisappear, which intentionally dismisses the permission guide.
+            window.level = .normal
+            window.alphaValue = 0
+            window.ignoresMouseEvents = true
         } else {
             window.level = .normal
+            window.alphaValue = 1
+            window.ignoresMouseEvents = false
             window.orderFront(nil)
         }
     }
 
     func prepareForNativePermissionPrompt() {
         guard let window else { return }
+        window.alphaValue = 1
+        window.ignoresMouseEvents = false
         window.level = .normal
         window.makeKeyAndOrderFront(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
