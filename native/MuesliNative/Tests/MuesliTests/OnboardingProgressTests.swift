@@ -278,4 +278,29 @@ struct OnboardingProgressTests {
         #expect(!OnboardingPermissionGate.hasRequiredVoiceNotesPermissions(permissions))
         #expect(step == 3)
     }
+
+    @Test("multi-select permission requirements use the strictest capability union")
+    func multiSelectPermissionUnion() {
+        let voiceAndMeetings = OnboardingPermissionSnapshot(
+            microphone: true,
+            accessibility: false,
+            inputMonitoring: true,
+            systemAudio: false,
+            screenRecording: false
+        )
+        #expect(OnboardingPermissionGate.hasRequiredPermissions(voiceAndMeetings, for: .voiceNotesAndMeetings))
+
+        let everythingWithoutAccessibility = OnboardingPermissionSnapshot(
+            microphone: true,
+            accessibility: false,
+            inputMonitoring: true,
+            systemAudio: false,
+            screenRecording: false
+        )
+        #expect(!OnboardingPermissionGate.hasRequiredPermissions(everythingWithoutAccessibility, for: .everything))
+
+        var everythingGranted = everythingWithoutAccessibility
+        everythingGranted.accessibility = true
+        #expect(OnboardingPermissionGate.hasRequiredPermissions(everythingGranted, for: .everything))
+    }
 }

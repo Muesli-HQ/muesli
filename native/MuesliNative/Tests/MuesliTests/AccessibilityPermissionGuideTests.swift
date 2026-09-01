@@ -17,6 +17,7 @@ struct AccessibilityPermissionGuideTests {
         #expect(frames.dragSource.height == 70)
         #expect(frames.dragSource.minY - frames.guide.minY == 12)
         #expect(frames.guide.minX > settingsWindow.minX + 250)
+        #expect(frames.dragDirection == .up)
     }
 
     @Test("does not present when System Settings is too small")

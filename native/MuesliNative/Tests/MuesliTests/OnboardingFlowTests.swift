@@ -23,6 +23,13 @@ struct OnboardingFlowTests {
         #expect(OnboardingFlow.orderedSteps(for: .dictationAndMeetings) == [0, 1, 2, 3, 4, 5, 6])
     }
 
+    @Test("multi-select unions include every required workflow step")
+    func multiSelectUnionOrderedSteps() {
+        #expect(OnboardingFlow.orderedSteps(for: .voiceNotesAndMeetings) == [0, 1, 2, 3, 4, 5, 6])
+        #expect(OnboardingFlow.orderedSteps(for: .voiceNotesAndDictation) == [0, 1, 2, 3, 4])
+        #expect(OnboardingFlow.orderedSteps(for: .everything) == [0, 1, 2, 3, 4, 5, 6])
+    }
+
     @Test("normalized step advances over skipped steps")
     func normalizedStepAdvancesOverSkippedSteps() {
         #expect(OnboardingFlow.normalizedStep(2, for: .meetings) == 3)

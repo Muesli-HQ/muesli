@@ -175,9 +175,9 @@ struct DictationsView: View {
             || appState.dictationApplicationFilter != nil {
             return "Try another source, app, or time range"
         }
-        return appState.config.resolvedOnboardingUseCase.includesVoiceNotes
-            ? "Click Record Voice Note to capture your first note"
-            : "Hold \(appState.config.dictationHotkey.label) to start dictating"
+        return appState.config.resolvedOnboardingUseCase.includesDictation
+            ? "Hold \(appState.config.dictationHotkey.label) to start dictating"
+            : "Click Record Voice Note to capture your first note"
     }
 
     private var emptyStateTitle: String {

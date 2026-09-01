@@ -32,6 +32,7 @@ struct OnboardingView: View {
     @State private var grantingPermissionName: String?
     @State private var nativePermissionPromptName: String?
     @State private var recentlyGrantedPermissionName: String?
+    @State private var hasScheduledPermissionAdvance = false
 
     // Hotkey recorder
     @State private var selectedHotkey: HotkeyConfig
@@ -67,6 +68,13 @@ struct OnboardingView: View {
 
     static let permissionsStep = OnboardingFlow.Step.permissions.rawValue
     static let dictationTestStep = OnboardingFlow.dictationTestStep
+    private static let bundledMuesliLogo: NSImage = {
+        if let url = Bundle.main.url(forResource: "muesli_app_icon", withExtension: "png"),
+           let image = NSImage(contentsOf: url) {
+            return image
+        }
+        return NSApplication.shared.applicationIconImage
+    }()
 
     private var orderedSteps: [Int] {
         OnboardingFlow.orderedSteps(for: selectedUseCase)
@@ -518,7 +526,7 @@ struct OnboardingView: View {
     private var dictationTestSubtitle: AttributedString {
         let markdown: String
         if isSelectedModelReadyForDictationTest {
-            markdown = selectedUseCase.includesVoiceNotes
+            markdown = selectedUseCase.includesVoiceNotes && !selectedUseCase.includesDictation
                 ? "Hold **\(selectedHotkey.label)** to record a voice note, then release.\nYour words should appear below."
                 : "Hold **\(selectedHotkey.label)** and say something, then release.\nYour words should appear below."
         } else {
@@ -528,7 +536,9 @@ struct OnboardingView: View {
     }
 
     private var dictationTestPreparationSubtitleMarkdown: String {
-        let unlockCopy = selectedUseCase.includesVoiceNotes ? "Voice note test" : "Dictation"
+        let unlockCopy = selectedUseCase.includesVoiceNotes && !selectedUseCase.includesDictation
+            ? "Voice note test"
+            : "Dictation"
         if isModelPreparingAfterDownload {
             return "Optimizing **\(selectedBackend.label)** for this Mac.\n\(unlockCopy) will unlock when it is ready."
         }
@@ -557,9 +567,12 @@ struct OnboardingView: View {
         VStack(spacing: MuesliTheme.spacing16) {
             Spacer()
 
-            MWaveformIcon(barCount: 13, spacing: 3)
-                .foregroundStyle(MuesliTheme.accent)
-                .frame(width: 80, height: 48)
+            Image(nsImage: Self.bundledMuesliLogo)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFit()
+                .frame(width: 64, height: 64)
+                .accessibilityLabel("Muesli")
 
             VStack(spacing: MuesliTheme.spacing8) {
                 Text("Welcome to Muesli")
@@ -600,36 +613,36 @@ struct OnboardingView: View {
                         icon: "waveform",
                         title: "Voice Notes",
                         subtitle: "Record in Muesli",
-                        selected: selectedUseCase == .voiceNotes
+                        selected: selectedUseCase.includesVoiceNotes
                     ) {
-                        selectedUseCase = .voiceNotes
+                        selectedUseCase = selectedUseCase.toggling(.voiceNotes)
                     }
 
                     useCaseCard(
                         icon: "keyboard.fill",
                         title: "Dictation",
                         subtitle: "Paste into apps",
-                        selected: selectedUseCase == .dictation
+                        selected: selectedUseCase.includesDictation
                     ) {
-                        selectedUseCase = .dictation
+                        selectedUseCase = selectedUseCase.toggling(.dictation)
                     }
 
                     useCaseCard(
                         icon: "person.2.fill",
                         title: "Meetings",
                         subtitle: "Notes and summaries",
-                        selected: selectedUseCase == .meetings
+                        selected: selectedUseCase.includesMeetings
                     ) {
-                        selectedUseCase = .meetings
+                        selectedUseCase = selectedUseCase.toggling(.meetings)
                     }
 
                     useCaseCard(
                         icon: "rectangle.3.group.fill",
                         title: "Everything",
-                        subtitle: "Dictation + meetings",
-                        selected: selectedUseCase == .dictationAndMeetings
+                        subtitle: "All workflows",
+                        selected: selectedUseCase == .everything
                     ) {
-                        selectedUseCase = .dictationAndMeetings
+                        selectedUseCase = selectedUseCase == .everything ? .dictation : .everything
                     }
                 }
             }
@@ -666,8 +679,18 @@ struct OnboardingView: View {
                 RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
                     .strokeBorder(selected ? MuesliTheme.accent : MuesliTheme.surfaceBorder, lineWidth: 1)
             )
+            .overlay(alignment: .topLeading) {
+                if selected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(7)
+                        .transition(.scale.combined(with: .opacity))
+                }
+            }
         }
         .buttonStyle(.plain)
+        .animation(.easeInOut(duration: 0.18), value: selected)
     }
 
     // MARK: - Step 2: Model Selection
@@ -984,7 +1007,17 @@ struct OnboardingView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity)
-        .onAppear { startPermissionPolling() }
+        .onAppear {
+            startPermissionPolling()
+            schedulePermissionAdvanceIfReady()
+        }
+        .onChange(of: requiredPermissionsGranted) { _, granted in
+            if granted {
+                schedulePermissionAdvanceIfReady()
+            } else {
+                hasScheduledPermissionAdvance = false
+            }
+        }
         .onDisappear {
             stopPermissionPolling()
             controller.dismissSystemPermissionGuide()
@@ -1024,8 +1057,8 @@ struct OnboardingView: View {
         grantingPermissionName = nil
         nativePermissionPromptName = nil
         recentlyGrantedPermissionName = nil
-        selectedUseCase = .voiceNotes
-        currentStep = OnboardingFlow.normalizedStep(currentStep, for: .voiceNotes)
+        selectedUseCase = selectedUseCase.replacingDictationWithVoiceNotes
+        currentStep = OnboardingFlow.normalizedStep(currentStep, for: selectedUseCase)
         saveProgress(atStep: currentStep)
     }
 
@@ -1117,6 +1150,30 @@ struct OnboardingView: View {
     private func stopPermissionPolling() {
         permissionPollTimer?.invalidate()
         permissionPollTimer = nil
+    }
+
+    private func schedulePermissionAdvanceIfReady() {
+        guard currentStep == Self.permissionsStep,
+              requiredPermissionsGranted,
+              !hasScheduledPermissionAdvance else { return }
+        hasScheduledPermissionAdvance = true
+
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(900))
+            guard currentStep == Self.permissionsStep, requiredPermissionsGranted else {
+                hasScheduledPermissionAdvance = false
+                return
+            }
+
+            controller.dismissSystemPermissionGuide()
+            if selectedUseCase.includesPushToTalk {
+                saveProgressAndRestart()
+            } else if currentStepIndex == orderedSteps.count - 1 {
+                finishOnboarding(withKey: false)
+            } else {
+                goToNextStep()
+            }
+        }
     }
 
     private func refreshPermissions() {
@@ -1309,7 +1366,7 @@ struct OnboardingView: View {
             Spacer()
 
             VStack(spacing: MuesliTheme.spacing8) {
-                Text(selectedUseCase.includesVoiceNotes ? "Test Voice Note" : "Test Dictation")
+                Text(selectedUseCase.includesVoiceNotes && !selectedUseCase.includesDictation ? "Test Voice Note" : "Test Dictation")
                     .font(MuesliTheme.title1())
                     .foregroundStyle(MuesliTheme.textPrimary)
 
@@ -1436,6 +1493,9 @@ struct OnboardingView: View {
                 withAnimation { isDictationTesting = true }
                 dictationTestError = nil
             }
+            controller.dictationTestRecordingStopped = {
+                withAnimation { isDictationTesting = false }
+            }
             controller.dictationTestCallback = { text in
                 if text.isEmpty {
                     dictationTestError = "No speech detected. Try again."
@@ -1458,6 +1518,7 @@ struct OnboardingView: View {
             controller.dictationTestCallback = nil
             controller.dictationTestFailureCallback = nil
             controller.dictationTestRecordingStarted = nil
+            controller.dictationTestRecordingStopped = nil
             controller.dictationTestBackend = nil
             controller.dictationTestCohereLanguage = nil
             // Stop the test monitor while moving through onboarding, but leave the

@@ -6,6 +6,20 @@ struct AccessibilityPermissionGuideFrames: Equatable {
     let guide: CGRect
     let dragSource: CGRect
     let completedGuide: CGRect
+    let dragDirection: PermissionGuideDragDirection
+}
+
+enum PermissionGuideDragDirection: Equatable {
+    case up
+    case down
+
+    var symbolName: String {
+        self == .up ? "arrow.up" : "arrow.down"
+    }
+
+    var instruction: String {
+        self == .up ? "Drag this row up into this list" : "Drag this row down into this list"
+    }
 }
 
 enum AccessibilityPermissionGuideLayout {
@@ -46,7 +60,8 @@ enum AccessibilityPermissionGuideLayout {
         return AccessibilityPermissionGuideFrames(
             guide: guide.integral,
             dragSource: dragSource.integral,
-            completedGuide: completedGuide.integral
+            completedGuide: completedGuide.integral,
+            dragDirection: guide.midY <= settingsWindow.midY ? .up : .down
         )
     }
 }
@@ -218,6 +233,7 @@ final class AccessibilityPermissionGuideController {
 
         ensurePanels()
         setPresenting(true)
+        model.dragDirection = frames.dragDirection
         if model.didCompleteDrag {
             guidePanel?.setFrame(frames.completedGuide, display: true)
             dragPanel?.orderOut(nil)
@@ -350,11 +366,14 @@ private enum SystemSettingsWindowLocator {
 @MainActor
 private final class AccessibilityPermissionGuideModel: ObservableObject {
     @Published var didCompleteDrag = false
+    @Published var dragDirection: PermissionGuideDragDirection = .up
 }
 
 private struct CompactAccessibilityPermissionGuideView: View {
     let appName: String
     @ObservedObject var model: AccessibilityPermissionGuideModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var arrowIsDisplaced = false
 
     var body: some View {
         Group {
@@ -378,9 +397,16 @@ private struct CompactAccessibilityPermissionGuideView: View {
                 .padding(.horizontal, 16)
             } else {
                 VStack(spacing: 0) {
-                    Text("Drag this row up into this list")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Color.white.opacity(0.72))
+                    HStack(spacing: 7) {
+                        Image(systemName: model.dragDirection.symbolName)
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(MuesliTheme.accent)
+                            .offset(y: arrowOffset)
+
+                        Text(model.dragDirection.instruction)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.white.opacity(0.72))
+                    }
 
                     Spacer(minLength: 82)
                 }
@@ -397,6 +423,24 @@ private struct CompactAccessibilityPermissionGuideView: View {
         )
         .shadow(color: .black.opacity(0.10), radius: 10, y: 4)
         .padding(2)
+        .onAppear { startArrowAnimation() }
+        .onChange(of: model.dragDirection) { _, _ in
+            arrowIsDisplaced = false
+            startArrowAnimation()
+        }
+    }
+
+    private var arrowOffset: CGFloat {
+        guard !reduceMotion else { return 0 }
+        let displacement: CGFloat = arrowIsDisplaced ? 4 : -1
+        return model.dragDirection == .up ? -displacement : displacement
+    }
+
+    private func startArrowAnimation() {
+        guard !reduceMotion else { return }
+        withAnimation(.easeInOut(duration: 0.72).repeatForever(autoreverses: true)) {
+            arrowIsDisplaced = true
+        }
     }
 }
 
@@ -454,6 +498,7 @@ private final class AccessibilityPermissionDragSourceView: NSView, NSDraggingSou
     private let appURL: URL
     private var mouseDownLocation: CGPoint?
     private var hasStartedDrag = false
+    private var cursorTrackingArea: NSTrackingArea?
 
     init(frame frameRect: NSRect, appURL: URL, appName: String, appIcon: NSImage) {
         self.appURL = appURL
@@ -473,6 +518,33 @@ private final class AccessibilityPermissionDragSourceView: NSView, NSDraggingSou
         addCursorRect(bounds, cursor: .openHand)
     }
 
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let cursorTrackingArea {
+            removeTrackingArea(cursorTrackingArea)
+        }
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited, .cursorUpdate],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        cursorTrackingArea = area
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        (hasStartedDrag ? NSCursor.closedHand : NSCursor.openHand).set()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        NSCursor.openHand.set()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        NSCursor.arrow.set()
+    }
+
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
@@ -481,6 +553,7 @@ private final class AccessibilityPermissionDragSourceView: NSView, NSDraggingSou
     override func mouseDown(with event: NSEvent) {
         mouseDownLocation = convert(event.locationInWindow, from: nil)
         hasStartedDrag = false
+        NSCursor.closedHand.set()
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -497,6 +570,7 @@ private final class AccessibilityPermissionDragSourceView: NSView, NSDraggingSou
     override func mouseUp(with event: NSEvent) {
         mouseDownLocation = nil
         hasStartedDrag = false
+        NSCursor.openHand.set()
     }
 
     func draggingSession(
@@ -513,6 +587,7 @@ private final class AccessibilityPermissionDragSourceView: NSView, NSDraggingSou
     ) {
         mouseDownLocation = nil
         hasStartedDrag = false
+        NSCursor.openHand.set()
         if !operation.isEmpty {
             onDragEnded?()
         }
