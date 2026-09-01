@@ -422,7 +422,13 @@ public final class MuesliController: NSObject {
     private var historyWindowController: RecentHistoryWindowController?
     private var preferencesWindowController: PreferencesWindowController?
     private var onboardingWindowController: OnboardingWindowController?
-    private lazy var accessibilityPermissionGuideController = AccessibilityPermissionGuideController()
+    private lazy var accessibilityPermissionGuideController: AccessibilityPermissionGuideController = {
+        let guide = AccessibilityPermissionGuideController()
+        guide.onPresentationChanged = { [weak self] isPresenting in
+            self?.onboardingWindowController?.setSuppressedForSystemSettings(isPresenting)
+        }
+        return guide
+    }()
     private let featureTourStore = FeatureTourStore()
     private var isFeatureTourPresentationQueued = false
     var updaterController: SPUStandardUpdaterController?

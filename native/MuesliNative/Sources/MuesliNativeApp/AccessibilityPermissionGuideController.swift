@@ -3,9 +3,9 @@ import ApplicationServices
 import SwiftUI
 
 struct AccessibilityPermissionGuideFrames: Equatable {
-    let target: CGRect
-    let card: CGRect
+    let guide: CGRect
     let dragSource: CGRect
+    let completedGuide: CGRect
 }
 
 enum AccessibilityPermissionGuideLayout {
@@ -18,34 +18,35 @@ enum AccessibilityPermissionGuideLayout {
         let contentWidth = contentMaxX - contentMinX
         guard contentWidth >= 360 else { return nil }
 
-        let targetHeight = min(250, max(170, settingsWindow.height * 0.30))
-        let target = CGRect(
-            x: contentMinX,
-            y: settingsWindow.minY + settingsWindow.height * 0.38,
-            width: contentWidth,
-            height: targetHeight
-        )
-
-        let cardWidth = min(560, contentWidth - 24)
-        let cardHeight: CGFloat = 190
-        let card = CGRect(
-            x: contentMinX + (contentWidth - cardWidth) / 2,
-            y: max(settingsWindow.minY + 28, target.minY - cardHeight - 12),
-            width: cardWidth,
-            height: cardHeight
+        let guideWidth = min(720, contentWidth - 16)
+        let guideHeight: CGFloat = 226
+        let preferredY = settingsWindow.minY + max(96, settingsWindow.height * 0.22)
+        let guideY = min(preferredY, settingsWindow.maxY - guideHeight - 92)
+        let guide = CGRect(
+            x: contentMinX + (contentWidth - guideWidth) / 2,
+            y: guideY,
+            width: guideWidth,
+            height: guideHeight
         )
 
         let dragSource = CGRect(
-            x: card.minX + 24,
-            y: card.minY + 52,
-            width: card.width - 48,
-            height: 68
+            x: guide.minX + 14,
+            y: guide.minY + 14,
+            width: guide.width - 28,
+            height: 76
+        )
+
+        let completedGuide = CGRect(
+            x: guide.minX + 46,
+            y: dragSource.minY + 8,
+            width: guide.width - 92,
+            height: 58
         )
 
         return AccessibilityPermissionGuideFrames(
-            target: target.integral,
-            card: card.integral,
-            dragSource: dragSource.integral
+            guide: guide.integral,
+            dragSource: dragSource.integral,
+            completedGuide: completedGuide.integral
         )
     }
 }
@@ -79,18 +80,20 @@ enum SystemSettingsWindowGeometry {
 
 @MainActor
 final class AccessibilityPermissionGuideController {
+    var onPresentationChanged: ((Bool) -> Void)?
+
     private let appURL: URL
     private let appName: String
     private let appIcon: NSImage
     private let model = AccessibilityPermissionGuideModel()
 
-    private var targetPanel: NSPanel?
-    private var cardPanel: NSPanel?
+    private var guidePanel: NSPanel?
     private var dragPanel: NSPanel?
     private var refreshTimer: Timer?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var applicationObservers: [NSObjectProtocol] = []
     private var isRequested = false
+    private var isPresenting = false
 
     init(
         appURL: URL = Bundle.main.bundleURL,
@@ -128,6 +131,7 @@ final class AccessibilityPermissionGuideController {
         applicationObservers.forEach { notificationCenter.removeObserver($0) }
         applicationObservers.removeAll()
 
+        setPresenting(false)
         closePanels()
     }
 
@@ -189,38 +193,33 @@ final class AccessibilityPermissionGuideController {
         ), let settingsWindow,
            let frames = AccessibilityPermissionGuideLayout.frames(for: settingsWindow) else {
             hidePanels()
+            setPresenting(false)
             return
         }
 
         ensurePanels()
-        targetPanel?.setFrame(frames.target, display: true)
-        cardPanel?.setFrame(frames.card, display: true)
-        dragPanel?.setFrame(frames.dragSource, display: true)
-
-        targetPanel?.orderFrontRegardless()
-        cardPanel?.orderFrontRegardless()
-        dragPanel?.orderFrontRegardless()
+        setPresenting(true)
+        if model.didCompleteDrag {
+            guidePanel?.setFrame(frames.completedGuide, display: true)
+            dragPanel?.orderOut(nil)
+        } else {
+            guidePanel?.setFrame(frames.guide, display: true)
+            dragPanel?.setFrame(frames.dragSource, display: true)
+        }
+        guidePanel?.orderFrontRegardless()
+        if !model.didCompleteDrag {
+            dragPanel?.orderFrontRegardless()
+        }
     }
 
     private func ensurePanels() {
-        if targetPanel == nil {
-            targetPanel = makePanel(
+        if guidePanel == nil {
+            guidePanel = makePanel(
                 frame: .zero,
                 ignoresMouseEvents: true,
-                contentView: NSHostingView(rootView: AccessibilityPermissionGuideTargetView(
+                contentView: NSHostingView(rootView: CompactAccessibilityPermissionGuideView(
                     appName: appName,
                     appIcon: appIcon,
-                    model: model
-                ).preferredColorScheme(.dark))
-            )
-        }
-
-        if cardPanel == nil {
-            cardPanel = makePanel(
-                frame: .zero,
-                ignoresMouseEvents: true,
-                contentView: NSHostingView(rootView: AccessibilityPermissionGuideCardView(
-                    appName: appName,
                     model: model
                 ).preferredColorScheme(.dark))
             )
@@ -234,7 +233,9 @@ final class AccessibilityPermissionGuideController {
                 appIcon: appIcon
             )
             dragView.onDragEnded = { [weak self] in
-                self?.model.didCompleteDrag = true
+                guard let self else { return }
+                self.model.didCompleteDrag = true
+                self.refreshPresentation()
             }
             dragPanel = makePanel(
                 frame: .zero,
@@ -242,6 +243,12 @@ final class AccessibilityPermissionGuideController {
                 contentView: dragView
             )
         }
+    }
+
+    private func setPresenting(_ presenting: Bool) {
+        guard isPresenting != presenting else { return }
+        isPresenting = presenting
+        onPresentationChanged?(presenting)
     }
 
     private func makePanel(
@@ -270,18 +277,16 @@ final class AccessibilityPermissionGuideController {
     }
 
     private func hidePanels() {
-        targetPanel?.orderOut(nil)
-        cardPanel?.orderOut(nil)
+        guidePanel?.orderOut(nil)
         dragPanel?.orderOut(nil)
     }
 
     private func closePanels() {
-        for panel in [targetPanel, cardPanel, dragPanel] {
+        for panel in [guidePanel, dragPanel] {
             panel?.orderOut(nil)
             panel?.close()
         }
-        targetPanel = nil
-        cardPanel = nil
+        guidePanel = nil
         dragPanel = nil
     }
 }
@@ -329,7 +334,7 @@ private final class AccessibilityPermissionGuideModel: ObservableObject {
     @Published var didCompleteDrag = false
 }
 
-private struct AccessibilityPermissionGuideTargetView: View {
+private struct CompactAccessibilityPermissionGuideView: View {
     let appName: String
     let appIcon: NSImage
     @ObservedObject var model: AccessibilityPermissionGuideModel
@@ -338,69 +343,78 @@ private struct AccessibilityPermissionGuideTargetView: View {
     @State private var isAnimating = false
 
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 22)
-                .fill(Color.black.opacity(0.12))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 22)
-                        .stroke(
-                            MuesliTheme.accent,
-                            style: StrokeStyle(lineWidth: 2.5, dash: [9, 7])
-                        )
-                )
+        Group {
+            if model.didCompleteDrag {
+                HStack(spacing: 10) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(MuesliTheme.success)
 
-            VStack(spacing: 8) {
-                Image(systemName: model.didCompleteDrag ? "checkmark" : "arrow.up")
-                    .font(.system(size: 28, weight: .bold))
-                    .foregroundStyle(model.didCompleteDrag ? MuesliTheme.success : MuesliTheme.accent)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("\(appName) added")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Color.white.opacity(0.94))
+                        Text("Turn it on in the list above")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(Color.white.opacity(0.62))
+                    }
 
-                PermissionGuideAppRow(appName: appName, appIcon: appIcon, isGhost: true)
-                    .frame(maxWidth: 430)
-                    .offset(y: reduceMotion || model.didCompleteDrag ? 0 : (isAnimating ? -30 : 28))
-                    .opacity(model.didCompleteDrag ? 0.62 : 0.88)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 16)
+            } else {
+                VStack(spacing: 5) {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 21, weight: .bold))
+                        .foregroundStyle(MuesliTheme.accent)
+
+                    PermissionGuideAppRow(appName: appName, appIcon: appIcon, isGhost: true)
+                        .frame(height: 52)
+                        .offset(y: reduceMotion ? 0 : (isAnimating ? -7 : 4))
+
+                    Text("Drag this row up into the list")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(Color.white.opacity(0.66))
+
+                    Spacer(minLength: 88)
+                }
+                .padding(.horizontal, 14)
+                .padding(.top, 12)
             }
-            .padding(.horizontal, 24)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: NSColor(red: 0.10, green: 0.12, blue: 0.14, alpha: 0.91)))
+        .clipShape(RoundedRectangle(cornerRadius: model.didCompleteDrag ? 14 : 18))
+        .overlay(
+            RoundedRectangle(cornerRadius: model.didCompleteDrag ? 14 : 18)
+                .stroke(Color.white.opacity(0.10), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.18), radius: 12, y: 5)
         .padding(2)
         .onAppear {
-            guard !reduceMotion, !model.didCompleteDrag else { return }
-            withAnimation(.easeInOut(duration: 1.45).repeatForever(autoreverses: false)) {
+            guard !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
                 isAnimating = true
             }
         }
     }
 }
 
-private struct AccessibilityPermissionGuideCardView: View {
+private struct AccessibilityPermissionDragRowView: View {
     let appName: String
-    @ObservedObject var model: AccessibilityPermissionGuideModel
+    let appIcon: NSImage
 
     var body: some View {
-        VStack(spacing: 0) {
-            Text(model.didCompleteDrag ? "Turn \(appName) on" : "Drag \(appName) into the list")
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(.white)
-                .padding(.top, 20)
-
-            Spacer()
-                .frame(height: 80)
-
-            Text(model.didCompleteDrag
-                ? "Use the switch beside \(appName) above."
-                : "If it is already listed, just turn its switch on.")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(Color.white.opacity(0.66))
-                .padding(.bottom, 18)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: NSColor(red: 0.10, green: 0.12, blue: 0.14, alpha: 0.96)))
-        .clipShape(RoundedRectangle(cornerRadius: 22))
-        .overlay(
-            RoundedRectangle(cornerRadius: 22)
-                .stroke(Color.white.opacity(0.12), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.34), radius: 20, y: 8)
-        .padding(2)
+        PermissionGuideAppRow(appName: appName, appIcon: appIcon)
+            .padding(7)
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(
+                        MuesliTheme.accent,
+                        style: StrokeStyle(lineWidth: 2, dash: [7, 5])
+                    )
+            )
+            .padding(1)
     }
 }
 
@@ -414,28 +428,22 @@ private struct PermissionGuideAppRow: View {
             Image(nsImage: appIcon)
                 .resizable()
                 .scaledToFit()
-                .frame(width: 34, height: 34)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .frame(width: 30, height: 30)
+                .clipShape(RoundedRectangle(cornerRadius: 7))
 
             Text(appName)
-                .font(.system(size: 15, weight: .semibold))
+                .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.white.opacity(isGhost ? 0.84 : 0.94))
 
             Spacer()
-
-            if !isGhost {
-                Image(systemName: "hand.draw.fill")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(MuesliTheme.accent)
-            }
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 14)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.white.opacity(isGhost ? 0.08 : 0.11))
-        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .background(Color.white.opacity(isGhost ? 0.07 : 0.10))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(Color.white.opacity(isGhost ? 0.12 : 0.18), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.white.opacity(isGhost ? 0.10 : 0.15), lineWidth: 1)
         )
     }
 }
@@ -452,7 +460,7 @@ private final class AccessibilityPermissionDragSourceView: NSView, NSDraggingSou
         self.appURL = appURL
         super.init(frame: frameRect)
 
-        let hostingView = NSHostingView(rootView: PermissionGuideAppRow(
+        let hostingView = NSHostingView(rootView: AccessibilityPermissionDragRowView(
             appName: appName,
             appIcon: appIcon
         ).preferredColorScheme(.dark))
@@ -460,6 +468,10 @@ private final class AccessibilityPermissionDragSourceView: NSView, NSDraggingSou
         hostingView.autoresizingMask = [.width, .height]
         addSubview(hostingView)
         toolTip = "Drag \(appName) into the Accessibility list"
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .openHand)
     }
 
     @available(*, unavailable)

@@ -4,16 +4,19 @@ import Testing
 
 @Suite("Accessibility permission guide")
 struct AccessibilityPermissionGuideTests {
-    @Test("lays the guide out inside the System Settings content area")
+    @Test("lays out a compact guide inside the System Settings content area")
     func layoutFitsSettingsContent() throws {
         let settingsWindow = CGRect(x: 100, y: 80, width: 1_000, height: 800)
         let frames = try #require(AccessibilityPermissionGuideLayout.frames(for: settingsWindow))
 
-        #expect(settingsWindow.contains(frames.target))
-        #expect(settingsWindow.contains(frames.card))
-        #expect(frames.card.contains(frames.dragSource))
-        #expect(frames.target.minY > frames.card.maxY)
-        #expect(frames.target.minX > settingsWindow.minX + 250)
+        #expect(settingsWindow.contains(frames.guide))
+        #expect(frames.guide.contains(frames.dragSource))
+        #expect(frames.guide.contains(frames.completedGuide))
+        #expect(frames.guide.height == 226)
+        #expect(frames.guide.width <= 720)
+        #expect(frames.dragSource.height == 76)
+        #expect(frames.dragSource.minY - frames.guide.minY == 14)
+        #expect(frames.guide.minX > settingsWindow.minX + 250)
     }
 
     @Test("does not present when System Settings is too small")

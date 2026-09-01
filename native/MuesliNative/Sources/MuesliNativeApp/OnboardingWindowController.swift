@@ -28,10 +28,20 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
     }
 
     func yieldFocusToSystemSettings() {
+        window?.level = .normal
+    }
+
+    func setSuppressedForSystemSettings(_ isSuppressed: Bool) {
         guard let window else { return }
-        window.level = .normal
-        // Let System Settings take focus without explicitly reordering onboarding.
-        // Reordering can make the window disappear on newer macOS releases.
+        if isSuppressed {
+            // Keep onboarding alive but entirely out of the way while the compact
+            // guide is attached to System Settings. Restoring with orderFront below
+            // avoids the macOS 26 orderBack behavior that can strand the window.
+            window.orderOut(nil)
+        } else {
+            window.level = .normal
+            window.orderFront(nil)
+        }
     }
 
     func prepareForNativePermissionPrompt() {
