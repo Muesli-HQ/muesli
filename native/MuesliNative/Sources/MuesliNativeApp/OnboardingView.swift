@@ -829,6 +829,7 @@ struct OnboardingView: View {
             }
             steps += [
             ("keyboard.fill", "Input Monitoring", "Detect hotkey for push-to-talk recording", inputMonitoringGranted, {
+                self.controller.beginSystemPermissionGuide(for: .inputMonitoring)
                 if !CGRequestListenEventAccess() {
                     self.openSystemSettings("Privacy_ListenEvent")
                 }
@@ -986,7 +987,7 @@ struct OnboardingView: View {
         .onAppear { startPermissionPolling() }
         .onDisappear {
             stopPermissionPolling()
-            controller.dismissAccessibilityPermissionGuide()
+            controller.dismissSystemPermissionGuide()
         }
     }
 
@@ -1003,7 +1004,7 @@ struct OnboardingView: View {
 
     private func requestAccessibilityPermission() {
         nativePermissionPromptName = "Accessibility"
-        controller.beginAccessibilityPermissionGuide()
+        controller.beginSystemPermissionGuide(for: .accessibility)
         controller.prepareOnboardingForNativePermissionPrompt()
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
@@ -1146,7 +1147,7 @@ struct OnboardingView: View {
     private func notePermissionGranted(_ permissionName: String) {
         guard recentlyGrantedPermissionName != permissionName else { return }
         if permissionName == "Accessibility" {
-            controller.dismissAccessibilityPermissionGuide()
+            controller.dismissSystemPermissionGuide()
         }
         grantingPermissionName = nil
         nativePermissionPromptName = nil
@@ -1194,8 +1195,13 @@ struct OnboardingView: View {
             nativePermissionPromptName = nil
             recentlyGrantedPermissionName = nil
             saveProgress(atStep: currentStep)
-            if steps[permissionIndex].name == "Accessibility" {
-                controller.beginAccessibilityPermissionGuide()
+            switch steps[permissionIndex].name {
+            case "Accessibility":
+                controller.beginSystemPermissionGuide(for: .accessibility)
+            case "Input Monitoring":
+                controller.beginSystemPermissionGuide(for: .inputMonitoring)
+            default:
+                break
             }
         }
         openSystemSettings(systemSettingsPane(for: permissionIndex))

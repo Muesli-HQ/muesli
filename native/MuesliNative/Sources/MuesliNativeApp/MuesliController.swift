@@ -422,7 +422,7 @@ public final class MuesliController: NSObject {
     private var historyWindowController: RecentHistoryWindowController?
     private var preferencesWindowController: PreferencesWindowController?
     private var onboardingWindowController: OnboardingWindowController?
-    private lazy var accessibilityPermissionGuideController: AccessibilityPermissionGuideController = {
+    private lazy var systemPermissionGuideController: AccessibilityPermissionGuideController = {
         let guide = AccessibilityPermissionGuideController()
         guide.onPresentationChanged = { [weak self] isPresenting in
             self?.onboardingWindowController?.setSuppressedForSystemSettings(isPresenting)
@@ -947,7 +947,7 @@ public final class MuesliController: NSObject {
     }
 
     func shutdown() async {
-        accessibilityPermissionGuideController.dismiss()
+        systemPermissionGuideController.dismiss()
         if let workspaceObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver)
             self.workspaceObserver = nil
@@ -4502,13 +4502,13 @@ public final class MuesliController: NSObject {
     }
 
     @MainActor
-    func beginAccessibilityPermissionGuide() {
-        accessibilityPermissionGuideController.showWhenSystemSettingsIsAvailable()
+    func beginSystemPermissionGuide(for permission: PermissionDragGuidePermission) {
+        systemPermissionGuideController.showWhenSystemSettingsIsAvailable(for: permission)
     }
 
     @MainActor
-    func dismissAccessibilityPermissionGuide() {
-        accessibilityPermissionGuideController.dismiss()
+    func dismissSystemPermissionGuide() {
+        systemPermissionGuideController.dismiss()
     }
 
     @MainActor
@@ -4812,7 +4812,7 @@ public final class MuesliController: NSObject {
         dictationTestBackend = nil
         dictationTestCohereLanguage = nil
 
-        accessibilityPermissionGuideController.dismiss()
+        systemPermissionGuideController.dismiss()
         onboardingWindowController?.close()
         onboardingWindowController = nil
         if hasRequiredStartupPermissions(for: onboardingUseCase) {

@@ -12,10 +12,10 @@ struct AccessibilityPermissionGuideTests {
         #expect(settingsWindow.contains(frames.guide))
         #expect(frames.guide.contains(frames.dragSource))
         #expect(frames.guide.contains(frames.completedGuide))
-        #expect(frames.guide.height == 226)
-        #expect(frames.guide.width <= 720)
-        #expect(frames.dragSource.height == 76)
-        #expect(frames.dragSource.minY - frames.guide.minY == 14)
+        #expect(frames.guide.height == 128)
+        #expect(frames.guide.width <= 640)
+        #expect(frames.dragSource.height == 70)
+        #expect(frames.dragSource.minY - frames.guide.minY == 12)
         #expect(frames.guide.minX > settingsWindow.minX + 250)
     }
 
@@ -29,37 +29,37 @@ struct AccessibilityPermissionGuideTests {
         ) == nil)
     }
 
-    @Test("presents only for an active untrusted Accessibility request")
+    @Test("presents only for an active ungranted permission request")
     func presentationPolicy() {
         let settingsBundleID = AccessibilityPermissionGuidePresentationPolicy.systemSettingsBundleID
 
         #expect(AccessibilityPermissionGuidePresentationPolicy.shouldShow(
             isRequested: true,
-            isTrusted: false,
+            isGranted: false,
             frontmostBundleID: settingsBundleID,
             hasSettingsWindow: true
         ))
         #expect(!AccessibilityPermissionGuidePresentationPolicy.shouldShow(
             isRequested: false,
-            isTrusted: false,
+            isGranted: false,
             frontmostBundleID: settingsBundleID,
             hasSettingsWindow: true
         ))
         #expect(!AccessibilityPermissionGuidePresentationPolicy.shouldShow(
             isRequested: true,
-            isTrusted: true,
+            isGranted: true,
             frontmostBundleID: settingsBundleID,
             hasSettingsWindow: true
         ))
         #expect(!AccessibilityPermissionGuidePresentationPolicy.shouldShow(
             isRequested: true,
-            isTrusted: false,
+            isGranted: false,
             frontmostBundleID: "com.apple.finder",
             hasSettingsWindow: true
         ))
         #expect(!AccessibilityPermissionGuidePresentationPolicy.shouldShow(
             isRequested: true,
-            isTrusted: false,
+            isGranted: false,
             frontmostBundleID: settingsBundleID,
             hasSettingsWindow: false
         ))

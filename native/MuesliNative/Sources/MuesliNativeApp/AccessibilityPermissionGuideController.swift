@@ -18,10 +18,10 @@ enum AccessibilityPermissionGuideLayout {
         let contentWidth = contentMaxX - contentMinX
         guard contentWidth >= 360 else { return nil }
 
-        let guideWidth = min(720, contentWidth - 16)
-        let guideHeight: CGFloat = 226
-        let preferredY = settingsWindow.minY + max(96, settingsWindow.height * 0.22)
-        let guideY = min(preferredY, settingsWindow.maxY - guideHeight - 92)
+        let guideWidth = min(640, contentWidth - 24)
+        let guideHeight: CGFloat = 128
+        let preferredY = settingsWindow.minY + max(88, settingsWindow.height * 0.18)
+        let guideY = min(preferredY, settingsWindow.maxY - guideHeight - 80)
         let guide = CGRect(
             x: contentMinX + (contentWidth - guideWidth) / 2,
             y: guideY,
@@ -30,17 +30,17 @@ enum AccessibilityPermissionGuideLayout {
         )
 
         let dragSource = CGRect(
-            x: guide.minX + 14,
-            y: guide.minY + 14,
-            width: guide.width - 28,
-            height: 76
+            x: guide.minX + 12,
+            y: guide.minY + 12,
+            width: guide.width - 24,
+            height: 70
         )
 
         let completedGuide = CGRect(
-            x: guide.minX + 46,
-            y: dragSource.minY + 8,
-            width: guide.width - 92,
-            height: 58
+            x: guide.minX + 64,
+            y: dragSource.minY + 7,
+            width: guide.width - 128,
+            height: 56
         )
 
         return AccessibilityPermissionGuideFrames(
@@ -51,17 +51,31 @@ enum AccessibilityPermissionGuideLayout {
     }
 }
 
+enum PermissionDragGuidePermission {
+    case accessibility
+    case inputMonitoring
+
+    var isGranted: Bool {
+        switch self {
+        case .accessibility:
+            AXIsProcessTrusted()
+        case .inputMonitoring:
+            CGPreflightListenEventAccess()
+        }
+    }
+}
+
 enum AccessibilityPermissionGuidePresentationPolicy {
     static let systemSettingsBundleID = "com.apple.systempreferences"
 
     static func shouldShow(
         isRequested: Bool,
-        isTrusted: Bool,
+        isGranted: Bool,
         frontmostBundleID: String?,
         hasSettingsWindow: Bool
     ) -> Bool {
         isRequested
-            && !isTrusted
+            && !isGranted
             && frontmostBundleID == systemSettingsBundleID
             && hasSettingsWindow
     }
@@ -92,7 +106,7 @@ final class AccessibilityPermissionGuideController {
     private var refreshTimer: Timer?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var applicationObservers: [NSObjectProtocol] = []
-    private var isRequested = false
+    private var requestedPermission: PermissionDragGuidePermission?
     private var isPresenting = false
 
     init(
@@ -105,13 +119,13 @@ final class AccessibilityPermissionGuideController {
         self.appIcon = appIcon ?? NSApplication.shared.applicationIconImage
     }
 
-    func showWhenSystemSettingsIsAvailable() {
-        guard !AXIsProcessTrusted() else {
+    func showWhenSystemSettingsIsAvailable(for permission: PermissionDragGuidePermission) {
+        guard !permission.isGranted else {
             dismiss()
             return
         }
 
-        isRequested = true
+        requestedPermission = permission
         model.didCompleteDrag = false
         installObserversIfNeeded()
         startRefreshTimerIfNeeded()
@@ -119,7 +133,7 @@ final class AccessibilityPermissionGuideController {
     }
 
     func dismiss() {
-        isRequested = false
+        requestedPermission = nil
         refreshTimer?.invalidate()
         refreshTimer = nil
 
@@ -178,7 +192,12 @@ final class AccessibilityPermissionGuideController {
     }
 
     private func refreshPresentation() {
-        if AXIsProcessTrusted() {
+        guard let requestedPermission else {
+            dismiss()
+            return
+        }
+
+        if requestedPermission.isGranted {
             dismiss()
             return
         }
@@ -186,8 +205,8 @@ final class AccessibilityPermissionGuideController {
         let frontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         let settingsWindow = SystemSettingsWindowLocator.mainWindowFrame()
         guard AccessibilityPermissionGuidePresentationPolicy.shouldShow(
-            isRequested: isRequested,
-            isTrusted: false,
+            isRequested: true,
+            isGranted: false,
             frontmostBundleID: frontmostBundleID,
             hasSettingsWindow: settingsWindow != nil
         ), let settingsWindow,
@@ -219,7 +238,6 @@ final class AccessibilityPermissionGuideController {
                 ignoresMouseEvents: true,
                 contentView: NSHostingView(rootView: CompactAccessibilityPermissionGuideView(
                     appName: appName,
-                    appIcon: appIcon,
                     model: model
                 ).preferredColorScheme(.dark))
             )
@@ -336,11 +354,7 @@ private final class AccessibilityPermissionGuideModel: ObservableObject {
 
 private struct CompactAccessibilityPermissionGuideView: View {
     let appName: String
-    let appIcon: NSImage
     @ObservedObject var model: AccessibilityPermissionGuideModel
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isAnimating = false
 
     var body: some View {
         Group {
@@ -363,23 +377,15 @@ private struct CompactAccessibilityPermissionGuideView: View {
                 }
                 .padding(.horizontal, 16)
             } else {
-                VStack(spacing: 5) {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 21, weight: .bold))
-                        .foregroundStyle(MuesliTheme.accent)
+                VStack(spacing: 0) {
+                    Text("Drag this row up into this list")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.72))
 
-                    PermissionGuideAppRow(appName: appName, appIcon: appIcon, isGhost: true)
-                        .frame(height: 52)
-                        .offset(y: reduceMotion ? 0 : (isAnimating ? -7 : 4))
-
-                    Text("Drag this row up into the list")
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(Color.white.opacity(0.66))
-
-                    Spacer(minLength: 88)
+                    Spacer(minLength: 82)
                 }
-                .padding(.horizontal, 14)
-                .padding(.top, 12)
+                .padding(.horizontal, 12)
+                .padding(.top, 14)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -389,14 +395,8 @@ private struct CompactAccessibilityPermissionGuideView: View {
             RoundedRectangle(cornerRadius: model.didCompleteDrag ? 14 : 18)
                 .stroke(Color.white.opacity(0.10), lineWidth: 1)
         )
-        .shadow(color: .black.opacity(0.18), radius: 12, y: 5)
+        .shadow(color: .black.opacity(0.10), radius: 10, y: 4)
         .padding(2)
-        .onAppear {
-            guard !reduceMotion else { return }
-            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
-                isAnimating = true
-            }
-        }
     }
 }
 
@@ -421,7 +421,6 @@ private struct AccessibilityPermissionDragRowView: View {
 private struct PermissionGuideAppRow: View {
     let appName: String
     let appIcon: NSImage
-    var isGhost = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -433,17 +432,17 @@ private struct PermissionGuideAppRow: View {
 
             Text(appName)
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white.opacity(isGhost ? 0.84 : 0.94))
+                .foregroundStyle(.white.opacity(0.94))
 
             Spacer()
         }
         .padding(.horizontal, 14)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.white.opacity(isGhost ? 0.07 : 0.10))
+        .background(Color.white.opacity(0.10))
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.white.opacity(isGhost ? 0.10 : 0.15), lineWidth: 1)
+                .stroke(Color.white.opacity(0.15), lineWidth: 1)
         )
     }
 }
@@ -467,7 +466,7 @@ private final class AccessibilityPermissionDragSourceView: NSView, NSDraggingSou
         hostingView.frame = bounds
         hostingView.autoresizingMask = [.width, .height]
         addSubview(hostingView)
-        toolTip = "Drag \(appName) into the Accessibility list"
+        toolTip = "Drag \(appName) into the permission list"
     }
 
     override func resetCursorRects() {
