@@ -29,8 +29,12 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
     func yieldFocusToSystemSettings() {
         guard let window else { return }
+        // De-float so System Settings can render on top, but DO NOT orderBack —
+        // on macOS 26 with this app's accessory activation policy, sending a
+        // previously-floating onboarding window to the back caused both the
+        // window AND the dock icon to vanish, leaving the app as a ghost
+        // process with no UI surface and no way for the user to recover.
         window.level = .normal
-        window.orderBack(nil)
     }
 
     func prepareForNativePermissionPrompt() {
