@@ -269,9 +269,9 @@ final class MeetingSession {
         } else {
             self.systemAudioRecorder = SystemAudioRecorder()
         }
-        micRecoveryCoordinator.recoveryRequest = { [weak meetingMicRecorder] reason in
+        micRecoveryCoordinator.recoveryRequest = { [weak meetingMicRecorder] trigger in
             guard let meetingMicRecorder else { return .unavailable }
-            return meetingMicRecorder.requestSameRouteRecovery(reason: reason)
+            return meetingMicRecorder.requestHealthRecovery(trigger)
         }
         // Recovery handoffs mid-transition reliably fail their first-buffer
         // window; defer them until the daemon settles (same signal the tap

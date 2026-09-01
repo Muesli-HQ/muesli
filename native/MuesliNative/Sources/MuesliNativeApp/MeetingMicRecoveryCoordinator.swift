@@ -17,6 +17,11 @@ enum MeetingMicHandoffOutcome: String, Equatable {
     case failed = "failed"
 }
 
+struct MeetingMicRecoveryTrigger: Equatable {
+    let reason: String
+    let requiresNonZeroSamples: Bool
+}
+
 /// Privacy-safe coarse context attached to episode telemetry: no audio, device
 /// names, or user content — only enum/classification-level fields.
 struct MeetingMicEpisodeContext: Equatable {
@@ -117,7 +122,7 @@ final class MeetingMicRecoveryCoordinator {
     /// the attempt is refunded but the cooldown timestamp is retained so
     /// refusal cannot churn per-snapshot. `.unavailable` keeps the attempt
     /// counted so the episode cap bounds total requests.
-    var recoveryRequest: (String) -> MeetingMicRecoveryRequestResult = { _ in .unavailable }
+    var recoveryRequest: (MeetingMicRecoveryTrigger) -> MeetingMicRecoveryRequestResult = { _ in .unavailable }
     /// Called after the coordinator's lock is released.
     var onEpisodeEvent: ((MeetingMicHealthEpisodeEvent) -> Void)?
     /// Coarse, privacy-safe context for telemetry; evaluated at event time.
@@ -452,7 +457,10 @@ final class MeetingMicRecoveryCoordinator {
         }
         lock.unlock()
 
-        let result = recoveryRequest(reservation.reason)
+        let result = recoveryRequest(MeetingMicRecoveryTrigger(
+            reason: reservation.reason,
+            requiresNonZeroSamples: active.initialState == .micAllZeroWhileSystemActive
+        ))
 
         lock.lock()
         if var active = episode, active.pendingRecoveryToken == reservation.token {
