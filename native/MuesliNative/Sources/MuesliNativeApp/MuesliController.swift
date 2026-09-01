@@ -1081,20 +1081,7 @@ public final class MuesliController: NSObject {
     }
 
     private func latestFeatureTour() -> FeatureTour {
-        let targetApplications = (try? dictationStore.dictationTargetApplications()) ?? []
-        let latestMeetingID = (try? dictationStore.recentMeetings(limit: 1))?.first?.id
-        return FeatureTourCatalog.latest(
-            includeApplicationFilter: !targetApplications.isEmpty,
-            includeAppleSpeech: Self.includesAppleSpeechInFeatureTour,
-            includeMeetingPeople: latestMeetingID != nil
-        )
-    }
-
-    private static var includesAppleSpeechInFeatureTour: Bool {
-        if #available(macOS 26.0, *) {
-            return AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem
-        }
-        return false
+        FeatureTourCatalog.latest
     }
 
     @discardableResult
@@ -1116,7 +1103,6 @@ public final class MuesliController: NSObject {
             TelemetryDeck.signal("feature_walkthrough.invitation_shown", parameters: [
                 "version": tour.version,
                 "step_count": "\(tour.steps.count)",
-                "includes_apple_speech": "\(tour.steps.contains { $0.target == .appleSpeechCard })",
             ])
         })
         // The normal startup preload task continues while this invitation and
@@ -1219,22 +1205,22 @@ public final class MuesliController: NSObject {
         if appState.isSearchActive {
             clearSearch()
         }
-        switch step.target {
-        case .timelineSidebar, .timelineFilters:
-            appState.selectedTab = .timeline
+        guard let target = step.target else { return }
+        switch target.navigationRoute {
+        case let .settings(pane):
+            appState.selectedSettingsPane = pane
+            appState.selectedTab = .settings
+        case let .tab(tab):
+            appState.selectedTab = tab
+        case let .models(category):
+            showModels(category: category)
         case .timelineApplications:
             guard (try? dictationStore.dictationTargetApplications().isEmpty) == false else {
                 completeFeatureTour()
                 return
             }
             appState.selectedTab = .timeline
-        case .appleSpeechCard, .modelLibrary:
-            showModels(category: .dictation)
-        case .insightsEntry:
-            appState.selectedTab = .timeline
-        case .dictionarySuggestions:
-            appState.selectedTab = .dictionary
-        case .meetingsSidebar:
+        case .meetingsBrowser:
             appState.selectedTab = .meetings
             appState.meetingsNavigationState = .browser
             appState.selectedMeetingID = nil
@@ -1245,16 +1231,6 @@ public final class MuesliController: NSObject {
                 return
             }
             showMeetingDocument(id: meetingID)
-        case .liveCaptionsSetting:
-            appState.selectedSettingsPane = .meetings
-            appState.selectedTab = .settings
-        case .cloudCleanupSetting:
-            appState.selectedSettingsPane = .dictation
-            appState.selectedTab = .settings
-        case .streamingModels, .experimentalModels:
-            if let category = step.target.modelsCategory {
-                showModels(category: category)
-            }
         }
     }
 
