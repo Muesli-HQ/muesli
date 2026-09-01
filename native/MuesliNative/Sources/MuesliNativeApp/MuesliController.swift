@@ -1103,7 +1103,6 @@ public final class MuesliController: NSObject {
             TelemetryDeck.signal("feature_walkthrough.invitation_shown", parameters: [
                 "version": tour.version,
                 "step_count": "\(tour.steps.count)",
-                "includes_apple_speech": "\(tour.steps.contains { $0.target == .appleSpeechCard })",
             ])
         })
         // The normal startup preload task continues while this invitation and
@@ -1211,8 +1210,6 @@ public final class MuesliController: NSObject {
         case .quillSettings, .dictationProviderSetting:
             appState.selectedSettingsPane = .dictation
             appState.selectedTab = .settings
-        case .parakeetFamilyCard:
-            showModels(category: .dictation)
         case .timelineSidebar, .timelineFilters:
             appState.selectedTab = .timeline
         case .timelineApplications:
@@ -1244,7 +1241,7 @@ public final class MuesliController: NSObject {
         case .cloudCleanupSetting:
             appState.selectedSettingsPane = .dictation
             appState.selectedTab = .settings
-        case .streamingModels, .experimentalModels:
+        case .parakeetFamilyCard, .streamingModels, .experimentalModels:
             if let category = target.modelsCategory {
                 showModels(category: category)
             }
