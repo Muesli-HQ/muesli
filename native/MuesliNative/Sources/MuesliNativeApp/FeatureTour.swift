@@ -52,18 +52,42 @@ enum FeatureTourTarget: String, Hashable {
     case streamingModels
     case experimentalModels
 
-    var modelsCategory: ModelsCategory? {
+    var navigationRoute: FeatureTourNavigationRoute {
         switch self {
-        case .modelLibrary, .appleSpeechCard, .parakeetFamilyCard:
-            return .dictation
+        case .quillSettings, .dictationProviderSetting, .cloudCleanupSetting:
+            return .settings(.dictation)
+        case .liveCaptionsSetting:
+            return .settings(.meetings)
+        case .timelineSidebar, .timelineFilters, .insightsEntry:
+            return .tab(.timeline)
+        case .timelineApplications:
+            return .timelineApplications
+        case .dictionarySuggestions:
+            return .tab(.dictionary)
+        case .meetingsSidebar:
+            return .meetingsBrowser
+        case .meetingPeople:
+            return .meetingPeople
+        case .modelLibrary, .appleSpeechCard, .parakeetFamilyCard, .experimentalModels:
+            return .models(.dictation)
         case .streamingModels:
-            return .streaming
-        case .experimentalModels:
-            return .dictation
-        case .quillSettings, .dictationProviderSetting, .timelineSidebar, .timelineApplications, .meetingPeople, .timelineFilters, .insightsEntry, .dictionarySuggestions, .meetingsSidebar, .liveCaptionsSetting, .cloudCleanupSetting:
-            return nil
+            return .models(.streaming)
         }
     }
+
+    var modelsCategory: ModelsCategory? {
+        guard case let .models(category) = navigationRoute else { return nil }
+        return category
+    }
+}
+
+enum FeatureTourNavigationRoute: Equatable {
+    case settings(SettingsPane)
+    case tab(DashboardTab)
+    case models(ModelsCategory)
+    case timelineApplications
+    case meetingsBrowser
+    case meetingPeople
 }
 
 struct FeatureTourStep: Identifiable, Equatable {

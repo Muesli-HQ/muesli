@@ -207,6 +207,13 @@ struct FeatureTourTests {
         #expect(parakeet.target?.modelsCategory == .dictation)
     }
 
+    @Test("model feature-tour targets resolve routes without UI state")
+    func modelNavigationRoutes() {
+        #expect(FeatureTourTarget.parakeetFamilyCard.navigationRoute == .models(.dictation))
+        #expect(FeatureTourTarget.streamingModels.navigationRoute == .models(.streaming))
+        #expect(FeatureTourTarget.experimentalModels.navigationRoute == .models(.dictation))
+    }
+
     @Test("store suppresses fresh installs and presents a legacy upgrade only once")
     func storeLifecycle() throws {
         let suiteName = "FeatureTourTests.storeLifecycle.\(UUID().uuidString)"

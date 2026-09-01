@@ -1206,25 +1206,21 @@ public final class MuesliController: NSObject {
             clearSearch()
         }
         guard let target = step.target else { return }
-        switch target {
-        case .quillSettings, .dictationProviderSetting:
-            appState.selectedSettingsPane = .dictation
+        switch target.navigationRoute {
+        case let .settings(pane):
+            appState.selectedSettingsPane = pane
             appState.selectedTab = .settings
-        case .timelineSidebar, .timelineFilters:
-            appState.selectedTab = .timeline
+        case let .tab(tab):
+            appState.selectedTab = tab
+        case let .models(category):
+            showModels(category: category)
         case .timelineApplications:
             guard (try? dictationStore.dictationTargetApplications().isEmpty) == false else {
                 completeFeatureTour()
                 return
             }
             appState.selectedTab = .timeline
-        case .appleSpeechCard, .modelLibrary:
-            showModels(category: .dictation)
-        case .insightsEntry:
-            appState.selectedTab = .timeline
-        case .dictionarySuggestions:
-            appState.selectedTab = .dictionary
-        case .meetingsSidebar:
+        case .meetingsBrowser:
             appState.selectedTab = .meetings
             appState.meetingsNavigationState = .browser
             appState.selectedMeetingID = nil
@@ -1235,16 +1231,6 @@ public final class MuesliController: NSObject {
                 return
             }
             showMeetingDocument(id: meetingID)
-        case .liveCaptionsSetting:
-            appState.selectedSettingsPane = .meetings
-            appState.selectedTab = .settings
-        case .cloudCleanupSetting:
-            appState.selectedSettingsPane = .dictation
-            appState.selectedTab = .settings
-        case .parakeetFamilyCard, .streamingModels, .experimentalModels:
-            if let category = target.modelsCategory {
-                showModels(category: category)
-            }
         }
     }
 
