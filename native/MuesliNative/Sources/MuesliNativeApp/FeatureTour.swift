@@ -35,6 +35,9 @@ struct MarketingVersion: Comparable, Equatable {
 }
 
 enum FeatureTourTarget: String, Hashable {
+    case quillSettings
+    case dictationProviderSetting
+    case parakeetFamilyCard
     case timelineSidebar
     case timelineApplications
     case appleSpeechCard
@@ -51,13 +54,13 @@ enum FeatureTourTarget: String, Hashable {
 
     var modelsCategory: ModelsCategory? {
         switch self {
-        case .modelLibrary, .appleSpeechCard:
+        case .modelLibrary, .appleSpeechCard, .parakeetFamilyCard:
             return .dictation
         case .streamingModels:
             return .streaming
         case .experimentalModels:
             return .dictation
-        case .timelineSidebar, .timelineApplications, .meetingPeople, .timelineFilters, .insightsEntry, .dictionarySuggestions, .meetingsSidebar, .liveCaptionsSetting, .cloudCleanupSetting:
+        case .quillSettings, .dictationProviderSetting, .timelineSidebar, .timelineApplications, .meetingPeople, .timelineFilters, .insightsEntry, .dictionarySuggestions, .meetingsSidebar, .liveCaptionsSetting, .cloudCleanupSetting:
             return nil
         }
     }
@@ -69,7 +72,7 @@ struct FeatureTourStep: Identifiable, Equatable {
     let title: String
     let message: String
     let systemImage: String
-    let target: FeatureTourTarget
+    let target: FeatureTourTarget?
 }
 
 struct FeatureTour: Equatable {
@@ -96,63 +99,40 @@ extension AppState {
 
 enum FeatureTourCatalog {
     static var latest: FeatureTour {
-        latest(
-            includeApplicationFilter: false,
-            includeAppleSpeech: false,
-            includeMeetingPeople: false
-        )
-    }
-
-    static func latest(
-        includeApplicationFilter: Bool,
-        includeAppleSpeech: Bool,
-        includeMeetingPeople: Bool
-    ) -> FeatureTour {
-        var steps = [
+        FeatureTour(version: "0.8.4", steps: [
             FeatureTourStep(
-                id: "timeline",
-                eyebrow: "ONE TIMELINE",
-                title: "Dictations and meetings, together",
-                message: "Timeline puts your recent work in one chronological view. Open it from the sidebar whenever you want to retrace what you dictated or discussed.",
-                systemImage: "clock.arrow.circlepath",
-                target: .timelineSidebar
-            )
-        ]
-
-        if includeApplicationFilter {
-            steps.append(FeatureTourStep(
-                id: "timeline-apps",
-                eyebrow: "FILTER BY APP",
-                title: "Find dictations by destination app",
-                message: "Use Apps to narrow Timeline to dictations sent to a specific destination, such as Mail, Notes, or your browser.",
-                systemImage: "square.grid.2x2",
-                target: .timelineApplications
-            ))
-        }
-
-        if includeAppleSpeech {
-            steps.append(FeatureTourStep(
-                id: "apple-speech",
-                eyebrow: "ON-DEVICE SPEECH",
-                title: "Try Apple's native on-device speech model",
-                message: "On macOS 26, Apple Speech can transcribe without a separate model download. Use your system language or choose another supported language in Models.",
-                systemImage: "apple.logo",
-                target: .appleSpeechCard
-            ))
-        }
-
-        if includeMeetingPeople {
-            steps.append(FeatureTourStep(
-                id: "meeting-people",
-                eyebrow: "MEETING ATTENDEES",
-                title: "Meeting attendees are now available!",
-                message: "See organizers and attendees from calendar events, or add people from Apple Contacts directly to a meeting.",
-                systemImage: "person.2.fill",
-                target: .meetingPeople
-            ))
-        }
-
-        return FeatureTour(version: "0.8.2", steps: steps)
+                id: "quill",
+                eyebrow: "QUILL MODE",
+                title: "Edit text with your voice",
+                message: "Highlight text or place the cursor, activate Quill, and say what you want changed. Use a configured AI provider, or download Gemma 4 for a private, on-device workflow.",
+                systemImage: "pencil.and.scribble",
+                target: .quillSettings
+            ),
+            FeatureTourStep(
+                id: "apple-shortcuts",
+                eyebrow: "APPLE SHORTCUTS",
+                title: "Control Muesli with Command-Space",
+                message: "Press Command-Space, then type Start Dictation, Stop Dictation, Start Meeting, or Stop Meeting.",
+                systemImage: "command",
+                target: nil
+            ),
+            FeatureTourStep(
+                id: "hosted-dictation",
+                eyebrow: "OPTIONAL CLOUD TRANSCRIPTION",
+                title: "Choose OpenAI or OpenRouter for dictation",
+                message: "Use a hosted transcription model when you want one. Local remains the default, and audio is sent only after you choose OpenAI or OpenRouter as your provider.",
+                systemImage: "cloud",
+                target: .dictationProviderSetting
+            ),
+            FeatureTourStep(
+                id: "parakeet-unified",
+                eyebrow: "ON-DEVICE ENGLISH",
+                title: "Meet the best English STT model",
+                message: "Parakeet Unified balances speed and accuracy for fast, reliable English transcription on your Mac. For other languages, choose multilingual Parakeet v3.",
+                systemImage: "waveform",
+                target: .parakeetFamilyCard
+            ),
+        ])
     }
 }
 

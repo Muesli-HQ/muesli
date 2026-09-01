@@ -122,23 +122,29 @@ struct DashboardRootView: View {
                     .frame(width: proxy.size.width, height: proxy.size.height)
                     .zIndex(101)
                 } else if let tour = appState.activeFeatureTour,
-                   tour.steps.indices.contains(appState.featureTourStepIndex),
-                   let globalTargetFrame = featureTourTargetFrames[tour.steps[appState.featureTourStepIndex].target] {
+                          tour.steps.indices.contains(appState.featureTourStepIndex) {
+                    let step = tour.steps[appState.featureTourStepIndex]
                     let globalRootFrame = proxy.frame(in: .global)
-                    let targetFrame = globalTargetFrame.offsetBy(
-                        dx: -globalRootFrame.minX,
-                        dy: -globalRootFrame.minY
-                    )
-                    FeatureTourOverlay(
-                        tour: tour,
-                        stepIndex: appState.featureTourStepIndex,
-                        spotlightRect: targetFrame,
-                        containerSize: proxy.size,
-                        onBack: { controller.showPreviousFeatureTourStep() },
-                        onNext: { controller.showNextFeatureTourStep() },
-                        onDismiss: { controller.dismissFeatureTour() }
-                    )
-                    .zIndex(100)
+                    let targetFrame = step.target
+                        .flatMap { featureTourTargetFrames[$0] }
+                        .map {
+                            $0.offsetBy(
+                                dx: -globalRootFrame.minX,
+                                dy: -globalRootFrame.minY
+                            )
+                        }
+                    if step.target == nil || targetFrame != nil {
+                        FeatureTourOverlay(
+                            tour: tour,
+                            stepIndex: appState.featureTourStepIndex,
+                            spotlightRect: targetFrame,
+                            containerSize: proxy.size,
+                            onBack: { controller.showPreviousFeatureTourStep() },
+                            onNext: { controller.showNextFeatureTourStep() },
+                            onDismiss: { controller.dismissFeatureTour() }
+                        )
+                        .zIndex(100)
+                    }
                 }
             }
         }

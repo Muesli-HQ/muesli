@@ -1081,20 +1081,7 @@ public final class MuesliController: NSObject {
     }
 
     private func latestFeatureTour() -> FeatureTour {
-        let targetApplications = (try? dictationStore.dictationTargetApplications()) ?? []
-        let latestMeetingID = (try? dictationStore.recentMeetings(limit: 1))?.first?.id
-        return FeatureTourCatalog.latest(
-            includeApplicationFilter: !targetApplications.isEmpty,
-            includeAppleSpeech: Self.includesAppleSpeechInFeatureTour,
-            includeMeetingPeople: latestMeetingID != nil
-        )
-    }
-
-    private static var includesAppleSpeechInFeatureTour: Bool {
-        if #available(macOS 26.0, *) {
-            return AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem
-        }
-        return false
+        FeatureTourCatalog.latest
     }
 
     @discardableResult
@@ -1219,7 +1206,13 @@ public final class MuesliController: NSObject {
         if appState.isSearchActive {
             clearSearch()
         }
-        switch step.target {
+        guard let target = step.target else { return }
+        switch target {
+        case .quillSettings, .dictationProviderSetting:
+            appState.selectedSettingsPane = .dictation
+            appState.selectedTab = .settings
+        case .parakeetFamilyCard:
+            showModels(category: .dictation)
         case .timelineSidebar, .timelineFilters:
             appState.selectedTab = .timeline
         case .timelineApplications:
@@ -1252,7 +1245,7 @@ public final class MuesliController: NSObject {
             appState.selectedSettingsPane = .dictation
             appState.selectedTab = .settings
         case .streamingModels, .experimentalModels:
-            if let category = step.target.modelsCategory {
+            if let category = target.modelsCategory {
                 showModels(category: category)
             }
         }
