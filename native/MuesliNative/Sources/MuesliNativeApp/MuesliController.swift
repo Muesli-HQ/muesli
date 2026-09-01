@@ -4637,10 +4637,13 @@ public final class MuesliController: NSObject {
     }
 
     @discardableResult
-    func transitionStoppedDictationTestToTranscribing() -> Bool {
+    func stopDictationTestRecordingFeedback() -> Bool {
         guard isDictationTestMode else { return false }
         dictationTestRecordingStopped?()
-        setState(.transcribing)
+        // Release the active recording pill immediately. A valid recording moves
+        // to transcribing after the recorder reports its duration; short presses
+        // remain idle instead of flashing a state for work that will be discarded.
+        setState(.idle)
         return true
     }
 
@@ -4904,15 +4907,16 @@ public final class MuesliController: NSObject {
         inputMonitoringGranted: Bool
     ) {
         let previousUseCase = config.resolvedOnboardingUseCase
-        guard previousUseCase.includesVoiceNotes, !previousUseCase.includesDictation else { return }
-        guard OnboardingPermissionGate.hasRequiredDictationPermissions(
-            OnboardingPermissionSnapshot(
-                microphone: microphoneGranted,
-                accessibility: accessibilityGranted,
-                inputMonitoring: inputMonitoringGranted,
-                systemAudio: false,
-                screenRecording: false
-            )
+        let permissions = OnboardingPermissionSnapshot(
+            microphone: microphoneGranted,
+            accessibility: accessibilityGranted,
+            inputMonitoring: inputMonitoringGranted,
+            systemAudio: false,
+            screenRecording: false
+        )
+        guard OnboardingFlow.shouldReclassifyVoiceNotesAsDictation(
+            previousUseCase: previousUseCase,
+            permissions: permissions
         ) else { return }
 
         let updatedUseCase = OnboardingUseCase.from(
@@ -10451,7 +10455,7 @@ public final class MuesliController: NSObject {
         fputs("[muesli-native] stop\n", stderr)
         let startedAt = dictationStartedAt ?? Date()
         dictationStartedAt = nil
-        transitionStoppedDictationTestToTranscribing()
+        stopDictationTestRecordingFeedback()
 
         // Nemotron streaming: text already typed — just finalize and store
         if isNemotron35Streaming {

@@ -58,6 +58,26 @@ struct AccessibilityPermissionGuideTests {
         ))
     }
 
+    @Test("preserves completion when reopening the same permission guide")
+    func invocationPolicy() {
+        let reopeningSamePermission = AccessibilityPermissionGuideInvocationPolicy.shouldResetDragCompletion(
+            previousPermission: .accessibility,
+            nextPermission: .accessibility
+        )
+        let changingPermission = AccessibilityPermissionGuideInvocationPolicy.shouldResetDragCompletion(
+            previousPermission: .accessibility,
+            nextPermission: .inputMonitoring
+        )
+        let firstInvocation = AccessibilityPermissionGuideInvocationPolicy.shouldResetDragCompletion(
+            previousPermission: nil,
+            nextPermission: .accessibility
+        )
+
+        #expect(!reopeningSamePermission)
+        #expect(changingPermission)
+        #expect(firstInvocation)
+    }
+
     @Test("does not present when System Settings is too small")
     func rejectsSmallSettingsWindows() {
         #expect(AccessibilityPermissionGuideLayout.frames(

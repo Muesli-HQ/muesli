@@ -28,6 +28,8 @@ case "${shard}" in
       SettingsPermissionRefreshReasonTests
       AccessibilityPermissionGuideTests
       DictationTestLifecycleTests
+      OnboardingFlowTests
+      OnboardingProgressTests
       FloatingIndicatorVisibilityTests
       IndicatorFrameSizeTests
       WindowAppearanceTests

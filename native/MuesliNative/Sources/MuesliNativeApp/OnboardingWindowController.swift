@@ -30,7 +30,13 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
     }
 
     func yieldFocusToSystemSettings() {
-        window?.level = .normal
+        guard let window else { return }
+        // Keep the SwiftUI hierarchy mounted so its permission polling and guide
+        // lifecycle continue, but get the onboarding window out of the way even
+        // when System Settings takes a moment to appear.
+        window.level = .normal
+        window.alphaValue = 0
+        window.ignoresMouseEvents = true
     }
 
     func setSuppressedForSystemSettings(_ isSuppressed: Bool) {
@@ -43,10 +49,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
             window.alphaValue = 0
             window.ignoresMouseEvents = true
         } else {
-            window.level = .normal
-            window.alphaValue = 1
-            window.ignoresMouseEvents = false
-            window.orderFront(nil)
+            bringToFront()
         }
     }
 

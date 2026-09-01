@@ -32,7 +32,9 @@ struct OnboardingView: View {
     @State private var grantingPermissionName: String?
     @State private var nativePermissionPromptName: String?
     @State private var recentlyGrantedPermissionName: String?
-    @State private var hasScheduledPermissionAdvance = false
+    @State private var permissionAdvanceTask: Task<Void, Never>?
+    @State private var permissionAdvanceGeneration: UUID?
+    @State private var selectionBeforeEverything: OnboardingUseCase?
 
     // Hotkey recorder
     @State private var selectedHotkey: HotkeyConfig
@@ -273,13 +275,7 @@ struct OnboardingView: View {
             }
         case 3:
             onboardingButton(currentStepIndex == orderedSteps.count - 1 ? "Finish" : "Continue", enabled: requiredPermissionsGranted) {
-                if selectedUseCase.includesPushToTalk {
-                    saveProgressAndRestart()
-                } else if currentStepIndex == orderedSteps.count - 1 {
-                    finishOnboarding(withKey: false)
-                } else {
-                    goToNextStep()
-                }
+                advancePastPermissions()
             }
         case 4:
             if dictationTestResult != nil {
@@ -615,7 +611,7 @@ struct OnboardingView: View {
                         subtitle: "Record in Muesli",
                         selected: selectedUseCase.includesVoiceNotes
                     ) {
-                        selectedUseCase = selectedUseCase.toggling(.voiceNotes)
+                        toggleCapability(.voiceNotes)
                     }
 
                     useCaseCard(
@@ -624,7 +620,7 @@ struct OnboardingView: View {
                         subtitle: "Paste into apps",
                         selected: selectedUseCase.includesDictation
                     ) {
-                        selectedUseCase = selectedUseCase.toggling(.dictation)
+                        toggleCapability(.dictation)
                     }
 
                     useCaseCard(
@@ -633,7 +629,7 @@ struct OnboardingView: View {
                         subtitle: "Notes and summaries",
                         selected: selectedUseCase.includesMeetings
                     ) {
-                        selectedUseCase = selectedUseCase.toggling(.meetings)
+                        toggleCapability(.meetings)
                     }
 
                     useCaseCard(
@@ -642,7 +638,7 @@ struct OnboardingView: View {
                         subtitle: "All workflows",
                         selected: selectedUseCase == .everything
                     ) {
-                        selectedUseCase = selectedUseCase == .everything ? .dictation : .everything
+                        toggleEverything()
                     }
                 }
             }
@@ -1015,10 +1011,11 @@ struct OnboardingView: View {
             if granted {
                 schedulePermissionAdvanceIfReady()
             } else {
-                hasScheduledPermissionAdvance = false
+                cancelScheduledPermissionAdvance()
             }
         }
         .onDisappear {
+            cancelScheduledPermissionAdvance()
             stopPermissionPolling()
             controller.dismissSystemPermissionGuide()
         }
@@ -1156,25 +1153,70 @@ struct OnboardingView: View {
     private func schedulePermissionAdvanceIfReady() {
         guard currentStep == Self.permissionsStep,
               requiredPermissionsGranted,
-              !hasScheduledPermissionAdvance else { return }
-        hasScheduledPermissionAdvance = true
+              permissionAdvanceTask == nil else { return }
 
-        Task { @MainActor in
+        let generation = UUID()
+        permissionAdvanceGeneration = generation
+        permissionAdvanceTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(900))
+            guard permissionAdvanceGeneration == generation, !Task.isCancelled else { return }
             guard currentStep == Self.permissionsStep, requiredPermissionsGranted else {
-                hasScheduledPermissionAdvance = false
+                permissionAdvanceGeneration = nil
+                permissionAdvanceTask = nil
                 return
             }
 
-            controller.dismissSystemPermissionGuide()
-            if selectedUseCase.includesPushToTalk {
-                saveProgressAndRestart()
-            } else if currentStepIndex == orderedSteps.count - 1 {
-                finishOnboarding(withKey: false)
-            } else {
-                goToNextStep()
-            }
+            permissionAdvanceGeneration = nil
+            permissionAdvanceTask = nil
+            advancePastPermissions()
         }
+    }
+
+    private func cancelScheduledPermissionAdvance() {
+        permissionAdvanceGeneration = nil
+        permissionAdvanceTask?.cancel()
+        permissionAdvanceTask = nil
+    }
+
+    private func advancePastPermissions() {
+        cancelScheduledPermissionAdvance()
+        controller.dismissSystemPermissionGuide()
+        switch OnboardingFlow.permissionAdvanceAction(
+            for: selectedUseCase,
+            currentStepIndex: currentStepIndex,
+            orderedStepCount: orderedSteps.count
+        ) {
+        case .restartForDictationTest:
+            saveProgressAndRestart()
+        case .finish:
+            finishOnboarding(withKey: false)
+        case .next:
+            goToNextStep()
+        }
+    }
+
+    private func toggleCapability(_ capability: OnboardingCapability) {
+        applyUseCaseSelection(OnboardingFlow.toggling(
+            capability,
+            in: OnboardingFlow.UseCaseSelectionState(
+                selectedUseCase: selectedUseCase,
+                selectionBeforeEverything: selectionBeforeEverything
+            )
+        ))
+    }
+
+    private func toggleEverything() {
+        applyUseCaseSelection(OnboardingFlow.togglingEverything(
+            in: OnboardingFlow.UseCaseSelectionState(
+                selectedUseCase: selectedUseCase,
+                selectionBeforeEverything: selectionBeforeEverything
+            )
+        ))
+    }
+
+    private func applyUseCaseSelection(_ state: OnboardingFlow.UseCaseSelectionState) {
+        selectedUseCase = state.selectedUseCase
+        selectionBeforeEverything = state.selectionBeforeEverything
     }
 
     private func refreshPermissions() {
@@ -1267,8 +1309,9 @@ struct OnboardingView: View {
 
     private func openSystemSettings(_ pane: String) {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") {
-            controller.yieldOnboardingFocusToSystemSettings()
-            NSWorkspace.shared.open(url)
+            if NSWorkspace.shared.open(url) {
+                controller.yieldOnboardingFocusToSystemSettings()
+            }
         }
     }
 

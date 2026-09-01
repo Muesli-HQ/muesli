@@ -26,7 +26,7 @@ struct DictationTestLifecycleTests {
             configStore: ConfigStore(supportDirectory: supportDirectory)
         )
 
-        #expect(!controller.transitionStoppedDictationTestToTranscribing())
+        #expect(!controller.stopDictationTestRecordingFeedback())
 
         var stopCallbackCount = 0
         controller.dictationTestCallback = { _ in }
@@ -37,9 +37,9 @@ struct DictationTestLifecycleTests {
         controller.dictationTestCohereLanguage = .defaultLanguage
 
         #expect(controller.isDictationTestMode)
-        #expect(controller.transitionStoppedDictationTestToTranscribing())
+        #expect(controller.stopDictationTestRecordingFeedback())
         #expect(stopCallbackCount == 1)
-        #expect(controller.appState.dictationState == .transcribing)
+        #expect(controller.appState.dictationState == .idle)
 
         controller.clearDictationTestLifecycle()
 

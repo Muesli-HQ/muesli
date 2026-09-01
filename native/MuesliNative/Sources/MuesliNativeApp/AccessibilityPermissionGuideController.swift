@@ -105,6 +105,15 @@ enum AccessibilityPermissionGuideDropPolicy {
     }
 }
 
+enum AccessibilityPermissionGuideInvocationPolicy {
+    static func shouldResetDragCompletion(
+        previousPermission: PermissionDragGuidePermission?,
+        nextPermission: PermissionDragGuidePermission
+    ) -> Bool {
+        previousPermission != nextPermission
+    }
+}
+
 enum PermissionDragGuidePermission {
     case accessibility
     case inputMonitoring
@@ -198,8 +207,13 @@ final class AccessibilityPermissionGuideController {
             return
         }
 
+        if AccessibilityPermissionGuideInvocationPolicy.shouldResetDragCompletion(
+            previousPermission: requestedPermission,
+            nextPermission: permission
+        ) {
+            model.didCompleteDrag = false
+        }
         requestedPermission = permission
-        model.didCompleteDrag = false
         installObserversIfNeeded()
         startRefreshTimerIfNeeded()
         refreshPresentation()
