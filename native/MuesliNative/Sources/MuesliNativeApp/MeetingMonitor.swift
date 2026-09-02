@@ -379,6 +379,10 @@ private actor MeetingDetectionService {
     private var resetTask: Task<Void, Never>?
     private var latestLifecycleGeneration = 0
     private var isStarted = false
+    // Manual recordings may need one or more discovery passes before a real
+    // media session is found. Once associated, continuing to enumerate every
+    // CoreAudio process only adds daemon load while capture is already owned.
+    private var hasAssociatedActiveRecording = false
 
     init(
         contextProvider: @escaping @MainActor (Date) -> MeetingDetectionEvaluationContext,
@@ -421,6 +425,7 @@ private actor MeetingDetectionService {
         pendingEvaluationTrigger = nil
         currentFallbackInterval = nil
         signalRefreshState = MeetingSignalRefreshState()
+        hasAssociatedActiveRecording = false
         let resetTask = Task { [audioAttributionService, mediaSessionTracker] in
             await audioAttributionService.reset()
             await mediaSessionTracker.reset()
@@ -487,6 +492,7 @@ private actor MeetingDetectionService {
     func markRecordingStarted(_ candidate: MeetingCandidate?) {
         if let candidate {
             log("recording_started id=\(candidate.id)")
+            associateActiveRecording(with: candidate)
         } else {
             log("recording_started")
         }
@@ -524,6 +530,9 @@ private actor MeetingDetectionService {
         let now = Date()
         let context = await contextProvider(now)
         guard isStarted else { return }
+        if !context.isRecording && !context.isStartingRecording {
+            hasAssociatedActiveRecording = false
+        }
         guard context.detectionEnabled else {
             dismissVisiblePromptForSuppression()
             return
@@ -539,7 +548,12 @@ private actor MeetingDetectionService {
         signalRefreshState.hasCalendarEvent = context.calendarEvent != nil
         signalRefreshState.hasPromptVisible = context.promptVisibility.isVisible
 
-        let refreshDecision = refreshPolicy.decision(trigger: trigger, state: signalRefreshState, now: now)
+        let refreshDecision = refreshPolicy.decision(
+            trigger: trigger,
+            state: signalRefreshState,
+            suppressAudioAttribution: context.isRecording && hasAssociatedActiveRecording,
+            now: now
+        )
         async let audioAttributionResult = audioAttributionService.activeInputProcesses(
             refresh: refreshDecision.refreshAudioAttribution
         )
@@ -605,9 +619,7 @@ private actor MeetingDetectionService {
             // Consume a media-backed session only after capture has really started,
             // so failed startups remain retryable and recurring URL-only candidates
             // are not suppressed for the lifetime of the app.
-            if promptState.markRecordingStarted(unmutedActivityCandidate) {
-                log("recording_session_consumed id=\(unmutedActivityCandidate.id)")
-            }
+            associateActiveRecording(with: unmutedActivityCandidate)
         }
         emitActivityUpdate(unmutedActivityCandidate)
         let candidate = isGloballySuppressed(now: now) ? nil : unmutedActivityCandidate
@@ -819,6 +831,15 @@ private actor MeetingDetectionService {
             now: now,
             resolvedCandidate: candidate
         )
+    }
+
+    private func associateActiveRecording(with candidate: MeetingCandidate) {
+        let inserted = promptState.markRecordingStarted(candidate)
+        guard inserted || promptState.isRecordingStartedSuppressed(candidate) else { return }
+        hasAssociatedActiveRecording = true
+        if inserted {
+            log("recording_session_consumed id=\(candidate.id)")
+        }
     }
 
     private func logEvaluation(

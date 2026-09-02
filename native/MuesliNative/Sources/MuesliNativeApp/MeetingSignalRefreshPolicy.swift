@@ -73,6 +73,7 @@ struct MeetingSignalRefreshPolicy {
     func decision(
         trigger: MeetingDetectionTrigger,
         state: MeetingSignalRefreshState,
+        suppressAudioAttribution: Bool = false,
         now: Date
     ) -> MeetingSignalRefreshDecision {
         let suspicious = isSuspicious(trigger: trigger, state: state, now: now)
@@ -81,7 +82,8 @@ struct MeetingSignalRefreshPolicy {
 
         return MeetingSignalRefreshDecision(
             mode: mode,
-            refreshAudioAttribution: shouldRefreshAudioAttribution(trigger: trigger, state: state, mode: mode, now: now),
+            refreshAudioAttribution: !suppressAudioAttribution
+                && shouldRefreshAudioAttribution(trigger: trigger, state: state, mode: mode, now: now),
             refreshBrowserMeetings: shouldRefreshBrowserMeetings(trigger: trigger, state: state, mode: mode, now: now),
             fallbackInterval: fallbackInterval
         )

@@ -69,6 +69,30 @@ struct MeetingSignalRefreshPolicyTests {
         #expect(decision.refreshBrowserMeetings == true)
     }
 
+    @Test(
+        "associated recording suppresses CoreAudio attribution",
+        arguments: [
+            MeetingDetectionTrigger.fallbackTimer,
+            MeetingDetectionTrigger.micChanged,
+            MeetingDetectionTrigger.sensorAttributionChanged,
+            MeetingDetectionTrigger.manualRefresh,
+        ]
+    )
+    func associatedRecordingSuppressesAudioAttribution(trigger: MeetingDetectionTrigger) {
+        let policy = MeetingSignalRefreshPolicy()
+        var state = MeetingSignalRefreshState()
+        state.hasActiveCandidate = true
+
+        let decision = policy.decision(
+            trigger: trigger,
+            state: state,
+            suppressAudioAttribution: true,
+            now: now
+        )
+
+        #expect(decision.refreshAudioAttribution == false)
+    }
+
     @Test("active-tab fallback is throttled per browser bundle")
     func activeTabFallbackIsThrottledPerBundle() {
         let policy = MeetingSignalRefreshPolicy()
