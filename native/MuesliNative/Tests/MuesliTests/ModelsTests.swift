@@ -700,13 +700,23 @@ struct SummaryModelPresetTests {
         #expect(TranscriptCleanupClient.configuredModel(for: backend, config: AppConfig()) == "gpt-5.6-terra")
     }
 
-    @Test("OpenRouter presets have valid model IDs")
+    @Test("OpenRouter presets default to the provider-managed free router")
     func openRouterModels() {
         #expect(!SummaryModelPreset.openRouterModels.isEmpty)
+        #expect(SummaryModelPreset.openRouterModels.first?.id == "openrouter/free")
+
         for preset in SummaryModelPreset.openRouterModels {
             #expect(!preset.id.isEmpty)
             #expect(!preset.label.isEmpty)
         }
+
+        let backend = TranscriptCleanupBackendOption.hosted(.openRouter)
+        #expect(TranscriptCleanupClient.defaultModel(for: backend) == "openrouter/free")
+        #expect(TranscriptCleanupClient.configuredModel(for: backend, config: AppConfig()) == "openrouter/free")
+
+        var config = AppConfig()
+        config.postProcessorOpenRouterModel = " custom/provider-model:free "
+        #expect(TranscriptCleanupClient.configuredModel(for: backend, config: config) == " custom/provider-model:free ")
     }
 
     @Test("Computer use planner presets use GPT-5.6 Sol by default")

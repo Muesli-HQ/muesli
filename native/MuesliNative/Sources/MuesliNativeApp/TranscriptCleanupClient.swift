@@ -44,7 +44,7 @@ enum TranscriptCleanupClient {
         case .some(.openAI):
             return SummaryModelPreset.openAIModels.first?.id ?? "gpt-5.4-mini"
         case .some(.openRouter):
-            return SummaryModelPreset.openRouterModels.first?.id ?? "stepfun/step-3.5-flash:free"
+            return SummaryModelPreset.openRouterModels.first?.id ?? "openrouter/free"
         case .some(.ollama):
             return "qwen3.5"
         case .some(.lmStudio), .some(.customLLM):
@@ -80,7 +80,11 @@ enum TranscriptCleanupClient {
             raw = ""
         }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? defaultModel(for: backend) : trimmed
+        guard !trimmed.isEmpty else { return defaultModel(for: backend) }
+        if backend.llmBackend == .openRouter {
+            return raw
+        }
+        return trimmed
     }
 
     static func hasRequiredSettings(for backend: TranscriptCleanupBackendOption, config: AppConfig, isChatGPTAuthenticated: Bool) -> Bool {
