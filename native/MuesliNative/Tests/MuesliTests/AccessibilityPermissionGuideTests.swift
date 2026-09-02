@@ -64,6 +64,23 @@ struct AccessibilityPermissionGuideTests {
         #expect(AccessibilityPermissionGuideCopy.attemptedDropDetail == "If it appears above, turn on its switch")
     }
 
+    @Test("restores the drag source after an ungranted drop attempt")
+    func restoresDragSourceAfterFailedDropAttempt() {
+        #expect(AccessibilityPermissionGuideRetryPolicy.attemptedDropRetryDelay == 4)
+        #expect(AccessibilityPermissionGuideRetryPolicy.shouldRestoreDragSource(
+            didAttemptDrop: true,
+            isGranted: false
+        ))
+        #expect(!AccessibilityPermissionGuideRetryPolicy.shouldRestoreDragSource(
+            didAttemptDrop: true,
+            isGranted: true
+        ))
+        #expect(!AccessibilityPermissionGuideRetryPolicy.shouldRestoreDragSource(
+            didAttemptDrop: false,
+            isGranted: false
+        ))
+    }
+
     @Test("does not present when System Settings is too small")
     func rejectsSmallSettingsWindows() {
         #expect(AccessibilityPermissionGuideLayout.frames(
