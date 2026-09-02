@@ -16,6 +16,30 @@ struct AppleSpeechAnalyzerBackendTests {
         #expect(accumulator.segments[0].end == 1.25)
     }
 
+    @Test("progressive results replace and revoke the current live phrase")
+    func accumulatorTracksProgressiveResults() {
+        var accumulator = AppleSpeechTranscriptAccumulator()
+        accumulator.receive(text: "今天天气", isFinal: false, start: 0, end: 0.8)
+        #expect(accumulator.text == "今天天气")
+
+        accumulator.receive(text: "今天天气很好", isFinal: false, start: 0, end: 1.2)
+        #expect(accumulator.text == "今天天气很好")
+
+        accumulator.receive(text: "", isFinal: false, start: 0, end: 1.2)
+        #expect(accumulator.text.isEmpty)
+    }
+
+    @Test("progressive tail revisions preserve finalized text")
+    func accumulatorPreservesFinalizedPrefix() {
+        var accumulator = AppleSpeechTranscriptAccumulator()
+        accumulator.receive(text: "会议开始。", isFinal: true, start: 0, end: 1)
+        accumulator.receive(text: "今天讨论", isFinal: false, start: 1, end: 2)
+        accumulator.receive(text: "今天讨论苹果语音。", isFinal: false, start: 1, end: 3)
+
+        #expect(accumulator.text == "会议开始。今天讨论苹果语音。")
+        #expect(accumulator.segments.map(\.text) == ["会议开始。"])
+    }
+
     @Test("final segments are normalized and joined")
     func accumulatorBuildsTimestampedTranscript() {
         var accumulator = AppleSpeechTranscriptAccumulator()
@@ -37,6 +61,31 @@ struct AppleSpeechAnalyzerBackendTests {
 
         #expect(accumulator.text == "Hello,\nNext line")
         #expect(accumulator.segments.map(\.text) == ["Hello", ",", "Next line"])
+    }
+
+    @Test("live accumulation preserves final text while replacing progressive ranges")
+    func liveAccumulatorReplacesProgressiveRanges() {
+        var accumulator = AppleSpeechLiveTranscriptAccumulator()
+        accumulator.receive(text: "会议开始。", isFinal: true, start: 0, end: 1)
+        accumulator.receive(text: "今天讨论", isFinal: false, start: 1, end: 2)
+        accumulator.receive(text: "今天讨论苹果语音。", isFinal: false, start: 1, end: 3)
+
+        #expect(accumulator.text == "会议开始。今天讨论苹果语音。")
+    }
+
+    @Test("live accumulation bounds non-overlapping progressive results")
+    func liveAccumulatorBoundsProgressiveResults() {
+        var accumulator = AppleSpeechLiveTranscriptAccumulator()
+        for index in 0..<(AppleSpeechLiveTranscriptAccumulator.maxProgressiveResults + 2) {
+            accumulator.receive(
+                text: "\(index)",
+                isFinal: false,
+                start: Double(index),
+                end: Double(index) + 0.5
+            )
+        }
+
+        #expect(accumulator.text == "23456789")
     }
 
     @Test("locale resolver uses exact or language-equivalent supported locale")
@@ -152,6 +201,7 @@ struct AppleSpeechAnalyzerBackendTests {
         #expect(option.backend == "apple-speech")
         #expect(option.isSystemManaged)
         #expect(option.supportsMeetingTranscription)
+        #expect(MeetingLiveCaptionBackend(rawValue: option.backend)?.settingsLabel == "Apple Speech (live preview only)")
         #expect(!BackendOption.experimental.contains(option))
         if #available(macOS 26.0, *), AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem {
             #expect(BackendOption.systemManaged.contains(option))

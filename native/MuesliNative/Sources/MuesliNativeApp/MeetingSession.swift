@@ -298,8 +298,11 @@ final class MeetingSession {
                 selectedInputResolved: snapshot.route?.selectedInputDeviceResolved
             )
         }
-        meetingMicRecorder.onHandoffOutcome = { [weak micRecoveryCoordinator] outcome in
+        meetingMicRecorder.onHandoffOutcome = { [weak self, weak micRecoveryCoordinator] outcome in
             micRecoveryCoordinator?.noteHandoffOutcome(outcome)
+            if outcome == .promoted {
+                self?.micPartialSession()?.resetAfterSourceRestart()
+            }
         }
         systemAudioWatchdog.captureHeartbeat = { [weak systemAudioRecorder] in
             systemAudioRecorder?.captureHeartbeat ?? 0
@@ -317,8 +320,12 @@ final class MeetingSession {
         systemAudioWatchdog.lastMicCallbackAt = { [weak self] in
             self?.micHealthTracker.snapshot().lastRawMicCallbackAt
         }
-        systemAudioWatchdog.recoveryRequest = { [weak systemAudioRecorder] reason in
-            systemAudioRecorder?.rebuildForHealthRecovery(reason: reason) ?? false
+        systemAudioWatchdog.recoveryRequest = { [weak self, weak systemAudioRecorder] reason in
+            let started = systemAudioRecorder?.rebuildForHealthRecovery(reason: reason) ?? false
+            if started {
+                self?.systemPartialSession()?.resetAfterSourceRestart()
+            }
+            return started
         }
         systemAudioWatchdog.onMicBlindnessDegradation = { [weak micRecoveryCoordinator] reason in
             micRecoveryCoordinator?.noteExternalDegradation(reason: reason)
@@ -491,7 +498,8 @@ final class MeetingSession {
             do {
                 let engines = try await MeetingLiveCaptionModelStore.makeEngines(
                     backend: backend,
-                    nemotronPromptId: self.config.resolvedNemotron35Language.promptId
+                    nemotronPromptId: self.config.resolvedNemotron35Language.promptId,
+                    appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage
                 )
                 guard self.chunkRotationQueue.sync(execute: { self.isRecording }),
                       self.partialSessionsStorage.withLock({ !$0.isShutDown }) else {
