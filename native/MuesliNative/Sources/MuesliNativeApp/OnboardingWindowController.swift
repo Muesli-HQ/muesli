@@ -2,6 +2,24 @@ import AppKit
 import SwiftUI
 import MuesliCore
 
+enum OnboardingSystemSettingsYieldBehavior: Equatable {
+    case orderedBehind
+    case hiddenButMounted
+}
+
+enum OnboardingSystemSettingsYieldPolicy {
+    static func behavior(
+        for guidePermission: PermissionDragGuidePermission?
+    ) -> OnboardingSystemSettingsYieldBehavior {
+        switch guidePermission {
+        case .some:
+            return .hiddenButMounted
+        case nil:
+            return .orderedBehind
+        }
+    }
+}
+
 @MainActor
 final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private let controller: MuesliController
@@ -29,14 +47,26 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
-    func yieldFocusToSystemSettings() {
+    func yieldFocusToSystemSettings(using behavior: OnboardingSystemSettingsYieldBehavior) {
         guard let window else { return }
-        // Keep the SwiftUI hierarchy mounted so its permission polling and guide
-        // lifecycle continue, but get the onboarding window out of the way even
-        // when System Settings takes a moment to appear.
-        window.level = .normal
-        window.alphaValue = 0
-        window.ignoresMouseEvents = true
+        switch behavior {
+        case .orderedBehind:
+            // Preserve the original onboarding behavior for permissions without
+            // a floating guide, such as Microphone. The user can return to the
+            // still-visible, interactive onboarding window without first
+            // granting the permission.
+            window.alphaValue = 1
+            window.ignoresMouseEvents = false
+            window.level = .normal
+            window.orderBack(nil)
+        case .hiddenButMounted:
+            // Keep the SwiftUI hierarchy mounted so its permission polling and
+            // guide lifecycle continue, but get the onboarding window out of
+            // the way even when System Settings takes a moment to appear.
+            window.level = .normal
+            window.alphaValue = 0
+            window.ignoresMouseEvents = true
+        }
     }
 
     func setSuppressedForSystemSettings(_ isSuppressed: Bool) {

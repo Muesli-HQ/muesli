@@ -4497,8 +4497,8 @@ public final class MuesliController: NSObject {
     }
 
     @MainActor
-    func yieldOnboardingFocusToSystemSettings() {
-        onboardingWindowController?.yieldFocusToSystemSettings()
+    func yieldOnboardingFocusToSystemSettings(using behavior: OnboardingSystemSettingsYieldBehavior) {
+        onboardingWindowController?.yieldFocusToSystemSettings(using: behavior)
     }
 
     @MainActor

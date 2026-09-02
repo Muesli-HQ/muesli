@@ -159,6 +159,13 @@ struct AccessibilityPermissionGuideTests {
         ))
     }
 
+    @Test("only drag-guide permissions hide onboarding while keeping it mounted")
+    func onboardingSystemSettingsYieldPolicy() {
+        #expect(OnboardingSystemSettingsYieldPolicy.behavior(for: nil) == .orderedBehind)
+        #expect(OnboardingSystemSettingsYieldPolicy.behavior(for: .accessibility) == .hiddenButMounted)
+        #expect(OnboardingSystemSettingsYieldPolicy.behavior(for: .inputMonitoring) == .hiddenButMounted)
+    }
+
     @Test("converts Quartz window coordinates to AppKit coordinates")
     func convertsWindowCoordinates() {
         let converted = SystemSettingsWindowGeometry.appKitFrame(

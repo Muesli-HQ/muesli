@@ -857,7 +857,10 @@ struct OnboardingView: View {
             ("keyboard.fill", "Input Monitoring", "Detect hotkey for push-to-talk recording", inputMonitoringGranted, {
                 self.controller.beginSystemPermissionGuide(for: .inputMonitoring)
                 if !CGRequestListenEventAccess() {
-                    self.openSystemSettings("Privacy_ListenEvent")
+                    self.openSystemSettings(
+                        "Privacy_ListenEvent",
+                        yieldBehavior: OnboardingSystemSettingsYieldPolicy.behavior(for: .inputMonitoring)
+                    )
                 }
             }),
             ]
@@ -1303,6 +1306,7 @@ struct OnboardingView: View {
 
     private func openSystemSettingsForPermission(at permissionIndex: Int) {
         let steps = permissionSteps
+        var guidePermission: PermissionDragGuidePermission?
         if permissionIndex < steps.count {
             grantingPermissionName = steps[permissionIndex].name
             nativePermissionPromptName = nil
@@ -1310,20 +1314,28 @@ struct OnboardingView: View {
             saveProgress(atStep: currentStep)
             switch steps[permissionIndex].name {
             case "Accessibility":
+                guidePermission = .accessibility
                 controller.beginSystemPermissionGuide(for: .accessibility)
             case "Input Monitoring":
+                guidePermission = .inputMonitoring
                 controller.beginSystemPermissionGuide(for: .inputMonitoring)
             default:
                 break
             }
         }
-        openSystemSettings(systemSettingsPane(for: permissionIndex))
+        openSystemSettings(
+            systemSettingsPane(for: permissionIndex),
+            yieldBehavior: OnboardingSystemSettingsYieldPolicy.behavior(for: guidePermission)
+        )
     }
 
-    private func openSystemSettings(_ pane: String) {
+    private func openSystemSettings(
+        _ pane: String,
+        yieldBehavior: OnboardingSystemSettingsYieldBehavior
+    ) {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") {
             if NSWorkspace.shared.open(url) {
-                controller.yieldOnboardingFocusToSystemSettings()
+                controller.yieldOnboardingFocusToSystemSettings(using: yieldBehavior)
             }
         }
     }
