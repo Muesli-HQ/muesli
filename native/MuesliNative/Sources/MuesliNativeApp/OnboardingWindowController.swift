@@ -4,7 +4,7 @@ import MuesliCore
 
 enum OnboardingSystemSettingsYieldBehavior: Equatable {
     case orderedBehind
-    case hiddenButMounted
+    case guideControlled
 }
 
 enum OnboardingSystemSettingsYieldPolicy {
@@ -13,7 +13,7 @@ enum OnboardingSystemSettingsYieldPolicy {
     ) -> OnboardingSystemSettingsYieldBehavior {
         switch guidePermission {
         case .some:
-            return .hiddenButMounted
+            return .guideControlled
         case nil:
             return .orderedBehind
         }
@@ -59,13 +59,14 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
             window.ignoresMouseEvents = false
             window.level = .normal
             window.orderBack(nil)
-        case .hiddenButMounted:
-            // Keep the SwiftUI hierarchy mounted so its permission polling and
-            // guide lifecycle continue, but get the onboarding window out of
-            // the way even when System Settings takes a moment to appear.
+        case .guideControlled:
+            // Keep onboarding mounted and recoverable behind System Settings
+            // while the guide validates the target window. The guide controller
+            // only suppresses it after usable overlay frames are available.
             window.level = .normal
-            window.alphaValue = 0
-            window.ignoresMouseEvents = true
+            window.alphaValue = 1
+            window.ignoresMouseEvents = false
+            window.orderBack(nil)
         }
     }
 

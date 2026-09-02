@@ -5,7 +5,7 @@ import SwiftUI
 struct AccessibilityPermissionGuideFrames: Equatable {
     let guide: CGRect
     let dragSource: CGRect
-    let completedGuide: CGRect
+    let postDropGuide: CGRect
     let permissionListDropRegion: CGRect
     let dragDirection: PermissionGuideDragDirection
 }
@@ -51,7 +51,7 @@ enum AccessibilityPermissionGuideLayout {
             height: 70
         )
 
-        let completedGuide = CGRect(
+        let postDropGuide = CGRect(
             x: guide.minX + 64,
             y: dragSource.minY + 7,
             width: guide.width - 128,
@@ -81,7 +81,7 @@ enum AccessibilityPermissionGuideLayout {
         return AccessibilityPermissionGuideFrames(
             guide: guide.integral,
             dragSource: dragSource.integral,
-            completedGuide: completedGuide.integral,
+            postDropGuide: postDropGuide.integral,
             permissionListDropRegion: permissionListDropRegion.integral,
             dragDirection: dragDirection
         )
@@ -89,7 +89,7 @@ enum AccessibilityPermissionGuideLayout {
 }
 
 enum AccessibilityPermissionGuideDropPolicy {
-    static func isPermissionListDrop(
+    static func isLikelyPermissionListDropAttempt(
         operationAccepted: Bool,
         dropPoint: CGPoint,
         frontmostBundleID: String?,
@@ -105,13 +105,12 @@ enum AccessibilityPermissionGuideDropPolicy {
     }
 }
 
-enum AccessibilityPermissionGuideInvocationPolicy {
-    static func shouldResetDragCompletion(
-        previousPermission: PermissionDragGuidePermission?,
-        nextPermission: PermissionDragGuidePermission
-    ) -> Bool {
-        previousPermission != nextPermission
+enum AccessibilityPermissionGuideCopy {
+    static func attemptedDropTitle(appName: String) -> String {
+        "Turn \(appName) on"
     }
+
+    static let attemptedDropDetail = "If it appears above, turn on its switch"
 }
 
 enum PermissionDragGuidePermission {
@@ -150,11 +149,12 @@ enum AccessibilityPermissionGuideSuppressionPolicy {
         isGranted: Bool,
         frontmostBundleID: String?,
         muesliBundleID: String?,
+        hasUsableGuide: Bool,
         isCurrentlySuppressed: Bool
     ) -> Bool {
         guard isRequested, !isGranted else { return false }
         if frontmostBundleID == AccessibilityPermissionGuidePresentationPolicy.systemSettingsBundleID {
-            return true
+            return hasUsableGuide
         }
         if frontmostBundleID == muesliBundleID {
             return false
@@ -207,12 +207,9 @@ final class AccessibilityPermissionGuideController {
             return
         }
 
-        if AccessibilityPermissionGuideInvocationPolicy.shouldResetDragCompletion(
-            previousPermission: requestedPermission,
-            nextPermission: permission
-        ) {
-            model.didCompleteDrag = false
-        }
+        // Each explicit invocation starts with a draggable row. A prior drop is
+        // only an attempt; the TCC permission state is the sole completion signal.
+        model.didAttemptDrop = false
         requestedPermission = permission
         installObserversIfNeeded()
         startRefreshTimerIfNeeded()
@@ -290,36 +287,39 @@ final class AccessibilityPermissionGuideController {
         }
 
         let frontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let settingsWindow = SystemSettingsWindowLocator.mainWindowFrame()
+        let frames = settingsWindow.flatMap {
+            AccessibilityPermissionGuideLayout.frames(for: $0)
+        }
         setPresenting(AccessibilityPermissionGuideSuppressionPolicy.shouldSuppressOnboarding(
             isRequested: true,
             isGranted: false,
             frontmostBundleID: frontmostBundleID,
             muesliBundleID: Bundle.main.bundleIdentifier,
+            hasUsableGuide: frames != nil,
             isCurrentlySuppressed: isPresenting
         ))
-        let settingsWindow = SystemSettingsWindowLocator.mainWindowFrame()
         guard AccessibilityPermissionGuidePresentationPolicy.shouldShow(
             isRequested: true,
             isGranted: false,
             frontmostBundleID: frontmostBundleID,
-            hasSettingsWindow: settingsWindow != nil
-        ), let settingsWindow,
-           let frames = AccessibilityPermissionGuideLayout.frames(for: settingsWindow) else {
+            hasSettingsWindow: frames != nil
+        ), let frames else {
             hidePanels()
             return
         }
 
         ensurePanels()
         model.dragDirection = frames.dragDirection
-        if model.didCompleteDrag {
-            guidePanel?.setFrame(frames.completedGuide, display: true)
+        if model.didAttemptDrop {
+            guidePanel?.setFrame(frames.postDropGuide, display: true)
             dragPanel?.orderOut(nil)
         } else {
             guidePanel?.setFrame(frames.guide, display: true)
             dragPanel?.setFrame(frames.dragSource, display: true)
         }
         guidePanel?.orderFrontRegardless()
-        if !model.didCompleteDrag {
+        if !model.didAttemptDrop {
             dragPanel?.orderFrontRegardless()
         }
     }
@@ -345,18 +345,22 @@ final class AccessibilityPermissionGuideController {
             )
             dragView.onDragEnded = { [weak self] screenPoint, operation in
                 guard let self else { return }
-                let isPermissionListDrop = AccessibilityPermissionGuideDropPolicy.isPermissionListDrop(
+                let isLikelyPermissionListDropAttempt = AccessibilityPermissionGuideDropPolicy
+                    .isLikelyPermissionListDropAttempt(
                     operationAccepted: !operation.isEmpty,
                     dropPoint: screenPoint,
                     frontmostBundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
                     settingsWindow: SystemSettingsWindowLocator.mainWindowFrame()
                 )
-                guard isPermissionListDrop else {
-                    self.model.didCompleteDrag = false
+                guard isLikelyPermissionListDropAttempt else {
+                    self.model.didAttemptDrop = false
                     self.refreshPresentation()
                     return
                 }
-                self.model.didCompleteDrag = true
+                // AppKit tells a dragging source that some destination accepted
+                // the URL, but not which System Settings view accepted it. Treat
+                // this as an attempted drop, never as proof that Muesli was added.
+                self.model.didAttemptDrop = true
                 self.refreshPresentation()
             }
             dragPanel = makePanel(
@@ -453,7 +457,7 @@ private enum SystemSettingsWindowLocator {
 
 @MainActor
 private final class AccessibilityPermissionGuideModel: ObservableObject {
-    @Published var didCompleteDrag = false
+    @Published var didAttemptDrop = false
     @Published var dragDirection: PermissionGuideDragDirection = .up
 }
 
@@ -465,17 +469,17 @@ private struct CompactAccessibilityPermissionGuideView: View {
 
     var body: some View {
         Group {
-            if model.didCompleteDrag {
+            if model.didAttemptDrop {
                 HStack(spacing: 10) {
-                    Image(systemName: "checkmark.circle.fill")
+                    Image(systemName: "hand.tap.fill")
                         .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(MuesliTheme.success)
+                        .foregroundStyle(MuesliTheme.accent)
 
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("\(appName) added")
+                        Text(AccessibilityPermissionGuideCopy.attemptedDropTitle(appName: appName))
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(Color.white.opacity(0.94))
-                        Text("Turn it on in the list above")
+                        Text(AccessibilityPermissionGuideCopy.attemptedDropDetail)
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(Color.white.opacity(0.62))
                     }
@@ -504,9 +508,9 @@ private struct CompactAccessibilityPermissionGuideView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: NSColor(red: 0.10, green: 0.12, blue: 0.14, alpha: 0.91)))
-        .clipShape(RoundedRectangle(cornerRadius: model.didCompleteDrag ? 14 : 18))
+        .clipShape(RoundedRectangle(cornerRadius: model.didAttemptDrop ? 14 : 18))
         .overlay(
-            RoundedRectangle(cornerRadius: model.didCompleteDrag ? 14 : 18)
+            RoundedRectangle(cornerRadius: model.didAttemptDrop ? 14 : 18)
                 .stroke(Color.white.opacity(0.10), lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.10), radius: 10, y: 4)

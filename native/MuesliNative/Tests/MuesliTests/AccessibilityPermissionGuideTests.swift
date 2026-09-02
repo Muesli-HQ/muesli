@@ -11,7 +11,7 @@ struct AccessibilityPermissionGuideTests {
 
         #expect(settingsWindow.contains(frames.guide))
         #expect(frames.guide.contains(frames.dragSource))
-        #expect(frames.guide.contains(frames.completedGuide))
+        #expect(frames.guide.contains(frames.postDropGuide))
         #expect(settingsWindow.contains(frames.permissionListDropRegion))
         #expect(!frames.guide.intersects(frames.permissionListDropRegion))
         #expect(frames.permissionListDropRegion.height > frames.dragSource.height)
@@ -23,8 +23,8 @@ struct AccessibilityPermissionGuideTests {
         #expect(frames.dragDirection == .up)
     }
 
-    @Test("completes only for an accepted drop in the active System Settings permission list")
-    func validatesPermissionListDrop() throws {
+    @Test("recognizes only likely drop attempts in the active System Settings permission region")
+    func validatesLikelyPermissionListDropAttempt() throws {
         let settingsWindow = CGRect(x: 100, y: 80, width: 1_000, height: 800)
         let frames = try #require(AccessibilityPermissionGuideLayout.frames(for: settingsWindow))
         let targetPoint = CGPoint(
@@ -32,25 +32,25 @@ struct AccessibilityPermissionGuideTests {
             y: frames.permissionListDropRegion.midY
         )
 
-        #expect(AccessibilityPermissionGuideDropPolicy.isPermissionListDrop(
+        #expect(AccessibilityPermissionGuideDropPolicy.isLikelyPermissionListDropAttempt(
             operationAccepted: true,
             dropPoint: targetPoint,
             frontmostBundleID: AccessibilityPermissionGuidePresentationPolicy.systemSettingsBundleID,
             settingsWindow: settingsWindow
         ))
-        #expect(!AccessibilityPermissionGuideDropPolicy.isPermissionListDrop(
+        #expect(!AccessibilityPermissionGuideDropPolicy.isLikelyPermissionListDropAttempt(
             operationAccepted: false,
             dropPoint: targetPoint,
             frontmostBundleID: AccessibilityPermissionGuidePresentationPolicy.systemSettingsBundleID,
             settingsWindow: settingsWindow
         ))
-        #expect(!AccessibilityPermissionGuideDropPolicy.isPermissionListDrop(
+        #expect(!AccessibilityPermissionGuideDropPolicy.isLikelyPermissionListDropAttempt(
             operationAccepted: true,
             dropPoint: CGPoint(x: frames.dragSource.midX, y: frames.dragSource.midY),
             frontmostBundleID: AccessibilityPermissionGuidePresentationPolicy.systemSettingsBundleID,
             settingsWindow: settingsWindow
         ))
-        #expect(!AccessibilityPermissionGuideDropPolicy.isPermissionListDrop(
+        #expect(!AccessibilityPermissionGuideDropPolicy.isLikelyPermissionListDropAttempt(
             operationAccepted: true,
             dropPoint: targetPoint,
             frontmostBundleID: "com.apple.finder",
@@ -58,24 +58,10 @@ struct AccessibilityPermissionGuideTests {
         ))
     }
 
-    @Test("preserves completion when reopening the same permission guide")
-    func invocationPolicy() {
-        let reopeningSamePermission = AccessibilityPermissionGuideInvocationPolicy.shouldResetDragCompletion(
-            previousPermission: .accessibility,
-            nextPermission: .accessibility
-        )
-        let changingPermission = AccessibilityPermissionGuideInvocationPolicy.shouldResetDragCompletion(
-            previousPermission: .accessibility,
-            nextPermission: .inputMonitoring
-        )
-        let firstInvocation = AccessibilityPermissionGuideInvocationPolicy.shouldResetDragCompletion(
-            previousPermission: nil,
-            nextPermission: .accessibility
-        )
-
-        #expect(!reopeningSamePermission)
-        #expect(changingPermission)
-        #expect(firstInvocation)
+    @Test("an accepted drop attempt does not claim that Muesli was added")
+    func attemptedDropCopyIsNonDefinitive() {
+        #expect(AccessibilityPermissionGuideCopy.attemptedDropTitle(appName: "MuesliDevB") == "Turn MuesliDevB on")
+        #expect(AccessibilityPermissionGuideCopy.attemptedDropDetail == "If it appears above, turn on its switch")
     }
 
     @Test("does not present when System Settings is too small")
@@ -134,13 +120,23 @@ struct AccessibilityPermissionGuideTests {
             isGranted: false,
             frontmostBundleID: settingsBundleID,
             muesliBundleID: muesliBundleID,
+            hasUsableGuide: true,
             isCurrentlySuppressed: false
+        ))
+        #expect(!AccessibilityPermissionGuideSuppressionPolicy.shouldSuppressOnboarding(
+            isRequested: true,
+            isGranted: false,
+            frontmostBundleID: settingsBundleID,
+            muesliBundleID: muesliBundleID,
+            hasUsableGuide: false,
+            isCurrentlySuppressed: true
         ))
         #expect(AccessibilityPermissionGuideSuppressionPolicy.shouldSuppressOnboarding(
             isRequested: true,
             isGranted: false,
             frontmostBundleID: "com.apple.finder",
             muesliBundleID: muesliBundleID,
+            hasUsableGuide: false,
             isCurrentlySuppressed: true
         ))
         #expect(!AccessibilityPermissionGuideSuppressionPolicy.shouldSuppressOnboarding(
@@ -148,6 +144,7 @@ struct AccessibilityPermissionGuideTests {
             isGranted: false,
             frontmostBundleID: muesliBundleID,
             muesliBundleID: muesliBundleID,
+            hasUsableGuide: true,
             isCurrentlySuppressed: true
         ))
         #expect(!AccessibilityPermissionGuideSuppressionPolicy.shouldSuppressOnboarding(
@@ -155,15 +152,16 @@ struct AccessibilityPermissionGuideTests {
             isGranted: true,
             frontmostBundleID: settingsBundleID,
             muesliBundleID: muesliBundleID,
+            hasUsableGuide: true,
             isCurrentlySuppressed: true
         ))
     }
 
-    @Test("only drag-guide permissions hide onboarding while keeping it mounted")
+    @Test("only drag-guide permissions let the guide control onboarding suppression")
     func onboardingSystemSettingsYieldPolicy() {
         #expect(OnboardingSystemSettingsYieldPolicy.behavior(for: nil) == .orderedBehind)
-        #expect(OnboardingSystemSettingsYieldPolicy.behavior(for: .accessibility) == .hiddenButMounted)
-        #expect(OnboardingSystemSettingsYieldPolicy.behavior(for: .inputMonitoring) == .hiddenButMounted)
+        #expect(OnboardingSystemSettingsYieldPolicy.behavior(for: .accessibility) == .guideControlled)
+        #expect(OnboardingSystemSettingsYieldPolicy.behavior(for: .inputMonitoring) == .guideControlled)
     }
 
     @Test("converts Quartz window coordinates to AppKit coordinates")
