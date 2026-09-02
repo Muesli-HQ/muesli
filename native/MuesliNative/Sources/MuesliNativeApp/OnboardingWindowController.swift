@@ -70,16 +70,25 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    func setSuppressedForSystemSettings(_ isSuppressed: Bool) {
+    func applySystemSettingsGuidePresentation(
+        _ presentation: AccessibilityPermissionGuideOnboardingPresentation
+    ) {
         guard let window else { return }
-        if isSuppressed {
+        switch presentation {
+        case .suppressed:
             // Keep the SwiftUI hierarchy mounted while the guide is attached to
             // System Settings. Ordering the window out fires OnboardingView's
             // onDisappear, which intentionally dismisses the permission guide.
             window.level = .normal
             window.alphaValue = 0
             window.ignoresMouseEvents = true
-        } else {
+        case .restoredWithoutActivation:
+            // Leaving System Settings must make onboarding recoverable without
+            // activating Muesli over the application the user chose.
+            window.level = .normal
+            window.alphaValue = 1
+            window.ignoresMouseEvents = false
+        case .restoredAndActive:
             bringToFront()
         }
     }

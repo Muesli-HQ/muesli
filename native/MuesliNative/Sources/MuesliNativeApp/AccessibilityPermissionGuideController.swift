@@ -152,23 +152,44 @@ enum AccessibilityPermissionGuidePresentationPolicy {
 }
 
 enum AccessibilityPermissionGuideSuppressionPolicy {
-    static func shouldSuppressOnboarding(
+    static func onboardingPresentation(
         isRequested: Bool,
         isGranted: Bool,
         frontmostBundleID: String?,
         muesliBundleID: String?,
-        hasUsableGuide: Bool,
-        isCurrentlySuppressed: Bool
-    ) -> Bool {
-        guard isRequested, !isGranted else { return false }
-        if frontmostBundleID == AccessibilityPermissionGuidePresentationPolicy.systemSettingsBundleID {
-            return hasUsableGuide
+        hasUsableGuide: Bool
+    ) -> AccessibilityPermissionGuideOnboardingPresentation {
+        if shouldSuppressOnboarding(
+            isRequested: isRequested,
+            isGranted: isGranted,
+            frontmostBundleID: frontmostBundleID,
+            hasUsableGuide: hasUsableGuide
+        ) {
+            return .suppressed
         }
-        if frontmostBundleID == muesliBundleID {
-            return false
+        if !isRequested || isGranted || frontmostBundleID == muesliBundleID {
+            return .restoredAndActive
         }
-        return isCurrentlySuppressed
+        return .restoredWithoutActivation
     }
+
+    static func shouldSuppressOnboarding(
+        isRequested: Bool,
+        isGranted: Bool,
+        frontmostBundleID: String?,
+        hasUsableGuide: Bool
+    ) -> Bool {
+        isRequested
+            && !isGranted
+            && frontmostBundleID == AccessibilityPermissionGuidePresentationPolicy.systemSettingsBundleID
+            && hasUsableGuide
+    }
+}
+
+enum AccessibilityPermissionGuideOnboardingPresentation: Equatable {
+    case suppressed
+    case restoredWithoutActivation
+    case restoredAndActive
 }
 
 enum SystemSettingsWindowGeometry {
@@ -184,7 +205,7 @@ enum SystemSettingsWindowGeometry {
 
 @MainActor
 final class AccessibilityPermissionGuideController {
-    var onPresentationChanged: ((Bool) -> Void)?
+    var onPresentationChanged: ((AccessibilityPermissionGuideOnboardingPresentation) -> Void)?
 
     private let appURL: URL
     private let appName: String
@@ -198,7 +219,7 @@ final class AccessibilityPermissionGuideController {
     private var workspaceObservers: [NSObjectProtocol] = []
     private var applicationObservers: [NSObjectProtocol] = []
     private var requestedPermission: PermissionDragGuidePermission?
-    private var isPresenting = false
+    private var onboardingPresentation: AccessibilityPermissionGuideOnboardingPresentation = .restoredAndActive
 
     init(
         appURL: URL = Bundle.main.bundleURL,
@@ -240,7 +261,7 @@ final class AccessibilityPermissionGuideController {
         applicationObservers.forEach { notificationCenter.removeObserver($0) }
         applicationObservers.removeAll()
 
-        setPresenting(false)
+        setOnboardingPresentation(.restoredAndActive)
         closePanels()
     }
 
@@ -302,13 +323,12 @@ final class AccessibilityPermissionGuideController {
         let frames = settingsWindow.flatMap {
             AccessibilityPermissionGuideLayout.frames(for: $0)
         }
-        setPresenting(AccessibilityPermissionGuideSuppressionPolicy.shouldSuppressOnboarding(
+        setOnboardingPresentation(AccessibilityPermissionGuideSuppressionPolicy.onboardingPresentation(
             isRequested: true,
             isGranted: false,
             frontmostBundleID: frontmostBundleID,
             muesliBundleID: Bundle.main.bundleIdentifier,
-            hasUsableGuide: frames != nil,
-            isCurrentlySuppressed: isPresenting
+            hasUsableGuide: frames != nil
         ))
         guard AccessibilityPermissionGuidePresentationPolicy.shouldShow(
             isRequested: true,
@@ -415,10 +435,12 @@ final class AccessibilityPermissionGuideController {
         attemptedDropRetryTimer = nil
     }
 
-    private func setPresenting(_ presenting: Bool) {
-        guard isPresenting != presenting else { return }
-        isPresenting = presenting
-        onPresentationChanged?(presenting)
+    private func setOnboardingPresentation(
+        _ presentation: AccessibilityPermissionGuideOnboardingPresentation
+    ) {
+        guard onboardingPresentation != presentation else { return }
+        onboardingPresentation = presentation
+        onPresentationChanged?(presentation)
     }
 
     private func makePanel(

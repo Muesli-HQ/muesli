@@ -424,8 +424,8 @@ public final class MuesliController: NSObject {
     private var onboardingWindowController: OnboardingWindowController?
     private lazy var systemPermissionGuideController: AccessibilityPermissionGuideController = {
         let guide = AccessibilityPermissionGuideController()
-        guide.onPresentationChanged = { [weak self] isPresenting in
-            self?.onboardingWindowController?.setSuppressedForSystemSettings(isPresenting)
+        guide.onPresentationChanged = { [weak self] presentation in
+            self?.onboardingWindowController?.applySystemSettingsGuidePresentation(presentation)
         }
         return guide
     }()

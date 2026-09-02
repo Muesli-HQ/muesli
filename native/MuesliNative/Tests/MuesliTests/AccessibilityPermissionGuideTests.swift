@@ -127,7 +127,7 @@ struct AccessibilityPermissionGuideTests {
         ))
     }
 
-    @Test("keeps onboarding suppressed while an unrelated app is frontmost")
+    @Test("suppresses onboarding only while a usable System Settings guide is frontmost")
     func suppressionPolicy() {
         let settingsBundleID = AccessibilityPermissionGuidePresentationPolicy.systemSettingsBundleID
         let muesliBundleID = "com.muesli.dev.b"
@@ -136,42 +136,61 @@ struct AccessibilityPermissionGuideTests {
             isRequested: true,
             isGranted: false,
             frontmostBundleID: settingsBundleID,
-            muesliBundleID: muesliBundleID,
-            hasUsableGuide: true,
-            isCurrentlySuppressed: false
+            hasUsableGuide: true
         ))
         #expect(!AccessibilityPermissionGuideSuppressionPolicy.shouldSuppressOnboarding(
             isRequested: true,
             isGranted: false,
             frontmostBundleID: settingsBundleID,
-            muesliBundleID: muesliBundleID,
-            hasUsableGuide: false,
-            isCurrentlySuppressed: true
+            hasUsableGuide: false
         ))
-        #expect(AccessibilityPermissionGuideSuppressionPolicy.shouldSuppressOnboarding(
+        #expect(!AccessibilityPermissionGuideSuppressionPolicy.shouldSuppressOnboarding(
             isRequested: true,
             isGranted: false,
             frontmostBundleID: "com.apple.finder",
-            muesliBundleID: muesliBundleID,
-            hasUsableGuide: false,
-            isCurrentlySuppressed: true
+            hasUsableGuide: false
         ))
         #expect(!AccessibilityPermissionGuideSuppressionPolicy.shouldSuppressOnboarding(
             isRequested: true,
             isGranted: false,
             frontmostBundleID: muesliBundleID,
-            muesliBundleID: muesliBundleID,
-            hasUsableGuide: true,
-            isCurrentlySuppressed: true
+            hasUsableGuide: true
         ))
         #expect(!AccessibilityPermissionGuideSuppressionPolicy.shouldSuppressOnboarding(
             isRequested: true,
             isGranted: true,
             frontmostBundleID: settingsBundleID,
-            muesliBundleID: muesliBundleID,
-            hasUsableGuide: true,
-            isCurrentlySuppressed: true
+            hasUsableGuide: true
         ))
+
+        #expect(AccessibilityPermissionGuideSuppressionPolicy.onboardingPresentation(
+            isRequested: true,
+            isGranted: false,
+            frontmostBundleID: settingsBundleID,
+            muesliBundleID: muesliBundleID,
+            hasUsableGuide: true
+        ) == .suppressed)
+        #expect(AccessibilityPermissionGuideSuppressionPolicy.onboardingPresentation(
+            isRequested: true,
+            isGranted: false,
+            frontmostBundleID: "com.apple.finder",
+            muesliBundleID: muesliBundleID,
+            hasUsableGuide: false
+        ) == .restoredWithoutActivation)
+        #expect(AccessibilityPermissionGuideSuppressionPolicy.onboardingPresentation(
+            isRequested: true,
+            isGranted: false,
+            frontmostBundleID: muesliBundleID,
+            muesliBundleID: muesliBundleID,
+            hasUsableGuide: false
+        ) == .restoredAndActive)
+        #expect(AccessibilityPermissionGuideSuppressionPolicy.onboardingPresentation(
+            isRequested: true,
+            isGranted: true,
+            frontmostBundleID: settingsBundleID,
+            muesliBundleID: muesliBundleID,
+            hasUsableGuide: true
+        ) == .restoredAndActive)
     }
 
     @Test("only drag-guide permissions let the guide control onboarding suppression")
