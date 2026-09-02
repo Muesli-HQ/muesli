@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 import Testing
 @testable import MuesliNativeApp
 
@@ -66,18 +67,53 @@ struct AccessibilityPermissionGuideTests {
 
     @Test("restores the drag source after an ungranted drop attempt")
     func restoresDragSourceAfterFailedDropAttempt() {
-        #expect(AccessibilityPermissionGuideRetryPolicy.attemptedDropRetryDelay == 4)
+        let start = Date(timeIntervalSinceReferenceDate: 1_000)
+        let deadline = AccessibilityPermissionGuideRetryPolicy.retryDeadline(startingAt: start)
+
+        #expect(AccessibilityPermissionGuideRetryPolicy.permissionCheckInterval == 0.5)
+        #expect(AccessibilityPermissionGuideRetryPolicy.attemptedDropRetryWindow == 10)
+        #expect(deadline == start.addingTimeInterval(10))
+        #expect(!AccessibilityPermissionGuideRetryPolicy.shouldRestoreDragSource(
+            didAttemptDrop: true,
+            isGranted: false,
+            retryDeadline: deadline,
+            now: start.addingTimeInterval(9.999),
+            isMuesliFrontmost: false
+        ))
         #expect(AccessibilityPermissionGuideRetryPolicy.shouldRestoreDragSource(
             didAttemptDrop: true,
-            isGranted: false
+            isGranted: false,
+            retryDeadline: deadline,
+            now: deadline,
+            isMuesliFrontmost: false
+        ))
+        #expect(AccessibilityPermissionGuideRetryPolicy.shouldRestoreDragSource(
+            didAttemptDrop: true,
+            isGranted: false,
+            retryDeadline: deadline,
+            now: start,
+            isMuesliFrontmost: true
         ))
         #expect(!AccessibilityPermissionGuideRetryPolicy.shouldRestoreDragSource(
             didAttemptDrop: true,
-            isGranted: true
+            isGranted: true,
+            retryDeadline: deadline,
+            now: deadline,
+            isMuesliFrontmost: true
         ))
         #expect(!AccessibilityPermissionGuideRetryPolicy.shouldRestoreDragSource(
             didAttemptDrop: false,
-            isGranted: false
+            isGranted: false,
+            retryDeadline: deadline,
+            now: deadline,
+            isMuesliFrontmost: false
+        ))
+        #expect(!AccessibilityPermissionGuideRetryPolicy.shouldRestoreDragSource(
+            didAttemptDrop: true,
+            isGranted: false,
+            retryDeadline: nil,
+            now: deadline,
+            isMuesliFrontmost: false
         ))
     }
 

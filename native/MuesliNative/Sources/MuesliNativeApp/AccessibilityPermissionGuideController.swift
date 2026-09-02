@@ -114,10 +114,24 @@ enum AccessibilityPermissionGuideCopy {
 }
 
 enum AccessibilityPermissionGuideRetryPolicy {
-    static let attemptedDropRetryDelay: TimeInterval = 4
+    static let permissionCheckInterval: TimeInterval = 0.5
+    static let attemptedDropRetryWindow: TimeInterval = 10
 
-    static func shouldRestoreDragSource(didAttemptDrop: Bool, isGranted: Bool) -> Bool {
-        didAttemptDrop && !isGranted
+    static func retryDeadline(startingAt date: Date) -> Date {
+        date.addingTimeInterval(attemptedDropRetryWindow)
+    }
+
+    static func shouldRestoreDragSource(
+        didAttemptDrop: Bool,
+        isGranted: Bool,
+        retryDeadline: Date?,
+        now: Date,
+        isMuesliFrontmost: Bool
+    ) -> Bool {
+        guard didAttemptDrop, !isGranted else { return false }
+        if isMuesliFrontmost { return true }
+        guard let retryDeadline else { return false }
+        return now >= retryDeadline
     }
 }
 
@@ -215,7 +229,7 @@ final class AccessibilityPermissionGuideController {
     private var guidePanel: NSPanel?
     private var dragPanel: NSPanel?
     private var refreshTimer: Timer?
-    private var attemptedDropRetryTimer: Timer?
+    private var attemptedDropRetryDeadline: Date?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var applicationObservers: [NSObjectProtocol] = []
     private var requestedPermission: PermissionDragGuidePermission?
@@ -239,8 +253,7 @@ final class AccessibilityPermissionGuideController {
 
         // Each explicit invocation starts with a draggable row. A prior drop is
         // only an attempt; the TCC permission state is the sole completion signal.
-        cancelAttemptedDropRetry()
-        model.didAttemptDrop = false
+        resetAttemptedDrop()
         requestedPermission = permission
         installObserversIfNeeded()
         startRefreshTimerIfNeeded()
@@ -251,7 +264,7 @@ final class AccessibilityPermissionGuideController {
         requestedPermission = nil
         refreshTimer?.invalidate()
         refreshTimer = nil
-        cancelAttemptedDropRetry()
+        resetAttemptedDrop()
 
         let workspaceCenter = NSWorkspace.shared.notificationCenter
         workspaceObservers.forEach { workspaceCenter.removeObserver($0) }
@@ -298,7 +311,10 @@ final class AccessibilityPermissionGuideController {
 
     private func startRefreshTimerIfNeeded() {
         guard refreshTimer == nil else { return }
-        let timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+        let timer = Timer.scheduledTimer(
+            withTimeInterval: AccessibilityPermissionGuideRetryPolicy.permissionCheckInterval,
+            repeats: true
+        ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.refreshPresentation()
             }
@@ -313,12 +329,22 @@ final class AccessibilityPermissionGuideController {
             return
         }
 
-        if requestedPermission.isGranted {
+        let isGranted = requestedPermission.isGranted
+        if isGranted {
             dismiss()
             return
         }
 
         let frontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        if AccessibilityPermissionGuideRetryPolicy.shouldRestoreDragSource(
+            didAttemptDrop: model.didAttemptDrop,
+            isGranted: isGranted,
+            retryDeadline: attemptedDropRetryDeadline,
+            now: Date(),
+            isMuesliFrontmost: frontmostBundleID == Bundle.main.bundleIdentifier
+        ) {
+            resetAttemptedDrop()
+        }
         let settingsWindow = SystemSettingsWindowLocator.mainWindowFrame()
         let frames = settingsWindow.flatMap {
             AccessibilityPermissionGuideLayout.frames(for: $0)
@@ -384,8 +410,7 @@ final class AccessibilityPermissionGuideController {
                     settingsWindow: SystemSettingsWindowLocator.mainWindowFrame()
                 )
                 guard isLikelyPermissionListDropAttempt else {
-                    self.cancelAttemptedDropRetry()
-                    self.model.didAttemptDrop = false
+                    self.resetAttemptedDrop()
                     self.refreshPresentation()
                     return
                 }
@@ -393,7 +418,8 @@ final class AccessibilityPermissionGuideController {
                 // the URL, but not which System Settings view accepted it. Treat
                 // this as an attempted drop, never as proof that Muesli was added.
                 self.model.didAttemptDrop = true
-                self.scheduleAttemptedDropRetry()
+                self.attemptedDropRetryDeadline = AccessibilityPermissionGuideRetryPolicy
+                    .retryDeadline(startingAt: Date())
                 self.refreshPresentation()
             }
             dragPanel = makePanel(
@@ -404,35 +430,9 @@ final class AccessibilityPermissionGuideController {
         }
     }
 
-    private func scheduleAttemptedDropRetry() {
-        cancelAttemptedDropRetry()
-
-        let timer = Timer(
-            timeInterval: AccessibilityPermissionGuideRetryPolicy.attemptedDropRetryDelay,
-            repeats: false
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.attemptedDropRetryTimer = nil
-                guard let requestedPermission = self.requestedPermission,
-                      AccessibilityPermissionGuideRetryPolicy.shouldRestoreDragSource(
-                        didAttemptDrop: self.model.didAttemptDrop,
-                        isGranted: requestedPermission.isGranted
-                      ) else {
-                    return
-                }
-
-                self.model.didAttemptDrop = false
-                self.refreshPresentation()
-            }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        attemptedDropRetryTimer = timer
-    }
-
-    private func cancelAttemptedDropRetry() {
-        attemptedDropRetryTimer?.invalidate()
-        attemptedDropRetryTimer = nil
+    private func resetAttemptedDrop() {
+        attemptedDropRetryDeadline = nil
+        model.didAttemptDrop = false
     }
 
     private func setOnboardingPresentation(
