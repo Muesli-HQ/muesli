@@ -286,7 +286,7 @@ struct ModelsView: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(MuesliTheme.textTertiary)
 
-                Text("Choose how words appear while a meeting is in progress. Nemotron also creates the saved transcript; Parakeet prioritizes a faster English preview.")
+                Text("Choose how words appear while a meeting is in progress. Nemotron also creates the saved transcript; Apple Speech and Parakeet provide provisional previews.")
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textSecondary)
             }
@@ -294,6 +294,24 @@ struct ModelsView: View {
             .padding(.top, MuesliTheme.spacing8)
             .id(FeatureTourTarget.streamingModels.rawValue)
             .featureTourTarget(.streamingModels)
+
+            if BackendOption.systemManaged.contains(.appleSpeechAnalyzer) {
+                let option = BackendOption.appleSpeechAnalyzer
+                modelCard(
+                    option: option,
+                    logo: logoForBackend(option),
+                    isActive: appState.config.enableLiveStreamingPartials
+                        && appState.config.resolvedMeetingLiveCaptionBackend == .appleSpeech,
+                    onSetActive: {
+                        controller.updateConfig {
+                            $0.meetingLiveCaptionBackend = MeetingLiveCaptionBackend.appleSpeech.rawValue
+                            $0.enableLiveStreamingPartials = true
+                        }
+                    },
+                    description: "Apple's private, on-device live captions for system-supported languages on macOS 26. This is a provisional preview; your regular meeting model creates the transcript you keep.",
+                    downloadedLabel: "Available"
+                )
+            }
 
             ForEach(BackendOption.streaming, id: \.model) { option in
                 if let liveCaptionBackend = MeetingLiveCaptionBackend(rawValue: option.backend) {

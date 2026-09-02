@@ -308,9 +308,12 @@ final class MeetingSession {
                 selectedInputResolved: snapshot.route?.selectedInputDeviceResolved
             )
         }
-        meetingMicRecorder.onHandoffOutcome = { [weak micRecoveryCoordinator, weak systemAudioWatchdog] outcome in
+        meetingMicRecorder.onHandoffOutcome = { [weak self, weak micRecoveryCoordinator, weak systemAudioWatchdog] outcome in
             micRecoveryCoordinator?.noteHandoffOutcome(outcome)
             systemAudioWatchdog?.noteRouteChange()
+            if outcome == .promoted {
+                self?.micPartialSession()?.resetAfterSourceRestart()
+            }
         }
         systemAudioWatchdog.isCaptureActive = { [weak systemAudioRecorder] in
             guard let recorder = systemAudioRecorder else { return false }
@@ -328,8 +331,12 @@ final class MeetingSession {
         systemAudioWatchdog.lastMicCallbackAt = { [weak self] in
             self?.micHealthTracker.snapshot().lastRawMicCallbackAt
         }
-        systemAudioWatchdog.recoveryRequest = { [weak systemAudioRecorder] reason in
-            systemAudioRecorder?.rebuildForHealthRecovery(reason: reason) ?? false
+        systemAudioWatchdog.recoveryRequest = { [weak self, weak systemAudioRecorder] reason in
+            let started = systemAudioRecorder?.rebuildForHealthRecovery(reason: reason) ?? false
+            if started {
+                self?.systemPartialSession()?.resetAfterSourceRestart()
+            }
+            return started
         }
         systemAudioWatchdog.onMicBlindnessDegradation = { [weak self] reason in
             guard let self, let snapshot = self.micHealthTracker.noteRouteCallbackLoss() else { return }
@@ -422,7 +429,8 @@ final class MeetingSession {
             do {
                 let engines = try await MeetingLiveCaptionModelStore.makeEngines(
                     backend: backend,
-                    nemotronPromptId: self.config.resolvedNemotron35Language.promptId
+                    nemotronPromptId: self.config.resolvedNemotron35Language.promptId,
+                    appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage
                 )
                 guard self.chunkRotationQueue.sync(execute: { self.isRecording }),
                       self.partialSessionsStorage.withLock({ !$0.isShutDown }) else {

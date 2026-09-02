@@ -5,23 +5,71 @@ import MuesliCore
 import Speech
 
 struct AppleSpeechTranscriptAccumulator: Sendable {
-    private var accumulatedText = ""
-    private(set) var segments: [SpeechSegment] = []
+    private struct Result: Sendable {
+        let rawText: String
+        let text: String
+        let isFinal: Bool
+        let start: Double
+        let end: Double
+    }
+
+    private var results: [Result] = []
 
     var text: String {
-        accumulatedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        results
+            .sorted(by: Self.sortResults)
+            .map(\.rawText)
+            .joined()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var segments: [SpeechSegment] {
+        results
+            .filter(\.isFinal)
+            .sorted(by: Self.sortResults)
+            .map { SpeechSegment(start: $0.start, end: $0.end, text: $0.text) }
     }
 
     mutating func receive(text rawText: String, isFinal: Bool, start: Double, end: Double) {
-        guard isFinal else { return }
-        let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-
-        accumulatedText.append(rawText)
-
         let safeStart = start.isFinite ? max(0, start) : 0
         let safeEnd = end.isFinite ? max(safeStart, end) : safeStart
-        segments.append(SpeechSegment(start: safeStart, end: safeEnd, text: trimmed))
+        results.removeAll { existing in
+            guard !existing.isFinal else { return false }
+            return Self.overlaps(
+                start: existing.start,
+                end: existing.end,
+                otherStart: safeStart,
+                otherEnd: safeEnd
+            )
+        }
+
+        let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        results.append(Result(
+            rawText: rawText,
+            text: trimmed,
+            isFinal: isFinal,
+            start: safeStart,
+            end: safeEnd
+        ))
+    }
+
+    private static func overlaps(
+        start: Double,
+        end: Double,
+        otherStart: Double,
+        otherEnd: Double
+    ) -> Bool {
+        if start == end || otherStart == otherEnd {
+            return start == otherStart
+        }
+        return start < otherEnd && otherStart < end
+    }
+
+    private static func sortResults(_ lhs: Result, _ rhs: Result) -> Bool {
+        if lhs.start != rhs.start { return lhs.start < rhs.start }
+        if lhs.end != rhs.end { return lhs.end < rhs.end }
+        return lhs.isFinal && !rhs.isFinal
     }
 }
 
