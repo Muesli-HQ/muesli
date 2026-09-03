@@ -37,6 +37,23 @@ struct MeetingSignalRefreshPolicyTests {
         #expect(decision.refreshAudioAttribution == true)
     }
 
+    @Test("Muesli-owned recording suppresses attribution until capture ends")
+    func ownedRecordingSuppressesAttributionUntilCaptureEnds() {
+        var gate = MeetingRecordingAttributionGate()
+
+        #expect(gate.shouldSuppress(isRecording: true) == false)
+        #expect(gate.markCaptureOwned() == true)
+        #expect(gate.markCaptureOwned() == false)
+        #expect(gate.shouldSuppress(isRecording: true) == true)
+
+        gate.synchronize(isRecording: false, isStartingRecording: true)
+        #expect(gate.ownsActiveCapture == true)
+
+        gate.synchronize(isRecording: false, isStartingRecording: false)
+        #expect(gate.ownsActiveCapture == false)
+        #expect(gate.shouldSuppress(isRecording: true) == false)
+    }
+
     @Test("repeated suspicious fallback respects expensive collector throttle")
     func repeatedSuspiciousFallbackRespectsThrottle() {
         let policy = MeetingSignalRefreshPolicy()
@@ -67,6 +84,30 @@ struct MeetingSignalRefreshPolicyTests {
         #expect(decision.mode == .suspicious)
         #expect(decision.refreshAudioAttribution == true)
         #expect(decision.refreshBrowserMeetings == true)
+    }
+
+    @Test(
+        "associated recording suppresses CoreAudio attribution",
+        arguments: [
+            MeetingDetectionTrigger.fallbackTimer,
+            MeetingDetectionTrigger.micChanged,
+            MeetingDetectionTrigger.sensorAttributionChanged,
+            MeetingDetectionTrigger.manualRefresh,
+        ]
+    )
+    func associatedRecordingSuppressesAudioAttribution(trigger: MeetingDetectionTrigger) {
+        let policy = MeetingSignalRefreshPolicy()
+        var state = MeetingSignalRefreshState()
+        state.hasActiveCandidate = true
+
+        let decision = policy.decision(
+            trigger: trigger,
+            state: state,
+            suppressAudioAttribution: true,
+            now: now
+        )
+
+        #expect(decision.refreshAudioAttribution == false)
     }
 
     @Test("active-tab fallback is throttled per browser bundle")

@@ -204,9 +204,9 @@ final class MeetingSession {
     /// Fired at most once per meeting when confirmed degradation is classified
     /// as user-muted input (no recovery episode is opened in that case).
     var onMicHealthUserMuted: (() -> Void)?
-    /// Episode-level system-audio (tap) health events: degraded when the IO
-    /// heartbeat stalls or a rebuild fails terminally, recovered when capture
-    /// resumes, unrecovered if the meeting ends dead.
+    /// Episode-level system-audio (tap) health events: degraded after positive
+    /// recorder failure evidence, recovered when capture resumes, unrecovered
+    /// if the meeting ends dead.
     var onSystemAudioHealthEpisode: ((MeetingSystemAudioHealthEvent) -> Void)?
     var manualNotesProvider: (() async -> String?)?
     var liveTitleProvider: (() async -> String?)?
@@ -269,9 +269,9 @@ final class MeetingSession {
         } else {
             self.systemAudioRecorder = SystemAudioRecorder()
         }
-        micRecoveryCoordinator.recoveryRequest = { [weak meetingMicRecorder] reason in
+        micRecoveryCoordinator.recoveryRequest = { [weak meetingMicRecorder] trigger in
             guard let meetingMicRecorder else { return .unavailable }
-            return meetingMicRecorder.requestSameRouteRecovery(reason: reason)
+            return meetingMicRecorder.requestHealthRecovery(trigger)
         }
         // Recovery handoffs mid-transition reliably fail their first-buffer
         // window; defer them until the daemon settles (same signal the tap
@@ -301,12 +301,12 @@ final class MeetingSession {
         meetingMicRecorder.onHandoffOutcome = { [weak micRecoveryCoordinator] outcome in
             micRecoveryCoordinator?.noteHandoffOutcome(outcome)
         }
-        systemAudioWatchdog.captureHeartbeat = { [weak systemAudioRecorder] in
-            systemAudioRecorder?.captureHeartbeat ?? 0
-        }
         systemAudioWatchdog.isCaptureActive = { [weak systemAudioRecorder] in
             guard let recorder = systemAudioRecorder else { return false }
-            return recorder.isRecording && !recorder.isPaused && !recorder.isRebuilding
+            return recorder.isRecording
+                && !recorder.isPaused
+                && !recorder.isRebuilding
+                && !recorder.captureIsDead
         }
         systemAudioWatchdog.isPaused = { [weak systemAudioRecorder] in
             systemAudioRecorder?.isPaused ?? false
@@ -1143,10 +1143,9 @@ final class MeetingSession {
     }
 
     private func startSystemAudioWatchdog() {
-        // Only heartbeat-capable backends can be stall-monitored: the SCK
-        // fallback reports heartbeat 0 permanently and would false-fire
-        // degraded episodes every meeting.
-        guard systemAudioRecorder.supportsHeartbeatMonitoring else { return }
+        // The timer is inert until the recorder reports explicit failure. It
+        // never probes CoreAudio process state or interprets silence as death.
+        guard systemAudioRecorder.supportsFailureRecovery else { return }
         stopSystemAudioWatchdogTimer()
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "MuesliNative.MeetingSession.systemAudioWatchdog"))
         timer.schedule(deadline: .now() + 1, repeating: 1)

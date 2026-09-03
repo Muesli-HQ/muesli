@@ -592,7 +592,10 @@ struct SettingsView: View {
 
     private func scrollToFeatureTourTarget(_ target: FeatureTourTarget?, using proxy: ScrollViewProxy) {
         guard let target,
-              target == .liveCaptionsSetting || target == .cloudCleanupSetting else { return }
+              target == .liveCaptionsSetting
+                || target == .cloudCleanupSetting
+                || target == .dictationProviderSetting
+                || target == .quillSettings else { return }
         DispatchQueue.main.async {
             withAnimation(.easeInOut(duration: 0.2)) {
                 proxy.scrollTo(target.rawValue, anchor: .center)
@@ -1020,6 +1023,8 @@ struct SettingsView: View {
                     }
                 }
             }
+            .id(FeatureTourTarget.dictationProviderSetting.rawValue)
+            .featureTourTarget(.dictationProviderSetting)
             Divider().background(MuesliTheme.surfaceBorder)
             if appState.dictationProvider == .openAI {
                 openAIDictationSettingsRows
@@ -1430,6 +1435,8 @@ struct SettingsView: View {
                 }
             }
         }
+        .id(FeatureTourTarget.quillSettings.rawValue)
+        .featureTourTarget(.quillSettings)
     }
 
     private func selectQuilLocalModel(_ model: OnDeviceCleanupModel?) {

@@ -37,6 +37,31 @@ struct MeetingSignalRefreshDecision: Equatable {
     let fallbackInterval: TimeInterval
 }
 
+struct MeetingRecordingAttributionGate: Equatable {
+    private(set) var ownsActiveCapture = false
+
+    @discardableResult
+    mutating func markCaptureOwned() -> Bool {
+        guard !ownsActiveCapture else { return false }
+        ownsActiveCapture = true
+        return true
+    }
+
+    mutating func synchronize(isRecording: Bool, isStartingRecording: Bool) {
+        if !isRecording && !isStartingRecording {
+            reset()
+        }
+    }
+
+    mutating func reset() {
+        ownsActiveCapture = false
+    }
+
+    func shouldSuppress(isRecording: Bool) -> Bool {
+        isRecording && ownsActiveCapture
+    }
+}
+
 struct MeetingSignalRefreshPolicy {
     let idleFallbackInterval: TimeInterval
     let suspiciousFallbackInterval: TimeInterval
@@ -73,6 +98,7 @@ struct MeetingSignalRefreshPolicy {
     func decision(
         trigger: MeetingDetectionTrigger,
         state: MeetingSignalRefreshState,
+        suppressAudioAttribution: Bool = false,
         now: Date
     ) -> MeetingSignalRefreshDecision {
         let suspicious = isSuspicious(trigger: trigger, state: state, now: now)
@@ -81,7 +107,8 @@ struct MeetingSignalRefreshPolicy {
 
         return MeetingSignalRefreshDecision(
             mode: mode,
-            refreshAudioAttribution: shouldRefreshAudioAttribution(trigger: trigger, state: state, mode: mode, now: now),
+            refreshAudioAttribution: !suppressAudioAttribution
+                && shouldRefreshAudioAttribution(trigger: trigger, state: state, mode: mode, now: now),
             refreshBrowserMeetings: shouldRefreshBrowserMeetings(trigger: trigger, state: state, mode: mode, now: now),
             fallbackInterval: fallbackInterval
         )
