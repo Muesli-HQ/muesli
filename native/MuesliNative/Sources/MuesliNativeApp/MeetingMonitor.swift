@@ -379,10 +379,10 @@ private actor MeetingDetectionService {
     private var resetTask: Task<Void, Never>?
     private var latestLifecycleGeneration = 0
     private var isStarted = false
-    // Manual recordings may need one or more discovery passes before a real
-    // media session is found. Once associated, continuing to enumerate every
-    // CoreAudio process only adds daemon load while capture is already owned.
-    private var hasAssociatedActiveRecording = false
+    // Once Muesli owns an active meeting capture, continuing to enumerate every
+    // CoreAudio process only adds daemon load. Browser discovery remains active,
+    // so manual recordings can still be associated without polling CoreAudio.
+    private var recordingAttributionGate = MeetingRecordingAttributionGate()
 
     init(
         contextProvider: @escaping @MainActor (Date) -> MeetingDetectionEvaluationContext,
@@ -425,7 +425,7 @@ private actor MeetingDetectionService {
         pendingEvaluationTrigger = nil
         currentFallbackInterval = nil
         signalRefreshState = MeetingSignalRefreshState()
-        hasAssociatedActiveRecording = false
+        recordingAttributionGate.reset()
         let resetTask = Task { [audioAttributionService, mediaSessionTracker] in
             await audioAttributionService.reset()
             await mediaSessionTracker.reset()
@@ -459,10 +459,14 @@ private actor MeetingDetectionService {
 
     func suppressWhileActive() {
         globalSuppressUntil = .distantFuture
+        if recordingAttributionGate.markCaptureOwned() {
+            log("audio_attribution_suppressed reason=muesli_recording_active")
+        }
         dismissVisiblePromptForSuppression()
     }
 
     func resumeAfterCooldown() {
+        recordingAttributionGate.reset()
         globalSuppressUntil = Date().addingTimeInterval(15)
         scheduleEvaluation(.promptStateChanged)
     }
@@ -530,9 +534,10 @@ private actor MeetingDetectionService {
         let now = Date()
         let context = await contextProvider(now)
         guard isStarted else { return }
-        if !context.isRecording && !context.isStartingRecording {
-            hasAssociatedActiveRecording = false
-        }
+        recordingAttributionGate.synchronize(
+            isRecording: context.isRecording,
+            isStartingRecording: context.isStartingRecording
+        )
         guard context.detectionEnabled else {
             dismissVisiblePromptForSuppression()
             return
@@ -551,7 +556,9 @@ private actor MeetingDetectionService {
         let refreshDecision = refreshPolicy.decision(
             trigger: trigger,
             state: signalRefreshState,
-            suppressAudioAttribution: context.isRecording && hasAssociatedActiveRecording,
+            suppressAudioAttribution: recordingAttributionGate.shouldSuppress(
+                isRecording: context.isRecording
+            ),
             now: now
         )
         async let audioAttributionResult = audioAttributionService.activeInputProcesses(
@@ -836,7 +843,7 @@ private actor MeetingDetectionService {
     private func associateActiveRecording(with candidate: MeetingCandidate) {
         let inserted = promptState.markRecordingStarted(candidate)
         guard inserted || promptState.isRecordingStartedSuppressed(candidate) else { return }
-        hasAssociatedActiveRecording = true
+        recordingAttributionGate.markCaptureOwned()
         if inserted {
             log("recording_session_consumed id=\(candidate.id)")
         }

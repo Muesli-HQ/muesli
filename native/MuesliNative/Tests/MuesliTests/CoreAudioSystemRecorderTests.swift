@@ -87,10 +87,12 @@ struct CoreAudioSystemRecorderTests {
         #expect(attempts == 1)
     }
 
-    @Test("CoreAudio tap backend supports heartbeat monitoring; SCK fallback does not")
-    func heartbeatCapabilityByBackend() {
-        #expect(CoreAudioSystemRecorder().supportsHeartbeatMonitoring)
-        #expect(!SystemAudioRecorder().supportsHeartbeatMonitoring)
+    @Test("capture-dead state requires positive recorder failure evidence")
+    func captureDeadDefaultsToFalse() {
+        #expect(!CoreAudioSystemRecorder().captureIsDead)
+        #expect(!SystemAudioRecorder().captureIsDead)
+        #expect(CoreAudioSystemRecorder().supportsFailureRecovery)
+        #expect(!SystemAudioRecorder().supportsFailureRecovery)
     }
 
     @Test("failed rebuild retries then succeeds without a terminal failure")
