@@ -756,12 +756,31 @@ enum MeetingSummaryClient {
                 message: "No model selected. Enter a model in Settings."
             )
         }
-        let apiKey = config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if customLLMRequiresAPIKey(config: config),
+           config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           config.customLLMAPIKeyCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw MeetingSummaryError.backendFailed(
+                backend: "Custom LLM",
+                statusCode: nil,
+                message: "Enter an API key or API key command for the selected Custom LLM format."
+            )
+        }
+        let extraHeaders: [String: String]
+        do {
+            extraHeaders = try CustomLLMRequestHeaders.validated(config.customLLMHeaders)
+        } catch {
+            throw MeetingSummaryError.backendFailed(
+                backend: "Custom LLM",
+                statusCode: nil,
+                message: error.localizedDescription
+            )
+        }
+        let apiKey = try await resolveCustomLLMAPIKey(config: config)
         if customLLMRequiresAPIKey(config: config) && apiKey.isEmpty {
             throw MeetingSummaryError.backendFailed(
                 backend: "Custom LLM",
                 statusCode: nil,
-                message: "Enter an API key for the selected Custom LLM format."
+                message: "Enter an API key or API key command for the selected Custom LLM format."
             )
         }
 
@@ -780,7 +799,8 @@ enum MeetingSummaryClient {
                 template: template,
                 visualContext: visualContext,
                 previousMeetingNotes: previousMeetingNotes,
-                timeout: customLLMSummaryTimeout
+                timeout: customLLMSummaryTimeout,
+                extraHeaders: extraHeaders
             )
         case .anthropic:
             return try await summarizeWithAnthropicMessages(
@@ -796,7 +816,8 @@ enum MeetingSummaryClient {
                 template: template,
                 visualContext: visualContext,
                 previousMeetingNotes: previousMeetingNotes,
-                timeout: customLLMSummaryTimeout
+                timeout: customLLMSummaryTimeout,
+                extraHeaders: extraHeaders
             )
         }
     }
@@ -812,7 +833,25 @@ enum MeetingSummaryClient {
     static func customLLMHasRequiredSettings(config: AppConfig) -> Bool {
         let model = config.customLLMModel.trimmingCharacters(in: .whitespacesAndNewlines)
         let apiKey = config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !model.isEmpty && (!customLLMRequiresAPIKey(config: config) || !apiKey.isEmpty)
+        let apiKeyCommand = config.customLLMAPIKeyCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasAPIKey = !apiKey.isEmpty || !apiKeyCommand.isEmpty
+        let headersAreValid = (try? CustomLLMRequestHeaders.validated(config.customLLMHeaders)) != nil
+        return headersAreValid
+            && !model.isEmpty
+            && (!customLLMRequiresAPIKey(config: config) || hasAPIKey)
+    }
+
+    /// Resolve the API key for the custom LLM backend.
+    ///
+    /// If `customLLMAPIKeyCommand` is set, it is executed via `/bin/sh -c` and its
+    /// trimmed stdout is used as the API key. This supports credential helpers that
+    /// issue short-lived tokens. The static `customLLMAPIKey` remains the fallback
+    /// when the command is not set, fails, times out, or returns no output.
+    static func resolveCustomLLMAPIKey(config: AppConfig) async throws -> String {
+        try await CredentialCommandRunner.resolve(
+            command: config.customLLMAPIKeyCommand,
+            fallback: config.customLLMAPIKey
+        )
     }
 
     private static func summarizeWithChatCompletions(
@@ -828,7 +867,8 @@ enum MeetingSummaryClient {
         template: MeetingTemplateSnapshot,
         visualContext: String?,
         previousMeetingNotes: String?,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        extraHeaders: [String: String] = [:]
     ) async throws -> String {
         let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes, previousMeetingNotes: previousMeetingNotes)
         let userPrompt = summaryUserPrompt(
@@ -856,6 +896,9 @@ enum MeetingSummaryClient {
         if !apiKey.isEmpty {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
+        for (name, value) in extraHeaders {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         do {
@@ -866,7 +909,7 @@ enum MeetingSummaryClient {
                 let text = extractOpenRouterText(from: json),
                 !text.isEmpty
             else {
-                if let message = extractErrorMessage(from: data) {
+                if backend != "Custom LLM", let message = extractErrorMessage(from: data) {
                     throw MeetingSummaryError.backendFailed(backend: backend, statusCode: nil, message: message)
                 }
                 throw MeetingSummaryError.emptyResponse(backend: backend)
@@ -890,7 +933,8 @@ enum MeetingSummaryClient {
         template: MeetingTemplateSnapshot,
         visualContext: String?,
         previousMeetingNotes: String?,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        extraHeaders: [String: String] = [:]
     ) async throws -> String {
         let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes, previousMeetingNotes: previousMeetingNotes)
         let userPrompt = summaryUserPrompt(
@@ -918,6 +962,9 @@ enum MeetingSummaryClient {
         if !apiKey.isEmpty {
             request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         }
+        for (name, value) in extraHeaders {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         do {
@@ -928,7 +975,7 @@ enum MeetingSummaryClient {
                 let text = extractAnthropicText(from: json),
                 !text.isEmpty
             else {
-                if let message = extractErrorMessage(from: data) {
+                if backend != "Custom LLM", let message = extractErrorMessage(from: data) {
                     throw MeetingSummaryError.backendFailed(backend: backend, statusCode: nil, message: message)
                 }
                 throw MeetingSummaryError.emptyResponse(backend: backend)
@@ -958,9 +1005,14 @@ enum MeetingSummaryClient {
     private static func validateHTTPResponse(_ response: URLResponse, data: Data, backend: String) throws {
         guard let httpResponse = response as? HTTPURLResponse else { return }
         guard (200..<300).contains(httpResponse.statusCode) else {
-            let message = extractErrorMessage(from: data)
-                ?? String(data: data, encoding: .utf8)
-                ?? HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode)
+            let message: String
+            if backend == "Custom LLM" {
+                message = HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode)
+            } else {
+                message = extractErrorMessage(from: data)
+                    ?? String(data: data, encoding: .utf8)
+                    ?? HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode)
+            }
             throw MeetingSummaryError.backendFailed(
                 backend: backend,
                 statusCode: httpResponse.statusCode,
@@ -1220,7 +1272,8 @@ enum MeetingSummaryClient {
     private static func callChatCompletions(
         url: URL, apiKey: String, model: String,
         systemPrompt: String, userPrompt: String,
-        maxTokens: Int?, extraHeaders: [String: String], timeout: TimeInterval? = nil
+        maxTokens: Int?, extraHeaders: [String: String], timeout: TimeInterval? = nil,
+        customLLM: Bool = false
     ) async -> String? {
         let isOpenAI = url.host?.contains("openai.com") == true
         var body: [String: Any] = [
@@ -1253,23 +1306,37 @@ enum MeetingSummaryClient {
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
         do {
-            let (data, _) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if customLLM,
+               let httpResponse = response as? HTTPURLResponse,
+               !(200..<300).contains(httpResponse.statusCode) {
+                fputs("[summary] Custom LLM title generation failed with HTTP \(httpResponse.statusCode)\n", stderr)
+                return nil
+            }
             guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 fputs("[summary] title generation: invalid JSON response\n", stderr)
                 return nil
             }
             if let error = json["error"] as? [String: Any] {
-                fputs("[summary] title generation error: \(error["message"] ?? error)\n", stderr)
+                if customLLM {
+                    fputs("[summary] Custom LLM title generation failed\n", stderr)
+                } else {
+                    fputs("[summary] title generation error: \(error["message"] ?? error)\n", stderr)
+                }
                 return nil
             }
             // Try chat completions format first, then responses API format
             let result = (extractOpenRouterText(from: json) ?? extractOpenAIText(from: json))?
                 .trimmingCharacters(in: .whitespacesAndNewlines.union(.init(charactersIn: "\"")))
             if result == nil {
-                let choices = json["choices"] as? [[String: Any]] ?? []
-                let firstChoice = choices.first ?? [:]
-                let message = firstChoice["message"] as? [String: Any] ?? [:]
-                fputs("[summary] title generation: nil. message keys: \(message.keys.sorted()), content type: \(type(of: message["content"] as Any)), content: \(String(describing: message["content"]).prefix(300))\n", stderr)
+                if customLLM {
+                    fputs("[summary] Custom LLM title generation returned no title\n", stderr)
+                } else {
+                    let choices = json["choices"] as? [[String: Any]] ?? []
+                    let firstChoice = choices.first ?? [:]
+                    let message = firstChoice["message"] as? [String: Any] ?? [:]
+                    fputs("[summary] title generation: nil. message keys: \(message.keys.sorted()), content type: \(type(of: message["content"] as Any)), content: \(String(describing: message["content"]).prefix(300))\n", stderr)
+                }
             }
             fputs("[summary] generated title: \(result ?? "(nil)")\n", stderr)
             return result
@@ -1286,6 +1353,7 @@ enum MeetingSummaryClient {
         systemPrompt: String,
         userPrompt: String,
         maxTokens: Int,
+        extraHeaders: [String: String] = [:],
         timeout: TimeInterval? = nil
     ) async -> String? {
         let body: [String: Any] = [
@@ -1306,6 +1374,9 @@ enum MeetingSummaryClient {
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         if !apiKey.isEmpty {
             request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        }
+        for (name, value) in extraHeaders {
+            request.setValue(value, forHTTPHeaderField: name)
         }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
@@ -1368,14 +1439,24 @@ enum MeetingSummaryClient {
     private static func generateTitleWithCustomLLM(transcript: String, config: AppConfig) async -> String? {
         let format = CustomLLMFormat(rawValue: config.customLLMFormat) ?? .openAI
         guard let requestURL = resolveCustomLLMURL(config: config, format: format) else { return nil }
-        let apiKey = config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let configuredModel = config.customLLMModel.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !configuredModel.isEmpty else {
             fputs("[summary] Custom LLM title generation: no model selected\n", stderr)
             return nil
         }
+        if customLLMRequiresAPIKey(config: config),
+           config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           config.customLLMAPIKeyCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            fputs("[summary] Custom LLM title generation: no API key or API key command configured\n", stderr)
+            return nil
+        }
+        guard let extraHeaders = try? CustomLLMRequestHeaders.validated(config.customLLMHeaders) else {
+            fputs("[summary] Custom LLM title generation: invalid additional headers\n", stderr)
+            return nil
+        }
+        guard let apiKey = try? await resolveCustomLLMAPIKey(config: config) else { return nil }
         if customLLMRequiresAPIKey(config: config) && apiKey.isEmpty {
-            fputs("[summary] Custom LLM title generation: no API key configured\n", stderr)
+            fputs("[summary] Custom LLM title generation: no API key or API key command configured\n", stderr)
             return nil
         }
 
@@ -1388,8 +1469,9 @@ enum MeetingSummaryClient {
                 systemPrompt: titleInstructions,
                 userPrompt: transcript,
                 maxTokens: 100,
-                extraHeaders: [:],
-                timeout: customLLMTitleTimeout
+                extraHeaders: extraHeaders,
+                timeout: customLLMTitleTimeout,
+                customLLM: true
             )
         case .anthropic:
             return await callAnthropicMessages(
@@ -1399,6 +1481,7 @@ enum MeetingSummaryClient {
                 systemPrompt: titleInstructions,
                 userPrompt: transcript,
                 maxTokens: 100,
+                extraHeaders: extraHeaders,
                 timeout: customLLMTitleTimeout
             )
         }
