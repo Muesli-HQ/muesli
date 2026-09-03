@@ -1318,6 +1318,43 @@ struct AppConfigTests {
         #expect(json["show_meeting_transcript_on_indicator_hover"] != nil)
     }
 
+    @Test("missing paste shortcut defaults to Command-V")
+    func missingPasteShortcutDefaultsToCommandV() throws {
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+
+        #expect(config.pasteShortcut == .commandV)
+    }
+
+    @Test("unknown paste shortcut defaults to Command-V")
+    func unknownPasteShortcutDefaultsToCommandV() throws {
+        let data = Data(#"{"paste_shortcut":"future_chord"}"#.utf8)
+        let config = try JSONDecoder().decode(AppConfig.self, from: data)
+
+        #expect(config.pasteShortcut == .commandV)
+    }
+
+    @Test("paste shortcut encodes with its snake_case key and value")
+    func pasteShortcutEncodesWithSnakeCaseKeyAndValue() throws {
+        var config = AppConfig()
+        config.pasteShortcut = .commandShiftV
+
+        let data = try JSONEncoder().encode(config)
+        let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        #expect(json["paste_shortcut"] as? String == "command_shift_v")
+    }
+
+    @Test("Command-Shift-V paste shortcut round-trips through JSON")
+    func commandShiftVPasteShortcutRoundTrips() throws {
+        var config = AppConfig()
+        config.pasteShortcut = .commandShiftV
+
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+
+        #expect(decoded.pasteShortcut == .commandShiftV)
+    }
+
     @Test("decodes screen context flags from snake_case")
     func decodesScreenContextFlagsFromSnakeCase() throws {
         let json = """
