@@ -88,6 +88,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
             window.level = .normal
             window.alphaValue = 1
             window.ignoresMouseEvents = false
+            window.orderFrontRegardless()
         case .restoredAndActive:
             bringToFront()
         }

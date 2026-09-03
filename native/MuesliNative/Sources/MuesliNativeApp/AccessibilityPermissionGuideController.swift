@@ -135,9 +135,20 @@ enum AccessibilityPermissionGuideRetryPolicy {
     }
 }
 
-enum PermissionDragGuidePermission {
+enum PermissionDragGuidePermission: Equatable {
     case accessibility
     case inputMonitoring
+
+    init?(permissionName: String) {
+        switch permissionName {
+        case "Accessibility":
+            self = .accessibility
+        case "Input Monitoring":
+            self = .inputMonitoring
+        default:
+            return nil
+        }
+    }
 
     var isGranted: Bool {
         switch self {

@@ -1262,7 +1262,7 @@ struct OnboardingView: View {
     @MainActor
     private func notePermissionGranted(_ permissionName: String) {
         guard recentlyGrantedPermissionName != permissionName else { return }
-        if permissionName == "Accessibility" {
+        if PermissionDragGuidePermission(permissionName: permissionName) != nil {
             controller.dismissSystemPermissionGuide()
         }
         grantingPermissionName = nil
@@ -1308,19 +1308,14 @@ struct OnboardingView: View {
         let steps = permissionSteps
         var guidePermission: PermissionDragGuidePermission?
         if permissionIndex < steps.count {
-            grantingPermissionName = steps[permissionIndex].name
+            let permissionName = steps[permissionIndex].name
+            grantingPermissionName = permissionName
             nativePermissionPromptName = nil
             recentlyGrantedPermissionName = nil
             saveProgress(atStep: currentStep)
-            switch steps[permissionIndex].name {
-            case "Accessibility":
-                guidePermission = .accessibility
-                controller.beginSystemPermissionGuide(for: .accessibility)
-            case "Input Monitoring":
-                guidePermission = .inputMonitoring
-                controller.beginSystemPermissionGuide(for: .inputMonitoring)
-            default:
-                break
+            guidePermission = PermissionDragGuidePermission(permissionName: permissionName)
+            if let guidePermission {
+                controller.beginSystemPermissionGuide(for: guidePermission)
             }
         }
         openSystemSettings(

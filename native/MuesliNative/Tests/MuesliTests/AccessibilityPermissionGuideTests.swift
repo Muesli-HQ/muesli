@@ -236,6 +236,13 @@ struct AccessibilityPermissionGuideTests {
         #expect(OnboardingSystemSettingsYieldPolicy.behavior(for: .inputMonitoring) == .guideControlled)
     }
 
+    @Test("maps both guided permission names to their guide type")
+    func guidedPermissionNameMapping() {
+        #expect(PermissionDragGuidePermission(permissionName: "Accessibility") == .accessibility)
+        #expect(PermissionDragGuidePermission(permissionName: "Input Monitoring") == .inputMonitoring)
+        #expect(PermissionDragGuidePermission(permissionName: "Microphone") == nil)
+    }
+
     @Test("converts Quartz window coordinates to AppKit coordinates")
     func convertsWindowCoordinates() {
         let converted = SystemSettingsWindowGeometry.appKitFrame(
