@@ -3793,7 +3793,10 @@ public final class MuesliController: NSObject {
     }
 
     private func currentOrNearbyCachedCalendarEvent() -> CalendarEventContext? {
-        selectCurrentOrNearbyCachedCalendarEvent(from: appState.upcomingCalendarEvents)
+        selectCurrentOrNearbyCachedCalendarEvent(
+            from: appState.upcomingCalendarEvents,
+            requireMeetingLink: config.requireCalendarMeetingLink
+        )
     }
 
     private func startMeetingFeatureMonitors(includeMaraudersMap: Bool) {
@@ -11154,14 +11157,26 @@ public final class MuesliController: NSObject {
     }
 }
 
+/// Picks the calendar event that meeting detection should attribute activity to.
+///
+/// `requireMeetingLink` reflects the `require_calendar_meeting_link` setting.
+/// Detection otherwise accepts any timed entry, so a reminder or a placeholder
+/// is indistinguishable from a real meeting — and once an event is in play,
+/// `MeetingCandidateResolver.resolve` attributes any media activity to it.
+/// Requiring a join link removes that whole class of false attribution, at the
+/// cost of no longer recognising link-less meetings: dial-in, phone, in person.
+/// That trade-off is the user's to make, which is why it is a setting and why
+/// it defaults to off.
 func selectCurrentOrNearbyCachedCalendarEvent(
     from events: [UnifiedCalendarEvent],
+    requireMeetingLink: Bool = false,
     now: Date = Date()
 ) -> CalendarEventContext? {
     let searchEnd = now.addingTimeInterval(5 * 60)
     let candidates = events
         .filter { event in
             !event.isAllDay && event.endDate > now && event.startDate < searchEnd
+                && (!requireMeetingLink || event.meetingURL != nil)
         }
         .sorted { $0.startDate < $1.startDate }
 

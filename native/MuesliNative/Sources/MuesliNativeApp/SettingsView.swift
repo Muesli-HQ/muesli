@@ -2088,6 +2088,15 @@ struct SettingsView: View {
                     Divider().background(MuesliTheme.surfaceBorder)
                     mutedMeetingDetectionAppsControl
                 }
+
+                Divider().background(MuesliTheme.surfaceBorder)
+
+                settingsRow("Only calendar events with a join link") {
+                    settingsSwitch(isOn: appState.config.requireCalendarMeetingLink) { newValue in
+                        controller.updateConfig { $0.requireCalendarMeetingLink = newValue }
+                    }
+                }
+                settingsDescription("Ignore calendar entries with no meeting link, so reminders and placeholders are not treated as meetings. Turn this off if you have meetings you dial into or attend in person.")
             }
 
             settingsSection("Calendars") {
