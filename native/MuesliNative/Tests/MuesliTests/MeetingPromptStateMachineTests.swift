@@ -209,6 +209,19 @@ struct MeetingPromptStateMachineTests {
         #expect(result.reason == .recordingStartedSuppression)
     }
 
+    @Test("restarting a recording recognizes the already consumed meeting session")
+    func restartingRecordingRecognizesConsumedSession() {
+        let machine = immediateMachine()
+        let accepted = candidate(
+            "meeting-session:browser:com.google.Chrome:room:meet.google.com/abc-defg-hij:1",
+            suppressionID: "meeting-session:browser:com.google.Chrome:room:meet.google.com/abc-defg-hij:1"
+        )
+
+        #expect(machine.markRecordingStarted(accepted))
+        #expect(!machine.markRecordingStarted(accepted))
+        #expect(machine.isRecordingStartedSuppressed(accepted))
+    }
+
     @Test("recording start does not permanently suppress a URL-only recurring meeting")
     func recordingStartDoesNotPermanentlySuppressURLOnlyCandidate() {
         let machine = immediateMachine()

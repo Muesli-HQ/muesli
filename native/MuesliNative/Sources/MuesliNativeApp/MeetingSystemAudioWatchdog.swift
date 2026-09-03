@@ -13,24 +13,17 @@ struct MeetingSystemAudioHealthEvent: Equatable {
     let recoveryAttempts: Int
 }
 
-/// Watches the system-audio tap's IO heartbeat while a meeting records and
-/// drives bounded rebuilds when capture dies without an error — the observed
-/// production failure was a route-change rebuild that failed once and stayed
-/// dead for the rest of the meeting, silently losing the remote side.
-///
-/// Liveness is callback delivery, not content: the tap's IO callback fires
-/// continuously while the graph runs, even when the room is quiet, so a stall
-/// means a dead pipeline. Same role as MeetingMicRecoveryCoordinator, but the
-/// tap has binary health and no mute classification (output volume does not
-/// affect process-tap content).
+/// Manages explicit system-audio capture failure episodes and bounded recovery.
+/// A flat IO callback stream is intentionally not treated as failure: healthy
+/// global process taps may quiesce while system output is silent, and querying
+/// every CoreAudio process to disambiguate that state can itself contend with
+/// the daemon. Recovery therefore begins only after the recorder reports
+/// positive failure evidence (for example, exhausted HAL rebuild attempts).
 ///
 /// All callbacks fire after internal state commits; injected closures run on
 /// the caller's tick context. Time and cadence are injected for tests.
 final class MeetingSystemAudioWatchdog {
     struct Policy: Equatable {
-        /// Seconds without an IO callback (while recording and not paused)
-        /// before the tap is declared dead.
-        var stallThreshold: TimeInterval = 2
         /// Sustained alive ticks required to close an episode as recovered.
         var recoveredAfterTicks: Int = 2
         /// Minimum gap between recovery rebuild attempts.
@@ -50,16 +43,14 @@ final class MeetingSystemAudioWatchdog {
         var micBridgeFired: Bool
     }
 
-    /// Evaluated per tick: the recorder's monotonic IO heartbeat and whether
-    /// capture is active (recording, no rebuild in flight).
-    var captureHeartbeat: () -> UInt64 = { 0 }
+    /// Evaluated per tick after an explicit failure episode opens. True means
+    /// the recorder is running, not rebuilding, and has not marked its capture
+    /// graph dead.
     var isCaptureActive: () -> Bool = { false }
     /// While true (meeting paused), ticks are ignored entirely.
     var isPaused: () -> Bool = { false }
-    /// While true (a route transition is still settling), ticks are ignored:
-    /// the old tap's heartbeat stalling mid-transition is expected, and firing
-    /// a recovery rebuild into daemon churn reliably fails and amplifies it
-    /// (measured live on macOS 26.5.2).
+    /// While true (a route transition is still settling), retries are paused
+    /// so confirmed recovery does not add HAL work during daemon churn.
     var isRouteSettling: () -> Bool = { false }
     /// The mic tracker's last raw-mic callback time, for the blindness bridge.
     var lastMicCallbackAt: () -> Date? = { nil }
@@ -77,8 +68,6 @@ final class MeetingSystemAudioWatchdog {
     private let lock = NSLock()
     private var episode: Episode?
     private var finished = false
-    private var lastObservedHeartbeat: UInt64 = 0
-    private var lastHeartbeatAdvanceAt: Date?
 
     init(policy: Policy = .default, now: @escaping () -> Date = Date.init) {
         self.policy = policy
@@ -86,7 +75,7 @@ final class MeetingSystemAudioWatchdog {
     }
 
     /// Called by the recorder when a rebuild exhausts its retry budget — the
-    /// tap is dead regardless of heartbeat state. Ignored while paused: a
+    /// tap has positively failed. Ignored while paused: a
     /// rejected recovery request must not open an episode or burn budget.
     func noteCaptureFailure(reason: String) {
         var eventToEmit: MeetingSystemAudioHealthEvent?
@@ -137,84 +126,50 @@ final class MeetingSystemAudioWatchdog {
         var micBridgeReason: String?
 
         lock.lock()
-        if !finished {
-            if isPaused() || isRouteSettling() {
-                lock.unlock()
-                return
-            }
-            let timestamp = now()
-            // Alive = capture active AND the IO heartbeat advanced recently.
-            // Content silence still delivers callbacks; a stall means the
-            // pipeline is dead. A rebuild in flight is a known-transient.
-            let heartbeat = captureHeartbeat()
-            if heartbeat != lastObservedHeartbeat {
-                lastObservedHeartbeat = heartbeat
-                lastHeartbeatAdvanceAt = timestamp
-            }
-            let active = isCaptureActive()
-            let stalled: Bool
-            if !active {
-                stalled = true
-            } else if let lastAdvance = lastHeartbeatAdvanceAt {
-                stalled = timestamp.timeIntervalSince(lastAdvance) >= policy.stallThreshold
-            } else {
-                // Capture active but no heartbeat ever observed.
-                stalled = true
-            }
-            let alive = active && !stalled
+        if finished || isPaused() || isRouteSettling() {
+            lock.unlock()
+            return
+        }
+        guard var active = episode else {
+            // No explicit failure evidence: silence, flat callbacks, playback
+            // transitions, and unrelated CoreAudio clients are all no-ops.
+            lock.unlock()
+            return
+        }
 
-            if alive {
-                if var active = episode {
-                    active.healthyTicks += 1
-                    if active.healthyTicks >= policy.recoveredAfterTicks {
-                        episode = nil
-                        eventToEmit = MeetingSystemAudioHealthEvent(
-                            kind: .recovered,
-                            reason: active.initialReason,
-                            durationSeconds: timestamp.timeIntervalSince(active.startedAt),
-                            recoveryAttempts: active.recoveryAttempts
-                        )
-                    } else {
-                        episode = active
-                    }
-                }
-            } else if episode == nil {
-                episode = openEpisodeLocked(reason: "capture_heartbeat_stalled", at: timestamp)
+        let timestamp = now()
+        if isCaptureActive() {
+            active.healthyTicks += 1
+            if active.healthyTicks >= policy.recoveredAfterTicks {
+                episode = nil
                 eventToEmit = MeetingSystemAudioHealthEvent(
-                    kind: .degraded,
-                    reason: "capture_heartbeat_stalled",
-                    durationSeconds: 0,
-                    recoveryAttempts: 0
+                    kind: .recovered,
+                    reason: active.initialReason,
+                    durationSeconds: timestamp.timeIntervalSince(active.startedAt),
+                    recoveryAttempts: active.recoveryAttempts
                 )
-                // The graph is confirmed dead; rebuild immediately.
-                if var active = episode {
-                    active.recoveryAttempts += 1
-                    active.lastAttemptAt = timestamp
-                    episode = active
-                    recoveryReason = "capture_heartbeat_stalled"
-                }
             } else {
-                if var active = episode {
-                    active.healthyTicks = 0
-                    if active.recoveryAttempts < policy.maxAttemptsPerEpisode,
-                       let lastAttemptAt = active.lastAttemptAt,
-                       timestamp.timeIntervalSince(lastAttemptAt) >= policy.attemptCooldown {
-                        active.recoveryAttempts += 1
-                        active.lastAttemptAt = timestamp
-                        recoveryReason = active.initialReason
-                    }
-                    // Blindness bridge: tap dead + mic stale → the mic
-                    // tracker cannot see degradation without active system
-                    // audio, so surface it here (once per episode).
-                    if !active.micBridgeFired,
-                       let lastMic = lastMicCallbackAt(),
-                       timestamp.timeIntervalSince(lastMic) >= 3 {
-                        active.micBridgeFired = true
-                        micBridgeReason = "mic_callbacks_stale_while_system_tap_dead"
-                    }
-                    episode = active
-                }
+                episode = active
             }
+        } else {
+            active.healthyTicks = 0
+            if active.recoveryAttempts < policy.maxAttemptsPerEpisode,
+               let lastAttemptAt = active.lastAttemptAt,
+               timestamp.timeIntervalSince(lastAttemptAt) >= policy.attemptCooldown {
+                active.recoveryAttempts += 1
+                active.lastAttemptAt = timestamp
+                recoveryReason = active.initialReason
+            }
+            // Blindness bridge: confirmed tap failure + mic stale means the mic
+            // tracker may be blind because its system-audio precondition is
+            // unavailable. Surface this once per failure episode.
+            if !active.micBridgeFired,
+               let lastMic = lastMicCallbackAt(),
+               timestamp.timeIntervalSince(lastMic) >= 3 {
+                active.micBridgeFired = true
+                micBridgeReason = "mic_callbacks_stale_while_system_tap_dead"
+            }
+            episode = active
         }
         lock.unlock()
 

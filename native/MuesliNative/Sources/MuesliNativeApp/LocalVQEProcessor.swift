@@ -146,6 +146,8 @@ enum LocalVQELibraryLocator {
 }
 
 final class LocalVQEAudioProcessor: MeetingAecProcessor {
+    static let defaultThreadCount = 1
+
     let name = "localvqe"
     let modelPath: String
     let libraryPath: String
@@ -154,7 +156,10 @@ final class LocalVQEAudioProcessor: MeetingAecProcessor {
     private(set) var frameSize = 256
     private(set) var sampleRate = 16_000
 
-    static func load(downloadModelIfMissing: Bool = true, threads: Int = 2) async throws -> LocalVQEAudioProcessor {
+    static func load(
+        downloadModelIfMissing: Bool = true,
+        threads: Int = defaultThreadCount
+    ) async throws -> LocalVQEAudioProcessor {
         let modelURL = try await LocalVQEModelStore.resolveModelURL(downloadIfMissing: downloadModelIfMissing)
         let libraryURL = try LocalVQELibraryLocator.resolve()
         return try LocalVQEAudioProcessor(modelURL: modelURL, libraryURL: libraryURL, threads: threads)

@@ -8,6 +8,7 @@ struct MeetingMicRecoveryCoordinatorTests {
         var coordinator: MeetingMicRecoveryCoordinator!
         var events: [MeetingMicHealthEpisodeEvent] = []
         var recoveryRequests: [String] = []
+        var recoveryTriggers: [MeetingMicRecoveryTrigger] = []
         var now = Date(timeIntervalSince1970: 1_000_000)
 
         init(cooldown: TimeInterval = 15, maxAttempts: Int = 3) {
@@ -15,8 +16,9 @@ struct MeetingMicRecoveryCoordinatorTests {
                 policy: .init(attemptCooldown: cooldown, maxAttemptsPerEpisode: maxAttempts),
                 now: { [weak self] in self?.now ?? Date() }
             )
-            coordinator.recoveryRequest = { [weak self] reason in
-                self?.recoveryRequests.append(reason)
+            coordinator.recoveryRequest = { [weak self] trigger in
+                self?.recoveryRequests.append(trigger.reason)
+                self?.recoveryTriggers.append(trigger)
                 return .initiated
             }
             coordinator.onEpisodeEvent = { [weak self] event in
@@ -30,6 +32,16 @@ struct MeetingMicRecoveryCoordinatorTests {
         func systemActive(seconds: Int) {
             let chunks = seconds * 10
             for _ in 0..<chunks {
+                let snapshot = tracker.noteSystemSamples(Array(repeating: 2000, count: 1600), now: now)
+                coordinator.process(snapshot)
+                now = now.addingTimeInterval(0.1)
+            }
+        }
+
+        func systemActiveWithMicSilence(seconds: Int) {
+            let chunks = seconds * 10
+            for _ in 0..<chunks {
+                _ = tracker.noteRawMicSamples(Array(repeating: 0, count: 1600), now: now)
                 let snapshot = tracker.noteSystemSamples(Array(repeating: 2000, count: 1600), now: now)
                 coordinator.process(snapshot)
                 now = now.addingTimeInterval(0.1)
@@ -61,6 +73,16 @@ struct MeetingMicRecoveryCoordinatorTests {
         #expect(harness.events.first?.reason == "system_audio_active_without_mic_callbacks")
         #expect(harness.events.first?.state == MeetingMicHealthState.micCallbacksMissing.rawValue)
         #expect(harness.recoveryRequests == ["system_audio_active_without_mic_callbacks"])
+        #expect(harness.recoveryTriggers.first?.requiresNonZeroSamples == false)
+    }
+
+    @Test("all-zero degradation requires a non-zero recovery candidate")
+    func allZeroRecoveryRequiresNonZeroCandidate() {
+        let harness = Harness()
+        harness.systemActiveWithMicSilence(seconds: 4)
+
+        #expect(harness.events.first?.state == MeetingMicHealthState.micAllZeroWhileSystemActive.rawValue)
+        #expect(harness.recoveryTriggers.first?.requiresNonZeroSamples == true)
     }
 
     @Test("continued degradation does not emit duplicate events or premature retries")
@@ -83,6 +105,22 @@ struct MeetingMicRecoveryCoordinatorTests {
         #expect(harness.events.count == 1)
         #expect(harness.recoveryRequests.count == 1)
         // micAllZeroWhileSystemActive follows micCallbacksMissing: same episode.
+        #expect(harness.coordinator.hasActiveEpisode)
+    }
+
+    @Test("retry adopts the live all-zero requirement after a degradation-mode change")
+    func retryUsesLiveDegradationMode() {
+        // Keep the retry cooldown beyond the tracker's three-second
+        // degradation confirmation window so the mode change is committed
+        // before attempt two is reserved (production uses 15 seconds).
+        let harness = Harness(cooldown: 3.5, maxAttempts: 2)
+        harness.systemActive(seconds: 3)
+        #expect(harness.recoveryTriggers.map(\.requiresNonZeroSamples) == [false])
+
+        harness.systemActiveWithMicSilence(seconds: 4)
+
+        #expect(harness.events.map(\.kind) == [.degraded])
+        #expect(harness.recoveryTriggers.map(\.requiresNonZeroSamples) == [false, true])
         #expect(harness.coordinator.hasActiveEpisode)
     }
 
@@ -378,8 +416,8 @@ struct MeetingMicRecoveryCoordinatorTests {
     @Test("recovery request callback may re-enter process without deadlock")
     func recoveryCallbackReentryDoesNotDeadlock() {
         let harness = Harness()
-        harness.coordinator.recoveryRequest = { [weak harness] reason in
-            harness?.recoveryRequests.append(reason)
+        harness.coordinator.recoveryRequest = { [weak harness] trigger in
+            harness?.recoveryRequests.append(trigger.reason)
             // Synchronous re-entry, as if a recovery drove an audio callback
             // straight back into the coordinator.
             harness?.micSignal()
