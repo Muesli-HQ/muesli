@@ -255,7 +255,13 @@ final class DictationAudioSessionManager: @unchecked Sendable {
         }
     }
 
-    func beginRecording(mode: String, duckingEnabled: Bool, mediaPauseEnabled: Bool) {
+    func beginRecording(
+        mode: String,
+        duckingEnabled: Bool,
+        mediaPauseEnabled: Bool,
+        attenuationEnabled: Bool = false,
+        attenuationLevel: Float32 = 0.5
+    ) {
         let sessionID = ensureSession()
         queue.async { [self] in
             self.cancelPendingRouteRefreshLocked()
@@ -290,7 +296,12 @@ final class DictationAudioSessionManager: @unchecked Sendable {
             } else {
                 self.routeSnapshot = self.makeRouteSnapshot(refreshInput: true)
             }
-            self.beginSessionAudioControls(duckingEnabled: duckingEnabled, mediaPauseEnabled: mediaPauseEnabled)
+            self.beginSessionAudioControls(
+                duckingEnabled: duckingEnabled,
+                mediaPauseEnabled: mediaPauseEnabled,
+                attenuationEnabled: attenuationEnabled,
+                attenuationLevel: attenuationLevel
+            )
             self.duckingController.ensureCurrentDefaultDucked()
             let recorderInputDeviceID = self.recorderInputDeviceID(for: self.routeSnapshot)
             self.recorder.preferredInputDeviceID = recorderInputDeviceID
@@ -313,14 +324,25 @@ final class DictationAudioSessionManager: @unchecked Sendable {
         }
     }
 
-    func beginExternalSession(source: String, duckingEnabled: Bool, mediaPauseEnabled: Bool) {
+    func beginExternalSession(
+        source: String,
+        duckingEnabled: Bool,
+        mediaPauseEnabled: Bool,
+        attenuationEnabled: Bool = false,
+        attenuationLevel: Float32 = 0.5
+    ) {
         setExternalSessionHint(true)
         queue.async { [self] in
             self.cancelPendingRouteRefreshLocked()
             self.externalSessionActive = true
             self.routeSnapshot = self.makeRouteSnapshot(refreshInput: true)
             self.emitLatency("external_begin:\(source)")
-            self.beginSessionAudioControls(duckingEnabled: duckingEnabled, mediaPauseEnabled: mediaPauseEnabled)
+            self.beginSessionAudioControls(
+                duckingEnabled: duckingEnabled,
+                mediaPauseEnabled: mediaPauseEnabled,
+                attenuationEnabled: attenuationEnabled,
+                attenuationLevel: attenuationLevel
+            )
             self.duckingController.ensureCurrentDefaultDucked()
         }
     }
@@ -522,15 +544,40 @@ final class DictationAudioSessionManager: @unchecked Sendable {
         route.preferredInputDeviceID
     }
 
-    private func beginSessionAudioControls(duckingEnabled: Bool, mediaPauseEnabled: Bool) {
+    private func beginSessionAudioControls(
+        duckingEnabled: Bool,
+        mediaPauseEnabled: Bool,
+        attenuationEnabled: Bool = false,
+        attenuationLevel: Float32 = 0.5
+    ) {
+        // When attenuation actually applies we do NOT pause media – spec says
+        // "Do not pause media. Leave output at reduced level."
+        let attenuationWillApply = attenuationEnabled && routeSnapshot.shouldDuck
+        let effectiveMediaPause = attenuationWillApply ? false : mediaPauseEnabled
         mediaPlaybackController.beginDictationMediaPause(
-            enabled: mediaPauseEnabled,
+            enabled: effectiveMediaPause,
             routeKind: routeSnapshot.routeKind
         )
-        beginDuckingIfNeeded(duckingEnabled: duckingEnabled)
+        beginDuckingIfNeeded(
+            duckingEnabled: duckingEnabled,
+            attenuationEnabled: attenuationEnabled,
+            attenuationLevel: attenuationLevel
+        )
     }
 
-    private func beginDuckingIfNeeded(duckingEnabled: Bool) {
+    private func beginDuckingIfNeeded(
+        duckingEnabled: Bool,
+        attenuationEnabled: Bool = false,
+        attenuationLevel: Float32 = 0.5
+    ) {
+        // Attenuation takes precedence over mute when both are enabled;
+        // it provides 50% volume reduction instead of full mute.
+        if attenuationEnabled && routeSnapshot.shouldDuck {
+            duckingEnabledForSession = true
+            emitLatency("attenuate_begin:\(attenuationLevel)")
+            duckingController.beginDictationDucking(enabled: true, attenuationLevel: attenuationLevel)
+            return
+        }
         duckingEnabledForSession = duckingEnabled && routeSnapshot.shouldDuck
         emitLatency(duckingEnabledForSession ? "duck_begin" : "duck_skip")
         duckingController.beginDictationDucking(enabled: duckingEnabledForSession)

@@ -1585,6 +1585,8 @@ struct AppConfig: Codable {
     var quilSoundEnabled: Bool = true
     var pauseMediaDuringDictation: Bool = false
     var muteSystemAudioDuringDictation: Bool = false
+    var lowerVolumeDuringDictation: Bool = false
+    var dictationAttenuationLevel: Double = 0.5
     var recordingColorHex: String = "1e1e2e"   // Catppuccin Mocha base, without #
     var menuBarIcon: String = "muesli"
     var showHotkeyInMenuBar: Bool = true
@@ -1634,6 +1636,10 @@ struct AppConfig: Codable {
     var contributionBuyMeCoffeeClicked: Bool = false
     var contributionTweetClicked: Bool = false
     var contributionLinkedInClicked: Bool = false
+
+    var resolvedDictationAttenuationLevel: Float32 {
+        Float32(min(1.0, max(0.1, dictationAttenuationLevel)))
+    }
 
     enum CodingKeys: String, CodingKey {
         case dictationHotkey = "dictation_hotkey"
@@ -1721,6 +1727,8 @@ struct AppConfig: Codable {
         case quilSoundEnabled = "quil_sound_enabled"
         case pauseMediaDuringDictation = "pause_media_during_dictation"
         case muteSystemAudioDuringDictation = "mute_system_audio_during_dictation"
+        case lowerVolumeDuringDictation = "lower_volume_during_dictation"
+        case dictationAttenuationLevel = "dictation_attenuation_level"
         case recordingColorHex = "recording_color_hex"
         case menuBarIcon = "menu_bar_icon"
         case showHotkeyInMenuBar = "show_hotkey_in_menu_bar"
@@ -1918,6 +1926,9 @@ struct AppConfig: Codable {
         quilSoundEnabled = (try? c.decode(Bool.self, forKey: .quilSoundEnabled)) ?? defaults.quilSoundEnabled
         pauseMediaDuringDictation = (try? c.decode(Bool.self, forKey: .pauseMediaDuringDictation)) ?? defaults.pauseMediaDuringDictation
         muteSystemAudioDuringDictation = (try? c.decode(Bool.self, forKey: .muteSystemAudioDuringDictation)) ?? defaults.muteSystemAudioDuringDictation
+        lowerVolumeDuringDictation = (try? c.decode(Bool.self, forKey: .lowerVolumeDuringDictation)) ?? defaults.lowerVolumeDuringDictation
+        let decodedAttenuationLevel = (try? c.decode(Double.self, forKey: .dictationAttenuationLevel)) ?? defaults.dictationAttenuationLevel
+        dictationAttenuationLevel = min(1.0, max(0.1, decodedAttenuationLevel))
         recordingColorHex = (try? c.decode(String.self, forKey: .recordingColorHex)) ?? defaults.recordingColorHex
         menuBarIcon = (try? c.decode(String.self, forKey: .menuBarIcon)) ?? defaults.menuBarIcon
         showHotkeyInMenuBar =

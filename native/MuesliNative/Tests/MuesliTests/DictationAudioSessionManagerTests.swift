@@ -768,6 +768,7 @@ private final class FakeDictationRecorder: DictationAudioRecording {
 
 private final class FakeDuckingManager: AudioDuckingManaging {
     var beginCalls: [Bool] = []
+    var beginAttenuationLevels: [Float32?] = []
     var ensureCalls = 0
     var restoreCalls = 0
     var completeRestoreImmediately = true
@@ -775,6 +776,12 @@ private final class FakeDuckingManager: AudioDuckingManaging {
 
     func beginDictationDucking(enabled: Bool) {
         beginCalls.append(enabled)
+        beginAttenuationLevels.append(nil)
+    }
+
+    func beginDictationDucking(enabled: Bool, attenuationLevel: Float32?) {
+        beginCalls.append(enabled)
+        beginAttenuationLevels.append(attenuationLevel)
     }
 
     func ensureCurrentDefaultDucked() {
