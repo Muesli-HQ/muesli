@@ -229,8 +229,8 @@ struct DictationAudioSessionManagerTests {
         })
     }
 
-    @Test("media resume waits until ducking restore completes")
-    func mediaResumeWaitsUntilDuckingRestoreCompletes() {
+    @Test("media resume starts before ducking restore completes")
+    func mediaResumeStartsBeforeDuckingRestoreCompletes() {
         let harness = Harness(routeKind: .speakerLike)
         harness.ducking.completeRestoreImmediately = false
 
@@ -240,7 +240,7 @@ struct DictationAudioSessionManagerTests {
         harness.wait()
 
         #expect(harness.ducking.restoreCalls == 1)
-        #expect(harness.media.restoreCalls == 0)
+        #expect(harness.media.restoreCalls == 1)
         #expect(harness.route.restoreCalls == 1)
         #expect(!harness.events.contains { event in
             if case .audioRestored = event {
@@ -610,6 +610,20 @@ struct DictationAudioSessionManagerTests {
         harness.wait()
 
         #expect(harness.media.restoreCalls == 1)
+    }
+
+    @Test("media restore does not wait for ducking restore")
+    func mediaRestoreDoesNotWaitForDuckingRestore() {
+        let harness = Harness(routeKind: .speakerLike)
+        harness.ducking.completeRestoreImmediately = false
+
+        harness.manager.beginRecording(mode: "toggle", duckingEnabled: false, mediaPauseEnabled: true)
+        harness.wait()
+        harness.manager.stop()
+        harness.wait()
+
+        #expect(harness.media.restoreCalls == 1)
+        #expect(harness.ducking.restoreCalls == 1)
     }
 
     @Test("cancel tears down warm recorder graph")
