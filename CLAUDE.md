@@ -196,7 +196,7 @@ Key implementation details:
 - Hotkey, calendar, and mic monitors are **deferred until after onboarding completes** to prevent premature permission prompts
 - App restart via detached shell: `/bin/sh -c "sleep 1; open -- \"$1\"" -- <bundlePath>` then `NSApp.terminate(nil)`
 - Progress saved on every step transition to `onboarding-progress.json` (schema-versioned, atomic writes)
-- Dictation test step uses real hold-to-talk hotkey flow with `dictationTestCallback` routing (no paste, no floating indicator)
+- Dictation test step uses the real hold-to-talk hotkey flow with `dictationTestCallback` routing. It never pastes, but intentionally keeps the floating waveform visible so onboarding exercises the same recording feedback as normal dictation; releasing the hotkey leaves the active state immediately.
 - `OnboardingView.dictationTestStep` (static Int = 4) — hotkey monitor only starts when resuming at this step or later
 
 ## Screen Context (opt-in, `enableScreenContext` in config)

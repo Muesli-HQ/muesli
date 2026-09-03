@@ -2,6 +2,24 @@ import AppKit
 import SwiftUI
 import MuesliCore
 
+enum OnboardingSystemSettingsYieldBehavior: Equatable {
+    case orderedBehind
+    case guideControlled
+}
+
+enum OnboardingSystemSettingsYieldPolicy {
+    static func behavior(
+        for guidePermission: PermissionDragGuidePermission?
+    ) -> OnboardingSystemSettingsYieldBehavior {
+        switch guidePermission {
+        case .some:
+            return .guideControlled
+        case nil:
+            return .orderedBehind
+        }
+    }
+}
+
 @MainActor
 final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private let controller: MuesliController
@@ -21,20 +39,65 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
     }
 
     func bringToFront() {
+        window?.alphaValue = 1
+        window?.ignoresMouseEvents = false
         window?.level = .floating
         window?.makeKeyAndOrderFront(nil)
         window?.orderFrontRegardless()
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
-    func yieldFocusToSystemSettings() {
+    func yieldFocusToSystemSettings(using behavior: OnboardingSystemSettingsYieldBehavior) {
         guard let window else { return }
-        window.level = .normal
-        window.orderBack(nil)
+        switch behavior {
+        case .orderedBehind:
+            // Preserve the original onboarding behavior for permissions without
+            // a floating guide, such as Microphone. The user can return to the
+            // still-visible, interactive onboarding window without first
+            // granting the permission.
+            window.alphaValue = 1
+            window.ignoresMouseEvents = false
+            window.level = .normal
+            window.orderBack(nil)
+        case .guideControlled:
+            // Keep onboarding mounted and recoverable behind System Settings
+            // while the guide validates the target window. The guide controller
+            // only suppresses it after usable overlay frames are available.
+            window.level = .normal
+            window.alphaValue = 1
+            window.ignoresMouseEvents = false
+            window.orderBack(nil)
+        }
+    }
+
+    func applySystemSettingsGuidePresentation(
+        _ presentation: AccessibilityPermissionGuideOnboardingPresentation
+    ) {
+        guard let window else { return }
+        switch presentation {
+        case .suppressed:
+            // Keep the SwiftUI hierarchy mounted while the guide is attached to
+            // System Settings. Ordering the window out fires OnboardingView's
+            // onDisappear, which intentionally dismisses the permission guide.
+            window.level = .normal
+            window.alphaValue = 0
+            window.ignoresMouseEvents = true
+        case .restoredWithoutActivation:
+            // Leaving System Settings must make onboarding recoverable without
+            // activating Muesli over the application the user chose.
+            window.level = .normal
+            window.alphaValue = 1
+            window.ignoresMouseEvents = false
+            window.orderFrontRegardless()
+        case .restoredAndActive:
+            bringToFront()
+        }
     }
 
     func prepareForNativePermissionPrompt() {
         guard let window else { return }
+        window.alphaValue = 1
+        window.ignoresMouseEvents = false
         window.level = .normal
         window.makeKeyAndOrderFront(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
