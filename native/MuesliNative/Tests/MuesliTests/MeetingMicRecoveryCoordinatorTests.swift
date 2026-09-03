@@ -108,6 +108,22 @@ struct MeetingMicRecoveryCoordinatorTests {
         #expect(harness.coordinator.hasActiveEpisode)
     }
 
+    @Test("retry adopts the live all-zero requirement after a degradation-mode change")
+    func retryUsesLiveDegradationMode() {
+        // Keep the retry cooldown beyond the tracker's three-second
+        // degradation confirmation window so the mode change is committed
+        // before attempt two is reserved (production uses 15 seconds).
+        let harness = Harness(cooldown: 3.5, maxAttempts: 2)
+        harness.systemActive(seconds: 3)
+        #expect(harness.recoveryTriggers.map(\.requiresNonZeroSamples) == [false])
+
+        harness.systemActiveWithMicSilence(seconds: 4)
+
+        #expect(harness.events.map(\.kind) == [.degraded])
+        #expect(harness.recoveryTriggers.map(\.requiresNonZeroSamples) == [false, true])
+        #expect(harness.coordinator.hasActiveEpisode)
+    }
+
     @Test("recovery retries after cooldown and stops at the attempt cap")
     func recoveryCooldownAndCap() {
         let harness = Harness(cooldown: 0.5, maxAttempts: 2)
