@@ -1565,6 +1565,8 @@ struct AppConfig: Codable {
     var lmStudioModel: String = ""
     var customLLMURL: String = ""
     var customLLMAPIKey: String = ""
+    var customLLMAPIKeyCommand: String = ""
+    var customLLMHeaders: [CustomLLMRequestHeader] = []
     var customLLMModel: String = ""
     var customLLMFormat: String = CustomLLMFormat.openAI.rawValue
     var summaryModel: String = ""
@@ -1703,6 +1705,8 @@ struct AppConfig: Codable {
         case lmStudioModel = "lmstudio_model"
         case customLLMURL = "custom_llm_url"
         case customLLMAPIKey = "custom_llm_api_key"
+        case customLLMAPIKeyCommand = "custom_llm_api_key_command"
+        case customLLMHeaders = "custom_llm_headers"
         case customLLMModel = "custom_llm_model"
         case customLLMFormat = "custom_llm_format"
         case summaryModel = "summary_model"
@@ -1891,6 +1895,8 @@ struct AppConfig: Codable {
         lmStudioModel = (try? c.decode(String.self, forKey: .lmStudioModel)) ?? defaults.lmStudioModel
         customLLMURL = (try? c.decode(String.self, forKey: .customLLMURL)) ?? defaults.customLLMURL
         customLLMAPIKey = (try? c.decode(String.self, forKey: .customLLMAPIKey)) ?? defaults.customLLMAPIKey
+        customLLMAPIKeyCommand = (try? c.decode(String.self, forKey: .customLLMAPIKeyCommand)) ?? defaults.customLLMAPIKeyCommand
+        customLLMHeaders = (try? c.decode([CustomLLMRequestHeader].self, forKey: .customLLMHeaders)) ?? defaults.customLLMHeaders
         customLLMModel = (try? c.decode(String.self, forKey: .customLLMModel)) ?? defaults.customLLMModel
         let decodedCustomLLMFormat = (try? c.decode(String.self, forKey: .customLLMFormat)) ?? defaults.customLLMFormat
         customLLMFormat = CustomLLMFormat(rawValue: decodedCustomLLMFormat)?.rawValue ?? defaults.customLLMFormat

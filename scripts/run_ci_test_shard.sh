@@ -101,6 +101,10 @@ case "${shard}" in
       MeetingFollowUpPolicyTests
       MeetingFollowUpThreadTests
       MeetingFollowUpSummaryPromptTests
+      CustomLLMAPIKeyResolutionTests
+      CustomLLMHeaderPropagationTests
+      CustomLLMRequestHeadersTests
+      LLMConnectionTests
       MeetingSummaryClientTests
       MeetingsNavigationTests
       MeetingBrowserLogicTests

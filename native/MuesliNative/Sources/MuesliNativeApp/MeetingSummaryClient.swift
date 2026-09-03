@@ -20,6 +20,114 @@ enum MeetingSummaryError: LocalizedError {
     }
 }
 
+enum LLMConnectionTestContext: Sendable {
+    case meetingSummary
+    case hostedGeneration
+}
+
+private actor ChatGPTConnectionTestGate {
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
+    private var isRunning = false
+    private var waiters: [Waiter] = []
+
+    func run<T: Sendable>(_ operation: @Sendable () async throws -> T) async throws -> T {
+        try await acquire()
+        defer { release() }
+        try Task.checkCancellation()
+        let result = try await operation()
+        try Task.checkCancellation()
+        return result
+    }
+
+    private func acquire() async throws {
+        try Task.checkCancellation()
+        guard isRunning else {
+            isRunning = true
+            return
+        }
+
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                } else {
+                    waiters.append(Waiter(id: id, continuation: continuation))
+                }
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(id: id) }
+        }
+    }
+
+    func queuedWaiterCount() -> Int {
+        waiters.count
+    }
+
+    private func cancelWaiter(id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        let waiter = waiters.remove(at: index)
+        waiter.continuation.resume(throwing: CancellationError())
+    }
+
+    private func release() {
+        if waiters.isEmpty {
+            isRunning = false
+        } else {
+            let waiter = waiters.removeFirst()
+            waiter.continuation.resume()
+        }
+    }
+}
+
+enum LLMConnectionTestError: LocalizedError, Equatable {
+    case invalidEndpoint
+    case missingModel
+    case missingCredential
+    case timedOut
+    case unreachable
+    case tlsFailure
+    case authenticationFailed
+    case accessDenied
+    case notFound
+    case rateLimited
+    case httpStatus(Int)
+    case invalidResponse
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidEndpoint:
+            return "Enter a valid endpoint before testing the connection."
+        case .missingModel:
+            return "Enter a model before testing the connection."
+        case .missingCredential:
+            return "Configure credentials before testing this connection."
+        case .timedOut:
+            return "The connection test timed out."
+        case .unreachable:
+            return "The configured endpoint could not be reached."
+        case .tlsFailure:
+            return "A secure connection to the endpoint could not be established."
+        case .authenticationFailed:
+            return "Authentication failed. Reconnect the account or check the configured credentials."
+        case .accessDenied:
+            return "The configured credential does not have access to this endpoint or model."
+        case .notFound:
+            return "The endpoint or model was not found."
+        case .rateLimited:
+            return "The endpoint is rate limited. Try again later."
+        case let .httpStatus(statusCode):
+            return "The endpoint returned HTTP status \(statusCode)."
+        case .invalidResponse:
+            return "The endpoint returned an incompatible response."
+        }
+    }
+}
+
 enum MeetingSummaryRetryPolicy {
     static let defaultRetryCount = 3
     static let maximumRetryCount = 5
@@ -756,12 +864,31 @@ enum MeetingSummaryClient {
                 message: "No model selected. Enter a model in Settings."
             )
         }
-        let apiKey = config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if customLLMRequiresAPIKey(config: config),
+           config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           config.customLLMAPIKeyCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw MeetingSummaryError.backendFailed(
+                backend: "Custom LLM",
+                statusCode: nil,
+                message: "Enter an API key or API key command for the selected Custom LLM format."
+            )
+        }
+        let extraHeaders: [String: String]
+        do {
+            extraHeaders = try CustomLLMRequestHeaders.validated(config.customLLMHeaders)
+        } catch {
+            throw MeetingSummaryError.backendFailed(
+                backend: "Custom LLM",
+                statusCode: nil,
+                message: error.localizedDescription
+            )
+        }
+        let apiKey = try await resolveCustomLLMAPIKey(config: config)
         if customLLMRequiresAPIKey(config: config) && apiKey.isEmpty {
             throw MeetingSummaryError.backendFailed(
                 backend: "Custom LLM",
                 statusCode: nil,
-                message: "Enter an API key for the selected Custom LLM format."
+                message: "Enter an API key or API key command for the selected Custom LLM format."
             )
         }
 
@@ -780,7 +907,8 @@ enum MeetingSummaryClient {
                 template: template,
                 visualContext: visualContext,
                 previousMeetingNotes: previousMeetingNotes,
-                timeout: customLLMSummaryTimeout
+                timeout: customLLMSummaryTimeout,
+                extraHeaders: extraHeaders
             )
         case .anthropic:
             return try await summarizeWithAnthropicMessages(
@@ -796,7 +924,8 @@ enum MeetingSummaryClient {
                 template: template,
                 visualContext: visualContext,
                 previousMeetingNotes: previousMeetingNotes,
-                timeout: customLLMSummaryTimeout
+                timeout: customLLMSummaryTimeout,
+                extraHeaders: extraHeaders
             )
         }
     }
@@ -812,7 +941,433 @@ enum MeetingSummaryClient {
     static func customLLMHasRequiredSettings(config: AppConfig) -> Bool {
         let model = config.customLLMModel.trimmingCharacters(in: .whitespacesAndNewlines)
         let apiKey = config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !model.isEmpty && (!customLLMRequiresAPIKey(config: config) || !apiKey.isEmpty)
+        let apiKeyCommand = config.customLLMAPIKeyCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasAPIKey = !apiKey.isEmpty || !apiKeyCommand.isEmpty
+        let headersAreValid = (try? CustomLLMRequestHeaders.validated(config.customLLMHeaders)) != nil
+        return headersAreValid
+            && !model.isEmpty
+            && (!customLLMRequiresAPIKey(config: config) || hasAPIKey)
+    }
+
+    /// Resolve the API key for the custom LLM backend.
+    ///
+    /// If `customLLMAPIKeyCommand` is set, it is executed via `/bin/sh -c` and its
+    /// trimmed stdout is used as the API key. This supports credential helpers that
+    /// issue short-lived tokens. The static `customLLMAPIKey` remains the fallback
+    /// when the command is not set, fails, times out, or returns no output.
+    static func resolveCustomLLMAPIKey(config: AppConfig) async throws -> String {
+        try await CredentialCommandRunner.resolve(
+            command: config.customLLMAPIKeyCommand,
+            fallback: config.customLLMAPIKey
+        )
+    }
+
+    static func chatCompletionsTokenKey(model: String, url: URL) -> String {
+        if url.host?.contains("openai.com") == true {
+            return "max_completion_tokens"
+        }
+        let modelName = model.split(separator: "/").last.map(String.init)?.lowercased() ?? model.lowercased()
+        let completionTokenPrefixes = ["gpt-5", "gpt-6", "o1", "o3", "o4"]
+        return completionTokenPrefixes.contains(where: modelName.hasPrefix)
+            ? "max_completion_tokens"
+            : "max_tokens"
+    }
+
+    typealias ChatGPTConnectionResponder = @Sendable (
+        _ systemPrompt: String,
+        _ userPrompt: String,
+        _ model: String,
+        _ maxOutputTokens: Int?
+    ) async throws -> String
+
+    private enum LLMConnectionResponseShape {
+        case openAIResponses(LLMConnectionTestContext)
+        case chatCompletions(LLMConnectionTestContext)
+        case anthropicMessages(LLMConnectionTestContext)
+        case ollamaChat
+    }
+
+    private static let chatGPTConnectionTestGate = ChatGPTConnectionTestGate()
+
+    static func chatGPTConnectionTestWaiterCount() async -> Int {
+        await chatGPTConnectionTestGate.queuedWaiterCount()
+    }
+
+    static func testLLMConnection(
+        backend: LLMBackendOption,
+        config: AppConfig,
+        model: String,
+        requiresExplicitEndpoint: Bool = false,
+        context: LLMConnectionTestContext = .meetingSummary,
+        session: URLSession = .shared,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        chatGPTResponder: ChatGPTConnectionResponder? = nil
+    ) async throws {
+        let configuredModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !configuredModel.isEmpty else {
+            throw LLMConnectionTestError.missingModel
+        }
+
+        if backend == .chatGPT {
+            do {
+                let output = try await chatGPTConnectionTestGate.run {
+                    if let chatGPTResponder {
+                        return try await chatGPTResponder(
+                            "Reply with OK.",
+                            "Connection test.",
+                            configuredModel,
+                            128
+                        )
+                    }
+                    return try await ChatGPTResponsesClient.respond(
+                        systemPrompt: "Reply with OK.",
+                        userPrompt: "Connection test.",
+                        model: configuredModel,
+                        maxOutputTokens: 128,
+                        logCategory: "connection-test",
+                        logProviderErrorDetails: false
+                    )
+                }
+                guard !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw LLMConnectionTestError.invalidResponse
+                }
+                return
+            } catch {
+                throw mappedConnectionTestError(error)
+            }
+        }
+
+        let (request, responseShape) = try await connectionTestRequest(
+            backend: backend,
+            config: config,
+            model: configuredModel,
+            requiresExplicitEndpoint: requiresExplicitEndpoint,
+            context: context,
+            environment: environment
+        )
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw LLMConnectionTestError.invalidResponse
+            }
+            guard (200..<300).contains(httpResponse.statusCode) else {
+                throw connectionTestError(for: httpResponse.statusCode)
+            }
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  connectionTestResponseIsCompatible(json, shape: responseShape) else {
+                throw LLMConnectionTestError.invalidResponse
+            }
+        } catch {
+            throw mappedConnectionTestError(error)
+        }
+    }
+
+    private static func connectionTestRequest(
+        backend: LLMBackendOption,
+        config: AppConfig,
+        model: String,
+        requiresExplicitEndpoint: Bool,
+        context: LLMConnectionTestContext,
+        environment: [String: String]
+    ) async throws -> (URLRequest, LLMConnectionResponseShape) {
+        var request: URLRequest
+        let body: [String: Any]
+        let responseShape: LLMConnectionResponseShape
+
+        switch backend {
+        case .openAI:
+            let apiKey = connectionTestAPIKey(
+                configured: config.openAIAPIKey,
+                environment: environment["OPENAI_API_KEY"],
+                context: context
+            )
+            guard !apiKey.isEmpty else { throw LLMConnectionTestError.missingCredential }
+            request = URLRequest(url: openAIURL)
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            switch context {
+            case .meetingSummary:
+                body = [
+                    "model": model,
+                    "input": [
+                        ["role": "system", "content": "Reply with OK."],
+                        ["role": "user", "content": "Connection test."],
+                    ],
+                    "reasoning": ["effort": SummaryModelPreset.reasoningEffort(for: model) ?? "low"],
+                    "text": ["verbosity": "low"],
+                    "max_output_tokens": 128,
+                ]
+            case .hostedGeneration:
+                var hostedBody: [String: Any] = [
+                    "model": model,
+                    "instructions": "Reply with OK.",
+                    "input": "Connection test.",
+                    "max_output_tokens": 128,
+                ]
+                if let effort = SummaryModelPreset.reasoningEffort(for: model) {
+                    hostedBody["reasoning"] = ["effort": effort]
+                }
+                body = hostedBody
+            }
+            responseShape = .openAIResponses(context)
+
+        case .openRouter:
+            let apiKey = connectionTestAPIKey(
+                configured: config.openRouterAPIKey,
+                environment: environment["OPENROUTER_API_KEY"],
+                context: context
+            )
+            guard !apiKey.isEmpty else { throw LLMConnectionTestError.missingCredential }
+            request = URLRequest(url: openRouterURL)
+            switch context {
+            case .meetingSummary:
+                request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            case .hostedGeneration:
+                let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
+            }
+            request.setValue(AppIdentity.displayName, forHTTPHeaderField: "X-OpenRouter-Title")
+            body = chatCompletionsConnectionTestBody(model: model, requestURL: openRouterURL)
+            responseShape = .chatCompletions(context)
+
+        case .ollama:
+            guard let baseURL = resolveOllamaConnectionTestURL(config.ollamaURL) else {
+                throw LLMConnectionTestError.invalidEndpoint
+            }
+            request = URLRequest(url: baseURL.appendingPathComponent("api/chat"))
+            body = [
+                "model": model,
+                "messages": [
+                    ["role": "system", "content": "Reply with OK."],
+                    ["role": "user", "content": "Connection test."],
+                ],
+                "stream": false,
+                "options": ["num_predict": 256],
+            ]
+            responseShape = .ollamaChat
+
+        case .lmStudio:
+            guard let requestURL = resolveLMStudioURL(config: config) else {
+                throw LLMConnectionTestError.invalidEndpoint
+            }
+            request = URLRequest(url: requestURL)
+            body = chatCompletionsConnectionTestBody(model: model, requestURL: requestURL)
+            responseShape = .chatCompletions(context)
+
+        case .customLLM:
+            let format = CustomLLMFormat(rawValue: config.customLLMFormat) ?? .openAI
+            if requiresExplicitEndpoint,
+               config.customLLMURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                throw LLMConnectionTestError.invalidEndpoint
+            }
+            guard let requestURL = resolveCustomLLMURL(config: config, format: format) else {
+                throw LLMConnectionTestError.invalidEndpoint
+            }
+            let extraHeaders = try CustomLLMRequestHeaders.validated(config.customLLMHeaders)
+            let apiKey = try await resolveCustomLLMAPIKey(config: config)
+            if customLLMRequiresAPIKey(config: config) && apiKey.isEmpty {
+                throw LLMConnectionTestError.missingCredential
+            }
+
+            request = URLRequest(url: requestURL)
+            switch format {
+            case .openAI:
+                if !apiKey.isEmpty {
+                    request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+                }
+                body = chatCompletionsConnectionTestBody(model: model, requestURL: requestURL)
+                responseShape = .chatCompletions(context)
+            case .anthropic:
+                request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+                request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+                body = [
+                    "model": model,
+                    "max_tokens": 256,
+                    "system": "Reply with OK.",
+                    "messages": [
+                        ["role": "user", "content": "Connection test."],
+                    ],
+                ]
+                responseShape = .anthropicMessages(context)
+            }
+            for (name, value) in extraHeaders {
+                request.setValue(value, forHTTPHeaderField: name)
+            }
+
+        default:
+            throw LLMConnectionTestError.invalidEndpoint
+        }
+
+        request.timeoutInterval = 120
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return (request, responseShape)
+    }
+
+    static func connectionTestAPIKey(
+        configured: String,
+        environment: String?,
+        context: LLMConnectionTestContext
+    ) -> String {
+        switch context {
+        case .meetingSummary:
+            return environment ?? configured
+        case .hostedGeneration:
+            let configured = configured.trimmingCharacters(in: .whitespacesAndNewlines)
+            return configured.isEmpty ? (environment ?? "") : configured
+        }
+    }
+
+    private static func chatCompletionsConnectionTestBody(
+        model: String,
+        requestURL: URL
+    ) -> [String: Any] {
+        var body: [String: Any] = [
+            "model": model,
+            "messages": [
+                ["role": "system", "content": "Reply with OK."],
+                ["role": "user", "content": "Connection test."],
+            ],
+        ]
+        body[requestURL.host?.contains("openai.com") == true ? "max_completion_tokens" : "max_tokens"] = 256
+        return body
+    }
+
+    private static func resolveOllamaConnectionTestURL(_ value: String) -> URL? {
+        let rawURL = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let candidate = rawURL.isEmpty ? defaultOllamaBaseURL.absoluteString : rawURL
+        guard let url = URL(string: candidate),
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              components.host?.isEmpty == false else {
+            return nil
+        }
+        return url
+    }
+
+    private static func connectionTestResponseIsCompatible(
+        _ json: [String: Any],
+        shape: LLMConnectionResponseShape
+    ) -> Bool {
+        if let error = json["error"], !(error is NSNull) {
+            return false
+        }
+        switch shape {
+        case let .openAIResponses(context):
+            if let status = json["status"] as? String,
+               ["failed", "cancelled", "incomplete"].contains(status.lowercased()) {
+                return false
+            }
+            switch context {
+            case .meetingSummary:
+                return extractOpenAIText(from: json)?.isEmpty == false
+            case .hostedGeneration:
+                return extractHostedOpenAIText(from: json)?.isEmpty == false
+            }
+        case let .chatCompletions(context):
+            switch context {
+            case .meetingSummary:
+                return extractOpenRouterText(from: json)?.isEmpty == false
+            case .hostedGeneration:
+                return extractHostedChatCompletionsText(from: json)?.isEmpty == false
+            }
+        case let .anthropicMessages(context):
+            switch context {
+            case .meetingSummary:
+                return extractAnthropicText(from: json)?.isEmpty == false
+            case .hostedGeneration:
+                return extractHostedAnthropicText(from: json)?.isEmpty == false
+            }
+        case .ollamaChat:
+            let message = json["message"] as? [String: Any]
+            return (message?["content"] as? String)?.isEmpty == false
+        }
+    }
+
+    private static func extractHostedOpenAIText(from payload: [String: Any]) -> String? {
+        if let outputText = payload["output_text"] as? String, !outputText.isEmpty {
+            return outputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard let output = payload["output"] as? [[String: Any]] else { return nil }
+        let parts = output.flatMap { item -> [String] in
+            guard let content = item["content"] as? [[String: Any]] else { return [] }
+            return content.compactMap { $0["text"] as? String }
+        }
+        let joined = parts.joined()
+        return joined.isEmpty ? nil : joined.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func extractHostedChatCompletionsText(from payload: [String: Any]) -> String? {
+        guard let choices = payload["choices"] as? [[String: Any]] else { return nil }
+        for choice in choices {
+            if let message = choice["message"] as? [String: Any],
+               let content = message["content"] as? String,
+               !content.isEmpty {
+                return content.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if let text = choice["text"] as? String, !text.isEmpty {
+                return text.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        return nil
+    }
+
+    private static func extractHostedAnthropicText(from payload: [String: Any]) -> String? {
+        guard let content = payload["content"] as? [[String: Any]] else { return nil }
+        let parts = content.compactMap { item -> String? in
+            guard (item["type"] as? String) == nil || (item["type"] as? String) == "text" else { return nil }
+            return item["text"] as? String
+        }
+        let joined = parts.joined()
+        return joined.isEmpty ? nil : joined.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func mappedConnectionTestError(_ error: Error) -> Error {
+        if error is CancellationError { return CancellationError() }
+        if let error = error as? LLMConnectionTestError { return error }
+        if error is ChatGPTAuthError { return LLMConnectionTestError.authenticationFailed }
+        if let error = error as? ChatGPTResponsesError {
+            switch error {
+            case let .backendFailed(statusCode, _):
+                if (200..<300).contains(statusCode) {
+                    return LLMConnectionTestError.invalidResponse
+                }
+                return connectionTestError(for: statusCode)
+            }
+        }
+        if let error = error as? URLError {
+            switch error.code {
+            case .cancelled:
+                return CancellationError()
+            case .timedOut:
+                return LLMConnectionTestError.timedOut
+            case .secureConnectionFailed, .serverCertificateHasBadDate,
+                 .serverCertificateUntrusted, .serverCertificateHasUnknownRoot,
+                 .serverCertificateNotYetValid, .clientCertificateRejected,
+                 .clientCertificateRequired:
+                return LLMConnectionTestError.tlsFailure
+            default:
+                return LLMConnectionTestError.unreachable
+            }
+        }
+        return LLMConnectionTestError.unreachable
+    }
+
+    private static func connectionTestError(for statusCode: Int) -> LLMConnectionTestError {
+        switch statusCode {
+        case 401:
+            return .authenticationFailed
+        case 403:
+            return .accessDenied
+        case 404:
+            return .notFound
+        case 429:
+            return .rateLimited
+        default:
+            return .httpStatus(statusCode)
+        }
     }
 
     private static func summarizeWithChatCompletions(
@@ -828,7 +1383,8 @@ enum MeetingSummaryClient {
         template: MeetingTemplateSnapshot,
         visualContext: String?,
         previousMeetingNotes: String?,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        extraHeaders: [String: String] = [:]
     ) async throws -> String {
         let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes, previousMeetingNotes: previousMeetingNotes)
         let userPrompt = summaryUserPrompt(
@@ -856,6 +1412,9 @@ enum MeetingSummaryClient {
         if !apiKey.isEmpty {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
+        for (name, value) in extraHeaders {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         do {
@@ -866,7 +1425,7 @@ enum MeetingSummaryClient {
                 let text = extractOpenRouterText(from: json),
                 !text.isEmpty
             else {
-                if let message = extractErrorMessage(from: data) {
+                if backend != "Custom LLM", let message = extractErrorMessage(from: data) {
                     throw MeetingSummaryError.backendFailed(backend: backend, statusCode: nil, message: message)
                 }
                 throw MeetingSummaryError.emptyResponse(backend: backend)
@@ -890,7 +1449,8 @@ enum MeetingSummaryClient {
         template: MeetingTemplateSnapshot,
         visualContext: String?,
         previousMeetingNotes: String?,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        extraHeaders: [String: String] = [:]
     ) async throws -> String {
         let instructions = summaryInstructions(for: template, existingNotes: existingNotes, manualNotes: manualNotes, previousMeetingNotes: previousMeetingNotes)
         let userPrompt = summaryUserPrompt(
@@ -918,6 +1478,9 @@ enum MeetingSummaryClient {
         if !apiKey.isEmpty {
             request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         }
+        for (name, value) in extraHeaders {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         do {
@@ -928,7 +1491,7 @@ enum MeetingSummaryClient {
                 let text = extractAnthropicText(from: json),
                 !text.isEmpty
             else {
-                if let message = extractErrorMessage(from: data) {
+                if backend != "Custom LLM", let message = extractErrorMessage(from: data) {
                     throw MeetingSummaryError.backendFailed(backend: backend, statusCode: nil, message: message)
                 }
                 throw MeetingSummaryError.emptyResponse(backend: backend)
@@ -958,9 +1521,14 @@ enum MeetingSummaryClient {
     private static func validateHTTPResponse(_ response: URLResponse, data: Data, backend: String) throws {
         guard let httpResponse = response as? HTTPURLResponse else { return }
         guard (200..<300).contains(httpResponse.statusCode) else {
-            let message = extractErrorMessage(from: data)
-                ?? String(data: data, encoding: .utf8)
-                ?? HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode)
+            let message: String
+            if backend == "Custom LLM" {
+                message = HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode)
+            } else {
+                message = extractErrorMessage(from: data)
+                    ?? String(data: data, encoding: .utf8)
+                    ?? HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode)
+            }
             throw MeetingSummaryError.backendFailed(
                 backend: backend,
                 statusCode: httpResponse.statusCode,
@@ -1220,7 +1788,8 @@ enum MeetingSummaryClient {
     private static func callChatCompletions(
         url: URL, apiKey: String, model: String,
         systemPrompt: String, userPrompt: String,
-        maxTokens: Int?, extraHeaders: [String: String], timeout: TimeInterval? = nil
+        maxTokens: Int?, extraHeaders: [String: String], timeout: TimeInterval? = nil,
+        customLLM: Bool = false
     ) async -> String? {
         let isOpenAI = url.host?.contains("openai.com") == true
         var body: [String: Any] = [
@@ -1253,23 +1822,37 @@ enum MeetingSummaryClient {
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
         do {
-            let (data, _) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if customLLM,
+               let httpResponse = response as? HTTPURLResponse,
+               !(200..<300).contains(httpResponse.statusCode) {
+                fputs("[summary] Custom LLM title generation failed with HTTP \(httpResponse.statusCode)\n", stderr)
+                return nil
+            }
             guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 fputs("[summary] title generation: invalid JSON response\n", stderr)
                 return nil
             }
             if let error = json["error"] as? [String: Any] {
-                fputs("[summary] title generation error: \(error["message"] ?? error)\n", stderr)
+                if customLLM {
+                    fputs("[summary] Custom LLM title generation failed\n", stderr)
+                } else {
+                    fputs("[summary] title generation error: \(error["message"] ?? error)\n", stderr)
+                }
                 return nil
             }
             // Try chat completions format first, then responses API format
             let result = (extractOpenRouterText(from: json) ?? extractOpenAIText(from: json))?
                 .trimmingCharacters(in: .whitespacesAndNewlines.union(.init(charactersIn: "\"")))
             if result == nil {
-                let choices = json["choices"] as? [[String: Any]] ?? []
-                let firstChoice = choices.first ?? [:]
-                let message = firstChoice["message"] as? [String: Any] ?? [:]
-                fputs("[summary] title generation: nil. message keys: \(message.keys.sorted()), content type: \(type(of: message["content"] as Any)), content: \(String(describing: message["content"]).prefix(300))\n", stderr)
+                if customLLM {
+                    fputs("[summary] Custom LLM title generation returned no title\n", stderr)
+                } else {
+                    let choices = json["choices"] as? [[String: Any]] ?? []
+                    let firstChoice = choices.first ?? [:]
+                    let message = firstChoice["message"] as? [String: Any] ?? [:]
+                    fputs("[summary] title generation: nil. message keys: \(message.keys.sorted()), content type: \(type(of: message["content"] as Any)), content: \(String(describing: message["content"]).prefix(300))\n", stderr)
+                }
             }
             fputs("[summary] generated title: \(result ?? "(nil)")\n", stderr)
             return result
@@ -1286,6 +1869,7 @@ enum MeetingSummaryClient {
         systemPrompt: String,
         userPrompt: String,
         maxTokens: Int,
+        extraHeaders: [String: String] = [:],
         timeout: TimeInterval? = nil
     ) async -> String? {
         let body: [String: Any] = [
@@ -1306,6 +1890,9 @@ enum MeetingSummaryClient {
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         if !apiKey.isEmpty {
             request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        }
+        for (name, value) in extraHeaders {
+            request.setValue(value, forHTTPHeaderField: name)
         }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
@@ -1368,14 +1955,24 @@ enum MeetingSummaryClient {
     private static func generateTitleWithCustomLLM(transcript: String, config: AppConfig) async -> String? {
         let format = CustomLLMFormat(rawValue: config.customLLMFormat) ?? .openAI
         guard let requestURL = resolveCustomLLMURL(config: config, format: format) else { return nil }
-        let apiKey = config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let configuredModel = config.customLLMModel.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !configuredModel.isEmpty else {
             fputs("[summary] Custom LLM title generation: no model selected\n", stderr)
             return nil
         }
+        if customLLMRequiresAPIKey(config: config),
+           config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           config.customLLMAPIKeyCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            fputs("[summary] Custom LLM title generation: no API key or API key command configured\n", stderr)
+            return nil
+        }
+        guard let extraHeaders = try? CustomLLMRequestHeaders.validated(config.customLLMHeaders) else {
+            fputs("[summary] Custom LLM title generation: invalid additional headers\n", stderr)
+            return nil
+        }
+        guard let apiKey = try? await resolveCustomLLMAPIKey(config: config) else { return nil }
         if customLLMRequiresAPIKey(config: config) && apiKey.isEmpty {
-            fputs("[summary] Custom LLM title generation: no API key configured\n", stderr)
+            fputs("[summary] Custom LLM title generation: no API key or API key command configured\n", stderr)
             return nil
         }
 
@@ -1388,8 +1985,9 @@ enum MeetingSummaryClient {
                 systemPrompt: titleInstructions,
                 userPrompt: transcript,
                 maxTokens: 100,
-                extraHeaders: [:],
-                timeout: customLLMTitleTimeout
+                extraHeaders: extraHeaders,
+                timeout: customLLMTitleTimeout,
+                customLLM: true
             )
         case .anthropic:
             return await callAnthropicMessages(
@@ -1399,6 +1997,7 @@ enum MeetingSummaryClient {
                 systemPrompt: titleInstructions,
                 userPrompt: transcript,
                 maxTokens: 100,
+                extraHeaders: extraHeaders,
                 timeout: customLLMTitleTimeout
             )
         }
