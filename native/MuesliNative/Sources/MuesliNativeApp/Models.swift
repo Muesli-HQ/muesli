@@ -298,6 +298,47 @@ struct BackendOption: Equatable {
         backend == "apple-speech"
     }
 
+    /// Human-readable reason this model can't be used on the current system, or `nil` if it's
+    /// compatible. Checked regardless of download state, so a model downloaded on a newer macOS
+    /// still gets flagged after a downgrade or on a shared data directory.
+    ///
+    /// `currentOSVersion` defaults to the real system but is injectable — `#available` can't take
+    /// a variable, so tests and manual QA (`MUESLI_DEBUG_OS_VERSION=<major>.<minor>`) pass a
+    /// version here instead.
+    func incompatibilityReason(currentOSVersion: OperatingSystemVersion = Self.currentOSVersion) -> String? {
+        let current = (currentOSVersion.majorVersion, currentOSVersion.minorVersion)
+        switch backend {
+        case "nemotron35", "qwen", "cohere", "indicasr", "gemma4-litert":
+            if current >= (15, 0) {
+                return nil
+            }
+            return "\(label) requires macOS 15 or later (you're on macOS \(Self.label(for: currentOSVersion)))."
+        case "apple-speech":
+            if current >= (26, 0) {
+                return nil
+            }
+            return "\(label) requires macOS 26 or later (you're on macOS \(Self.label(for: currentOSVersion)))."
+        default:
+            return nil
+        }
+    }
+
+    /// The real running system version, or a developer-supplied override for manual QA builds
+    /// (`MUESLI_DEBUG_OS_VERSION=14.8`, major.minor only — never set in shipped builds).
+    static var currentOSVersion: OperatingSystemVersion {
+        if let raw = ProcessInfo.processInfo.environment["MUESLI_DEBUG_OS_VERSION"] {
+            let parts = raw.split(separator: ".").compactMap { Int($0) }
+            if parts.count >= 2 {
+                return OperatingSystemVersion(majorVersion: parts[0], minorVersion: parts[1], patchVersion: 0)
+            }
+        }
+        return ProcessInfo.processInfo.operatingSystemVersion
+    }
+
+    private static func label(for version: OperatingSystemVersion) -> String {
+        "\(version.majorVersion).\(version.minorVersion)"
+    }
+
     /// Multilingual WhisperKit models expose language selection (auto-detect or pinned code).
     /// English-only `.en` variants do not.
     var supportsWhisperLanguageSelection: Bool {

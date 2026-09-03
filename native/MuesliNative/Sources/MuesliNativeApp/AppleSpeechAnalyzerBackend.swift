@@ -156,7 +156,12 @@ actor AppleSpeechAnalyzerTranscriber {
     static let modelID = "apple-speech-transcriber"
 
     static var isSupportedOnCurrentSystem: Bool {
-        SpeechTranscriber.isAvailable
+        // Respect MUESLI_DEBUG_OS_VERSION (BackendOption.currentOSVersion) so this agrees with
+        // BackendOption.incompatibilityReason during manual QA of issue #479.
+        if BackendOption.currentOSVersion.majorVersion < 26 {
+            return false
+        }
+        return SpeechTranscriber.isAvailable
     }
 
     private let localeResolver: AppleSpeechLocaleResolver

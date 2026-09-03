@@ -90,6 +90,63 @@ struct BackendOptionTests {
         #expect(BackendOption.qwen3Asr.description.contains("2–3 second"))
     }
 
+    // Issue #479: incompatibilityReason lets the Models tab disable Download and explain why
+    // *before* a doomed attempt, instead of only discovering it after a download starts (which
+    // left a stuck, empty progress bar behind — see ModelsView's downloadProgressView).
+    // Deterministic — exercises both branches via the injectable `currentOSVersion` parameter
+    // rather than depending on whichever OS happens to run the test, per issue #479 follow-up.
+    private static let macOS14: OperatingSystemVersion = .init(majorVersion: 14, minorVersion: 8, patchVersion: 0)
+    private static let macOS15: OperatingSystemVersion = .init(majorVersion: 15, minorVersion: 0, patchVersion: 0)
+    private static let macOS25: OperatingSystemVersion = .init(majorVersion: 25, minorVersion: 0, patchVersion: 0)
+    private static let macOS26: OperatingSystemVersion = .init(majorVersion: 26, minorVersion: 0, patchVersion: 0)
+
+    @Test(
+        "macOS-15-gated backends report an incompatibility reason exactly when unavailable",
+        arguments: [
+            BackendOption.nemotron35Multilingual,
+            BackendOption.qwen3Asr,
+            BackendOption.cohereTranscribe,
+            BackendOption.indicASR,
+            BackendOption.gemma4E2BLiteRT,
+            BackendOption.gemma4E4BLiteRT,
+        ]
+    )
+    func macOS15GatedBackendsMatchAvailability(_ option: BackendOption) {
+        #expect(
+            option.incompatibilityReason(currentOSVersion: Self.macOS15) == nil,
+            "\(option.label) should be compatible on macOS 15+"
+        )
+        let reason = option.incompatibilityReason(currentOSVersion: Self.macOS14)
+        #expect(reason != nil, "\(option.label) should report an incompatibility reason below macOS 15")
+        #expect(reason?.contains("macOS 15") == true)
+        #expect(reason?.contains(option.label) == true)
+    }
+
+    @Test("apple-speech reports an incompatibility reason exactly when below macOS 26")
+    func appleSpeechIncompatibilityMatchesAvailability() {
+        #expect(BackendOption.appleSpeechAnalyzer.incompatibilityReason(currentOSVersion: Self.macOS26) == nil)
+        let reason = BackendOption.appleSpeechAnalyzer.incompatibilityReason(currentOSVersion: Self.macOS25)
+        #expect(reason != nil)
+        #expect(reason?.contains("macOS 26") == true)
+    }
+
+    @Test(
+        "backends with no OS gate are always compatible",
+        arguments: [
+            BackendOption.parakeetMultilingual,
+            BackendOption.parakeetUnified,
+            BackendOption.parakeetEnglish,
+            BackendOption.whisperTiny,
+            BackendOption.senseVoiceSmall,
+        ]
+    )
+    func ungatedBackendsAreAlwaysCompatible(_ option: BackendOption) {
+        #expect(
+            option.incompatibilityReason(currentOSVersion: Self.macOS14) == nil,
+            "\(option.label) has no OS requirement and should never be marked incompatible"
+        )
+    }
+
     @Test("model descriptions explain usage without implementation jargon")
     func modelDescriptionsAreProductFacing() {
         let implementationTerms = ["INT8", "CoreML", "ANE", "RNNT", "FluidAudio", "LiteRT-LM", "quantized", "GGUF"]
