@@ -38,9 +38,9 @@ By default, dictation uses an on-device model. You can instead opt into OpenAI S
 ### Meeting Transcription
 Start a meeting recording → Muesli captures your mic (You) and system audio (Others) simultaneously → VAD-driven chunked transcription happens during the meeting at natural speech boundaries → speaker diarization identifies individual remote speakers (Speaker 1, Speaker 2, etc.) → when you stop, the transcript is ready in seconds, not minutes. Generate structured meeting notes via OpenAI, free OpenRouter models, your ChatGPT Plus/Pro subscription, or local Ollama models.
 
-Live meeting transcripts have two explicit modes. **Nemotron 3.5** is a unified multilingual option: its continuous transcript is the normal final raw transcript before diarization and note generation, with the configured meeting model retained only for gap recovery. **Parakeet Realtime EOU** is a low-latency English preview: it powers the live floating transcript while a separately selected meeting model creates the final transcript. Settings always shows which model owns the final transcript.
+Live meeting transcripts have two explicit modes. **Nemotron 3.5** is a unified multilingual option: its continuous transcript is the normal final raw transcript before diarization and note generation, with the configured meeting model retained only for gap recovery. **Apple Speech** and **Parakeet Realtime EOU** provide provisional live previews while a separately selected meeting model creates the final transcript. Apple Speech adds system-supported languages on macOS 26+, while Parakeet Realtime EOU remains the low-latency English option. Settings always shows which model owns the final transcript.
 
-Live transcription is off by default. Download Parakeet Realtime EOU or Nemotron 3.5 from Models, then select one under **Settings → Meetings → Transcription**. The waveform-hover preview can be enabled separately from the same section. Downloading a streaming model does not activate it automatically.
+Live transcription is off by default. Choose Apple Speech, or download Parakeet Realtime EOU or Nemotron 3.5, from Models and then select one under **Settings → Meetings → Transcription**. The waveform-hover preview can be enabled separately from the same section. Making a live model available does not activate it automatically.
 
 ---
 
@@ -52,7 +52,7 @@ Live transcription is off by default. Download Parakeet Realtime EOU or Nemotron
 - **Quill voice rewriting** — Highlight text to rewrite it from a spoken instruction, or generate new text at the cursor with no selection. Quill supports local and hosted models, hands-free activation, and an independent toggle for its activation and release sounds.
 - **Apple Shortcuts & Siri** — Six preconfigured actions out of the box: Start/Stop Dictation (latched hands-free mode, same as double-tapping the hotkey), Start/Stop Meeting Recording, Get Last Dictation, and Get Last Meeting Notes. Trigger them from Spotlight, Siri ("Start a meeting recording in Muesli"), keyboard shortcuts, or Shortcuts automations — e.g. auto-record when a calendar event starts, or pipe your last dictation into Notes, Messages, or Files.
 - **Meeting recording** — Captures mic + system audio (including Bluetooth/AirPods) with a CoreAudio process tap by default and ScreenCaptureKit fallback. System audio from Zoom, Teams, and other call clients stays on the Others side of the transcript.
-- **Live meeting transcript** — Choose Nemotron 3.5 for one multilingual live-and-final transcript, or Parakeet Realtime EOU for an English live preview paired with a separate final meeting model.
+- **Live meeting transcript** — Choose Nemotron 3.5 for one multilingual live-and-final transcript, Apple Speech for a system-managed multilingual live preview on macOS 26+, or Parakeet Realtime EOU for an English live preview. Preview-only choices remain paired with a separate final meeting model.
 - **VAD-driven chunk rotation** — Silero VAD detects natural speech boundaries in real-time, splitting mic audio at pauses instead of fixed intervals. No mid-sentence cuts.
 - **Speaker diarization** — Identifies individual speakers in system audio (Speaker 1, Speaker 2, etc.) using FluidAudio's pyannote-based CoreML diarization model.
 - **Camera-based meeting detection** — Detects when your webcam + mic activate in a recognized meeting app (Zoom, Chrome, Teams, FaceTime, Slack, WhatsApp). Camera alone (e.g. Photo Booth) won't trigger false positives.
@@ -330,7 +330,7 @@ Important meeting fields:
 
 | Model | Backend | Runtime | Size | Languages | Latency |
 |-------|---------|---------|------|-----------|---------|
-| **Apple Speech** | SpeechAnalyzer / SpeechTranscriber | System-managed | No Muesli model download | System-supported locales | macOS 26+, system dependent |
+| **Apple Speech** | SpeechAnalyzer / SpeechTranscriber | System-managed | No Muesli model download | System-supported locales | Dictation, meetings, live preview on macOS 26+ |
 | **Parakeet v3** (recommended) | FluidAudio | CoreML / Neural Engine | ~450 MB | 25 languages | ~0.13s |
 | Parakeet v2 | FluidAudio | CoreML / Neural Engine | ~450 MB | English only | ~0.13s |
 | Parakeet Realtime EOU | FluidAudio | CoreML / Neural Engine | ~430 MB | English only | Live preview |
