@@ -422,6 +422,13 @@ public final class MuesliController: NSObject {
     private var historyWindowController: RecentHistoryWindowController?
     private var preferencesWindowController: PreferencesWindowController?
     private var onboardingWindowController: OnboardingWindowController?
+    private lazy var systemPermissionGuideController: AccessibilityPermissionGuideController = {
+        let guide = AccessibilityPermissionGuideController()
+        guide.onPresentationChanged = { [weak self] presentation in
+            self?.onboardingWindowController?.applySystemSettingsGuidePresentation(presentation)
+        }
+        return guide
+    }()
     private let featureTourStore = FeatureTourStore()
     private var isFeatureTourPresentationQueued = false
     var updaterController: SPUStandardUpdaterController?
@@ -940,6 +947,7 @@ public final class MuesliController: NSObject {
     }
 
     func shutdown() async {
+        systemPermissionGuideController.dismiss()
         if let workspaceObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver)
             self.workspaceObserver = nil
@@ -4489,8 +4497,18 @@ public final class MuesliController: NSObject {
     }
 
     @MainActor
-    func yieldOnboardingFocusToSystemSettings() {
-        onboardingWindowController?.yieldFocusToSystemSettings()
+    func yieldOnboardingFocusToSystemSettings(using behavior: OnboardingSystemSettingsYieldBehavior) {
+        onboardingWindowController?.yieldFocusToSystemSettings(using: behavior)
+    }
+
+    @MainActor
+    func beginSystemPermissionGuide(for permission: PermissionDragGuidePermission) {
+        systemPermissionGuideController.showWhenSystemSettingsIsAvailable(for: permission)
+    }
+
+    @MainActor
+    func dismissSystemPermissionGuide() {
+        systemPermissionGuideController.dismiss()
     }
 
     @MainActor
@@ -4597,15 +4615,37 @@ public final class MuesliController: NSObject {
     // MARK: - Dictation Test Mode (onboarding)
 
     /// When set, handleStop routes transcribed text to this callback instead of pasting.
-    /// The floating indicator and sounds are suppressed during test mode.
+    /// Lifecycle sounds are suppressed, while the floating indicator stays live so
+    /// onboarding exercises the same recording feedback as normal dictation.
     var dictationTestCallback: ((String) -> Void)?
     var dictationTestFailureCallback: ((String) -> Void)?
     var dictationTestRecordingStarted: (() -> Void)?
+    var dictationTestRecordingStopped: (() -> Void)?
     var dictationTestBackend: BackendOption?
     var dictationTestCohereLanguage: CohereTranscribeLanguage?
     private var dictationTestTask: Task<Void, Never>?
 
     var isDictationTestMode: Bool { dictationTestCallback != nil }
+
+    func clearDictationTestLifecycle() {
+        dictationTestCallback = nil
+        dictationTestFailureCallback = nil
+        dictationTestRecordingStarted = nil
+        dictationTestRecordingStopped = nil
+        dictationTestBackend = nil
+        dictationTestCohereLanguage = nil
+    }
+
+    @discardableResult
+    func stopDictationTestRecordingFeedback() -> Bool {
+        guard isDictationTestMode else { return false }
+        dictationTestRecordingStopped?()
+        // Release the active recording pill immediately. A valid recording moves
+        // to transcribing after the recorder reports its duration; short presses
+        // remain idle instead of flashing a state for work that will be discarded.
+        setState(.idle)
+        return true
+    }
 
     func cancelTestDictation() {
         dictationTestTask?.cancel()
@@ -4788,12 +4828,9 @@ public final class MuesliController: NSObject {
         selectBackend(backend)
         hotkeyMonitor.configure(keyCode: hotkey.keyCode)
         configureComputerUseHotkeyMonitor()
-        dictationTestCallback = nil
-        dictationTestFailureCallback = nil
-        dictationTestRecordingStarted = nil
-        dictationTestBackend = nil
-        dictationTestCohereLanguage = nil
+        clearDictationTestLifecycle()
 
+        systemPermissionGuideController.dismiss()
         onboardingWindowController?.close()
         onboardingWindowController = nil
         if hasRequiredStartupPermissions(for: onboardingUseCase) {
@@ -4869,25 +4906,32 @@ public final class MuesliController: NSObject {
         accessibilityGranted: Bool,
         inputMonitoringGranted: Bool
     ) {
-        guard config.resolvedOnboardingUseCase == .voiceNotes else { return }
-        guard OnboardingPermissionGate.hasRequiredDictationPermissions(
-            OnboardingPermissionSnapshot(
-                microphone: microphoneGranted,
-                accessibility: accessibilityGranted,
-                inputMonitoring: inputMonitoringGranted,
-                systemAudio: false,
-                screenRecording: false
-            )
+        let previousUseCase = config.resolvedOnboardingUseCase
+        let permissions = OnboardingPermissionSnapshot(
+            microphone: microphoneGranted,
+            accessibility: accessibilityGranted,
+            inputMonitoring: inputMonitoringGranted,
+            systemAudio: false,
+            screenRecording: false
+        )
+        guard OnboardingFlow.shouldReclassifyVoiceNotesAsDictation(
+            previousUseCase: previousUseCase,
+            permissions: permissions
         ) else { return }
 
-        updateConfig { $0.onboardingUseCase = OnboardingUseCase.dictation.rawValue }
+        let updatedUseCase = OnboardingUseCase.from(
+            capabilities: previousUseCase.capabilities
+                .subtracting([.voiceNotes])
+                .union([.dictation])
+        )
+        updateConfig { $0.onboardingUseCase = updatedUseCase.rawValue }
         hotkeyMonitor.configure(keyCode: config.dictationHotkey.keyCode)
         hotkeyMonitor.start()
         startComputerUseHotkeyMonitorIfNeeded()
         syncDictationRecorderWarmup(intent: .idlePrewarm(.permissionsReady))
         TelemetryDeck.signal("onboarding.use_case_reclassified", parameters: [
-            "from_use_case": OnboardingUseCase.voiceNotes.rawValue,
-            "to_use_case": OnboardingUseCase.dictation.rawValue,
+            "from_use_case": previousUseCase.rawValue,
+            "to_use_case": updatedUseCase.rawValue,
             "reason": "dictation_permissions_granted",
         ])
     }
@@ -8103,17 +8147,15 @@ public final class MuesliController: NSObject {
         case .transcribing: status = "Transcribing"
         }
         statusBarController?.setStatus(status)
-        if !isDictationTestMode {
-            if state == .preparing {
-                let workItem = DispatchWorkItem { [weak self] in
-                    guard let self, self.dictationState == .preparing else { return }
-                    self.indicator.setPreparingWaveformWaiting(config: self.config)
-                }
-                pendingPreparingIndicatorWorkItem = workItem
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
-            } else {
-                indicator.setState(state, config: config)
+        if state == .preparing {
+            let workItem = DispatchWorkItem { [weak self] in
+                guard let self, self.dictationState == .preparing else { return }
+                self.indicator.setPreparingWaveformWaiting(config: self.config)
             }
+            pendingPreparingIndicatorWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
+        } else {
+            indicator.setState(state, config: config)
         }
     }
 
@@ -9605,7 +9647,7 @@ public final class MuesliController: NSObject {
     }
 
     private var defaultDictationOutputMode: DictationOutputMode {
-        config.resolvedOnboardingUseCase.includesVoiceNotes ? .voiceNote : .paste
+        config.resolvedOnboardingUseCase.includesDictation ? .paste : .voiceNote
     }
 
     private func beginDictationOutput(mode: DictationOutputMode? = nil) {
@@ -9904,10 +9946,8 @@ public final class MuesliController: NSObject {
 
     private func activateDictationPreparingIndicator() {
         setState(.preparing)
-        if !isDictationTestMode {
-            indicator.powerProvider = { [weak self] in
-                self?.dictationAudioSessionManager.currentPower() ?? -160
-            }
+        indicator.powerProvider = { [weak self] in
+            self?.dictationAudioSessionManager.currentPower() ?? -160
         }
     }
 
@@ -9920,10 +9960,8 @@ public final class MuesliController: NSObject {
             setState(.recording)
             indicator.setRecordingWaveformLevel(config: config)
         }
-        if !isDictationTestMode {
-            indicator.powerProvider = { [weak self] in
-                self?.dictationAudioSessionManager.currentPower() ?? -160
-            }
+        indicator.powerProvider = { [weak self] in
+            self?.dictationAudioSessionManager.currentPower() ?? -160
         }
     }
 
@@ -10417,6 +10455,7 @@ public final class MuesliController: NSObject {
         fputs("[muesli-native] stop\n", stderr)
         let startedAt = dictationStartedAt ?? Date()
         dictationStartedAt = nil
+        stopDictationTestRecordingFeedback()
 
         // Nemotron streaming: text already typed — just finalize and store
         if isNemotron35Streaming {

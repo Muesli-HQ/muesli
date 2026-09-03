@@ -3,6 +3,41 @@ import Testing
 
 @Suite("OnboardingFlow")
 struct OnboardingFlowTests {
+    @Test("Everything restores the prior capability union when toggled off")
+    func everythingRestoresPriorSelection() {
+        let prior = OnboardingFlow.UseCaseSelectionState(
+            selectedUseCase: .voiceNotesAndMeetings,
+            selectionBeforeEverything: nil
+        )
+        let everything = OnboardingFlow.togglingEverything(in: prior)
+
+        #expect(everything.selectedUseCase == .everything)
+        #expect(everything.selectionBeforeEverything == .voiceNotesAndMeetings)
+        #expect(OnboardingFlow.togglingEverything(in: everything) == prior)
+    }
+
+    @Test("Everything remains selected after resume without an in-memory prior selection")
+    func resumedEverythingDoesNotDiscardCapabilities() {
+        let resumed = OnboardingFlow.UseCaseSelectionState(
+            selectedUseCase: .everything,
+            selectionBeforeEverything: nil
+        )
+
+        #expect(OnboardingFlow.togglingEverything(in: resumed) == resumed)
+    }
+
+    @Test("Individual capability changes clear the Everything restoration state")
+    func capabilityToggleClearsEverythingHistory() {
+        let everything = OnboardingFlow.UseCaseSelectionState(
+            selectedUseCase: .everything,
+            selectionBeforeEverything: .voiceNotesAndMeetings
+        )
+        let updated = OnboardingFlow.toggling(.voiceNotes, in: everything)
+
+        #expect(updated.selectedUseCase == .dictationAndMeetings)
+        #expect(updated.selectionBeforeEverything == nil)
+    }
+
     @Test("voice notes orders push-to-talk steps without paste permission")
     func voiceNotesOrderedSteps() {
         #expect(OnboardingFlow.orderedSteps(for: .voiceNotes) == [0, 1, 2, 3, 4])
@@ -21,6 +56,13 @@ struct OnboardingFlowTests {
     @Test("dictation and meetings orders combined steps")
     func dictationAndMeetingsOrderedSteps() {
         #expect(OnboardingFlow.orderedSteps(for: .dictationAndMeetings) == [0, 1, 2, 3, 4, 5, 6])
+    }
+
+    @Test("multi-select unions include every required workflow step")
+    func multiSelectUnionOrderedSteps() {
+        #expect(OnboardingFlow.orderedSteps(for: .voiceNotesAndMeetings) == [0, 1, 2, 3, 4, 5, 6])
+        #expect(OnboardingFlow.orderedSteps(for: .voiceNotesAndDictation) == [0, 1, 2, 3, 4])
+        #expect(OnboardingFlow.orderedSteps(for: .everything) == [0, 1, 2, 3, 4, 5, 6])
     }
 
     @Test("normalized step advances over skipped steps")
@@ -65,6 +107,85 @@ struct OnboardingFlowTests {
         #expect(OnboardingFlow.completionTab(for: .voiceNotes) == .dictations)
         #expect(OnboardingFlow.completionTab(for: .dictation) == .dictations)
         #expect(OnboardingFlow.completionTab(for: .dictationAndMeetings) == .dictations)
+    }
+
+    @Test("permission advancement has one capability-derived destination")
+    func permissionAdvanceAction() {
+        #expect(OnboardingFlow.permissionAdvanceAction(
+            for: .dictation,
+            currentStepIndex: 3,
+            orderedStepCount: 5
+        ) == .restartForDictationTest)
+        #expect(OnboardingFlow.permissionAdvanceAction(
+            for: .meetings,
+            currentStepIndex: 2,
+            orderedStepCount: 3
+        ) == .finish)
+        #expect(OnboardingFlow.permissionAdvanceAction(
+            for: .meetings,
+            currentStepIndex: 2,
+            orderedStepCount: 5
+        ) == .next)
+        #expect(OnboardingFlow.permissionAdvanceAction(
+            for: .dictation,
+            currentStepIndex: 3,
+            orderedStepCount: 5,
+            hasCompletedPermissionsStep: true
+        ) == .next)
+    }
+
+    @Test("completed permission steps do not auto-advance again on re-entry")
+    func completedPermissionStepDoesNotAutoAdvanceAgain() {
+        let resumedAfterPermissions = OnboardingFlow.hasCompletedPermissionsStep(
+            resumingAt: OnboardingFlow.Step.dictationTest.rawValue
+        )
+        let resumedAtPermissions = OnboardingFlow.hasCompletedPermissionsStep(
+            resumingAt: OnboardingFlow.Step.permissions.rawValue
+        )
+        let schedulesAfterCompletion = OnboardingFlow.shouldSchedulePermissionAdvance(
+            currentStep: OnboardingFlow.Step.permissions.rawValue,
+            requiredPermissionsGranted: true,
+            hasCompletedPermissionsStep: true,
+            hasScheduledTask: false
+        )
+        let schedulesInitialCompletion = OnboardingFlow.shouldSchedulePermissionAdvance(
+            currentStep: OnboardingFlow.Step.permissions.rawValue,
+            requiredPermissionsGranted: true,
+            hasCompletedPermissionsStep: false,
+            hasScheduledTask: false
+        )
+
+        #expect(resumedAfterPermissions)
+        #expect(!resumedAtPermissions)
+        #expect(!schedulesAfterCompletion)
+        #expect(schedulesInitialCompletion)
+    }
+
+    @Test("automatic dictation reclassification applies only to legacy Voice Notes")
+    func voiceNoteReclassificationPolicy() {
+        let granted = OnboardingPermissionSnapshot(
+            microphone: true,
+            accessibility: true,
+            inputMonitoring: true,
+            systemAudio: false,
+            screenRecording: false
+        )
+
+        #expect(OnboardingFlow.shouldReclassifyVoiceNotesAsDictation(
+            previousUseCase: .voiceNotes,
+            permissions: granted
+        ))
+        #expect(!OnboardingFlow.shouldReclassifyVoiceNotesAsDictation(
+            previousUseCase: .voiceNotesAndMeetings,
+            permissions: granted
+        ))
+
+        var missingAccessibility = granted
+        missingAccessibility.accessibility = false
+        #expect(!OnboardingFlow.shouldReclassifyVoiceNotesAsDictation(
+            previousUseCase: .voiceNotes,
+            permissions: missingAccessibility
+        ))
     }
 
     @Test("dictation monitor stops and cancels active testing when readiness is lost")
