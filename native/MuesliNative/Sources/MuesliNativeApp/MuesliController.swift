@@ -68,6 +68,10 @@ struct InteractiveAudioSessionOwnership: Equatable {
     let computerUseIsActive: Bool
     var quilIsActive: Bool = false
 
+    var hasActiveOwner: Bool {
+        dictationIsActive || computerUseIsActive || quilIsActive
+    }
+
     func canStart(_ owner: InteractiveAudioSessionOwner) -> Bool {
         switch owner {
         case .dictation:
@@ -852,6 +856,9 @@ public final class MuesliController: NSObject {
                 sessionID: sessionID,
                 autoStopSource: self.activeMeetingAutoStop.source
             )
+        }
+        meetingMonitor.selfAudioActivityActiveProvider = { [weak self] in
+            self?.interactiveAudioSessionOwnership.hasActiveOwner ?? false
         }
         meetingMonitor.isCalendarNotificationVisibleProvider = { [weak self] in
             self?.isShowingCalendarNotification ?? false
@@ -7599,7 +7606,7 @@ public final class MuesliController: NSObject {
                 if !self.isMeetingRecording()
                     && !self.isStartingMeetingRecording
                     && self.backgroundMeetingProcessingCount == 0
-                    && !self.isDictationActivityInProgress {
+                    && !self.isInteractiveAudioActivityInProgress {
                     self.statusBarController?.setStatus("Idle")
                     self.statusBarController?.refresh()
                     if !self.isDictationTestMode {
@@ -8166,7 +8173,7 @@ public final class MuesliController: NSObject {
         }
     }
 
-    private var isDictationActivityInProgress: Bool {
+    private var isInteractiveAudioActivityInProgress: Bool {
         dictationState != .idle || dictationStartedAt != nil || computerUseCommandStartedAt != nil
             || quilStartedAt != nil || quilTask != nil || isNemotron35Streaming
     }
@@ -8631,7 +8638,7 @@ public final class MuesliController: NSObject {
 
     @MainActor
     private func presentMeetingProcessingStage(_ stage: MeetingProcessingStage) {
-        if stage.allowsDictation, isDictationActivityInProgress { return }
+        if stage.allowsDictation, isInteractiveAudioActivityInProgress { return }
 
         switch stage {
         case .transcribingAudio:
@@ -8647,7 +8654,7 @@ public final class MuesliController: NSObject {
 
     @MainActor
     private func setMeetingProcessingStatus(_ status: String) {
-        guard !isDictationActivityInProgress else { return }
+        guard !isInteractiveAudioActivityInProgress else { return }
         statusBarController?.setStatus(status)
         statusBarController?.refresh()
         if !isDictationTestMode {
@@ -10405,7 +10412,7 @@ public final class MuesliController: NSObject {
     public func startDictationForShortcuts() -> Bool {
         guard config.hasCompletedOnboarding,
               ensureBasicDictationPermissionsBeforeDashboard(),
-              !isDictationActivityInProgress,
+              !isInteractiveAudioActivityInProgress,
               !dictationAudioSessionManager.hasActiveSession,
               canBeginDictationInteraction,
               !isMeetingRecording(),

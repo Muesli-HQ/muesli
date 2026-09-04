@@ -8,6 +8,7 @@ final class MeetingMonitor {
     var calendarEventProvider: (() -> CalendarEventContext?)?
     var detectionEnabledProvider: (() -> Bool)?
     var recordingLifecycleProvider: (() -> MeetingRecordingLifecycleSnapshot)?
+    var selfAudioActivityActiveProvider: (() -> Bool)?
     var isCalendarNotificationVisibleProvider: (() -> Bool)?
     var promptVisibilityProvider: (() -> MeetingPromptVisibility)?
     var mutedDetectionBundleIDsProvider: (() -> Set<String>)?
@@ -171,6 +172,7 @@ final class MeetingMonitor {
             detectionEnabled: detectionEnabledProvider?() ?? true,
             isRecording: lifecycle.isRecording,
             isStartingRecording: lifecycle.isStarting,
+            selfAudioActivityActive: selfAudioActivityActiveProvider?() ?? false,
             monitoringMode: MeetingMonitoringModePolicy.resolve(lifecycle),
             isCalendarNotificationVisible: isCalendarNotificationVisibleProvider?() ?? false,
             promptVisibility: promptVisibilityProvider?()
@@ -279,6 +281,7 @@ private struct MeetingDetectionEvaluationContext {
     let detectionEnabled: Bool
     let isRecording: Bool
     let isStartingRecording: Bool
+    let selfAudioActivityActive: Bool
     let monitoringMode: MeetingMonitoringMode
     let isCalendarNotificationVisible: Bool
     let promptVisibility: MeetingPromptVisibility
@@ -294,6 +297,7 @@ private struct MeetingDetectionEvaluationContext {
         detectionEnabled: false,
         isRecording: false,
         isStartingRecording: false,
+        selfAudioActivityActive: false,
         monitoringMode: .discovery,
         isCalendarNotificationVisible: false,
         promptVisibility: MeetingPromptVisibility(isVisible: false, currentPromptID: nil, shownAt: nil),
@@ -319,6 +323,7 @@ enum MeetingMediaSignalFilter {
         cameraActive: Bool,
         audioInputProcesses: [AudioProcessActivity],
         sensorAttributions: SensorAttributionSnapshot,
+        selfAudioActivityActive: Bool = false,
         selfBundleID: String
     ) -> MeetingMediaSignals {
         let externalAudioInputProcesses = audioInputProcesses.filter {
@@ -328,7 +333,7 @@ enum MeetingMediaSignalFilter {
             isSelfBundleID($0.bundleID, selfBundleID: selfBundleID)
         } || sensorAttributions.micBundleIDs.contains {
             isSelfBundleID($0, selfBundleID: selfBundleID)
-        }
+        } || selfAudioActivityActive
         let hasExternalMicAttribution = !externalAudioInputProcesses.isEmpty
             || sensorAttributions.micBundleIDs.contains {
                 !isSelfBundleID($0, selfBundleID: selfBundleID)
@@ -358,6 +363,15 @@ enum MeetingMediaSignalFilter {
         } || sensorAttributions.cameraBundleIDs.contains {
             !isSelfBundleID($0, selfBundleID: selfBundleID)
         }
+    }
+
+    static func externalMicBundleIDs(
+        _ sensorAttributions: SensorAttributionSnapshot,
+        selfBundleID: String
+    ) -> Set<String> {
+        Set(sensorAttributions.micBundleIDs.filter {
+            !isSelfBundleID($0, selfBundleID: selfBundleID)
+        })
     }
 
     private static func isSelfBundleID(_ bundleID: String, selfBundleID: String) -> Bool {
@@ -574,27 +588,43 @@ private actor MeetingDetectionService {
             return
         }
 
-        signalRefreshState.hasMicOrCameraSignal = MeetingMediaSignalFilter.apply(
-            deviceMicActive: false,
+        // Every evaluation reads one scalar property from the selected input
+        // device. Full process attribution is a separate, episode-driven step.
+        let deviceMicActive = await signalCollector.isMicActive(deviceID: context.micDeviceID)
+        let cheapMediaSignals = MeetingMediaSignalFilter.apply(
+            deviceMicActive: deviceMicActive,
             cameraActive: context.cameraActive,
             audioInputProcesses: [],
             sensorAttributions: context.sensorAttributions,
+            selfAudioActivityActive: context.selfAudioActivityActive,
             selfBundleID: resolver.selfBundleID
-        ).hasMicOrCameraSignal
+        )
+        signalRefreshState.hasMicOrCameraSignal = cheapMediaSignals.hasMicOrCameraSignal
         signalRefreshState.hasCalendarEvent = context.calendarEvent != nil
         signalRefreshState.hasPromptVisible = context.promptVisibility.isVisible
 
+        let globallySuppressed = isGloballySuppressed(now: now)
+        let audioEvidence = MeetingAudioAttributionEvidence(
+            deviceMicActive: deviceMicActive,
+            selfAudioActivityActive: context.selfAudioActivityActive,
+            externalMicBundleIDs: MeetingMediaSignalFilter.externalMicBundleIDs(
+                context.sensorAttributions,
+                selfBundleID: resolver.selfBundleID
+            )
+        )
         let refreshDecision = refreshPolicy.decision(
             trigger: trigger,
             state: signalRefreshState,
             monitoringMode: context.monitoringMode,
+            audioEvidence: audioEvidence,
+            suppressAudioAttribution: globallySuppressed,
             now: now
         )
         async let audioAttributionResult = audioAttributionService.activeInputProcesses(
-            refresh: refreshDecision.refreshAudioAttribution
+            refreshFull: refreshDecision.refreshAudioAttribution,
+            refreshTracked: refreshDecision.refreshTrackedAudioProcesses
         )
         let collectedSignals = await signalCollector.collect(
-            micDeviceID: context.micDeviceID,
             runningApps: context.runningApps,
             foregroundBundleID: context.foregroundBundleID,
             monitoringMode: context.monitoringMode,
@@ -607,9 +637,6 @@ private actor MeetingDetectionService {
         guard !Task.isCancelled,
               isStarted,
               monitoringMode == context.monitoringMode else { return }
-        if refreshDecision.refreshAudioAttribution {
-            signalRefreshState.lastAudioAttributionRefreshAt = now
-        }
         if refreshDecision.refreshBrowserMeetings {
             signalRefreshState.lastBrowserRefreshAt = now
         }
@@ -618,16 +645,20 @@ private actor MeetingDetectionService {
         }
 
         let rawAudioInputProcesses = mergedAudioInputProcesses(
-            context.monitoringMode.allowsFullAudioAttribution ? audioResult.processes : [],
+            context.monitoringMode.allowsFullAudioAttribution
+                && refreshDecision.audioAttributionEpisode != nil
+                ? audioResult.processes
+                : [],
             sensorAttributions: context.sensorAttributions,
             runningProcessIDsByBundleID: collectedSignals.runningProcessIDsByBundleID,
             monitoringMode: context.monitoringMode
         )
         let mediaSignals = MeetingMediaSignalFilter.apply(
-            deviceMicActive: collectedSignals.micActive,
+            deviceMicActive: deviceMicActive,
             cameraActive: context.cameraActive,
             audioInputProcesses: rawAudioInputProcesses,
             sensorAttributions: context.sensorAttributions,
+            selfAudioActivityActive: context.selfAudioActivityActive,
             selfBundleID: resolver.selfBundleID
         )
 
@@ -646,6 +677,12 @@ private actor MeetingDetectionService {
         let resolvedActivityCandidate = scopedActivityCandidate(
             resolver.resolve(snapshot),
             monitoringMode: context.monitoringMode
+        )
+        signalRefreshState.audioAttributionAttempt = refreshPolicy.audioAttributionAttemptState(
+            after: refreshDecision,
+            current: signalRefreshState.audioAttributionAttempt,
+            resolvedCandidate: resolvedActivityCandidate != nil,
+            now: now
         )
         let resolverDuration = Date().timeIntervalSince(resolverStart)
         let stabilizedActivityCandidate = await mediaSessionTracker.stabilize(
@@ -669,10 +706,9 @@ private actor MeetingDetectionService {
             associateActiveRecording(with: unmutedActivityCandidate)
         }
         emitActivityUpdate(unmutedActivityCandidate)
-        let candidate = isGloballySuppressed(now: now) ? nil : unmutedActivityCandidate
+        let candidate = globallySuppressed ? nil : unmutedActivityCandidate
         logCandidateIfChanged(candidate)
         updateRefreshState(
-            trigger: trigger,
             micActive: mediaSignals.micActive,
             cameraActive: mediaSignals.cameraActive,
             calendarEvent: context.calendarEvent,
@@ -710,6 +746,8 @@ private actor MeetingDetectionService {
             trigger: .fallbackTimer,
             state: signalRefreshState,
             monitoringMode: context.monitoringMode,
+            audioEvidence: audioEvidence,
+            suppressAudioAttribution: globallySuppressed,
             now: now
         )
         installFallbackEvaluationLoop(interval: nextDecision.fallbackInterval)
@@ -963,7 +1001,6 @@ private actor MeetingDetectionService {
     }
 
     private func updateRefreshState(
-        trigger: MeetingDetectionTrigger,
         micActive: Bool,
         cameraActive: Bool,
         calendarEvent: CalendarEventContext?,
@@ -984,7 +1021,6 @@ private actor MeetingDetectionService {
                 || MeetingCandidateResolver.dedicatedApps[bundleID] != nil
         } ?? false
         signalRefreshState.lastSuspicionAt = refreshPolicy.suspicionDate(
-            after: trigger,
             state: signalRefreshState,
             now: now,
             resolvedCandidate: candidate
@@ -1005,7 +1041,7 @@ private actor MeetingDetectionService {
         totalDuration: TimeInterval
     ) {
         Self.logger.notice(
-            "evaluation trigger=\(String(describing: trigger), privacy: .public) mode=\(String(describing: decision.mode), privacy: .public) browser_ms=\(timings.browserMilliseconds, privacy: .public) audio_ms=\(timings.audioAttributionMilliseconds, privacy: .public) resolver_ms=\(Int(resolverDuration * 1000), privacy: .public) total_ms=\(Int(totalDuration * 1000), privacy: .public) refresh_browser=\(decision.refreshBrowserMeetings, privacy: .public) refresh_audio=\(decision.refreshAudioAttribution, privacy: .public)"
+            "evaluation trigger=\(String(describing: trigger), privacy: .public) mode=\(String(describing: decision.mode), privacy: .public) browser_ms=\(timings.browserMilliseconds, privacy: .public) audio_ms=\(timings.audioAttributionMilliseconds, privacy: .public) resolver_ms=\(Int(resolverDuration * 1000), privacy: .public) total_ms=\(Int(totalDuration * 1000), privacy: .public) refresh_browser=\(decision.refreshBrowserMeetings, privacy: .public) refresh_audio=\(decision.refreshAudioAttribution, privacy: .public) refresh_tracked_audio=\(decision.refreshTrackedAudioProcesses, privacy: .public)"
         )
     }
 
@@ -1016,7 +1052,6 @@ private actor MeetingDetectionService {
 }
 
 private struct MeetingCollectedSignals {
-    let micActive: Bool
     let runningApps: [RunningAppInfo]
     let browserMeetings: [BrowserMeetingContext]
     let foregroundBundleID: String?
@@ -1040,24 +1075,33 @@ private struct AudioAttributionResult {
 
 private actor AudioAttributionService {
     private let collector = AudioProcessAttributionCollector()
-    private var cachedInputProcesses: [AudioProcessActivity] = []
+    private var trackedProcesses: [AudioProcessActivity] = []
 
-    func activeInputProcesses(refresh: Bool) -> AudioAttributionResult {
-        guard refresh else {
-            return AudioAttributionResult(processes: cachedInputProcesses, duration: 0)
+    func activeInputProcesses(
+        refreshFull: Bool,
+        refreshTracked: Bool
+    ) -> AudioAttributionResult {
+        guard refreshFull || refreshTracked else {
+            return AudioAttributionResult(
+                processes: trackedProcesses.filter { $0.isRunningInput },
+                duration: 0
+            )
         }
 
         let start = Date()
-        let processes = collector.activeInputProcesses()
-        cachedInputProcesses = processes
+        if refreshFull {
+            trackedProcesses = collector.activeInputProcesses()
+        } else {
+            trackedProcesses = collector.refreshTrackedProcesses(trackedProcesses)
+        }
         return AudioAttributionResult(
-            processes: processes,
+            processes: trackedProcesses.filter { $0.isRunningInput },
             duration: Date().timeIntervalSince(start)
         )
     }
 
     func reset() {
-        cachedInputProcesses = []
+        trackedProcesses = []
     }
 }
 
@@ -1065,7 +1109,6 @@ private actor MeetingSignalCollector {
     private let browserCollector = BrowserMeetingActivityCollector()
 
     func collect(
-        micDeviceID: AudioDeviceID,
         runningApps: [RunningAppSnapshot],
         foregroundBundleID: String?,
         monitoringMode: MeetingMonitoringMode,
@@ -1094,7 +1137,6 @@ private actor MeetingSignalCollector {
         let browserDuration = Date().timeIntervalSince(browserStart)
 
         return MeetingCollectedSignals(
-            micActive: isMicActive(deviceID: micDeviceID),
             runningApps: runningApps.map {
                 RunningAppInfo(bundleID: $0.bundleID, isActive: $0.isActive)
             },
@@ -1107,6 +1149,10 @@ private actor MeetingSignalCollector {
                 audioAttributionDuration: 0
             )
         )
+    }
+
+    func isMicActive(deviceID: AudioDeviceID) -> Bool {
+        readMicActive(deviceID: deviceID)
     }
 
     private func runningProcessIDsByBundleID(from apps: [RunningAppSnapshot]) -> [String: pid_t] {
@@ -1134,7 +1180,7 @@ private actor MeetingSignalCollector {
         }
     }
 
-    private func isMicActive(deviceID: AudioDeviceID) -> Bool {
+    private func readMicActive(deviceID: AudioDeviceID) -> Bool {
         guard deviceID != 0 else { return false }
 
         var isRunning: UInt32 = 0
