@@ -199,6 +199,22 @@ enum MeetingAutoStopPolicy {
             return true
         }
 
+        // Native meeting apps do not expose a room URL. Once capture has been
+        // explicitly armed from one of those apps, its bundle identity is the
+        // only stable source identity macOS provides across attribution gaps.
+        if source.normalizedURL == nil,
+           let sourceBundleID = source.sourceBundleID,
+           let candidateBundleID = candidate.sourceBundleID,
+           bundleIDsReferToSameApp(sourceBundleID, candidateBundleID) {
+            return true
+        }
+
         return false
+    }
+
+    private static func bundleIDsReferToSameApp(_ lhs: String, _ rhs: String) -> Bool {
+        let lhs = lhs.lowercased()
+        let rhs = rhs.lowercased()
+        return lhs == rhs || lhs.hasPrefix("\(rhs).") || rhs.hasPrefix("\(lhs).")
     }
 }

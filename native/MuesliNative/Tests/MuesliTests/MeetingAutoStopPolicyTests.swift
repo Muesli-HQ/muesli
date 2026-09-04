@@ -86,6 +86,44 @@ struct MeetingAutoStopPolicyTests {
         #expect(!MeetingAutoStopPolicy.matches(candidate: calendarOnly, source: source))
     }
 
+    @Test("native app source remains stable across attribution session IDs")
+    func nativeAppSourceMatchesByEstablishedBundleIdentity() {
+        let source = MeetingAutoStopSource(candidate: teamsCandidate())
+        let laterAttribution = MeetingCandidate(
+            id: "app:com.microsoft.teams2:session:1800000030",
+            platform: .teams,
+            appName: "Teams",
+            url: nil,
+            evidence: [.audioInputProcess, .dedicatedApp],
+            startedAt: Date(timeIntervalSince1970: 1_800_000_030),
+            meetingTitle: nil,
+            sourceBundleID: "com.microsoft.teams2",
+            sourcePID: 4321,
+            suppressionID: "app:com.microsoft.teams2:session:1800000030"
+        )
+
+        #expect(MeetingAutoStopPolicy.matches(candidate: laterAttribution, source: source))
+    }
+
+    @Test("URL-backed source does not degrade to browser bundle identity")
+    func urlBackedSourceDoesNotMatchOtherRoomInSameBrowser() {
+        let source = MeetingAutoStopSource(candidate: googleMeetCandidate())
+        let otherRoom = MeetingCandidate(
+            id: "googleMeet:meet.google.com/zzz-yyyy-xxx",
+            platform: .googleMeet,
+            appName: "Chrome",
+            url: "meet.google.com/zzz-yyyy-xxx",
+            evidence: [.browserURL],
+            startedAt: Date(timeIntervalSince1970: 1_800_000_030),
+            meetingTitle: nil,
+            sourceBundleID: "com.google.Chrome",
+            sourcePID: 1234,
+            suppressionID: "browser:com.google.Chrome:session:1800000030"
+        )
+
+        #expect(!MeetingAutoStopPolicy.matches(candidate: otherRoom, source: source))
+    }
+
     @Test("creates source from supported meeting URL")
     func createsSourceFromSupportedMeetingURL() throws {
         let url = try #require(URL(string: "https://meet.google.com/aaa-bbbb-ccc?authuser=0"))

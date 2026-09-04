@@ -14,7 +14,10 @@ struct MeetingSignalRefreshPolicyTests {
             lastBrowserRefreshAt: now.addingTimeInterval(-10)
         )
 
-        let decision = policy.decision(trigger: .fallbackTimer, state: state, now: now)
+        let decision = policy.decision(
+            trigger: .fallbackTimer, state: state,
+            monitoringMode: .discovery, now: now
+        )
 
         #expect(decision.mode == .idle)
         #expect(decision.fallbackInterval == 120)
@@ -30,28 +33,59 @@ struct MeetingSignalRefreshPolicyTests {
             lastBrowserRefreshAt: now
         )
 
-        let decision = policy.decision(trigger: .micChanged, state: state, now: now)
+        let decision = policy.decision(
+            trigger: .micChanged, state: state,
+            monitoringMode: .discovery, now: now
+        )
 
         #expect(decision.mode == .suspicious)
         #expect(decision.fallbackInterval == 3)
         #expect(decision.refreshAudioAttribution == true)
     }
 
-    @Test("Muesli-owned recording suppresses attribution until capture ends")
-    func ownedRecordingSuppressesAttributionUntilCaptureEnds() {
-        var gate = MeetingRecordingAttributionGate()
+    @Test("capture lifecycle suppresses attribution without association or retained ownership")
+    func captureLifecycleSuppressesAttributionWithoutRetainedOwnership() {
+        let policy = MeetingSignalRefreshPolicy()
+        // Empty discovery state represents a manual meeting or a detector restart.
+        let state = MeetingSignalRefreshState()
+        let modes: [(MeetingMonitoringMode, Bool)] = [
+            (.discovery, true),
+            (.suspended(sessionID: 1), false),
+            (.sourceLiveness(sessionID: 1, source: nativeSource()), false),
+            (.suspended(sessionID: nil), false),
+            (.discovery, true),
+            // Failed startup must not leave stale suppression behind.
+            (.discovery, true),
+        ]
 
-        #expect(gate.shouldSuppress(isRecording: true) == false)
-        #expect(gate.markCaptureOwned() == true)
-        #expect(gate.markCaptureOwned() == false)
-        #expect(gate.shouldSuppress(isRecording: true) == true)
+        for (mode, refresh) in modes {
+            let decision = policy.decision(
+                trigger: .startup, state: state,
+                monitoringMode: mode, now: now
+            )
+            #expect(decision.refreshAudioAttribution == refresh)
+        }
+    }
 
-        gate.synchronize(isRecording: false, isStartingRecording: true)
-        #expect(gate.ownsActiveCapture == true)
-
-        gate.synchronize(isRecording: false, isStartingRecording: false)
-        #expect(gate.ownsActiveCapture == false)
-        #expect(gate.shouldSuppress(isRecording: true) == false)
+    @Test("cooldown reevaluation cannot resume attribution during a recording")
+    func cooldownReevaluationCannotResumeAttributionDuringRecording() {
+        let policy = MeetingSignalRefreshPolicy()
+        let state = MeetingSignalRefreshState(
+            lastAudioAttributionRefreshAt: now.addingTimeInterval(-120),
+            hasActiveCandidate: true
+        )
+        // resumeAfterCooldown() schedules promptStateChanged. Neither that event
+        // nor a timer after the 15-second cooldown may permit a fresh scan.
+        for elapsed in [0.0, 16.0, 120.0, 3600.0] {
+            for trigger in [MeetingDetectionTrigger.promptStateChanged, .fallbackTimer] {
+                let decision = policy.decision(
+                    trigger: trigger, state: state,
+                    monitoringMode: .sourceLiveness(sessionID: 1, source: nativeSource()),
+                    now: now.addingTimeInterval(elapsed)
+                )
+                #expect(decision.refreshAudioAttribution == false)
+            }
+        }
     }
 
     @Test("repeated suspicious fallback respects expensive collector throttle")
@@ -63,7 +97,10 @@ struct MeetingSignalRefreshPolicyTests {
             lastSuspicionAt: now.addingTimeInterval(-2)
         )
 
-        let decision = policy.decision(trigger: .fallbackTimer, state: state, now: now)
+        let decision = policy.decision(
+            trigger: .fallbackTimer, state: state,
+            monitoringMode: .discovery, now: now
+        )
 
         #expect(decision.mode == .suspicious)
         #expect(decision.refreshAudioAttribution == false)
@@ -79,7 +116,10 @@ struct MeetingSignalRefreshPolicyTests {
             lastSuspicionAt: now.addingTimeInterval(-2)
         )
 
-        let decision = policy.decision(trigger: .fallbackTimer, state: state, now: now)
+        let decision = policy.decision(
+            trigger: .fallbackTimer, state: state,
+            monitoringMode: .discovery, now: now
+        )
 
         #expect(decision.mode == .suspicious)
         #expect(decision.refreshAudioAttribution == true)
@@ -87,27 +127,46 @@ struct MeetingSignalRefreshPolicyTests {
     }
 
     @Test(
-        "associated recording suppresses CoreAudio attribution",
-        arguments: [
-            MeetingDetectionTrigger.fallbackTimer,
-            MeetingDetectionTrigger.micChanged,
-            MeetingDetectionTrigger.sensorAttributionChanged,
-            MeetingDetectionTrigger.manualRefresh,
-        ]
+        "every trigger suppresses CoreAudio attribution throughout capture",
+        arguments: MeetingDetectionTrigger.allCases, [false, true]
     )
-    func associatedRecordingSuppressesAudioAttribution(trigger: MeetingDetectionTrigger) {
+    func everyTriggerSuppressesAudioAttribution(
+        trigger: MeetingDetectionTrigger,
+        hasActiveCandidate: Bool
+    ) {
         let policy = MeetingSignalRefreshPolicy()
-        var state = MeetingSignalRefreshState()
-        state.hasActiveCandidate = true
-
-        let decision = policy.decision(
+        let state = MeetingSignalRefreshState(
+            hasMicOrCameraSignal: true,
+            hasActiveCandidate: hasActiveCandidate
+        )
+        let idleDecision = policy.decision(
             trigger: trigger,
             state: state,
-            suppressAudioAttribution: true,
+            monitoringMode: .discovery,
             now: now
         )
+        #expect(idleDecision.refreshAudioAttribution == true)
 
-        #expect(decision.refreshAudioAttribution == false)
+        let captureModes: [MeetingMonitoringMode] = [
+            .suspended(sessionID: 1),
+            .suspended(sessionID: nil),
+            .sourceLiveness(sessionID: 1, source: nativeSource()),
+        ]
+        for mode in captureModes {
+            let decision = policy.decision(
+                trigger: trigger,
+                state: state,
+                monitoringMode: mode,
+                now: now
+            )
+
+            #expect(decision.refreshAudioAttribution == false)
+            #expect(decision.refreshBrowserMeetings == (mode.performsEvaluation
+                ? idleDecision.refreshBrowserMeetings
+                : false))
+            #expect(decision.mode == idleDecision.mode)
+            #expect(decision.fallbackInterval == idleDecision.fallbackInterval)
+        }
     }
 
     @Test("active-tab fallback is throttled per browser bundle")
@@ -133,7 +192,10 @@ struct MeetingSignalRefreshPolicyTests {
             lastSuspicionAt: now.addingTimeInterval(-13)
         )
 
-        let decision = policy.decision(trigger: .fallbackTimer, state: state, now: now)
+        let decision = policy.decision(
+            trigger: .fallbackTimer, state: state,
+            monitoringMode: .discovery, now: now
+        )
 
         #expect(decision.mode == .idle)
         #expect(decision.fallbackInterval == 120)
@@ -145,9 +207,99 @@ struct MeetingSignalRefreshPolicyTests {
         var state = MeetingSignalRefreshState()
         state.hasActiveCandidate = true
 
-        let decision = policy.decision(trigger: .fallbackTimer, state: state, now: now)
+        let decision = policy.decision(
+            trigger: .fallbackTimer, state: state,
+            monitoringMode: .discovery, now: now
+        )
 
         #expect(decision.mode == .suspicious)
         #expect(decision.fallbackInterval == 3)
+    }
+
+    private func nativeSource() -> MeetingAutoStopSource {
+        MeetingAutoStopSource(candidate: MeetingCandidate(
+            id: "app-session:zoom:1",
+            platform: .zoom,
+            appName: "Zoom",
+            url: nil,
+            evidence: [.audioInputProcess, .dedicatedApp],
+            startedAt: now,
+            meetingTitle: nil,
+            sourceBundleID: "us.zoom.xos"
+        ))
+    }
+}
+
+@Suite("MeetingMonitoringModePolicy")
+struct MeetingMonitoringModePolicyTests {
+    private let source = MeetingAutoStopSource(candidate: MeetingCandidate(
+        id: "meet:room",
+        platform: .googleMeet,
+        appName: "Chrome",
+        url: "https://meet.google.com/abc-defg-hij",
+        evidence: [.browserURL],
+        startedAt: Date(timeIntervalSince1970: 1_800_000_000),
+        meetingTitle: nil,
+        sourceBundleID: "com.google.Chrome"
+    ))
+
+    @Test("idle always derives discovery")
+    func idleDerivesDiscovery() {
+        let contradictoryIdle = MeetingRecordingLifecycleSnapshot(
+            isRecording: false,
+            isStarting: false,
+            isStopping: false,
+            sessionID: 7,
+            autoStopSource: source
+        )
+        #expect(MeetingMonitoringModePolicy.resolve(contradictoryIdle) == .discovery)
+    }
+
+    @Test("manual capture suspends all detection")
+    func manualCaptureSuspendsDetection() {
+        for lifecycle in [
+            MeetingRecordingLifecycleSnapshot(
+                isRecording: false, isStarting: true, isStopping: false,
+                sessionID: 7, autoStopSource: nil
+            ),
+            MeetingRecordingLifecycleSnapshot(
+                isRecording: true, isStarting: false, isStopping: false,
+                sessionID: 7, autoStopSource: nil
+            ),
+        ] {
+            #expect(MeetingMonitoringModePolicy.resolve(lifecycle) == .suspended(sessionID: 7))
+        }
+    }
+
+    @Test("source-backed capture derives narrow liveness")
+    func sourceBackedCaptureDerivesLiveness() {
+        let lifecycle = MeetingRecordingLifecycleSnapshot(
+            isRecording: true,
+            isStarting: false,
+            isStopping: false,
+            sessionID: 7,
+            autoStopSource: source
+        )
+        #expect(MeetingMonitoringModePolicy.resolve(lifecycle) == .sourceLiveness(sessionID: 7, source: source))
+    }
+
+    @Test("stopping and invalid capture state fail closed")
+    func invalidStatesFailClosed() {
+        let stopping = MeetingRecordingLifecycleSnapshot(
+            isRecording: true,
+            isStarting: false,
+            isStopping: true,
+            sessionID: 7,
+            autoStopSource: source
+        )
+        let missingSession = MeetingRecordingLifecycleSnapshot(
+            isRecording: true,
+            isStarting: false,
+            isStopping: false,
+            sessionID: nil,
+            autoStopSource: source
+        )
+        #expect(MeetingMonitoringModePolicy.resolve(stopping) == .suspended(sessionID: 7))
+        #expect(MeetingMonitoringModePolicy.resolve(missingSession) == .suspended(sessionID: nil))
     }
 }

@@ -1,6 +1,6 @@
 import Foundation
 
-enum MeetingDetectionTrigger: Equatable {
+enum MeetingDetectionTrigger: CaseIterable, Equatable {
     case startup
     case fallbackTimer
     case micChanged
@@ -15,6 +15,67 @@ enum MeetingDetectionTrigger: Equatable {
 enum MeetingDetectionMode: Equatable {
     case idle
     case suspicious
+}
+
+/// This is derived from the recording controller's authoritative state. It is
+/// deliberately not a second, mutable recording state machine.
+enum MeetingMonitoringMode: Equatable {
+    case discovery
+    case sourceLiveness(sessionID: Int64, source: MeetingAutoStopSource)
+    case suspended(sessionID: Int64?)
+
+    var performsEvaluation: Bool {
+        switch self {
+        case .discovery, .sourceLiveness:
+            return true
+        case .suspended:
+            return false
+        }
+    }
+
+    var allowsFullAudioAttribution: Bool {
+        self == .discovery
+    }
+}
+
+struct MeetingRecordingLifecycleSnapshot: Equatable {
+    let isRecording: Bool
+    let isStarting: Bool
+    let isStopping: Bool
+    let sessionID: Int64?
+    let autoStopSource: MeetingAutoStopSource?
+
+    static let idle = MeetingRecordingLifecycleSnapshot(
+        isRecording: false,
+        isStarting: false,
+        isStopping: false,
+        sessionID: nil,
+        autoStopSource: nil
+    )
+}
+
+enum MeetingMonitoringModePolicy {
+    static func resolve(_ lifecycle: MeetingRecordingLifecycleSnapshot) -> MeetingMonitoringMode {
+        // Teardown wins over every other flag. Missing or contradictory state
+        // fails closed: discovery must never resume while capture may still own
+        // CoreAudio resources.
+        if lifecycle.isStopping {
+            return .suspended(sessionID: lifecycle.sessionID)
+        }
+
+        guard lifecycle.isStarting || lifecycle.isRecording else {
+            return .discovery
+        }
+
+        guard let sessionID = lifecycle.sessionID else {
+            return .suspended(sessionID: nil)
+        }
+
+        if let source = lifecycle.autoStopSource {
+            return .sourceLiveness(sessionID: sessionID, source: source)
+        }
+        return .suspended(sessionID: sessionID)
+    }
 }
 
 struct MeetingSignalRefreshState: Equatable {
@@ -35,31 +96,6 @@ struct MeetingSignalRefreshDecision: Equatable {
     let refreshAudioAttribution: Bool
     let refreshBrowserMeetings: Bool
     let fallbackInterval: TimeInterval
-}
-
-struct MeetingRecordingAttributionGate: Equatable {
-    private(set) var ownsActiveCapture = false
-
-    @discardableResult
-    mutating func markCaptureOwned() -> Bool {
-        guard !ownsActiveCapture else { return false }
-        ownsActiveCapture = true
-        return true
-    }
-
-    mutating func synchronize(isRecording: Bool, isStartingRecording: Bool) {
-        if !isRecording && !isStartingRecording {
-            reset()
-        }
-    }
-
-    mutating func reset() {
-        ownsActiveCapture = false
-    }
-
-    func shouldSuppress(isRecording: Bool) -> Bool {
-        isRecording && ownsActiveCapture
-    }
 }
 
 struct MeetingSignalRefreshPolicy {
@@ -98,7 +134,7 @@ struct MeetingSignalRefreshPolicy {
     func decision(
         trigger: MeetingDetectionTrigger,
         state: MeetingSignalRefreshState,
-        suppressAudioAttribution: Bool = false,
+        monitoringMode: MeetingMonitoringMode,
         now: Date
     ) -> MeetingSignalRefreshDecision {
         let suspicious = isSuspicious(trigger: trigger, state: state, now: now)
@@ -107,9 +143,10 @@ struct MeetingSignalRefreshPolicy {
 
         return MeetingSignalRefreshDecision(
             mode: mode,
-            refreshAudioAttribution: !suppressAudioAttribution
+            refreshAudioAttribution: monitoringMode.allowsFullAudioAttribution
                 && shouldRefreshAudioAttribution(trigger: trigger, state: state, mode: mode, now: now),
-            refreshBrowserMeetings: shouldRefreshBrowserMeetings(trigger: trigger, state: state, mode: mode, now: now),
+            refreshBrowserMeetings: monitoringMode.performsEvaluation
+                && shouldRefreshBrowserMeetings(trigger: trigger, state: state, mode: mode, now: now),
             fallbackInterval: fallbackInterval
         )
     }

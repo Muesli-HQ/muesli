@@ -842,12 +842,16 @@ public final class MuesliController: NSObject {
         meetingMonitor.mutedDetectionBundleIDsProvider = { [weak self] in
             Set(self?.config.mutedMeetingDetectionAppBundleIDs ?? [])
         }
-        meetingMonitor.isRecordingProvider = { [weak self] in
-            guard let self else { return false }
-            return self.isMeetingRecording()
-        }
-        meetingMonitor.isStartingRecordingProvider = { [weak self] in
-            self?.isStartingMeetingRecording ?? false
+        meetingMonitor.recordingLifecycleProvider = { [weak self] in
+            guard let self else { return .idle }
+            let sessionID = self.activeMeetingID ?? self.meetingStartMeetingID
+            return MeetingRecordingLifecycleSnapshot(
+                isRecording: self.activeMeetingSession?.isRecording == true,
+                isStarting: self.isStartingMeetingRecording && sessionID != nil,
+                isStopping: self.isStoppingMeetingRecording,
+                sessionID: sessionID,
+                autoStopSource: self.activeMeetingAutoStop.source
+            )
         }
         meetingMonitor.isCalendarNotificationVisibleProvider = { [weak self] in
             self?.isShowingCalendarNotification ?? false
@@ -6669,8 +6673,6 @@ public final class MuesliController: NSObject {
             clearLiveMeetingTranscript(ownerID: meetingID)
             resolveLiveMeetingAfterStartFailure(id: meetingID)
             cancelMeetingRecordingHotkeyToggleAfterFailedStart(meetingID: meetingID)
-            meetingMonitor.resumeAfterCooldown()
-            meetingMonitor.refreshState()
             meetingStartTask = nil
             meetingStartMeetingID = nil
             syncDictationRecorderWarmup(intent: .idlePrewarm(.meetingStateChanged))
@@ -6690,6 +6692,8 @@ public final class MuesliController: NSObject {
         meetingStartTask = nil
         meetingStartMeetingID = nil
         isStartingMeetingRecording = false
+        meetingMonitor.resumeAfterCooldown()
+        meetingMonitor.refreshState(trigger: .promptStateChanged)
         updateMeetingStartStatus(nil)
         updateMeetingNotificationVisibility()
         syncAppState()
@@ -6702,6 +6706,7 @@ public final class MuesliController: NSObject {
         meetingStartTask = nil
         meetingStartMeetingID = nil
         isStartingMeetingRecording = false
+        meetingMonitor.refreshState(trigger: .promptStateChanged)
         updateMeetingStartStatus(nil)
         updateMeetingNotificationVisibility()
         if !didStartActiveSession {
@@ -7476,6 +7481,8 @@ public final class MuesliController: NSObject {
             }
             indicator.setMeetingRecording(false, config: config)
             isStoppingMeetingRecording = false
+            meetingMonitor.resumeAfterCooldown()
+            meetingMonitor.refreshState(trigger: .promptStateChanged)
             endMeetingActivity()
             setState(.idle)
             return
