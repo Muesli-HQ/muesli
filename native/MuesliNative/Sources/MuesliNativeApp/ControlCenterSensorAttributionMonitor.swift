@@ -23,7 +23,11 @@ final class ControlCenterSensorAttributionMonitor {
     private var process: Process?
     private var outputPipe: Pipe?
     private var lineBuffer = ""
-    private var currentSnapshot = SensorAttributionSnapshot.empty
+    private var currentSnapshot: SensorAttributionSnapshot
+
+    init(initialSnapshot: SensorAttributionSnapshot = .empty) {
+        currentSnapshot = initialSnapshot
+    }
 
     func start() {
         lock.lock()
@@ -53,8 +57,8 @@ final class ControlCenterSensorAttributionMonitor {
             self?.consume(text)
         }
 
-        process.terminationHandler = { [weak self] _ in
-            self?.clearProcess()
+        process.terminationHandler = { [weak self] terminatedProcess in
+            self?.clearProcess(ifCurrent: terminatedProcess)
         }
 
         do {
@@ -86,15 +90,10 @@ final class ControlCenterSensorAttributionMonitor {
         }
     }
 
-    func snapshot(maxAge: TimeInterval = 8, now: Date = Date()) -> SensorAttributionSnapshot {
+    func snapshot() -> SensorAttributionSnapshot {
         lock.lock()
         let snapshot = currentSnapshot
         lock.unlock()
-
-        guard let observedAt = snapshot.observedAt,
-              now.timeIntervalSince(observedAt) <= maxAge else {
-            return .empty
-        }
         return snapshot
     }
 
@@ -123,12 +122,25 @@ final class ControlCenterSensorAttributionMonitor {
         }
     }
 
-    private func clearProcess() {
+    private func clearProcess(ifCurrent terminatedProcess: Process) {
         lock.lock()
+        guard process === terminatedProcess else {
+            lock.unlock()
+            return
+        }
+        let hadActiveAttribution = !currentSnapshot.micBundleIDs.isEmpty
+            || !currentSnapshot.cameraBundleIDs.isEmpty
         process = nil
         outputPipe = nil
         lineBuffer = ""
+        currentSnapshot = .empty
+        let callback = onAttributionsChanged
         lock.unlock()
+
+        if hadActiveAttribution {
+            Self.logger.notice("sensor_attribution_stream_ended_clearing_snapshot")
+            callback?()
+        }
     }
 
     private func logSnapshot(_ snapshot: SensorAttributionSnapshot) {

@@ -167,7 +167,7 @@ final class MeetingMonitor {
         return MeetingDetectionEvaluationContext(
             micDeviceID: micListenerDeviceID,
             cameraActive: cameraMonitor.isCameraActive,
-            sensorAttributions: sensorAttributionMonitor.snapshot(now: now),
+            sensorAttributions: sensorAttributionMonitor.snapshot(),
             calendarEvent: calendarEventProvider?(),
             detectionEnabled: detectionEnabledProvider?() ?? true,
             isRecording: lifecycle.isRecording,

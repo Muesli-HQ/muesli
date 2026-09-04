@@ -199,6 +199,21 @@ enum MeetingAutoStopPolicy {
             return true
         }
 
+        // A browser can stop exposing its active room URL while the call keeps
+        // running in a background tab or window. Once that exact browser source
+        // was established before recording, current source-specific media
+        // attribution is positive liveness evidence even if the URL probe is
+        // temporarily unavailable. Requiring audioInputProcess keeps ordinary
+        // same-browser navigation from extending the recording, and requiring
+        // hasObservedCandidate prevents an unverified join URL from doing so.
+        if source.hasObservedCandidate,
+           candidate.evidence.contains(.audioInputProcess),
+           let sourceBundleID = source.sourceBundleID,
+           let candidateBundleID = candidate.sourceBundleID,
+           bundleIDsReferToSameApp(sourceBundleID, candidateBundleID) {
+            return true
+        }
+
         // Native meeting apps do not expose a room URL. Once capture has been
         // explicitly armed from one of those apps, its bundle identity is the
         // only stable source identity macOS provides across attribution gaps.

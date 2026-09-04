@@ -51,10 +51,10 @@ struct MeetingAutoStopPolicyTests {
         #expect(MeetingAutoStopPolicy.matches(candidate: audioFallback, source: source))
     }
 
-    @Test("ignores unrelated browser audio in the same browser")
-    func ignoresUnrelatedBrowserAudioInSameBrowser() {
+    @Test("established browser source survives a new attributed media session")
+    func establishedBrowserSourceSurvivesNewAttributedMediaSession() {
         let source = MeetingAutoStopSource(candidate: googleMeetCandidate())
-        let otherTabAudio = MeetingCandidate(
+        let attributedBrowser = MeetingCandidate(
             id: "browser:com.google.Chrome:session:1800000999",
             platform: .unknown,
             appName: "Chrome",
@@ -67,7 +67,62 @@ struct MeetingAutoStopPolicyTests {
             suppressionID: "browser:com.google.Chrome:session:1800000999"
         )
 
-        #expect(!MeetingAutoStopPolicy.matches(candidate: otherTabAudio, source: source))
+        #expect(MeetingAutoStopPolicy.matches(candidate: attributedBrowser, source: source))
+    }
+
+    @Test("same browser without media attribution does not extend URL source")
+    func sameBrowserWithoutMediaAttributionDoesNotExtendURLSource() {
+        let source = MeetingAutoStopSource(candidate: googleMeetCandidate())
+        let ordinaryBrowserActivity = MeetingCandidate(
+            id: "browser:com.google.Chrome:foreground",
+            platform: .unknown,
+            appName: "Chrome",
+            url: nil,
+            evidence: [.foregroundApp],
+            startedAt: Date(timeIntervalSince1970: 1_800_000_005),
+            meetingTitle: nil,
+            sourceBundleID: "com.google.Chrome",
+            sourcePID: 9876
+        )
+
+        #expect(!MeetingAutoStopPolicy.matches(candidate: ordinaryBrowserActivity, source: source))
+    }
+
+    @Test("another attributed browser does not extend URL source")
+    func anotherAttributedBrowserDoesNotExtendURLSource() {
+        let source = MeetingAutoStopSource(candidate: googleMeetCandidate())
+        let safariAudio = MeetingCandidate(
+            id: "browser:com.apple.Safari:session:1800000999",
+            platform: .unknown,
+            appName: "Safari",
+            url: nil,
+            evidence: [.audioInputProcess],
+            startedAt: Date(timeIntervalSince1970: 1_800_000_005),
+            meetingTitle: nil,
+            sourceBundleID: "com.apple.Safari",
+            sourcePID: 9876
+        )
+
+        #expect(!MeetingAutoStopPolicy.matches(candidate: safariAudio, source: source))
+    }
+
+    @Test("unverified join URL is not extended by browser attribution")
+    func unverifiedJoinURLIsNotExtendedByBrowserAttribution() throws {
+        let url = try #require(URL(string: "https://meet.google.com/aaa-bbbb-ccc"))
+        let source = try #require(MeetingAutoStopSource(meetingURL: url))
+        let attributedBrowser = MeetingCandidate(
+            id: "browser:com.google.Chrome:session:1800000999",
+            platform: .unknown,
+            appName: "Chrome",
+            url: nil,
+            evidence: [.audioInputProcess],
+            startedAt: Date(timeIntervalSince1970: 1_800_000_005),
+            meetingTitle: nil,
+            sourceBundleID: "com.google.Chrome",
+            sourcePID: 9876
+        )
+
+        #expect(!MeetingAutoStopPolicy.matches(candidate: attributedBrowser, source: source))
     }
 
     @Test("ignores unrelated calendar-only activity")
@@ -279,6 +334,50 @@ struct MeetingAutoStopPolicyTests {
         #expect(!shouldStopWhileVisible)
         #expect(!shouldStopBeforeGrace)
         #expect(shouldStopAfterGrace)
+    }
+
+    @Test("tracker keeps established browser source alive through URL probe gaps")
+    func trackerKeepsEstablishedBrowserSourceAliveThroughURLProbeGaps() {
+        var tracker = MeetingAutoStopTracker()
+        tracker.arm(source: MeetingAutoStopSource(candidate: googleMeetCandidate()))
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let attributedBrowser = MeetingCandidate(
+            id: "browser:com.google.Chrome:session:1800000999",
+            platform: .unknown,
+            appName: "Chrome",
+            url: nil,
+            evidence: [.audioInputProcess],
+            startedAt: now,
+            meetingTitle: nil,
+            sourceBundleID: "com.google.Chrome",
+            sourcePID: 9876
+        )
+
+        let stoppedWhileRoomVisible = tracker.observe(
+            candidate: googleMeetCandidate(),
+            now: now,
+            gracePeriod: 20
+        )
+        let stoppedWhileBrowserAttributed = tracker.observe(
+            candidate: attributedBrowser,
+            now: now.addingTimeInterval(30),
+            gracePeriod: 20
+        )
+        let stoppedBeforeGrace = tracker.observe(
+            candidate: nil,
+            now: now.addingTimeInterval(49),
+            gracePeriod: 20
+        )
+        let stoppedAfterGrace = tracker.observe(
+            candidate: nil,
+            now: now.addingTimeInterval(51),
+            gracePeriod: 20
+        )
+
+        #expect(!stoppedWhileRoomVisible)
+        #expect(!stoppedWhileBrowserAttributed)
+        #expect(!stoppedBeforeGrace)
+        #expect(stoppedAfterGrace)
     }
 
     @Test("tracker refines URL source before disappearing")
