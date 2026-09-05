@@ -68,6 +68,45 @@ struct MeetingSystemAudioWatchdogTests {
         #expect(harness.micBridgeReasons.isEmpty)
     }
 
+    @Test("stale microphone after a settled route event bridges into mic recovery")
+    func routeEventBridgesStaleMic() {
+        let harness = Harness()
+        harness.micLastCallbackAt = harness.now.addingTimeInterval(-10)
+        harness.watchdog.noteRouteChange()
+
+        harness.tick()
+
+        #expect(harness.micBridgeReasons == ["mic_callbacks_stale_after_audio_route_change"])
+        #expect(harness.events.isEmpty)
+        #expect(harness.recoveryRequests.isEmpty)
+    }
+
+    @Test("fresh microphone after a route event needs no recovery")
+    func routeEventAcceptsFreshMic() {
+        let harness = Harness()
+        harness.micLastCallbackAt = harness.now
+        harness.watchdog.noteRouteChange()
+
+        harness.tick()
+
+        #expect(harness.micBridgeReasons.isEmpty)
+    }
+
+    @Test("route-event microphone probe waits for route settling")
+    func routeEventProbeWaitsForSettle() {
+        let harness = Harness()
+        harness.micLastCallbackAt = harness.now.addingTimeInterval(-10)
+        harness.routeSettling = true
+        harness.watchdog.noteRouteChange()
+
+        harness.tick()
+        #expect(harness.micBridgeReasons.isEmpty)
+
+        harness.routeSettling = false
+        harness.tick()
+        #expect(harness.micBridgeReasons == ["mic_callbacks_stale_after_audio_route_change"])
+    }
+
     @Test("explicit capture failure opens one episode and requests recovery")
     func explicitFailureOpensEpisode() {
         let harness = Harness()

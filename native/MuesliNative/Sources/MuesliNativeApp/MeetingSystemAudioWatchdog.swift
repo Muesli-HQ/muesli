@@ -18,7 +18,8 @@ struct MeetingSystemAudioHealthEvent: Equatable {
 /// global process taps may quiesce while system output is silent, and querying
 /// every CoreAudio process to disambiguate that state can itself contend with
 /// the daemon. Recovery therefore begins only after the recorder reports
-/// positive failure evidence (for example, exhausted HAL rebuild attempts).
+/// positive failure evidence (for example, exhausted HAL rebuild attempts),
+/// or after a hardware route event followed by a stale microphone callback.
 ///
 /// All callbacks fire after internal state commits; injected closures run on
 /// the caller's tick context. Time and cadence are injected for tests.
@@ -56,10 +57,10 @@ final class MeetingSystemAudioWatchdog {
     var lastMicCallbackAt: () -> Date? = { nil }
     /// Rebuild request; returns whether a rebuild was actually started.
     var recoveryRequest: (String) -> Bool = { _ in false }
-    /// Fired once per episode when the tap is dead AND mic callbacks have been
-    /// stale beyond the mic tracker's confirmation window — the mic detector is
-    /// blind while its system-audio precondition is dead, so the watchdog
-    /// bridges it.
+    /// Fired when mic callbacks are stale after either a confirmed tap failure
+    /// or a settled hardware route event. The latter closes the blind spot
+    /// where both audio callback streams stop and sample-driven health tracking
+    /// therefore has no opportunity to evaluate itself.
     var onMicBlindnessDegradation: ((String) -> Void)?
     var onEpisodeEvent: ((MeetingSystemAudioHealthEvent) -> Void)?
 
@@ -67,6 +68,10 @@ final class MeetingSystemAudioWatchdog {
     private let now: () -> Date
     private let lock = NSLock()
     private var episode: Episode?
+    /// A default-output transition is positive evidence that the input graph
+    /// may have been invalidated too. It is consumed once, after the shared
+    /// route-settle gate opens, without performing any HAL reads.
+    private var pendingRouteMicProbe = false
     private var finished = false
 
     init(policy: Policy = .default, now: @escaping () -> Date = Date.init) {
@@ -108,6 +113,16 @@ final class MeetingSystemAudioWatchdog {
         }
     }
 
+    /// Record a route transition without touching CoreAudio. The next tick
+    /// after the route-settle window compares only the tracker's cached mic
+    /// callback timestamp and bridges a stale graph into normal mic recovery.
+    func noteRouteChange() {
+        lock.withLock {
+            guard !finished else { return }
+            pendingRouteMicProbe = true
+        }
+    }
+
     /// Roll back the attempt count for a rejected request while keeping its
     /// cooldown timestamp for back-pressure.
     private func refundAttemptLocked(reason: String) {
@@ -130,10 +145,23 @@ final class MeetingSystemAudioWatchdog {
             lock.unlock()
             return
         }
+        if pendingRouteMicProbe {
+            pendingRouteMicProbe = false
+            let timestamp = now()
+            let micIsStale = lastMicCallbackAt().map {
+                timestamp.timeIntervalSince($0) >= 3
+            } ?? true
+            if micIsStale {
+                micBridgeReason = "mic_callbacks_stale_after_audio_route_change"
+            }
+        }
         guard var active = episode else {
             // No explicit failure evidence: silence, flat callbacks, playback
             // transitions, and unrelated CoreAudio clients are all no-ops.
             lock.unlock()
+            if let micBridgeReason {
+                onMicBlindnessDegradation?(micBridgeReason)
+            }
             return
         }
 
@@ -196,6 +224,7 @@ final class MeetingSystemAudioWatchdog {
         var eventToEmit: MeetingSystemAudioHealthEvent?
         lock.lock()
         finished = true
+        pendingRouteMicProbe = false
         if let active = episode {
             episode = nil
             eventToEmit = MeetingSystemAudioHealthEvent(

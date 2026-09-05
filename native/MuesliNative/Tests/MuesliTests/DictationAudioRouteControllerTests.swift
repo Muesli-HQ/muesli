@@ -490,6 +490,68 @@ struct DictationAudioRouteControllerTests {
 
         #expect(preferredInputChanges == [nil])
     }
+
+    @Test("route change bursts coalesce into one inventory refresh and notification")
+    func routeChangeBurstCoalesces() async throws {
+        let inspector = FakeCoreAudioDeviceInspector(
+            defaultOutputDeviceID: 10,
+            outputRouteKind: .speakerLike,
+            defaultInputDeviceID: 82,
+            builtInInputDeviceID: 82
+        )
+        let routeQueue = DispatchQueue(label: "test.dictation-audio-route.coalesced-route-change")
+        let controller = DictationAudioRouteController(
+            inspector: inspector,
+            queue: routeQueue,
+            observesDefaultOutputChanges: false,
+            routeChangeSettleDelay: 0.02,
+            routeChangeMaximumDelay: 0.05
+        )
+        routeQueue.sync {}
+        let inventoryReadsBeforeBurst = inspector.availableInputDevicesCallCount
+        var dictationNotifications = 0
+        var meetingNotifications = 0
+        controller.onPreferredInputDeviceChanged = { _ in dictationNotifications += 1 }
+        controller.onMeetingPreferredInputDeviceChanged = { _ in meetingNotifications += 1 }
+
+        controller.scheduleRouteChangeRefresh(.defaultOutput)
+        controller.scheduleRouteChangeRefresh(.defaultInput)
+        controller.scheduleRouteChangeRefresh(.deviceInventory)
+        controller.scheduleRouteChangeRefresh(.defaultOutput)
+        try await Task.sleep(for: .milliseconds(100))
+        routeQueue.sync {}
+
+        #expect(inspector.availableInputDevicesCallCount == inventoryReadsBeforeBurst + 1)
+        #expect(dictationNotifications == 1)
+        #expect(meetingNotifications == 1)
+    }
+
+    @Test("default device events reuse cached inventory")
+    func defaultDeviceEventsReuseCachedInventory() async throws {
+        let inspector = FakeCoreAudioDeviceInspector(
+            defaultOutputDeviceID: 10,
+            outputRouteKind: .speakerLike,
+            defaultInputDeviceID: 82,
+            builtInInputDeviceID: 82
+        )
+        let routeQueue = DispatchQueue(label: "test.dictation-audio-route.cached-route-change")
+        let controller = DictationAudioRouteController(
+            inspector: inspector,
+            queue: routeQueue,
+            observesDefaultOutputChanges: false,
+            routeChangeSettleDelay: 0.01,
+            routeChangeMaximumDelay: 0.02
+        )
+        routeQueue.sync {}
+        let inventoryReadsBeforeChange = inspector.availableInputDevicesCallCount
+
+        controller.scheduleRouteChangeRefresh(.defaultOutput)
+        controller.scheduleRouteChangeRefresh(.defaultInput)
+        try await Task.sleep(for: .milliseconds(60))
+        routeQueue.sync {}
+
+        #expect(inspector.availableInputDevicesCallCount == inventoryReadsBeforeChange)
+    }
 }
 
 private final class FakeCoreAudioDeviceInspector: CoreAudioDeviceInspecting {
@@ -500,6 +562,7 @@ private final class FakeCoreAudioDeviceInspector: CoreAudioDeviceInspecting {
     var builtInInputDeviceIDValue: AudioObjectID?
     var inputDevices: [AudioInputDeviceInfo]
     private(set) var inspectionCallCount = 0
+    private(set) var availableInputDevicesCallCount = 0
 
     init(
         defaultOutputDeviceID: AudioObjectID?,
@@ -533,6 +596,7 @@ private final class FakeCoreAudioDeviceInspector: CoreAudioDeviceInspecting {
 
     func availableInputDevices() -> [AudioInputDeviceInfo] {
         inspectionCallCount += 1
+        availableInputDevicesCallCount += 1
         return inputDevices.filter { !$0.uid.hasPrefix("CADefaultDeviceAggregate") }
     }
 

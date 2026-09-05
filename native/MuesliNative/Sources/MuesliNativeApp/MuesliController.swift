@@ -651,7 +651,8 @@ public final class MuesliController: NSObject {
                 guard let self else { return }
                 self.syncDictationRecorderWarmup(
                     intent: .idlePrewarm(.routeChange),
-                    delay: DictationAudioRouteTiming.stabilizationDelay
+                    delay: DictationAudioRouteTiming.stabilizationDelay,
+                    refreshRoutingCache: false
                 )
             }
         }
@@ -9691,11 +9692,16 @@ public final class MuesliController: NSObject {
         dictationAudioSessionManager.coolDown(reason: reason)
     }
 
-    private func syncDictationRecorderWarmup(intent: DictationWarmupIntent, delay: TimeInterval = 0) {
+    private func syncDictationRecorderWarmup(
+        intent: DictationWarmupIntent,
+        delay: TimeInterval = 0,
+        refreshRoutingCache: Bool = true
+    ) {
         dictationAudioSessionManager.refreshRoute(
             intent: intent,
             delay: delay,
-            canWarmUp: canPrimeDictationRecorder && !isStreamingDictationBackend
+            canWarmUp: canPrimeDictationRecorder && !isStreamingDictationBackend,
+            refreshRoutingCache: refreshRoutingCache
         )
     }
 

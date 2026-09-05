@@ -10,6 +10,10 @@ import os
 /// Protocol for system audio capture backends (ScreenCaptureKit vs CoreAudio tap).
 protocol SystemAudioCapturing: AnyObject {
     var onPCMSamples: (([Int16]) -> Void)? { get set }
+    /// A hardware output-route transition occurred. This is a lightweight
+    /// signal only: observers must not synchronously inspect CoreAudio from
+    /// this callback because the HAL may still be rebuilding its device graph.
+    var onRouteChange: (() -> Void)? { get set }
     var isRecording: Bool { get }
     var isPaused: Bool { get }
     func start() async throws
@@ -48,6 +52,10 @@ extension SystemAudioCapturing {
         get { nil }
         set {}
     }
+    var onRouteChange: (() -> Void)? {
+        get { nil }
+        set {}
+    }
     func rebuildForHealthRecovery(reason: String) -> Bool { false }
 }
 
@@ -75,6 +83,7 @@ struct RebuildRetryPolicy: Equatable {
 /// - Hardware-synchronized with mic input when used in an aggregate device
 final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnosticsProviding {
     var onPCMSamples: (([Int16]) -> Void)?
+    var onRouteChange: (() -> Void)?
 
     private var tapID: AudioObjectID = kAudioObjectUnknown
     private var aggregateDeviceID: AudioDeviceID = kAudioObjectUnknown
@@ -82,6 +91,10 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
     private var deviceIOBlock: AudioDeviceIOBlock?
     private let deviceIOQueue = DispatchQueue(label: "com.muesli.system-audio-tap.io", qos: .userInitiated)
     private let processingQueue = DispatchQueue(label: "com.muesli.system-audio-tap")
+    /// Kept separate from audio processing and route inspection. A wedged HAL
+    /// query or a saturated sample-processing queue must not hide the one
+    /// signal that lets the mic watchdog recover from the transition.
+    private let routeSignalQueue = DispatchQueue(label: "com.muesli.system-audio-route-signal")
     private var defaultOutputDeviceListenerBlock: AudioObjectPropertyListenerBlock?
 
     private var outputFile: FileHandle?
@@ -810,7 +823,7 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
         guard defaultOutputDeviceListenerBlock == nil else { return }
 
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            self?.processingQueue.async { [weak self] in
+            self?.routeSignalQueue.async { [weak self] in
                 guard let self, self.isRecording else { return }
                 self.restartTapForDefaultOutputDeviceChange()
             }
@@ -880,6 +893,7 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
     func restartTapForDefaultOutputDeviceChange() {
         guard isRecording else { return }
         lastRouteChangeAtMs.store(Int64(Date().timeIntervalSince1970 * 1000), ordering: .relaxed)
+        onRouteChange?()
         fputs("[system-audio] default output device changed (no rebuild; tap is route-independent)\n", stderr)
     }
 

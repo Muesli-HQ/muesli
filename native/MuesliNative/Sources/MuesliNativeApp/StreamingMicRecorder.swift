@@ -66,6 +66,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
     private let engine = AVAudioEngine()
     private let directoryName: String
     private let recoversFromInputConfigurationChanges: Bool
+    private let observesInputConfigurationChanges: Bool
     private let graphLock = NSRecursiveLock()
     /// Published independently of graphLock: invalidateForTeardown() must land
     /// even while a worker is blocked in engine startup holding graphLock, so
@@ -99,10 +100,13 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
 
     init(
         directoryName: String = "muesli-meeting-mic",
-        recoversFromInputConfigurationChanges: Bool = false
+        recoversFromInputConfigurationChanges: Bool = false,
+        observesInputConfigurationChanges: Bool? = nil
     ) {
         self.directoryName = directoryName
         self.recoversFromInputConfigurationChanges = recoversFromInputConfigurationChanges
+        self.observesInputConfigurationChanges = observesInputConfigurationChanges
+            ?? recoversFromInputConfigurationChanges
     }
 
     deinit {
@@ -381,7 +385,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
     /// silently while system audio keeps flowing. Rebuild the tap and restart
     /// the engine so capture continues into the same file.
     private func installConfigurationChangeObserverIfNeeded(recordingID: UUID) {
-        guard recoversFromInputConfigurationChanges else { return }
+        guard observesInputConfigurationChanges else { return }
         guard configurationChangeObserver == nil else { return }
         let callbackQueue = configurationChangeQueue
         configurationChangeObserver = NotificationCenter.default.addObserver(

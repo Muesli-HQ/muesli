@@ -326,6 +326,9 @@ final class MeetingSession {
         systemAudioWatchdog.onEpisodeEvent = { [weak self] event in
             self?.onSystemAudioHealthEpisode?(event)
         }
+        systemAudioRecorder.onRouteChange = { [weak systemAudioWatchdog] in
+            systemAudioWatchdog?.noteRouteChange()
+        }
         systemAudioRecorder.onCaptureFailure = { [weak systemAudioWatchdog] error in
             systemAudioWatchdog?.noteCaptureFailure(reason: "rebuild_exhausted: \(error.localizedDescription)")
         }
@@ -444,6 +447,7 @@ final class MeetingSession {
             systemVadController = nil
             meetingMicRecorder.onRawPCMSamples = nil
             systemAudioRecorder.onPCMSamples = nil
+            systemAudioRecorder.onRouteChange = nil
             retainedRecordingWriter?.cancel()
             retainedRecordingWriter = nil
             rawMicChunkRecorder?.cancel()
@@ -669,6 +673,7 @@ final class MeetingSession {
         meetingMicRecorder.onRawPCMSamples = nil
         meetingMicRecorder.cancel()
         systemAudioRecorder.onPCMSamples = nil
+        systemAudioRecorder.onRouteChange = nil
         if let url = systemAudioRecorder.stop() {
             try? FileManager.default.removeItem(at: url)
         }
@@ -695,6 +700,7 @@ final class MeetingSession {
         systemVadController = nil
         meetingMicRecorder.onRawPCMSamples = nil
         systemAudioRecorder.onPCMSamples = nil
+        systemAudioRecorder.onRouteChange = nil
         let (meetingStart, lastChunkTiming, lastRawMicURL, lastSystemChunkTiming, lastSystemChunkURL) = chunkRotationQueue.sync { () -> (Date, MeetingChunkTimingSnapshot?, URL?, MeetingChunkTimingSnapshot?, URL?) in
             isRecording = false
             setPausedStateOnQueue(false)

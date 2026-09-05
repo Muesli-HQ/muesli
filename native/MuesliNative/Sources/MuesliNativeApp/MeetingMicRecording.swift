@@ -690,7 +690,11 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         StreamingMeetingMicRecorderAdapter(
             recorder: StreamingMicRecorder(
                 directoryName: "muesli-meeting-mic",
-                recoversFromInputConfigurationChanges: true
+                recoversFromInputConfigurationChanges: true,
+                // This outer recorder owns route recovery. A child restart can
+                // itself emit another configuration-change notification and
+                // create an unbounded aggregate-device rebuild loop.
+                observesInputConfigurationChanges: false
             ),
             kind: .systemDefaultStreaming
         )
@@ -702,7 +706,8 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
                 primary: AudioQueueInputRecorder(directoryName: "muesli-meeting-mic-audioqueue"),
                 fallback: StreamingMicRecorder(
                     directoryName: "muesli-meeting-mic-app-scoped-fallback",
-                    recoversFromInputConfigurationChanges: true
+                    recoversFromInputConfigurationChanges: true,
+                    observesInputConfigurationChanges: false
                 )
             ),
             kind: .appScopedAudioQueue
