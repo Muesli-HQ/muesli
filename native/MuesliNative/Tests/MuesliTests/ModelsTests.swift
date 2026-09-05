@@ -1091,6 +1091,7 @@ struct AppConfigTests {
         config.userName = "Test User"
         config.hasCompletedOnboarding = true
         config.onboardingUseCase = OnboardingUseCase.dictationAndMeetings.rawValue
+        config.enablePushToTalk = false
         config.cohereLanguage = CohereTranscribeLanguage.german.rawValue
         config.indicASRLanguage = IndicASRLanguage.tamil.rawValue
         config.appleSpeechLanguage = "en-GB"
@@ -1173,6 +1174,7 @@ struct AppConfigTests {
         #expect(decoded.userName == "Test User")
         #expect(decoded.hasCompletedOnboarding == true)
         #expect(decoded.resolvedOnboardingUseCase == .dictationAndMeetings)
+        #expect(decoded.enablePushToTalk == false)
         #expect(decoded.cohereLanguage == CohereTranscribeLanguage.german.rawValue)
         #expect(decoded.indicASRLanguage == IndicASRLanguage.tamil.rawValue)
         #expect(decoded.appleSpeechLanguage == "en-GB")
@@ -1275,6 +1277,7 @@ struct AppConfigTests {
         #expect(json["indicator_anchor"] != nil)
         #expect(json["has_completed_onboarding"] != nil)
         #expect(json["onboarding_use_case"] != nil)
+        #expect(json["enable_push_to_talk"] != nil)
         #expect(json["user_name"] != nil)
         #expect(json["default_meeting_template_id"] != nil)
         #expect(json["meeting_recording_save_policy"] != nil)
@@ -1898,18 +1901,32 @@ struct AppConfigTests {
         #expect(OnboardingUseCase.dictation.toggling(.dictation) == .dictation)
     }
 
-    @Test("meetings-only can opt into push-to-talk without dropping meetings")
-    func meetingsOnlyCanEnablePushToTalk() {
-        #expect(!OnboardingUseCase.meetings.includesPushToTalk)
-        #expect(OnboardingUseCase.meetings.enablingPushToTalk == .dictationAndMeetings)
-        #expect(OnboardingUseCase.meetings.enablingPushToTalk.includesPushToTalk)
-        #expect(OnboardingUseCase.meetings.enablingPushToTalk.includesMeetings)
-        #expect(OnboardingUseCase.dictation.enablingPushToTalk == .dictation)
-        #expect(OnboardingUseCase.voiceNotes.enablingPushToTalk == .voiceNotes)
-        #expect(OnboardingUseCase.voiceNotesAndDictation.enablingPushToTalk == .voiceNotesAndDictation)
-        #expect(OnboardingUseCase.voiceNotesAndMeetings.enablingPushToTalk == .voiceNotesAndMeetings)
-        #expect(OnboardingUseCase.dictationAndMeetings.enablingPushToTalk == .dictationAndMeetings)
-        #expect(OnboardingUseCase.everything.enablingPushToTalk == .everything)
+    @Test("legacy Push to Talk state migrates from the onboarding use case")
+    func legacyPushToTalkStateMigratesFromOnboardingUseCase() throws {
+        let meetings = try JSONDecoder().decode(
+            AppConfig.self,
+            from: Data(#"{"has_completed_onboarding":true,"onboarding_use_case":"meetings"}"#.utf8)
+        )
+        let dictation = try JSONDecoder().decode(
+            AppConfig.self,
+            from: Data(#"{"has_completed_onboarding":true,"onboarding_use_case":"dictation"}"#.utf8)
+        )
+
+        #expect(!meetings.enablePushToTalk)
+        #expect(dictation.enablePushToTalk)
+    }
+
+    @Test("explicit Push to Talk state is independent from onboarding intent")
+    func explicitPushToTalkStateIsIndependentFromOnboardingIntent() throws {
+        let config = try JSONDecoder().decode(
+            AppConfig.self,
+            from: Data(
+                #"{"has_completed_onboarding":true,"onboarding_use_case":"meetings","enable_push_to_talk":true}"#.utf8
+            )
+        )
+
+        #expect(config.resolvedOnboardingUseCase == .meetings)
+        #expect(config.enablePushToTalk)
     }
 
     @Test("scheduled meeting notifications inherit legacy detection opt-out")

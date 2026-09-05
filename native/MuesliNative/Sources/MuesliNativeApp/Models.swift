@@ -1489,12 +1489,6 @@ enum OnboardingUseCase: String, Codable, CaseIterable {
         return .everything
     }
 
-    /// Meetings-only installs can later opt into dictation without dropping meetings.
-    var enablingPushToTalk: OnboardingUseCase {
-        guard !includesPushToTalk else { return self }
-        return Self.from(capabilities: capabilities.union([.dictation]))
-    }
-
     static func resolved(_ rawValue: String?) -> OnboardingUseCase {
         guard let rawValue, let useCase = OnboardingUseCase(rawValue: rawValue) else {
             return .dictation
@@ -1505,6 +1499,7 @@ enum OnboardingUseCase: String, Codable, CaseIterable {
 
 struct AppConfig: Codable {
     var dictationHotkey: HotkeyConfig = .default
+    var enablePushToTalk: Bool = true
     var quilHotkey: HotkeyConfig = .quilDefault
     var enableQuilMode: Bool = false
     var computerUseHotkey: HotkeyConfig = .computerUseDefault
@@ -1643,6 +1638,7 @@ struct AppConfig: Codable {
 
     enum CodingKeys: String, CodingKey {
         case dictationHotkey = "dictation_hotkey"
+        case enablePushToTalk = "enable_push_to_talk"
         case quilHotkey = "quil_hotkey"
         case enableQuilMode = "enable_quil_mode"
         case computerUseHotkey = "computer_use_hotkey"
@@ -1781,6 +1777,7 @@ struct AppConfig: Codable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let defaults = AppConfig()
         dictationHotkey = (try? c.decode(HotkeyConfig.self, forKey: .dictationHotkey)) ?? defaults.dictationHotkey
+        let decodedEnablePushToTalk = try? c.decode(Bool.self, forKey: .enablePushToTalk)
         quilHotkey = (try? c.decode(HotkeyConfig.self, forKey: .quilHotkey)) ?? defaults.quilHotkey
         enableQuilMode = (try? c.decode(Bool.self, forKey: .enableQuilMode)) ?? defaults.enableQuilMode
         computerUseHotkey = (try? c.decode(HotkeyConfig.self, forKey: .computerUseHotkey))
@@ -1912,6 +1909,10 @@ struct AppConfig: Codable {
         } else {
             onboardingUseCase = defaults.onboardingUseCase
         }
+        // Existing installs used the onboarding selection as runtime state. Preserve that
+        // behavior once, then persist future Push to Talk changes independently.
+        enablePushToTalk = decodedEnablePushToTalk
+            ?? OnboardingUseCase.resolved(onboardingUseCase).includesPushToTalk
         userName = (try? c.decode(String.self, forKey: .userName)) ?? defaults.userName
         customMeetingTemplates = (try? c.decode([CustomMeetingTemplate].self, forKey: .customMeetingTemplates)) ?? defaults.customMeetingTemplates
         customWords = (try? c.decode([CustomWord].self, forKey: .customWords)) ?? defaults.customWords

@@ -27,30 +27,31 @@ struct PushToTalkEnablementIntentStore {
 
 enum PushToTalkEnablementPolicy {
     enum Outcome: Equatable {
-        case alreadyEnabled
-        case promote(OnboardingUseCase)
-        case waitForPermissions(OnboardingUseCase)
+        case disabled
+        case ready
+        case waitForPermissions
     }
 
     static func shouldStartDictationHotkeyMonitor(
         hasCompletedOnboarding: Bool,
-        hasRequiredStartupPermissions: Bool,
-        useCase: OnboardingUseCase
+        hasDictationPermissions: Bool,
+        isEnabled: Bool
     ) -> Bool {
-        hasCompletedOnboarding && hasRequiredStartupPermissions && useCase.includesPushToTalk
+        hasCompletedOnboarding && hasDictationPermissions && isEnabled
+    }
+
+    static func shouldReconcilePendingEnable(
+        hasCompletedOnboarding: Bool,
+        isPending: Bool
+    ) -> Bool {
+        hasCompletedOnboarding && isPending
     }
 
     static func outcome(
-        currentUseCase: OnboardingUseCase,
+        isEnabled: Bool,
         hasDictationPermissions: Bool
     ) -> Outcome {
-        if currentUseCase.includesPushToTalk {
-            return .alreadyEnabled
-        }
-        let promoted = currentUseCase.enablingPushToTalk
-        if hasDictationPermissions {
-            return .promote(promoted)
-        }
-        return .waitForPermissions(promoted)
+        guard isEnabled else { return .disabled }
+        return hasDictationPermissions ? .ready : .waitForPermissions
     }
 }
