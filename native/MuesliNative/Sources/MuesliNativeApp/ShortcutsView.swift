@@ -57,6 +57,15 @@ struct ShortcutsView: View {
         appState.config.enablePushToTalk
     }
 
+    private var pushToTalkPermissionMessage: String {
+        let profile = PushToTalkEnablementPolicy.PermissionProfile.resolved(
+            for: appState.config.resolvedOnboardingUseCase
+        )
+        return profile.requiresAccessibility
+            ? "Grant Microphone, Accessibility, and Input Monitoring to use Push to Talk."
+            : "Grant Microphone and Input Monitoring to use Push to Talk."
+    }
+
     private enum ShortcutTarget {
         case dictation
         case computerUse
@@ -446,7 +455,7 @@ struct ShortcutsView: View {
         case .alreadyEnabled, .enabled, .disabled:
             dictationShortcutMessage = nil
         case .needsPermissions:
-            dictationShortcutMessage = "Grant Microphone, Accessibility, and Input Monitoring to use Push to Talk."
+            dictationShortcutMessage = pushToTalkPermissionMessage
         }
     }
 
@@ -456,7 +465,7 @@ struct ShortcutsView: View {
         case .alreadyEnabled, .enabled, .disabled:
             dictationShortcutMessage = nil
         case .needsPermissions:
-            dictationShortcutMessage = "Grant Microphone, Accessibility, and Input Monitoring to use Push to Talk."
+            dictationShortcutMessage = pushToTalkPermissionMessage
         }
     }
 
