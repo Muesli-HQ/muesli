@@ -4918,7 +4918,7 @@ public final class MuesliController: NSObject {
     }
 
     private func hasRequiredStartupPermissions(for useCase: OnboardingUseCase) -> Bool {
-        OnboardingPermissionGate.hasRequiredPermissions(
+        OnboardingPermissionGate.hasRequiredStartupPermissions(
             currentOnboardingPermissionSnapshot(),
             for: useCase
         )
