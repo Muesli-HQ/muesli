@@ -88,6 +88,19 @@ case "${shard}" in
     ;;
   meetings)
     filters=(
+      AudioAttributionServiceTests
+      CameraActivityMonitorTests
+      MicrophoneActivityMonitorTests
+      MeetingCaptureLifecycleTests
+      AudioQueueInputRecorderTests
+      FallbackStreamingDictationRecorderTests
+      MeetingCaptureShutdownTests
+      MeetingMonitoringModePolicyTests
+      MeetingAudioRecoveryDeadlinesTests
+      MeetingSignalRefreshPolicyTests
+      MeetingMicRecoveryCoordinatorTests
+      MeetingMicHealthTrackerTests
+      MeetingSystemAudioWatchdogTests
       AudioGraphExceptionBridgeTests
       DiagnosticIncidentTests
       DictationAudioRouteControllerTests

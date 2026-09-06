@@ -129,7 +129,7 @@ final class StreamingDictationController {
 
         // Start mic IMMEDIATELY — don't block on state init or warmup
         recorder.onAudioBuffer = { [weak self] samples in
-            self?.handleAudioBuffer(samples)
+            self?.handleAudioBuffer(samples, sessionID: sessionID)
         }
         recorder.onRecordingFailed = { [weak self] error in
             self?.failActiveSession(sessionID: sessionID, error: error)
@@ -320,9 +320,10 @@ final class StreamingDictationController {
     // MARK: - Audio Buffer Handling
 
     /// Called on AVAudioEngine's audio processing thread (4096 samples per call).
-    private func handleAudioBuffer(_ samples: [Float]) {
+    private func handleAudioBuffer(_ samples: [Float], sessionID expectedSessionID: UUID) {
         let capture = bufferLock.withLock { () -> (sessionID: UUID?, chunks: [[Float]]) in
-            guard isActive, let sessionID = activeSessionID else { return (nil, []) }
+            guard isActive, let sessionID = activeSessionID,
+                  sessionID == expectedSessionID else { return (nil, []) }
             var chunks: [[Float]] = []
             sampleBuffer.append(contentsOf: samples)
             while sampleBuffer.count >= chunkSamples {

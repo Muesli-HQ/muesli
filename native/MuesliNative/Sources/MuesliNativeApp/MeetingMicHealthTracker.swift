@@ -129,6 +129,17 @@ final class MeetingMicHealthTracker {
         }
     }
 
+    /// Called only by finite post-route verification, never an idle poll.
+    /// Recheck under the tracker lock so a fresh callback wins the race.
+    func noteRouteCallbackLoss(now: Date = Date()) -> MeetingMicHealthSnapshot? {
+        lock.withLock { state in
+            if let last = state.lastRawMicCallbackAt, now.timeIntervalSince(last) < 3 { return nil }
+            transitionLocked(&state, to: .micCallbacksMissing,
+                reason: "mic_callbacks_stale_after_audio_route_change", now: now)
+            return snapshotLocked(state)
+        }
+    }
+
     func snapshot() -> MeetingMicHealthSnapshot {
         lock.withLock { snapshotLocked($0) }
     }

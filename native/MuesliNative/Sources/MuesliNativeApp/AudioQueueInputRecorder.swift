@@ -7,18 +7,50 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
     var onAudioBuffer: (([Float]) -> Void)?
     var onRecordingFailed: ((Error) -> Void)?
     var onLatencyEvent: ((String, Date) -> Void)?
-    var preferredInputDeviceID: AudioObjectID?
+    private let inputDevice = OSAllocatedUnfairLock<AudioObjectID?>(initialState: nil)
+    var preferredInputDeviceID: AudioObjectID? {
+        get { inputDevice.withLock { $0 } }
+        set { inputDevice.withLock { $0 = newValue } }
+    }
 
     private static let sampleRate: Double = 16_000
     private static let framesPerBuffer: UInt32 = 512
     private static let bufferCount = 3
 
+    /// Native boundary permits deterministic callback/teardown tests without HAL.
+    struct NativeOperations {
+        var create: (UnsafePointer<AudioStreamBasicDescription>, AudioQueueInputCallback, UnsafeMutableRawPointer, UnsafeMutablePointer<AudioQueueRef?>) -> OSStatus = {
+            AudioQueueNewInput($0, $1, $2, nil, nil, 0, $3)
+        }
+        var allocate: (AudioQueueRef, UInt32, UnsafeMutablePointer<AudioQueueBufferRef?>) -> OSStatus = {
+            AudioQueueAllocateBuffer($0, $1, $2)
+        }
+        var enqueue: (AudioQueueRef, AudioQueueBufferRef) -> OSStatus = { AudioQueueEnqueueBuffer($0, $1, 0, nil) }
+        var start: (AudioQueueRef) -> OSStatus = { AudioQueueStart($0, nil) }
+        var stop: (AudioQueueRef, Bool) -> OSStatus = { AudioQueueStop($0, $1) }
+        var dispose: (AudioQueueRef) -> OSStatus = { AudioQueueDispose($0, true) }
+        var isRunning: (AudioQueueRef) -> Bool = {
+            var running: UInt32 = 0
+            var size = UInt32(MemoryLayout<UInt32>.size)
+            let status = AudioQueueGetProperty($0, kAudioQueueProperty_IsRunning, &running, &size)
+            return status != noErr || running != 0
+        }
+    }
+
+    private let native: NativeOperations
     private let directoryName: String
-    private let queueLock = NSRecursiveLock()
-    /// Published independently of queueLock: invalidateForTeardown() must land
-    /// even while a worker is blocked inside AudioQueueStart holding queueLock,
-    /// so the post-start self-check observes it before start() returns.
-    private let teardownInvalidation = OSAllocatedUnfairLock(initialState: false)
+    // Serializes native commands only. Neither native callbacks nor the PCM
+    // processing queue acquire this lock, including during synchronous disposal.
+    private let operationLock = NSRecursiveLock()
+    private struct CallbackState {
+        var queue: AudioQueueRef?
+        var isRunning = false
+        var isDraining = false
+        var isPaused = false
+        var generation: UInt64 = 0
+        var invalidated = false
+    }
+    private let callbackState = OSAllocatedUnfairLock(initialState: CallbackState())
     private let stateLock = OSAllocatedUnfairLock(initialState: FileState())
     private let processingQueue = DispatchQueue(label: "com.muesli.audio-queue-input-recorder-processing")
     private let failureCallbackQueue = DispatchQueue(label: "com.muesli.audio-queue-input-recorder-failures")
@@ -28,13 +60,6 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
     private var buffers: [AudioQueueBufferRef] = []
     private var preparedInputDeviceID: AudioObjectID?
     private var isPrepared = false
-    private var isRunning = false
-    /// True while stop() drains the buffer ring: callbacks keep delivering the
-    /// final buffers (the tail word) but are not re-enqueued.
-    private var isDraining = false
-    private var isPaused = false
-    private var captureGeneration: UInt64 = 0
-
     private struct FileState {
         var fileHandle: FileHandle?
         var fileURL: URL?
@@ -42,7 +67,8 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         var latestPowerDB: Float = -160
     }
 
-    init(directoryName: String = "muesli-native-dictation") {
+    init(directoryName: String = "muesli-native-dictation", native: NativeOperations = NativeOperations()) {
+        self.native = native
         self.directoryName = directoryName
     }
 
@@ -51,24 +77,32 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
     }
 
     func prepare() throws {
-        queueLock.lock()
-        defer { queueLock.unlock() }
+        operationLock.lock()
+        defer { operationLock.unlock() }
         guard !isPermanentlyInvalidated else {
             throw Self.runtimeError(code: 9, message: "Recorder was invalidated by teardown")
         }
 
         try prepareLocked()
+        guard !isPermanentlyInvalidated else {
+            disposeQueue()
+            throw Self.runtimeError(code: 9, message: "Recorder was invalidated by teardown")
+        }
     }
 
     func start() throws {
-        queueLock.lock()
-        defer { queueLock.unlock() }
+        operationLock.lock()
+        defer { operationLock.unlock() }
         guard !isPermanentlyInvalidated else {
             throw Self.runtimeError(code: 9, message: "Recorder was invalidated by teardown")
         }
 
-        guard !isRunning else { return }
+        guard !callbackState.withLock({ $0.isRunning }) else { return }
         try prepareLocked()
+        guard !isPermanentlyInvalidated else {
+            disposeQueue()
+            throw Self.runtimeError(code: 9, message: "Recorder was invalidated by teardown")
+        }
 
         guard let audioQueue else {
             throw Self.runtimeError(code: 1, message: "Audio queue was not initialized")
@@ -77,168 +111,80 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         stateLock.withLock { $0 = FileState() }
         let fileState = try createNewFile()
         stateLock.withLock { $0 = fileState }
-        isPaused = false
-        isDraining = false
-
+        callbackState.withLock {
+            $0.isPaused = false
+            $0.isDraining = false
+            $0.generation &+= 1
+            $0.isRunning = true
+        }
         for buffer in buffers {
-            let status = AudioQueueEnqueueBuffer(audioQueue, buffer, 0, nil)
+            let status = native.enqueue(audioQueue, buffer)
             guard status == noErr else {
                 cleanupAfterStartFailure()
                 throw Self.runtimeError(code: 2, message: "AudioQueueEnqueueBuffer failed: \(status)")
             }
         }
-
-        captureGeneration &+= 1
-        isRunning = true
         emitLatency("audio_queue_start_begin")
-        let status = AudioQueueStart(audioQueue, nil)
+        let status = native.start(audioQueue)
         emitLatency("audio_queue_start_end")
         // AudioQueueStart can block while the daemon negotiates the route, and
         // teardown may land during that window. If this instance was invalidated
         // while the call was in flight, synchronously stop what just started
         // before returning — capture must not outlive teardown.
         if isPermanentlyInvalidated {
-            AudioQueueStop(audioQueue, true)
-            isRunning = false
-            captureGeneration &+= 1
             cleanupAfterStartFailure()
             throw Self.runtimeError(code: 9, message: "Recorder was invalidated by teardown")
         }
         guard status == noErr else {
-            isRunning = false
-            captureGeneration &+= 1
             cleanupAfterStartFailure()
             throw Self.runtimeError(code: 3, message: "AudioQueueStart failed: \(status)")
         }
     }
 
     func stop() -> URL? {
-        queueLock.lock()
-        guard isRunning else {
-            queueLock.unlock()
-            return nil
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        let wasRunning = callbackState.withLock { state in
+            guard state.isRunning else { return false }
+            state.isRunning = false
+            state.isDraining = true
+            return true
         }
-        isRunning = false
-        // Graceful stop: AudioQueueStop(_, false) delivers the in-flight
-        // buffers (including the partially filled one holding the final word's
-        // tail) before the queue halts, instead of discarding them. The
-        // callback keeps accepting buffers while draining but does not
-        // re-enqueue, so the ring empties and the queue stops itself.
-        isDraining = true
-        let generationToFinish = captureGeneration
-        let queueToStop = audioQueue
-        queueLock.unlock()
-
-        if let queueToStop {
+        guard wasRunning else { return nil }
+        if let audioQueue {
             emitLatency("audio_queue_stop_begin")
-            AudioQueueStop(queueToStop, false)
-            // Bounded wait for the drain (3-buffer ring of 32ms buffers drains
-            // in well under 100ms); bail out immediately if a successor
-            // start() took over the queue (generation bumped).
+            native.stop(audioQueue, false)
+            // Preserve the existing bounded graceful drain for the final word.
+            // Native property reads and forced stop hold no callback-state lock.
             var waitedMs = 0
-            while isQueueRunning(queueToStop), waitedMs < 500 {
-                let superseded = queueLock.withLock { captureGeneration != generationToFinish }
-                if superseded { break }
+            while waitedMs < 500, native.isRunning(audioQueue) {
                 usleep(10_000)
                 waitedMs += 10
             }
-            // Force-stop a wedged drain only while this capture still owns
-            // the queue. start() holds queueLock across its entire setup
-            // (including AudioQueueStart), so checking + stopping under
-            // queueLock cannot interleave with a successor capture.
-            queueLock.lock()
-            let ownsQueue = captureGeneration == generationToFinish && isDraining
-            if ownsQueue, isQueueRunning(queueToStop) {
-                AudioQueueStop(queueToStop, true)
-            }
-            if ownsQueue {
-                isDraining = false
-            }
-            queueLock.unlock()
-            guard ownsQueue else {
-                emitLatency("audio_queue_stop_end")
-                return nil
-            }
+            if native.isRunning(audioQueue) { native.stop(audioQueue, true) }
             emitLatency("audio_queue_stop_end")
         }
-
-        // Drain the processing closures for this generation BEFORE the
-        // generation bump below — otherwise the drained tail buffers (the
-        // final word) would be dropped by the generation check.
+        callbackState.withLock { $0.isDraining = false }
         emitLatency("audio_queue_processing_drain_begin")
         processingQueue.sync {}
         emitLatency("audio_queue_processing_drain_end")
-
-        // Ownership re-check, generation bump, and file-state transfer are a
-        // single atomic section under queueLock: start() performs its own
-        // state install + generation bump under the same lock, so a successor
-        // either runs entirely before this section (check fails, we return
-        // nil and never touch its file) or entirely after (it sees the bumped
-        // generation and a fresh state).
-        queueLock.lock()
-        guard captureGeneration == generationToFinish else {
-            queueLock.unlock()
-            return nil
+        callbackState.withLock {
+            $0.isPaused = false
+            $0.generation &+= 1
         }
-        isDraining = false
-        isPaused = false
-        captureGeneration &+= 1
-        let finalState = stateLock.withLock { state -> FileState in
-            let old = state
-            state = FileState()
-            return old
-        }
-        queueLock.unlock()
-
+        let finalState = takeFileState()
         emitLatency("audio_queue_finalize_begin")
         let url = finalizeFile(finalState)
         emitLatency("audio_queue_finalize_end")
         return url
     }
 
-    private func isQueueRunning(_ queue: AudioQueueRef) -> Bool {
-        var running: UInt32 = 0
-        var size = UInt32(MemoryLayout<UInt32>.size)
-        let status = AudioQueueGetProperty(queue, kAudioQueueProperty_IsRunning, &running, &size)
-        // Treat a query failure as "still running": the wait loop is bounded
-        // (500ms), and assuming stopped on failure would silently skip the
-        // drain that preserves the final word's tail.
-        return status != noErr || running != 0
-    }
-
     func cancel() {
-        queueLock.lock()
-        isRunning = false
-        isPaused = false
-        isDraining = false
-        captureGeneration &+= 1
-        let queueToDispose = audioQueue
-        let callbackUserDataToRelease = queueCallbackUserData
-        audioQueue = nil
-        queueCallbackUserData = nil
-        buffers.removeAll()
-        preparedInputDeviceID = nil
-        isPrepared = false
-        queueLock.unlock()
-
-        if let queueToDispose {
-            emitLatency("audio_queue_cancel_stop_begin")
-            AudioQueueStop(queueToDispose, true)
-            emitLatency("audio_queue_cancel_stop_end")
-            AudioQueueDispose(queueToDispose, true)
-        }
-        Self.releaseCallbackUserData(callbackUserDataToRelease)
-
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        disposeQueue()
         processingQueue.sync {}
-
-        let state = stateLock.withLock { state -> FileState in
-            let old = state
-            state = FileState()
-            return old
-        }
-        if let url = state.fileURL {
-            try? FileManager.default.removeItem(at: url)
-        }
+        discardFile()
     }
 
     func currentPower() -> Float {
@@ -249,47 +195,38 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
     /// never start capture again, regardless of which queue a stale worker is
     /// on. Distinct from cancel(), which disposes but permits re-prepare.
     func invalidateForTeardown() {
-        teardownInvalidation.withLock { $0 = true }
+        callbackState.withLock { $0.invalidated = true }
     }
 
     private var isPermanentlyInvalidated: Bool {
-        teardownInvalidation.withLock { $0 }
+        callbackState.withLock { $0.invalidated }
     }
 
     func pause() {
-        queueLock.lock()
-        guard isRunning else {
-            queueLock.unlock()
-            return
-        }
-        isPaused = true
-        queueLock.unlock()
+        callbackState.withLock { if $0.isRunning { $0.isPaused = true } }
         stateLock.withLock { $0.latestPowerDB = -160 }
     }
 
     func resume() {
-        queueLock.lock()
-        guard isRunning else {
-            queueLock.unlock()
-            return
-        }
-        isPaused = false
-        queueLock.unlock()
+        callbackState.withLock { if $0.isRunning { $0.isPaused = false } }
     }
 
     private func prepareLocked() throws {
+        let targetInputDeviceID = preferredInputDeviceID
         // Reuse is safe for the default route too: a queue prepared without an
         // explicit device reports kAudioQueueProperty_CurrentDevice =
         // "AQDefaultDevice", i.e. it follows the system default input at start
         // time. Explicit-device queues are bound to a fixed UID; if that device
         // disappears, AudioQueueStart fails and the caller's failure path
         // disposes + rebuilds. Neither case needs eager rebuild here.
-        if isPrepared, preparedInputDeviceID == preferredInputDeviceID {
+        if isPrepared, preparedInputDeviceID == targetInputDeviceID {
             emitLatency("audio_queue_prepare_reused")
             return
         }
 
-        disposeQueueLocked()
+        guard disposeQueue() else {
+            throw Self.runtimeError(code: 10, message: "Previous audio queue did not finish disposal")
+        }
         emitLatency("audio_queue_prepare_begin")
 
         var format = AudioStreamBasicDescription(
@@ -307,15 +244,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         var queue: AudioQueueRef?
         let callbackUserData = Unmanaged.passRetained(self).toOpaque()
         emitLatency("audio_queue_new_input_begin")
-        let newInputStatus = AudioQueueNewInput(
-            &format,
-            Self.inputCallback,
-            callbackUserData,
-            nil,
-            nil,
-            0,
-            &queue
-        )
+        let newInputStatus = native.create(&format, Self.inputCallback, callbackUserData, &queue)
         emitLatency("audio_queue_new_input_end")
         guard newInputStatus == noErr, let queue else {
             Self.releaseCallbackUserData(callbackUserData)
@@ -323,10 +252,11 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         }
         audioQueue = queue
         queueCallbackUserData = callbackUserData
+        callbackState.withLock { $0.queue = queue }
 
         do {
-            if let preferredInputDeviceID {
-                try applyPreferredInputDeviceID(preferredInputDeviceID, to: queue)
+            if let targetInputDeviceID {
+                try applyPreferredInputDeviceID(targetInputDeviceID, to: queue)
             } else {
                 emitLatency("audio_queue_preferred_input_default_route")
             }
@@ -335,7 +265,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
             emitLatency("audio_queue_allocate_buffers_begin")
             for _ in 0..<Self.bufferCount {
                 var buffer: AudioQueueBufferRef?
-                let status = AudioQueueAllocateBuffer(queue, bytesPerBuffer, &buffer)
+                let status = native.allocate(queue, bytesPerBuffer, &buffer)
                 guard status == noErr, let buffer else {
                     throw Self.runtimeError(code: 5, message: "AudioQueueAllocateBuffer failed: \(status)")
                 }
@@ -343,11 +273,11 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
             }
             emitLatency("audio_queue_allocate_buffers_end")
         } catch {
-            disposeQueueLocked()
+            disposeQueue()
             throw error
         }
 
-        preparedInputDeviceID = preferredInputDeviceID
+        preparedInputDeviceID = targetInputDeviceID
         isPrepared = true
         emitLatency("audio_queue_prepare_end")
     }
@@ -381,17 +311,15 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
     }
 
     private func handleInputBuffer(queue: AudioQueueRef, buffer: AudioQueueBufferRef) {
-        queueLock.lock()
-        let shouldProcess = isRunning || isDraining
-        let draining = isDraining
-        let generation = captureGeneration
-        queueLock.unlock()
-        guard shouldProcess else { return }
+        let state = callbackState.withLock { $0 }
+        guard state.queue == queue, state.isRunning || state.isDraining else { return }
+        let draining = state.isDraining
+        let generation = state.generation
 
         let byteCount = Int(buffer.pointee.mAudioDataByteSize)
         guard byteCount > 0 else {
             if !draining {
-                AudioQueueEnqueueBuffer(queue, buffer, 0, nil)
+                native.enqueue(queue, buffer)
             }
             return
         }
@@ -401,7 +329,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         // the queue stops itself, carrying the final partial buffer (the tail
         // of the user's last word) into the file first.
         if !draining {
-            let enqueueStatus = AudioQueueEnqueueBuffer(queue, buffer, 0, nil)
+            let enqueueStatus = native.enqueue(queue, buffer)
             if enqueueStatus != noErr {
                 reportFailure(Self.runtimeError(code: 8, message: "AudioQueueEnqueueBuffer failed: \(enqueueStatus)"))
                 return
@@ -414,10 +342,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
     }
 
     private func processAudioData(_ data: Data, generation: UInt64) {
-        queueLock.lock()
-        let shouldProcess = captureGeneration == generation && !isPaused
-        queueLock.unlock()
-        guard shouldProcess else { return }
+        guard callbackState.withLock({ $0.generation == generation && !$0.isPaused }) else { return }
 
         let sampleCount = data.count / MemoryLayout<Float>.size
         guard sampleCount > 0 else { return }
@@ -454,31 +379,54 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
     }
 
     private func cleanupAfterStartFailure() {
-        disposeQueueLocked()
-        let state = stateLock.withLock { state -> FileState in
+        disposeQueue()
+        processingQueue.sync {}
+        discardFile()
+    }
+
+    private func takeFileState() -> FileState {
+        stateLock.withLock { state in
             let old = state
             state = FileState()
             return old
         }
-        if let url = state.fileURL {
-            try? FileManager.default.removeItem(at: url)
-        }
     }
 
-    private func disposeQueueLocked() {
-        let callbackUserDataToRelease = queueCallbackUserData
-        if let audioQueue {
-            captureGeneration &+= 1
-            isPaused = false
-            AudioQueueStop(audioQueue, true)
-            AudioQueueDispose(audioQueue, true)
+    private func discardFile() {
+        let state = takeFileState()
+        state.fileHandle?.closeFile()
+        if let url = state.fileURL { try? FileManager.default.removeItem(at: url) }
+    }
+
+    /// Caller owns operationLock, which callbacks never acquire. Publish rejection
+    /// before disposal and retain callback context until native disposal succeeds.
+    @discardableResult
+    private func disposeQueue() -> Bool {
+        callbackState.withLock {
+            $0.queue = nil
+            $0.isRunning = false
+            $0.isDraining = false
+            $0.isPaused = false
+            $0.generation &+= 1
         }
+        isPrepared = false
+        if let audioQueue {
+            native.stop(audioQueue, true)
+            let status = native.dispose(audioQueue)
+            guard status == noErr else {
+                // Keep ownership for a later cleanup attempt; never free native
+                // callback context or prepare a replacement while disposal failed.
+                reportFailure(Self.runtimeError(code: 10, message: "AudioQueueDispose failed: \(status)"))
+                return false
+            }
+        }
+        let context = queueCallbackUserData
         audioQueue = nil
         queueCallbackUserData = nil
         buffers.removeAll()
         preparedInputDeviceID = nil
-        isPrepared = false
-        Self.releaseCallbackUserData(callbackUserDataToRelease)
+        Self.releaseCallbackUserData(context)
+        return true
     }
 
     private func reportFailure(_ error: Error) {

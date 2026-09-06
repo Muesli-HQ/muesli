@@ -7,6 +7,23 @@ import CoreAudio
 struct StreamingDictationControllerTests {
 
     @available(macOS 15, *)
+    @Test("retired audio callback cannot add chunks to a replacement streaming session")
+    func retiredAudioAfterReuse() async {
+        let transcriber = DelayedStreamingTranscriber()
+        await transcriber.releaseState()
+        let recorder = InspectableStreamingDictationRecorder()
+        let controller = StreamingDictationController(transcriber: transcriber, recorder: recorder)
+        #expect(controller.start())
+        let oldAudio = recorder.onAudioBuffer
+        controller.cancel()
+        #expect(controller.start())
+        oldAudio?([Float](repeating: 0.2, count: 8960))
+        let text = await stop(controller)
+        #expect(text.isEmpty)
+        #expect(await transcriber.transcribeCalls == 0)
+    }
+
+    @available(macOS 15, *)
     @Test("controller initializes without crash")
     func initDoesNotCrash() {
         let transcriber = ImmediateStreamingTranscriber()

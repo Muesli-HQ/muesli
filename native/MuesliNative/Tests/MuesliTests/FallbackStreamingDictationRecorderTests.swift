@@ -5,6 +5,77 @@ import Testing
 
 @Suite("FallbackStreamingDictationRecorder")
 struct FallbackStreamingDictationRecorderTests {
+    @Test("fallback uses input changed while recovering from primary start failure")
+    func changedInputDuringFallbackPreparation() throws {
+        let primary = FakeFallbackStreamingRecorder()
+        let fallback = FakeFallbackStreamingRecorder()
+        primary.startResults = [.failure(NSError(domain: "test", code: 1))]
+        let recorder = FallbackStreamingDictationRecorder(primary: primary, fallback: fallback)
+        recorder.preferredInputDeviceID = 82
+        fallback.prepareAction = { [weak recorder] in recorder?.preferredInputDeviceID = 93 }
+        try recorder.prepare()
+        try recorder.start()
+        #expect(fallback.preparedInputDeviceIDs == [82])
+        #expect(fallback.startedInputDeviceID == 93)
+        recorder.cancel()
+    }
+
+    @Test("start applies a route changed after preparation", arguments: [false, true])
+    func changedPreparedRoute(useFallback: Bool) throws {
+        let primary = FakeFallbackStreamingRecorder()
+        let fallback = FakeFallbackStreamingRecorder()
+        if useFallback { primary.prepareResults = [.failure(NSError(domain: "test", code: 1))] }
+        let recorder = FallbackStreamingDictationRecorder(primary: primary, fallback: fallback)
+        recorder.preferredInputDeviceID = 82
+        try recorder.prepare()
+        recorder.preferredInputDeviceID = 93
+        try recorder.start()
+        #expect((useFallback ? fallback : primary).startedInputDeviceID == 93)
+        recorder.cancel()
+    }
+
+    @Test("child startup can synchronously await a forwarded callback")
+    func callbacksDoNotWaitForStartupLock() throws {
+        let primary = FakeFallbackStreamingRecorder()
+        let recorder = FallbackStreamingDictationRecorder(primary: primary, fallback: FakeFallbackStreamingRecorder())
+        let delivered = DispatchSemaphore(value: 0)
+        recorder.onAudioBuffer = { _ in delivered.signal() }
+        primary.startAction = { [weak primary] in
+            let callback = primary?.onAudioBuffer
+            Thread.detachNewThread { callback?([0.25]) }
+            #expect(delivered.wait(timeout: .now() + 1) == .success)
+        }
+        try recorder.start()
+    }
+
+    @Test("invalidation during startup cannot activate the fallback", arguments: [false, true])
+    func invalidationRejectsFallback(startFails: Bool) {
+        let primary = FakeFallbackStreamingRecorder()
+        let fallback = FakeFallbackStreamingRecorder()
+        let recorder = FallbackStreamingDictationRecorder(primary: primary, fallback: fallback)
+        primary.startAction = { [weak recorder] in recorder?.invalidateForTeardown() }
+        if startFails { primary.startResults = [.failure(NSError(domain: "test", code: 1))] }
+        #expect(throws: Error.self) { try recorder.start() }
+        #expect(fallback.prepareCalls == 0)
+        #expect(fallback.startCalls == 0)
+    }
+
+    @Test("callbacks captured before cancellation cannot reach a reused primary")
+    func oldCallbacksAfterReuse() throws {
+        let primary = FakeFallbackStreamingRecorder()
+        let recorder = FallbackStreamingDictationRecorder(primary: primary, fallback: FakeFallbackStreamingRecorder())
+        var received = 0
+        recorder.onAudioBuffer = { _ in received += 1 }
+        try recorder.prepare()
+        let oldCallback = primary.onAudioBuffer
+        recorder.cancel()
+        try recorder.prepare()
+        oldCallback?([0.1])
+        #expect(received == 0)
+        primary.onAudioBuffer?([0.2])
+        #expect(received == 1)
+    }
+
     @Test("prepare falls back when primary prepare fails")
     func prepareFallsBackWhenPrimaryPrepareFails() throws {
         let error = NSError(domain: "FallbackStreamingDictationRecorderTests", code: 1)
@@ -152,6 +223,8 @@ private final class FakeFallbackStreamingRecorder: StreamingDictationRecording, 
 
     var prepareResults: [Result<Void, Error>] = []
     var startResults: [Result<Void, Error>] = []
+    var startAction: (() -> Void)?
+    var prepareAction: (() -> Void)?
     var preparedInputDeviceIDs: [AudioObjectID?] = []
     var startedInputDeviceID: AudioObjectID?
     var prepareCalls = 0
@@ -165,6 +238,7 @@ private final class FakeFallbackStreamingRecorder: StreamingDictationRecording, 
     func prepare() throws {
         prepareCalls += 1
         preparedInputDeviceIDs.append(preferredInputDeviceID)
+        prepareAction?()
         if !prepareResults.isEmpty {
             try prepareResults.removeFirst().get()
         }
@@ -172,6 +246,7 @@ private final class FakeFallbackStreamingRecorder: StreamingDictationRecording, 
 
     func start() throws {
         startCalls += 1
+        startAction?()
         startedInputDeviceID = preferredInputDeviceID
         if !startResults.isEmpty {
             try startResults.removeFirst().get()
