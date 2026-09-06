@@ -718,6 +718,7 @@ struct SummaryModelPreset {
     ]
 
     static let openRouterModels: [SummaryModelPreset] = [
+        SummaryModelPreset(id: "openrouter/free", label: "OpenRouter Free (default)"),
         SummaryModelPreset(id: "stepfun/step-3.5-flash:free", label: "Step 3.5 Flash (256k ctx)"),
         SummaryModelPreset(id: "nvidia/nemotron-3-super-120b-a12b:free", label: "Nemotron 3 Super 120B (262k ctx)"),
         SummaryModelPreset(id: "nvidia/nemotron-3-nano-30b-a3b:free", label: "Nemotron 3 Nano 30B (256k ctx)"),

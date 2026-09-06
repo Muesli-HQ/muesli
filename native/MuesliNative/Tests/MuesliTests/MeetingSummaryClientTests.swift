@@ -406,6 +406,16 @@ struct MeetingSummaryClientTests {
         #expect(result.contains("## Raw Transcript"))
     }
 
+    @Test("OpenRouter summaries and titles use the free router when no model is configured")
+    func openRouterUsesProviderManagedDefaultModel() {
+        #expect(MeetingSummaryClient.resolvedOpenRouterModel("") == "openrouter/free")
+        #expect(MeetingSummaryClient.resolvedOpenRouterModel("   \n") == "openrouter/free")
+        #expect(
+            MeetingSummaryClient.resolvedOpenRouterModel(" custom/provider-model:free ")
+                == " custom/provider-model:free "
+        )
+    }
+
     @Test("summary failure notes make backend failure visible")
     func summaryFailureNotesAreExplicit() {
         let error = MeetingSummaryError.backendFailed(

@@ -1175,8 +1175,14 @@ enum CLISummaryError: LocalizedError {
 
 enum CLISummaryClient {
     private static let defaultOpenAIModel = "gpt-5.4-mini"
-    private static let defaultOpenRouterModel = "stepfun/step-3.5-flash:free"
+    private static let defaultOpenRouterModel = "openrouter/free"
     private static let defaultSummaryMaxOutputTokens = 2500
+
+    static func resolvedOpenRouterModel(_ configuredModel: String) -> String {
+        configuredModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? defaultOpenRouterModel
+            : configuredModel
+    }
 
     static func summarize(transcript: String, title: String, config: CLISummaryConfig) async throws -> String {
         let backend = config.meetingSummaryBackend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -1203,7 +1209,7 @@ enum CLISummaryClient {
                 backend: "OpenRouter",
                 url: URL(string: "https://openrouter.ai/api/v1/chat/completions")!,
                 apiKey: key,
-                model: config.openRouterModel.isEmpty ? defaultOpenRouterModel : config.openRouterModel,
+                model: resolvedOpenRouterModel(config.openRouterModel),
                 transcript: transcript,
                 title: title
             )
