@@ -5,6 +5,20 @@ import Testing
 
 @Suite("FallbackStreamingDictationRecorder")
 struct FallbackStreamingDictationRecorderTests {
+    @Test("start applies a route changed after preparation", arguments: [false, true])
+    func changedPreparedRoute(useFallback: Bool) throws {
+        let primary = FakeFallbackStreamingRecorder()
+        let fallback = FakeFallbackStreamingRecorder()
+        if useFallback { primary.prepareResults = [.failure(NSError(domain: "test", code: 1))] }
+        let recorder = FallbackStreamingDictationRecorder(primary: primary, fallback: fallback)
+        recorder.preferredInputDeviceID = 82
+        try recorder.prepare()
+        recorder.preferredInputDeviceID = 93
+        try recorder.start()
+        #expect((useFallback ? fallback : primary).startedInputDeviceID == 93)
+        recorder.cancel()
+    }
+
     @Test("child startup can synchronously await a forwarded callback")
     func callbacksDoNotWaitForStartupLock() throws {
         let primary = FakeFallbackStreamingRecorder()

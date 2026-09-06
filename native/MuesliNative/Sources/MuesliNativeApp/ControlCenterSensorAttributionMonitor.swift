@@ -52,8 +52,11 @@ final class ControlCenterSensorAttributionMonitor {
 
         pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
-            guard !data.isEmpty,
-                  let text = String(data: data, encoding: .utf8) else { return }
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            guard let text = String(data: data, encoding: .utf8) else { return }
             self?.consume(text)
         }
 
@@ -131,12 +134,14 @@ final class ControlCenterSensorAttributionMonitor {
         let hadActiveAttribution = !currentSnapshot.micBundleIDs.isEmpty
             || !currentSnapshot.cameraBundleIDs.isEmpty
         process = nil
+        let pipe = outputPipe
         outputPipe = nil
         lineBuffer = ""
         currentSnapshot = .empty
         let callback = onAttributionsChanged
         lock.unlock()
 
+        pipe?.fileHandleForReading.readabilityHandler = nil
         if hadActiveAttribution {
             Self.logger.notice("sensor_attribution_stream_ended_clearing_snapshot")
             callback?()

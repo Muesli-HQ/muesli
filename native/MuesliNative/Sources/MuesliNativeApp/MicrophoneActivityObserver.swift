@@ -125,14 +125,15 @@ final class CoreAudioMicrophoneActivityObserver: MicrophoneActivityObserving, @u
             guard let self, self.isStarted else { return }
             self.publishActivity()
         }
-        micListenerBlock = block
 
         var runningAddress = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        AudioObjectAddPropertyListenerBlock(deviceID, &runningAddress, queue, block)
+        let runningStatus = AudioObjectAddPropertyListenerBlock(deviceID, &runningAddress, queue, block)
+        if runningStatus == noErr { micListenerBlock = block }
+        else { reportRegistrationFailure("running state", status: runningStatus) }
         if observesMute {
             let muteBlock: AudioObjectPropertyListenerBlock = { [weak self] count, addresses in
                 guard let self, self.isStarted else { return }
@@ -142,9 +143,10 @@ final class CoreAudioMicrophoneActivityObserver: MicrophoneActivityObserving, @u
                 }
                 if relevant { self.publishActivity() }
             }
-            muteListenerBlock = muteBlock
             var address = Self.inputControlAddress
-            AudioObjectAddPropertyListenerBlock(deviceID, &address, queue, muteBlock)
+            let status = AudioObjectAddPropertyListenerBlock(deviceID, &address, queue, muteBlock)
+            if status == noErr { muteListenerBlock = muteBlock }
+            else { reportRegistrationFailure("input controls", status: status) }
         }
     }
 
@@ -162,19 +164,21 @@ final class CoreAudioMicrophoneActivityObserver: MicrophoneActivityObserving, @u
         )
         onActivityChanged?(MicrophoneActivitySnapshot(
             deviceID: micListenerDeviceID,
-            isActive: status == noErr ? running != 0 : nil,
+            isActive: status == noErr && micListenerBlock != nil ? running != 0 : nil,
             isMuted: observesMute ? readInputMuted(deviceID: micListenerDeviceID) : nil
         ))
     }
 
     private func removeMicListener() {
-        guard micListenerDeviceID != 0, let block = micListenerBlock else { return }
+        guard micListenerDeviceID != 0 else { return }
         var runningAddress = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        AudioObjectRemovePropertyListenerBlock(micListenerDeviceID, &runningAddress, queue, block)
+        if let block = micListenerBlock {
+            AudioObjectRemovePropertyListenerBlock(micListenerDeviceID, &runningAddress, queue, block)
+        }
         if let muteListenerBlock {
             var address = Self.inputControlAddress
             AudioObjectRemovePropertyListenerBlock(micListenerDeviceID, &address, queue, muteListenerBlock)
@@ -193,19 +197,20 @@ final class CoreAudioMicrophoneActivityObserver: MicrophoneActivityObserving, @u
                 self.publishActivity()
             }
         }
-        deviceChangeListenerBlock = block
-
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultInputDevice,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        AudioObjectAddPropertyListenerBlock(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            queue,
-            block
+        let status = AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &address, queue, block
         )
+        if status == noErr { deviceChangeListenerBlock = block }
+        else { reportRegistrationFailure("default input", status: status) }
+    }
+
+    private func reportRegistrationFailure(_ property: String, status: OSStatus) {
+        fputs("[meeting-mic-activity] failed to observe \(property) (status=\(status))\n", stderr)
     }
 
     private func removeDeviceChangeListener() {

@@ -205,6 +205,7 @@ struct AudioAttributionServiceTests {
         // publish a meeting into the next detector lifetime.
         await service.reset()
         release.signal()
+        await service.waitForObservation()
         // A separate owner proves completion generates exactly the observation
         // event, whose policy decision must not schedule another query.
         let fresh = AudioAttributionService { _ in [] }

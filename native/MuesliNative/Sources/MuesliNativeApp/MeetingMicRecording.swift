@@ -720,7 +720,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
             guard let self else { return }
             let resume = self.lock.withLock { state in
                 guard state.deferredRouteHandoff, state.startingIDs.isEmpty,
-                      state.retiringIDs.isEmpty else { return false }
+                      state.retiringIDs.isEmpty, state.pending == nil else { return false }
                 state.deferredRouteHandoff = false
                 return state.lifecycleState == .running || state.lifecycleState == .failed
             }

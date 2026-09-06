@@ -542,3 +542,13 @@ Verification:
 
 - User authorized committing the current implementation locally and rebuilding DevC for another AirPods case/uncase test. This checkpoints the accumulated capture/observation/locking changes plus the attribution/liveness simplification; no push requested.
 - Latest cleanup: production63 lines smaller, two policy test files1100→372 lines, conflicting-room liveness fixed; complete native suite2003 tests/182 suites passed (`/private/tmp/muesli-trim-full.log`, durable copy under branch-trim artifact directory). CI shard checks and diff whitespace checks passed. Known outstanding UI Stop and >15s startup reports remain unresolved; one physical route cycle passed before this cleanup on updated macOS/Chrome, not a release guarantee.
+
+
+### PR #500 review follow-up — 2026-09-06
+
+- PR https://github.com/Muesli-HQ/muesli/pull/500 is ready for review. Only issue #498 was approved as a related reference, without closing keywords. Five original commits received author-matching DCO signoffs at user request; pre-review-fix head is `53bc5b21`, tree-identical to physically tested `f942cb2a`.
+- CodeRabbit follow-up fixes EOF handler cleanup, cross-queue route callback storage, preferred input propagation before child start, deferred-handoff retention, late shutdown file cleanup (preserving delivered files), explicit self-process resolution failure during tap creation, cached live route diagnostics, and checked listener registration. No new recurring polling or capture states.
+- Rejected nil-ID finding: MeetingCandidate.suppressionID is nonoptional and defaults to id. Did not add a HAL startup wait: initial microphone publication already schedules micChanged after updating the cache.
+- Attribution service retains its observation task instead of a separate in-flight boolean so the stale-result test can await actual retired completion. Existing shutdown deadline test now verifies late-file deletion and preservation of the delivered track; parameterized recorder test covers selection changes after primary/fallback preparation.
+- Full native suite: 2,004 tests / 182 suites passed in 37.015 seconds; CI shard assignment and diff checks passed. Test log `/private/tmp/muesli-pr500-review-tests.log`. These fixes have not been rebuilt into installed DevC or physically route-tested yet.
+- Prior console-enabled physical round: near-instant startup, smooth AirPods connect/case with waveform responsive, automatic stop on ending Google Meet. Both floating-pill Pause and Stop failed; user explicitly deferred that work. CPU profiler stopped; console stderr logging remained enabled. Durable archive under Codex audio-evidence/devc-console-route-round.tgz.

@@ -36,6 +36,8 @@ enum MeetingCaptureShutdown {
         var micURL: URL?
         var systemURL: URL?
         var completed = 0
+        // Only URLs returned before the deadline belong to the finalizer.
+        var deliveredURLs = Set<URL>()
         var deadline: DispatchWorkItem?
 
         init(microphone: @escaping () async -> URL?, systemAudio: @escaping () async -> URL?,
@@ -68,7 +70,11 @@ enum MeetingCaptureShutdown {
             let waiter = continuation
             continuation = nil
             let result = Result(microphone: micURL, systemAudio: systemURL, timedOut: false)
+            let lateURLs = waiter == nil
+                ? Set([micURL, systemURL].compactMap { $0 }).subtracting(deliveredURLs)
+                : []
             lock.unlock()
+            for url in lateURLs { try? FileManager.default.removeItem(at: url) }
             onQuiesced()
             waiter?.resume(returning: result)
         }
@@ -77,6 +83,7 @@ enum MeetingCaptureShutdown {
             lock.lock()
             let waiter = continuation
             continuation = nil
+            if waiter != nil { deliveredURLs = Set([micURL, systemURL].compactMap { $0 }) }
             let result = Result(microphone: micURL, systemAudio: systemURL, timedOut: true)
             lock.unlock()
             waiter?.resume(returning: result)

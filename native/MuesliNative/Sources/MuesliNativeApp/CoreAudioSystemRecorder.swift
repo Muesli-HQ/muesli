@@ -83,7 +83,12 @@ struct RebuildRetryPolicy: Equatable {
 /// - Hardware-synchronized with mic input when used in an aggregate device
 final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnosticsProviding {
     var onPCMSamples: (([Int16]) -> Void)?
-    var onRouteChange: (() -> Void)?
+    private let routeCallbackLock = NSLock()
+    private var routeCallback: (() -> Void)?
+    var onRouteChange: (() -> Void)? {
+        get { routeCallbackLock.withLock { routeCallback } }
+        set { routeCallbackLock.withLock { routeCallback = newValue } }
+    }
 
     private var tapID: AudioObjectID = kAudioObjectUnknown
     private var aggregateDeviceID: AudioDeviceID = kAudioObjectUnknown
@@ -288,8 +293,11 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
         // equivalent to ScreenCaptureKit's "system audio" stream: all process
         // output mixed to stereo, excluding Muesli itself. The previous
         // device-stream tap could be valid but zero-filled on some routes.
+        guard let ownProcessID = Self.currentProcessAudioObjectID() else {
+            throw RecorderError.coreAudioSetupFailed("resolve own process for tap exclusion", kAudioHardwareBadObjectError)
+        }
         let tapDesc = Self.makeGlobalTapDescription(
-            excludingProcessID: Self.currentProcessAudioObjectID(),
+            excludingProcessID: ownProcessID,
             name: "Muesli System Audio Tap"
         )
 

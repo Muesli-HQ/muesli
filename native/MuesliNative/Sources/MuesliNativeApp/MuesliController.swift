@@ -6732,8 +6732,11 @@ public final class MuesliController: NSObject {
 
     private func installMeetingCapture(id: Int64, title: String, calendarEventID: String?,
                                        backend: BackendOption, templateSnapshot: MeetingTemplateSnapshot) {
-        let route = dictationAudioRoutingController.meetingInputRouteSnapshot()
-        let microphone = RouteAwareMeetingMicRecorder(routeSnapshotProvider: { route })
+        let routingController = dictationAudioRoutingController
+        let route = routingController.meetingInputRouteSnapshot()
+        let microphone = RouteAwareMeetingMicRecorder(
+            routeSnapshotProvider: { routingController.meetingInputRouteSnapshot() }
+        )
         microphone.preferredInputDeviceID = route.preferredInputDeviceID
         let session = MeetingSession(title: title, calendarEventID: calendarEventID,
             backend: backend, runtime: runtime, config: config, templateSnapshot: templateSnapshot,

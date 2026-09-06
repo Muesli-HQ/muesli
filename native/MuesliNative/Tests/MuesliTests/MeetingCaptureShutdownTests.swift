@@ -50,13 +50,19 @@ extension MeetingCaptureShutdownTests {
         let release = DispatchSemaphore(value: 0)
         let systemCompleted = DispatchSemaphore(value: 0)
         let quiesced = DispatchSemaphore(value: 0)
-        let systemURL = URL(fileURLWithPath: "/tmp/shutdown-system.wav")
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let systemURL = directory.appendingPathComponent("system.wav")
+        let lateMicURL = directory.appendingPathComponent("mic.wav")
+        try! Data([1]).write(to: systemURL)
+        try! Data([2]).write(to: lateMicURL)
         let result = await MeetingCaptureShutdown.stop(
             timeout: 0.1,
             microphone: {
                 try? await MeetingCaptureLifecycle.onDriverQueue {
                     #expect(release.wait(timeout: .now() + 5) == .success)
-                    return nil as URL?
+                    return lateMicURL as URL?
                 }
             },
             systemAudio: { systemCompleted.signal(); return systemURL },
@@ -72,6 +78,8 @@ extension MeetingCaptureShutdownTests {
             quiesced.wait(timeout: .now() + 5) == .success
         }
         #expect(didQuiesce == true)
+        #expect(!FileManager.default.fileExists(atPath: lateMicURL.path))
+        #expect(FileManager.default.fileExists(atPath: systemURL.path))
         #expect(quiesced.wait(timeout: .now()) == .timedOut)
     }
 }

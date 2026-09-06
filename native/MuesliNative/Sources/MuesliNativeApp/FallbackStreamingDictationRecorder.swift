@@ -77,6 +77,9 @@ final class FallbackStreamingDictationRecorder: StreamingDictationRecording, Str
         try select(selected, attempt: attempt)
         let child = recorder(for: selected)
         do {
+            // Preparation may precede a route update. Apply it under the command
+            // lock; child start re-prepares when its selected input changed.
+            child.preferredInputDeviceID = preferredInputDeviceID
             try child.start()
             try checkCurrent(attempt)
         } catch {

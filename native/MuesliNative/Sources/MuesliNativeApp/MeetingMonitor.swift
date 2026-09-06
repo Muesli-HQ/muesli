@@ -985,7 +985,7 @@ actor AudioAttributionService {
     private let queue = DispatchQueue(label: "com.muesli.meeting-process-observation")
     private var trackedProcesses: [AudioProcessActivity] = []
     private var cachedEpisode: MeetingAudioAttributionEpisode?
-    private var inFlight = false
+    private var observationTask: Task<Void, Never>?
     private var generation = 0
 
     init(collect: Collect? = nil) {
@@ -1001,18 +1001,17 @@ actor AudioAttributionService {
         episode: MeetingAudioAttributionEpisode?,
         onChange: @escaping () async -> Void
     ) -> AudioAttributionResult {
-        let started = (refreshFull || refreshTracked) && !inFlight && episode != nil
+        let started = (refreshFull || refreshTracked) && observationTask == nil && episode != nil
         if started {
-            inFlight = true
             let token = generation
             let tracked = refreshFull ? nil : trackedProcesses
-            Task { [self, collect, queue] in
+            observationTask = Task { [self, collect, queue] in
                 let began = Date()
                 let processes: [AudioProcessActivity] = await withCheckedContinuation { continuation in
                     queue.async { continuation.resume(returning: collect(tracked)) }
                 }
                 let elapsed = Date().timeIntervalSince(began)
-                inFlight = false
+                observationTask = nil
                 guard generation == token else { return }
                 trackedProcesses = processes
                 cachedEpisode = episode
@@ -1025,6 +1024,10 @@ actor AudioAttributionService {
             duration: 0,
             startedRefresh: started
         )
+    }
+
+    func waitForObservation() async {
+        await observationTask?.value
     }
 
     func reset() {
