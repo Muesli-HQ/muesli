@@ -72,6 +72,7 @@ struct PushToTalkEnablementPolicyTests {
         for useCase in [OnboardingUseCase.voiceNotes, .voiceNotesAndMeetings] {
             let profile = PushToTalkEnablementPolicy.PermissionProfile.resolved(for: useCase)
             #expect(profile == .voiceNote)
+            #expect(!profile.requiresAccessibility)
             #expect(profile.hasRequiredPermissions(permissions))
         }
     }
@@ -95,6 +96,7 @@ struct PushToTalkEnablementPolicyTests {
         ] {
             let profile = PushToTalkEnablementPolicy.PermissionProfile.resolved(for: useCase)
             #expect(profile == .paste)
+            #expect(profile.requiresAccessibility)
             #expect(!profile.hasRequiredPermissions(permissions))
         }
     }

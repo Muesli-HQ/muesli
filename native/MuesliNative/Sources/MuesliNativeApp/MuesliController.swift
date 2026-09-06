@@ -4983,6 +4983,7 @@ public final class MuesliController: NSObject {
         requestPermissions: Bool = false
     ) -> PushToTalkEnableResult {
         let wasEnabled = config.enablePushToTalk
+        let wasPending = pushToTalkEnablementIntentStore.isPending
         let snapshot = currentOnboardingPermissionSnapshot()
         let permissionProfile = PushToTalkEnablementPolicy.PermissionProfile.resolved(
             for: config.resolvedOnboardingUseCase
@@ -5017,7 +5018,7 @@ public final class MuesliController: NSObject {
             pushToTalkEnablementIntentStore.clear()
             startDictationHotkeyMonitorIfNeeded()
             syncDictationRecorderWarmup(intent: .idlePrewarm(.permissionsReady))
-            if !wasEnabled {
+            if !wasEnabled || wasPending {
                 signalPushToTalkEnablementChanged(
                     enabled: true,
                     permissionProfile: permissionProfile,
