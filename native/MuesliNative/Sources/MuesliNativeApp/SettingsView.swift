@@ -1379,6 +1379,13 @@ struct SettingsView: View {
                     _ = controller.updateQuilModeEnabled(newValue)
                 }
             }
+            if appState.config.enableQuilMode,
+               (!micGranted || !accessibilityGranted || !inputMonitoringGranted) {
+                Text(ShortcutFeatureEnablementPolicy.missingPermissionsMessage)
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.transcribing)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             if appState.config.enableQuilMode {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow(
@@ -3009,6 +3016,7 @@ struct SettingsView: View {
             accessibilityGranted: accessibilityGranted,
             inputMonitoringGranted: inputMonitoringGranted
         )
+        controller.reconcilePendingPushToTalkEnableIfReady()
         if reason.refreshesSystemAudio {
             refreshSystemAudioPermissionIfNeeded()
         }

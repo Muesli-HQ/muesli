@@ -17,7 +17,19 @@ enum OnboardingPermissionGate {
         permissions.microphone && permissions.inputMonitoring
     }
 
-    static func hasRequiredPermissions(
+    static func hasRequiredMeetingPermissions(
+        _ permissions: OnboardingPermissionSnapshot,
+        useCoreAudioTap: Bool = true
+    ) -> Bool {
+        permissions.microphone
+            && (useCoreAudioTap ? permissions.systemAudio : permissions.screenRecording)
+    }
+
+    /// Runtime startup remains gated only by permissions needed for the app's
+    /// always-on interaction surfaces. Meeting system audio is requested during
+    /// onboarding, but a later revocation is repaired when meeting capture starts
+    /// instead of trapping an existing user back in onboarding.
+    static func hasRequiredStartupPermissions(
         _ permissions: OnboardingPermissionSnapshot,
         for useCase: OnboardingUseCase
     ) -> Bool {
@@ -30,15 +42,37 @@ enum OnboardingPermissionGate {
         return permissions.microphone
     }
 
+    static func hasRequiredPermissions(
+        _ permissions: OnboardingPermissionSnapshot,
+        for useCase: OnboardingUseCase,
+        useCoreAudioTap: Bool = true
+    ) -> Bool {
+        guard permissions.microphone else { return false }
+        if useCase.includesDictation,
+           (!permissions.accessibility || !permissions.inputMonitoring) {
+            return false
+        }
+        if useCase.includesVoiceNotes, !permissions.inputMonitoring {
+            return false
+        }
+        if useCase.includesMeetings,
+           !hasRequiredMeetingPermissions(permissions, useCoreAudioTap: useCoreAudioTap) {
+            return false
+        }
+        return true
+    }
+
     static func resumeStep(
         requestedStep: Int,
         permissions: OnboardingPermissionSnapshot,
         useCase: OnboardingUseCase,
         permissionsStep: Int,
-        dictationTestStep: Int
+        dictationTestStep: Int,
+        useCoreAudioTap: Bool = true
     ) -> Int {
         let gatedStep = useCase.includesPushToTalk ? dictationTestStep : permissionsStep + 1
-        if requestedStep >= gatedStep && !hasRequiredPermissions(permissions, for: useCase) {
+        if requestedStep >= gatedStep
+            && !hasRequiredPermissions(permissions, for: useCase, useCoreAudioTap: useCoreAudioTap) {
             return permissionsStep
         }
         return requestedStep
