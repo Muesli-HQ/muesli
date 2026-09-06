@@ -1405,18 +1405,48 @@ struct HotkeyConfig: Codable, Equatable {
     }
 }
 
+enum OnboardingCapability: String, Codable, CaseIterable, Hashable {
+    case voiceNotes = "voice_notes"
+    case dictation
+    case meetings
+}
+
 enum OnboardingUseCase: String, Codable, CaseIterable {
     case voiceNotes = "voice_notes"
     case dictation = "dictation"
     case meetings = "meetings"
+    case voiceNotesAndDictation = "voice_notes_and_dictation"
+    case voiceNotesAndMeetings = "voice_notes_and_meetings"
     case dictationAndMeetings = "dictation_and_meetings"
+    case everything = "everything"
+
+    static let allCapabilities = Set(OnboardingCapability.allCases)
+
+    var capabilities: Set<OnboardingCapability> {
+        switch self {
+        case .voiceNotes:
+            [.voiceNotes]
+        case .dictation:
+            [.dictation]
+        case .meetings:
+            [.meetings]
+        case .voiceNotesAndDictation:
+            [.voiceNotes, .dictation]
+        case .voiceNotesAndMeetings:
+            [.voiceNotes, .meetings]
+        case .dictationAndMeetings:
+            [.dictation, .meetings]
+        case .everything:
+            Self.allCapabilities
+        }
+    }
 
     var includesDictation: Bool {
-        self == .dictation || self == .dictationAndMeetings
+        capabilities.contains(.dictation)
     }
 
     var includesVoiceNotes: Bool {
-        self == .voiceNotes
+        capabilities.contains(.voiceNotes)
     }
 
     var includesPushToTalk: Bool {
@@ -1424,11 +1454,40 @@ enum OnboardingUseCase: String, Codable, CaseIterable {
     }
 
     var includesMeetings: Bool {
-        self == .meetings || self == .dictationAndMeetings
+        capabilities.contains(.meetings)
     }
 
     var canSwitchToVoiceNotesOnly: Bool {
-        self == .dictation
+        includesDictation && !includesVoiceNotes
+    }
+
+    func toggling(_ capability: OnboardingCapability) -> OnboardingUseCase {
+        var updated = capabilities
+        if updated.contains(capability) {
+            guard updated.count > 1 else { return self }
+            updated.remove(capability)
+        } else {
+            updated.insert(capability)
+        }
+        return Self.from(capabilities: updated)
+    }
+
+    var replacingDictationWithVoiceNotes: OnboardingUseCase {
+        var updated = capabilities
+        updated.remove(.dictation)
+        updated.insert(.voiceNotes)
+        return Self.from(capabilities: updated)
+    }
+
+    static func from(capabilities: Set<OnboardingCapability>) -> OnboardingUseCase {
+        let normalized = capabilities.isEmpty ? Set([OnboardingCapability.dictation]) : capabilities
+        if normalized == [.voiceNotes] { return .voiceNotes }
+        if normalized == [.dictation] { return .dictation }
+        if normalized == [.meetings] { return .meetings }
+        if normalized == [.voiceNotes, .dictation] { return .voiceNotesAndDictation }
+        if normalized == [.voiceNotes, .meetings] { return .voiceNotesAndMeetings }
+        if normalized == [.dictation, .meetings] { return .dictationAndMeetings }
+        return .everything
     }
 
     static func resolved(_ rawValue: String?) -> OnboardingUseCase {

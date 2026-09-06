@@ -32,6 +32,10 @@ struct OnboardingView: View {
     @State private var grantingPermissionName: String?
     @State private var nativePermissionPromptName: String?
     @State private var recentlyGrantedPermissionName: String?
+    @State private var permissionAdvanceTask: Task<Void, Never>?
+    @State private var permissionAdvanceGeneration: UUID?
+    @State private var hasCompletedPermissionsStep: Bool
+    @State private var selectionBeforeEverything: OnboardingUseCase?
 
     // Hotkey recorder
     @State private var selectedHotkey: HotkeyConfig
@@ -67,6 +71,13 @@ struct OnboardingView: View {
 
     static let permissionsStep = OnboardingFlow.Step.permissions.rawValue
     static let dictationTestStep = OnboardingFlow.dictationTestStep
+    private static let bundledMuesliLogo: NSImage = {
+        if let url = Bundle.main.url(forResource: "muesli_app_icon", withExtension: "png"),
+           let image = NSImage(contentsOf: url) {
+            return image
+        }
+        return NSApplication.shared.applicationIconImage
+    }()
 
     private var orderedSteps: [Int] {
         OnboardingFlow.orderedSteps(for: selectedUseCase)
@@ -134,6 +145,9 @@ struct OnboardingView: View {
         let effectiveInitialStep = OnboardingFlow.normalizedStep(permissionGatedInitialStep, for: initialUseCase)
 
         _currentStep = State(initialValue: effectiveInitialStep)
+        _hasCompletedPermissionsStep = State(initialValue: OnboardingFlow.hasCompletedPermissionsStep(
+            resumingAt: effectiveInitialStep
+        ))
         _userName = State(initialValue: initialUserName)
         _selectedUseCase = State(initialValue: initialUseCase)
         let sanitizedInitialBackend = BackendOption.onboarding.contains(initialBackend)
@@ -217,7 +231,10 @@ struct OnboardingView: View {
         .onChange(of: userName) { _, _ in
             saveProgress(atStep: currentStep)
         }
-        .onChange(of: selectedUseCase) { _, _ in
+        .onChange(of: selectedUseCase) { previousUseCase, newUseCase in
+            if previousUseCase != newUseCase {
+                hasCompletedPermissionsStep = false
+            }
             if !orderedSteps.contains(currentStep) {
                 currentStep = OnboardingFlow.normalizedStep(currentStep, for: selectedUseCase)
             }
@@ -265,13 +282,7 @@ struct OnboardingView: View {
             }
         case 3:
             onboardingButton(currentStepIndex == orderedSteps.count - 1 ? "Finish" : "Continue", enabled: requiredPermissionsGranted) {
-                if selectedUseCase.includesPushToTalk {
-                    saveProgressAndRestart()
-                } else if currentStepIndex == orderedSteps.count - 1 {
-                    finishOnboarding(withKey: false)
-                } else {
-                    goToNextStep()
-                }
+                advancePastPermissions()
             }
         case 4:
             if dictationTestResult != nil {
@@ -518,7 +529,7 @@ struct OnboardingView: View {
     private var dictationTestSubtitle: AttributedString {
         let markdown: String
         if isSelectedModelReadyForDictationTest {
-            markdown = selectedUseCase.includesVoiceNotes
+            markdown = selectedUseCase.includesVoiceNotes && !selectedUseCase.includesDictation
                 ? "Hold **\(selectedHotkey.label)** to record a voice note, then release.\nYour words should appear below."
                 : "Hold **\(selectedHotkey.label)** and say something, then release.\nYour words should appear below."
         } else {
@@ -528,7 +539,9 @@ struct OnboardingView: View {
     }
 
     private var dictationTestPreparationSubtitleMarkdown: String {
-        let unlockCopy = selectedUseCase.includesVoiceNotes ? "Voice note test" : "Dictation"
+        let unlockCopy = selectedUseCase.includesVoiceNotes && !selectedUseCase.includesDictation
+            ? "Voice note test"
+            : "Dictation"
         if isModelPreparingAfterDownload {
             return "Optimizing **\(selectedBackend.label)** for this Mac.\n\(unlockCopy) will unlock when it is ready."
         }
@@ -557,9 +570,12 @@ struct OnboardingView: View {
         VStack(spacing: MuesliTheme.spacing16) {
             Spacer()
 
-            MWaveformIcon(barCount: 13, spacing: 3)
-                .foregroundStyle(MuesliTheme.accent)
-                .frame(width: 80, height: 48)
+            Image(nsImage: Self.bundledMuesliLogo)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFit()
+                .frame(width: 64, height: 64)
+                .accessibilityLabel("Muesli")
 
             VStack(spacing: MuesliTheme.spacing8) {
                 Text("Welcome to Muesli")
@@ -600,36 +616,36 @@ struct OnboardingView: View {
                         icon: "waveform",
                         title: "Voice Notes",
                         subtitle: "Record in Muesli",
-                        selected: selectedUseCase == .voiceNotes
+                        selected: selectedUseCase.includesVoiceNotes
                     ) {
-                        selectedUseCase = .voiceNotes
+                        toggleCapability(.voiceNotes)
                     }
 
                     useCaseCard(
                         icon: "keyboard.fill",
                         title: "Dictation",
                         subtitle: "Paste into apps",
-                        selected: selectedUseCase == .dictation
+                        selected: selectedUseCase.includesDictation
                     ) {
-                        selectedUseCase = .dictation
+                        toggleCapability(.dictation)
                     }
 
                     useCaseCard(
                         icon: "person.2.fill",
                         title: "Meetings",
                         subtitle: "Notes and summaries",
-                        selected: selectedUseCase == .meetings
+                        selected: selectedUseCase.includesMeetings
                     ) {
-                        selectedUseCase = .meetings
+                        toggleCapability(.meetings)
                     }
 
                     useCaseCard(
                         icon: "rectangle.3.group.fill",
                         title: "Everything",
-                        subtitle: "Dictation + meetings",
-                        selected: selectedUseCase == .dictationAndMeetings
+                        subtitle: "All workflows",
+                        selected: selectedUseCase == .everything
                     ) {
-                        selectedUseCase = .dictationAndMeetings
+                        toggleEverything()
                     }
                 }
             }
@@ -666,8 +682,18 @@ struct OnboardingView: View {
                 RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
                     .strokeBorder(selected ? MuesliTheme.accent : MuesliTheme.surfaceBorder, lineWidth: 1)
             )
+            .overlay(alignment: .topLeading) {
+                if selected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(7)
+                        .transition(.scale.combined(with: .opacity))
+                }
+            }
         }
         .buttonStyle(.plain)
+        .animation(.easeInOut(duration: 0.18), value: selected)
     }
 
     // MARK: - Step 2: Model Selection
@@ -829,8 +855,12 @@ struct OnboardingView: View {
             }
             steps += [
             ("keyboard.fill", "Input Monitoring", "Detect hotkey for push-to-talk recording", inputMonitoringGranted, {
+                self.controller.beginSystemPermissionGuide(for: .inputMonitoring)
                 if !CGRequestListenEventAccess() {
-                    self.openSystemSettings("Privacy_ListenEvent")
+                    self.openSystemSettings(
+                        "Privacy_ListenEvent",
+                        yieldBehavior: OnboardingSystemSettingsYieldPolicy.behavior(for: .inputMonitoring)
+                    )
                 }
             }),
             ]
@@ -983,8 +1013,22 @@ struct OnboardingView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity)
-        .onAppear { startPermissionPolling() }
-        .onDisappear { stopPermissionPolling() }
+        .onAppear {
+            startPermissionPolling()
+            schedulePermissionAdvanceIfReady()
+        }
+        .onChange(of: requiredPermissionsGranted) { _, granted in
+            if granted {
+                schedulePermissionAdvanceIfReady()
+            } else {
+                cancelScheduledPermissionAdvance()
+            }
+        }
+        .onDisappear {
+            cancelScheduledPermissionAdvance()
+            stopPermissionPolling()
+            controller.dismissSystemPermissionGuide()
+        }
     }
 
     private func permissionButtonTitle(for permissionName: String, isConfirmingGrant: Bool) -> String {
@@ -1000,6 +1044,7 @@ struct OnboardingView: View {
 
     private func requestAccessibilityPermission() {
         nativePermissionPromptName = "Accessibility"
+        controller.beginSystemPermissionGuide(for: .accessibility)
         controller.prepareOnboardingForNativePermissionPrompt()
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
@@ -1019,8 +1064,9 @@ struct OnboardingView: View {
         grantingPermissionName = nil
         nativePermissionPromptName = nil
         recentlyGrantedPermissionName = nil
-        selectedUseCase = .voiceNotes
-        currentStep = OnboardingFlow.normalizedStep(currentStep, for: .voiceNotes)
+        controller.dismissSystemPermissionGuide()
+        selectedUseCase = selectedUseCase.replacingDictationWithVoiceNotes
+        currentStep = OnboardingFlow.normalizedStep(currentStep, for: selectedUseCase)
         saveProgress(atStep: currentStep)
     }
 
@@ -1114,6 +1160,81 @@ struct OnboardingView: View {
         permissionPollTimer = nil
     }
 
+    private func schedulePermissionAdvanceIfReady() {
+        guard OnboardingFlow.shouldSchedulePermissionAdvance(
+            currentStep: currentStep,
+            requiredPermissionsGranted: requiredPermissionsGranted,
+            hasCompletedPermissionsStep: hasCompletedPermissionsStep,
+            hasScheduledTask: permissionAdvanceTask != nil
+        ) else { return }
+
+        let generation = UUID()
+        permissionAdvanceGeneration = generation
+        permissionAdvanceTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(900))
+            guard permissionAdvanceGeneration == generation, !Task.isCancelled else { return }
+            guard currentStep == Self.permissionsStep, requiredPermissionsGranted else {
+                permissionAdvanceGeneration = nil
+                permissionAdvanceTask = nil
+                return
+            }
+
+            permissionAdvanceGeneration = nil
+            permissionAdvanceTask = nil
+            advancePastPermissions()
+        }
+    }
+
+    private func cancelScheduledPermissionAdvance() {
+        permissionAdvanceGeneration = nil
+        permissionAdvanceTask?.cancel()
+        permissionAdvanceTask = nil
+    }
+
+    private func advancePastPermissions() {
+        cancelScheduledPermissionAdvance()
+        controller.dismissSystemPermissionGuide()
+        let action = OnboardingFlow.permissionAdvanceAction(
+            for: selectedUseCase,
+            currentStepIndex: currentStepIndex,
+            orderedStepCount: orderedSteps.count,
+            hasCompletedPermissionsStep: hasCompletedPermissionsStep
+        )
+        hasCompletedPermissionsStep = true
+        switch action {
+        case .restartForDictationTest:
+            saveProgressAndRestart()
+        case .finish:
+            finishOnboarding(withKey: false)
+        case .next:
+            goToNextStep()
+        }
+    }
+
+    private func toggleCapability(_ capability: OnboardingCapability) {
+        applyUseCaseSelection(OnboardingFlow.toggling(
+            capability,
+            in: OnboardingFlow.UseCaseSelectionState(
+                selectedUseCase: selectedUseCase,
+                selectionBeforeEverything: selectionBeforeEverything
+            )
+        ))
+    }
+
+    private func toggleEverything() {
+        applyUseCaseSelection(OnboardingFlow.togglingEverything(
+            in: OnboardingFlow.UseCaseSelectionState(
+                selectedUseCase: selectedUseCase,
+                selectionBeforeEverything: selectionBeforeEverything
+            )
+        ))
+    }
+
+    private func applyUseCaseSelection(_ state: OnboardingFlow.UseCaseSelectionState) {
+        selectedUseCase = state.selectedUseCase
+        selectionBeforeEverything = state.selectionBeforeEverything
+    }
+
     private func refreshPermissions() {
         micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         accessibilityGranted = AXIsProcessTrusted()
@@ -1141,6 +1262,9 @@ struct OnboardingView: View {
     @MainActor
     private func notePermissionGranted(_ permissionName: String) {
         guard recentlyGrantedPermissionName != permissionName else { return }
+        if PermissionDragGuidePermission(permissionName: permissionName) != nil {
+            controller.dismissSystemPermissionGuide()
+        }
         grantingPermissionName = nil
         nativePermissionPromptName = nil
         recentlyGrantedPermissionName = permissionName
@@ -1182,19 +1306,32 @@ struct OnboardingView: View {
 
     private func openSystemSettingsForPermission(at permissionIndex: Int) {
         let steps = permissionSteps
+        var guidePermission: PermissionDragGuidePermission?
         if permissionIndex < steps.count {
-            grantingPermissionName = steps[permissionIndex].name
+            let permissionName = steps[permissionIndex].name
+            grantingPermissionName = permissionName
             nativePermissionPromptName = nil
             recentlyGrantedPermissionName = nil
             saveProgress(atStep: currentStep)
+            guidePermission = PermissionDragGuidePermission(permissionName: permissionName)
+            if let guidePermission {
+                controller.beginSystemPermissionGuide(for: guidePermission)
+            }
         }
-        openSystemSettings(systemSettingsPane(for: permissionIndex))
+        openSystemSettings(
+            systemSettingsPane(for: permissionIndex),
+            yieldBehavior: OnboardingSystemSettingsYieldPolicy.behavior(for: guidePermission)
+        )
     }
 
-    private func openSystemSettings(_ pane: String) {
+    private func openSystemSettings(
+        _ pane: String,
+        yieldBehavior: OnboardingSystemSettingsYieldBehavior
+    ) {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") {
-            controller.yieldOnboardingFocusToSystemSettings()
-            NSWorkspace.shared.open(url)
+            if NSWorkspace.shared.open(url) {
+                controller.yieldOnboardingFocusToSystemSettings(using: yieldBehavior)
+            }
         }
     }
 
@@ -1293,7 +1430,7 @@ struct OnboardingView: View {
             Spacer()
 
             VStack(spacing: MuesliTheme.spacing8) {
-                Text(selectedUseCase.includesVoiceNotes ? "Test Voice Note" : "Test Dictation")
+                Text(selectedUseCase.includesVoiceNotes && !selectedUseCase.includesDictation ? "Test Voice Note" : "Test Dictation")
                     .font(MuesliTheme.title1())
                     .foregroundStyle(MuesliTheme.textPrimary)
 
@@ -1420,6 +1557,9 @@ struct OnboardingView: View {
                 withAnimation { isDictationTesting = true }
                 dictationTestError = nil
             }
+            controller.dictationTestRecordingStopped = {
+                withAnimation { isDictationTesting = false }
+            }
             controller.dictationTestCallback = { text in
                 if text.isEmpty {
                     dictationTestError = "No speech detected. Try again."
@@ -1439,11 +1579,7 @@ struct OnboardingView: View {
             // Cancel any in-flight recording before clearing callbacks to prevent
             // the transcription Task from falling through to the production paste path
             controller.cancelTestDictation()
-            controller.dictationTestCallback = nil
-            controller.dictationTestFailureCallback = nil
-            controller.dictationTestRecordingStarted = nil
-            controller.dictationTestBackend = nil
-            controller.dictationTestCohereLanguage = nil
+            controller.clearDictationTestLifecycle()
             // Stop the test monitor while moving through onboarding, but leave the
             // production monitor running when finishing from the dictation test.
             if !hasFinishedOnboarding {

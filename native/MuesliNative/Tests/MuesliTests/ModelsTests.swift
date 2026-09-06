@@ -1883,12 +1883,29 @@ struct AppConfigTests {
         #expect(!OnboardingUseCase.voiceNotes.includesMeetings)
     }
 
-    @Test("voice notes escape hatch is dictation-only")
-    func voiceNotesEscapeHatchIsDictationOnly() {
+    @Test("voice notes escape hatch is available for every dictation selection")
+    func voiceNotesEscapeHatchPreservesOtherCapabilities() {
         #expect(OnboardingUseCase.dictation.canSwitchToVoiceNotesOnly)
-        #expect(!OnboardingUseCase.dictationAndMeetings.canSwitchToVoiceNotesOnly)
+        #expect(OnboardingUseCase.dictationAndMeetings.canSwitchToVoiceNotesOnly)
         #expect(!OnboardingUseCase.meetings.canSwitchToVoiceNotesOnly)
         #expect(!OnboardingUseCase.voiceNotes.canSwitchToVoiceNotesOnly)
+        #expect(OnboardingUseCase.dictationAndMeetings.replacingDictationWithVoiceNotes == .voiceNotesAndMeetings)
+    }
+
+    @Test("onboarding use cases preserve the union of selected capabilities")
+    func onboardingUseCaseCapabilityUnion() {
+        let voiceAndMeetings = OnboardingUseCase.voiceNotes.toggling(.meetings)
+        #expect(voiceAndMeetings == .voiceNotesAndMeetings)
+        #expect(voiceAndMeetings.includesVoiceNotes)
+        #expect(!voiceAndMeetings.includesDictation)
+        #expect(voiceAndMeetings.includesMeetings)
+
+        let everything = voiceAndMeetings.toggling(.dictation)
+        #expect(everything == .everything)
+        #expect(everything.capabilities == OnboardingUseCase.allCapabilities)
+
+        #expect(everything.toggling(.voiceNotes) == .dictationAndMeetings)
+        #expect(OnboardingUseCase.dictation.toggling(.dictation) == .dictation)
     }
 
     @Test("scheduled meeting notifications inherit legacy detection opt-out")
