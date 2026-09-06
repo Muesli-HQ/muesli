@@ -2039,6 +2039,18 @@ struct SettingsView: View {
                     .padding(.horizontal, MuesliTheme.spacing16)
             }
 
+            settingsSection("Manual Export") {
+                settingsRow("Open file after exporting") {
+                    settingsSwitch(isOn: appState.config.openFileAfterManualExport) { newValue in
+                        controller.updateConfig { $0.openFileAfterManualExport = newValue }
+                    }
+                }
+                Text("Opens the exported file in its default app after saving from the Export menu. The Export menu also remembers your last-used format.")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .padding(.horizontal, MuesliTheme.spacing16)
+            }
+
             settingsSection("Meeting Notifications") {
                 settingsRow("Scheduled meetings") {
                     settingsSwitch(isOn: appState.config.showScheduledMeetingNotifications) { newValue in

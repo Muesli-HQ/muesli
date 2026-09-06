@@ -1626,6 +1626,8 @@ struct AppConfig: Codable {
     var autoExportMarkdownFolderPath: String = ""
     var autoExportMarkdownContent: String = MeetingExportContent.notes.rawValue
     var autoExportFileFormat: String = MeetingAutoExportFileFormat.markdown.rawValue
+    var manualExportFormat: String = MeetingManualExportFormat.pdf.rawValue
+    var openFileAfterManualExport: Bool = true
     var iCloudSyncEnabled: Bool = false
     var showIOSCompanionPrompt: Bool = true
     var contributionPromptNextWordCount: Int?
@@ -1759,6 +1761,8 @@ struct AppConfig: Codable {
         case autoExportMarkdownFolderPath = "auto_export_markdown_folder_path"
         case autoExportMarkdownContent = "auto_export_markdown_content"
         case autoExportFileFormat = "auto_export_file_format"
+        case manualExportFormat = "manual_export_format"
+        case openFileAfterManualExport = "open_file_after_manual_export"
         case iCloudSyncEnabled = "icloud_sync_enabled"
         case showIOSCompanionPrompt = "show_ios_companion_prompt"
         case contributionPromptNextWordCount = "contribution_prompt_next_word_count"
@@ -1985,6 +1989,9 @@ struct AppConfig: Codable {
         autoExportMarkdownContent = MeetingExportContent(rawValue: decodedAutoExportMarkdownContent)?.rawValue ?? defaults.autoExportMarkdownContent
         let decodedAutoExportFileFormat = (try? c.decode(String.self, forKey: .autoExportFileFormat)) ?? defaults.autoExportFileFormat
         autoExportFileFormat = MeetingAutoExportFileFormat(rawValue: decodedAutoExportFileFormat)?.rawValue ?? defaults.autoExportFileFormat
+        let decodedManualExportFormat = (try? c.decode(String.self, forKey: .manualExportFormat)) ?? defaults.manualExportFormat
+        manualExportFormat = MeetingManualExportFormat(rawValue: decodedManualExportFormat)?.rawValue ?? defaults.manualExportFormat
+        openFileAfterManualExport = (try? c.decode(Bool.self, forKey: .openFileAfterManualExport)) ?? defaults.openFileAfterManualExport
         contributionPromptNextWordCount = try? c.decode(Int.self, forKey: .contributionPromptNextWordCount)
         contributionPromptNextMeetingCount = try? c.decode(Int.self, forKey: .contributionPromptNextMeetingCount)
         contributionGitHubStarClicked = (try? c.decode(Bool.self, forKey: .contributionGitHubStarClicked)) ?? defaults.contributionGitHubStarClicked
@@ -2039,6 +2046,10 @@ struct AppConfig: Codable {
 
     var resolvedAutoExportFileFormat: MeetingAutoExportFileFormat {
         MeetingAutoExportFileFormat.resolved(autoExportFileFormat)
+    }
+
+    var resolvedManualExportFormat: MeetingManualExportFormat {
+        MeetingManualExportFormat.resolved(manualExportFormat)
     }
 
     var resolvedMeetingRecordingFileFormat: MeetingRecordingFileFormat {

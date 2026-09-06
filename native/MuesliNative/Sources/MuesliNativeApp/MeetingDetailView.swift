@@ -1062,18 +1062,29 @@ struct MeetingDetailView: View {
         .accessibilityLabel(label)
     }
 
+    private func exportMeeting(_ meeting: MeetingRecord, content: MeetingExportContent) {
+        MeetingExporter.export(
+            meeting: meeting,
+            content: content,
+            preferredFormat: appState.config.resolvedManualExportFormat,
+            openAfterSaving: appState.config.openFileAfterManualExport
+        ) { confirmedFormat in
+            controller.updateConfig { $0.manualExportFormat = confirmedFormat.rawValue }
+        }
+    }
+
     @ViewBuilder
     private func exportMenu(for meeting: MeetingRecord) -> some View {
         let currentContent: MeetingExportContent = documentMode == .transcript ? .transcript : .notes
         let currentLabel = documentMode == .transcript ? "Export Transcript" : "Export Notes"
         Menu {
             Button {
-                MeetingExporter.export(meeting: meeting, content: currentContent)
+                exportMeeting(meeting, content: currentContent)
             } label: {
                 Label(currentLabel, systemImage: documentMode == .transcript ? "text.quote" : "doc.text")
             }
             Button {
-                MeetingExporter.export(meeting: meeting, content: .fullMeeting)
+                exportMeeting(meeting, content: .fullMeeting)
             } label: {
                 Label("Export Full Meeting", systemImage: "doc.on.doc")
             }
