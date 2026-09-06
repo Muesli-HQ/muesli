@@ -764,8 +764,11 @@ public final class MuesliController: NSObject {
         ) {
             startDictationHotkeyMonitorIfNeeded()
         }
+        // Quill and Computer Use own their runtime permission checks. Their
+        // availability must not inherit the startup requirements of whichever
+        // use case happened to be selected during onboarding.
+        startIndependentDictationFeatureHotkeyMonitorsIfNeeded()
         if canRunMainApp {
-            startIndependentDictationFeatureHotkeyMonitorsIfNeeded()
             startMeetingRecordingHotkeyMonitorIfNeeded()
         }
         syncDictationRecorderWarmup(intent: .idlePrewarm(.startup))
@@ -2176,6 +2179,7 @@ public final class MuesliController: NSObject {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.reconcilePendingPushToTalkEnableIfReady()
+                self?.reconcileIndependentShortcutFeatureEnablement()
                 self?.scheduleICloudSync(
                     intent: .incoming,
                     delay: 0.5,
@@ -4384,6 +4388,7 @@ public final class MuesliController: NSObject {
 
     @discardableResult
     func updateComputerUseHotkeyEnabled(_ enabled: Bool) -> ShortcutHotkeyUpdateResult {
+        let wasEnabled = config.enableComputerUseHotkey
         if enabled {
             if config.enableQuilMode,
                ShortcutHotkeyPolicy.hotkeysConflict(config.computerUseHotkey, config.quilHotkey) {
@@ -4405,10 +4410,33 @@ public final class MuesliController: NSObject {
                 config.enableComputerUseHotkey = true
             }
             configureComputerUseHotkeyMonitor()
-            return resolution.result
+            let permissions = currentOnboardingPermissionSnapshot()
+            let hasRequiredPermissions = ShortcutFeatureEnablementPolicy.hasRequiredPermissions(permissions)
+            if !hasRequiredPermissions {
+                requestMissingShortcutPermissions(permissions, requiresAccessibility: true)
+            }
+            if !wasEnabled {
+                signalIndependentShortcutEnablementChanged(
+                    feature: "computer_use",
+                    enabled: true,
+                    hasRequiredPermissions: hasRequiredPermissions
+                )
+            }
+            return hasRequiredPermissions
+                ? resolution.result
+                : .updated(notice: ShortcutFeatureEnablementPolicy.missingPermissionsMessage)
         }
-        updateConfig { $0.enableComputerUseHotkey = enabled }
+        updateConfig { $0.enableComputerUseHotkey = false }
         configureComputerUseHotkeyMonitor()
+        if wasEnabled {
+            signalIndependentShortcutEnablementChanged(
+                feature: "computer_use",
+                enabled: false,
+                hasRequiredPermissions: ShortcutFeatureEnablementPolicy.hasRequiredPermissions(
+                    currentOnboardingPermissionSnapshot()
+                )
+            )
+        }
         return .updated
     }
 
@@ -4474,6 +4502,8 @@ public final class MuesliController: NSObject {
 
     @discardableResult
     func updateQuilModeEnabled(_ enabled: Bool) -> ShortcutHotkeyUpdateResult {
+        let wasEnabled = config.enableQuilMode
+        var validationResult: ShortcutHotkeyUpdateResult = .updated
         if enabled {
             let result = ShortcutHotkeyPolicy.validateQuilHotkey(
                 config.quilHotkey,
@@ -4484,10 +4514,25 @@ public final class MuesliController: NSObject {
                 isMeetingRecordingEnabled: config.enableMeetingRecordingHotkey
             )
             guard result.didUpdate else { return result }
+            validationResult = result
         }
         updateConfig { $0.enableQuilMode = enabled }
         configureQuilHotkeyMonitor()
-        return .updated
+        let permissions = currentOnboardingPermissionSnapshot()
+        let hasRequiredPermissions = ShortcutFeatureEnablementPolicy.hasRequiredPermissions(permissions)
+        if enabled, !hasRequiredPermissions {
+            requestMissingShortcutPermissions(permissions, requiresAccessibility: true)
+        }
+        if wasEnabled != enabled {
+            signalIndependentShortcutEnablementChanged(
+                feature: "quill",
+                enabled: enabled,
+                hasRequiredPermissions: hasRequiredPermissions
+            )
+        }
+        return enabled && !hasRequiredPermissions
+            ? .updated(notice: ShortcutFeatureEnablementPolicy.missingPermissionsMessage)
+            : validationResult
     }
 
     func resetShortcutDefaults() {
@@ -5066,16 +5111,52 @@ public final class MuesliController: NSObject {
         _ snapshot: OnboardingPermissionSnapshot,
         profile: PushToTalkEnablementPolicy.PermissionProfile
     ) {
+        requestMissingShortcutPermissions(
+            snapshot,
+            requiresAccessibility: profile.requiresAccessibility
+        )
+    }
+
+    private func requestMissingShortcutPermissions(
+        _ snapshot: OnboardingPermissionSnapshot,
+        requiresAccessibility: Bool
+    ) {
         if !snapshot.microphone {
             AVCaptureDevice.requestAccess(for: .audio) { _ in }
         }
-        if profile.requiresAccessibility, !snapshot.accessibility {
+        if requiresAccessibility, !snapshot.accessibility {
             let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
             AXIsProcessTrustedWithOptions(options)
         }
         if !snapshot.inputMonitoring {
             _ = CGRequestListenEventAccess()
         }
+    }
+
+    func independentShortcutPermissionMessageIfNeeded(isEnabled: Bool) -> String? {
+        guard isEnabled,
+              !ShortcutFeatureEnablementPolicy.hasRequiredPermissions(
+                  currentOnboardingPermissionSnapshot()
+              ) else { return nil }
+        return ShortcutFeatureEnablementPolicy.missingPermissionsMessage
+    }
+
+    private func reconcileIndependentShortcutFeatureEnablement() {
+        configureComputerUseHotkeyMonitor()
+        configureQuilHotkeyMonitor()
+    }
+
+    private func signalIndependentShortcutEnablementChanged(
+        feature: String,
+        enabled: Bool,
+        hasRequiredPermissions: Bool
+    ) {
+        TelemetryDeck.signal("shortcut_feature.enablement_changed", parameters: [
+            "feature": feature,
+            "enabled": enabled ? "true" : "false",
+            "onboarding_use_case": config.resolvedOnboardingUseCase.rawValue,
+            "required_permissions_granted": hasRequiredPermissions ? "true" : "false",
+        ])
     }
 
     private func signalPushToTalkEnablementChanged(
@@ -8351,7 +8432,11 @@ public final class MuesliController: NSObject {
             computerUseHotkeyMonitor.stop()
             return
         }
-        guard config.resolvedOnboardingUseCase.includesDictation else {
+        guard ShortcutFeatureEnablementPolicy.outcome(
+            hasCompletedOnboarding: config.hasCompletedOnboarding,
+            isEnabled: config.enableComputerUseHotkey,
+            permissions: currentOnboardingPermissionSnapshot()
+        ) == .ready else {
             computerUseHotkeyMonitor.stop()
             return
         }
@@ -8372,8 +8457,11 @@ public final class MuesliController: NSObject {
     }
 
     private func startQuilHotkeyMonitorIfNeeded() {
-        guard config.enableQuilMode,
-              config.resolvedOnboardingUseCase.includesDictation else {
+        guard ShortcutFeatureEnablementPolicy.outcome(
+            hasCompletedOnboarding: config.hasCompletedOnboarding,
+            isEnabled: config.enableQuilMode,
+            permissions: currentOnboardingPermissionSnapshot()
+        ) == .ready else {
             quilHotkeyMonitor.stop()
             return
         }

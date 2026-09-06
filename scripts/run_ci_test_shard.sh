@@ -79,6 +79,7 @@ case "${shard}" in
       SummaryModelPresetTests
       HotkeyMonitorTests
       PushToTalkEnablementPolicyTests
+      ShortcutFeatureEnablementPolicyTests
       InteractiveAudioSessionOwnershipTests
       DictationStateTests
       HotkeyConfigTests

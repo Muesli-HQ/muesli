@@ -43,10 +43,13 @@ struct ShortcutsView: View {
         }
         .onAppear {
             reconcilePushToTalkState()
+            reconcileIndependentShortcutState()
         }
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
-            guard isPushToTalkEnabled else { return }
-            reconcilePushToTalkState()
+            if isPushToTalkEnabled {
+                reconcilePushToTalkState()
+            }
+            reconcileIndependentShortcutState()
         }
         .onDisappear {
             stopRecording()
@@ -302,7 +305,7 @@ struct ShortcutsView: View {
     ) -> some View {
         HStack(spacing: MuesliTheme.spacing12) {
             hotkeyBadge(hotkey(for: target))
-            changeButton(for: target)
+            compactChangeButton(for: target)
                 .disabled(!isEnabled)
                 .opacity(isEnabled ? 1 : 0.55)
             Spacer(minLength: MuesliTheme.spacing16)
@@ -408,29 +411,6 @@ struct ShortcutsView: View {
             .foregroundStyle(MuesliTheme.transcribing)
     }
 
-    private func changeButton(for target: ShortcutTarget) -> some View {
-        Button {
-            if recordingTarget == target {
-                stopRecording()
-            } else {
-                startRecording(target)
-            }
-        } label: {
-            Text(recordingTarget == target ? recordingPrompt(for: target) : "Change Shortcut")
-                .font(MuesliTheme.body())
-                .foregroundStyle(recordingTarget == target ? MuesliTheme.accent : MuesliTheme.textPrimary)
-        }
-        .buttonStyle(.plain)
-        .padding(.horizontal, MuesliTheme.spacing12)
-        .padding(.vertical, MuesliTheme.spacing8)
-        .background(recordingTarget == target ? MuesliTheme.accentSubtle : MuesliTheme.surfacePrimary)
-        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-        .overlay(
-            RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                .strokeBorder(recordingTarget == target ? MuesliTheme.accent.opacity(0.3) : MuesliTheme.surfaceBorder, lineWidth: 1)
-        )
-    }
-
     private func compactChangeButton(for target: ShortcutTarget) -> some View {
         Button {
             if recordingTarget == target {
@@ -466,6 +446,27 @@ struct ShortcutsView: View {
             dictationShortcutMessage = nil
         case .needsPermissions:
             dictationShortcutMessage = pushToTalkPermissionMessage
+        }
+    }
+
+    private func reconcileIndependentShortcutState() {
+        let permissionMessage = ShortcutFeatureEnablementPolicy.missingPermissionsMessage
+        let computerUsePermissionMessage = controller.independentShortcutPermissionMessageIfNeeded(
+            isEnabled: appState.config.enableComputerUseHotkey
+        )
+        if let computerUsePermissionMessage {
+            computerUseShortcutMessage = computerUsePermissionMessage
+        } else if computerUseShortcutMessage == permissionMessage {
+            computerUseShortcutMessage = nil
+        }
+
+        let quilPermissionMessage = controller.independentShortcutPermissionMessageIfNeeded(
+            isEnabled: appState.config.enableQuilMode
+        )
+        if let quilPermissionMessage {
+            quilShortcutMessage = quilPermissionMessage
+        } else if quilShortcutMessage == permissionMessage {
+            quilShortcutMessage = nil
         }
     }
 
