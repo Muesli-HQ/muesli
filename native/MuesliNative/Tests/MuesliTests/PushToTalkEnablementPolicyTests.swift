@@ -9,12 +9,12 @@ struct PushToTalkEnablementPolicyTests {
     func disabledPushToTalkDoesNotStartDictationMonitor() {
         #expect(!PushToTalkEnablementPolicy.shouldStartDictationHotkeyMonitor(
             hasCompletedOnboarding: true,
-            hasDictationPermissions: true,
+            hasRequiredPermissions: true,
             isEnabled: false
         ))
         #expect(PushToTalkEnablementPolicy.shouldStartDictationHotkeyMonitor(
             hasCompletedOnboarding: true,
-            hasDictationPermissions: true,
+            hasRequiredPermissions: true,
             isEnabled: true
         ))
     }
@@ -23,12 +23,12 @@ struct PushToTalkEnablementPolicyTests {
     func incompleteOnboardingDoesNotStartDictationMonitor() {
         #expect(!PushToTalkEnablementPolicy.shouldStartDictationHotkeyMonitor(
             hasCompletedOnboarding: false,
-            hasDictationPermissions: true,
+            hasRequiredPermissions: true,
             isEnabled: true
         ))
         #expect(!PushToTalkEnablementPolicy.shouldStartDictationHotkeyMonitor(
             hasCompletedOnboarding: true,
-            hasDictationPermissions: false,
+            hasRequiredPermissions: false,
             isEnabled: true
         ))
     }
@@ -38,13 +38,13 @@ struct PushToTalkEnablementPolicyTests {
         #expect(
             PushToTalkEnablementPolicy.outcome(
                 isEnabled: true,
-                hasDictationPermissions: false
+                hasRequiredPermissions: false
             ) == .waitForPermissions
         )
         #expect(
             PushToTalkEnablementPolicy.outcome(
                 isEnabled: true,
-                hasDictationPermissions: true
+                hasRequiredPermissions: true
             ) == .ready
         )
     }
@@ -54,9 +54,49 @@ struct PushToTalkEnablementPolicyTests {
         #expect(
             PushToTalkEnablementPolicy.outcome(
                 isEnabled: false,
-                hasDictationPermissions: true
+                hasRequiredPermissions: true
             ) == .disabled
         )
+    }
+
+    @Test("Voice Notes Push to Talk does not require Accessibility")
+    func voiceNotesPushToTalkDoesNotRequireAccessibility() {
+        let permissions = OnboardingPermissionSnapshot(
+            microphone: true,
+            accessibility: false,
+            inputMonitoring: true,
+            systemAudio: false,
+            screenRecording: false
+        )
+
+        for useCase in [OnboardingUseCase.voiceNotes, .voiceNotesAndMeetings] {
+            let profile = PushToTalkEnablementPolicy.PermissionProfile.resolved(for: useCase)
+            #expect(profile == .voiceNote)
+            #expect(profile.hasRequiredPermissions(permissions))
+        }
+    }
+
+    @Test("paste-output Push to Talk requires Accessibility")
+    func pasteOutputPushToTalkRequiresAccessibility() {
+        let permissions = OnboardingPermissionSnapshot(
+            microphone: true,
+            accessibility: false,
+            inputMonitoring: true,
+            systemAudio: false,
+            screenRecording: false
+        )
+
+        for useCase in [
+            OnboardingUseCase.dictation,
+            .meetings,
+            .voiceNotesAndDictation,
+            .dictationAndMeetings,
+            .everything,
+        ] {
+            let profile = PushToTalkEnablementPolicy.PermissionProfile.resolved(for: useCase)
+            #expect(profile == .paste)
+            #expect(!profile.hasRequiredPermissions(permissions))
+        }
     }
 
     @Test("permission reconciliation stops after pending enablement clears")
@@ -88,7 +128,7 @@ struct PushToTalkEnablementPolicyTests {
         #expect(
             PushToTalkEnablementPolicy.outcome(
                 isEnabled: true,
-                hasDictationPermissions: true
+                hasRequiredPermissions: true
             ) == .ready
         )
 

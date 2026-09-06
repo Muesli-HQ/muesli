@@ -26,6 +26,30 @@ struct PushToTalkEnablementIntentStore {
 }
 
 enum PushToTalkEnablementPolicy {
+    enum PermissionProfile: String, Equatable {
+        case voiceNote = "voice_note"
+        case paste = "paste"
+
+        static func resolved(for useCase: OnboardingUseCase) -> Self {
+            useCase.includesVoiceNotes && !useCase.includesDictation
+                ? .voiceNote
+                : .paste
+        }
+
+        func hasRequiredPermissions(_ permissions: OnboardingPermissionSnapshot) -> Bool {
+            switch self {
+            case .voiceNote:
+                OnboardingPermissionGate.hasRequiredVoiceNotesPermissions(permissions)
+            case .paste:
+                OnboardingPermissionGate.hasRequiredDictationPermissions(permissions)
+            }
+        }
+
+        var requiresAccessibility: Bool {
+            self == .paste
+        }
+    }
+
     enum Outcome: Equatable {
         case disabled
         case ready
@@ -34,10 +58,10 @@ enum PushToTalkEnablementPolicy {
 
     static func shouldStartDictationHotkeyMonitor(
         hasCompletedOnboarding: Bool,
-        hasDictationPermissions: Bool,
+        hasRequiredPermissions: Bool,
         isEnabled: Bool
     ) -> Bool {
-        hasCompletedOnboarding && hasDictationPermissions && isEnabled
+        hasCompletedOnboarding && hasRequiredPermissions && isEnabled
     }
 
     static func shouldReconcilePendingEnable(
@@ -49,9 +73,9 @@ enum PushToTalkEnablementPolicy {
 
     static func outcome(
         isEnabled: Bool,
-        hasDictationPermissions: Bool
+        hasRequiredPermissions: Bool
     ) -> Outcome {
         guard isEnabled else { return .disabled }
-        return hasDictationPermissions ? .ready : .waitForPermissions
+        return hasRequiredPermissions ? .ready : .waitForPermissions
     }
 }
