@@ -5,6 +5,51 @@ import Testing
 
 @Suite("AppScopedDictationRecorder")
 struct AppScopedDictationRecorderTests {
+    @Test("accepted audio keeps its original sink when a callback replaces the recording")
+    func replacementDuringDelivery() throws {
+        let child = FakeStreamingRecorder()
+        let recorder = AppScopedDictationRecorder(recorder: child)
+        var oldBuffers = 0
+        var newBuffers = 0
+        recorder.onAudioBuffer = { _ in oldBuffers += 1 }
+        recorder.onFirstCapturedAudioBuffer = { [weak recorder] _ in
+            guard let recorder else { return }
+            recorder.cancel()
+            recorder.onFirstCapturedAudioBuffer = nil
+            recorder.onAudioBuffer = { _ in newBuffers += 1 }
+            _ = try? recorder.start()
+        }
+        _ = try recorder.start()
+        child.onAudioBuffer?([0.25])
+        #expect(oldBuffers == 1 && newBuffers == 0)
+        child.onAudioBuffer?([0.5])
+        #expect(newBuffers == 1)
+        recorder.cancel()
+    }
+
+    @Test("previous recording callbacks cannot populate or fail a replacement recording")
+    func retiredCallbacksAfterReuse() throws {
+        let child = FakeStreamingRecorder()
+        let recorder = AppScopedDictationRecorder(recorder: child)
+        _ = try recorder.start()
+        let oldAudio = child.onAudioBuffer
+        let oldFailure = child.onRecordingFailed
+        recorder.cancel()
+        var buffers = 0
+        var failures = 0
+        var firstBuffers = 0
+        recorder.onAudioBuffer = { _ in buffers += 1 }
+        recorder.onRecordingFailed = { _, _ in failures += 1 }
+        recorder.onFirstCapturedAudioBuffer = { _ in firstBuffers += 1 }
+        _ = try recorder.start()
+        oldAudio?([0.25])
+        oldFailure?(NSError(domain: "old recording", code: 1))
+        #expect(buffers == 0 && failures == 0 && firstBuffers == 0)
+        child.onAudioBuffer?([0.5])
+        #expect(buffers == 1 && firstBuffers == 1)
+        recorder.cancel()
+    }
+
     @Test("audio buffers are forwarded without changing capture callbacks")
     func audioBuffersAreForwarded() throws {
         let streamingRecorder = FakeStreamingRecorder()

@@ -2,8 +2,18 @@ import CoreAudio
 import Foundation
 
 final class FallbackStreamingDictationRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting, PausableStreamingDictationRecording {
-    var onAudioBuffer: (([Float]) -> Void)?
-    var onRecordingFailed: ((Error) -> Void)?
+    // Snapshot the consumer together with generation validation. An accepted
+    // callback may finish during cancellation, but must never pick a new sink.
+    var onAudioBuffer: (([Float]) -> Void)? {
+        get { lock.withLock { audioHandler } }
+        set { lock.withLock { audioHandler = newValue } }
+    }
+    var onRecordingFailed: ((Error) -> Void)? {
+        get { lock.withLock { failureHandler } }
+        set { lock.withLock { failureHandler = newValue } }
+    }
+    private var audioHandler: (([Float]) -> Void)?
+    private var failureHandler: ((Error) -> Void)?
     var onLatencyEvent: ((String, Date) -> Void)?
     var preferredInputDeviceID: AudioObjectID? {
         get {
@@ -93,6 +103,7 @@ final class FallbackStreamingDictationRecorder: StreamingDictationRecording, Str
             do {
                 try prepare(.fallback, attempt: attempt)
                 try checkCurrent(attempt)
+                fallback.preferredInputDeviceID = preferredInputDeviceID
                 try fallback.start()
                 try checkCurrent(attempt)
             } catch {
@@ -208,19 +219,17 @@ final class FallbackStreamingDictationRecorder: StreamingDictationRecording, Str
     }
 
     private func forwardAudioBuffer(_ samples: [Float], from recorder: ActiveRecorder, generation callbackGeneration: UInt64) {
-        lock.lock()
-        let shouldForward = activeRecorder == recorder && generation == callbackGeneration
-        lock.unlock()
-        guard shouldForward else { return }
-        onAudioBuffer?(samples)
+        let callback = lock.withLock {
+            activeRecorder == recorder && generation == callbackGeneration ? audioHandler : nil
+        }
+        callback?(samples)
     }
 
     private func forwardRecordingFailure(_ error: Error, from recorder: ActiveRecorder, generation callbackGeneration: UInt64) {
-        lock.lock()
-        let shouldForward = activeRecorder == recorder && generation == callbackGeneration
-        lock.unlock()
-        guard shouldForward else { return }
-        onRecordingFailed?(error)
+        let callback = lock.withLock {
+            activeRecorder == recorder && generation == callbackGeneration ? failureHandler : nil
+        }
+        callback?(error)
     }
 
     private func emitLatency(_ event: String, at date: Date = Date()) {

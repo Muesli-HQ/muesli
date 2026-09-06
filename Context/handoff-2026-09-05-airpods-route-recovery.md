@@ -552,3 +552,13 @@ Verification:
 - Attribution service retains its observation task instead of a separate in-flight boolean so the stale-result test can await actual retired completion. Existing shutdown deadline test now verifies late-file deletion and preservation of the delivered track; parameterized recorder test covers selection changes after primary/fallback preparation.
 - Full native suite: 2,004 tests / 182 suites passed in 37.015 seconds; CI shard assignment and diff checks passed. Test log `/private/tmp/muesli-pr500-review-tests.log`. These fixes have not been rebuilt into installed DevC or physically route-tested yet.
 - Prior console-enabled physical round: near-instant startup, smooth AirPods connect/case with waveform responsive, automatic stop on ending Google Meet. Both floating-pill Pause and Stop failed; user explicitly deferred that work. CPU profiler stopped; console stderr logging remained enabled. Durable archive under Codex audio-evidence/devc-console-route-round.tgz.
+
+
+### PR #500 second review follow-up — 2026-09-07
+
+- Fixed preferred-input refresh on the primary-start-failure fallback path, including a route-change-during-prepare regression.
+- Callback acceptance now snapshots the consumer under the wrapper's generation lock. App-scoped and streaming dictation callbacks carry original recording/session IDs; retired callbacks cannot be attributed to a replacement session. App-scoped delivery snapshots its sinks before invoking callbacks outside locks. Accepted work may finish against its original sink; no synchronous callback drain or delivery queue added.
+- New tests cover fallback preparation route changes, stale app-scoped audio/failure callbacks after reuse, streaming stale audio, and reentrant recording replacement during delivery.
+- Rejected operationLock around cached power/invalidation: concrete children already use independent short state locks; waiting behind native commands would regress responsiveness. Rejected missing-input publication finding: caller always publishes after installMicListener returns, and removal cleared device identity.
+- Focused 41 tests passed before the final reentrant test addition. Full final suite: 2,008 tests / 182 suites passed in 39.460 seconds; shard and whitespace checks passed. Log `/private/tmp/pr500-round2-full.log`.
+- Installed DevC remains ca171d56. Its physical AirPods connect/case and meeting-end stop passed, but second-review changes are not yet physically validated. Only console logging remains; physical profiler was stopped and archived. Optional authorized system-audio restart UX remains a separate proposed PR, not implemented here.

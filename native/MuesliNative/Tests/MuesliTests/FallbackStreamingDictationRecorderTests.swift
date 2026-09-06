@@ -5,6 +5,21 @@ import Testing
 
 @Suite("FallbackStreamingDictationRecorder")
 struct FallbackStreamingDictationRecorderTests {
+    @Test("fallback uses input changed while recovering from primary start failure")
+    func changedInputDuringFallbackPreparation() throws {
+        let primary = FakeFallbackStreamingRecorder()
+        let fallback = FakeFallbackStreamingRecorder()
+        primary.startResults = [.failure(NSError(domain: "test", code: 1))]
+        let recorder = FallbackStreamingDictationRecorder(primary: primary, fallback: fallback)
+        recorder.preferredInputDeviceID = 82
+        fallback.prepareAction = { [weak recorder] in recorder?.preferredInputDeviceID = 93 }
+        try recorder.prepare()
+        try recorder.start()
+        #expect(fallback.preparedInputDeviceIDs == [82])
+        #expect(fallback.startedInputDeviceID == 93)
+        recorder.cancel()
+    }
+
     @Test("start applies a route changed after preparation", arguments: [false, true])
     func changedPreparedRoute(useFallback: Bool) throws {
         let primary = FakeFallbackStreamingRecorder()
@@ -209,6 +224,7 @@ private final class FakeFallbackStreamingRecorder: StreamingDictationRecording, 
     var prepareResults: [Result<Void, Error>] = []
     var startResults: [Result<Void, Error>] = []
     var startAction: (() -> Void)?
+    var prepareAction: (() -> Void)?
     var preparedInputDeviceIDs: [AudioObjectID?] = []
     var startedInputDeviceID: AudioObjectID?
     var prepareCalls = 0
@@ -222,6 +238,7 @@ private final class FakeFallbackStreamingRecorder: StreamingDictationRecording, 
     func prepare() throws {
         prepareCalls += 1
         preparedInputDeviceIDs.append(preferredInputDeviceID)
+        prepareAction?()
         if !prepareResults.isEmpty {
             try prepareResults.removeFirst().get()
         }
