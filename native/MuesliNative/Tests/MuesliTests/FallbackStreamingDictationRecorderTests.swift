@@ -5,6 +5,48 @@ import Testing
 
 @Suite("FallbackStreamingDictationRecorder")
 struct FallbackStreamingDictationRecorderTests {
+    @Test("child startup can synchronously await a forwarded callback")
+    func callbacksDoNotWaitForStartupLock() throws {
+        let primary = FakeFallbackStreamingRecorder()
+        let recorder = FallbackStreamingDictationRecorder(primary: primary, fallback: FakeFallbackStreamingRecorder())
+        let delivered = DispatchSemaphore(value: 0)
+        recorder.onAudioBuffer = { _ in delivered.signal() }
+        primary.startAction = { [weak primary] in
+            let callback = primary?.onAudioBuffer
+            Thread.detachNewThread { callback?([0.25]) }
+            #expect(delivered.wait(timeout: .now() + 1) == .success)
+        }
+        try recorder.start()
+    }
+
+    @Test("invalidation during startup cannot activate the fallback", arguments: [false, true])
+    func invalidationRejectsFallback(startFails: Bool) {
+        let primary = FakeFallbackStreamingRecorder()
+        let fallback = FakeFallbackStreamingRecorder()
+        let recorder = FallbackStreamingDictationRecorder(primary: primary, fallback: fallback)
+        primary.startAction = { [weak recorder] in recorder?.invalidateForTeardown() }
+        if startFails { primary.startResults = [.failure(NSError(domain: "test", code: 1))] }
+        #expect(throws: Error.self) { try recorder.start() }
+        #expect(fallback.prepareCalls == 0)
+        #expect(fallback.startCalls == 0)
+    }
+
+    @Test("callbacks captured before cancellation cannot reach a reused primary")
+    func oldCallbacksAfterReuse() throws {
+        let primary = FakeFallbackStreamingRecorder()
+        let recorder = FallbackStreamingDictationRecorder(primary: primary, fallback: FakeFallbackStreamingRecorder())
+        var received = 0
+        recorder.onAudioBuffer = { _ in received += 1 }
+        try recorder.prepare()
+        let oldCallback = primary.onAudioBuffer
+        recorder.cancel()
+        try recorder.prepare()
+        oldCallback?([0.1])
+        #expect(received == 0)
+        primary.onAudioBuffer?([0.2])
+        #expect(received == 1)
+    }
+
     @Test("prepare falls back when primary prepare fails")
     func prepareFallsBackWhenPrimaryPrepareFails() throws {
         let error = NSError(domain: "FallbackStreamingDictationRecorderTests", code: 1)
@@ -152,6 +194,7 @@ private final class FakeFallbackStreamingRecorder: StreamingDictationRecording, 
 
     var prepareResults: [Result<Void, Error>] = []
     var startResults: [Result<Void, Error>] = []
+    var startAction: (() -> Void)?
     var preparedInputDeviceIDs: [AudioObjectID?] = []
     var startedInputDeviceID: AudioObjectID?
     var prepareCalls = 0
@@ -172,6 +215,7 @@ private final class FakeFallbackStreamingRecorder: StreamingDictationRecording, 
 
     func start() throws {
         startCalls += 1
+        startAction?()
         startedInputDeviceID = preferredInputDeviceID
         if !startResults.isEmpty {
             try startResults.removeFirst().get()

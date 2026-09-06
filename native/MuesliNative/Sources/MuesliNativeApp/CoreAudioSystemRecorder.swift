@@ -199,6 +199,10 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
     }
 
     func start() async throws {
+        try await MeetingCaptureLifecycle.onDriverQueue { [self] in try startCapture() }
+    }
+
+    private func startCapture() throws {
         guard !isRecording else { return }
 
         let dir = FileManager.default.temporaryDirectory
@@ -293,9 +297,8 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
         // system permission dialog on first use ("… would like to record audio
         // from other applications").
         var status = AudioHardwareCreateProcessTap(tapDesc, &tapID)
-        guard status == noErr, tapID != kAudioObjectUnknown else {
-            throw RecorderError.tapCreationFailed(status)
-        }
+        guard status == noErr else { throw RecorderError.tapCreationFailed(status) }
+        guard tapID != kAudioObjectUnknown else { throw RecorderError.invalidTapIdentity }
         fputs("[system-audio] process tap \(tapID) created\n", stderr)
 
         // Create aggregate device referencing the registered tap by UUID.
@@ -684,42 +687,22 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
         return false
     }
 
-    /// Look up our process's AudioObjectID from the HAL process object list.
-    /// `CATapDescription` expects these IDs — not raw PIDs.
+    /// Resolve only our own process. Enumerating every client's PID here adds
+    /// system-wide HAL work to the critical path of every meeting start.
     private static func currentProcessAudioObjectID() -> AudioObjectID? {
-        let myPID = ProcessInfo.processInfo.processIdentifier
-        var propertySize: UInt32 = 0
+        var pid = ProcessInfo.processInfo.processIdentifier
+        var objectID = kAudioObjectUnknown
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
         var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyProcessObjectList,
+            mSelector: kAudioHardwarePropertyTranslatePIDToProcessObject,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        guard AudioObjectGetPropertyDataSize(
-            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &propertySize
-        ) == noErr else { return nil }
-
-        let count = Int(propertySize) / MemoryLayout<AudioObjectID>.size
-        guard count > 0 else { return nil }
-
-        var objects = [AudioObjectID](repeating: 0, count: count)
-        guard AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &propertySize, &objects
-        ) == noErr else { return nil }
-
-        var pidAddr = AudioObjectPropertyAddress(
-            mSelector: kAudioProcessPropertyPID,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &address,
+            UInt32(MemoryLayout<pid_t>.size), &pid, &size, &objectID
         )
-        for obj in objects {
-            var objPID: pid_t = 0
-            var pidSize = UInt32(MemoryLayout<pid_t>.size)
-            if AudioObjectGetPropertyData(obj, &pidAddr, 0, nil, &pidSize, &objPID) == noErr,
-               objPID == myPID {
-                return obj
-            }
-        }
-        return nil
+        return status == noErr && objectID != kAudioObjectUnknown ? objectID : nil
     }
 
     private static func audioTapStreamFormat(for tapID: AudioObjectID) throws -> AudioStreamBasicDescription {
@@ -971,6 +954,7 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
         case fileCreationFailed
         case noDefaultOutputDevice
         case tapCreationFailed(OSStatus)
+        case invalidTapIdentity
         case aggregateDeviceCreationFailed(OSStatus)
         case coreAudioSetupFailed(String, OSStatus)
         case deviceIOProcCreationFailed
@@ -982,6 +966,8 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
                 return "Could not create output file"
             case .noDefaultOutputDevice:
                 return "No default audio output device found"
+            case .invalidTapIdentity:
+                return "The audio service returned no usable capture tap. Audio capture could not start."
             case .tapCreationFailed(let s):
                 return "Process tap creation failed (status: \(s))"
             case .aggregateDeviceCreationFailed(let s):

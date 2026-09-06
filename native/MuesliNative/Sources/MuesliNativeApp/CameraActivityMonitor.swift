@@ -1,26 +1,99 @@
-import AVFoundation
 import CoreMediaIO
 import Foundation
 
 /// CMIO listener block type — different from CoreAudio's AudioObjectPropertyListenerBlock.
 private typealias CMIOListenerBlock = @convention(block) (UInt32, UnsafePointer<CMIOObjectPropertyAddress>?) -> Void
 
-/// Event-driven camera activity monitor using CoreMediaIO property listeners.
-/// Fires a callback the moment any camera turns on or off — no polling.
+/// Main-actor state is a cache: discovery and driver listener operations must
+/// never hold the UI behind a media-driver route transition.
 @MainActor
 final class CameraActivityMonitor {
+    var onCameraStateChanged: ((Bool) -> Void)?
+    private(set) var isCameraActive = false
+    private var generation = 0
+    private var isStarted = false
+    private let queue: DispatchQueue
+    private let observer: CameraActivityObserving
+
+    init(
+        observer: CameraActivityObserving? = nil,
+        queue: DispatchQueue = DispatchQueue(label: "com.muesli.camera-activity")
+    ) {
+        self.queue = queue
+        self.observer = observer ?? CoreMediaIOCameraActivityObserver(queue: queue)
+    }
+
+    func start() {
+        guard !isStarted else { return }
+        isStarted = true
+        generation += 1
+        let expectedGeneration = generation
+        queue.async { [observer, weak self] in
+            observer.onCameraStateChanged = { [weak self] active in
+                Task { @MainActor [weak self] in
+                    guard let self, self.isStarted,
+                          self.generation == expectedGeneration else { return }
+                    guard self.isCameraActive != active else { return }
+                    self.isCameraActive = active
+                    self.onCameraStateChanged?(active)
+                }
+            }
+            observer.start()
+        }
+    }
+
+    func stop() {
+        guard isStarted else { return }
+        isStarted = false
+        generation += 1
+        isCameraActive = false
+        queue.async { [observer] in
+            observer.onCameraStateChanged = nil
+            observer.stop()
+        }
+    }
+
+    func refresh() {
+        guard isStarted else { return }
+        queue.async { [observer] in observer.refresh() }
+    }
+}
+
+/// All methods and callbacks belong to the monitor's serial worker queue.
+protocol CameraActivityObserving: AnyObject, Sendable {
+    var onCameraStateChanged: ((Bool) -> Void)? { get set }
+    func start()
+    func stop()
+    func refresh()
+}
+
+/// Event-driven camera observation without creating AVCaptureHALDevice objects.
+/// AVFoundation's device discovery installs its own main-queue HAL listeners;
+/// a captured AirPods stall blocked that queue in _removePropertyListeners.
+// Mutable state is confined to the serial queue supplied by the facade.
+private final class CoreMediaIOCameraActivityObserver: CameraActivityObserving, @unchecked Sendable {
     var onCameraStateChanged: ((Bool) -> Void)?
 
     private var monitoredDevices: [CMIOObjectID: CMIOListenerBlock] = [:]
     private var deviceListListenerBlock: CMIOListenerBlock?
-    private(set) var isCameraActive = false
+    private var isCameraActive = false
+    private var isStarted = false
+    private let queue: DispatchQueue
+
+    init(queue: DispatchQueue) {
+        self.queue = queue
+    }
 
     func start() {
+        guard !isStarted else { return }
+        isStarted = true
         installDeviceListListener()
         refreshDeviceListeners()
     }
 
     func stop() {
+        isStarted = false
+        isCameraActive = false
         removeAllDeviceListeners()
         removeDeviceListListener()
     }
@@ -34,7 +107,7 @@ final class CameraActivityMonitor {
     /// Listens for camera hardware being added/removed (e.g. plugging in a USB webcam).
     private func installDeviceListListener() {
         let block: CMIOListenerBlock = { [weak self] _, _ in
-            DispatchQueue.main.async { self?.refreshDeviceListeners() }
+            self?.queue.async { [weak self] in self?.refreshDeviceListeners() }
         }
         deviceListListenerBlock = block
 
@@ -66,6 +139,7 @@ final class CameraActivityMonitor {
     /// Discovers all video devices and installs a property listener on each
     /// for `kCMIODevicePropertyDeviceIsRunningSomewhere`.
     private func refreshDeviceListeners() {
+        guard isStarted else { return }
         let currentDeviceIDs = Set(enumerateCameraDeviceIDs())
 
         // Remove listeners for devices that are gone
@@ -80,7 +154,7 @@ final class CameraActivityMonitor {
         // Add listeners for new devices
         for deviceID in currentDeviceIDs where monitoredDevices[deviceID] == nil {
             let block: CMIOListenerBlock = { [weak self] _, _ in
-                DispatchQueue.main.async { self?.checkCameraState() }
+                self?.queue.async { [weak self] in self?.checkCameraState() }
             }
             monitoredDevices[deviceID] = block
 
@@ -115,6 +189,7 @@ final class CameraActivityMonitor {
     // MARK: - State Check
 
     private func checkCameraState() {
+        guard isStarted else { return }
         let active = monitoredDevices.keys.contains { isDeviceRunning($0) }
         if active != isCameraActive {
             isCameraActive = active
@@ -146,16 +221,33 @@ final class CameraActivityMonitor {
 
     // MARK: - Device Enumeration
 
-    /// Uses AVCaptureDevice.DiscoverySession to find video devices,
-    /// then extracts their CMIOObjectID via the private `_connectionID` key.
+    /// Enumerate camera input streams through the public DAL API. Do not use
+    /// AVCaptureDevice discovery or its private _connectionID KVC property.
     private func enumerateCameraDeviceIDs() -> [CMIOObjectID] {
-        let session = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.builtInWideAngleCamera, .external],
-            mediaType: .video,
-            position: .unspecified
+        var address = CMIOObjectPropertyAddress(
+            mSelector: CMIOObjectPropertySelector(kCMIOHardwarePropertyDevices),
+            mScope: CMIOObjectPropertyScope(kCMIOObjectPropertyScopeGlobal),
+            mElement: CMIOObjectPropertyElement(kCMIOObjectPropertyElementMain)
         )
-        return session.devices.compactMap { device -> CMIOObjectID? in
-            device.value(forKey: "_connectionID") as? CMIOObjectID
+        var size: UInt32 = 0
+        let system = CMIOObjectID(kCMIOObjectSystemObject)
+        guard CMIOObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr,
+              size > 0 else { return [] }
+        var devices = [CMIOObjectID](repeating: 0, count: Int(size) / MemoryLayout<CMIOObjectID>.size)
+        var used: UInt32 = 0
+        let status = devices.withUnsafeMutableBytes { buffer in
+            CMIOObjectGetPropertyData(system, &address, 0, nil, size, &used, buffer.baseAddress)
+        }
+        guard status == noErr else { return [] }
+        return devices.prefix(Int(used) / MemoryLayout<CMIOObjectID>.size).filter { device in
+            var streams = CMIOObjectPropertyAddress(
+                mSelector: CMIOObjectPropertySelector(kCMIODevicePropertyStreams),
+                mScope: CMIOObjectPropertyScope(kCMIODevicePropertyScopeInput),
+                mElement: CMIOObjectPropertyElement(kCMIOObjectPropertyElementMain)
+            )
+            var streamSize: UInt32 = 0
+            return CMIOObjectGetPropertyDataSize(device, &streams, 0, nil, &streamSize) == noErr
+                && streamSize > 0
         }
     }
 }

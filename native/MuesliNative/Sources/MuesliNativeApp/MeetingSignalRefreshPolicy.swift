@@ -6,6 +6,7 @@ enum MeetingDetectionTrigger: CaseIterable, Equatable {
     case micChanged
     case cameraChanged
     case sensorAttributionChanged
+    case audioAttributionChanged
     case workspaceActivated
     case calendarChanged
     case promptStateChanged
@@ -39,31 +40,25 @@ enum MeetingMonitoringMode: Equatable {
 }
 
 struct MeetingRecordingLifecycleSnapshot: Equatable {
-    let isRecording: Bool
-    let isStarting: Bool
-    let isStopping: Bool
+    let phase: MeetingCapturePhase
     let sessionID: Int64?
     let autoStopSource: MeetingAutoStopSource?
 
+    var isRecording: Bool { phase.isRecording }
+    var isStarting: Bool { phase == .preparing }
+
     static let idle = MeetingRecordingLifecycleSnapshot(
-        isRecording: false,
-        isStarting: false,
-        isStopping: false,
-        sessionID: nil,
-        autoStopSource: nil
+        phase: .stopped, sessionID: nil, autoStopSource: nil
     )
 }
 
 enum MeetingMonitoringModePolicy {
     static func resolve(_ lifecycle: MeetingRecordingLifecycleSnapshot) -> MeetingMonitoringMode {
-        // Teardown wins over every other flag. Missing or contradictory state
-        // fails closed: discovery must never resume while capture may still own
-        // CoreAudio resources.
-        if lifecycle.isStopping {
+        if lifecycle.phase == .stopping {
             return .suspended(sessionID: lifecycle.sessionID)
         }
 
-        guard lifecycle.isStarting || lifecycle.isRecording else {
+        guard lifecycle.phase != .stopped else {
             return .discovery
         }
 
@@ -89,6 +84,11 @@ struct MeetingSignalRefreshState: Equatable {
     var hasPromptVisible = false
     var hasCalendarEvent = false
     var foregroundIsMeetingCapableApp = false
+
+    var hasObservedActivity: Bool {
+        hasMicOrCameraSignal || hasRecentBrowserMeeting || hasPromptVisible
+            || hasCalendarEvent || foregroundIsMeetingCapableApp
+    }
 }
 
 enum MeetingAudioAttributionEpisode: Equatable {
@@ -100,7 +100,7 @@ struct MeetingAudioAttributionAttemptState: Equatable {
     let episode: MeetingAudioAttributionEpisode
     let attemptCount: Int
     let lastAttemptAt: Date
-    let resolvedCandidate: Bool
+    var resolvedCandidate: Bool
 }
 
 struct MeetingAudioAttributionEvidence: Equatable {
@@ -177,16 +177,14 @@ struct MeetingSignalRefreshPolicy {
         let mode: MeetingDetectionMode = suspicious ? .suspicious : .idle
         let fallbackInterval = suspicious ? suspiciousFallbackInterval : idleFallbackInterval
         let audioEpisode = audioEvidence.episode
-        let refreshAudioAttribution = !suppressAudioAttribution
-            && monitoringMode.allowsFullAudioAttribution
-            && shouldRefreshAudioAttribution(
-                episode: audioEpisode,
-                attempt: state.audioAttributionAttempt,
-                now: now
-            )
-        let refreshTrackedAudioProcesses = !suppressAudioAttribution
-            && monitoringMode.performsEvaluation
-            && !refreshAudioAttribution
+        let canRefreshAudio = trigger != .audioAttributionChanged
+            && !suppressAudioAttribution && monitoringMode.allowsFullAudioAttribution
+        let refreshAudioAttribution = canRefreshAudio && shouldRefreshAudioAttribution(
+            episode: audioEpisode,
+            attempt: state.audioAttributionAttempt,
+            now: now
+        )
+        let refreshTrackedAudioProcesses = canRefreshAudio && !refreshAudioAttribution
             && audioEpisode != nil
             && state.audioAttributionAttempt?.episode == audioEpisode
 
@@ -213,17 +211,9 @@ struct MeetingSignalRefreshPolicy {
         now: Date
     ) -> MeetingAudioAttributionAttemptState? {
         guard let episode = decision.audioAttributionEpisode else { return nil }
-        if decision.refreshTrackedAudioProcesses,
-           let current,
-           current.episode == episode,
-           resolvedCandidate,
-           !current.resolvedCandidate {
-            return MeetingAudioAttributionAttemptState(
-                episode: episode,
-                attemptCount: current.attemptCount,
-                lastAttemptAt: current.lastAttemptAt,
-                resolvedCandidate: true
-            )
+        if var current, current.episode == episode, resolvedCandidate, !current.resolvedCandidate {
+            current.resolvedCandidate = true
+            return current
         }
         guard decision.refreshAudioAttribution else {
             // Recording/self-audio/prompt suppression must not consume a new
@@ -249,12 +239,7 @@ struct MeetingSignalRefreshPolicy {
         now: Date,
         resolvedCandidate: MeetingCandidate?
     ) -> Date? {
-        if resolvedCandidate != nil
-            || state.hasMicOrCameraSignal
-            || state.hasRecentBrowserMeeting
-            || state.hasPromptVisible
-            || state.hasCalendarEvent
-            || state.foregroundIsMeetingCapableApp {
+        if resolvedCandidate != nil || state.hasObservedActivity {
             return now
         }
 
@@ -269,12 +254,7 @@ struct MeetingSignalRefreshPolicy {
         state: MeetingSignalRefreshState,
         now: Date
     ) -> Bool {
-        if state.hasMicOrCameraSignal
-            || state.hasRecentBrowserMeeting
-            || state.hasActiveCandidate
-            || state.hasPromptVisible
-            || state.hasCalendarEvent
-            || state.foregroundIsMeetingCapableApp {
+        if state.hasActiveCandidate || state.hasObservedActivity {
             return true
         }
 

@@ -198,7 +198,6 @@ final class DictationAudioRouteController: DictationAudioRouting {
 
     private let inspector: CoreAudioDeviceInspecting
     private let queue: DispatchQueue
-    private let queueKey = DispatchSpecificKey<Void>()
     private let lock = NSLock()
     private var snapshot = RouteSnapshot()
     private var selectedInputDeviceUIDStorage: String?
@@ -275,54 +274,45 @@ final class DictationAudioRouteController: DictationAudioRouting {
         self.queue = queue
         self.routeChangeSettleDelay = max(0, routeChangeSettleDelay)
         self.routeChangeMaximumDelay = max(0, max(routeChangeSettleDelay, routeChangeMaximumDelay))
-        self.queue.setSpecific(key: queueKey, value: ())
-        let initialOutputClassification = inspector.defaultOutputDeviceID().map {
-            inspector.outputRouteClassification(for: $0)
+        // Construction can happen on MainActor while HAL is unavailable.
+        // Publish an unknown snapshot immediately; this worker owns all HAL IO.
+        queue.async { [weak self] in
+            guard let self else { return }
+            if observesDefaultOutputChanges {
+                self.installDefaultOutputListener()
+                self.installDefaultInputListener()
+                self.installDeviceInventoryListener()
+            }
+            self.performRouteCacheRefresh(
+                refreshingDeviceInventory: true,
+                notifyDictationEvenIfUnchanged: false,
+                notifyMeetingEvenIfUnchanged: false
+            )
         }
-        self.snapshot = RouteSnapshot(
-            outputRouteKind: initialOutputClassification?.kind ?? .unknown,
-            outputIsAmbiguousBluetooth: initialOutputClassification?.isAmbiguousBluetooth ?? false,
-            builtInInputDeviceID: inspector.builtInInputDeviceID(),
-            defaultInputDeviceID: inspector.defaultInputDeviceID(),
-            selectedInputDeviceID: nil,
-            selectedMeetingInputDeviceID: nil
-        )
-        if observesDefaultOutputChanges {
-            installDefaultOutputListener()
-            installDefaultInputListener()
-            installDeviceInventoryListener()
-        }
-        refreshRouteCache()
     }
 
     deinit {
         pendingRouteRefreshItem?.cancel()
-        if let defaultOutputListener {
-            var address = Self.defaultOutputDeviceAddress()
-            AudioObjectRemovePropertyListenerBlock(
-                AudioObjectID(kAudioObjectSystemObject),
-                &address,
-                queue,
-                defaultOutputListener
-            )
-        }
-        if let defaultInputListener {
-            var address = Self.defaultInputDeviceAddress()
-            AudioObjectRemovePropertyListenerBlock(
-                AudioObjectID(kAudioObjectSystemObject),
-                &address,
-                queue,
-                defaultInputListener
-            )
-        }
-        if let deviceInventoryListener {
-            var address = Self.deviceInventoryAddress()
-            AudioObjectRemovePropertyListenerBlock(
-                AudioObjectID(kAudioObjectSystemObject),
-                &address,
-                queue,
-                deviceInventoryListener
-            )
+        // Never remove HAL listeners synchronously on the releasing/UI thread.
+        let output = defaultOutputListener
+        let input = defaultInputListener
+        let inventory = deviceInventoryListener
+        let listenerQueue = queue
+        queue.async {
+            for (selector, listener) in [
+                (kAudioHardwarePropertyDefaultOutputDevice, output),
+                (kAudioHardwarePropertyDefaultInputDevice, input),
+                (kAudioHardwarePropertyDevices, inventory),
+            ] {
+                guard let listener else { continue }
+                var address = AudioObjectPropertyAddress(
+                    mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal,
+                    mElement: kAudioObjectPropertyElementMain
+                )
+                AudioObjectRemovePropertyListenerBlock(
+                    AudioObjectID(kAudioObjectSystemObject), &address, listenerQueue, listener
+                )
+            }
         }
     }
 
@@ -439,11 +429,7 @@ final class DictationAudioRouteController: DictationAudioRouting {
     }
 
     func preferredInputDeviceIDForDictation() -> AudioObjectID? {
-        syncOnRouteQueue {
-            let next = makeRouteSnapshot()
-            replaceRouteSnapshot(next)
-        }
-        return Self.preferredInputDeviceID(for: lock.withLock { snapshot })
+        cachedPreferredInputDeviceIDForDictation()
     }
 
     func preferredInputDeviceIDForMeeting() -> AudioObjectID? {
@@ -484,7 +470,7 @@ final class DictationAudioRouteController: DictationAudioRouting {
     }
 
     func availableInputDevices() -> [AudioInputDeviceInfo] {
-        inspector.availableInputDevices()
+        cachedAvailableInputDevices()
     }
 
     func cachedAvailableInputDevices() -> [AudioInputDeviceInfo] {
@@ -529,18 +515,7 @@ final class DictationAudioRouteController: DictationAudioRouting {
     }
 
     func refreshRouteAfterDictationSession() {
-        syncOnRouteQueue {
-            let current = makeRouteSnapshot()
-            replaceRouteSnapshot(current)
-        }
-    }
-
-    private func syncOnRouteQueue(_ work: () -> Void) {
-        if DispatchQueue.getSpecific(key: queueKey) != nil {
-            work()
-        } else {
-            queue.sync(execute: work)
-        }
+        refreshRouteCache()
     }
 
     private static func preferredInputDeviceID(for snapshot: RouteSnapshot) -> AudioObjectID? {
@@ -803,7 +778,7 @@ final class CoreAudioDeviceInspector: CoreAudioDeviceInspecting {
                 )
             }
             .sorted { lhs, rhs in
-                inputDeviceSortKey(lhs.deviceID) < inputDeviceSortKey(rhs.deviceID)
+                Self.inputDeviceSortKey(name: lhs.name) < Self.inputDeviceSortKey(name: rhs.name)
             }
     }
 
@@ -866,11 +841,14 @@ final class CoreAudioDeviceInspector: CoreAudioDeviceInspecting {
             transportType(for: $0) == kAudioDeviceTransportTypeBuiltIn
                 && hasStreams(deviceID: $0, scope: kAudioDevicePropertyScopeInput)
         }
-        return builtInInputs.sorted { inputDeviceSortKey($0) < inputDeviceSortKey($1) }.first
+        // Read each name once. A comparator can run many times, and a HAL read
+        // during each comparison amplified the captured Bluetooth route stall.
+        return builtInInputs.map { (id: $0, key: Self.inputDeviceSortKey(name: deviceName(for: $0) ?? "")) }
+            .min { $0.key < $1.key }?.id
     }
 
-    private func inputDeviceSortKey(_ deviceID: AudioObjectID) -> String {
-        let name = (deviceName(for: deviceID) ?? "").lowercased()
+    private static func inputDeviceSortKey(name: String) -> String {
+        let name = name.lowercased()
         if name.contains("microphone") { return "0-\(name)" }
         if name.contains("macbook") { return "1-\(name)" }
         if name.contains("built-in") { return "2-\(name)" }

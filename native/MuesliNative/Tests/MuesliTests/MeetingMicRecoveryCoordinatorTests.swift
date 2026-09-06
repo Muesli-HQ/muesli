@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import MuesliNativeApp
 
+@Suite("Microphone recovery episodes")
 struct MeetingMicRecoveryCoordinatorTests {
     private final class Harness {
         let tracker = MeetingMicHealthTracker()
@@ -280,7 +281,7 @@ struct MeetingMicRecoveryCoordinatorTests {
         #expect(harness.events.isEmpty)
 
         muted = false
-        harness.advance(seconds: 1.5)      // past the 1Hz mute-read throttle
+        harness.advance(seconds: 0.1)      // cached OS state needs no polling interval
         harness.systemActive(seconds: 1)   // still degraded, no longer muted
 
         #expect(harness.events.map(\.kind) == [.degraded])

@@ -31,9 +31,7 @@ final class MeetingMonitor {
     private let sensorAttributionMonitor = ControlCenterSensorAttributionMonitor()
     private let runningApplicationStore = RunningApplicationStore()
 
-    private var micListenerDeviceID: AudioDeviceID = 0
-    private var micListenerBlock: AudioObjectPropertyListenerBlock?
-    private var deviceChangeListenerBlock: AudioObjectPropertyListenerBlock?
+    private let microphoneMonitor = MicrophoneActivityMonitor()
     private var lifecycleGeneration = 0
     private var isStarted = false
 
@@ -42,8 +40,10 @@ final class MeetingMonitor {
         isStarted = true
         lifecycleGeneration += 1
         let generation = lifecycleGeneration
-        installMicListener()
-        installDeviceChangeListener()
+        microphoneMonitor.onActivityChanged = { [weak self] in
+            self?.scheduleEvaluation(.micChanged)
+        }
+        microphoneMonitor.start()
         runningApplicationStore.onChanged = { [weak self] trigger in
             self?.scheduleEvaluation(trigger)
         }
@@ -70,8 +70,8 @@ final class MeetingMonitor {
         isStarted = false
         lifecycleGeneration += 1
         let generation = lifecycleGeneration
-        removeMicListener()
-        removeDeviceChangeListener()
+        microphoneMonitor.stop()
+        microphoneMonitor.onActivityChanged = nil
         runningApplicationStore.stop()
         runningApplicationStore.onChanged = nil
         cameraMonitor.stop()
@@ -165,7 +165,7 @@ final class MeetingMonitor {
         let runningApplicationState = runningApplicationStore.snapshot()
         let lifecycle = currentRecordingLifecycle()
         return MeetingDetectionEvaluationContext(
-            micDeviceID: micListenerDeviceID,
+            deviceMicActive: microphoneMonitor.snapshot.isActive ?? false,
             cameraActive: cameraMonitor.isCameraActive,
             sensorAttributions: sensorAttributionMonitor.snapshot(),
             calendarEvent: calendarEventProvider?(),
@@ -183,89 +183,7 @@ final class MeetingMonitor {
         )
     }
 
-    private func installMicListener() {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultInputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var deviceID: AudioDeviceID = 0
-        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
 
-        guard AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            0,
-            nil,
-            &size,
-            &deviceID
-        ) == noErr, deviceID != 0 else { return }
-
-        micListenerDeviceID = deviceID
-
-        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            DispatchQueue.main.async { self?.scheduleEvaluation(.micChanged) }
-        }
-        micListenerBlock = block
-
-        var runningAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        AudioObjectAddPropertyListenerBlock(deviceID, &runningAddress, nil, block)
-    }
-
-    private func removeMicListener() {
-        guard micListenerDeviceID != 0, let block = micListenerBlock else { return }
-        var runningAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        AudioObjectRemovePropertyListenerBlock(micListenerDeviceID, &runningAddress, nil, block)
-        micListenerDeviceID = 0
-        micListenerBlock = nil
-    }
-
-    private func installDeviceChangeListener() {
-        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            DispatchQueue.main.async {
-                self?.removeMicListener()
-                self?.installMicListener()
-                self?.scheduleEvaluation(.micChanged)
-            }
-        }
-        deviceChangeListenerBlock = block
-
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultInputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        AudioObjectAddPropertyListenerBlock(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            nil,
-            block
-        )
-    }
-
-    private func removeDeviceChangeListener() {
-        guard let block = deviceChangeListenerBlock else { return }
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultInputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        AudioObjectRemovePropertyListenerBlock(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            nil,
-            block
-        )
-        deviceChangeListenerBlock = nil
-    }
 }
 
 private enum MeetingPromptUpdate {
@@ -274,7 +192,7 @@ private enum MeetingPromptUpdate {
 }
 
 private struct MeetingDetectionEvaluationContext {
-    let micDeviceID: AudioDeviceID
+    let deviceMicActive: Bool
     let cameraActive: Bool
     let sensorAttributions: SensorAttributionSnapshot
     let calendarEvent: CalendarEventContext?
@@ -290,7 +208,7 @@ private struct MeetingDetectionEvaluationContext {
     let foregroundBundleID: String?
 
     static let disabled = MeetingDetectionEvaluationContext(
-        micDeviceID: 0,
+        deviceMicActive: false,
         cameraActive: false,
         sensorAttributions: .empty,
         calendarEvent: nil,
@@ -588,9 +506,8 @@ private actor MeetingDetectionService {
             return
         }
 
-        // Every evaluation reads one scalar property from the selected input
-        // device. Full process attribution is a separate, episode-driven step.
-        let deviceMicActive = await signalCollector.isMicActive(deviceID: context.micDeviceID)
+        // The observer owns HAL reads. Evaluation only consumes its last event.
+        let deviceMicActive = context.deviceMicActive
         let cheapMediaSignals = MeetingMediaSignalFilter.apply(
             deviceMicActive: deviceMicActive,
             cameraActive: context.cameraActive,
@@ -622,7 +539,9 @@ private actor MeetingDetectionService {
         )
         async let audioAttributionResult = audioAttributionService.activeInputProcesses(
             refreshFull: refreshDecision.refreshAudioAttribution,
-            refreshTracked: refreshDecision.refreshTrackedAudioProcesses
+            refreshTracked: refreshDecision.refreshTrackedAudioProcesses,
+            episode: refreshDecision.audioAttributionEpisode,
+            onChange: { [weak self] in await self?.scheduleEvaluation(.audioAttributionChanged) }
         )
         let collectedSignals = await signalCollector.collect(
             runningApps: context.runningApps,
@@ -678,12 +597,14 @@ private actor MeetingDetectionService {
             resolver.resolve(snapshot),
             monitoringMode: context.monitoringMode
         )
-        signalRefreshState.audioAttributionAttempt = refreshPolicy.audioAttributionAttemptState(
-            after: refreshDecision,
-            current: signalRefreshState.audioAttributionAttempt,
-            resolvedCandidate: resolvedActivityCandidate != nil,
-            now: now
-        )
+        if !refreshDecision.refreshAudioAttribution || audioResult.startedRefresh {
+            signalRefreshState.audioAttributionAttempt = refreshPolicy.audioAttributionAttemptState(
+                after: refreshDecision,
+                current: signalRefreshState.audioAttributionAttempt,
+                resolvedCandidate: resolvedActivityCandidate != nil,
+                now: now
+            )
+        }
         let resolverDuration = Date().timeIntervalSince(resolverStart)
         let stabilizedActivityCandidate = await mediaSessionTracker.stabilize(
             candidate: resolvedActivityCandidate,
@@ -908,7 +829,7 @@ private actor MeetingDetectionService {
         for attributedBundleID in sensorBundleIDs {
             let bundleID: String
             if let sourceBundleID {
-                guard bundleIDsReferToSameApp(attributedBundleID, sourceBundleID) else { continue }
+                guard MeetingAutoStopPolicy.bundleIDsReferToSameApp(attributedBundleID, sourceBundleID) else { continue }
                 bundleID = sourceBundleID
             } else {
                 bundleID = attributedBundleID
@@ -919,7 +840,7 @@ private actor MeetingDetectionService {
             guard let appName else { continue }
             guard !existingBundleIDs.contains(bundleID),
                   !existingBundleIDs.contains(where: { helperBundleID in
-                      bundleIDsReferToSameApp(helperBundleID, bundleID)
+                      MeetingAutoStopPolicy.bundleIDsReferToSameApp(helperBundleID, bundleID)
                   }) else {
                 continue
             }
@@ -942,12 +863,6 @@ private actor MeetingDetectionService {
         return processes
     }
 
-    private func bundleIDsReferToSameApp(_ lhs: String, _ rhs: String) -> Bool {
-        let lhs = lhs.lowercased()
-        let rhs = rhs.lowercased()
-        return lhs == rhs || lhs.hasPrefix("\(rhs).") || rhs.hasPrefix("\(lhs).")
-    }
-
     private func scopedActivityCandidate(
         _ candidate: MeetingCandidate?,
         monitoringMode: MeetingMonitoringMode
@@ -956,27 +871,14 @@ private actor MeetingDetectionService {
             return candidate
         }
         guard let candidate else { return nil }
-        if MeetingAutoStopPolicy.matches(candidate: candidate, source: source) {
-            return candidate
-        }
-
-        // URL-backed sources have room identity and must match it. Native-app
-        // sources have no room identifier, so their already-established bundle
-        // identity is the narrowest liveness signal macOS exposes.
-        guard source.normalizedURL == nil,
-              let sourceBundleID = source.sourceBundleID,
-              let candidateBundleID = candidate.sourceBundleID,
-              bundleIDsReferToSameApp(sourceBundleID, candidateBundleID) else {
-            return nil
-        }
-        return candidate
+        return MeetingAutoStopPolicy.matches(candidate: candidate, source: source) ? candidate : nil
     }
 
     private func debounceDelay(for trigger: MeetingDetectionTrigger) -> TimeInterval {
         switch trigger {
         case .startup, .fallbackTimer:
             return 0
-        case .micChanged, .cameraChanged, .sensorAttributionChanged, .workspaceActivated,
+        case .micChanged, .cameraChanged, .sensorAttributionChanged, .audioAttributionChanged, .workspaceActivated,
              .calendarChanged, .promptStateChanged, .manualRefresh:
             return refreshPolicy.debounceDelay
         }
@@ -993,7 +895,7 @@ private actor MeetingDetectionService {
     private func triggerPriority(_ trigger: MeetingDetectionTrigger) -> Int {
         switch trigger {
         case .startup: return 9
-        case .micChanged, .sensorAttributionChanged, .cameraChanged: return 8
+        case .micChanged, .sensorAttributionChanged, .audioAttributionChanged, .cameraChanged: return 8
         case .workspaceActivated, .calendarChanged: return 7
         case .promptStateChanged, .manualRefresh: return 6
         case .fallbackTimer: return 1
@@ -1068,40 +970,67 @@ private struct MeetingCollectionTimings {
     var audioAttributionMilliseconds: Int { Int(audioAttributionDuration * 1000) }
 }
 
-private struct AudioAttributionResult {
+struct AudioAttributionResult {
     let processes: [AudioProcessActivity]
     let duration: TimeInterval
+    let startedRefresh: Bool
 }
 
-private actor AudioAttributionService {
-    private let collector = AudioProcessAttributionCollector()
+/// A blocked HAL observation never holds the detector actor or queues another
+/// scan. Completion is the wake-up event; reset invalidates the result without
+/// pretending the native work was cancelled.
+actor AudioAttributionService {
+    typealias Collect = ([AudioProcessActivity]?) -> [AudioProcessActivity]
+    private let collect: Collect
+    private let queue = DispatchQueue(label: "com.muesli.meeting-process-observation")
     private var trackedProcesses: [AudioProcessActivity] = []
+    private var cachedEpisode: MeetingAudioAttributionEpisode?
+    private var inFlight = false
+    private var generation = 0
+
+    init(collect: Collect? = nil) {
+        self.collect = collect ?? { tracked in
+            let collector = AudioProcessAttributionCollector()
+            return tracked.map { collector.refreshTrackedProcesses($0) } ?? collector.activeInputProcesses()
+        }
+    }
 
     func activeInputProcesses(
         refreshFull: Bool,
-        refreshTracked: Bool
+        refreshTracked: Bool,
+        episode: MeetingAudioAttributionEpisode?,
+        onChange: @escaping () async -> Void
     ) -> AudioAttributionResult {
-        guard refreshFull || refreshTracked else {
-            return AudioAttributionResult(
-                processes: trackedProcesses.filter { $0.isRunningInput },
-                duration: 0
-            )
-        }
-
-        let start = Date()
-        if refreshFull {
-            trackedProcesses = collector.activeInputProcesses()
-        } else {
-            trackedProcesses = collector.refreshTrackedProcesses(trackedProcesses)
+        let started = (refreshFull || refreshTracked) && !inFlight && episode != nil
+        if started {
+            inFlight = true
+            let token = generation
+            let tracked = refreshFull ? nil : trackedProcesses
+            Task { [self, collect, queue] in
+                let began = Date()
+                let processes: [AudioProcessActivity] = await withCheckedContinuation { continuation in
+                    queue.async { continuation.resume(returning: collect(tracked)) }
+                }
+                let elapsed = Date().timeIntervalSince(began)
+                inFlight = false
+                guard generation == token else { return }
+                trackedProcesses = processes
+                cachedEpisode = episode
+                fputs("[meeting-detection] process observation completed duration_ms=\(Int(elapsed * 1000))\n", stderr)
+                await onChange()
+            }
         }
         return AudioAttributionResult(
-            processes: trackedProcesses.filter { $0.isRunningInput },
-            duration: Date().timeIntervalSince(start)
+            processes: cachedEpisode == episode ? trackedProcesses.filter { $0.isRunningInput } : [],
+            duration: 0,
+            startedRefresh: started
         )
     }
 
     func reset() {
+        generation += 1
         trackedProcesses = []
+        cachedEpisode = nil
     }
 }
 
@@ -1151,10 +1080,6 @@ private actor MeetingSignalCollector {
         )
     }
 
-    func isMicActive(deviceID: AudioDeviceID) -> Bool {
-        readMicActive(deviceID: deviceID)
-    }
-
     private func runningProcessIDsByBundleID(from apps: [RunningAppSnapshot]) -> [String: pid_t] {
         var processIDs: [String: pid_t] = [:]
         for app in apps where processIDs[app.bundleID] == nil {
@@ -1171,35 +1096,8 @@ private actor MeetingSignalCollector {
               let sourceBundleID = source.sourceBundleID else {
             return apps
         }
-        let sourceBundleIDLowercased = sourceBundleID.lowercased()
-        return apps.filter { app in
-            let bundleID = app.bundleID.lowercased()
-            return bundleID == sourceBundleIDLowercased
-                || bundleID.hasPrefix("\(sourceBundleIDLowercased).")
-                || sourceBundleIDLowercased.hasPrefix("\(bundleID).")
-        }
+        return apps.filter { MeetingAutoStopPolicy.bundleIDsReferToSameApp($0.bundleID, sourceBundleID) }
     }
 
-    private func readMicActive(deviceID: AudioDeviceID) -> Bool {
-        guard deviceID != 0 else { return false }
 
-        var isRunning: UInt32 = 0
-        var runningAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var size = UInt32(MemoryLayout<UInt32>.size)
-
-        guard AudioObjectGetPropertyData(
-            deviceID,
-            &runningAddress,
-            0,
-            nil,
-            &size,
-            &isRunning
-        ) == noErr else { return false }
-
-        return isRunning != 0
-    }
 }

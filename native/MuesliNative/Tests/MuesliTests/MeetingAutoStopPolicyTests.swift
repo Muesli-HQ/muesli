@@ -4,463 +4,144 @@ import Testing
 
 @Suite("Meeting auto-stop policy")
 struct MeetingAutoStopPolicyTests {
-    @Test("matches the original browser meeting candidate")
-    func matchesOriginalBrowserMeetingCandidate() {
-        let source = MeetingAutoStopSource(candidate: googleMeetCandidate())
+    private let now = Date(timeIntervalSince1970: 1_800_000_000)
+    private let room = "meet.google.com/aaa-bbbb-ccc"
 
-        #expect(MeetingAutoStopPolicy.matches(
-            candidate: googleMeetCandidate(),
-            source: source
-        ))
-    }
-
-    @Test("matches calendar-wrapped candidate by normalized URL")
-    func matchesCalendarWrappedCandidateByURL() {
-        let source = MeetingAutoStopSource(candidate: googleMeetCandidate())
-        let calendarCandidate = MeetingCandidate(
-            id: "cal:event-1:googleMeet:meet.google.com/aaa-bbbb-ccc",
-            platform: .googleMeet,
-            appName: "Chrome",
-            url: "meet.google.com/aaa-bbbb-ccc",
-            evidence: [.browserURL, .calendarEvent],
-            startedAt: Date(timeIntervalSince1970: 1_800_000_000),
-            meetingTitle: "Team sync",
-            sourceBundleID: "com.google.Chrome",
-            sourcePID: 1234
+    private func candidate(
+        id: String = "room-a", url: String? = "meet.google.com/aaa-bbbb-ccc",
+        bundle: String? = "com.google.Chrome", media: Bool = true,
+        suppressionID: String? = "session-a"
+    ) -> MeetingCandidate {
+        MeetingCandidate(
+            id: id, platform: .googleMeet, appName: "Meeting", url: url,
+            evidence: media ? [.audioInputProcess] : [.browserURL],
+            startedAt: now, meetingTitle: nil, sourceBundleID: bundle,
+            suppressionID: suppressionID
         )
-
-        #expect(MeetingAutoStopPolicy.matches(candidate: calendarCandidate, source: source))
     }
 
-    @Test("matches browser audio fallback by suppression session")
-    func matchesBrowserAudioFallbackBySuppressionSession() {
-        let source = MeetingAutoStopSource(candidate: googleMeetCandidate())
-        let audioFallback = MeetingCandidate(
-            id: "browser:com.google.Chrome:session:1800000000",
-            platform: .unknown,
-            appName: "Chrome",
-            url: nil,
-            evidence: [.audioInputProcess],
-            startedAt: Date(timeIntervalSince1970: 1_800_000_005),
-            meetingTitle: nil,
-            sourceBundleID: "com.google.Chrome",
-            sourcePID: 9876,
-            suppressionID: "browser:com.google.Chrome:session:1800000000"
-        )
-
-        #expect(MeetingAutoStopPolicy.matches(candidate: audioFallback, source: source))
-    }
-
-    @Test("established browser source survives a new attributed media session")
-    func establishedBrowserSourceSurvivesNewAttributedMediaSession() {
-        let source = MeetingAutoStopSource(candidate: googleMeetCandidate())
-        let attributedBrowser = MeetingCandidate(
-            id: "browser:com.google.Chrome:session:1800000999",
-            platform: .unknown,
-            appName: "Chrome",
-            url: nil,
-            evidence: [.audioInputProcess],
-            startedAt: Date(timeIntervalSince1970: 1_800_000_005),
-            meetingTitle: nil,
-            sourceBundleID: "com.google.Chrome",
-            sourcePID: 9876,
-            suppressionID: "browser:com.google.Chrome:session:1800000999"
-        )
-
-        #expect(MeetingAutoStopPolicy.matches(candidate: attributedBrowser, source: source))
-    }
-
-    @Test("same browser without media attribution does not extend URL source")
-    func sameBrowserWithoutMediaAttributionDoesNotExtendURLSource() {
-        let source = MeetingAutoStopSource(candidate: googleMeetCandidate())
-        let ordinaryBrowserActivity = MeetingCandidate(
-            id: "browser:com.google.Chrome:foreground",
-            platform: .unknown,
-            appName: "Chrome",
-            url: nil,
-            evidence: [.foregroundApp],
-            startedAt: Date(timeIntervalSince1970: 1_800_000_005),
-            meetingTitle: nil,
-            sourceBundleID: "com.google.Chrome",
-            sourcePID: 9876
-        )
-
-        #expect(!MeetingAutoStopPolicy.matches(candidate: ordinaryBrowserActivity, source: source))
-    }
-
-    @Test("another attributed browser does not extend URL source")
-    func anotherAttributedBrowserDoesNotExtendURLSource() {
-        let source = MeetingAutoStopSource(candidate: googleMeetCandidate())
-        let safariAudio = MeetingCandidate(
-            id: "browser:com.apple.Safari:session:1800000999",
-            platform: .unknown,
-            appName: "Safari",
-            url: nil,
-            evidence: [.audioInputProcess],
-            startedAt: Date(timeIntervalSince1970: 1_800_000_005),
-            meetingTitle: nil,
-            sourceBundleID: "com.apple.Safari",
-            sourcePID: 9876
-        )
-
-        #expect(!MeetingAutoStopPolicy.matches(candidate: safariAudio, source: source))
-    }
-
-    @Test("unverified join URL is not extended by browser attribution")
-    func unverifiedJoinURLIsNotExtendedByBrowserAttribution() throws {
-        let url = try #require(URL(string: "https://meet.google.com/aaa-bbbb-ccc"))
-        let source = try #require(MeetingAutoStopSource(meetingURL: url))
-        let attributedBrowser = MeetingCandidate(
-            id: "browser:com.google.Chrome:session:1800000999",
-            platform: .unknown,
-            appName: "Chrome",
-            url: nil,
-            evidence: [.audioInputProcess],
-            startedAt: Date(timeIntervalSince1970: 1_800_000_005),
-            meetingTitle: nil,
-            sourceBundleID: "com.google.Chrome",
-            sourcePID: 9876
-        )
-
-        #expect(!MeetingAutoStopPolicy.matches(candidate: attributedBrowser, source: source))
-    }
-
-    @Test("ignores unrelated calendar-only activity")
-    func ignoresUnrelatedCalendarOnlyActivity() {
-        let source = MeetingAutoStopSource(candidate: googleMeetCandidate())
-        let calendarOnly = MeetingCandidate(
-            id: "cal:event-2",
-            platform: .unknown,
-            appName: "Meeting",
-            url: nil,
-            evidence: [.calendarEvent, .micActive],
-            startedAt: Date(timeIntervalSince1970: 1_800_000_010),
-            meetingTitle: "Later meeting"
-        )
-
-        #expect(!MeetingAutoStopPolicy.matches(candidate: calendarOnly, source: source))
-    }
-
-    @Test("native app source remains stable across attribution session IDs")
-    func nativeAppSourceMatchesByEstablishedBundleIdentity() {
-        let source = MeetingAutoStopSource(candidate: teamsCandidate())
-        let laterAttribution = MeetingCandidate(
-            id: "app:com.microsoft.teams2:session:1800000030",
-            platform: .teams,
-            appName: "Teams",
-            url: nil,
-            evidence: [.audioInputProcess, .dedicatedApp],
-            startedAt: Date(timeIntervalSince1970: 1_800_000_030),
-            meetingTitle: nil,
-            sourceBundleID: "com.microsoft.teams2",
-            sourcePID: 4321,
-            suppressionID: "app:com.microsoft.teams2:session:1800000030"
-        )
-
-        #expect(MeetingAutoStopPolicy.matches(candidate: laterAttribution, source: source))
-    }
-
-    @Test("URL-backed source does not degrade to browser bundle identity")
-    func urlBackedSourceDoesNotMatchOtherRoomInSameBrowser() {
-        let source = MeetingAutoStopSource(candidate: googleMeetCandidate())
-        let otherRoom = MeetingCandidate(
-            id: "googleMeet:meet.google.com/zzz-yyyy-xxx",
-            platform: .googleMeet,
-            appName: "Chrome",
-            url: "meet.google.com/zzz-yyyy-xxx",
-            evidence: [.browserURL],
-            startedAt: Date(timeIntervalSince1970: 1_800_000_030),
-            meetingTitle: nil,
-            sourceBundleID: "com.google.Chrome",
-            sourcePID: 1234,
-            suppressionID: "browser:com.google.Chrome:session:1800000030"
-        )
-
-        #expect(!MeetingAutoStopPolicy.matches(candidate: otherRoom, source: source))
-    }
-
-    @Test("creates source from supported meeting URL")
-    func createsSourceFromSupportedMeetingURL() throws {
-        let url = try #require(URL(string: "https://meet.google.com/aaa-bbbb-ccc?authuser=0"))
-        let source = try #require(MeetingAutoStopSource(meetingURL: url))
-
-        #expect(source.candidateID == "googleMeet:meet.google.com/aaa-bbbb-ccc")
-        #expect(source.normalizedURL == "meet.google.com/aaa-bbbb-ccc")
-        #expect(source.hasObservedCandidate == false)
-    }
-
-    @Test("refines URL-only source with observed browser source")
-    func refinesURLOnlySourceWithObservedBrowserSource() throws {
-        let url = try #require(URL(string: "https://meet.google.com/aaa-bbbb-ccc"))
-        let source = try #require(MeetingAutoStopSource(meetingURL: url))
-
-        let refined = source.refined(with: googleMeetCandidate())
-
-        #expect(refined.sourceBundleID == "com.google.Chrome")
-        #expect(refined.suppressionID == "browser:com.google.Chrome:session:1800000000")
-        #expect(refined.hasObservedCandidate)
-    }
-
-    @Test("refinement preserves existing suppression ID when candidate lacks one")
-    func refinementPreservesExistingSuppressionIDWhenCandidateLacksOne() throws {
-        let url = try #require(URL(string: "https://meet.google.com/aaa-bbbb-ccc"))
-        let source = try #require(MeetingAutoStopSource(meetingURL: url))
-        let partialCandidate = MeetingCandidate(
-            id: "browser:com.google.Chrome:unknown",
-            platform: .unknown,
-            appName: "Chrome",
-            url: nil,
-            evidence: [.audioInputProcess],
-            startedAt: Date(timeIntervalSince1970: 1_800_000_005),
-            meetingTitle: nil,
-            sourceBundleID: "com.google.Chrome",
-            sourcePID: 9876,
-            suppressionID: nil
-        )
-
-        let refined = source.refined(with: partialCandidate)
-
-        #expect(refined.suppressionID == "googleMeet:meet.google.com/aaa-bbbb-ccc")
-        #expect(refined.hasObservedCandidate)
-    }
-
-    @Test("candidate source starts as observed")
-    func candidateSourceStartsObserved() {
-        let source = MeetingAutoStopSource(candidate: googleMeetCandidate())
-
-        #expect(source.hasObservedCandidate)
-    }
-
-    @Test("manual start origin does not track meeting signal loss")
-    func manualStartOriginDoesNotTrackMeetingSignalLoss() {
-        let explicitSource = MeetingAutoStopSource(candidate: googleMeetCandidate())
-        let recentSource = MeetingAutoStopSource(candidate: teamsCandidate())
-
-        let resolvedSource = MeetingRecordingStartOrigin.manual.signalLossSource(
-            explicitSource: explicitSource,
-            recentSource: recentSource
-        )
-
-        #expect(!MeetingRecordingStartOrigin.manual.enablesMeetingAutoStop)
-        #expect(MeetingRecordingStartOrigin.manual.signalLossResponse == .none)
-        #expect(resolvedSource == nil)
-        #expect(MeetingRecordingStartOrigin.manual.signalLossSource(
-            explicitSource: nil,
-            recentSource: recentSource
-        ) == nil)
-    }
-
-    @Test("source-backed start origins can auto-stop after warning")
-    func sourceBackedStartOriginsCanAutoStopAfterWarning() {
-        let explicitSource = MeetingAutoStopSource(candidate: googleMeetCandidate())
-        let recentSource = MeetingAutoStopSource(candidate: teamsCandidate())
-        let origins: [MeetingRecordingStartOrigin] = [
-            .detectedPrompt,
-            .calendarAutoRecord,
-            .scheduledMeetingPrompt,
-            .joinAndRecord,
+    @Test("room identity wins over browser attribution and shared suppression IDs")
+    func roomMatching() {
+        let source = MeetingAutoStopSource(candidate: candidate())
+        let cases: [(MeetingCandidate, Bool)] = [
+            (candidate(), true),
+            (candidate(id: "calendar-wrapped", suppressionID: "calendar"), true),
+            (candidate(id: "audio-fallback", url: nil), true),
+            (candidate(id: "new-session", url: nil, suppressionID: "new"), true),
+            (candidate(id: "helper", url: nil, bundle: "com.google.Chrome.helper", suppressionID: "new"), true),
+            (candidate(id: "foreground", url: nil, media: false, suppressionID: "new"), false),
+            (candidate(id: "safari", url: nil, bundle: "com.apple.Safari", suppressionID: "new"), false),
+            (candidate(id: "unattributed", url: nil, bundle: nil, suppressionID: "new"), false),
+            (candidate(id: "room-b", url: "meet.google.com/zzz-yyyy-xxx", suppressionID: "new"), false),
+            // Even a reused browser session or candidate ID cannot override a conflicting URL.
+            (candidate(url: "meet.google.com/zzz-yyyy-xxx"), false)
         ]
-
-        for origin in origins {
-            #expect(origin.enablesMeetingAutoStop)
-            #expect(origin.signalLossResponse == .autoStopAfterWarning)
-            #expect(origin.signalLossSource(explicitSource: explicitSource, recentSource: recentSource) == explicitSource)
-            #expect(origin.signalLossSource(explicitSource: nil, recentSource: recentSource) == recentSource)
+        for (observed, expected) in cases {
+            #expect(MeetingAutoStopPolicy.matches(candidate: observed, source: source) == expected)
         }
     }
 
-    @Test("signal loss prompt can reappear after source recovery when not dismissed")
-    func signalLossPromptCanReappearAfterSourceRecoveryWhenNotDismissed() {
-        var state = MeetingSignalLossPromptState()
-
-        #expect(state.canPresentPrompt)
-        state.markPromptPresented()
-        #expect(!state.canPresentPrompt)
-
-        state.markSourceRecovered()
-        #expect(state.canPresentPrompt)
+    @Test("native source survives new helper/session identity, but not another app")
+    func nativeMatching() {
+        let source = MeetingAutoStopSource(candidate: candidate(url: nil, bundle: "com.microsoft.teams2"))
+        #expect(MeetingAutoStopPolicy.matches(
+            candidate: candidate(id: "new", url: nil, bundle: "com.microsoft.teams2.helper", suppressionID: "new"), source: source
+        ))
+        #expect(!MeetingAutoStopPolicy.matches(
+            candidate: candidate(id: "new", url: nil, bundle: "us.zoom.xos", suppressionID: "new"), source: source
+        ))
     }
 
-    @Test("user dismissed signal loss prompt stays suppressed for recording")
-    func userDismissedSignalLossPromptStaysSuppressedForRecording() {
+    @Test("URL-only sources need observation and retain identity during refinement")
+    func refinement() throws {
+        let url = try #require(URL(string: "https://\(room)?authuser=0"))
+        let source = try #require(MeetingAutoStopSource(meetingURL: url))
+        #expect(source.candidateID == "googleMeet:\(room)")
+        #expect(source.normalizedURL == room && !source.hasObservedCandidate)
+        #expect(!MeetingAutoStopPolicy.matches(candidate: candidate(id: "fallback", url: nil), source: source))
+        let refined = source.refined(with: candidate())
+        #expect(refined.sourceBundleID == "com.google.Chrome" && refined.hasObservedCandidate)
+        #expect(refined.suppressionID == "session-a")
+        #expect(refined.normalizedURL == room)
+        let partial = source.refined(with: candidate(id: "partial", url: nil, suppressionID: nil))
+        #expect(partial.suppressionID == source.suppressionID)
+        #expect(MeetingAutoStopSource(candidate: candidate()).hasObservedCandidate)
+    }
+
+    @Test("only source-backed origins enable auto-stop", arguments: [
+        MeetingRecordingStartOrigin.manual, .detectedPrompt, .calendarAutoRecord,
+        .scheduledMeetingPrompt, .joinAndRecord
+    ])
+    func startOrigin(origin: MeetingRecordingStartOrigin) {
+        let explicit = MeetingAutoStopSource(candidate: candidate())
+        let recent = MeetingAutoStopSource(candidate: candidate(id: "recent", url: nil))
+        let enabled = origin != .manual
+        #expect(origin.enablesMeetingAutoStop == enabled)
+        #expect(origin.signalLossResponse == (enabled ? .autoStopAfterWarning : .none))
+        #expect(origin.signalLossSource(explicitSource: explicit, recentSource: recent) == (enabled ? explicit : nil))
+        #expect(origin.signalLossSource(explicitSource: nil, recentSource: recent) == (enabled ? recent : nil))
+    }
+
+    @Test("source recovery reopens prompts unless the user dismissed them", arguments: [false, true])
+    func promptLifetime(dismissed: Bool) {
         var state = MeetingSignalLossPromptState()
-
+        #expect(state.canPresentPrompt)
         state.markPromptPresented()
-        state.markDismissedByUser()
-        state.markSourceRecovered()
-
         #expect(!state.canPresentPrompt)
-
+        if dismissed { state.markDismissedByUser() }
+        state.markSourceRecovered()
+        #expect(state.canPresentPrompt == !dismissed)
         state.resetForRecording()
         #expect(state.canPresentPrompt)
     }
 
-    @Test("tracker waits for a recording-time observation before auto-stopping")
-    func trackerWaitsForRecordingTimeObservationBeforeAutoStopping() {
+    @Test("unobserved source cannot auto-stop; confirmed source uses disappearance grace")
+    func disappearance() throws {
         var tracker = MeetingAutoStopTracker()
-        tracker.arm(source: MeetingAutoStopSource(candidate: googleMeetCandidate()))
-        let now = Date(timeIntervalSince1970: 1_800_000_000)
-        let shouldStop = tracker.observe(
-            candidate: nil,
-            now: now.addingTimeInterval(25),
-            gracePeriod: 20
-        )
-
-        #expect(!shouldStop)
-        #expect(tracker.lastSeenAt == nil)
-    }
-
-    @Test("tracker stops after a confirmed recording-time source disappears")
-    func trackerStopsAfterConfirmedRecordingTimeSourceDisappears() {
-        var tracker = MeetingAutoStopTracker()
-        tracker.arm(source: MeetingAutoStopSource(candidate: googleMeetCandidate()))
-        let now = Date(timeIntervalSince1970: 1_800_000_000)
-        let shouldStopWhileVisible = tracker.observe(
-            candidate: googleMeetCandidate(),
-            now: now,
-            gracePeriod: 20
-        )
-        let shouldStopBeforeGrace = tracker.observe(
-            candidate: nil,
-            now: now.addingTimeInterval(19),
-            gracePeriod: 20
-        )
-        let shouldStopAfterGrace = tracker.observe(
-            candidate: nil,
-            now: now.addingTimeInterval(21),
-            gracePeriod: 20
-        )
-
-        #expect(!shouldStopWhileVisible)
-        #expect(!shouldStopBeforeGrace)
-        #expect(shouldStopAfterGrace)
-    }
-
-    @Test("tracker keeps established browser source alive through URL probe gaps")
-    func trackerKeepsEstablishedBrowserSourceAliveThroughURLProbeGaps() {
-        var tracker = MeetingAutoStopTracker()
-        tracker.arm(source: MeetingAutoStopSource(candidate: googleMeetCandidate()))
-        let now = Date(timeIntervalSince1970: 1_800_000_000)
-        let attributedBrowser = MeetingCandidate(
-            id: "browser:com.google.Chrome:session:1800000999",
-            platform: .unknown,
-            appName: "Chrome",
-            url: nil,
-            evidence: [.audioInputProcess],
-            startedAt: now,
-            meetingTitle: nil,
-            sourceBundleID: "com.google.Chrome",
-            sourcePID: 9876
-        )
-
-        let stoppedWhileRoomVisible = tracker.observe(
-            candidate: googleMeetCandidate(),
-            now: now,
-            gracePeriod: 20
-        )
-        let stoppedWhileBrowserAttributed = tracker.observe(
-            candidate: attributedBrowser,
-            now: now.addingTimeInterval(30),
-            gracePeriod: 20
-        )
-        let stoppedBeforeGrace = tracker.observe(
-            candidate: nil,
-            now: now.addingTimeInterval(49),
-            gracePeriod: 20
-        )
-        let stoppedAfterGrace = tracker.observe(
-            candidate: nil,
-            now: now.addingTimeInterval(51),
-            gracePeriod: 20
-        )
-
-        #expect(!stoppedWhileRoomVisible)
-        #expect(!stoppedWhileBrowserAttributed)
-        #expect(!stoppedBeforeGrace)
-        #expect(stoppedAfterGrace)
-    }
-
-    @Test("tracker refines URL source before disappearing")
-    func trackerRefinesURLSourceBeforeDisappearing() throws {
-        let url = try #require(URL(string: "https://meet.google.com/aaa-bbbb-ccc"))
-        var tracker = MeetingAutoStopTracker()
+        let url = try #require(URL(string: "https://\(room)"))
         tracker.arm(source: MeetingAutoStopSource(meetingURL: url))
-        let now = Date(timeIntervalSince1970: 1_800_000_000)
-        let shouldStopBeforeObservation = tracker.observe(
-            candidate: nil,
-            now: now.addingTimeInterval(25),
-            gracePeriod: 20
-        )
-        let shouldStopWhileVisible = tracker.observe(
-            candidate: googleMeetCandidate(),
-            now: now.addingTimeInterval(30),
-            gracePeriod: 20
-        )
-        let shouldStopAfterGrace = tracker.observe(
-            candidate: nil,
-            now: now.addingTimeInterval(51),
-            gracePeriod: 20
-        )
-
-        #expect(!shouldStopBeforeObservation)
-        #expect(!shouldStopWhileVisible)
+        let shouldStop1 = tracker.observe(candidate: nil, now: now, gracePeriod: 20)
+        #expect(!shouldStop1)
+        #expect(tracker.lastSeenAt == nil)
+        let shouldStop2 = tracker.observe(candidate: candidate(), now: now, gracePeriod: 20)
+        #expect(!shouldStop2)
         #expect(tracker.source?.sourceBundleID == "com.google.Chrome")
         #expect(tracker.source?.hasObservedCandidate == true)
-        #expect(shouldStopAfterGrace)
+        let shouldStop3 = tracker.observe(candidate: nil, now: now.addingTimeInterval(19), gracePeriod: 20)
+        #expect(!shouldStop3)
+        let shouldStop4 = tracker.observe(candidate: nil, now: now.addingTimeInterval(21), gracePeriod: 20)
+        #expect(shouldStop4)
+        tracker.disarm()
+        #expect(!tracker.isArmed && tracker.lastSeenAt == nil)
     }
 
-    @Test("tracker starts disappearance grace at recording start after startup observation")
-    func trackerStartsGraceAtRecordingStartAfterStartupObservation() throws {
-        let url = try #require(URL(string: "https://meet.google.com/aaa-bbbb-ccc"))
+    @Test("media fallback extends grace, but a different known room does not")
+    func fallbackGrace() {
         var tracker = MeetingAutoStopTracker()
+        tracker.arm(source: MeetingAutoStopSource(candidate: candidate()))
+        let shouldStop5 = tracker.observe(candidate: candidate(), now: now, gracePeriod: 20)
+        #expect(!shouldStop5)
+        let shouldStop6 = tracker.observe(candidate: candidate(id: "fallback", url: nil, suppressionID: "new"),
+                                now: now.addingTimeInterval(30), gracePeriod: 20)
+        #expect(!shouldStop6)
+        let shouldStop7 = tracker.observe(candidate: nil, now: now.addingTimeInterval(49), gracePeriod: 20)
+        #expect(!shouldStop7)
+        let shouldStop8 = tracker.observe(candidate: candidate(id: "room-b", url: "meet.google.com/zzz-yyyy-xxx"),
+                               now: now.addingTimeInterval(51), gracePeriod: 20)
+        #expect(shouldStop8)
+    }
+
+    @Test("startup observation starts grace at recording start, not preparation")
+    func preparationGrace() throws {
+        var tracker = MeetingAutoStopTracker()
+        let url = try #require(URL(string: "https://\(room)"))
         tracker.arm(source: MeetingAutoStopSource(meetingURL: url))
-        let now = Date(timeIntervalSince1970: 1_800_000_000)
-
-        tracker.observeBeforeRecordingStarted(candidate: googleMeetCandidate())
+        tracker.observeBeforeRecordingStarted(candidate: candidate())
         tracker.markRecordingStarted(now: now.addingTimeInterval(10))
-        let shouldStopBeforeGrace = tracker.observe(
-            candidate: nil,
-            now: now.addingTimeInterval(29),
-            gracePeriod: 20
-        )
-        let shouldStopAfterGrace = tracker.observe(
-            candidate: nil,
-            now: now.addingTimeInterval(31),
-            gracePeriod: 20
-        )
-
         #expect(tracker.source?.sourceBundleID == "com.google.Chrome")
-        #expect(!shouldStopBeforeGrace)
-        #expect(shouldStopAfterGrace)
-    }
-
-    private func googleMeetCandidate() -> MeetingCandidate {
-        MeetingCandidate(
-            id: "googleMeet:meet.google.com/aaa-bbbb-ccc",
-            platform: .googleMeet,
-            appName: "Chrome",
-            url: "meet.google.com/aaa-bbbb-ccc",
-            evidence: [.browserURL, .audioInputProcess],
-            startedAt: Date(timeIntervalSince1970: 1_800_000_000),
-            meetingTitle: nil,
-            sourceBundleID: "com.google.Chrome",
-            sourcePID: 1234,
-            suppressionID: "browser:com.google.Chrome:session:1800000000"
-        )
-    }
-
-    private func teamsCandidate() -> MeetingCandidate {
-        MeetingCandidate(
-            id: "app:com.microsoft.teams2:session:1800000000",
-            platform: .teams,
-            appName: "Teams",
-            url: nil,
-            evidence: [.audioInputProcess, .dedicatedApp],
-            startedAt: Date(timeIntervalSince1970: 1_800_000_000),
-            meetingTitle: nil,
-            sourceBundleID: "com.microsoft.teams2",
-            sourcePID: 4321,
-            suppressionID: "app:com.microsoft.teams2:session:1800000000"
-        )
+        let shouldStop9 = tracker.observe(candidate: nil, now: now.addingTimeInterval(29), gracePeriod: 20)
+        #expect(!shouldStop9)
+        let shouldStop10 = tracker.observe(candidate: nil, now: now.addingTimeInterval(31), gracePeriod: 20)
+        #expect(shouldStop10)
     }
 }

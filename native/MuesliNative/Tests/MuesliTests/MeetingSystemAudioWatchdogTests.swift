@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import MuesliNativeApp
 
+@Suite("System audio recovery episodes")
 struct MeetingSystemAudioWatchdogTests {
     private final class Harness {
         var watchdog: MeetingSystemAudioWatchdog!
@@ -18,7 +19,8 @@ struct MeetingSystemAudioWatchdogTests {
         init(policy: MeetingSystemAudioWatchdog.Policy = .default) {
             watchdog = MeetingSystemAudioWatchdog(
                 policy: policy,
-                now: { [weak self] in self?.now ?? Date() }
+                now: { [weak self] in self?.now ?? Date() },
+                deadlineScheduler: { _, _ in }
             )
             watchdog.isCaptureActive = { [weak self] in self?.captureActive ?? false }
             watchdog.isPaused = { [weak self] in self?.paused ?? false }
@@ -45,6 +47,32 @@ struct MeetingSystemAudioWatchdogTests {
             captureActive = false
             watchdog.noteCaptureFailure(reason: reason)
         }
+    }
+
+    @Test("an exhausted verification window cannot reopen from its own rebuild error")
+    func exhaustedWindowRetainsBudget() {
+        var now = Date(timeIntervalSince1970: 1_000)
+        var scheduled: [DispatchWorkItem] = []
+        var requests = 0
+        var events: [MeetingSystemAudioHealthKind] = []
+        let watchdog = MeetingSystemAudioWatchdog(
+            now: { now }, deadlineScheduler: { _, item in scheduled.append(item) }
+        )
+        watchdog.recoveryRequest = { _ in requests += 1; return true }
+        watchdog.onEpisodeEvent = { events.append($0.kind) }
+        watchdog.noteCaptureFailure(reason: "driver failure")
+        for (index, elapsed) in [3.0, 8, 20, 40, 60].enumerated() {
+            now = Date(timeIntervalSince1970: 1_000 + elapsed)
+            scheduled[index].perform()
+        }
+        let attempts = requests
+        let deadlines = scheduled.count
+        watchdog.noteCaptureFailure(reason: "last rebuild also failed")
+        #expect(requests == attempts)
+        #expect(scheduled.count == deadlines)
+        #expect(events == [.degraded, .unrecovered])
+        watchdog.finishMeeting()
+        #expect(events == [.degraded, .unrecovered])
     }
 
     @Test("ordinary capture ticks never infer failure from missing callbacks")
@@ -105,6 +133,21 @@ struct MeetingSystemAudioWatchdogTests {
         harness.routeSettling = false
         harness.tick()
         #expect(harness.micBridgeReasons == ["mic_callbacks_stale_after_audio_route_change"])
+    }
+
+    @Test("post-route verification catches a stall after an initially fresh callback")
+    func delayedStallAfterFreshCallback() {
+        let harness = Harness()
+        harness.micLastCallbackAt = harness.now
+        harness.watchdog.noteRouteChange()
+        harness.tick()
+        #expect(harness.micBridgeReasons.isEmpty)
+        harness.now = harness.now.addingTimeInterval(30)
+        harness.tick()
+        #expect(harness.micBridgeReasons == ["mic_callbacks_stale_after_audio_route_change"])
+        harness.watchdog.suspendVerification()
+        harness.tick()
+        #expect(harness.micBridgeReasons.count == 1)
     }
 
     @Test("explicit capture failure opens one episode and requests recovery")

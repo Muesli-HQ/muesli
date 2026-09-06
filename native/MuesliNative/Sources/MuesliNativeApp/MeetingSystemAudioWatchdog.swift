@@ -42,6 +42,7 @@ final class MeetingSystemAudioWatchdog {
         var lastAttemptAt: Date?
         var healthyTicks: Int
         var micBridgeFired: Bool
+        var terminalReported = false
     }
 
     /// Evaluated per tick after an explicit failure episode opens. True means
@@ -68,15 +69,28 @@ final class MeetingSystemAudioWatchdog {
     private let now: () -> Date
     private let lock = NSLock()
     private var episode: Episode?
-    /// A default-output transition is positive evidence that the input graph
-    /// may have been invalidated too. It is consumed once, after the shared
-    /// route-settle gate opens, without performing any HAL reads.
+    /// A route transition opens a finite verification window. Cached callback
+    /// timestamps are checked only at that window's sparse deadlines.
     private var pendingRouteMicProbe = false
     private var finished = false
+    private let deadlines: MeetingAudioRecoveryDeadlines
+    // The callback box is initialized before self can be captured.
+    private final class DeadlineTarget { weak var watchdog: MeetingSystemAudioWatchdog? }
 
-    init(policy: Policy = .default, now: @escaping () -> Date = Date.init) {
+
+    init(
+        policy: Policy = .default,
+        now: @escaping () -> Date = Date.init,
+        deadlineScheduler: MeetingAudioRecoveryDeadlines.Scheduler? = nil
+    ) {
         self.policy = policy
         self.now = now
+        let target = DeadlineTarget()
+        self.deadlines = MeetingAudioRecoveryDeadlines(scheduler: deadlineScheduler) { final in
+            target.watchdog?.tick(allowRecovery: !final)
+            if final { target.watchdog?.endVerificationWindow() }
+        }
+        target.watchdog = self
     }
 
     /// Called by the recorder when a rebuild exhausts its retry budget — the
@@ -103,6 +117,7 @@ final class MeetingSystemAudioWatchdog {
         lock.unlock()
 
         if let eventToEmit {
+            deadlines.arm()
             onEpisodeEvent?(eventToEmit)
         }
         if let recoveryReason {
@@ -113,14 +128,39 @@ final class MeetingSystemAudioWatchdog {
         }
     }
 
-    /// Record a route transition without touching CoreAudio. The next tick
-    /// after the route-settle window compares only the tracker's cached mic
-    /// callback timestamp and bridges a stale graph into normal mic recovery.
+    /// The cached timestamp remains eligible throughout the finite window;
+    /// one fresh callback cannot hide a delayed post-route stall.
     func noteRouteChange() {
-        lock.withLock {
-            guard !finished else { return }
+        let accepted = lock.withLock {
+            guard !finished, !isPaused() else { return false }
             pendingRouteMicProbe = true
+            return true
         }
+        if accepted { deadlines.arm() }
+    }
+
+    func suspendVerification() {
+        deadlines.cancel()
+        lock.withLock { pendingRouteMicProbe = false }
+    }
+
+    private func endVerificationWindow() {
+        var unresolved: MeetingSystemAudioHealthEvent?
+        lock.withLock {
+            pendingRouteMicProbe = false
+            if var active = episode, !active.terminalReported {
+                active.terminalReported = true
+                // Retain the exhausted episode: errors emitted by our last
+                // rebuild must not reopen it with a fresh retry budget.
+                episode = active
+                unresolved = MeetingSystemAudioHealthEvent(
+                    kind: .unrecovered, reason: active.initialReason,
+                    durationSeconds: now().timeIntervalSince(active.startedAt),
+                    recoveryAttempts: active.recoveryAttempts
+                )
+            }
+        }
+        if let unresolved { onEpisodeEvent?(unresolved) }
     }
 
     /// Roll back the attempt count for a rejected request while keeping its
@@ -134,8 +174,8 @@ final class MeetingSystemAudioWatchdog {
         episode = active
     }
 
-    /// One health evaluation. Called by MeetingSession's timer.
-    func tick() {
+    /// One cached health evaluation at an event-triggered deadline.
+    func tick(allowRecovery: Bool = true) {
         var eventToEmit: MeetingSystemAudioHealthEvent?
         var recoveryReason: String?
         var micBridgeReason: String?
@@ -146,7 +186,6 @@ final class MeetingSystemAudioWatchdog {
             return
         }
         if pendingRouteMicProbe {
-            pendingRouteMicProbe = false
             let timestamp = now()
             let micIsStale = lastMicCallbackAt().map {
                 timestamp.timeIntervalSince($0) >= 3
@@ -165,6 +204,11 @@ final class MeetingSystemAudioWatchdog {
             return
         }
 
+        guard !active.terminalReported else {
+            lock.unlock()
+            if let micBridgeReason { onMicBlindnessDegradation?(micBridgeReason) }
+            return
+        }
         let timestamp = now()
         if isCaptureActive() {
             active.healthyTicks += 1
@@ -181,7 +225,7 @@ final class MeetingSystemAudioWatchdog {
             }
         } else {
             active.healthyTicks = 0
-            if active.recoveryAttempts < policy.maxAttemptsPerEpisode,
+            if allowRecovery, active.recoveryAttempts < policy.maxAttemptsPerEpisode,
                let lastAttemptAt = active.lastAttemptAt,
                timestamp.timeIntervalSince(lastAttemptAt) >= policy.attemptCooldown {
                 active.recoveryAttempts += 1
@@ -221,12 +265,14 @@ final class MeetingSystemAudioWatchdog {
     /// Call when the meeting stops or is discarded. An open episode is the
     /// terminal (error-level) condition.
     func finishMeeting() {
+        deadlines.cancel()
         var eventToEmit: MeetingSystemAudioHealthEvent?
         lock.lock()
         finished = true
         pendingRouteMicProbe = false
-        if let active = episode {
-            episode = nil
+        let activeEpisode = episode
+        episode = nil
+        if let active = activeEpisode, !active.terminalReported {
             eventToEmit = MeetingSystemAudioHealthEvent(
                 kind: .unrecovered,
                 reason: active.initialReason,

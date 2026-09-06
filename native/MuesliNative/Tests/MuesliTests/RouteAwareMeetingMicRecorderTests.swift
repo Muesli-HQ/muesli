@@ -5,6 +5,86 @@ import Testing
 
 @Suite("RouteAwareMeetingMicRecorder", .serialized)
 struct RouteAwareMeetingMicRecorderTests {
+    @Test("stopping releases the microphone child and its driver ownership")
+    func stopReleasesChild() throws {
+        weak var child: FakeMeetingMicRecorder?
+        let recorder = RouteAwareMeetingMicRecorder(systemDefaultRecorderFactory: {
+            let created = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+            child = created
+            return created
+        })
+
+        try recorder.start()
+        #expect(child != nil)
+        _ = recorder.stop()
+        recorder.waitForQuiescence()
+
+        #expect(child == nil)
+    }
+
+    @Test("a completed handoff releases the retired microphone child")
+    func handoffReleasesRetiredChild() throws {
+        weak var initial: FakeMeetingMicRecorder?
+        weak var replacement: FakeMeetingMicRecorder?
+        let lifecycle = DispatchQueue(label: "test.meeting-mic.release.lifecycle")
+        let worker = DispatchQueue(label: "test.meeting-mic.release.worker")
+        let cleanup = DispatchQueue(label: "test.meeting-mic.release.cleanup")
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorderFactory: {
+                let created = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+                initial = created
+                return created
+            },
+            appScopedRecorderFactory: {
+                let created = FakeMeetingMicRecorder(kind: .appScopedAudioQueue)
+                replacement = created
+                return created
+            },
+            lifecycleQueue: lifecycle, handoffWorkerQueue: worker, cleanupQueue: cleanup,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+        try recorder.start()
+        #expect(recorder.requestHealthRecovery(.init(reason: "test", requiresNonZeroSamples: false)) == .initiated)
+        worker.sync {}
+        replacement?.onRawPCMSamples?([1, 2])
+        lifecycle.sync {}
+        cleanup.sync {}
+
+        #expect(initial == nil)
+        #expect(replacement != nil)
+        _ = recorder.stop()
+        recorder.waitForQuiescence()
+        #expect(replacement == nil)
+    }
+
+    @Test("stopping releases a pending child before its scheduled timeout")
+    func stopReleasesPendingChildBeforeTimeout() throws {
+        weak var candidate: FakeMeetingMicRecorder?
+        let timeouts = ManualMeetingMicHandoffTimeoutScheduler()
+        let worker = DispatchQueue(label: "test.meeting-mic.pending-release.worker")
+        let cleanup = DispatchQueue(label: "test.meeting-mic.pending-release.cleanup")
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: FakeMeetingMicRecorder(kind: .systemDefaultStreaming),
+            appScopedRecorderFactory: {
+                let created = FakeMeetingMicRecorder(kind: .appScopedAudioQueue)
+                candidate = created
+                return created
+            },
+            handoffWorkerQueue: worker, cleanupQueue: cleanup,
+            handoffTimeoutScheduler: timeouts.schedule
+        )
+        try recorder.start()
+        #expect(recorder.requestHealthRecovery(.init(reason: "test", requiresNonZeroSamples: false)) == .initiated)
+        worker.sync {}
+        #expect(candidate != nil)
+
+        _ = recorder.stop()
+        cleanup.sync {}
+        #expect(candidate == nil)
+        // An outstanding deadline is harmless and need not own the driver.
+        #expect(timeouts.fireNext())
+    }
+
     @Test("default input uses system default recorder")
     func defaultInputUsesSystemDefaultRecorder() throws {
         let system = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
@@ -706,6 +786,40 @@ struct RouteAwareMeetingMicRecorderTests {
         #expect(candidate.cancelCalls >= 1)
     }
 
+
+    @Test("timed-out graph retains capacity until native start and cleanup return")
+    func timedOutGraphRetainsCapacity() async throws {
+        let timeouts = ManualMeetingMicHandoffTimeoutScheduler()
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let cancelled = DispatchSemaphore(value: 0)
+        let active = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let candidate = FakeMeetingMicRecorder(kind: .appScopedAudioQueue)
+        candidate.onStart = {
+            entered.signal()
+            #expect(release.wait(timeout: .now() + 3) == .success)
+        }
+        candidate.onCancel = { cancelled.signal() }
+        let next = FakeMeetingMicRecorder(kind: .appScopedAudioQueue)
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: active, appScopedRecorder: candidate,
+            appScopedRecorderFactory: { next }, handoffTimeoutScheduler: timeouts.schedule
+        )
+        try recorder.start()
+        recorder.preferredInputDeviceID = 91
+        #expect(entered.wait(timeout: .now() + 1) == .success)
+        #expect(timeouts.fireNext())
+        #expect(candidate.invalidatedForTeardown)
+        #expect(cancelled.wait(timeout: .now() + 1) == .success)
+        recorder.preferredInputDeviceID = 92
+        // Cleanup has returned, but the old start is still inside its driver.
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(next.prepareCalls == 0)
+        release.signal()
+        try await waitUntil { next.startCalls == 1 }
+        recorder.cancel()
+        recorder.waitForQuiescence()
+    }
 
     private func waitUntil(
         timeout: Duration = .seconds(5),
