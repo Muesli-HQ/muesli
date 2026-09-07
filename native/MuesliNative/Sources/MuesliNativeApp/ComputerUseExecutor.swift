@@ -78,7 +78,8 @@ enum ComputerUseToolExecutor {
 
     static func execute(
         _ toolCall: ComputerUseToolCall,
-        registry: ComputerUseElementRegistry?
+        registry: ComputerUseElementRegistry?,
+        pasteShortcut: PasteShortcut
     ) async -> ComputerUseExecutionResult {
         if let failure = toolCall.validationFailure() {
             return .unsupported(failure)
@@ -115,9 +116,9 @@ enum ComputerUseToolExecutor {
                 key: toolCall.key ?? ""
             ))
         case .typeText:
-            return await enterText(toolCall, registry: registry, mode: .keyboard)
+            return await enterText(toolCall, registry: registry, mode: .keyboard, pasteShortcut: pasteShortcut)
         case .pasteText:
-            return await enterText(toolCall, registry: registry, mode: .paste)
+            return await enterText(toolCall, registry: registry, mode: .paste, pasteShortcut: pasteShortcut)
         case .scroll:
             return scroll(toolCall, registry: registry)
         case .listBrowserTabs:
@@ -496,7 +497,8 @@ enum ComputerUseToolExecutor {
     private static func enterText(
         _ toolCall: ComputerUseToolCall,
         registry: ComputerUseElementRegistry?,
-        mode: TextEntryMode
+        mode: TextEntryMode,
+        pasteShortcut: PasteShortcut
     ) async -> ComputerUseExecutionResult {
         let targetApp = await prepareTextEntryApp(toolCall)
         if case let .failure(message) = targetApp {
@@ -532,7 +534,7 @@ enum ComputerUseToolExecutor {
                 return .failed(error.localizedDescription)
             }
         case .paste:
-            PasteController.paste(text: toolCall.text ?? "")
+            PasteController.paste(text: toolCall.text ?? "", shortcut: pasteShortcut)
             do {
                 try await Task.sleep(nanoseconds: 700_000_000)
             } catch is CancellationError {

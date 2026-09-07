@@ -68,10 +68,12 @@ enum PasteController {
     /// For nonempty text, completion receives the target app only when the selected Paste
     /// command was accepted. When staged-clipboard ownership is required, a failed write or
     /// intervening clipboard change also completes with `nil` attribution and skips dispatch.
+    /// `shortcut` applies only to `.keyboardShortcut`; target-app Paste commands are invoked directly.
     @MainActor
     static func paste(
         text: String,
         pasteboard: NSPasteboard = .general,
+        shortcut: PasteShortcut = .commandV,
         requireStagedClipboardOwnership: Bool = false,
         targetApplicationProvider: @escaping @MainActor () -> NSRunningApplication? = {
             NSWorkspace.shared.frontmostApplication
@@ -82,13 +84,16 @@ enum PasteController {
         targetPasteAction: @escaping @MainActor (NSRunningApplication) -> Bool? = {
             PasteController.performTargetPasteCommand(in: $0)
         },
-        simulatePasteAction: @escaping @MainActor () -> Bool = PasteController.simulatePaste,
+        simulatePasteAction: (@MainActor (PasteShortcut) -> Bool)? = nil,
         onPasteDispatched: @escaping @MainActor () -> Void = {},
         onPasteFinished: @escaping @MainActor (NSRunningApplication?) -> Void = { _ in },
         onClipboardSettled: @escaping @MainActor () -> Void = {},
         onLifecycleEvent: @escaping @MainActor (LifecycleEvent) -> Void = { _ in }
     ) {
         guard !text.isEmpty else { return }
+        let simulatePasteAction = simulatePasteAction ?? {
+            PasteController.simulatePaste(shortcut: $0)
+        }
 
         // Save current clipboard contents (all types) so we can restore after paste.
         let savedItems = saveClipboard(pasteboard)
@@ -148,7 +153,7 @@ enum PasteController {
             let didDispatchPaste: Bool
             switch dispatchStrategy {
             case .keyboardShortcut:
-                didDispatchPaste = simulatePasteAction()
+                didDispatchPaste = simulatePasteAction(shortcut)
             case .targetApplicationPasteCommand:
                 guard let targetApplication else {
                     onLifecycleEvent(.targetPasteCommandUnavailable)
@@ -273,7 +278,15 @@ enum PasteController {
         return true
     }
 
-    private static func simulatePaste() -> Bool {
+    /// CGEvent modifier flags for the paste chord the user selected.
+    static func eventFlags(for shortcut: PasteShortcut) -> CGEventFlags {
+        switch shortcut {
+        case .commandV: return .maskCommand
+        case .commandShiftV: return [.maskCommand, .maskShift]
+        }
+    }
+
+    private static func simulatePaste(shortcut: PasteShortcut) -> Bool {
         guard let source = CGEventSource(stateID: .combinedSessionState) else {
             fputs("[muesli-native] failed to create event source for paste\n", stderr)
             return false
@@ -287,8 +300,9 @@ enum PasteController {
         }
         MuesliSyntheticKeyboardEvent.mark(commandDown)
         MuesliSyntheticKeyboardEvent.mark(commandUp)
-        commandDown.flags = .maskCommand
-        commandUp.flags = .maskCommand
+        let flags = eventFlags(for: shortcut)
+        commandDown.flags = flags
+        commandUp.flags = flags
         commandDown.post(tap: .cghidEventTap)
         commandUp.post(tap: .cghidEventTap)
         return true
