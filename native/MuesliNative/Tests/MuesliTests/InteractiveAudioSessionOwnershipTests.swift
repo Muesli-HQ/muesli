@@ -13,6 +13,7 @@ struct InteractiveAudioSessionOwnershipTests {
         #expect(ownership.canStart(.dictation))
         #expect(ownership.canStart(.computerUse))
         #expect(ownership.canStart(.quil))
+        #expect(!ownership.hasActiveOwner)
         #expect(!ownership.shouldIgnoreCleanup(for: .dictation))
         #expect(!ownership.shouldIgnoreCleanup(for: .computerUse))
     }
@@ -31,6 +32,7 @@ struct InteractiveAudioSessionOwnershipTests {
         #expect(ownership.shouldIgnoreCleanup(for: .dictation))
         #expect(ownership.shouldIgnoreCleanup(for: .computerUse))
         #expect(!ownership.shouldIgnoreCleanup(for: .quil))
+        #expect(ownership.hasActiveOwner)
     }
 
     @Test("dictation ownership rejects computer use start and cleanup")
@@ -44,6 +46,7 @@ struct InteractiveAudioSessionOwnershipTests {
         #expect(!ownership.canStart(.computerUse))
         #expect(ownership.shouldIgnoreCleanup(for: .computerUse))
         #expect(!ownership.shouldIgnoreCleanup(for: .dictation))
+        #expect(ownership.hasActiveOwner)
     }
 
     @Test("computer use ownership rejects dictation start and cleanup")
@@ -57,6 +60,7 @@ struct InteractiveAudioSessionOwnershipTests {
         #expect(ownership.canStart(.computerUse))
         #expect(ownership.shouldIgnoreCleanup(for: .dictation))
         #expect(!ownership.shouldIgnoreCleanup(for: .computerUse))
+        #expect(ownership.hasActiveOwner)
     }
 
     @Test("an existing overlap still permits both owners to clean up")
@@ -70,5 +74,6 @@ struct InteractiveAudioSessionOwnershipTests {
         #expect(!ownership.canStart(.computerUse))
         #expect(!ownership.shouldIgnoreCleanup(for: .dictation))
         #expect(!ownership.shouldIgnoreCleanup(for: .computerUse))
+        #expect(ownership.hasActiveOwner)
     }
 }

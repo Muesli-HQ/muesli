@@ -137,12 +137,9 @@ final class MeetingMicRecoveryCoordinator {
     var onEpisodeEvent: ((MeetingMicHealthEpisodeEvent) -> Void)?
     /// Coarse, privacy-safe context for telemetry; evaluated at event time.
     var contextProvider: () -> MeetingMicEpisodeContext = { MeetingMicEpisodeContext() }
-    /// Evaluated at episode confirmation and at most once per second while
-    /// suppressed — never per sample batch. When the capture device is
-    /// muted/zero-gain at the source, no recovery episode opens: the all-zero
-    /// signature is user intent, not a broken route. Called outside the
-    /// coordinator lock (may read device state via HAL).
-    var isInputMuted: () -> Bool = { false }
+    /// Cached OS-event observation. Unknown mute state defers classification;
+    /// this callback must never query HAL on the audio-processing queue.
+    var isInputMuted: () -> Bool? = { false }
     /// Fired at most once per meeting when confirmed degradation is classified
     /// as user-muted input. Runs after the coordinator lock is released.
     var onUserMuted: (() -> Void)?
@@ -169,7 +166,6 @@ final class MeetingMicRecoveryCoordinator {
     private var mutedSignalEmitted = false
     /// Throttles HAL mute reads to 1Hz while degradation is open but
     /// suppressed; nil while an episode is open (no reads at all then).
-    private var lastMuteCheckAt: Date?
 
     init(policy: Policy = .default, now: @escaping () -> Date = Date.init) {
         self.policy = policy
@@ -188,25 +184,11 @@ final class MeetingMicRecoveryCoordinator {
         var pendingEvent: PendingEvent?
         var recoveryToDispatch: RecoveryReservation?
 
-        // The mute read (HAL, can block) runs outside the lock, and only when
-        // it can change behavior: an open episode never consults it, and
-        // suppressed degradation re-reads at most once per second to notice
-        // un-muting without polling the HAL per sample batch.
         let degradedNow = Self.isDegraded(snapshot.state)
         var inputMuted = false
-        if degradedNow {
-            let shouldCheck: Bool = lock.withLock {
-                guard episode == nil else { return false }
-                if let lastMuteCheckAt,
-                   now().timeIntervalSince(lastMuteCheckAt) < 1 { return false }
-                lastMuteCheckAt = now()
-                return true
-            }
-            if shouldCheck {
-                inputMuted = isInputMuted()
-            } else {
-                inputMuted = lock.withLock { mutedSuppressed }
-            }
+        if degradedNow, lock.withLock({ episode == nil }) {
+            guard let observed = isInputMuted() else { return }
+            inputMuted = observed
         }
         var emitUserMuted = false
 

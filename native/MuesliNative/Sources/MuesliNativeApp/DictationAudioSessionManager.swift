@@ -372,8 +372,19 @@ final class DictationAudioSessionManager: @unchecked Sendable {
         }
     }
 
-    func refreshRoute(intent: DictationWarmupIntent, delay: TimeInterval = 0, canWarmUp: Bool) {
-        routingController.refreshRouteCache()
+    func refreshRoute(
+        intent: DictationWarmupIntent,
+        delay: TimeInterval = 0,
+        canWarmUp: Bool,
+        refreshRoutingCache: Bool = true
+    ) {
+        // A route-controller callback already follows its own cache refresh.
+        // Re-entering the controller from that callback performs a second HAL
+        // inspection in the same transition and can wedge on CoreAudio's
+        // command gate. Other callers retain the explicit refresh by default.
+        if refreshRoutingCache {
+            routingController.refreshRouteCache()
+        }
         queue.async { [self] in
             self.routeRefreshGeneration += 1
             let generation = self.routeRefreshGeneration

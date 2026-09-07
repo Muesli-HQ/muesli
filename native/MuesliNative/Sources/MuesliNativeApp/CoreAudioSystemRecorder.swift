@@ -10,6 +10,10 @@ import os
 /// Protocol for system audio capture backends (ScreenCaptureKit vs CoreAudio tap).
 protocol SystemAudioCapturing: AnyObject {
     var onPCMSamples: (([Int16]) -> Void)? { get set }
+    /// A hardware output-route transition occurred. This is a lightweight
+    /// signal only: observers must not synchronously inspect CoreAudio from
+    /// this callback because the HAL may still be rebuilding its device graph.
+    var onRouteChange: (() -> Void)? { get set }
     var isRecording: Bool { get }
     var isPaused: Bool { get }
     func start() async throws
@@ -48,6 +52,10 @@ extension SystemAudioCapturing {
         get { nil }
         set {}
     }
+    var onRouteChange: (() -> Void)? {
+        get { nil }
+        set {}
+    }
     func rebuildForHealthRecovery(reason: String) -> Bool { false }
 }
 
@@ -75,6 +83,12 @@ struct RebuildRetryPolicy: Equatable {
 /// - Hardware-synchronized with mic input when used in an aggregate device
 final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnosticsProviding {
     var onPCMSamples: (([Int16]) -> Void)?
+    private let routeCallbackLock = NSLock()
+    private var routeCallback: (() -> Void)?
+    var onRouteChange: (() -> Void)? {
+        get { routeCallbackLock.withLock { routeCallback } }
+        set { routeCallbackLock.withLock { routeCallback = newValue } }
+    }
 
     private var tapID: AudioObjectID = kAudioObjectUnknown
     private var aggregateDeviceID: AudioDeviceID = kAudioObjectUnknown
@@ -82,6 +96,10 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
     private var deviceIOBlock: AudioDeviceIOBlock?
     private let deviceIOQueue = DispatchQueue(label: "com.muesli.system-audio-tap.io", qos: .userInitiated)
     private let processingQueue = DispatchQueue(label: "com.muesli.system-audio-tap")
+    /// Kept separate from audio processing and route inspection. A wedged HAL
+    /// query or a saturated sample-processing queue must not hide the one
+    /// signal that lets the mic watchdog recover from the transition.
+    private let routeSignalQueue = DispatchQueue(label: "com.muesli.system-audio-route-signal")
     private var defaultOutputDeviceListenerBlock: AudioObjectPropertyListenerBlock?
 
     private var outputFile: FileHandle?
@@ -186,6 +204,10 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
     }
 
     func start() async throws {
+        try await MeetingCaptureLifecycle.onDriverQueue { [self] in try startCapture() }
+    }
+
+    private func startCapture() throws {
         guard !isRecording else { return }
 
         let dir = FileManager.default.temporaryDirectory
@@ -271,8 +293,11 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
         // equivalent to ScreenCaptureKit's "system audio" stream: all process
         // output mixed to stereo, excluding Muesli itself. The previous
         // device-stream tap could be valid but zero-filled on some routes.
+        guard let ownProcessID = Self.currentProcessAudioObjectID() else {
+            throw RecorderError.coreAudioSetupFailed("resolve own process for tap exclusion", kAudioHardwareBadObjectError)
+        }
         let tapDesc = Self.makeGlobalTapDescription(
-            excludingProcessID: Self.currentProcessAudioObjectID(),
+            excludingProcessID: ownProcessID,
             name: "Muesli System Audio Tap"
         )
 
@@ -280,9 +305,8 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
         // system permission dialog on first use ("… would like to record audio
         // from other applications").
         var status = AudioHardwareCreateProcessTap(tapDesc, &tapID)
-        guard status == noErr, tapID != kAudioObjectUnknown else {
-            throw RecorderError.tapCreationFailed(status)
-        }
+        guard status == noErr else { throw RecorderError.tapCreationFailed(status) }
+        guard tapID != kAudioObjectUnknown else { throw RecorderError.invalidTapIdentity }
         fputs("[system-audio] process tap \(tapID) created\n", stderr)
 
         // Create aggregate device referencing the registered tap by UUID.
@@ -671,42 +695,22 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
         return false
     }
 
-    /// Look up our process's AudioObjectID from the HAL process object list.
-    /// `CATapDescription` expects these IDs — not raw PIDs.
+    /// Resolve only our own process. Enumerating every client's PID here adds
+    /// system-wide HAL work to the critical path of every meeting start.
     private static func currentProcessAudioObjectID() -> AudioObjectID? {
-        let myPID = ProcessInfo.processInfo.processIdentifier
-        var propertySize: UInt32 = 0
+        var pid = ProcessInfo.processInfo.processIdentifier
+        var objectID = kAudioObjectUnknown
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
         var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyProcessObjectList,
+            mSelector: kAudioHardwarePropertyTranslatePIDToProcessObject,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        guard AudioObjectGetPropertyDataSize(
-            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &propertySize
-        ) == noErr else { return nil }
-
-        let count = Int(propertySize) / MemoryLayout<AudioObjectID>.size
-        guard count > 0 else { return nil }
-
-        var objects = [AudioObjectID](repeating: 0, count: count)
-        guard AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &propertySize, &objects
-        ) == noErr else { return nil }
-
-        var pidAddr = AudioObjectPropertyAddress(
-            mSelector: kAudioProcessPropertyPID,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &address,
+            UInt32(MemoryLayout<pid_t>.size), &pid, &size, &objectID
         )
-        for obj in objects {
-            var objPID: pid_t = 0
-            var pidSize = UInt32(MemoryLayout<pid_t>.size)
-            if AudioObjectGetPropertyData(obj, &pidAddr, 0, nil, &pidSize, &objPID) == noErr,
-               objPID == myPID {
-                return obj
-            }
-        }
-        return nil
+        return status == noErr && objectID != kAudioObjectUnknown ? objectID : nil
     }
 
     private static func audioTapStreamFormat(for tapID: AudioObjectID) throws -> AudioStreamBasicDescription {
@@ -810,7 +814,7 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
         guard defaultOutputDeviceListenerBlock == nil else { return }
 
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            self?.processingQueue.async { [weak self] in
+            self?.routeSignalQueue.async { [weak self] in
                 guard let self, self.isRecording else { return }
                 self.restartTapForDefaultOutputDeviceChange()
             }
@@ -880,6 +884,7 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
     func restartTapForDefaultOutputDeviceChange() {
         guard isRecording else { return }
         lastRouteChangeAtMs.store(Int64(Date().timeIntervalSince1970 * 1000), ordering: .relaxed)
+        onRouteChange?()
         fputs("[system-audio] default output device changed (no rebuild; tap is route-independent)\n", stderr)
     }
 
@@ -957,6 +962,7 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
         case fileCreationFailed
         case noDefaultOutputDevice
         case tapCreationFailed(OSStatus)
+        case invalidTapIdentity
         case aggregateDeviceCreationFailed(OSStatus)
         case coreAudioSetupFailed(String, OSStatus)
         case deviceIOProcCreationFailed
@@ -968,6 +974,8 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
                 return "Could not create output file"
             case .noDefaultOutputDevice:
                 return "No default audio output device found"
+            case .invalidTapIdentity:
+                return "The audio service returned no usable capture tap. Audio capture could not start."
             case .tapCreationFailed(let s):
                 return "Process tap creation failed (status: \(s))"
             case .aggregateDeviceCreationFailed(let s):
