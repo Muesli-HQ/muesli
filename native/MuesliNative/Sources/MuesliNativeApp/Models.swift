@@ -705,10 +705,12 @@ enum MeetingLiveCaptionBackend: String, CaseIterable, Codable, Sendable {
     var settingsLabel: String {
         switch self {
         case .parakeetRealtimeEOU: return "\(label) (live preview only)"
-        case .appleSpeech: return "\(label) (live preview only)"
+        case .appleSpeech: return "\(label) (live + final)"
         case .nemotron35: return "\(label) (live + final)"
         }
     }
+
+    var producesFinalTranscript: Bool { self == .nemotron35 || self == .appleSpeech }
 
     var isDownloaded: Bool {
         switch self {

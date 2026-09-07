@@ -290,8 +290,8 @@ struct SettingsView: View {
 
     private var usesUnifiedMeetingTranscript: Bool {
         appState.config.enableLiveStreamingPartials
-            && appState.config.resolvedMeetingLiveCaptionBackend == .nemotron35
-            && downloadedMeetingLiveCaptionBackends.contains(.nemotron35)
+            && appState.config.resolvedMeetingLiveCaptionBackend.producesFinalTranscript
+            && downloadedMeetingLiveCaptionBackends.contains(appState.config.resolvedMeetingLiveCaptionBackend)
     }
 
     private var meetingLiveTranscriptDescription: String {
@@ -1232,7 +1232,7 @@ struct SettingsView: View {
             }
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow(
-                "Live preview model",
+                "Live transcript model",
                 description: meetingLiveTranscriptDescription,
                 controlWidth: meetingControlWidth
             ) {
@@ -1266,7 +1266,7 @@ struct SettingsView: View {
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Final transcript", controlWidth: meetingControlWidth) {
                 if usesUnifiedMeetingTranscript {
-                    Text("\(MeetingLiveCaptionBackend.nemotron35.label) (same model)")
+                    Text("\(appState.config.resolvedMeetingLiveCaptionBackend.label) (same model)")
                         .font(MuesliTheme.body())
                         .foregroundStyle(MuesliTheme.textSecondary)
                         .frame(width: meetingControlWidth, alignment: .trailing)
@@ -1289,7 +1289,13 @@ struct SettingsView: View {
             if usesUnifiedMeetingTranscript {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Language", controlWidth: meetingControlWidth) {
-                    nemotron35LanguageMenu
+                    if appState.config.resolvedMeetingLiveCaptionBackend == .nemotron35 {
+                        nemotron35LanguageMenu
+                    } else {
+                        Text("Set in Models → Apple Speech")
+                            .font(MuesliTheme.body())
+                            .foregroundStyle(MuesliTheme.textSecondary)
+                    }
                 }
             } else if appState.selectedMeetingTranscriptionBackend.backend == BackendOption.cohereTranscribe.backend {
                 Divider().background(MuesliTheme.surfaceBorder)

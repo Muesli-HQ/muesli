@@ -131,6 +131,114 @@ struct MeetingStreamingPartialSessionTests {
         #expect(await remainsTrue(for: 0.5) { collector.latest == "" })
     }
 
+    @Test("native boundaries save finalized corrections and serialize the next audio")
+    func nativeFinalizationPrecedesNextAudio() async {
+        let engine = ManualAsynchronousPartialEngine(blocksFinish: true, finalText: "Final correction.")
+        let session = MeetingStreamingPartialSession(engine: engine, label: "You")
+        defer { session.stop() }
+        await session.connect()
+        engine.emit("provisional guess")
+        let id = UUID()
+        session.markSegmentBoundary(id: id)
+        #expect(await waitUntil { engine.isFinishing })
+        #expect(session.pendingSegmentText(id: id) == nil)
+        session.enqueue(samples(chunkCount: 1))
+        #expect(engine.processCalls == 0)
+        engine.releaseFinish()
+        #expect(await session.finalizedSegmentText(id: id) == "Final correction.")
+        #expect(await waitUntil { engine.processCalls == 1 && engine.restartCalls == 1 })
+    }
+
+    @Test("native stop saves final text instead of the last provisional caption")
+    func nativeStopUsesFinalText() async {
+        let engine = ManualAsynchronousPartialEngine(finalText: "Final correction.")
+        let session = MeetingStreamingPartialSession(engine: engine, label: "You")
+        defer { session.stop() }
+        await session.connect()
+        engine.emit("provisional guess")
+        #expect(await session.finish() == "Final correction.")
+    }
+
+    @Test("stop during native restart retains the sub-interval audio tail")
+    func nativeStopDuringRestartFlushesResidualAudio() async {
+        let engine = ManualAsynchronousPartialEngine(blocksRestart: true, finalText: "final")
+        let session = MeetingStreamingPartialSession(engine: engine, label: "You")
+        defer { session.stop() }
+        await session.connect()
+        session.markSegmentBoundary(id: UUID())
+        #expect(await waitUntil { engine.isRestarting })
+        session.enqueue([0.1, 0.2, 0.3])
+        let finishing = Task { await session.finish() }
+        // Keep the restart blocked long enough for finish to queue the residual.
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        engine.releaseRestart()
+        #expect(await finishing.value == "final")
+        #expect(engine.processCalls == 1)
+    }
+
+    @Test("failed native finalization falls back instead of saving provisional text")
+    func nativeFinalizationFailureFallsBack() async {
+        let engine = ManualAsynchronousPartialEngine(failsFinish: true)
+        let session = MeetingStreamingPartialSession(engine: engine, label: "You")
+        defer { session.stop() }
+        await session.connect()
+        engine.emit("must not save")
+        let id = UUID()
+        session.markSegmentBoundary(id: id)
+        #expect(await session.finalizedSegmentText(id: id) == nil)
+        #expect(await waitUntil { engine.shutdownCalls > 0 })
+    }
+
+    @Test("hung native finalization times out and recovers from recorded audio")
+    func nativeFinalizationTimeoutFallsBack() async {
+        let engine = ManualAsynchronousPartialEngine(blocksFinish: true)
+        let session = MeetingStreamingPartialSession(engine: engine, label: "You",
+            finalizationTimeoutNanoseconds: 50_000_000)
+        defer { session.stop() }
+        await session.connect()
+        engine.emit("must not save")
+        let id = UUID()
+        session.markSegmentBoundary(id: id)
+        #expect(await session.finalizedSegmentText(id: id) == nil)
+        #expect(await waitUntil { engine.shutdownCalls > 0 })
+        #expect(session.pendingSegmentText(id: id) == nil)
+    }
+
+    @Test("late startup and capture recovery use recording until a complete segment")
+    func nativeIncompleteStartFallsBack() async {
+        let engine = ManualAsynchronousPartialEngine(finalText: "complete sentence")
+        let session = MeetingStreamingPartialSession(engine: engine, label: "You", startsAtSegmentBoundary: false)
+        defer { session.stop() }
+        await session.connect()
+        let first = UUID()
+        session.markSegmentBoundary(id: first)
+        #expect(await session.finalizedSegmentText(id: first) == nil)
+        #expect(await waitUntil { engine.restartCalls == 1 })
+        let second = UUID()
+        session.markSegmentBoundary(id: second)
+        #expect(await session.finalizedSegmentText(id: second) == "complete sentence")
+        #expect(await waitUntil { engine.restartCalls == 2 })
+        session.resetAfterSourceRestart()
+        #expect(await waitUntil { engine.restartCalls == 3 })
+        let recovered = UUID()
+        session.markSegmentBoundary(id: recovered)
+        #expect(await session.finalizedSegmentText(id: recovered) == nil)
+    }
+
+    @Test("native audio overflow selects recording rather than silently dropping speech")
+    func nativeBackpressureFallsBack() async {
+        let engine = ManualAsynchronousPartialEngine(blocksFinish: true)
+        let session = MeetingStreamingPartialSession(engine: engine, label: "You")
+        defer { session.stop() }
+        await session.connect()
+        let id = UUID()
+        session.markSegmentBoundary(id: id)
+        #expect(await waitUntil { engine.isFinishing })
+        session.enqueue(samples(chunkCount: MeetingStreamingPartialSession.maxNativeQueuedChunks + 1))
+        #expect(await waitUntil { engine.shutdownCalls > 0 })
+        #expect(await session.finalizedSegmentText(id: id) == nil)
+    }
+
     @Test("an asynchronous boundary freezes one segment without hiding the next")
     func asynchronousBoundaryKeepsSegmentsIndependent() async throws {
         let engine = ManualAsynchronousPartialEngine()
@@ -734,14 +842,24 @@ private final class ManualAsynchronousPartialEngine: MeetingStreamingPartialEngi
         var shutdownCalls = 0
         var restartContinuation: CheckedContinuation<Void, Never>?
         var isRestarting = false
+        var text = ""
+        var finishContinuation: CheckedContinuation<Void, Never>?
+        var isFinishing = false
     }
     private let state = OSAllocatedUnfairLock(initialState: State())
     private let blocksRestart: Bool
+    private let blocksFinish: Bool
+    private let finalText: String?
+    private let failsFinish: Bool
 
-    init(blocksRestart: Bool = false) {
+    init(blocksRestart: Bool = false, blocksFinish: Bool = false, finalText: String? = nil, failsFinish: Bool = false) {
         self.blocksRestart = blocksRestart
+        self.blocksFinish = blocksFinish
+        self.finalText = finalText
+        self.failsFinish = failsFinish
     }
 
+    var isFinishing: Bool { state.withLock { $0.isFinishing } }
     var processCalls: Int { state.withLock { $0.processCalls } }
     var restartCalls: Int { state.withLock { $0.restartCalls } }
     var shutdownCalls: Int { state.withLock { $0.shutdownCalls } }
@@ -767,6 +885,7 @@ private final class ManualAsynchronousPartialEngine: MeetingStreamingPartialEngi
             s.handler = partialHandler
             s.failureHandler = failureHandler
             s.restartCalls += 1
+            s.text = ""
         }
         guard blocksRestart else { return }
         await withCheckedContinuation { continuation in
@@ -788,7 +907,38 @@ private final class ManualAsynchronousPartialEngine: MeetingStreamingPartialEngi
     }
 
     func emit(_ text: String) {
-        state.withLock { $0.handler }?(text)
+        let handler = state.withLock { s in
+            s.text = text
+            return s.handler
+        }
+        handler?(text)
+    }
+
+    func finalizedText() async -> String? {
+        state.withLock { $0.text.isEmpty ? nil : $0.text }
+    }
+
+    func finish() async throws {
+        if blocksFinish {
+            await withCheckedContinuation { continuation in
+                state.withLock { s in
+                    s.finishContinuation = continuation
+                    s.isFinishing = true
+                }
+            }
+        }
+        if failsFinish { throw NSError(domain: "ManualAsynchronousPartialEngine", code: 2) }
+        if let finalText { emit(finalText) }
+    }
+
+    func releaseFinish() {
+        let continuation = state.withLock { s -> CheckedContinuation<Void, Never>? in
+            let continuation = s.finishContinuation
+            s.finishContinuation = nil
+            s.isFinishing = false
+            return continuation
+        }
+        continuation?.resume()
     }
 
     func fail() {
@@ -799,6 +949,7 @@ private final class ManualAsynchronousPartialEngine: MeetingStreamingPartialEngi
 
     func shutdown() async {
         releaseRestart()
+        releaseFinish()
         state.withLock { $0.shutdownCalls += 1 }
     }
 }

@@ -71,6 +71,7 @@ struct AppleSpeechAnalyzerBackendTests {
         accumulator.receive(text: "今天讨论苹果语音。", isFinal: false, start: 1, end: 3)
 
         #expect(accumulator.text == "会议开始。今天讨论苹果语音。")
+        #expect(accumulator.finalizedText == "会议开始。")
     }
 
     @Test("live accumulation bounds non-overlapping progressive results")
@@ -201,7 +202,10 @@ struct AppleSpeechAnalyzerBackendTests {
         #expect(option.backend == "apple-speech")
         #expect(option.isSystemManaged)
         #expect(option.supportsMeetingTranscription)
-        #expect(MeetingLiveCaptionBackend(rawValue: option.backend)?.settingsLabel == "Apple Speech (live preview only)")
+        #expect(MeetingLiveCaptionBackend(rawValue: option.backend)?.settingsLabel == "Apple Speech (live + final)")
+        #expect(MeetingLiveCaptionBackend.appleSpeech.producesFinalTranscript)
+        #expect(MeetingLiveCaptionBackend.nemotron35.producesFinalTranscript)
+        #expect(!MeetingLiveCaptionBackend.parakeetRealtimeEOU.producesFinalTranscript)
         #expect(!BackendOption.experimental.contains(option))
         if #available(macOS 26.0, *), AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem {
             #expect(BackendOption.systemManaged.contains(option))

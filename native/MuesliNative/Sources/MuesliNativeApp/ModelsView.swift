@@ -286,7 +286,7 @@ struct ModelsView: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(MuesliTheme.textTertiary)
 
-                Text("Choose how words appear while a meeting is in progress. Nemotron also creates the saved transcript; Apple Speech and Parakeet provide provisional previews.")
+                Text("Choose how words appear while a meeting is in progress. Apple Speech and Nemotron also create the saved transcript; Parakeet provides a provisional preview.")
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textSecondary)
             }
@@ -308,7 +308,7 @@ struct ModelsView: View {
                             $0.enableLiveStreamingPartials = true
                         }
                     },
-                    description: "Apple's private, on-device live captions for system-supported languages on macOS 26. This is a provisional preview; your regular meeting model creates the transcript you keep.",
+                    description: "Apple's private, on-device streaming transcription on macOS 26. Finalized speech becomes your saved transcript; your regular meeting model recovers any audio the live stream could not finish.",
                     downloadedLabel: "Available"
                 )
             }

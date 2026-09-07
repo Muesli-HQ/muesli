@@ -134,6 +134,7 @@ protocol MeetingStreamingPartialEngine: AnyObject, Sendable {
         failureHandler: @escaping @Sendable (Error) -> Void
     ) async throws
     func finish() async throws
+    func finalizedText() async -> String?
     func shutdown() async
 }
 
@@ -148,12 +149,13 @@ extension MeetingStreamingPartialEngine {
         await setFailureHandler(failureHandler)
     }
     func finish() async throws {}
+    func finalizedText() async -> String? { nil }
 }
 
 @available(macOS 26.0, *)
 private actor AppleSpeechMeetingPartialEngine: MeetingStreamingPartialEngine {
     nonisolated let partialDeliveryMode = MeetingStreamingPartialDeliveryMode.asynchronous
-    private static let maxBufferedInputs = MeetingStreamingPartialSession.maxQueuedChunks
+    private static let maxBufferedInputs = MeetingStreamingPartialSession.maxNativeQueuedChunks
 
     private let locale: Locale
     private let inputFormat: AVAudioFormat
@@ -284,17 +286,26 @@ private actor AppleSpeechMeetingPartialEngine: MeetingStreamingPartialEngine {
             let clamped = min(max(sample, -1), 1)
             channel[index] = Int16(clamped * Float(Int16.max))
         }
-        if case .terminated = inputContinuation.yield(AnalyzerInput(buffer: buffer)) {
+        switch inputContinuation.yield(AnalyzerInput(buffer: buffer)) {
+        case .enqueued:
+            break
+        case .dropped, .terminated:
             throw NSError(
                 domain: "MeetingLiveCaptions",
                 code: 4,
-                userInfo: [NSLocalizedDescriptionKey: "Apple Speech stopped accepting live audio."]
+                userInfo: [NSLocalizedDescriptionKey: "Apple Speech could not retain all live audio."]
             )
+        @unknown default:
+            throw CancellationError()
         }
     }
 
     func finish() async throws {
         guard !isFinished else { return }
+        let generation = sessionGeneration
+        let analysisTask = self.analysisTask
+        let analyzer = self.analyzer
+        let resultsTask = self.resultsTask
         isFinished = true
         inputContinuation?.finish()
         inputContinuation = nil
@@ -305,7 +316,14 @@ private actor AppleSpeechMeetingPartialEngine: MeetingStreamingPartialEngine {
             await analyzer.cancelAndFinishNow()
         }
         try await resultsTask?.value
+        guard generation == sessionGeneration else { throw CancellationError() }
         partialHandler?(accumulator.text)
+    }
+
+    func finalizedText() async -> String? {
+        guard isFinished, !didReportFailure else { return nil }
+        let text = accumulator.finalizedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
     }
 
     func shutdown() async {
@@ -352,10 +370,8 @@ private actor AppleSpeechMeetingPartialEngine: MeetingStreamingPartialEngine {
     }
 }
 
-/// Keeps only the text required by the live preview plus a small set of
-/// progressive ranges. Durable timestamped segments are produced by the
-/// meeting transcription pipeline, so the live adapter does not retain every
-/// SpeechTranscriber result object for the lifetime of a meeting.
+/// Retains one VAD segment's final text and bounded provisional ranges. Only
+/// final text is eligible for persistence after the results stream is drained.
 struct AppleSpeechLiveTranscriptAccumulator: Sendable {
     private struct Partial: Sendable {
         let rawText: String
@@ -365,7 +381,7 @@ struct AppleSpeechLiveTranscriptAccumulator: Sendable {
 
     static let maxProgressiveResults = 8
 
-    private var finalizedText = ""
+    private(set) var finalizedText = ""
     private var progressiveResults: [Partial] = []
 
     var text: String {
@@ -524,13 +540,13 @@ private actor Nemotron35MeetingPartialEngine: MeetingStreamingPartialEngine {
     }
 }
 
-/// Display-only streaming partials for one meeting audio source ("You" or "Others").
+/// Streaming captions for one meeting audio source ("You" or "Others").
 ///
 /// The session receives the same 16 kHz samples as the existing meeting VAD and
 /// chunk recorders. Parakeet EOU supplies a low-latency cumulative transcript,
-/// while VAD rotation and durable chunk transcription remain authoritative:
-/// `markSegmentBoundary(id:)` freezes the provisional prefix and
-/// `commitSegment(id:)` removes it only after that chunk retires.
+/// while native asynchronous engines finalize at the existing VAD boundaries.
+/// Final-capable engines supply saved text through the existing chunk pipeline;
+/// missing or incomplete results fall back to recorded audio transcription.
 final class MeetingStreamingPartialSession: @unchecked Sendable {
     /// Called with the current provisional tail text on a background thread.
     /// An empty string clears the tail.
@@ -540,23 +556,34 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
     /// larger look-ahead window required by its cache-aware encoder.
     static let feedSamples = StreamingChunkSize.ms320.shiftSamples
     static let maxQueuedChunks = 3
+    // About ten seconds of 16 kHz audio while a native segment finalizes.
+    static let maxNativeQueuedChunks = 32
     static let maxFrozenSegments = 12
     static let publicationIntervalNanoseconds: UInt64 = 250_000_000
     static let finishDrainTimeoutNanoseconds: UInt64 = 30_000_000_000
 
     private let engine: MeetingStreamingPartialEngine
     private let label: String
+    private let finalizationTimeoutNanoseconds: UInt64
 
     private struct PendingSegment {
         let id: UUID
         let prefixLength: Int
         var frozenText: String?
         var isCommitted = false
+        var isFinalized = false
+        var finalizedText: String?
+    }
+
+    private enum Work {
+        case audio([Float])
+        case boundary(UUID)
+        case restart
     }
 
     private struct State {
         var sampleBuffer: [Float] = []
-        var chunkQueue: [[Float]] = []
+        var chunkQueue: [Work] = []
         var isDraining = false
         var engineText = ""
         var committedPrefixLength = 0
@@ -571,13 +598,20 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
         var lifecycleRevision: UInt64 = 0
         var activeInferenceRevision: UInt64?
         var resumeRevision: UInt64?
-        var isRestartWorkerRunning = false
+        var hasCompleteSegmentStart = true
     }
     private let state = OSAllocatedUnfairLock(initialState: State())
 
-    init(engine: MeetingStreamingPartialEngine, label: String) {
+    init(
+        engine: MeetingStreamingPartialEngine,
+        label: String,
+        startsAtSegmentBoundary: Bool = true,
+        finalizationTimeoutNanoseconds: UInt64 = MeetingStreamingPartialSession.finishDrainTimeoutNanoseconds
+    ) {
         self.engine = engine
         self.label = label
+        self.finalizationTimeoutNanoseconds = finalizationTimeoutNanoseconds
+        state.withLock { $0.hasCompleteSegmentStart = startsAtSegmentBoundary }
     }
 
     func connect() async {
@@ -594,19 +628,31 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
     /// single-flight and bounded so provisional captions cannot delay recording.
     func enqueue(_ samples: [Float]) {
         guard !samples.isEmpty else { return }
+        var lostAudio = false
         let shouldStartDrain = state.withLock { s -> Bool in
             guard !s.isStopped, !s.didFail, !s.isSuspended || s.isRestarting else { return false }
             s.sampleBuffer.append(contentsOf: samples)
             while s.sampleBuffer.count >= Self.feedSamples {
-                s.chunkQueue.append(Array(s.sampleBuffer.prefix(Self.feedSamples)))
+                s.chunkQueue.append(.audio(Array(s.sampleBuffer.prefix(Self.feedSamples))))
                 s.sampleBuffer.removeFirst(Self.feedSamples)
             }
-            if s.chunkQueue.count > Self.maxQueuedChunks {
+            let queueLimit = engine.partialDeliveryMode == .asynchronous
+                ? Self.maxNativeQueuedChunks : Self.maxQueuedChunks
+            if s.chunkQueue.count > queueLimit {
+                if engine.partialDeliveryMode == .asynchronous {
+                    lostAudio = true
+                    return false
+                }
                 s.chunkQueue.removeFirst(s.chunkQueue.count - Self.maxQueuedChunks)
             }
             guard !s.isSuspended, !s.chunkQueue.isEmpty, !s.isDraining else { return false }
             s.isDraining = true
             return true
+        }
+        if lostAudio {
+            goDormant(error: NSError(domain: "MeetingStreamingPartialSession", code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Live audio queue overflow; using recorded audio."]))
+            return
         }
         if shouldStartDrain {
             Task.detached(priority: .utility) { [weak self] in
@@ -616,47 +662,53 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
     }
 
     func markSegmentBoundary(id: UUID) {
-        let restartRevision: UInt64? = state.withLock { s in
-            guard engine.partialDeliveryMode == .asynchronous else {
-                s.pendingSegments.append(PendingSegment(
-                    id: id,
-                    prefixLength: s.engineText.count,
-                    frozenText: nil
-                ))
-                return nil
-            }
-            let frozenText = currentEngineTail(for: s)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            s.pendingSegments.append(PendingSegment(
-                id: id,
-                prefixLength: 0,
-                frozenText: frozenText.isEmpty ? nil : frozenText
-            ))
-            let frozenIndices = s.pendingSegments.indices.filter {
-                s.pendingSegments[$0].frozenText != nil
-            }
-            if frozenIndices.count > Self.maxFrozenSegments {
-                for index in frozenIndices.prefix(frozenIndices.count - Self.maxFrozenSegments) {
-                    s.pendingSegments[index].frozenText = nil
+        if engine.partialDeliveryMode == .asynchronous {
+            var overflow = false
+            let shouldDrain = state.withLock { s -> Bool in
+                guard !s.isStopped, !s.didFail else { return false }
+                s.pendingSegments.append(PendingSegment(id: id, prefixLength: 0))
+                if !s.sampleBuffer.isEmpty {
+                    s.chunkQueue.append(.audio(s.sampleBuffer))
+                    s.sampleBuffer.removeAll(keepingCapacity: true)
                 }
+                s.chunkQueue.append(.boundary(id))
+                if s.chunkQueue.count > Self.maxNativeQueuedChunks {
+                    overflow = true
+                    return false
+                }
+                guard !s.isDraining, !s.isSuspended else { return false }
+                s.isDraining = true
+                return true
             }
-            s.lifecycleRevision &+= 1
-            s.isSuspended = true
-            s.isRestarting = true
-            s.resumeRevision = s.lifecycleRevision
-            s.sampleBuffer.removeAll(keepingCapacity: true)
-            s.chunkQueue.removeAll(keepingCapacity: true)
-            s.engineText = ""
-            s.committedPrefixLength = 0
-            return s.lifecycleRevision
-        }
-        if let restartRevision {
-            let tail = state.withLock { visibleTail(for: $0) }
-            publishImmediately(tail, expectedRevision: restartRevision)
-            Task.detached(priority: .utility) { [weak self] in
-                await self?.resumeEngine(expectedRevision: restartRevision)
+            if overflow {
+                goDormant(error: NSError(domain: "MeetingStreamingPartialSession", code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "Live boundary queue overflow; using recorded audio."]))
+                return
             }
+            if shouldDrain { Task { await drain() } }
+            return
         }
+        state.withLock { s in
+            s.pendingSegments.append(PendingSegment(id: id, prefixLength: s.engineText.count))
+        }
+    }
+
+    /// Wait only for this chunk's native finalization; never persist a volatile
+    /// preview. Timeout, source discontinuity, or dropped audio selects fallback.
+    func finalizedSegmentText(id: UUID) async -> String? {
+        guard engine.partialDeliveryMode == .asynchronous else { return pendingSegmentText(id: id) }
+        let deadline = DispatchTime.now().uptimeNanoseconds &+ finalizationTimeoutNanoseconds
+        while !Task.isCancelled {
+            let result = state.withLock { s -> (done: Bool, text: String?) in
+                guard !s.isStopped, !s.didFail,
+                      let segment = s.pendingSegments.first(where: { $0.id == id }) else { return (true, nil) }
+                return (segment.isFinalized, segment.finalizedText)
+            }
+            if result.done { return result.text }
+            guard DispatchTime.now().uptimeNanoseconds < deadline else { return nil }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return nil
     }
 
     func pendingSegmentText(id: UUID) -> String? {
@@ -664,6 +716,7 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
             guard !s.isStopped, !s.didFail,
                   let segmentIndex = s.pendingSegments.firstIndex(where: { $0.id == id }) else { return nil }
             let segment = s.pendingSegments[segmentIndex]
+            if engine.partialDeliveryMode == .asynchronous { return segment.finalizedText }
             if let frozenText = segment.frozenText {
                 return frozenText
             }
@@ -721,6 +774,7 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
             s.chunkQueue.removeAll(keepingCapacity: true)
             s.committedPrefixLength = s.engineText.count
             s.pendingSegments.removeAll(keepingCapacity: true)
+            s.hasCompleteSegmentStart = false
         }
         publishImmediately("")
     }
@@ -733,16 +787,16 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
             }
             return
         }
-        let revision: UInt64? = state.withLock { s in
-            guard !s.isStopped, !s.didFail, s.isSuspended, s.resumeRevision == nil else { return nil }
+        let shouldDrain = state.withLock { s -> Bool in
+            guard !s.isStopped, !s.didFail, s.isSuspended, s.resumeRevision == nil else { return false }
             s.isRestarting = true
             s.resumeRevision = s.lifecycleRevision
-            return s.lifecycleRevision
+            s.chunkQueue.insert(.restart, at: 0)
+            guard !s.isDraining else { return false }
+            s.isDraining = true
+            return true
         }
-        guard let revision else { return }
-        Task.detached(priority: .utility) { [weak self] in
-            await self?.resumeEngine(expectedRevision: revision)
-        }
+        if shouldDrain { Task { await drain() } }
     }
 
     /// A rebuilt capture source starts a new live-ASR lifecycle. Existing
@@ -757,10 +811,10 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
         drainTimeoutNanoseconds: UInt64 = MeetingStreamingPartialSession.finishDrainTimeoutNanoseconds
     ) async -> String? {
         let shouldDrain = state.withLock { s -> Bool in
-            guard !s.isStopped, !s.isSuspended, !s.didFail else { return false }
+            guard !s.isStopped, (!s.isSuspended || s.isRestarting), !s.didFail else { return false }
             if !s.sampleBuffer.isEmpty {
                 s.sampleBuffer.append(contentsOf: repeatElement(0, count: Self.feedSamples - s.sampleBuffer.count))
-                s.chunkQueue.append(s.sampleBuffer)
+                s.chunkQueue.append(.audio(s.sampleBuffer))
                 s.sampleBuffer.removeAll(keepingCapacity: true)
             }
             guard !s.chunkQueue.isEmpty, !s.isDraining else { return false }
@@ -784,23 +838,22 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
             }
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
-        guard !state.withLock({ $0.didFail || $0.isStopped }) else { return nil }
+        guard !state.withLock({ $0.didFail || $0.isStopped || $0.isSuspended }) else { return nil }
         let finishRevision = state.withLock { s -> UInt64 in
             s.activeInferenceRevision = s.lifecycleRevision
             return s.lifecycleRevision
         }
-        do {
-            try await engine.finish()
-        } catch {
-            goDormant(error: error)
-            return nil
-        }
+        let finalized = await finalizeEngine(revision: finishRevision, timeout: drainTimeoutNanoseconds)
         state.withLock { s in
             if s.activeInferenceRevision == finishRevision {
                 s.activeInferenceRevision = nil
             }
         }
         return state.withLock { s in
+            guard !s.isStopped, !s.didFail, s.lifecycleRevision == finishRevision else { return nil }
+            if engine.partialDeliveryMode == .asynchronous {
+                return s.hasCompleteSegmentStart ? finalized : nil
+            }
             let text = visibleTail(for: s).trimmingCharacters(in: .whitespacesAndNewlines)
             return text.isEmpty ? nil : text
         }
@@ -826,8 +879,8 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
 
     private func drain() async {
         while true {
-            let work: (chunk: [Float], revision: UInt64)? = state.withLock { s in
-                guard !s.isStopped, !s.isSuspended, !s.didFail, !s.chunkQueue.isEmpty else {
+            let work: (item: Work, revision: UInt64)? = state.withLock { s in
+                guard !s.isStopped, (!s.isSuspended || s.isRestarting), !s.didFail, !s.chunkQueue.isEmpty else {
                     s.isDraining = false
                     return nil
                 }
@@ -838,39 +891,88 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
             guard let work else { return }
 
             do {
-                try await engine.process(samples: work.chunk)
+                switch work.item {
+                case .audio(let samples):
+                    try await engine.process(samples: samples)
+                case .boundary(let id):
+                    await finalizeBoundary(id: id, revision: work.revision)
+                case .restart:
+                    await restartEngine(expectedRevision: work.revision)
+                }
                 state.withLock { s in
                     if s.activeInferenceRevision == work.revision {
                         s.activeInferenceRevision = nil
                     }
                 }
             } catch {
-                goDormant(error: error)
-                return
+                if state.withLock({ $0.lifecycleRevision == work.revision }) {
+                    goDormant(error: error)
+                    return
+                }
             }
         }
     }
 
-    private func resumeEngine(expectedRevision: UInt64) async {
-        // One worker owns engine mutation across suspension points. New boundaries
-        // only replace resumeRevision; stale tasks must never replace its handlers.
-        let acquired = state.withLock { s -> Bool in
-            guard !s.isRestartWorkerRunning, s.resumeRevision == expectedRevision,
-                  !s.isStopped, !s.didFail else { return false }
-            s.isRestartWorkerRunning = true
-            return true
-        }
-        guard acquired else { return }
-        while let revision = state.withLock({ s -> UInt64? in
-            guard !s.isStopped, !s.didFail, s.isSuspended,
-                  let revision = s.resumeRevision else {
-                s.isRestartWorkerRunning = false
-                return nil
+    private func finalizeBoundary(id: UUID, revision: UInt64) async {
+        let finalized = await finalizeEngine(revision: revision)
+        let restartRevision = state.withLock { s -> UInt64? in
+            guard !s.isStopped, !s.didFail, s.lifecycleRevision == revision else { return nil }
+            if let index = s.pendingSegments.firstIndex(where: { $0.id == id }) {
+                s.pendingSegments[index].isFinalized = true
+                s.pendingSegments[index].finalizedText = s.hasCompleteSegmentStart ? finalized : nil
+                s.pendingSegments[index].frozenText = finalized
             }
-            return revision
-        }) {
-            await restartEngine(expectedRevision: revision)
+            // Bound unretired display/lookup text; evicted chunks use recorded audio.
+            for index in s.pendingSegments.indices.dropLast(Self.maxFrozenSegments) {
+                s.pendingSegments[index].frozenText = nil
+                s.pendingSegments[index].finalizedText = nil
+            }
+            s.engineText = ""
+            s.committedPrefixLength = 0
+            s.hasCompleteSegmentStart = true
+            s.lifecycleRevision &+= 1
+            s.isSuspended = true
+            s.isRestarting = true
+            s.resumeRevision = s.lifecycleRevision
+            return s.lifecycleRevision
         }
+        guard let restartRevision else { return }
+        publishImmediately(state.withLock { visibleTail(for: $0) }, expectedRevision: restartRevision)
+        await restartEngine(expectedRevision: restartRevision)
+    }
+
+    /// Unlike a task-group timeout, this does not wait for an uncooperative
+    /// Speech call to acknowledge cancellation before recorded-audio fallback.
+    private func finalizeEngine(
+        revision: UInt64,
+        timeout: UInt64? = nil
+    ) async -> String? {
+        let result = OSAllocatedUnfairLock<Result<String?, Error>?>(initialState: nil)
+        let task = Task { [engine] in
+            do {
+                try await engine.finish()
+                let text = await engine.finalizedText()
+                result.withLock { $0 = .success(text) }
+            } catch {
+                result.withLock { $0 = .failure(error) }
+            }
+        }
+        defer { task.cancel() }
+        let deadline = DispatchTime.now().uptimeNanoseconds &+ (timeout ?? finalizationTimeoutNanoseconds)
+        while !Task.isCancelled {
+            guard state.withLock({ !$0.isStopped && !$0.didFail && $0.lifecycleRevision == revision }) else { return nil }
+            if let completed = result.withLock({ $0 }) {
+                switch completed {
+                case .success(let text): return text
+                case .failure(let error): goDormant(error: error); return nil
+                }
+            }
+            guard DispatchTime.now().uptimeNanoseconds < deadline else { break }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        goDormant(error: NSError(domain: "MeetingStreamingPartialSession", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Timed out finalizing live transcript; using recorded audio."]))
+        return nil
     }
 
     private func restartEngine(expectedRevision: UInt64) async {
@@ -893,23 +995,17 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
                 }
                 return
             }
-            let activation = state.withLock { s -> (activated: Bool, shouldDrain: Bool) in
+            let activated = state.withLock { s -> Bool in
                 guard !s.isStopped, !s.didFail, s.isSuspended,
                       s.lifecycleRevision == expectedRevision,
-                      s.resumeRevision == expectedRevision else { return (false, false) }
+                      s.resumeRevision == expectedRevision else { return false }
                 s.resumeRevision = nil
                 s.isSuspended = false
                 s.isRestarting = false
-                guard !s.chunkQueue.isEmpty, !s.isDraining else { return (true, false) }
-                s.isDraining = true
-                return (true, true)
+                return true
             }
-            if activation.shouldDrain {
-                Task.detached(priority: .utility) { [weak self] in
-                    await self?.drain()
-                }
-            }
-            if !activation.activated, state.withLock({ $0.isStopped || $0.didFail }) {
+            // The same serial drain resumes queued audio after this returns.
+            if !activated, state.withLock({ $0.isStopped || $0.didFail }) {
                 await engine.shutdown()
             }
         } catch {
