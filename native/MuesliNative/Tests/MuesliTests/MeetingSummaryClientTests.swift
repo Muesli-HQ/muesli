@@ -5,6 +5,59 @@ import MuesliCore
 
 @Suite("MeetingSummaryClient")
 struct MeetingSummaryClientTests {
+    @Test("one-request summary selections preserve global defaults and unrelated configuration",
+          arguments: MeetingSummaryBackendOption.all)
+    func oneRequestSummarySelection(provider: MeetingSummaryBackendOption) {
+        var config = AppConfig()
+        config.meetingSummaryBackend = "openrouter"
+        config.openRouterModel = "original/model"
+        config.openAIAPIKey = "test-key"
+        config.customLLMURL = "https://example.com/v1"
+        config.meetingSummaryRetryCount = 2
+        let selected = MeetingSummarySelection(provider: provider, model: "chosen/model")
+            .applying(to: config)
+
+        #expect(config.meetingSummaryBackend == "openrouter")
+        #expect(config.openRouterModel == "original/model")
+        #expect(selected.meetingSummaryBackend == provider.backend)
+        #expect(selected.openAIAPIKey == config.openAIAPIKey)
+        #expect(selected.customLLMURL == config.customLLMURL)
+        #expect(selected.meetingSummaryRetryCount == 2)
+        let model: String
+        switch provider {
+        case .chatGPT: model = selected.chatGPTModel
+        case .openAI: model = selected.openAIModel
+        case .openRouter: model = selected.openRouterModel
+        case .ollama: model = selected.ollamaModel
+        case .lmStudio: model = selected.lmStudioModel
+        default: model = selected.customLLMModel
+        }
+        #expect(model == "chosen/model")
+    }
+
+    @Test("re-summary catalog retains the stable router and configured custom model")
+    func resummaryCatalogRetention() {
+        var config = AppConfig()
+        config.openRouterModel = "custom/model"
+        let cached = [SummaryModelPreset(id: "openrouter/free", label: "Router"),
+                      SummaryModelPreset(id: "available/model", label: "Available")]
+        let models = MeetingSummarySelection.models(for: .openRouter, config: config, openRouterModels: cached)
+        #expect(models.map(\.id) == ["openrouter/free", "available/model", "custom/model"])
+        let offline = MeetingSummarySelection.models(for: .openRouter, config: config, openRouterModels: [])
+        #expect(offline.map(\.id) == ["openrouter/free", "custom/model"])
+    }
+
+    @Test("re-summary menus reuse presets and retain configured local models")
+    func resummaryProviderModels() {
+        var config = AppConfig()
+        config.openAIModel = "my-openai-model"
+        config.ollamaModel = "local-model"
+        let models = MeetingSummarySelection.models(for: .openAI, config: config, openRouterModels: [])
+        #expect(models.first?.id == SummaryModelPreset.openAIModels.first?.id)
+        #expect(models.last?.id == "my-openai-model")
+        #expect(MeetingSummarySelection.models(for: .ollama, config: config, openRouterModels: []).map(\.id) == ["local-model"])
+    }
+
     private let customTemplate = MeetingTemplateSnapshot(
         id: "custom-follow-up",
         name: "Customer Follow-Up",

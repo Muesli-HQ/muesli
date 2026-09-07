@@ -881,6 +881,60 @@ enum OpenRouterModelCatalogFilter {
     }
 }
 
+/// A one-request summary choice; applying it never persists the user's defaults.
+struct MeetingSummarySelection: Equatable {
+    let provider: MeetingSummaryBackendOption
+    let model: String
+
+    func applying(to config: AppConfig) -> AppConfig {
+        var snapshot = config
+        snapshot.meetingSummaryBackend = provider.backend
+        switch provider {
+        case .chatGPT: snapshot.chatGPTModel = model
+        case .openAI: snapshot.openAIModel = model
+        case .openRouter: snapshot.openRouterModel = model
+        case .ollama: snapshot.ollamaModel = model
+        case .lmStudio: snapshot.lmStudioModel = model
+        case .customLLM: snapshot.customLLMModel = model
+        default: break
+        }
+        return snapshot
+    }
+
+    static func models(
+        for provider: MeetingSummaryBackendOption,
+        config: AppConfig,
+        openRouterModels: [SummaryModelPreset]
+    ) -> [SummaryModelPreset] {
+        let presets: [SummaryModelPreset]
+        let configured: String
+        switch provider {
+        case .chatGPT:
+            presets = SummaryModelPreset.chatGPTModels
+            configured = config.chatGPTModel
+        case .openAI:
+            presets = SummaryModelPreset.openAIModels
+            configured = config.openAIModel
+        case .openRouter:
+            presets = [SummaryModelPreset.openRouterModels[0]]
+                + openRouterModels.filter { $0.id != "openrouter/free" }
+            configured = config.openRouterModel
+        case .ollama:
+            presets = []
+            configured = config.ollamaModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "qwen3.5" : config.ollamaModel
+        case .lmStudio:
+            presets = []
+            configured = config.lmStudioModel
+        case .customLLM:
+            presets = []
+            configured = config.customLLMModel
+        default: return []
+        }
+        return SummaryModelPreset.menuPresets(presets, currentModel: configured)
+    }
+}
+
 struct MeetingSummaryBackendOption: Equatable {
     let backend: String
     let label: String

@@ -151,6 +151,9 @@ struct MeetingDetailView: View {
                 .background(MuesliTheme.backgroundBase)
                 .onAppear {
                     threadContext = controller.meetingThreadContext(for: meeting.id)
+                    if controller.canUseSummaryProvider(.openRouter) {
+                        controller.loadOpenRouterModels(.text)
+                    }
                 }
                 .onChange(of: meeting.id) { _, _ in
                     syncLocalState(with: meeting)
@@ -732,7 +735,7 @@ struct MeetingDetailView: View {
         }
     }
 
-    private func beginSummary(for meeting: MeetingRecord) {
+    private func beginSummary(for meeting: MeetingRecord, selection: MeetingSummarySelection? = nil) {
         guard !isSummarizing else { return }
         isSummarizing = true
         let completion: (Result<Void, Error>) -> Void = { [meeting] result in
@@ -750,9 +753,9 @@ struct MeetingDetailView: View {
             }
         }
         if hasPendingTemplateChange(for: meeting) {
-            controller.applyMeetingTemplate(id: pendingTemplateID, to: meeting, completion: completion)
+            controller.applyMeetingTemplate(id: pendingTemplateID, to: meeting, selection: selection, completion: completion)
         } else {
-            controller.resummarize(meeting: meeting, completion: completion)
+            controller.resummarize(meeting: meeting, selection: selection, completion: completion)
         }
     }
 
@@ -1115,8 +1118,38 @@ struct MeetingDetailView: View {
                 )
             }
 
-            Button {
-                beginSummary(for: meeting)
+            Menu {
+                Button("Use Settings (\(appState.selectedMeetingSummaryBackend.label))") {
+                    beginSummary(for: meeting)
+                }
+                Divider()
+                ForEach(MeetingSummaryBackendOption.all, id: \.backend) { provider in
+                    if controller.canUseSummaryProvider(provider) {
+                        Menu(provider.label) {
+                            ForEach(MeetingSummarySelection.models(
+                                for: provider,
+                                config: appState.config,
+                                openRouterModels: appState.openRouterSummaryModels
+                            ), id: \.id) { model in
+                                Button(model.label) {
+                                    beginSummary(for: meeting, selection: MeetingSummarySelection(
+                                        provider: provider, model: model.id
+                                    ))
+                                }
+                            }
+                            if provider == .openRouter {
+                                if case .failed = appState.openRouterSummaryCatalogState {
+                                    Divider()
+                                    Button("Retry Loading Models") {
+                                        controller.loadOpenRouterModels(.text, force: true)
+                                    }
+                                } else if appState.openRouterSummaryCatalogState == .loading {
+                                    Text("Loading models…")
+                                }
+                            }
+                        }
+                    }
+                }
             } label: {
                 Label(primarySummaryActionLabel(for: meeting), systemImage: "sparkles")
             }
