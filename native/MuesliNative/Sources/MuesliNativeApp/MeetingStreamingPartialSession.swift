@@ -192,7 +192,9 @@ private actor AppleSpeechMeetingPartialEngine: MeetingStreamingPartialEngine {
         partialHandler: @escaping @Sendable (String) -> Void,
         failureHandler: @escaping @Sendable (Error) -> Void
     ) async throws {
+        let cancellationGeneration = sessionGeneration &+ 1
         await cancelCurrentSession()
+        guard sessionGeneration == cancellationGeneration else { throw CancellationError() }
         self.partialHandler = partialHandler
         self.failureHandler = failureHandler
         try await startSession()
@@ -200,6 +202,8 @@ private actor AppleSpeechMeetingPartialEngine: MeetingStreamingPartialEngine {
     }
 
     private func startSession() async throws {
+        sessionGeneration &+= 1
+        let generation = sessionGeneration
         let transcriber = SpeechTranscriber(
             locale: locale,
             preset: .timeIndexedProgressiveTranscription
@@ -209,11 +213,13 @@ private actor AppleSpeechMeetingPartialEngine: MeetingStreamingPartialEngine {
             options: SpeechAnalyzer.Options(priority: .userInitiated, modelRetention: .lingering)
         )
         try await analyzer.prepareToAnalyze(in: inputFormat)
+        guard generation == sessionGeneration else {
+            await analyzer.cancelAndFinishNow()
+            throw CancellationError()
+        }
         let (inputStream, continuation) = AsyncStream<AnalyzerInput>.makeStream(
             bufferingPolicy: .bufferingNewest(Self.maxBufferedInputs)
         )
-        sessionGeneration &+= 1
-        let generation = sessionGeneration
         self.transcriber = transcriber
         self.analyzer = analyzer
         inputContinuation = continuation
@@ -316,9 +322,7 @@ private actor AppleSpeechMeetingPartialEngine: MeetingStreamingPartialEngine {
         analysisTask?.cancel()
         analysisMonitorTask?.cancel()
         resultsTask?.cancel()
-        if let analyzer {
-            await analyzer.cancelAndFinishNow()
-        }
+        let retiringAnalyzer = analyzer
         analysisTask = nil
         analysisMonitorTask = nil
         resultsTask = nil
@@ -327,6 +331,7 @@ private actor AppleSpeechMeetingPartialEngine: MeetingStreamingPartialEngine {
         accumulator = AppleSpeechLiveTranscriptAccumulator()
         isFinished = false
         didReportFailure = false
+        await retiringAnalyzer?.cancelAndFinishNow()
     }
 
     private func receive(_ result: SpeechTranscriber.Result, generation: UInt64) {
@@ -566,6 +571,7 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
         var lifecycleRevision: UInt64 = 0
         var activeInferenceRevision: UInt64?
         var resumeRevision: UInt64?
+        var isRestartWorkerRunning = false
     }
     private let state = OSAllocatedUnfairLock(initialState: State())
 
@@ -846,6 +852,28 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
     }
 
     private func resumeEngine(expectedRevision: UInt64) async {
+        // One worker owns engine mutation across suspension points. New boundaries
+        // only replace resumeRevision; stale tasks must never replace its handlers.
+        let acquired = state.withLock { s -> Bool in
+            guard !s.isRestartWorkerRunning, s.resumeRevision == expectedRevision,
+                  !s.isStopped, !s.didFail else { return false }
+            s.isRestartWorkerRunning = true
+            return true
+        }
+        guard acquired else { return }
+        while let revision = state.withLock({ s -> UInt64? in
+            guard !s.isStopped, !s.didFail, s.isSuspended,
+                  let revision = s.resumeRevision else {
+                s.isRestartWorkerRunning = false
+                return nil
+            }
+            return revision
+        }) {
+            await restartEngine(expectedRevision: revision)
+        }
+    }
+
+    private func restartEngine(expectedRevision: UInt64) async {
         do {
             try await engine.restart(
                 partialHandler: { [weak self] text in

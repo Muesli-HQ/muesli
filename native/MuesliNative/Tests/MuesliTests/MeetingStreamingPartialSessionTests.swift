@@ -249,6 +249,47 @@ struct MeetingStreamingPartialSessionTests {
         #expect(latest.contains("[segment13]"))
     }
 
+    @Test("overlapping boundaries serialize restarts and retain the newest callbacks")
+    func overlappingRestartsKeepNewestSession() async throws {
+        let engine = ManualAsynchronousPartialEngine(blocksRestart: true)
+        let session = MeetingStreamingPartialSession(engine: engine, label: "Others")
+        defer { session.stop() }
+        let collector = PartialCollector()
+        session.onPartialUpdate = { collector.record($0) }
+        await session.connect()
+
+        session.markSegmentBoundary(id: UUID())
+        #expect(await waitUntil { engine.isRestarting })
+        session.markSegmentBoundary(id: UUID())
+        session.resetAfterSourceRestart()
+        #expect(await remainsTrue { engine.restartCalls == 1 })
+
+        engine.releaseRestart()
+        #expect(await waitUntil { engine.restartCalls == 2 && engine.isRestarting })
+        engine.releaseRestart()
+        session.enqueue(samples(chunkCount: 1))
+        #expect(await waitUntil { engine.processCalls == 1 })
+        engine.emit("newest")
+        #expect(await waitUntil { collector.latest == "newest" })
+        #expect(engine.restartCalls == 2)
+    }
+
+    @Test("stop during a blocked restart cannot reactivate caption delivery")
+    func stopDuringRestartRemainsStopped() async throws {
+        let engine = ManualAsynchronousPartialEngine(blocksRestart: true)
+        let session = MeetingStreamingPartialSession(engine: engine, label: "Others")
+        let collector = PartialCollector()
+        session.onPartialUpdate = { collector.record($0) }
+        await session.connect()
+        session.markSegmentBoundary(id: UUID())
+        #expect(await waitUntil { engine.isRestarting })
+        session.stop()
+        #expect(await waitUntil { !engine.isRestarting && engine.shutdownCalls > 0 })
+        engine.emit("stale")
+        session.enqueue(samples(chunkCount: 1))
+        #expect(await remainsTrue { collector.latest == "" && engine.processCalls == 0 })
+    }
+
     @Test("a capture source restart rebuilds an asynchronous partial engine")
     func sourceRestartRebuildsAsynchronousEngine() async throws {
         let engine = ManualAsynchronousPartialEngine()
