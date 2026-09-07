@@ -21,7 +21,6 @@ private struct MicrophoneOption: Identifiable {
 
 enum SettingsPermissionRefreshReason {
     case initialDisplay
-    case periodicPoll
     case permissionRequested
     case settingsSelected
     case appActivated
@@ -34,7 +33,7 @@ enum SettingsPermissionRefreshReason {
         switch self {
         case .initialDisplay, .settingsSelected, .appActivated:
             true
-        case .periodicPoll, .permissionRequested:
+        case .permissionRequested:
             false
         }
     }
@@ -201,12 +200,8 @@ struct SettingsView: View {
     @State private var downloadedMeetingLiveCaptionBackends: [MeetingLiveCaptionBackend] = []
     @State private var audioInputDevices: [AudioInputDeviceInfo] = []
     @State private var audioInputDeviceRefreshTask: Task<Void, Never>?
-    @State private var permissionPollTimer: Timer?
+    @State private var permissionMonitoringClientID = UUID()
     @State private var isCleanupPromptManagerPresented = false
-    @State private var micGranted = false
-    @State private var accessibilityGranted = false
-    @State private var inputMonitoringGranted = false
-    @State private var screenRecordingGranted = false
     @AppStorage("settings.pendingScreenContextEnable") private var pendingScreenContextEnable = false
     @AppStorage("settings.pendingScreenContextRequestedAt") private var pendingScreenContextRequestedAt = 0.0
     @State private var systemAudioGranted = false
@@ -226,11 +221,26 @@ struct SettingsView: View {
         _selectedPane = State(initialValue: appState.selectedSettingsPane)
     }
 
+    private var micGranted: Bool {
+        appState.interactionPermissionSnapshot?.microphone ?? false
+    }
+
+    private var accessibilityGranted: Bool {
+        appState.interactionPermissionSnapshot?.accessibility ?? false
+    }
+
+    private var inputMonitoringGranted: Bool {
+        appState.interactionPermissionSnapshot?.inputMonitoring ?? false
+    }
+
+    private var screenRecordingGranted: Bool {
+        appState.interactionPermissionSnapshot?.screenRecording ?? false
+    }
+
     // Uniform width for standard right-side controls.
     private let controlWidth: CGFloat = 220
     // Wider controls keep model/provider selections visually consistent in Settings.
     private let meetingControlWidth: CGFloat = 275
-    private let screenContextGrantIntentTimeout: TimeInterval = 15 * 60
     private let meetingDetectionAppOptions: [MeetingDetectionAppOption] = [
         MeetingDetectionAppOption(bundleID: "com.google.Chrome", name: "Chrome", icon: "globe"),
         MeetingDetectionAppOption(bundleID: "company.thebrowser.Browser", name: "Arc", icon: "globe"),
@@ -459,7 +469,7 @@ struct SettingsView: View {
             .onAppear {
                 refreshDownloadedModelOptions()
                 refreshAudioInputDevices()
-                startPermissionPolling()
+                startPermissionMonitoring()
                 if appState.selectedMeetingSummaryBackend == .openRouter {
                     loadOpenRouterFreeModelsIfNeeded()
                 }
@@ -474,7 +484,7 @@ struct SettingsView: View {
                 isPreviewingClip = false
                 audioInputDeviceRefreshTask?.cancel()
                 audioInputDeviceRefreshTask = nil
-                stopPermissionPolling()
+                stopPermissionMonitoring()
             }
             .onChange(of: appState.selectedTab) { _, tab in
                 if tab == .settings {
@@ -1379,9 +1389,10 @@ struct SettingsView: View {
                     _ = controller.updateQuilModeEnabled(newValue)
                 }
             }
-            if appState.config.enableQuilMode,
-               (!micGranted || !accessibilityGranted || !inputMonitoringGranted) {
-                Text(ShortcutFeatureEnablementPolicy.missingPermissionsMessage)
+            if let quilPermissionMessage = controller.independentShortcutPermissionMessageIfNeeded(
+                isEnabled: appState.config.enableQuilMode
+            ) {
+                Text(quilPermissionMessage)
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.transcribing)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -2949,11 +2960,11 @@ struct SettingsView: View {
             pendingScreenContextEnable = true
             pendingScreenContextRequestedAt = Date().timeIntervalSince1970
             let granted = controller.requestScreenContextEnable()
-            accessibilityGranted = AXIsProcessTrusted()
-            if granted || accessibilityGranted {
+            controller.refreshInteractionPermissionSnapshot()
+            if granted {
                 clearPendingScreenContextEnable()
             }
-            return granted || accessibilityGranted
+            return granted
         }
 
         clearPendingScreenContextEnable()
@@ -2966,66 +2977,23 @@ struct SettingsView: View {
         }
     }
 
-    private func startPermissionPolling() {
-        // Keep the 1 Hz poll limited to cheap TCC snapshots. SMAppService can block
-        // the main thread, while probing system audio creates a CoreAudio process
-        // tap and can perturb the HAL. Refresh those only at lifecycle boundaries.
+    private func startPermissionMonitoring() {
+        controller.beginInteractionPermissionMonitoring(clientID: permissionMonitoringClientID)
         refreshPermissionStatuses(for: .initialDisplay)
-        permissionPollTimer?.invalidate()
-        let timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-            refreshPermissionStatuses(for: .periodicPoll)
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        permissionPollTimer = timer
     }
 
-    private func stopPermissionPolling() {
-        permissionPollTimer?.invalidate()
-        permissionPollTimer = nil
+    private func stopPermissionMonitoring() {
+        controller.endInteractionPermissionMonitoring(clientID: permissionMonitoringClientID)
     }
 
     private func refreshPermissionStatuses(for reason: SettingsPermissionRefreshReason) {
-        micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-        accessibilityGranted = AXIsProcessTrusted()
-        controller.reconcilePendingDictionaryCorrectionAccessibilityEnable()
-        inputMonitoringGranted = CGPreflightListenEventAccess()
-        screenRecordingGranted = CGPreflightScreenCaptureAccess()
         if reason.refreshesLaunchAtLogin {
             controller.refreshLaunchAtLoginState()
         }
-        if accessibilityGranted && pendingScreenContextEnable {
-            if controller.requestScreenContextEnable() {
-                clearPendingScreenContextEnable()
-            }
-        }
-        if !accessibilityGranted && isPendingScreenContextGrantExpired {
-            clearPendingScreenContextEnable()
-        }
-        if !accessibilityGranted && appState.config.enableScreenContext {
-            clearPendingScreenContextEnable()
-            controller.updateConfig {
-                $0.enableScreenContext = false
-                $0.enableDictationOCRContext = false
-            }
-        }
-        if (!appState.config.enableScreenContext || !screenRecordingGranted) && appState.config.enableDictationOCRContext {
-            controller.updateConfig { $0.enableDictationOCRContext = false }
-        }
-        controller.reclassifyVoiceNotesAsDictationIfReady(
-            microphoneGranted: micGranted,
-            accessibilityGranted: accessibilityGranted,
-            inputMonitoringGranted: inputMonitoringGranted
-        )
-        controller.reconcilePendingPushToTalkEnableIfReady()
+        controller.refreshInteractionPermissionSnapshot()
         if reason.refreshesSystemAudio {
             refreshSystemAudioPermissionIfNeeded()
         }
-    }
-
-    private var isPendingScreenContextGrantExpired: Bool {
-        guard pendingScreenContextEnable else { return false }
-        guard pendingScreenContextRequestedAt > 0 else { return true }
-        return Date().timeIntervalSince1970 - pendingScreenContextRequestedAt > screenContextGrantIntentTimeout
     }
 
     private func clearPendingScreenContextEnable() {

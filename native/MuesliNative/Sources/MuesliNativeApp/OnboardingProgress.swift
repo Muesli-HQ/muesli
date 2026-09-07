@@ -1,6 +1,6 @@
 import Foundation
 
-struct OnboardingPermissionSnapshot: Equatable {
+struct OnboardingPermissionSnapshot: Equatable, Sendable {
     var microphone: Bool
     var accessibility: Bool
     var inputMonitoring: Bool

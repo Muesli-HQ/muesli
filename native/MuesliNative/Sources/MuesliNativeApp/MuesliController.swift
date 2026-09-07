@@ -349,6 +349,9 @@ public final class MuesliController: NSObject {
     private static let pendingDictionaryCorrectionAccessibilityRequestedAtKey = "dictionaryCorrectionPrompts.pendingAccessibilityRequestedAt"
     private static let pendingDictionaryCorrectionAccessibilityRequestProcessIDKey = "dictionaryCorrectionPrompts.pendingAccessibilityRequestProcessID"
     private static let dictionaryCorrectionAccessibilityIntentTimeout: TimeInterval = 24 * 60 * 60
+    private static let pendingScreenContextEnableKey = "settings.pendingScreenContextEnable"
+    private static let pendingScreenContextRequestedAtKey = "settings.pendingScreenContextRequestedAt"
+    private static let screenContextGrantIntentTimeout: TimeInterval = 15 * 60
     private let runtime: RuntimePaths
     private let configStore: ConfigStore
     private let dictationStore: DictationStore
@@ -417,6 +420,11 @@ public final class MuesliController: NSObject {
     private var meetingFeatureMonitorsAllowed = false
     private var meetingDetectionMonitorStarted = false
     private let pushToTalkEnablementIntentStore = PushToTalkEnablementIntentStore()
+    private var interactionPermissionMonitoringClientIDs = Set<UUID>()
+    private var interactionPermissionMonitoringRevision = 0
+    private lazy var interactionPermissionMonitor = InteractionPermissionMonitor { [weak self] snapshot in
+        self?.applyInteractionPermissionSnapshot(snapshot)
+    }
 
     private var searchTask: Task<Void, Never>?
     private var onboardingModelPreparationTask: Task<Void, Never>?
@@ -2178,8 +2186,7 @@ public final class MuesliController: NSObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.reconcilePendingPushToTalkEnableIfReady()
-                self?.reconcileIndependentShortcutFeatureEnablement()
+                self?.refreshInteractionPermissionSnapshot()
                 self?.scheduleICloudSync(
                     intent: .incoming,
                     delay: 0.5,
@@ -5025,11 +5032,12 @@ public final class MuesliController: NSObject {
     @discardableResult
     func updatePushToTalkEnabled(
         _ enabled: Bool,
-        requestPermissions: Bool = false
+        requestPermissions: Bool = false,
+        permissionSnapshot: OnboardingPermissionSnapshot? = nil
     ) -> PushToTalkEnableResult {
         let wasEnabled = config.enablePushToTalk
         let wasPending = pushToTalkEnablementIntentStore.isPending
-        let snapshot = currentOnboardingPermissionSnapshot()
+        let snapshot = permissionSnapshot ?? currentOnboardingPermissionSnapshot()
         let permissionProfile = PushToTalkEnablementPolicy.PermissionProfile.resolved(
             for: config.resolvedOnboardingUseCase
         )
@@ -5089,12 +5097,18 @@ public final class MuesliController: NSObject {
     }
 
     @discardableResult
-    func reconcilePendingPushToTalkEnableIfReady() -> PushToTalkEnableResult? {
+    func reconcilePendingPushToTalkEnableIfReady(
+        permissions: OnboardingPermissionSnapshot? = nil
+    ) -> PushToTalkEnableResult? {
         guard PushToTalkEnablementPolicy.shouldReconcilePendingEnable(
             hasCompletedOnboarding: config.hasCompletedOnboarding,
             isPending: pushToTalkEnablementIntentStore.isPending
         ) else { return nil }
-        return enablePushToTalkIfNeeded(requestPermissions: false)
+        return updatePushToTalkEnabled(
+            true,
+            requestPermissions: false,
+            permissionSnapshot: permissions
+        )
     }
 
     private func currentOnboardingPermissionSnapshot() -> OnboardingPermissionSnapshot {
@@ -5135,15 +5149,96 @@ public final class MuesliController: NSObject {
 
     func independentShortcutPermissionMessageIfNeeded(isEnabled: Bool) -> String? {
         guard isEnabled,
+              let permissions = appState.interactionPermissionSnapshot?.onboardingSnapshot,
               !ShortcutFeatureEnablementPolicy.hasRequiredPermissions(
-                  currentOnboardingPermissionSnapshot()
+                  permissions
               ) else { return nil }
         return ShortcutFeatureEnablementPolicy.missingPermissionsMessage
     }
 
-    private func reconcileIndependentShortcutFeatureEnablement() {
-        configureComputerUseHotkeyMonitor()
-        configureQuilHotkeyMonitor()
+    func beginInteractionPermissionMonitoring(clientID: UUID) {
+        guard interactionPermissionMonitoringClientIDs.insert(clientID).inserted else { return }
+        synchronizeInteractionPermissionMonitoringClients()
+    }
+
+    func endInteractionPermissionMonitoring(clientID: UUID) {
+        guard interactionPermissionMonitoringClientIDs.remove(clientID) != nil else { return }
+        synchronizeInteractionPermissionMonitoringClients()
+    }
+
+    private func synchronizeInteractionPermissionMonitoringClients() {
+        interactionPermissionMonitoringRevision += 1
+        let clientIDs = interactionPermissionMonitoringClientIDs
+        let revision = interactionPermissionMonitoringRevision
+        let monitor = interactionPermissionMonitor
+        Task {
+            await monitor.updateClients(clientIDs, revision: revision)
+        }
+    }
+
+    func refreshInteractionPermissionSnapshot() {
+        let monitor = interactionPermissionMonitor
+        Task {
+            await monitor.refresh()
+        }
+    }
+
+    private func applyInteractionPermissionSnapshot(_ snapshot: InteractionPermissionSnapshot) {
+        guard appState.interactionPermissionSnapshot != snapshot else { return }
+        appState.interactionPermissionSnapshot = snapshot
+
+        let permissions = snapshot.onboardingSnapshot
+        reconcilePendingDictionaryCorrectionAccessibilityEnable()
+        reclassifyVoiceNotesAsDictationIfReady(
+            microphoneGranted: snapshot.microphone,
+            accessibilityGranted: snapshot.accessibility,
+            inputMonitoringGranted: snapshot.inputMonitoring
+        )
+        reconcilePendingScreenContextPermission(snapshot)
+        reconcilePendingPushToTalkEnableIfReady(permissions: permissions)
+        reconcileIndependentShortcutFeatureEnablement(permissions: permissions)
+    }
+
+    private func reconcilePendingScreenContextPermission(_ snapshot: InteractionPermissionSnapshot) {
+        let defaults = UserDefaults.standard
+        let isPending = defaults.bool(forKey: Self.pendingScreenContextEnableKey)
+        let requestedAt = defaults.double(forKey: Self.pendingScreenContextRequestedAtKey)
+
+        if snapshot.accessibility, isPending, requestScreenContextEnable() {
+            clearPendingScreenContextPermission(defaults: defaults)
+        }
+
+        let pendingRequestExpired = isPending
+            && (requestedAt <= 0
+                || Date().timeIntervalSince1970 - requestedAt > Self.screenContextGrantIntentTimeout)
+        if !snapshot.accessibility, pendingRequestExpired {
+            clearPendingScreenContextPermission(defaults: defaults)
+        }
+
+        if !snapshot.accessibility, config.enableScreenContext {
+            clearPendingScreenContextPermission(defaults: defaults)
+            updateConfig {
+                $0.enableScreenContext = false
+                $0.enableDictationOCRContext = false
+            }
+        }
+
+        if (!config.enableScreenContext || !snapshot.screenRecording),
+           config.enableDictationOCRContext {
+            updateConfig { $0.enableDictationOCRContext = false }
+        }
+    }
+
+    private func clearPendingScreenContextPermission(defaults: UserDefaults) {
+        defaults.set(false, forKey: Self.pendingScreenContextEnableKey)
+        defaults.set(0, forKey: Self.pendingScreenContextRequestedAtKey)
+    }
+
+    private func reconcileIndependentShortcutFeatureEnablement(
+        permissions: OnboardingPermissionSnapshot? = nil
+    ) {
+        configureComputerUseHotkeyMonitor(permissions: permissions)
+        configureQuilHotkeyMonitor(permissions: permissions)
     }
 
     private func signalIndependentShortcutEnablementChanged(
@@ -8388,22 +8483,26 @@ public final class MuesliController: NSObject {
         )
     }
 
-    private func configureComputerUseHotkeyMonitor() {
+    private func configureComputerUseHotkeyMonitor(
+        permissions: OnboardingPermissionSnapshot? = nil
+    ) {
         guard config.enableComputerUseHotkey else {
             computerUseHotkeyMonitor.stop()
             return
         }
         computerUseHotkeyMonitor.configure(config.computerUseHotkey)
-        startComputerUseHotkeyMonitorIfNeeded()
+        startComputerUseHotkeyMonitorIfNeeded(permissions: permissions)
     }
 
-    private func configureQuilHotkeyMonitor() {
+    private func configureQuilHotkeyMonitor(
+        permissions: OnboardingPermissionSnapshot? = nil
+    ) {
         guard config.enableQuilMode else {
             quilHotkeyMonitor.stop()
             return
         }
         quilHotkeyMonitor.configure(config.quilHotkey)
-        startQuilHotkeyMonitorIfNeeded()
+        startQuilHotkeyMonitorIfNeeded(permissions: permissions)
     }
 
     private func configureHotkeyMonitorTiming() {
@@ -8427,7 +8526,9 @@ public final class MuesliController: NSObject {
         startQuilHotkeyMonitorIfNeeded()
     }
 
-    private func startComputerUseHotkeyMonitorIfNeeded() {
+    private func startComputerUseHotkeyMonitorIfNeeded(
+        permissions: OnboardingPermissionSnapshot? = nil
+    ) {
         guard config.enableComputerUseHotkey else {
             computerUseHotkeyMonitor.stop()
             return
@@ -8435,7 +8536,7 @@ public final class MuesliController: NSObject {
         guard ShortcutFeatureEnablementPolicy.outcome(
             hasCompletedOnboarding: config.hasCompletedOnboarding,
             isEnabled: config.enableComputerUseHotkey,
-            permissions: currentOnboardingPermissionSnapshot()
+            permissions: permissions ?? currentOnboardingPermissionSnapshot()
         ) == .ready else {
             computerUseHotkeyMonitor.stop()
             return
@@ -8456,11 +8557,13 @@ public final class MuesliController: NSObject {
         computerUseHotkeyMonitor.start()
     }
 
-    private func startQuilHotkeyMonitorIfNeeded() {
+    private func startQuilHotkeyMonitorIfNeeded(
+        permissions: OnboardingPermissionSnapshot? = nil
+    ) {
         guard ShortcutFeatureEnablementPolicy.outcome(
             hasCompletedOnboarding: config.hasCompletedOnboarding,
             isEnabled: config.enableQuilMode,
-            permissions: currentOnboardingPermissionSnapshot()
+            permissions: permissions ?? currentOnboardingPermissionSnapshot()
         ) == .ready else {
             quilHotkeyMonitor.stop()
             return

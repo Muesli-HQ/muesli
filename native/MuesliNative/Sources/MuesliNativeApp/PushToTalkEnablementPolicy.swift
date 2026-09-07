@@ -48,6 +48,12 @@ enum PushToTalkEnablementPolicy {
         var requiresAccessibility: Bool {
             self == .paste
         }
+
+        var missingPermissionsMessage: String {
+            requiresAccessibility
+                ? "Grant Microphone, Accessibility, and Input Monitoring to use Push to Talk."
+                : "Grant Microphone and Input Monitoring to use Push to Talk."
+        }
     }
 
     enum Outcome: Equatable {

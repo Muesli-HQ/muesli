@@ -5,6 +5,7 @@ import MuesliCore
 struct ShortcutsView: View {
     let appState: AppState
     let controller: MuesliController
+    @State private var permissionMonitoringClientID = UUID()
     @State private var recordingTarget: ShortcutTarget?
     @State private var eventMonitor: Any?
     @State private var pendingModifierKeyCode: UInt16?
@@ -42,16 +43,17 @@ struct ShortcutsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .onAppear {
+            controller.beginInteractionPermissionMonitoring(clientID: permissionMonitoringClientID)
             reconcilePushToTalkState()
             reconcileIndependentShortcutState()
         }
-        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
-            if isPushToTalkEnabled {
-                reconcilePushToTalkState()
-            }
+        .onChange(of: appState.interactionPermissionSnapshot) { _, snapshot in
+            guard let snapshot else { return }
+            reconcilePushToTalkState(permissions: snapshot.onboardingSnapshot)
             reconcileIndependentShortcutState()
         }
         .onDisappear {
+            controller.endInteractionPermissionMonitoring(clientID: permissionMonitoringClientID)
             stopRecording()
         }
     }
@@ -61,12 +63,9 @@ struct ShortcutsView: View {
     }
 
     private var pushToTalkPermissionMessage: String {
-        let profile = PushToTalkEnablementPolicy.PermissionProfile.resolved(
+        PushToTalkEnablementPolicy.PermissionProfile.resolved(
             for: appState.config.resolvedOnboardingUseCase
-        )
-        return profile.requiresAccessibility
-            ? "Grant Microphone, Accessibility, and Input Monitoring to use Push to Talk."
-            : "Grant Microphone and Input Monitoring to use Push to Talk."
+        ).missingPermissionsMessage
     }
 
     private enum ShortcutTarget {
@@ -439,13 +438,30 @@ struct ShortcutsView: View {
         }
     }
 
-    private func reconcilePushToTalkState() {
-        guard let result = controller.reconcilePendingPushToTalkEnableIfReady() else { return }
-        switch result {
-        case .alreadyEnabled, .enabled, .disabled:
-            dictationShortcutMessage = nil
-        case .needsPermissions:
-            dictationShortcutMessage = pushToTalkPermissionMessage
+    private func reconcilePushToTalkState(
+        permissions: OnboardingPermissionSnapshot? = nil
+    ) {
+        if let result = controller.reconcilePendingPushToTalkEnableIfReady(permissions: permissions) {
+            switch result {
+            case .alreadyEnabled, .enabled, .disabled:
+                dictationShortcutMessage = nil
+            case .needsPermissions:
+                dictationShortcutMessage = pushToTalkPermissionMessage
+            }
+            return
+        }
+
+        guard isPushToTalkEnabled, let permissions else { return }
+        let profile = PushToTalkEnablementPolicy.PermissionProfile.resolved(
+            for: appState.config.resolvedOnboardingUseCase
+        )
+        if profile.hasRequiredPermissions(permissions) {
+            if dictationShortcutMessage == profile.missingPermissionsMessage {
+                dictationShortcutMessage = nil
+            }
+        } else if dictationShortcutMessage == nil
+                    || dictationShortcutMessage == profile.missingPermissionsMessage {
+            dictationShortcutMessage = profile.missingPermissionsMessage
         }
     }
 
