@@ -1376,7 +1376,9 @@ struct ModelsView: View {
                         Button("Update") { updateNemotron35(option) }
                             .buttonStyle(.plain)
                             .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(MuesliTheme.accent)
+                            .foregroundStyle(incompatibilityReason == nil ? MuesliTheme.accent : MuesliTheme.textTertiary)
+                            .disabled(incompatibilityReason != nil)
+                            .help(incompatibilityReason ?? "Update")
                     }
                 }
             }
@@ -1816,6 +1818,9 @@ struct ModelsView: View {
     /// Re-download Nemotron 3.5 to pick up a newer upstream build: delete the cached
     /// files (so the download isn't skipped), then start a fresh download.
     private func updateNemotron35(_ option: BackendOption) {
+        // Check before unloading or deleting the installed model: startDownload also
+        // rejects incompatible backends, so otherwise no replacement would be started.
+        guard option.isCompatible() else { return }
         Task {
             do {
                 await controller.transcriptionCoordinator.unloadNemotron35Transcriber()

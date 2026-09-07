@@ -144,10 +144,11 @@ struct OnboardingView: View {
             useCoreAudioTap: appState.config.useCoreAudioTap
         )
         let sanitizedInitialBackend = BackendOption.resolvedOnboardingBackend(initialBackend)
-        // A restored model may require a newer OS. Return to model selection rather than
-        // resuming a test or download with an unsupported model or stale progress.
-        let modelGatedInitialStep = !initialBackend.isCompatible() && permissionGatedInitialStep > 1
-            ? 1 : permissionGatedInitialStep
+        let modelGatedInitialStep = OnboardingFlow.modelGatedResumeStep(
+            requestedStep: permissionGatedInitialStep,
+            initialBackend: initialBackend,
+            resolvedBackend: sanitizedInitialBackend
+        )
         let effectiveInitialStep = OnboardingFlow.normalizedStep(modelGatedInitialStep, for: initialUseCase)
 
         _currentStep = State(initialValue: effectiveInitialStep)

@@ -30,6 +30,20 @@ enum OnboardingFlow {
 
     static let dictationTestStep = Step.dictationTest.rawValue
 
+    /// Reconfirm a restored model whenever sanitization replaces it, without skipping
+    /// earlier setup steps or discarding the permission gate for unchanged selections.
+    static func modelGatedResumeStep(
+        requestedStep: Int,
+        initialBackend: BackendOption,
+        resolvedBackend: BackendOption,
+        currentOSVersion: OperatingSystemVersion = BackendOption.currentOSVersion
+    ) -> Int {
+        let mustChooseModel = resolvedBackend != initialBackend
+            || !initialBackend.isCompatible(currentOSVersion: currentOSVersion)
+        return mustChooseModel && requestedStep > Step.model.rawValue
+            ? Step.model.rawValue : requestedStep
+    }
+
     static func hasCompletedPermissionsStep(resumingAt step: Int) -> Bool {
         step > Step.permissions.rawValue
     }
