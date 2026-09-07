@@ -73,6 +73,13 @@ struct MuesliCLITests {
         #expect(config.openRouterAPIKey == "sk-or-cli-test")
     }
 
+    @Test("CLI OpenRouter summaries use the free router when no model is configured")
+    func cliOpenRouterUsesProviderManagedDefaultModel() {
+        #expect(CLISummaryClient.resolvedOpenRouterModel("") == "openrouter/free")
+        #expect(CLISummaryClient.resolvedOpenRouterModel("  \n") == "openrouter/free")
+        #expect(CLISummaryClient.resolvedOpenRouterModel("custom/model") == "custom/model")
+    }
+
     @Test("migration runs before a read so a legacy database gains new columns")
     func migrationWarningsUpgradesLegacyDatabase() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
