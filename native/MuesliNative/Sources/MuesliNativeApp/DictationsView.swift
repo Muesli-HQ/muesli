@@ -176,7 +176,8 @@ struct DictationsView: View {
             return "Try another source, app, or time range"
         }
         let useCase = appState.config.resolvedOnboardingUseCase
-        if useCase.includesDictation {
+        if appState.config.enablePushToTalk
+            && (useCase.includesDictation || !useCase.includesVoiceNotes) {
             return "Hold \(appState.config.dictationHotkey.label) to start dictating"
         }
         if useCase.includesVoiceNotes {

@@ -5,6 +5,31 @@ import MuesliCore
 
 @Suite("MeetingSummaryClient")
 struct MeetingSummaryClientTests {
+    @Test("one-request choices preserve settings and route each provider's model",
+          arguments: MeetingSummaryBackendOption.all)
+    func oneRequestSummarySelection(provider: MeetingSummaryBackendOption) throws {
+        let config = AppConfig()
+        let selected = provider.summaryConfiguration(from: config, model: "chosen/model")
+        let fields = ["chatgpt": "chatgpt_model", "openai": "openai_model",
+                      "openrouter": "openrouter_model", "ollama": "ollama_model",
+                      "lmstudio": "lmstudio_model", "custom_llm": "custom_llm_model"]
+        var original = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(config)) as? [String: Any])
+        let encoded = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(selected)) as? [String: Any])
+        original["meeting_summary_backend"] = provider.backend
+        original[try #require(fields[provider.backend])] = "chosen/model"
+        #expect(NSDictionary(dictionary: original).isEqual(to: encoded))
+        #expect(provider.summaryModels(config: selected, openRouterModels: []).contains { $0.id == "chosen/model" })
+    }
+
+    @Test("re-summary catalog retains stable router and custom model with or without cached results",
+          arguments: [[], [SummaryModelPreset(id: "openrouter/free", label: "Router")]])
+    func resummaryCatalogRetention(catalog: [SummaryModelPreset]) {
+        var config = AppConfig()
+        config.openRouterModel = "custom/model"
+        let models = MeetingSummaryBackendOption.openRouter.summaryModels(config: config, openRouterModels: catalog)
+        #expect(models.map(\.id) == ["openrouter/free", "custom/model"])
+    }
+
     private let customTemplate = MeetingTemplateSnapshot(
         id: "custom-follow-up",
         name: "Customer Follow-Up",

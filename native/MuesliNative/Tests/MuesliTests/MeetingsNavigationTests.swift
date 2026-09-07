@@ -1468,10 +1468,13 @@ struct MeetingsNavigationTests {
 
         let unauthenticatedRequestCount = await probe.requestCount
         #expect(unauthenticatedRequestCount == 0)
+        #expect(!controller.canUseSummaryProvider(.openRouter))
         #expect(controller.appState.openRouterTranscriptionModels.isEmpty)
         #expect(controller.appState.openRouterTranscriptionCatalogState == .idle)
 
         try openRouterAuth.storeManualAPIKey("sk-or-v1-test")
+        controller.updateConfig { _ in }
+        #expect(controller.canUseSummaryProvider(.openRouter))
         controller.loadOpenRouterModels(.transcription, force: true)
         await probe.waitForRequest()
         for _ in 0..<100 where controller.appState.openRouterTranscriptionCatalogState != .loaded {
@@ -1508,6 +1511,7 @@ struct MeetingsNavigationTests {
 
         #expect(!openRouterAuth.isAuthenticated)
         #expect(controller.hostedDictationModelVisibility.shows(.openRouter))
+        #expect(controller.canUseSummaryProvider(.openRouter))
     }
 
     @Test("an older cancelled catalog request cannot overwrite a newer reload")

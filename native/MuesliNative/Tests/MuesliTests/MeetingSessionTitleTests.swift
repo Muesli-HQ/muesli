@@ -5,8 +5,22 @@ import Testing
 struct MeetingProcessingStageTests {
     @Test("audio processing keeps dictation blocked")
     func audioProcessingBlocksDictation() {
+        #expect(!MeetingProcessingStage.stoppingCapture.allowsDictation)
         #expect(!MeetingProcessingStage.transcribingAudio.allowsDictation)
         #expect(!MeetingProcessingStage.cleaningAudio.allowsDictation)
+    }
+
+    @Test("a blocked capture shutdown keeps microphone features gated after transcript processing")
+    func shutdownLeaseOutlivesTranscription() {
+        #expect(MeetingProcessingAdmissionPolicy.blocksDictation(
+            stages: [.generatingTitle], captureShutdownInProgress: true
+        ))
+        #expect(MeetingProcessingAdmissionPolicy.blocksDictation(
+            stages: [], captureShutdownInProgress: true
+        ))
+        #expect(!MeetingProcessingAdmissionPolicy.blocksDictation(
+            stages: [], captureShutdownInProgress: false
+        ))
     }
 
     @Test("post-transcription processing allows dictation")

@@ -18,7 +18,8 @@ struct MeetingSystemAudioHealthEvent: Equatable {
 /// global process taps may quiesce while system output is silent, and querying
 /// every CoreAudio process to disambiguate that state can itself contend with
 /// the daemon. Recovery therefore begins only after the recorder reports
-/// positive failure evidence (for example, exhausted HAL rebuild attempts).
+/// positive failure evidence (for example, exhausted HAL rebuild attempts),
+/// or after a hardware route event followed by a stale microphone callback.
 ///
 /// All callbacks fire after internal state commits; injected closures run on
 /// the caller's tick context. Time and cadence are injected for tests.
@@ -41,6 +42,7 @@ final class MeetingSystemAudioWatchdog {
         var lastAttemptAt: Date?
         var healthyTicks: Int
         var micBridgeFired: Bool
+        var terminalReported = false
     }
 
     /// Evaluated per tick after an explicit failure episode opens. True means
@@ -56,10 +58,10 @@ final class MeetingSystemAudioWatchdog {
     var lastMicCallbackAt: () -> Date? = { nil }
     /// Rebuild request; returns whether a rebuild was actually started.
     var recoveryRequest: (String) -> Bool = { _ in false }
-    /// Fired once per episode when the tap is dead AND mic callbacks have been
-    /// stale beyond the mic tracker's confirmation window — the mic detector is
-    /// blind while its system-audio precondition is dead, so the watchdog
-    /// bridges it.
+    /// Fired when mic callbacks are stale after either a confirmed tap failure
+    /// or a settled hardware route event. The latter closes the blind spot
+    /// where both audio callback streams stop and sample-driven health tracking
+    /// therefore has no opportunity to evaluate itself.
     var onMicBlindnessDegradation: ((String) -> Void)?
     var onEpisodeEvent: ((MeetingSystemAudioHealthEvent) -> Void)?
 
@@ -67,11 +69,28 @@ final class MeetingSystemAudioWatchdog {
     private let now: () -> Date
     private let lock = NSLock()
     private var episode: Episode?
+    /// A route transition opens a finite verification window. Cached callback
+    /// timestamps are checked only at that window's sparse deadlines.
+    private var pendingRouteMicProbe = false
     private var finished = false
+    private let deadlines: MeetingAudioRecoveryDeadlines
+    // The callback box is initialized before self can be captured.
+    private final class DeadlineTarget { weak var watchdog: MeetingSystemAudioWatchdog? }
 
-    init(policy: Policy = .default, now: @escaping () -> Date = Date.init) {
+
+    init(
+        policy: Policy = .default,
+        now: @escaping () -> Date = Date.init,
+        deadlineScheduler: MeetingAudioRecoveryDeadlines.Scheduler? = nil
+    ) {
         self.policy = policy
         self.now = now
+        let target = DeadlineTarget()
+        self.deadlines = MeetingAudioRecoveryDeadlines(scheduler: deadlineScheduler) { final in
+            target.watchdog?.tick(allowRecovery: !final)
+            if final { target.watchdog?.endVerificationWindow() }
+        }
+        target.watchdog = self
     }
 
     /// Called by the recorder when a rebuild exhausts its retry budget — the
@@ -98,6 +117,7 @@ final class MeetingSystemAudioWatchdog {
         lock.unlock()
 
         if let eventToEmit {
+            deadlines.arm()
             onEpisodeEvent?(eventToEmit)
         }
         if let recoveryReason {
@@ -106,6 +126,41 @@ final class MeetingSystemAudioWatchdog {
                 refundAttemptLocked(reason: recoveryReason)
             }
         }
+    }
+
+    /// The cached timestamp remains eligible throughout the finite window;
+    /// one fresh callback cannot hide a delayed post-route stall.
+    func noteRouteChange() {
+        let accepted = lock.withLock {
+            guard !finished, !isPaused() else { return false }
+            pendingRouteMicProbe = true
+            return true
+        }
+        if accepted { deadlines.arm() }
+    }
+
+    func suspendVerification() {
+        deadlines.cancel()
+        lock.withLock { pendingRouteMicProbe = false }
+    }
+
+    private func endVerificationWindow() {
+        var unresolved: MeetingSystemAudioHealthEvent?
+        lock.withLock {
+            pendingRouteMicProbe = false
+            if var active = episode, !active.terminalReported {
+                active.terminalReported = true
+                // Retain the exhausted episode: errors emitted by our last
+                // rebuild must not reopen it with a fresh retry budget.
+                episode = active
+                unresolved = MeetingSystemAudioHealthEvent(
+                    kind: .unrecovered, reason: active.initialReason,
+                    durationSeconds: now().timeIntervalSince(active.startedAt),
+                    recoveryAttempts: active.recoveryAttempts
+                )
+            }
+        }
+        if let unresolved { onEpisodeEvent?(unresolved) }
     }
 
     /// Roll back the attempt count for a rejected request while keeping its
@@ -119,8 +174,8 @@ final class MeetingSystemAudioWatchdog {
         episode = active
     }
 
-    /// One health evaluation. Called by MeetingSession's timer.
-    func tick() {
+    /// One cached health evaluation at an event-triggered deadline.
+    func tick(allowRecovery: Bool = true) {
         var eventToEmit: MeetingSystemAudioHealthEvent?
         var recoveryReason: String?
         var micBridgeReason: String?
@@ -130,13 +185,30 @@ final class MeetingSystemAudioWatchdog {
             lock.unlock()
             return
         }
+        if pendingRouteMicProbe {
+            let timestamp = now()
+            let micIsStale = lastMicCallbackAt().map {
+                timestamp.timeIntervalSince($0) >= 3
+            } ?? true
+            if micIsStale {
+                micBridgeReason = "mic_callbacks_stale_after_audio_route_change"
+            }
+        }
         guard var active = episode else {
             // No explicit failure evidence: silence, flat callbacks, playback
             // transitions, and unrelated CoreAudio clients are all no-ops.
             lock.unlock()
+            if let micBridgeReason {
+                onMicBlindnessDegradation?(micBridgeReason)
+            }
             return
         }
 
+        guard !active.terminalReported else {
+            lock.unlock()
+            if let micBridgeReason { onMicBlindnessDegradation?(micBridgeReason) }
+            return
+        }
         let timestamp = now()
         if isCaptureActive() {
             active.healthyTicks += 1
@@ -153,7 +225,7 @@ final class MeetingSystemAudioWatchdog {
             }
         } else {
             active.healthyTicks = 0
-            if active.recoveryAttempts < policy.maxAttemptsPerEpisode,
+            if allowRecovery, active.recoveryAttempts < policy.maxAttemptsPerEpisode,
                let lastAttemptAt = active.lastAttemptAt,
                timestamp.timeIntervalSince(lastAttemptAt) >= policy.attemptCooldown {
                 active.recoveryAttempts += 1
@@ -193,11 +265,14 @@ final class MeetingSystemAudioWatchdog {
     /// Call when the meeting stops or is discarded. An open episode is the
     /// terminal (error-level) condition.
     func finishMeeting() {
+        deadlines.cancel()
         var eventToEmit: MeetingSystemAudioHealthEvent?
         lock.lock()
         finished = true
-        if let active = episode {
-            episode = nil
+        pendingRouteMicProbe = false
+        let activeEpisode = episode
+        episode = nil
+        if let active = activeEpisode, !active.terminalReported {
             eventToEmit = MeetingSystemAudioHealthEvent(
                 kind: .unrecovered,
                 reason: active.initialReason,

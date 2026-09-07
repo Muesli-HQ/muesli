@@ -140,7 +140,8 @@ struct OnboardingView: View {
             permissions: initialPermissions,
             useCase: initialUseCase,
             permissionsStep: Self.permissionsStep,
-            dictationTestStep: Self.dictationTestStep
+            dictationTestStep: Self.dictationTestStep,
+            useCoreAudioTap: appState.config.useCoreAudioTap
         )
         let effectiveInitialStep = OnboardingFlow.normalizedStep(permissionGatedInitialStep, for: initialUseCase)
 
@@ -839,8 +840,9 @@ struct OnboardingView: View {
     // MARK: - Step 3: Permissions (sequential, one at a time)
 
     /// The ordered list of permissions to grant during onboarding.
-    /// Keep this to the core dictation path so first-run setup gets to a
-    /// successful transcription before meeting-specific permissions appear.
+    /// Request the permission union for the capabilities selected during setup.
+    /// Screen Recording remains optional because it enriches meeting context but
+    /// is not required to capture the meeting's audio.
     private var permissionSteps: [(icon: String, name: String, description: String, granted: Bool, action: () -> Void)] {
         var steps: [(String, String, String, Bool, () -> Void)] = [
             ("mic.fill", "Microphone", "Record audio for voice notes, dictation, and meetings", micGranted, {
@@ -864,6 +866,37 @@ struct OnboardingView: View {
                 }
             }),
             ]
+        }
+        if selectedUseCase.includesMeetings {
+            if appState.config.useCoreAudioTap {
+                steps.append((
+                    "speaker.wave.2.fill",
+                    "System Audio",
+                    "Capture meeting audio from other participants",
+                    systemAudioGranted,
+                    {
+                        Task {
+                            let granted = await CoreAudioSystemRecorder.requestSystemAudioAccess()
+                            await MainActor.run {
+                                self.systemAudioGranted = granted
+                                if granted {
+                                    self.notePermissionGranted("System Audio")
+                                } else {
+                                    self.saveProgress(atStep: self.currentStep)
+                                }
+                            }
+                        }
+                    }
+                ))
+            } else {
+                steps.append((
+                    "rectangle.dashed.badge.record",
+                    "Screen & System Audio",
+                    "Capture meeting audio from other participants",
+                    screenRecordingGranted,
+                    { CGRequestScreenCaptureAccess() }
+                ))
+            }
         }
         return steps
     }
@@ -1077,6 +1110,7 @@ struct OnboardingView: View {
         case "Microphone": return "Privacy_Microphone"
         case "Accessibility": return "Privacy_Accessibility"
         case "Input Monitoring": return "Privacy_ListenEvent"
+        case "System Audio", "Screen & System Audio": return "Privacy_ScreenCapture"
         default: return "Privacy_Microphone"
         }
     }
@@ -1141,7 +1175,8 @@ struct OnboardingView: View {
                 systemAudio: systemAudioGranted,
                 screenRecording: screenRecordingGranted
             ),
-            for: selectedUseCase
+            for: selectedUseCase,
+            useCoreAudioTap: appState.config.useCoreAudioTap
         )
     }
 
@@ -1254,6 +1289,10 @@ struct OnboardingView: View {
             return accessibilityGranted
         case "Input Monitoring":
             return inputMonitoringGranted
+        case "System Audio":
+            return systemAudioGranted
+        case "Screen & System Audio":
+            return screenRecordingGranted
         default:
             return false
         }

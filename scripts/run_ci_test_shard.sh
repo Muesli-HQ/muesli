@@ -26,6 +26,7 @@ case "${shard}" in
       ChatGPTTokenStorageTests
       OpenRouterAuthTests
       SettingsPermissionRefreshReasonTests
+      InteractionPermissionMonitorTests
       AccessibilityPermissionGuideTests
       DictationTestLifecycleTests
       OnboardingFlowTests
@@ -78,6 +79,8 @@ case "${shard}" in
       OpenRouterTranscriptionClientTests
       SummaryModelPresetTests
       HotkeyMonitorTests
+      PushToTalkEnablementPolicyTests
+      ShortcutFeatureEnablementPolicyTests
       InteractiveAudioSessionOwnershipTests
       DictationStateTests
       HotkeyConfigTests
@@ -88,6 +91,19 @@ case "${shard}" in
     ;;
   meetings)
     filters=(
+      AudioAttributionServiceTests
+      CameraActivityMonitorTests
+      MicrophoneActivityMonitorTests
+      MeetingCaptureLifecycleTests
+      AudioQueueInputRecorderTests
+      FallbackStreamingDictationRecorderTests
+      MeetingCaptureShutdownTests
+      MeetingMonitoringModePolicyTests
+      MeetingAudioRecoveryDeadlinesTests
+      MeetingSignalRefreshPolicyTests
+      MeetingMicRecoveryCoordinatorTests
+      MeetingMicHealthTrackerTests
+      MeetingSystemAudioWatchdogTests
       AudioGraphExceptionBridgeTests
       DiagnosticIncidentTests
       DictationAudioRouteControllerTests
