@@ -59,6 +59,40 @@ struct PushToTalkEnablementPolicyTests {
         )
     }
 
+    @Test("permission revocation makes an enabled Push to Talk monitor unavailable")
+    func permissionRevocationStopsRuntimeAvailability() {
+        let grantedPermissions = OnboardingPermissionSnapshot(
+            microphone: true,
+            accessibility: true,
+            inputMonitoring: true,
+            systemAudio: false,
+            screenRecording: false
+        )
+        let revokedPermissions = OnboardingPermissionSnapshot(
+            microphone: true,
+            accessibility: false,
+            inputMonitoring: true,
+            systemAudio: false,
+            screenRecording: false
+        )
+        let profile = PushToTalkEnablementPolicy.PermissionProfile.resolved(for: .dictation)
+
+        #expect(PushToTalkEnablementPolicy.shouldStartDictationHotkeyMonitor(
+            hasCompletedOnboarding: true,
+            hasRequiredPermissions: profile.hasRequiredPermissions(grantedPermissions),
+            isEnabled: true
+        ))
+        #expect(!PushToTalkEnablementPolicy.shouldStartDictationHotkeyMonitor(
+            hasCompletedOnboarding: true,
+            hasRequiredPermissions: profile.hasRequiredPermissions(revokedPermissions),
+            isEnabled: true
+        ))
+        #expect(PushToTalkEnablementPolicy.outcome(
+            isEnabled: true,
+            hasRequiredPermissions: profile.hasRequiredPermissions(revokedPermissions)
+        ) == .waitForPermissions)
+    }
+
     @Test("Voice Notes Push to Talk does not require Accessibility")
     func voiceNotesPushToTalkDoesNotRequireAccessibility() {
         let permissions = OnboardingPermissionSnapshot(

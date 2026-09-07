@@ -38,6 +38,7 @@ actor InteractionPermissionMonitor {
     private var clientIDs = Set<UUID>()
     private var clientRevision = 0
     private var lastSnapshot: InteractionPermissionSnapshot?
+    private var captureGeneration = 0
     private var pollingGeneration = UUID()
     private var pollingTask: Task<Void, Never>?
 
@@ -93,10 +94,13 @@ actor InteractionPermissionMonitor {
     }
 
     private func captureAndPublishIfChanged() async {
+        captureGeneration += 1
+        let generation = captureGeneration
         let reader = readSnapshot
         let snapshot = await Task.detached(priority: .utility) {
             reader()
         }.value
+        guard generation == captureGeneration else { return }
         guard snapshot != lastSnapshot else { return }
         lastSnapshot = snapshot
         await onChange(snapshot)

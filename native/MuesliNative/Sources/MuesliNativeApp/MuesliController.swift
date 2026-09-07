@@ -763,14 +763,15 @@ public final class MuesliController: NSObject {
         let pushToTalkPermissionProfile = PushToTalkEnablementPolicy.PermissionProfile.resolved(
             for: config.resolvedOnboardingUseCase
         )
+        let pushToTalkPermissionSnapshot = currentOnboardingPermissionSnapshot()
         if PushToTalkEnablementPolicy.shouldStartDictationHotkeyMonitor(
             hasCompletedOnboarding: config.hasCompletedOnboarding,
             hasRequiredPermissions: pushToTalkPermissionProfile.hasRequiredPermissions(
-                currentOnboardingPermissionSnapshot()
+                pushToTalkPermissionSnapshot
             ),
             isEnabled: config.enablePushToTalk
         ) {
-            startDictationHotkeyMonitorIfNeeded()
+            startDictationHotkeyMonitorIfNeeded(permissions: pushToTalkPermissionSnapshot)
         }
         // Quill and Computer Use own their runtime permission checks. Their
         // availability must not inherit the startup requirements of whichever
@@ -4918,14 +4919,15 @@ public final class MuesliController: NSObject {
             let pushToTalkPermissionProfile = PushToTalkEnablementPolicy.PermissionProfile.resolved(
                 for: onboardingUseCase
             )
+            let pushToTalkPermissionSnapshot = currentOnboardingPermissionSnapshot()
             if PushToTalkEnablementPolicy.shouldStartDictationHotkeyMonitor(
                 hasCompletedOnboarding: true,
                 hasRequiredPermissions: pushToTalkPermissionProfile.hasRequiredPermissions(
-                    currentOnboardingPermissionSnapshot()
+                    pushToTalkPermissionSnapshot
                 ),
                 isEnabled: config.enablePushToTalk
             ) {
-                startDictationHotkeyMonitorIfNeeded()
+                startDictationHotkeyMonitorIfNeeded(permissions: pushToTalkPermissionSnapshot)
             }
             startIndependentDictationFeatureHotkeyMonitorsIfNeeded()
             syncCalendarMonitor()
@@ -5008,7 +5010,7 @@ public final class MuesliController: NSObject {
                 .union([.dictation])
         )
         updateConfig { $0.onboardingUseCase = updatedUseCase.rawValue }
-        startDictationHotkeyMonitorIfNeeded()
+        startDictationHotkeyMonitorIfNeeded(permissions: permissions)
         syncDictationRecorderWarmup(intent: .idlePrewarm(.permissionsReady))
         TelemetryDeck.signal("onboarding.use_case_reclassified", parameters: [
             "from_use_case": previousUseCase.rawValue,
@@ -5069,7 +5071,7 @@ public final class MuesliController: NSObject {
             return .disabled
         case .ready:
             pushToTalkEnablementIntentStore.clear()
-            startDictationHotkeyMonitorIfNeeded()
+            startDictationHotkeyMonitorIfNeeded(permissions: snapshot)
             syncDictationRecorderWarmup(intent: .idlePrewarm(.permissionsReady))
             if !wasEnabled || wasPending {
                 signalPushToTalkEnablementChanged(
@@ -5082,6 +5084,7 @@ public final class MuesliController: NSObject {
             return .alreadyEnabled
         case .waitForPermissions:
             pushToTalkEnablementIntentStore.markPending()
+            hotkeyMonitor.stop()
             if requestPermissions {
                 requestMissingPushToTalkPermissions(snapshot, profile: permissionProfile)
             }
@@ -5195,8 +5198,18 @@ public final class MuesliController: NSObject {
             inputMonitoringGranted: snapshot.inputMonitoring
         )
         reconcilePendingScreenContextPermission(snapshot)
-        reconcilePendingPushToTalkEnableIfReady(permissions: permissions)
+        reconcilePushToTalkMonitorAvailability(permissions: permissions)
         reconcileIndependentShortcutFeatureEnablement(permissions: permissions)
+    }
+
+    private func reconcilePushToTalkMonitorAvailability(
+        permissions: OnboardingPermissionSnapshot
+    ) {
+        guard config.hasCompletedOnboarding, !isDictationTestMode else { return }
+        if reconcilePendingPushToTalkEnableIfReady(permissions: permissions) != nil {
+            return
+        }
+        startDictationHotkeyMonitorIfNeeded(permissions: permissions)
     }
 
     private func reconcilePendingScreenContextPermission(_ snapshot: InteractionPermissionSnapshot) {
@@ -8512,11 +8525,23 @@ public final class MuesliController: NSObject {
         meetingRecordingHotkeyMonitor.configureTriggerThreshold(milliseconds: config.meetingRecordingHotkeyTriggerThresholdMS)
     }
 
-    private func startDictationHotkeyMonitorIfNeeded() {
-        guard config.enablePushToTalk else {
+    private func startDictationHotkeyMonitorIfNeeded(
+        permissions: OnboardingPermissionSnapshot? = nil
+    ) {
+        let permissionProfile = PushToTalkEnablementPolicy.PermissionProfile.resolved(
+            for: config.resolvedOnboardingUseCase
+        )
+        guard PushToTalkEnablementPolicy.shouldStartDictationHotkeyMonitor(
+            hasCompletedOnboarding: config.hasCompletedOnboarding,
+            hasRequiredPermissions: permissionProfile.hasRequiredPermissions(
+                permissions ?? currentOnboardingPermissionSnapshot()
+            ),
+            isEnabled: config.enablePushToTalk
+        ) else {
             hotkeyMonitor.stop()
             return
         }
+        guard !hotkeyMonitor.isRunning else { return }
         hotkeyMonitor.configure(config.dictationHotkey)
         hotkeyMonitor.start()
     }
