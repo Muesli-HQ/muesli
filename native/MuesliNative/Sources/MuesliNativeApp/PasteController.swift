@@ -71,6 +71,7 @@ enum PasteController {
     @MainActor
     static func paste(
         text: String,
+        appendDictationSentenceSpace: Bool = false,
         pasteboard: NSPasteboard = .general,
         requireStagedClipboardOwnership: Bool = false,
         targetApplicationProvider: @escaping @MainActor () -> NSRunningApplication? = {
@@ -94,7 +95,12 @@ enum PasteController {
         let savedItems = saveClipboard(pasteboard)
 
         let clearedChangeCount = pasteboard.clearContents()
-        let didStageText = pasteboard.setString(text, forType: .string)
+        // Only live dictation opts in. Quill, history copy, and other paste uses
+        // keep their exact text; stored transcripts are never padded.
+        let pastedText = appendDictationSentenceSpace
+            ? text + DictationPasteSpacing.trailingSeparator(after: text)
+            : text
+        let didStageText = pasteboard.setString(pastedText, forType: .string)
         let pasteChangeCount = pasteboard.changeCount
         onLifecycleEvent(didStageText ? .clipboardStaged : .clipboardStageFailed)
 

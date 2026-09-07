@@ -11194,6 +11194,7 @@ public final class MuesliController: NSObject {
                         var completionTargetApp: DictationCorrectionTargetApp?
                         PasteController.paste(
                             text: text,
+                            appendDictationSentenceSpace: true,
                             requireStagedClipboardOwnership: true,
                             onPasteFinished: { [weak self] targetApplication in
                                 guard let self else { return }
