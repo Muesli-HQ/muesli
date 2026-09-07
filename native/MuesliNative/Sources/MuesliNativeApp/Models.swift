@@ -298,6 +298,58 @@ struct BackendOption: Equatable {
         backend == "apple-speech"
     }
 
+    /// Shared OS requirements for model selection in onboarding and the library.
+    /// Native `#available` checks still protect calls into newer system APIs.
+    var minimumOSVersion: OperatingSystemVersion {
+        switch backend {
+        case "nemotron35", "qwen", "cohere", "indicasr", "gemma4-litert":
+            return OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0)
+        case "apple-speech":
+            return OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0)
+        default:
+            return OperatingSystemVersion(majorVersion: 14, minorVersion: 2, patchVersion: 0)
+        }
+    }
+
+    func isCompatible(currentOSVersion: OperatingSystemVersion = Self.currentOSVersion) -> Bool {
+        let minimum = minimumOSVersion
+        return (currentOSVersion.majorVersion, currentOSVersion.minorVersion, currentOSVersion.patchVersion)
+            >= (minimum.majorVersion, minimum.minorVersion, minimum.patchVersion)
+    }
+
+    /// Applies even to installed models; download state does not establish OS compatibility.
+    func incompatibilityReason(currentOSVersion: OperatingSystemVersion = Self.currentOSVersion) -> String? {
+        guard !isCompatible(currentOSVersion: currentOSVersion) else { return nil }
+        let minimum = minimumOSVersion
+        let required = minimum.minorVersion == 0 ? "\(minimum.majorVersion)" : Self.label(for: minimum)
+        return "\(label) requires macOS \(required) or later (you're on macOS \(Self.label(for: currentOSVersion)))."
+    }
+
+    /// Restore only selectable, supported onboarding models (including after an OS downgrade).
+    static func resolvedOnboardingBackend(
+        _ preferred: BackendOption,
+        currentOSVersion: OperatingSystemVersion = Self.currentOSVersion
+    ) -> BackendOption {
+        onboarding.contains(preferred) && preferred.isCompatible(currentOSVersion: currentOSVersion)
+            ? preferred : onboardingDefault
+    }
+
+    /// Resolve once per launch, including the optional `MUESLI_DEBUG_OS_VERSION=14.8`
+    /// UI preview. This does not override native API availability checks.
+    static let currentOSVersion: OperatingSystemVersion = {
+        if let raw = ProcessInfo.processInfo.environment["MUESLI_DEBUG_OS_VERSION"] {
+            let parts = raw.split(separator: ".").compactMap { Int($0) }
+            if parts.count >= 2 {
+                return OperatingSystemVersion(majorVersion: parts[0], minorVersion: parts[1], patchVersion: 0)
+            }
+        }
+        return ProcessInfo.processInfo.operatingSystemVersion
+    }()
+
+    private static func label(for version: OperatingSystemVersion) -> String {
+        "\(version.majorVersion).\(version.minorVersion)"
+    }
+
     /// Multilingual WhisperKit models expose language selection (auto-detect or pinned code).
     /// English-only `.en` variants do not.
     var supportsWhisperLanguageSelection: Bool {

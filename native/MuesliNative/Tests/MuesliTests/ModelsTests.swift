@@ -90,6 +90,85 @@ struct BackendOptionTests {
         #expect(BackendOption.qwen3Asr.description.contains("2–3 second"))
     }
 
+    // Exercise the shared library/onboarding OS guard independently of the test host's OS.
+    private static let macOS14: OperatingSystemVersion = .init(majorVersion: 14, minorVersion: 8, patchVersion: 0)
+    private static let macOS15: OperatingSystemVersion = .init(majorVersion: 15, minorVersion: 0, patchVersion: 0)
+    private static let macOS25: OperatingSystemVersion = .init(majorVersion: 25, minorVersion: 0, patchVersion: 0)
+    private static let macOS26: OperatingSystemVersion = .init(majorVersion: 26, minorVersion: 0, patchVersion: 0)
+
+    @Test(
+        "macOS-15-gated backends report an incompatibility reason exactly when unavailable",
+        arguments: [
+            BackendOption.nemotron35Multilingual,
+            BackendOption.qwen3Asr,
+            BackendOption.cohereTranscribe,
+            BackendOption.indicASR,
+            BackendOption.gemma4E2BLiteRT,
+            BackendOption.gemma4E4BLiteRT,
+        ]
+    )
+    func macOS15GatedBackendsMatchAvailability(_ option: BackendOption) {
+        #expect(
+            option.incompatibilityReason(currentOSVersion: Self.macOS15) == nil,
+            "\(option.label) should be compatible on macOS 15+"
+        )
+        let reason = option.incompatibilityReason(currentOSVersion: Self.macOS14)
+        #expect(reason != nil, "\(option.label) should report an incompatibility reason below macOS 15")
+        #expect(reason?.contains("macOS 15") == true)
+        #expect(reason?.contains(option.label) == true)
+    }
+
+    @Test("apple-speech reports an incompatibility reason exactly when below macOS 26")
+    func appleSpeechIncompatibilityMatchesAvailability() {
+        #expect(BackendOption.appleSpeechAnalyzer.incompatibilityReason(currentOSVersion: Self.macOS26) == nil)
+        let reason = BackendOption.appleSpeechAnalyzer.incompatibilityReason(currentOSVersion: Self.macOS25)
+        #expect(reason != nil)
+        #expect(reason?.contains("macOS 26") == true)
+    }
+
+    @Test(
+        "baseline backends are compatible on supported macOS 14 versions",
+        arguments: [
+            BackendOption.parakeetMultilingual,
+            BackendOption.parakeetUnified,
+            BackendOption.parakeetEnglish,
+            BackendOption.whisperTiny,
+            BackendOption.senseVoiceSmall,
+        ]
+    )
+    func baselineBackendsSupportMacOS14(_ option: BackendOption) {
+        #expect(
+            option.incompatibilityReason(currentOSVersion: Self.macOS14) == nil,
+            "\(option.label) requires only the app's macOS 14.2 minimum"
+        )
+    }
+
+    @Test("model OS guard respects the app's macOS 14.2 minimum")
+    func modelOSGuardIncludesMinorVersion() {
+        let beforeMinimum = OperatingSystemVersion(majorVersion: 14, minorVersion: 1, patchVersion: 9)
+        let minimum = OperatingSystemVersion(majorVersion: 14, minorVersion: 2, patchVersion: 0)
+        #expect(!BackendOption.parakeetUnified.isCompatible(currentOSVersion: beforeMinimum))
+        #expect(BackendOption.parakeetUnified.isCompatible(currentOSVersion: minimum))
+        #expect(BackendOption.parakeetUnified.incompatibilityReason(currentOSVersion: beforeMinimum)?.contains("macOS 14.2 or later") == true)
+    }
+
+    @Test("onboarding and model library share the same OS guard", arguments: BackendOption.onboarding)
+    func onboardingUsesSharedOSGuard(_ option: BackendOption) {
+        for version in [Self.macOS14, Self.macOS15, Self.macOS26] {
+            let supported = option.isCompatible(currentOSVersion: version)
+            #expect((option.incompatibilityReason(currentOSVersion: version) == nil) == supported)
+            let restored = BackendOption.resolvedOnboardingBackend(option, currentOSVersion: version)
+            #expect(restored == (supported ? option : .onboardingDefault))
+            #expect(restored.isCompatible(currentOSVersion: version))
+        }
+    }
+
+    @Test("onboarding rejects restored models outside its curated catalog")
+    func onboardingRejectsNonOnboardingModels() {
+        #expect(BackendOption.resolvedOnboardingBackend(.gemma4E2BLiteRT, currentOSVersion: Self.macOS15) == .onboardingDefault)
+        #expect(BackendOption.resolvedOnboardingBackend(.appleSpeechAnalyzer, currentOSVersion: Self.macOS26) == .onboardingDefault)
+    }
+
     @Test("model descriptions explain usage without implementation jargon")
     func modelDescriptionsAreProductFacing() {
         let implementationTerms = ["INT8", "CoreML", "ANE", "RNNT", "FluidAudio", "LiteRT-LM", "quantized", "GGUF"]

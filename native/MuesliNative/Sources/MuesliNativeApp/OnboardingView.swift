@@ -143,7 +143,13 @@ struct OnboardingView: View {
             dictationTestStep: Self.dictationTestStep,
             useCoreAudioTap: appState.config.useCoreAudioTap
         )
-        let effectiveInitialStep = OnboardingFlow.normalizedStep(permissionGatedInitialStep, for: initialUseCase)
+        let sanitizedInitialBackend = BackendOption.resolvedOnboardingBackend(initialBackend)
+        let modelGatedInitialStep = OnboardingFlow.modelGatedResumeStep(
+            requestedStep: permissionGatedInitialStep,
+            initialBackend: initialBackend,
+            resolvedBackend: sanitizedInitialBackend
+        )
+        let effectiveInitialStep = OnboardingFlow.normalizedStep(modelGatedInitialStep, for: initialUseCase)
 
         _currentStep = State(initialValue: effectiveInitialStep)
         _hasCompletedPermissionsStep = State(initialValue: OnboardingFlow.hasCompletedPermissionsStep(
@@ -151,15 +157,12 @@ struct OnboardingView: View {
         ))
         _userName = State(initialValue: initialUserName)
         _selectedUseCase = State(initialValue: initialUseCase)
-        let sanitizedInitialBackend = BackendOption.onboarding.contains(initialBackend)
-            ? initialBackend
-            : BackendOption.onboardingDefault
         _selectedBackend = State(initialValue: sanitizedInitialBackend)
         _selectedCohereLanguage = State(initialValue: initialCohereLanguage)
         _selectedHotkey = State(initialValue: initialHotkey)
         _summaryBackend = State(initialValue: initialSummaryBackend)
-        _modelDownloadProgress = State(initialValue: initialModelDownloadProgress)
-        _modelDownloadStatus = State(initialValue: initialModelDownloadStatus)
+        _modelDownloadProgress = State(initialValue: sanitizedInitialBackend == initialBackend ? initialModelDownloadProgress : nil)
+        _modelDownloadStatus = State(initialValue: sanitizedInitialBackend == initialBackend ? initialModelDownloadStatus : nil)
         _micGranted = State(initialValue: initialMicGranted)
         _accessibilityGranted = State(initialValue: initialAccessibilityGranted)
         _inputMonitoringGranted = State(initialValue: initialInputMonitoringGranted)
@@ -274,7 +277,7 @@ struct OnboardingView: View {
                 goToNextStep()
             }
         case 1:
-            onboardingButton(selectedBackend.isDownloaded ? "Continue" : "Download & Continue", enabled: true) {
+            onboardingButton(selectedBackend.isDownloaded ? "Continue" : "Download & Continue", enabled: selectedBackend.isCompatible()) {
                 startDownload()
             }
         case 2:
@@ -789,7 +792,9 @@ struct OnboardingView: View {
 
     private func modelCard(option: BackendOption) -> some View {
         let isSelected = selectedBackend == option
+        let incompatibilityReason = option.incompatibilityReason()
         return Button {
+            guard option.isCompatible() else { return }
             selectedBackend = option
         } label: {
             HStack(spacing: MuesliTheme.spacing12) {
@@ -805,7 +810,7 @@ struct OnboardingView: View {
                     HStack(spacing: 6) {
                         Text(option.label)
                             .font(MuesliTheme.headline())
-                            .foregroundStyle(MuesliTheme.textPrimary)
+                            .foregroundStyle(incompatibilityReason == nil ? MuesliTheme.textPrimary : MuesliTheme.textTertiary)
                         if option == BackendOption.onboardingDefault {
                             Text("Recommended")
                                 .font(.system(size: 9, weight: .semibold))
@@ -821,7 +826,12 @@ struct OnboardingView: View {
                     }
                     Text(option.description)
                         .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.textSecondary)
+                        .foregroundStyle(incompatibilityReason == nil ? MuesliTheme.textSecondary : MuesliTheme.textTertiary)
+                    if let incompatibilityReason {
+                        Label(incompatibilityReason, systemImage: "exclamationmark.triangle")
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                    }
                 }
 
                 Spacer()
@@ -835,6 +845,8 @@ struct OnboardingView: View {
             )
         }
         .buttonStyle(.plain)
+        .disabled(incompatibilityReason != nil)
+        .help(incompatibilityReason ?? option.label)
     }
 
     // MARK: - Step 3: Permissions (sequential, one at a time)
@@ -1872,6 +1884,7 @@ struct OnboardingView: View {
     // MARK: - Actions
 
     private func startDownload() {
+        guard selectedBackend.isCompatible() else { return }
         ensureModelDownloadStarted()
         goToNextStep()
     }
@@ -1915,6 +1928,10 @@ struct OnboardingView: View {
     }
 
     private func ensureModelDownloadStarted() {
+        if let reason = selectedBackend.incompatibilityReason() {
+            modelDownloadError = reason
+            return
+        }
         if modelReadyBackend == selectedBackend {
             isModelStillDownloading = false
             modelDownloadProgress = 1.0

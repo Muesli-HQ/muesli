@@ -156,7 +156,11 @@ actor AppleSpeechAnalyzerTranscriber {
     static let modelID = "apple-speech-transcriber"
 
     static var isSupportedOnCurrentSystem: Bool {
-        SpeechTranscriber.isAvailable
+        // Keep system-model discovery consistent with the shared OS guard and UI preview.
+        if !BackendOption.appleSpeechAnalyzer.isCompatible() {
+            return false
+        }
+        return SpeechTranscriber.isAvailable
     }
 
     private let localeResolver: AppleSpeechLocaleResolver

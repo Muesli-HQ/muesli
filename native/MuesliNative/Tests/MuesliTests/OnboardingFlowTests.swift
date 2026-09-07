@@ -1,8 +1,44 @@
+import Foundation
 import Testing
 @testable import MuesliNativeApp
 
 @Suite("OnboardingFlow")
 struct OnboardingFlowTests {
+    @Test("Restored supported models outside onboarding must be reconfirmed", arguments: [2, 3, 4, 5, 6])
+    func replacedModelReturnsToSelection(_ requestedStep: Int) {
+        let version = OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0)
+        let initial = BackendOption.gemma4E2BLiteRT
+        #expect(initial.isCompatible(currentOSVersion: version))
+        let resolved = BackendOption.resolvedOnboardingBackend(initial, currentOSVersion: version)
+        #expect(resolved != initial)
+        #expect(OnboardingFlow.modelGatedResumeStep(
+            requestedStep: requestedStep, initialBackend: initial,
+            resolvedBackend: resolved, currentOSVersion: version
+        ) == 1)
+    }
+
+    @Test("Unchanged supported onboarding models preserve the permission-gated step", arguments: [0, 1, 2, 3, 4, 5, 6])
+    func unchangedModelPreservesResumeStep(_ requestedStep: Int) {
+        let version = OperatingSystemVersion(majorVersion: 14, minorVersion: 8, patchVersion: 0)
+        let initial = BackendOption.parakeetUnified
+        #expect(OnboardingFlow.modelGatedResumeStep(
+            requestedStep: requestedStep, initialBackend: initial,
+            resolvedBackend: BackendOption.resolvedOnboardingBackend(initial, currentOSVersion: version),
+            currentOSVersion: version
+        ) == requestedStep)
+    }
+
+    @Test("OS-incompatible restored models return to selection without skipping welcome", arguments: [0, 1, 3, 4])
+    func incompatibleModelRespectsEarlierSteps(_ requestedStep: Int) {
+        let version = OperatingSystemVersion(majorVersion: 14, minorVersion: 8, patchVersion: 0)
+        let initial = BackendOption.nemotron35Multilingual
+        #expect(OnboardingFlow.modelGatedResumeStep(
+            requestedStep: requestedStep, initialBackend: initial,
+            resolvedBackend: BackendOption.resolvedOnboardingBackend(initial, currentOSVersion: version),
+            currentOSVersion: version
+        ) == min(requestedStep, 1))
+    }
+
     @Test("Everything restores the prior capability union when toggled off")
     func everythingRestoresPriorSelection() {
         let prior = OnboardingFlow.UseCaseSelectionState(
