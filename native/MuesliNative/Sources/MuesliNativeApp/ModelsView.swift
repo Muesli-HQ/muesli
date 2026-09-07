@@ -1631,6 +1631,7 @@ struct ModelsView: View {
     // MARK: - Actions
 
     private func startDownload(_ option: BackendOption) {
+        guard option.isCompatible() else { return }
         withAnimation { _ = downloadingModels.insert(option.model) }
         downloadProgress[option.model] = 0.05  // Show initial progress immediately
         downloadMessages.removeValue(forKey: option.model)

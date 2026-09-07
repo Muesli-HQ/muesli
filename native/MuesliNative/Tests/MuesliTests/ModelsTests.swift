@@ -90,11 +90,7 @@ struct BackendOptionTests {
         #expect(BackendOption.qwen3Asr.description.contains("2–3 second"))
     }
 
-    // Issue #479: incompatibilityReason lets the Models tab disable Download and explain why
-    // *before* a doomed attempt, instead of only discovering it after a download starts (which
-    // left a stuck, empty progress bar behind — see ModelsView's downloadProgressView).
-    // Deterministic — exercises both branches via the injectable `currentOSVersion` parameter
-    // rather than depending on whichever OS happens to run the test, per issue #479 follow-up.
+    // Exercise the shared library/onboarding OS guard independently of the test host's OS.
     private static let macOS14: OperatingSystemVersion = .init(majorVersion: 14, minorVersion: 8, patchVersion: 0)
     private static let macOS15: OperatingSystemVersion = .init(majorVersion: 15, minorVersion: 0, patchVersion: 0)
     private static let macOS25: OperatingSystemVersion = .init(majorVersion: 25, minorVersion: 0, patchVersion: 0)
@@ -131,7 +127,7 @@ struct BackendOptionTests {
     }
 
     @Test(
-        "backends with no OS gate are always compatible",
+        "baseline backends are compatible on supported macOS 14 versions",
         arguments: [
             BackendOption.parakeetMultilingual,
             BackendOption.parakeetUnified,
@@ -140,11 +136,37 @@ struct BackendOptionTests {
             BackendOption.senseVoiceSmall,
         ]
     )
-    func ungatedBackendsAreAlwaysCompatible(_ option: BackendOption) {
+    func baselineBackendsSupportMacOS14(_ option: BackendOption) {
         #expect(
             option.incompatibilityReason(currentOSVersion: Self.macOS14) == nil,
-            "\(option.label) has no OS requirement and should never be marked incompatible"
+            "\(option.label) requires only the app's macOS 14.2 minimum"
         )
+    }
+
+    @Test("model OS guard respects the app's macOS 14.2 minimum")
+    func modelOSGuardIncludesMinorVersion() {
+        let beforeMinimum = OperatingSystemVersion(majorVersion: 14, minorVersion: 1, patchVersion: 9)
+        let minimum = OperatingSystemVersion(majorVersion: 14, minorVersion: 2, patchVersion: 0)
+        #expect(!BackendOption.parakeetUnified.isCompatible(currentOSVersion: beforeMinimum))
+        #expect(BackendOption.parakeetUnified.isCompatible(currentOSVersion: minimum))
+        #expect(BackendOption.parakeetUnified.incompatibilityReason(currentOSVersion: beforeMinimum)?.contains("macOS 14.2 or later") == true)
+    }
+
+    @Test("onboarding and model library share the same OS guard", arguments: BackendOption.onboarding)
+    func onboardingUsesSharedOSGuard(_ option: BackendOption) {
+        for version in [Self.macOS14, Self.macOS15, Self.macOS26] {
+            let supported = option.isCompatible(currentOSVersion: version)
+            #expect((option.incompatibilityReason(currentOSVersion: version) == nil) == supported)
+            let restored = BackendOption.resolvedOnboardingBackend(option, currentOSVersion: version)
+            #expect(restored == (supported ? option : .onboardingDefault))
+            #expect(restored.isCompatible(currentOSVersion: version))
+        }
+    }
+
+    @Test("onboarding rejects restored models outside its curated catalog")
+    func onboardingRejectsNonOnboardingModels() {
+        #expect(BackendOption.resolvedOnboardingBackend(.gemma4E2BLiteRT, currentOSVersion: Self.macOS15) == .onboardingDefault)
+        #expect(BackendOption.resolvedOnboardingBackend(.appleSpeechAnalyzer, currentOSVersion: Self.macOS26) == .onboardingDefault)
     }
 
     @Test("model descriptions explain usage without implementation jargon")
