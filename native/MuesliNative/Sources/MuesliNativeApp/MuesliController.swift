@@ -5528,12 +5528,25 @@ public final class MuesliController: NSObject {
         selectMeetingSummaryBackend(option)
     }
 
-    func resummarize(meeting: MeetingRecord, completion: @escaping (Result<Void, Error>) -> Void) {
-        let templateSnapshot = meetingTemplateSnapshot(for: meeting)
-        resummarize(meeting: meeting, using: templateSnapshot, completion: completion)
+    func canUseSummaryProvider(_ provider: MeetingSummaryBackendOption) -> Bool {
+        switch provider {
+        case .chatGPT: return appState.isChatGPTAuthenticated
+        case .openAI: return !resolvedOpenAIAPIKey().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .openRouter:
+            return appState.isOpenRouterAuthenticated || !config.openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .ollama: return true
+        case .lmStudio: return MeetingSummaryClient.lmStudioHasRequiredSettings(config: config)
+        case .customLLM: return MeetingSummaryClient.customLLMHasRequiredSettings(config: config)
+        default: return false
+        }
     }
 
-    func applyMeetingTemplate(id: String, to meeting: MeetingRecord, completion: @escaping (Result<Void, Error>) -> Void) {
+    func resummarize(meeting: MeetingRecord, summaryConfig: AppConfig? = nil, completion: @escaping (Result<Void, Error>) -> Void) {
+        let templateSnapshot = meetingTemplateSnapshot(for: meeting)
+        resummarize(meeting: meeting, using: templateSnapshot, summaryConfig: summaryConfig, completion: completion)
+    }
+
+    func applyMeetingTemplate(id: String, to meeting: MeetingRecord, summaryConfig: AppConfig? = nil, completion: @escaping (Result<Void, Error>) -> Void) {
         guard let templateSnapshot = MeetingTemplates.resolveExactSnapshot(
             id: id,
             customTemplates: config.customMeetingTemplates
@@ -5541,14 +5554,17 @@ public final class MuesliController: NSObject {
             completion(.failure(MeetingTemplateSelectionError.templateNoLongerExists))
             return
         }
-        resummarize(meeting: meeting, using: templateSnapshot, completion: completion)
+        resummarize(meeting: meeting, using: templateSnapshot, summaryConfig: summaryConfig, completion: completion)
     }
 
     private func resummarize(
         meeting: MeetingRecord,
         using templateSnapshot: MeetingTemplateSnapshot,
+        summaryConfig: AppConfig?,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
+        let summaryConfig = summaryConfig ?? config
+        let openRouterKey = openRouterAuth.resolvedAPIKey(legacyAPIKey: summaryConfig.openRouterAPIKey)
         Task { [weak self] in
             guard let self else { return }
             let plan = MeetingResummarizationPolicy.plan(for: meeting)
@@ -5556,10 +5572,11 @@ public final class MuesliController: NSObject {
                 let notes = try await MeetingSummaryClient.summarize(
                     transcript: meeting.rawTranscript,
                     meetingTitle: plan.promptTitle,
-                    config: self.config,
+                    config: summaryConfig,
                     template: templateSnapshot,
                     existingNotes: self.notesContextForResummary(meeting),
-                    manualNotesToRetain: meeting.manualNotes
+                    manualNotesToRetain: meeting.manualNotes,
+                    openRouterAPIKeyOverride: openRouterKey
                 )
                 try self.dictationStore.updateMeetingSummary(
                     id: meeting.id,

@@ -718,6 +718,7 @@ struct SummaryModelPreset {
     ]
 
     static let openRouterModels: [SummaryModelPreset] = [
+        SummaryModelPreset(id: "openrouter/free", label: "OpenRouter Free (default)"),
         SummaryModelPreset(id: "stepfun/step-3.5-flash:free", label: "Step 3.5 Flash (256k ctx)"),
         SummaryModelPreset(id: "nvidia/nemotron-3-super-120b-a12b:free", label: "Nemotron 3 Super 120B (262k ctx)"),
         SummaryModelPreset(id: "nvidia/nemotron-3-nano-30b-a3b:free", label: "Nemotron 3 Nano 30B (256k ctx)"),
@@ -877,6 +878,41 @@ enum OpenRouterModelCatalogFilter {
                 return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
             }
             .map { SummaryModelPreset(id: $0.id, label: $0.transcriptionPresetLabel) }
+    }
+}
+
+extension MeetingSummaryBackendOption {
+    var modelKeyPath: WritableKeyPath<AppConfig, String> {
+        switch self {
+        case .chatGPT: return \.chatGPTModel
+        case .openAI: return \.openAIModel
+        case .openRouter: return \.openRouterModel
+        case .ollama: return \.ollamaModel
+        case .lmStudio: return \.lmStudioModel
+        default: return \.customLLMModel
+        }
+    }
+
+    /// Copies the settings for one request without persisting a new default.
+    func summaryConfiguration(from config: AppConfig, model: String) -> AppConfig {
+        var snapshot = config
+        snapshot.meetingSummaryBackend = backend
+        snapshot[keyPath: modelKeyPath] = model
+        return snapshot
+    }
+
+    func summaryModels(config: AppConfig, openRouterModels: [SummaryModelPreset]) -> [SummaryModelPreset] {
+        let presets: [SummaryModelPreset]
+        switch self {
+        case .chatGPT: presets = SummaryModelPreset.chatGPTModels
+        case .openAI: presets = SummaryModelPreset.openAIModels
+        case .openRouter:
+            presets = [SummaryModelPreset.openRouterModels[0]]
+                + openRouterModels.filter { $0.id != "openrouter/free" }
+        case .ollama: presets = [SummaryModelPreset(id: "qwen3.5", label: "qwen3.5 (default)")]
+        default: presets = []
+        }
+        return SummaryModelPreset.menuPresets(presets, currentModel: config[keyPath: modelKeyPath])
     }
 }
 
