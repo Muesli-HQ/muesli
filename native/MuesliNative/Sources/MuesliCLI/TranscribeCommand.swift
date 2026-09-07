@@ -14,6 +14,7 @@ enum TranscribeOutputFormat: String, CaseIterable, ExpressibleByArgument {
 enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
     case parakeetV3 = "parakeet-v3"
     case parakeetV2 = "parakeet-v2"
+    case parakeetUnified = "parakeet-unified"
     case parakeetEou320ms = "parakeet-eou-320ms"
     case senseVoice = "sensevoice"
     case qwen3Asr = "qwen3-asr"
@@ -31,7 +32,7 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
         switch self {
         case .parakeetV3: return .v3
         case .parakeetV2: return .v2
-        case .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35,
+        case .parakeetUnified, .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35,
              .whisperTiny, .whisperTinyEnglish,
              .whisperSmall, .whisperSmallEnglish, .whisperMediumEnglish,
              .whisperLargeTurbo:
@@ -48,7 +49,7 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
         case .whisperSmallEnglish: return "small.en"
         case .whisperMediumEnglish: return "medium.en"
         case .whisperLargeTurbo: return "large-v3-v20240930_626MB"
-        case .parakeetV3, .parakeetV2, .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35:
+        case .parakeetV3, .parakeetV2, .parakeetUnified, .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35:
             return nil
         }
     }
@@ -108,8 +109,8 @@ struct TranscribeCommand: AsyncParsableCommand {
     var file: String
     @Option(name: .long, help: "Output format: text, json, or markdown.")
     var format: TranscribeOutputFormat = .text
-    @Option(name: .long, help: "Transcription model: parakeet-v3, parakeet-v2, parakeet-eou-320ms (streaming), sensevoice, qwen3-asr, nemotron35, whisper-tiny, whisper-tiny-english, whisper-small, whisper-small-english, whisper-medium-english, or whisper-large-turbo.")
-    var model: TranscribeModel = .parakeetV3
+    @Option(name: .long, help: "Transcription model: parakeet-v3, parakeet-v2, parakeet-unified, parakeet-eou-320ms (streaming), sensevoice, qwen3-asr, nemotron35, whisper-tiny, whisper-tiny-english, whisper-small, whisper-small-english, whisper-medium-english, or whisper-large-turbo.")
+    var model: TranscribeModel = .parakeetUnified
     @Flag(name: .long, help: "Generate meeting notes using the configured Muesli summary backend when available.")
     var summarize = false
     @Flag(name: .long, help: "Save the transcript as an imported Muesli meeting.")
@@ -616,6 +617,7 @@ struct MuesliAudioFilePreparer: AudioPreparing {
 /// entirely for SenseVoice/Qwen3).
 struct RoutingAudioTranscriber: AudioTranscribing {
     var batch: AudioTranscribing = FluidAudioCLITranscriber()
+    var parakeetUnified: AudioTranscribing = ParakeetUnifiedCLITranscriber()
     var streaming: AudioTranscribing = StreamingEouCLITranscriber()
     var senseVoice: AudioTranscribing = SenseVoiceCLITranscriber()
     var qwen3Asr: AudioTranscribing = Qwen3AsrCLITranscriber()
@@ -626,6 +628,7 @@ struct RoutingAudioTranscriber: AudioTranscribing {
         let transcriber: AudioTranscribing
         switch model {
         case .parakeetV3, .parakeetV2: transcriber = batch
+        case .parakeetUnified: transcriber = parakeetUnified
         case .parakeetEou320ms: transcriber = streaming
         case .senseVoice: transcriber = senseVoice
         case .qwen3Asr: transcriber = qwen3Asr
@@ -720,10 +723,10 @@ actor SenseVoiceCLITranscriber: AudioTranscribing {
     }
 }
 
-/// Wraps FluidAudio's `Qwen3AsrManager` directly — a thin wrapper, same shape as
+/// Wraps the vendored `MuesliQwen3AsrManager` directly — a thin wrapper, same shape as
 /// the app's `Qwen3AsrTranscriber` (`Qwen3AsrBackend.swift`), reusing the app's
 /// default model cache. Requires macOS 15+ for CoreML stateful decoder support,
-/// same constraint FluidAudio's `Qwen3AsrManager` itself carries.
+/// same constraint the vendored manager itself carries.
 actor Qwen3AsrCLITranscriber: AudioTranscribing {
     func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
         guard #available(macOS 15, *) else {
@@ -744,7 +747,7 @@ actor Qwen3AsrCLITranscriber: AudioTranscribing {
                 }
             ) { modelDir in
                 progress("preparing model")
-                let mgr = Qwen3AsrManager()
+                let mgr = MuesliQwen3AsrManager()
                 try await mgr.loadModels(from: modelDir)
                 return mgr
             }
@@ -755,16 +758,52 @@ actor Qwen3AsrCLITranscriber: AudioTranscribing {
         }
         let start = CFAbsoluteTimeGetCurrent()
         let samples = try AudioConverter().resampleAudioFile(wavURL)
-        let text = try await (manager as! Qwen3AsrManager).transcribe(audioSamples: samples)
+        guard let qwen3Manager = manager as? MuesliQwen3AsrManager else {
+            throw CLIError.invalidInput("Qwen3 ASR model was not loaded.", fix: "Run the command again after the model finishes downloading.")
+        }
+        let text = try await qwen3Manager.transcribe(audioSamples: samples)
         progress("transcription complete in \(String(format: "%.2f", CFAbsoluteTimeGetCurrent() - start))s")
         return HeadlessTranscription(text: text, durationSeconds: nil)
     }
 
-    // Stored as Any: `Qwen3AsrManager` itself is `@available(macOS 15, *)` in FluidAudio,
+    // Stored as Any: the vendored manager is `@available(macOS 15, *)`,
     // and a stored property of that type would force this whole actor declaration behind
     // the same guard — but `RoutingAudioTranscriber` needs to construct this actor
     // unconditionally on any deployment target, and only fail at call time on older OSes.
     private var manager: Any?
+}
+
+/// Offline-batch Parakeet Unified 0.6B (FastConformer-RNNT) via the managed
+/// model directory shared with the app backend.
+actor ParakeetUnifiedCLITranscriber: AudioTranscribing {
+    private var manager: UnifiedAsrManager?
+
+    func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
+        if manager == nil {
+            progress("loading parakeet-unified")
+            let plan = ManagedASRModelPlans.parakeetUnified()
+            manager = try await ManagedASRModelDownloader.loadValidated(
+                plan,
+                progress: { fraction, message in
+                    progress(message ?? "model \(Int((fraction * 100).rounded()))%")
+                }
+            ) { modelDir in
+                progress("preparing model")
+                let mgr = UnifiedAsrManager()
+                try await mgr.loadModels(from: modelDir)
+                return mgr
+            }
+            progress("model ready")
+        }
+        guard let manager else {
+            throw CLIError.invalidInput("Parakeet Unified model was not loaded.", fix: "Run the command again after the model finishes downloading.")
+        }
+        let start = CFAbsoluteTimeGetCurrent()
+        let samples = try AudioConverter().resampleAudioFile(wavURL)
+        let text = try await manager.transcribe(samples)
+        progress("transcription complete in \(String(format: "%.2f", CFAbsoluteTimeGetCurrent() - start))s")
+        return HeadlessTranscription(text: text, durationSeconds: nil)
+    }
 }
 
 /// Wraps FluidAudio's public multilingual Nemotron manager using the exact
@@ -1063,19 +1102,19 @@ struct CLISummaryConfig: Decodable {
     var customLLMFormat = "openai"
 
     enum CodingKeys: String, CodingKey {
-        case meetingSummaryBackend
-        case openAIAPIKey
-        case openRouterAPIKey
-        case openAIModel
-        case openRouterModel
-        case ollamaURL
-        case ollamaModel
-        case lmStudioURL
-        case lmStudioModel
-        case customLLMURL
-        case customLLMAPIKey
-        case customLLMModel
-        case customLLMFormat
+        case meetingSummaryBackend = "meeting_summary_backend"
+        case openAIAPIKey = "openai_api_key"
+        case openRouterAPIKey = "openrouter_api_key"
+        case openAIModel = "openai_model"
+        case openRouterModel = "openrouter_model"
+        case ollamaURL = "ollama_url"
+        case ollamaModel = "ollama_model"
+        case lmStudioURL = "lmstudio_url"
+        case lmStudioModel = "lmstudio_model"
+        case customLLMURL = "custom_llm_url"
+        case customLLMAPIKey = "custom_llm_api_key"
+        case customLLMModel = "custom_llm_model"
+        case customLLMFormat = "custom_llm_format"
     }
 
     init() {}
@@ -1100,8 +1139,22 @@ struct CLISummaryConfig: Decodable {
     static func load(from supportDirectory: URL) -> CLISummaryConfig {
         let url = supportDirectory.appendingPathComponent("config.json")
         guard let data = try? Data(contentsOf: url),
-              let config = try? JSONDecoder().decode(CLISummaryConfig.self, from: data) else {
+              var config = try? JSONDecoder().decode(CLISummaryConfig.self, from: data) else {
             return CLISummaryConfig()
+        }
+        if config.openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            struct StoredOpenRouterCredential: Decodable {
+                let apiKey: String
+
+                enum CodingKeys: String, CodingKey {
+                    case apiKey = "api_key"
+                }
+            }
+            let credentialURL = supportDirectory.appendingPathComponent("openrouter-auth.json")
+            if let credentialData = try? Data(contentsOf: credentialURL),
+               let credential = try? JSONDecoder().decode(StoredOpenRouterCredential.self, from: credentialData) {
+                config.openRouterAPIKey = credential.apiKey
+            }
         }
         return config
     }
@@ -1122,8 +1175,12 @@ enum CLISummaryError: LocalizedError {
 
 enum CLISummaryClient {
     private static let defaultOpenAIModel = "gpt-5.4-mini"
-    private static let defaultOpenRouterModel = "stepfun/step-3.5-flash:free"
+    private static let defaultOpenRouterModel = "openrouter/free"
     private static let defaultSummaryMaxOutputTokens = 2500
+
+    static func resolvedOpenRouterModel(_ configuredModel: String) -> String {
+        configuredModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? defaultOpenRouterModel : configuredModel
+    }
 
     static func summarize(transcript: String, title: String, config: CLISummaryConfig) async throws -> String {
         let backend = config.meetingSummaryBackend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -1150,7 +1207,7 @@ enum CLISummaryClient {
                 backend: "OpenRouter",
                 url: URL(string: "https://openrouter.ai/api/v1/chat/completions")!,
                 apiKey: key,
-                model: config.openRouterModel.isEmpty ? defaultOpenRouterModel : config.openRouterModel,
+                model: resolvedOpenRouterModel(config.openRouterModel),
                 transcript: transcript,
                 title: title
             )

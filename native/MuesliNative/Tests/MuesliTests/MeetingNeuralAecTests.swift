@@ -6,6 +6,11 @@ import Testing
 @Suite("MeetingNeuralAec")
 struct MeetingNeuralAecTests {
 
+    @Test("LocalVQE defaults to one inference thread")
+    func localVQEDefaultsToOneInferenceThread() {
+        #expect(LocalVQEAudioProcessor.defaultThreadCount == 1)
+    }
+
     @Test("bundle candidates prefer Contents/Resources in packaged apps")
     func candidateURLsPreferResourceDirectory() throws {
         let fixture = try makeTemporaryAppBundle()

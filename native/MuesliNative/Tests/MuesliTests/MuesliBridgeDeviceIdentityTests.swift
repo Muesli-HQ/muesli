@@ -11,6 +11,8 @@ struct MuesliBridgeDeviceIdentityTests {
         static let remoteDeviceName = "muesli.sync.bridge.remoteDeviceName.v1"
         static let remoteDevicePlatform = "muesli.sync.bridge.remoteDevicePlatform.v1"
         static let remoteDeviceLastSeenAt = "muesli.sync.bridge.remoteDeviceLastSeenAt.v1"
+        static let lastRefresh = "muesli.sync.bridge.lastRefreshed.v1"
+        static let lastRefreshFailure = "muesli.sync.bridge.lastRefreshFailure.v1"
     }
 
     private func makeDefaults() throws -> (UserDefaults, String) {
@@ -168,6 +170,29 @@ struct MuesliBridgeDeviceIdentityTests {
         #expect(defaults.object(forKey: DefaultsKey.remoteDeviceLastSeenAt) == nil)
     }
 
+    @Test("clearRemoteDevice removes the linked cache but preserves local identity")
+    func clearRemoteDevicePreservesLocalIdentity() throws {
+        let (defaults, suiteName) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set("local-mac", forKey: DefaultsKey.localDeviceID)
+        defaults.set("remote-iphone", forKey: DefaultsKey.remoteDeviceID)
+        defaults.set("iPhone", forKey: DefaultsKey.remoteDeviceName)
+        defaults.set("iOS", forKey: DefaultsKey.remoteDevicePlatform)
+        defaults.set(Date(), forKey: DefaultsKey.remoteDeviceLastSeenAt)
+        defaults.set(Date(), forKey: DefaultsKey.lastRefresh)
+        defaults.set(Date(), forKey: DefaultsKey.lastRefreshFailure)
+
+        MuesliBridgeDeviceIdentity.clearRemoteDevice(defaults: defaults)
+
+        #expect(defaults.string(forKey: DefaultsKey.localDeviceID) == "local-mac")
+        #expect(defaults.object(forKey: DefaultsKey.remoteDeviceID) == nil)
+        #expect(defaults.object(forKey: DefaultsKey.remoteDeviceName) == nil)
+        #expect(defaults.object(forKey: DefaultsKey.remoteDevicePlatform) == nil)
+        #expect(defaults.object(forKey: DefaultsKey.remoteDeviceLastSeenAt) == nil)
+        #expect(defaults.object(forKey: DefaultsKey.lastRefresh) == nil)
+        #expect(defaults.object(forKey: DefaultsKey.lastRefreshFailure) == nil)
+    }
+
     @Test("updateRemoteDevices picks the most recent non-local record")
     func updateRemoteDevicesPicksMostRecentNonLocalRecord() throws {
         let (defaults, suiteName) = try makeDefaults()
@@ -230,6 +255,33 @@ struct MuesliBridgeDeviceIdentityTests {
         #expect(defaults.string(forKey: DefaultsKey.remoteDeviceID) == "remote-iphone")
         #expect(defaults.string(forKey: DefaultsKey.remoteDeviceName) == "picophone")
         #expect(defaults.string(forKey: DefaultsKey.remoteDevicePlatform) == "iOS")
+    }
+
+    @Test("updateRemoteDevices keeps the existing companion link when another device appears")
+    func updateRemoteDevicesKeepsExistingCompanionLink() throws {
+        let (defaults, suiteName) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set("local-mac", forKey: DefaultsKey.localDeviceID)
+        defaults.set("linked-iphone", forKey: DefaultsKey.remoteDeviceID)
+        let now = Date(timeIntervalSince1970: 1_770_000_000)
+        let linked = bridgeRecord(
+            deviceID: "linked-iphone",
+            deviceName: "Linked iPhone",
+            lastSeenAt: now.addingTimeInterval(-60)
+        )
+        let newer = bridgeRecord(
+            deviceID: "other-iphone",
+            deviceName: "Other iPhone",
+            lastSeenAt: now
+        )
+
+        MuesliBridgeDeviceIdentity.updateRemoteDevices(
+            from: [linked, newer],
+            defaults: defaults
+        )
+
+        #expect(defaults.string(forKey: DefaultsKey.remoteDeviceID) == "linked-iphone")
+        #expect(defaults.string(forKey: DefaultsKey.remoteDeviceName) == "Linked iPhone")
     }
 
     @Test("updateRemoteDevices clears remote bridge when no companion exists")

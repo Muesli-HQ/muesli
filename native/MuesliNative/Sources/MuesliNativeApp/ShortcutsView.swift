@@ -5,11 +5,13 @@ import MuesliCore
 struct ShortcutsView: View {
     let appState: AppState
     let controller: MuesliController
+    @State private var permissionMonitoringClientID = UUID()
     @State private var recordingTarget: ShortcutTarget?
     @State private var eventMonitor: Any?
     @State private var pendingModifierKeyCode: UInt16?
     @State private var dictationShortcutMessage: String?
     @State private var computerUseShortcutMessage: String?
+    @State private var quilShortcutMessage: String?
     @State private var meetingRecordingShortcutMessage: String?
 
     var body: some View {
@@ -27,23 +29,49 @@ struct ShortcutsView: View {
 
                 computerUseShortcutSection
 
+                quilShortcutSection
+
                 meetingRecordingShortcutSection
 
                 doubleTapSection
 
                 resetButton
             }
-            .padding(MuesliTheme.spacing32)
+            .padding(.horizontal, MuesliTheme.spacing32)
+            .padding(.top, MuesliTheme.pageTop)
+            .padding(.bottom, MuesliTheme.spacing32)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .onAppear {
+            controller.beginInteractionPermissionMonitoring(clientID: permissionMonitoringClientID)
+            reconcilePushToTalkState()
+            reconcileIndependentShortcutState()
+        }
+        .onChange(of: appState.interactionPermissionSnapshot) { _, snapshot in
+            guard let snapshot else { return }
+            reconcilePushToTalkState(permissions: snapshot.onboardingSnapshot)
+            reconcileIndependentShortcutState()
+        }
         .onDisappear {
+            controller.endInteractionPermissionMonitoring(clientID: permissionMonitoringClientID)
             stopRecording()
         }
+    }
+
+    private var isPushToTalkEnabled: Bool {
+        appState.config.enablePushToTalk
+    }
+
+    private var pushToTalkPermissionMessage: String {
+        PushToTalkEnablementPolicy.PermissionProfile.resolved(
+            for: appState.config.resolvedOnboardingUseCase
+        ).missingPermissionsMessage
     }
 
     private enum ShortcutTarget {
         case dictation
         case computerUse
+        case quil
         case meetingRecording
     }
 
@@ -59,17 +87,27 @@ struct ShortcutsView: View {
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
                 Spacer()
-                hotkeyBadge(appState.config.dictationHotkey)
+                HStack(spacing: MuesliTheme.spacing8) {
+                    Text(isPushToTalkEnabled ? "On" : "Off")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                    Toggle("Push to Talk", isOn: Binding(
+                        get: { isPushToTalkEnabled },
+                        set: updatePushToTalkEnabled
+                    ))
+                    .toggleStyle(.switch)
+                    .tint(MuesliTheme.accent)
+                    .labelsHidden()
+                }
             }
 
             Divider()
                 .background(MuesliTheme.surfaceBorder)
 
-            shortcutControls(
-                target: .dictation,
-                threshold: appState.config.hotkeyTriggerThresholdMS
-            ) { value in
-                controller.updateConfig { $0.hotkeyTriggerThresholdMS = value }
+            pushToTalkControls
+
+            if !isPushToTalkEnabled {
+                pushToTalkDisabledMessage
             }
 
             if let dictationShortcutMessage {
@@ -190,6 +228,59 @@ struct ShortcutsView: View {
         )
     }
 
+    private var quilShortcutSection: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                    HStack(spacing: MuesliTheme.spacing8) {
+                        Image(nsImage: QuillIcon.image())
+                            .renderingMode(.template)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 16, height: 16)
+                            .foregroundStyle(MuesliTheme.accent)
+                        Text("Quill")
+                            .font(MuesliTheme.headline())
+                            .foregroundStyle(MuesliTheme.textPrimary)
+                    }
+                    Text("Highlight text, hold to speak an editing instruction, then release to replace")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
+                Spacer()
+                Toggle("", isOn: Binding(
+                    get: { appState.config.enableQuilMode },
+                    set: { newValue in
+                        let result = controller.updateQuilModeEnabled(newValue)
+                        quilShortcutMessage = result.message
+                    }
+                ))
+                .toggleStyle(.switch)
+                .tint(MuesliTheme.accent)
+                .labelsHidden()
+            }
+
+            Divider().background(MuesliTheme.surfaceBorder)
+
+            shortcutControls(
+                target: .quil,
+                threshold: appState.config.quilHotkeyTriggerThresholdMS,
+                isEnabled: appState.config.enableQuilMode
+            ) { value in
+                controller.updateConfig { $0.quilHotkeyTriggerThresholdMS = value }
+            }
+
+            if let quilShortcutMessage { shortcutMessage(quilShortcutMessage) }
+        }
+        .padding(MuesliTheme.spacing16)
+        .background(MuesliTheme.backgroundRaised)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+        .overlay(
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
+                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+        )
+    }
+
     private func hotkeyBadge(_ hotkey: HotkeyConfig) -> some View {
         Text(hotkey.displayLabel)
             .font(.system(size: 12, weight: .medium, design: .rounded))
@@ -213,7 +304,7 @@ struct ShortcutsView: View {
     ) -> some View {
         HStack(spacing: MuesliTheme.spacing12) {
             hotkeyBadge(hotkey(for: target))
-            changeButton(for: target)
+            compactChangeButton(for: target)
                 .disabled(!isEnabled)
                 .opacity(isEnabled ? 1 : 0.55)
             Spacer(minLength: MuesliTheme.spacing16)
@@ -226,20 +317,45 @@ struct ShortcutsView: View {
         }
     }
 
+    private var pushToTalkControls: some View {
+        HStack(spacing: MuesliTheme.spacing12) {
+            Text("Shortcut")
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textSecondary)
+            hotkeyBadge(appState.config.dictationHotkey)
+            compactChangeButton(for: .dictation)
+            Spacer(minLength: MuesliTheme.spacing16)
+            thresholdInput(
+                value: appState.config.hotkeyTriggerThresholdMS,
+                label: "Hold duration"
+            ) { value in
+                controller.updateConfig { $0.hotkeyTriggerThresholdMS = value }
+            }
+        }
+        .disabled(!isPushToTalkEnabled)
+        .opacity(isPushToTalkEnabled ? 1 : 0.55)
+    }
+
     private func hotkey(for target: ShortcutTarget) -> HotkeyConfig {
         switch target {
         case .dictation:
             return appState.config.dictationHotkey
         case .computerUse:
             return appState.config.computerUseHotkey
+        case .quil:
+            return appState.config.quilHotkey
         case .meetingRecording:
             return appState.config.meetingRecordingHotkey
         }
     }
 
-    private func thresholdInput(value: Int, onChange: @escaping (Int) -> Void) -> some View {
+    private func thresholdInput(
+        value: Int,
+        label: String = "Hold",
+        onChange: @escaping (Int) -> Void
+    ) -> some View {
         HStack(spacing: MuesliTheme.spacing8) {
-            Text("Hold")
+            Text(label)
                 .font(MuesliTheme.caption())
                 .foregroundStyle(MuesliTheme.textSecondary)
 
@@ -272,13 +388,29 @@ struct ShortcutsView: View {
         .help("Hold threshold: \(HotkeyTriggerTiming.minThresholdMilliseconds)-\(HotkeyTriggerTiming.maxThresholdMilliseconds) ms")
     }
 
+    private var pushToTalkDisabledMessage: some View {
+        HStack(spacing: MuesliTheme.spacing8) {
+            Image(systemName: "info.circle")
+                .foregroundStyle(MuesliTheme.accent)
+            Text(pushToTalkDisabledMessageText)
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textSecondary)
+        }
+    }
+
+    private var pushToTalkDisabledMessageText: String {
+        appState.config.resolvedOnboardingUseCase.includesPushToTalk
+            ? "Push to Talk is turned off."
+            : "Dictation wasn’t enabled during setup."
+    }
+
     private func shortcutMessage(_ message: String) -> some View {
         Text(message)
             .font(MuesliTheme.caption())
             .foregroundStyle(MuesliTheme.transcribing)
     }
 
-    private func changeButton(for target: ShortcutTarget) -> some View {
+    private func compactChangeButton(for target: ShortcutTarget) -> some View {
         Button {
             if recordingTarget == target {
                 stopRecording()
@@ -286,25 +418,80 @@ struct ShortcutsView: View {
                 startRecording(target)
             }
         } label: {
-            Text(recordingTarget == target ? recordingPrompt(for: target) : "Change Shortcut")
+            Text(recordingTarget == target ? recordingPrompt(for: target) : "Change…")
                 .font(MuesliTheme.body())
-                .foregroundStyle(recordingTarget == target ? MuesliTheme.accent : MuesliTheme.textPrimary)
+                .foregroundStyle(MuesliTheme.accent)
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, MuesliTheme.spacing12)
-        .padding(.vertical, MuesliTheme.spacing8)
-        .background(recordingTarget == target ? MuesliTheme.accentSubtle : MuesliTheme.surfacePrimary)
-        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-        .overlay(
-            RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                .strokeBorder(recordingTarget == target ? MuesliTheme.accent.opacity(0.3) : MuesliTheme.surfaceBorder, lineWidth: 1)
+    }
+
+    private func updatePushToTalkEnabled(_ enabled: Bool) {
+        if !enabled, recordingTarget == .dictation {
+            stopRecording()
+        }
+        let result = controller.updatePushToTalkEnabled(enabled, requestPermissions: enabled)
+        switch result {
+        case .alreadyEnabled, .enabled, .disabled:
+            dictationShortcutMessage = nil
+        case .needsPermissions:
+            dictationShortcutMessage = pushToTalkPermissionMessage
+        }
+    }
+
+    private func reconcilePushToTalkState(
+        permissions: OnboardingPermissionSnapshot? = nil
+    ) {
+        if let result = controller.reconcilePendingPushToTalkEnableIfReady(permissions: permissions) {
+            switch result {
+            case .alreadyEnabled, .enabled, .disabled:
+                dictationShortcutMessage = nil
+            case .needsPermissions:
+                dictationShortcutMessage = pushToTalkPermissionMessage
+            }
+            return
+        }
+
+        guard isPushToTalkEnabled, let permissions else { return }
+        let profile = PushToTalkEnablementPolicy.PermissionProfile.resolved(
+            for: appState.config.resolvedOnboardingUseCase
         )
+        if profile.hasRequiredPermissions(permissions) {
+            if dictationShortcutMessage == profile.missingPermissionsMessage {
+                dictationShortcutMessage = nil
+            }
+        } else if dictationShortcutMessage == nil
+                    || dictationShortcutMessage == profile.missingPermissionsMessage {
+            dictationShortcutMessage = profile.missingPermissionsMessage
+        }
+    }
+
+    private func reconcileIndependentShortcutState() {
+        let permissionMessage = ShortcutFeatureEnablementPolicy.missingPermissionsMessage
+        let computerUsePermissionMessage = controller.independentShortcutPermissionMessageIfNeeded(
+            isEnabled: appState.config.enableComputerUseHotkey
+        )
+        if let computerUsePermissionMessage {
+            computerUseShortcutMessage = computerUsePermissionMessage
+        } else if computerUseShortcutMessage == permissionMessage {
+            computerUseShortcutMessage = nil
+        }
+
+        let quilPermissionMessage = controller.independentShortcutPermissionMessageIfNeeded(
+            isEnabled: appState.config.enableQuilMode
+        )
+        if let quilPermissionMessage {
+            quilShortcutMessage = quilPermissionMessage
+        } else if quilShortcutMessage == permissionMessage {
+            quilShortcutMessage = nil
+        }
     }
 
     private func recordingPrompt(for target: ShortcutTarget) -> String {
         switch target {
         case .meetingRecording:
             return "Press a key or modifier..."
+        case .quil:
+            return "Press one key or a two-key shortcut..."
         case .dictation, .computerUse:
             return "Press a modifier key..."
         }
@@ -317,7 +504,7 @@ struct ShortcutsView: View {
                     Text("Hands-Free Mode")
                         .font(MuesliTheme.headline())
                         .foregroundStyle(MuesliTheme.textPrimary)
-                    Text("Double-tap dictation or CUA to start, tap again to stop")
+                    Text("Double-tap dictation, Quill, or CUA to start; tap again to stop")
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
@@ -348,6 +535,7 @@ struct ShortcutsView: View {
             dictationShortcutMessage = nil
             computerUseShortcutMessage = nil
             meetingRecordingShortcutMessage = nil
+            quilShortcutMessage = nil
         } label: {
             Text("Reset to Defaults")
                 .font(MuesliTheme.body())
@@ -358,10 +546,13 @@ struct ShortcutsView: View {
             appState.config.dictationHotkey == .default
                 && appState.config.computerUseHotkey == .computerUseDefault
                 && !appState.config.enableComputerUseHotkey
+                && appState.config.quilHotkey == .quilDefault
+                && !appState.config.enableQuilMode
                 && appState.config.meetingRecordingHotkey == .meetingRecordingDefault
                 && !appState.config.enableMeetingRecordingHotkey
                 && appState.config.hotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds
                 && appState.config.computerUseHotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds
+                && appState.config.quilHotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds
                 && appState.config.meetingRecordingHotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultMeetingThresholdMilliseconds
         )
     }
@@ -378,10 +569,12 @@ struct ShortcutsView: View {
                     return nil
                 }
                 let mods = HotkeyConfig.supportedCombinationModifiers(from: event.modifierFlags)
-                let hasModifiers = mods.contains(.command) || mods.contains(.control)
-                    || mods.contains(.option)
-                guard target == .meetingRecording,
-                      hasModifiers,
+                let modifierCount = [NSEvent.ModifierFlags.command, .control, .option, .shift]
+                    .filter { mods.contains($0) }.count
+                let allowsCombination = target == .meetingRecording || target == .quil
+                guard allowsCombination,
+                      (target != .quil || modifierCount == 1),
+                      modifierCount > 0,
                       HotkeyConfig.letterLabel(for: event.keyCode) != nil else {
                     return event
                 }
@@ -400,6 +593,7 @@ struct ShortcutsView: View {
             case 56, 60: isDown = flags.contains(.shift)
             case 58, 61: isDown = flags.contains(.option)
             case 59, 62: isDown = flags.contains(.control)
+            case 63: isDown = flags.contains(.function)
             default: isDown = false
             }
             if isDown {
@@ -420,6 +614,8 @@ struct ShortcutsView: View {
             result = controller.updateDictationHotkey(config)
         case .computerUse:
             result = controller.updateComputerUseHotkey(config)
+        case .quil:
+            result = controller.updateQuilHotkey(config)
         case .meetingRecording:
             result = controller.updateMeetingRecordingHotkey(config)
         }
@@ -435,13 +631,16 @@ struct ShortcutsView: View {
         switch target {
         case .dictation:
             dictationShortcutMessage = message
-            if message == nil { computerUseShortcutMessage = nil; meetingRecordingShortcutMessage = nil }
+            if message == nil { computerUseShortcutMessage = nil; meetingRecordingShortcutMessage = nil; quilShortcutMessage = nil }
         case .computerUse:
             computerUseShortcutMessage = message
-            if message == nil { dictationShortcutMessage = nil; meetingRecordingShortcutMessage = nil }
+            if message == nil { dictationShortcutMessage = nil; meetingRecordingShortcutMessage = nil; quilShortcutMessage = nil }
+        case .quil:
+            quilShortcutMessage = message
+            if message == nil { dictationShortcutMessage = nil; computerUseShortcutMessage = nil; meetingRecordingShortcutMessage = nil }
         case .meetingRecording:
             meetingRecordingShortcutMessage = message
-            if message == nil { dictationShortcutMessage = nil; computerUseShortcutMessage = nil }
+            if message == nil { dictationShortcutMessage = nil; computerUseShortcutMessage = nil; quilShortcutMessage = nil }
         }
     }
 

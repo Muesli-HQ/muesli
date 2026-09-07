@@ -60,7 +60,7 @@ struct ModelsView: View {
         self.controller = controller
 
         let active = appState.selectedBackend
-        _selectedParakeetModel = State(initialValue: BackendOption.parakeetFamily.contains(active) ? active.model : BackendOption.parakeetMultilingual.model)
+        _selectedParakeetModel = State(initialValue: BackendOption.parakeetFamily.contains(active) ? active.model : BackendOption.parakeetUnified.model)
         _selectedWhisperModel = State(initialValue: BackendOption.whisperFamily.contains(active) ? active.model : BackendOption.whisperSmall.model)
         _showExperimental = State(initialValue: appState.activeFeatureTourTarget == .experimentalModels)
     }
@@ -89,7 +89,9 @@ struct ModelsView: View {
 
                     selectedCategoryContent
                 }
-                .padding(MuesliTheme.spacing32)
+                .padding(.horizontal, MuesliTheme.spacing32)
+            .padding(.top, MuesliTheme.pageTop)
+            .padding(.bottom, MuesliTheme.spacing32)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .onAppear {
@@ -149,7 +151,7 @@ struct ModelsView: View {
                 postProcModelToDelete = nil
             }
         } message: {
-            Text("The downloaded model files will be removed from this Mac. You can download the model again later.")
+            Text(postProcessorDeleteMessage)
         }
         .alert(
             "Delete \"\(MeetingLiveCaptionModelStore.label)\"?",
@@ -169,6 +171,13 @@ struct ModelsView: View {
             get: { appState.selectedModelsCategory },
             set: { appState.selectedModelsCategory = $0 }
         )
+    }
+
+    private var postProcessorDeleteMessage: String {
+        guard let option = postProcModelToDelete, !option.isDownloadable else {
+            return "The downloaded model files will be removed from this Mac. You can download the model again later."
+        }
+        return "The downloaded model files will be removed from this Mac. This legacy model is no longer available to download, so deleting it is permanent."
     }
 
     @ViewBuilder
@@ -191,13 +200,13 @@ struct ModelsView: View {
             familyCard(
                 title: "Parakeet Family",
                 subtitle: "The most responsive choices for everyday dictation, with multilingual and English-only options.",
-                defaultBadge: "Default: v3",
+                defaultBadge: "Recommended: Unified",
                 logo: "nvidia-logo",
                 selection: $selectedParakeetModel,
                 options: BackendOption.parakeetFamily
             )
-
-            modelCard(option: .qwen3Asr, logo: "qwen-logo")
+            .id(FeatureTourTarget.parakeetFamilyCard.rawValue)
+            .featureTourTarget(.parakeetFamilyCard)
 
             familyCard(
                 title: "Whisper",
@@ -250,6 +259,9 @@ struct ModelsView: View {
             appState.selectedModelsCategory = .dictation
         case .appleSpeechCard:
             target = .appleSpeechCard
+            appState.selectedModelsCategory = .dictation
+        case .parakeetFamilyCard:
+            target = .parakeetFamilyCard
             appState.selectedModelsCategory = .dictation
         case .streamingModels:
             target = .streamingModels
@@ -593,6 +605,20 @@ struct ModelsView: View {
         )
     }
 
+    private var parakeetLanguageSelection: Binding<ParakeetLanguage> {
+        Binding(
+            get: { appState.config.resolvedParakeetLanguage },
+            set: { controller.selectParakeetLanguage($0) }
+        )
+    }
+
+    private var qwen3AsrLanguageSelection: Binding<Qwen3AsrLanguage> {
+        Binding(
+            get: { appState.config.resolvedQwen3AsrLanguage },
+            set: { controller.selectQwen3AsrLanguage($0) }
+        )
+    }
+
     private var appleSpeechLanguageSelection: Binding<String> {
         Binding(
             get: { appState.config.resolvedAppleSpeechLanguage },
@@ -617,17 +643,19 @@ struct ModelsView: View {
             .padding(.top, MuesliTheme.spacing8)
 
             VStack(spacing: MuesliTheme.spacing12) {
-                gemmaCleanupModelCard
+                ForEach(Gemma4LiteRTModel.allCases) { model in
+                    gemmaCleanupModelCard(model)
+                }
 
-                ForEach(PostProcessorOption.all) { option in
+                ForEach(displayedPostProcessorOptions) { option in
                     postProcModelCard(option)
                 }
             }
         }
     }
 
-    private var gemmaCleanupModelCard: some View {
-        let option = BackendOption.gemma4E2BLiteRT
+    private func gemmaCleanupModelCard(_ model: Gemma4LiteRTModel) -> some View {
+        let option = BackendOption.gemma4LiteRT(model)
         let isDownloaded = downloadedModels.contains(option.model)
         let isCompatible = TranscriptCleanupBackendOption.gemma4LiteRT
             .isCompatible(with: appState.selectedBackend)
@@ -635,11 +663,13 @@ struct ModelsView: View {
         return modelCard(
             option: option,
             logo: "google-logo",
-            isActive: isDownloaded && appState.selectedPostProcessorBackend == .gemma4LiteRT,
+            isActive: isDownloaded
+                && appState.selectedPostProcessorBackend == .gemma4LiteRT
+                && appState.config.postProcessorGemmaModel == model.repoID,
             onSetActive: {
-                controller.selectPostProcessorBackend(.gemma4LiteRT)
+                controller.selectGemma4PostProcessor(model)
             },
-            description: "An experimental local option for filler removal, formatting, and obvious transcript errors. It uses the same download as Gemma 4 dictation.",
+            description: "An experimental local option for filler removal, formatting, and obvious transcript errors. It shares the \(model.label) download with dictation and Quill.",
             activeLabel: "Cleanup Active",
             downloadedLabel: isCompatible ? "Downloaded" : "Used for Dictation",
             actionTitle: "Use for Cleanup",
@@ -658,7 +688,7 @@ struct ModelsView: View {
 
         return VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
             HStack(alignment: .top, spacing: MuesliTheme.spacing12) {
-                brandLogo("qwen-logo")
+                brandLogo(option.logoResourceName)
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
                     HStack(spacing: MuesliTheme.spacing8) {
                         Text(option.label)
@@ -739,7 +769,7 @@ struct ModelsView: View {
                             .frame(width: 20, height: 20)
                     }
                     .buttonStyle(.plain)
-                } else {
+                } else if option.isDownloadable {
                     Button("Download") {
                         startPostProcDownload(option)
                     }
@@ -750,6 +780,10 @@ struct ModelsView: View {
                     .padding(.vertical, 4)
                     .background(MuesliTheme.accentSubtle)
                     .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                } else {
+                    Text("No longer available")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
                 }
             }
         }
@@ -845,6 +879,28 @@ struct ModelsView: View {
                     .pickerStyle(.menu)
                     .frame(maxWidth: 220, alignment: .leading)
                 }
+            }
+
+            if selectedOption.backend == BackendOption.parakeetMultilingual.backend {
+                HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
+                    Text("Language")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .frame(width: 64, alignment: .leading)
+
+                    Picker("", selection: parakeetLanguageSelection) {
+                        ForEach(ParakeetLanguage.allCases, id: \.self) { language in
+                            Text(language.label).tag(language)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 220, alignment: .leading)
+                }
+
+                Text("Script filter: keeps the chosen language's writing script in the transcript. Parakeet v3 only — v2 ignores this setting.")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
             }
 
             if showsDownloadStatus {
@@ -1006,6 +1062,7 @@ struct ModelsView: View {
     private func logoForBackend(_ option: BackendOption) -> String? {
         switch option.backend {
         case "fluidaudio": return "nvidia-logo"
+        case "parakeet-unified": return "nvidia-logo"
         case "whisper": return "openai-logo"
         case "cohere": return "cohere-logo"
         case "qwen": return "qwen-logo"
@@ -1190,6 +1247,24 @@ struct ModelsView: View {
                 }
             }
 
+            if option.backend == BackendOption.qwen3Asr.backend {
+                HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
+                    Text("Language")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .frame(width: 64, alignment: .leading)
+
+                    Picker("", selection: qwen3AsrLanguageSelection) {
+                        ForEach(Qwen3AsrLanguage.allCases, id: \.self) { language in
+                            Text(language.label).tag(language)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 220, alignment: .leading)
+                }
+            }
+
             if option.backend == BackendOption.appleSpeechAnalyzer.backend {
                 HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
                     Text("Language")
@@ -1335,6 +1410,7 @@ struct ModelsView: View {
     // MARK: - Post-Processor Actions
 
     private func startPostProcDownload(_ option: PostProcessorOption) {
+        guard option.isDownloadable else { return }
         withAnimation { _ = downloadingPostProcModels.insert(option.id) }
         downloadProgressPostProc[option.id] = 0.02
         downloadMessages.removeValue(forKey: option.id)
@@ -1482,11 +1558,21 @@ struct ModelsView: View {
 
     private func checkDownloadedPostProcModels() {
         downloadedPostProcModels.removeAll()
-        for option in PostProcessorOption.all {
+        for option in PostProcessorOption.downloaded {
             if option.isDownloaded {
                 downloadedPostProcModels.insert(option.id)
             }
         }
+    }
+
+    /// The retired v2 cleanup model stays visible only for people who already
+    /// have it installed. Deleting it removes the card, and the model cannot
+    /// be downloaded again.
+    private var displayedPostProcessorOptions: [PostProcessorOption] {
+        PostProcessorOption.all
+            + (downloadedPostProcModels.contains(PostProcessorOption.legacyV2.id)
+                ? [.legacyV2]
+                : [])
     }
 
     // MARK: - Actions
@@ -1696,13 +1782,14 @@ struct ModelsView: View {
            appState.config.resolvedMeetingLiveCaptionBackend == .nemotron35 {
             controller.updateConfig { $0.enableLiveStreamingPartials = false }
         }
-        if !appState.selectedPostProcessorBackend.isCompatible(with: option) {
+        if appState.selectedPostProcessorBackend == .gemma4LiteRT,
+           appState.config.postProcessorGemmaModel == option.model {
             controller.selectPostProcessorBackend(.local)
         }
         if appState.selectedBackend == option {
             let fallback = downloadedModels
                 .compactMap { model in BackendOption.all.first(where: { $0.model == model && $0 != option }) }
-                .first ?? .parakeetMultilingual
+                .first ?? (option == .parakeetUnified ? .parakeetMultilingual : .parakeetUnified)
             controller.selectBackend(fallback)
         }
         let task = downloadTasks[option.model]
@@ -1760,7 +1847,10 @@ struct ModelsView: View {
             SenseVoiceTranscriber.deleteModelFiles(fileManager: fm)
         case "gemma4-litert":
             await controller.transcriptionCoordinator.unloadGemma4LiteRTTranscriber()
-            try Gemma4LiteRTModelStore.deleteModelFiles(fileManager: fm)
+            try Gemma4LiteRTModelStore.deleteModelFiles(
+                model: Gemma4LiteRTModel.resolved(option.model),
+                fileManager: fm
+            )
         case "fluidaudio":
             let version: AsrModelVersion = option.model.contains("v2") ? .v2 : .v3
             await controller.transcriptionCoordinator.unloadFluidAudioTranscriber(
@@ -1770,6 +1860,9 @@ struct ModelsView: View {
                 ? ManagedASRModelPlans.parakeetV2()
                 : ManagedASRModelPlans.parakeetV3()
             try plan.delete(fileManager: fm)
+        case "parakeet-unified":
+            await controller.transcriptionCoordinator.unloadParakeetUnifiedTranscriber()
+            try ManagedASRModelPlans.parakeetUnified().delete(fileManager: fm)
         case "qwen":
             await controller.transcriptionCoordinator.unloadQwen3Transcriber()
             try Qwen3AsrModelStore.deleteModelFiles(fileManager: fm)
@@ -1829,6 +1922,8 @@ struct ModelsView: View {
                 ? ManagedASRModelPlans.parakeetV2()
                 : ManagedASRModelPlans.parakeetV3()
             return plan.isAvailableLocally(fileManager: fm)
+        case "parakeet-unified":
+            return ManagedASRModelPlans.parakeetUnified().isAvailableLocally(fileManager: fm)
         case "qwen":
             return Qwen3AsrModelStore.isModelDownloaded(fileManager: fm)
         case "cohere":
@@ -1838,7 +1933,10 @@ struct ModelsView: View {
         case "sensevoice":
             return SenseVoiceTranscriber.isModelDownloaded(fileManager: fm)
         case "gemma4-litert":
-            return Gemma4LiteRTModelStore.isAvailableLocally(fileManager: fm)
+            return Gemma4LiteRTModelStore.isAvailableLocally(
+                model: Gemma4LiteRTModel.resolved(option.model),
+                fileManager: fm
+            )
         case "apple-speech":
             if #available(macOS 26.0, *) {
                 return AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem

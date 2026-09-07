@@ -52,6 +52,8 @@ struct CoreAudioSystemRecorderTests {
         let recorder = CoreAudioSystemRecorder()
         recorder.testing_setRecording(true)
         var attempts = 0
+        var routeChanges = 0
+        recorder.onRouteChange = { routeChanges += 1 }
         recorder.createAndStartForTesting = { attempts += 1 }
 
         CoreAudioSystemRecorder.routeSettleDelay = 0.05
@@ -61,6 +63,7 @@ struct CoreAudioSystemRecorderTests {
         recorder.restartTapForDefaultOutputDeviceChange()
         recorder.restartTapForDefaultOutputDeviceChange()
         #expect(recorder.isRouteSettling)
+        #expect(routeChanges == 2)
 
         // The tap is route-independent (global process mix): no rebuild ever.
         try await Task.sleep(for: .milliseconds(150))
@@ -87,10 +90,12 @@ struct CoreAudioSystemRecorderTests {
         #expect(attempts == 1)
     }
 
-    @Test("CoreAudio tap backend supports heartbeat monitoring; SCK fallback does not")
-    func heartbeatCapabilityByBackend() {
-        #expect(CoreAudioSystemRecorder().supportsHeartbeatMonitoring)
-        #expect(!SystemAudioRecorder().supportsHeartbeatMonitoring)
+    @Test("capture-dead state requires positive recorder failure evidence")
+    func captureDeadDefaultsToFalse() {
+        #expect(!CoreAudioSystemRecorder().captureIsDead)
+        #expect(!SystemAudioRecorder().captureIsDead)
+        #expect(CoreAudioSystemRecorder().supportsFailureRecovery)
+        #expect(!SystemAudioRecorder().supportsFailureRecovery)
     }
 
     @Test("failed rebuild retries then succeeds without a terminal failure")

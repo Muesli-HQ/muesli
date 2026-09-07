@@ -146,7 +146,9 @@ struct AboutView: View {
 
                 Spacer(minLength: MuesliTheme.spacing32)
             }
-            .padding(MuesliTheme.spacing32)
+            .padding(.horizontal, MuesliTheme.spacing32)
+            .padding(.top, MuesliTheme.pageTop)
+            .padding(.bottom, MuesliTheme.spacing32)
         }
         .background(MuesliTheme.backgroundBase)
     }

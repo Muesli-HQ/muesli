@@ -59,7 +59,7 @@ struct UpcomingMeetingEvent {
 /// A calendar exposed by EventKit (iCloud, On-My-Mac, Exchange, an Internet
 /// Account–linked Google calendar, etc.). Used by Settings to show which
 /// calendars Muesli is reading from and to drive per-calendar enable/disable.
-struct AvailableCalendar: Identifiable, Equatable {
+struct AvailableCalendar: Identifiable, Equatable, Sendable {
     let id: String           // EKCalendar.calendarIdentifier
     let title: String
     let sourceTitle: String  // e.g. "iCloud", "spencer@dockstreet.com"
@@ -313,7 +313,9 @@ final class CalendarMonitor {
     /// Exchange, and any Google account linked via System Settings > Internet
     /// Accounts. Used by Settings to surface which calendars Muesli is reading
     /// from and to power per-calendar enable/disable.
-    func availableCalendars() -> [AvailableCalendar] {
+    /// Produces a value-only snapshot so EventKit objects never cross the
+    /// background boundary used by Settings and calendar-monitor refreshes.
+    static func availableCalendars() -> [AvailableCalendar] {
         let freshStore = EKEventStore()
         return freshStore.calendars(for: .event)
             .map { cal in

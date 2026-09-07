@@ -479,16 +479,18 @@
 
   <h3>Sidebar Navigation</h3>
   <div class="icon-grid">
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F552;</span><div class="icon-label">clock.fill<br>Timeline</div></div>
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F399;</span><div class="icon-label">mic.fill<br>Dictations</div></div>
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F465;</span><div class="icon-label">person.2.fill<br>Meetings</div></div>
+    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F552;</span><div class="icon-label">clock<br>Timeline</div></div>
+    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x301C;</span><div class="icon-label">waveform<br>Dictations</div></div>
+    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F465;</span><div class="icon-label">person.wave.2<br>Meetings</div></div>
+    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F4CA;</span><div class="icon-label">chart.bar.xaxis<br>Insights</div></div>
     <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F4D6;</span><div class="icon-label">character.book.closed<br>Dictionary</div></div>
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x2B07;</span><div class="icon-label">square.and.arrow.down<br>Models</div></div>
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x2328;</span><div class="icon-label">keyboard<br>Shortcuts</div></div>
+    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F4BB;</span><div class="icon-label">cpu<br>Models</div></div>
+    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x2318;</span><div class="icon-label">command<br>Shortcuts</div></div>
     <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x2699;</span><div class="icon-label">gearshape<br>Settings</div></div>
     <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x2139;</span><div class="icon-label">info.circle<br>About</div></div>
   </div>
-  <p style="color:var(--text-secondary);font-size:13px;margin:8px 0">Timeline (clock.fill) leads: one chronological feed combining dictations and meetings. The Meetings row expands to reveal meeting folders. Insights (streak, words, pace, meetings) is a drill-in view with a back button, not a sidebar item.</p>
+  <p style="color:var(--text-secondary);font-size:13px;margin:8px 0">Timeline (clock) leads: one chronological feed combining dictations and meetings. The Meetings row expands to reveal meeting folders, with children indented as a group (position carries nesting, not icon size). Insights is a first-class sidebar item. Models, Shortcuts, Settings, and About sit in the bottom section. The rail collapses to a 68pt icon strip via the header toggle.</p>
+  <p style="color:var(--text-secondary);font-size:13px;margin:8px 0">Icons are outline-only at 14pt medium; <code>.fill</code> is reserved for selection state, keeping ink weight even across the column. The icon column is center-aligned and starts at the search field's inner padding, so row glyphs sit directly under the magnifier.</p>
 
   <h3>Floating Indicator Controls</h3>
   <table>
@@ -663,17 +665,17 @@
   </div>
   <div class="component-preview" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px">
     <div style="display:inline-flex;align-items:center;gap:0">
-      <div style="background:#33B888;color:white;font-size:11px;font-weight:600;padding:5px 10px;border-radius:5px 0 0 5px">Join &amp; Record</div>
+      <div style="background:#33B888;color:white;font-size:11px;font-weight:600;padding:5px 10px;border-radius:5px 0 0 5px">Join &amp; Transcribe</div>
       <div style="background:#2a9e74;color:white;font-size:11px;padding:5px 6px;border-radius:0 5px 5px 0;border-left:1px solid rgba(0,0,0,0.15)">&#x25BE;</div>
     </div>
-    <div class="btn-primary" style="font-size:11px;padding:5px 14px">Start Recording</div>
+    <div class="btn-primary" style="font-size:11px;padding:5px 14px">Start Transcribing</div>
   </div>
   <table>
     <tr><th>Variant</th><th>Background</th><th>Text</th><th>Padding</th><th>Radius</th></tr>
     <tr><td>Primary</td><td><code>accent</code></td><td>White</td><td>H:20 V:8</td><td>6pt</td></tr>
     <tr><td>Secondary / Icon</td><td><code>surfacePrimary</code></td><td><code>textSecondary</code></td><td>H:8 V:5</td><td>6pt</td></tr>
-    <tr><td>Join &amp; Record (split)</td><td><code>joinRecord</code></td><td>White, 10pt semi</td><td>H:10 V:5 + chevron 6pt</td><td>5pt (split left/right)</td></tr>
-    <tr><td>Join &amp; Record (inline)</td><td><code>joinRecord</code></td><td>White, 10pt medium</td><td>H:8 V:4</td><td>5pt</td></tr>
+    <tr><td>Join &amp; Transcribe (split)</td><td><code>joinRecord</code></td><td>White, 10pt semi</td><td>H:10 V:5 + chevron 6pt</td><td>5pt (split left/right)</td></tr>
+    <tr><td>Join &amp; Transcribe (inline)</td><td><code>joinRecord</code></td><td>White, 10pt medium</td><td>H:8 V:4</td><td>5pt</td></tr>
   </table>
 
   <h3>Cards</h3>
@@ -720,14 +722,14 @@
     <tr><td>Fade in</td><td>0.25s alpha 0&rarr;1</td></tr>
     <tr><td>Fade out</td><td>0.2s alpha 1&rarr;0</td></tr>
     <tr><td>Platform icons</td><td>Zoom (PNG), Google Meet (PNG) &mdash; 28&times;28pt, 8pt left offset</td></tr>
-    <tr><td>Chevron dropdown</td><td>NSMenu with "Join Only" + "Record Only" &mdash; darker green (#2a9e74), 24pt wide</td></tr>
-    <tr><td>No URL fallback</td><td>Single blue "Start Recording" button (120&times;30pt)</td></tr>
+    <tr><td>Chevron dropdown</td><td>NSMenu with "Join Only" + "Transcribe Only" &mdash; darker green (#2a9e74), 24pt wide</td></tr>
+    <tr><td>No URL fallback</td><td>Single blue "Start Transcribing" button (126&times;30pt)</td></tr>
   </table>
 
-  <h3>Join & Record Button (Coming Up)</h3>
+  <h3>Join &amp; Transcribe Button (Coming Up)</h3>
   <div class="component-preview" style="display:flex;gap:12px;align-items:center">
     <div style="display:inline-flex;align-items:center;gap:4px;background:#33B888;color:white;font-size:10px;font-weight:500;padding:4px 8px;border-radius:5px">
-      <span style="font-size:9px">&#x25B6;</span> Join &amp; Record
+      <span style="font-size:9px">&#x25B6;</span> Join &amp; Transcribe
     </div>
   </div>
   <table>

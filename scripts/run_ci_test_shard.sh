@@ -22,7 +22,15 @@ case "${shard}" in
       MuesliCKSyncEngineTests
       MuesliCLITests
       ChatGPTAuthTests
+      ChatGPTResponsesTransportTests
       ChatGPTTokenStorageTests
+      OpenRouterAuthTests
+      SettingsPermissionRefreshReasonTests
+      InteractionPermissionMonitorTests
+      AccessibilityPermissionGuideTests
+      DictationTestLifecycleTests
+      OnboardingFlowTests
+      OnboardingProgressTests
       FloatingIndicatorVisibilityTests
       IndicatorFrameSizeTests
       WindowAppearanceTests
@@ -36,6 +44,7 @@ case "${shard}" in
       CustomWordDictionaryTests
       ModelDownloadCoordinatorTests
       IndicASRBackendTests
+      ContributionMilestoneTests
     )
     ;;
   dictation-transcription)
@@ -64,9 +73,14 @@ case "${shard}" in
       DiarizerPreloadDiagnosticsTests
       DiarizerPreloadCoordinationTests
       PasteControllerTests
+      QuilTransformationTests
       BackendOptionTests
+      OpenAIDictationProviderTests
+      OpenRouterTranscriptionClientTests
       SummaryModelPresetTests
       HotkeyMonitorTests
+      PushToTalkEnablementPolicyTests
+      ShortcutFeatureEnablementPolicyTests
       InteractiveAudioSessionOwnershipTests
       DictationStateTests
       HotkeyConfigTests
@@ -77,6 +91,19 @@ case "${shard}" in
     ;;
   meetings)
     filters=(
+      AudioAttributionServiceTests
+      CameraActivityMonitorTests
+      MicrophoneActivityMonitorTests
+      MeetingCaptureLifecycleTests
+      AudioQueueInputRecorderTests
+      FallbackStreamingDictationRecorderTests
+      MeetingCaptureShutdownTests
+      MeetingMonitoringModePolicyTests
+      MeetingAudioRecoveryDeadlinesTests
+      MeetingSignalRefreshPolicyTests
+      MeetingMicRecoveryCoordinatorTests
+      MeetingMicHealthTrackerTests
+      MeetingSystemAudioWatchdogTests
       AudioGraphExceptionBridgeTests
       DiagnosticIncidentTests
       DictationAudioRouteControllerTests

@@ -311,6 +311,22 @@ struct DictationAudioSessionManagerTests {
         })
     }
 
+    @Test("route callback consumes the controller cache without refreshing HAL again")
+    func routeCallbackAvoidsDuplicateRouteRefresh() {
+        let harness = Harness(routeKind: .speakerLike)
+
+        harness.manager.refreshRoute(
+            intent: .idlePrewarm(.routeChange),
+            canWarmUp: true,
+            refreshRoutingCache: false
+        )
+        harness.wait()
+
+        #expect(harness.route.refreshCalls == 0)
+        #expect(harness.recorder.warmUpCalls == 0)
+        #expect(harness.recorder.startCalls == 0)
+    }
+
     @Test("speaker route skips idle warmup when default input is not built in")
     func speakerRouteSkipsIdleWarmupWhenDefaultInputIsNotBuiltIn() {
         let harness = Harness(routeKind: .speakerLike)

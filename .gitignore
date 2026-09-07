@@ -30,6 +30,7 @@ node_modules/
 # Environment variables
 .env
 .env.production
+.env.local
 .dev.vars*
 
 # Local database
@@ -79,6 +80,8 @@ tmp-install/
 
 # Audio/data files
 *.wav
+!assets/audio/quill-activate.wav
+!assets/audio/quill-release.wav
 *.sqlite
 *.db
 

@@ -131,12 +131,27 @@ enum ICloudBridgeState: Equatable {
     case syncing
     case active
     case needsICloud
+    case needsReconnection
+    case needsAccountReplacement
     case error
+}
+
+enum ICloudBridgeCompanionDiscoveryState: Equatable {
+    case idle
+    case waiting
+    case timedOut
 }
 
 struct ActiveMeetingAudioWarning: Equatable {
     let meetingID: Int64
     let message: String
+}
+
+enum OpenRouterModelCatalogLoadState: Equatable {
+    case idle
+    case loading
+    case loaded
+    case failed(String)
 }
 
 @MainActor
@@ -169,12 +184,14 @@ final class AppState {
 
     // Config-driven state
     var selectedBackend: BackendOption = .whisper
+    var dictationProvider: DictationProvider = .local
     var selectedMeetingTranscriptionBackend: BackendOption = .whisper
     var selectedMeetingSummaryBackend: MeetingSummaryBackendOption = .chatGPT
     var selectedPostProcessorBackend: TranscriptCleanupBackendOption = .local
     var activePostProcessor: PostProcessorOption = PostProcessorOption.defaultOption
     var config: AppConfig = AppConfig()
     var launchAtLoginRegistrationState: LaunchAtLoginRegistrationState = .disabled
+    var interactionPermissionSnapshot: InteractionPermissionSnapshot?
 
     // Live status
     var isMeetingRecording: Bool = false
@@ -191,6 +208,13 @@ final class AppState {
     var dictationState: DictationState = .idle
     var isVoiceNoteRecording: Bool = false
     var isChatGPTAuthenticated: Bool = false
+    var isOpenRouterAuthenticated: Bool = false
+    var isOpenRouterEnvironmentManaged: Bool = false
+    var hasStoredOpenRouterCredential: Bool = false
+    var openRouterSummaryModels: [SummaryModelPreset] = []
+    var openRouterSummaryCatalogState: OpenRouterModelCatalogLoadState = .idle
+    var openRouterTranscriptionModels: [SummaryModelPreset] = []
+    var openRouterTranscriptionCatalogState: OpenRouterModelCatalogLoadState = .idle
     var isGoogleCalendarAvailable: Bool = false
     var isGoogleCalendarVerified: Bool = false
     var isGoogleCalendarAuthenticated: Bool = false
@@ -204,6 +228,7 @@ final class AppState {
     var iCloudSyncStatus: String?
     var isICloudSyncInProgress: Bool = false
     var isICloudBridgeActivationPending: Bool = false
+    var iCloudBridgeCompanionDiscoveryState: ICloudBridgeCompanionDiscoveryState = .idle
     var iCloudBridgeState: ICloudBridgeState = .notConfigured
     var iCloudBridgeMessage: String?
     var iCloudBridgeRemoteDeviceName: String?

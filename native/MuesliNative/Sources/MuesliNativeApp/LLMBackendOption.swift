@@ -39,7 +39,7 @@ struct TranscriptCleanupBackendOption: Equatable, Identifiable {
 
     static let gemma4LiteRT = TranscriptCleanupBackendOption(
         backend: "gemma4-litert",
-        label: "Gemma 4 E2B",
+        label: "Gemma 4",
         llmBackend: nil
     )
 
@@ -66,5 +66,32 @@ struct TranscriptCleanupBackendOption: Equatable, Identifiable {
             return .local
         }
         return option
+    }
+}
+
+struct QuilModelSourceOption: Equatable, Identifiable {
+    let id: String
+    let label: String
+    let hostedBackend: TranscriptCleanupBackendOption?
+
+    static let localModels = QuilModelSourceOption(
+        id: "local-models",
+        label: "Local Models",
+        hostedBackend: nil
+    )
+
+    static let hosted: [QuilModelSourceOption] = LLMBackendOption.all.map { option in
+        QuilModelSourceOption(
+            id: option.backend,
+            label: option.label,
+            hostedBackend: .hosted(option)
+        )
+    }
+
+    static let all: [QuilModelSourceOption] = [.localModels] + hosted
+
+    static func resolved(for backend: TranscriptCleanupBackendOption) -> QuilModelSourceOption {
+        guard !backend.isOnDevice else { return .localModels }
+        return hosted.first(where: { $0.hostedBackend == backend }) ?? .localModels
     }
 }

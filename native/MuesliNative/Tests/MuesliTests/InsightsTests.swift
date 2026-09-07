@@ -81,6 +81,39 @@ struct InsightsTests {
         #expect(snapshot.selected.averageWPM == 2)
     }
 
+    @Test("Quill insights use the spoken prompt and exclude model output")
+    func quillInsightsUseSpokenPrompt() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_784_092_800)
+        try store.insertDictation(
+            text: "spokenanchor",
+            durationSeconds: 60,
+            startedAt: now.addingTimeInterval(-60),
+            endedAt: now
+        )
+        try store.insertQuilDictation(
+            outputText: "generatedartifact generatedartifact generatedartifact",
+            originalText: "highlightartifact highlightartifact",
+            instruction: "rewriteprompt concisely",
+            backend: "gemma4LiteRT",
+            model: "gemma-4-e4b-it",
+            durationSeconds: 60,
+            startedAt: now.addingTimeInterval(-60),
+            endedAt: now
+        )
+
+        let snapshot = try store.insightsSnapshot(range: .allTime, now: now)
+        let words = Set(snapshot.dictationWords.map(\.word))
+
+        #expect(snapshot.lifetime.dictationWords == 3)
+        #expect(snapshot.lifetime.dictationSessions == 2)
+        #expect(snapshot.lifetime.averageWPM == 1.5)
+        #expect(words.contains("spokenanchor"))
+        #expect(words.contains("rewriteprompt"))
+        #expect(!words.contains("generatedartifact"))
+        #expect(!words.contains("highlightartifact"))
+    }
+
     @Test("selected average pace uses the caller's local-day boundary")
     func selectedAveragePaceUsesLocalDayBoundary() throws {
         let store = try makeStore()

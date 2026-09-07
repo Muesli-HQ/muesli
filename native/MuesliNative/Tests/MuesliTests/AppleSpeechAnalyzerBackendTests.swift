@@ -156,24 +156,27 @@ struct AppleSpeechAnalyzerBackendTests {
         if #available(macOS 26.0, *), AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem {
             #expect(BackendOption.systemManaged.contains(option))
             #expect(BackendOption.all.contains(option))
-            #expect(BackendOption.onboardingDefault == option)
-            #expect(BackendOption.onboarding.contains(option))
+            // Parakeet Unified is the preferred onboarding model; Apple Speech
+            // stays available in the catalog but is not the default.
+            #expect(BackendOption.onboardingDefault == .parakeetUnified)
+            #expect(!BackendOption.onboarding.contains(option))
         } else {
             #expect(!BackendOption.systemManaged.contains(option))
             #expect(!BackendOption.all.contains(option))
-            #expect(BackendOption.onboardingDefault == .parakeetMultilingual)
+            #expect(BackendOption.onboardingDefault == .parakeetUnified)
             #expect(!BackendOption.onboarding.contains(option))
         }
     }
 
-    @Test("supported catalogue makes Apple Speech the onboarding default")
+    @Test("supported catalogue keeps Apple Speech available without making it the default")
     func supportedCatalogue() {
         let catalog = BackendOption.catalog(appleSpeechAvailable: true)
 
         #expect(catalog.systemManaged == [.appleSpeechAnalyzer])
         #expect(catalog.all.contains(.appleSpeechAnalyzer))
-        #expect(catalog.onboardingDefault == .appleSpeechAnalyzer)
-        #expect(catalog.onboarding.first == .appleSpeechAnalyzer)
+        #expect(catalog.onboardingDefault == .parakeetUnified)
+        #expect(catalog.onboarding.first == .parakeetUnified)
+        #expect(!catalog.onboarding.contains(.appleSpeechAnalyzer))
     }
 
     @Test("unsupported catalogue falls back to Parakeet")
@@ -182,7 +185,7 @@ struct AppleSpeechAnalyzerBackendTests {
 
         #expect(catalog.systemManaged.isEmpty)
         #expect(!catalog.all.contains(.appleSpeechAnalyzer))
-        #expect(catalog.onboardingDefault == .parakeetMultilingual)
+        #expect(catalog.onboardingDefault == .parakeetUnified)
         #expect(!catalog.onboarding.contains(.appleSpeechAnalyzer))
     }
 }

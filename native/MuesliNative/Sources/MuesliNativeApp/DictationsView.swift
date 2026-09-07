@@ -54,6 +54,14 @@ struct DictationsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            DashboardPageHeader(
+                title: "Dictations",
+                appState: appState,
+                controller: controller
+            )
+                .padding(.horizontal, MuesliTheme.spacing24)
+                .padding(.top, MuesliTheme.pageTop)
+
             StatsHeaderView(
                 dictationStats: appState.filteredDictationStats,
                 meetingStats: appState.meetingStats,
@@ -167,9 +175,15 @@ struct DictationsView: View {
             || appState.dictationApplicationFilter != nil {
             return "Try another source, app, or time range"
         }
-        return appState.config.resolvedOnboardingUseCase.includesVoiceNotes
-            ? "Click Record Voice Note to capture your first note"
-            : "Hold \(appState.config.dictationHotkey.label) to start dictating"
+        let useCase = appState.config.resolvedOnboardingUseCase
+        if appState.config.enablePushToTalk
+            && (useCase.includesDictation || !useCase.includesVoiceNotes) {
+            return "Hold \(appState.config.dictationHotkey.label) to start dictating"
+        }
+        if useCase.includesVoiceNotes {
+            return "Click Record Voice Note to capture your first note"
+        }
+        return "No dictations yet"
     }
 
     private var emptyStateTitle: String {

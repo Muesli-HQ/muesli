@@ -48,6 +48,10 @@ final class RouteAwareDictationRecorder: DictationAudioRecording {
     var onNoAudioTimeout: ((Date) -> Void)?
     var onRecordingFailed: ((Error, UUID) -> Void)?
     var onLatencyEvent: ((String, Date) -> Void)?
+    var onAudioBuffer: (([Float]) -> Void)? {
+        get { lock.withLock { onAudioBufferStorage } }
+        set { lock.withLock { onAudioBufferStorage = newValue } }
+    }
 
     private let systemDefaultRecorder: DictationAudioRecording
     private let appScopedRecorder: DictationAudioRecording
@@ -56,6 +60,7 @@ final class RouteAwareDictationRecorder: DictationAudioRecording {
     private var preferredInputDeviceIDStorage: AudioObjectID?
     private var keepsAudioGraphWarmStorage = false
     private var activeRecorderKindStorage: ActiveRecorderKind = .systemDefault
+    private var onAudioBufferStorage: (([Float]) -> Void)?
 
     init(
         systemDefaultRecorder: DictationAudioRecording = AppScopedDictationRecorder(),
@@ -161,6 +166,12 @@ final class RouteAwareDictationRecorder: DictationAudioRecording {
         }
         recorder.onLatencyEvent = { [weak self] event, date in
             self?.forwardIfActive(kind) { $0.onLatencyEvent?(event, date) }
+        }
+        recorder.onAudioBuffer = { [weak self] samples in
+            self?.forwardIfActive(kind) { recorder in
+                let callback = recorder.lock.withLock { recorder.onAudioBufferStorage }
+                callback?(samples)
+            }
         }
     }
 

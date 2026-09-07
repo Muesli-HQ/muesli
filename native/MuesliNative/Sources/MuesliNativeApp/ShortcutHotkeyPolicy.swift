@@ -30,6 +30,33 @@ enum ShortcutHotkeyUpdateResult: Equatable {
 struct ShortcutHotkeyPolicy {
     static let conflictMessage = "These shortcuts need different keys."
     static let commonGlobalShortcutWarning = "This shortcut is commonly used by other apps. Muesli listens globally, so choose a less common combination if it conflicts with your workflow."
+    static let quilKeyCountMessage = "Quill supports one key or a two-key shortcut."
+
+    static func isValidQuilShortcut(_ hotkey: HotkeyConfig) -> Bool {
+        guard hotkey.isCombination else { return HotkeyConfig.label(for: hotkey.keyCode) != nil }
+        guard let modifiers = hotkey.resolvedCombinationModifiers,
+              hotkey.combinationKeyCode.flatMap(HotkeyConfig.letterLabel(for:)) != nil else { return false }
+        return [NSEvent.ModifierFlags.command, .control, .option, .shift]
+            .filter { modifiers.contains($0) }
+            .count == 1
+    }
+
+    static func validateQuilHotkey(
+        _ hotkey: HotkeyConfig,
+        dictationHotkey: HotkeyConfig,
+        computerUseHotkey: HotkeyConfig,
+        isComputerUseEnabled: Bool,
+        meetingRecordingHotkey: HotkeyConfig,
+        isMeetingRecordingEnabled: Bool
+    ) -> ShortcutHotkeyUpdateResult {
+        guard isValidQuilShortcut(hotkey) else { return .conflict(message: quilKeyCountMessage) }
+        guard !hotkeysConflict(hotkey, dictationHotkey),
+              !isComputerUseEnabled || !hotkeysConflict(hotkey, computerUseHotkey),
+              !isMeetingRecordingEnabled || !hotkeysConflict(hotkey, meetingRecordingHotkey) else {
+            return .conflict(message: conflictMessage)
+        }
+        return .updated(notice: commonGlobalShortcutWarning(for: hotkey))
+    }
 
     static func hotkeysConflict(_ a: HotkeyConfig, _ b: HotkeyConfig) -> Bool {
         if a.isCombination != b.isCombination { return false }

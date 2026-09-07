@@ -35,14 +35,32 @@ private final class HoverIndicatorView: NSView {
     private var windowOriginAtMouseDown: NSPoint?
     private var didDrag = false
 
+    /// In shortcut-pill mode the panel is a large fixed canvas, but only the
+    /// visible grip (resting) or pill + capsule (hovered) should intercept
+    /// input. Outside those rects clicks fall through to apps underneath.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if let owner, !owner.pointerInteractiveRect(in: bounds).contains(point) {
+            return nil
+        }
+        return super.hitTest(point)
+    }
+
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let trackingAreaRef {
             removeTrackingArea(trackingAreaRef)
         }
+        // .inVisibleRect would discard a narrowed rect and track the full
+        // bounds, so only include it when the interactive rect is the full
+        // bounds (classic style); shortcut-pill tracks its explicit rect.
+        let interactiveRect = owner?.pointerInteractiveRect(in: bounds) ?? bounds
+        var options: NSTrackingArea.Options = [.mouseEnteredAndExited, .activeAlways]
+        if interactiveRect.equalTo(bounds) {
+            options.insert(.inVisibleRect)
+        }
         let tracking = NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            rect: interactiveRect,
+            options: options,
             owner: self,
             userInfo: nil
         )
@@ -108,6 +126,42 @@ private final class HoverIndicatorView: NSView {
     }
 }
 
+// A self-contained rounded "shortcut pill" shown beside the idle indicator on
+// hover when `IndicatorHoverStyle.shortcutPill` is configured. Drawn as one
+// rounded rectangle so the label never inherits the mic surface's shape.
+private final class IdleShortcutPillView: NSView {
+    var title = "" {
+        didSet { needsDisplay = true }
+    }
+
+    override var isOpaque: Bool { false }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let pillRect = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let pillPath = NSBezierPath(roundedRect: pillRect, xRadius: 14, yRadius: 14)
+        NSColor.black.withAlphaComponent(0.97).setFill()
+        pillPath.fill()
+        NSColor.white.withAlphaComponent(0.16).setStroke()
+        pillPath.lineWidth = 1
+        pillPath.stroke()
+
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 15, weight: .regular),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.88),
+            .paragraphStyle: paragraph
+        ]
+        let attributedTitle = NSAttributedString(string: title, attributes: attributes)
+        let textSize = attributedTitle.size()
+        attributedTitle.draw(at: NSPoint(
+            x: floor((bounds.width - textSize.width) / 2),
+            y: floor((bounds.height - textSize.height) / 2)
+        ))
+    }
+}
+
 @MainActor
 final class FloatingIndicatorController: NSObject {
     private var panel: NSPanel?
@@ -117,6 +171,7 @@ final class FloatingIndicatorController: NSObject {
     private var textLabel: NSTextField?
     private var state: DictationState = .idle
     private var isHovered = false
+    private var lastLoadedConfig: AppConfig?
     private var preservesCollapsedLeftEdge = false
     private var hoverExitWorkItem: DispatchWorkItem?
     private let configStore: ConfigStore
@@ -136,8 +191,11 @@ final class FloatingIndicatorController: NSObject {
     )
     private var glassView: NSVisualEffectView?
     private var tintLayer: CALayer?
+    private var idleShortcutPillView: IdleShortcutPillView?
+    private var idleIconBackgroundLayer: CALayer?
     private var micIconView: NSImageView?
     private var wandIconView: NSImageView?
+    private var quillIconView: NSImageView?
     private var barLayers: [CALayer] = []
     private var amplitudeTimer: Timer?
     private var smoothedAmplitude: CGFloat = 0
@@ -155,7 +213,8 @@ final class FloatingIndicatorController: NSObject {
     var isToggleDictation = false
     private var stopLayer: CALayer?
     private var transcribingTitle = "Transcribing"
-    private var computerUseTranscriptText: String?
+    private var instructionTranscriptText: String?
+    private var instructionTranscriptShowsProgress = false
     private var loadingSpinner: NSProgressIndicator?
     private var isShowingLoading = false
     private var isComputerUseCursorMode = false
@@ -379,20 +438,47 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func setTranscribingTitle(_ title: String, config: AppConfig) {
-        computerUseTranscriptText = nil
+        instructionTranscriptText = nil
+        instructionTranscriptShowsProgress = false
+        hideInstructionProgress()
         transcribingTitle = title
         guard state == .transcribing else { return }
         setState(.transcribing, config: config)
     }
 
     func showComputerUseTranscript(_ transcript: String, config: AppConfig) {
-        let normalized = Self.normalizedComputerUseTranscript(transcript)
-        computerUseTranscriptText = normalized.isEmpty ? nil : normalized
-        transcribingTitle = normalized.isEmpty ? "Starting CUA" : normalized
+        showInstructionTranscript(
+            transcript,
+            fallbackTitle: "Starting CUA",
+            showsProgress: false,
+            config: config
+        )
+    }
+
+    func showQuilInstruction(_ instruction: String, config: AppConfig) {
+        showInstructionTranscript(
+            instruction,
+            fallbackTitle: "Rewriting selection",
+            showsProgress: true,
+            config: config
+        )
+    }
+
+    private func showInstructionTranscript(
+        _ transcript: String,
+        fallbackTitle: String,
+        showsProgress: Bool,
+        config: AppConfig
+    ) {
+        let normalized = Self.normalizedInstructionTranscript(transcript)
+        instructionTranscriptText = normalized.isEmpty ? nil : normalized
+        instructionTranscriptShowsProgress = showsProgress && !normalized.isEmpty
+        transcribingTitle = normalized.isEmpty ? fallbackTitle : normalized
         setState(.transcribing, config: config)
     }
 
     func setState(_ state: DictationState, config: AppConfig) {
+        lastLoadedConfig = config
         let previousState = self.state
         let previousHover = isHovered
         let previouslyPreservedCollapsedLeftEdge = preservesCollapsedLeftEdge
@@ -400,9 +486,16 @@ final class FloatingIndicatorController: NSObject {
             exitComputerUseCursorMode(restoreFrame: false)
         }
         self.state = state
+        if state != .idle {
+            hideShortcutPillChrome()
+        }
         if state != .transcribing {
             transcribingTitle = "Transcribing"
-            computerUseTranscriptText = nil
+            instructionTranscriptText = nil
+            instructionTranscriptShowsProgress = false
+            hideInstructionProgress()
+        } else if !instructionTranscriptShowsProgress {
+            hideInstructionProgress()
         }
         if state != .recording {
             recordingWaveformMode = .level
@@ -499,13 +592,13 @@ final class FloatingIndicatorController: NSObject {
                 iconLabel.font = NSFont.systemFont(ofSize: 14, weight: .bold)
                 iconLabel.stringValue = style.icon
                 iconLabel.textColor = style.iconColor
-                configureTextLabelForTranscript(state == .transcribing && computerUseTranscriptText != nil)
+                configureTextLabelForTranscript(state == .transcribing && instructionTranscriptText != nil)
                 textLabel.stringValue = style.title
                 textLabel.textColor = style.textColor
                 textLabel.animator().alphaValue = style.title.isEmpty ? 0 : 1
                 textLabel.isHidden = style.title.isEmpty
-                if state == .transcribing, computerUseTranscriptText != nil {
-                    layoutComputerUseTranscript(in: targetFrame.size, animated: true)
+                if state == .transcribing, instructionTranscriptText != nil {
+                    layoutInstructionTranscript(in: targetFrame.size, animated: true)
                 } else {
                     layoutLabels(
                         iconLabel: iconLabel,
@@ -537,6 +630,7 @@ final class FloatingIndicatorController: NSObject {
                 )
             }
         case .preparing:
+            hideShortcutPillChrome()
             ensureWaveformAnimation(in: targetFrame.size, mode: .waiting)
         default:
             break
@@ -550,6 +644,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func showComputerUseCursor(at quartzPoint: CGPoint, label rawLabel: String?) {
+        hideShortcutPillChrome()
         let config = configStore.load()
         if panel == nil {
             createPanel(config: config)
@@ -582,6 +677,7 @@ final class FloatingIndicatorController: NSObject {
         tintLayer?.isHidden = true
         micIconView?.isHidden = true
         wandIconView?.isHidden = true
+        quillIconView?.isHidden = true
 
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.16
@@ -638,6 +734,7 @@ final class FloatingIndicatorController: NSObject {
 
     /// Flash a brief warning message on the indicator pill, then snap back to idle.
     func showWarning(_ message: String, icon: String = "⚡", duration: TimeInterval = 2.5) {
+        hideShortcutPillChrome()
         guard state == .idle else { return }
         let config = configStore.load()
         if panel == nil { createPanel(config: config) }
@@ -712,6 +809,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func showLoading(_ message: String) {
+        hideShortcutPillChrome()
         let config = configStore.load()
         if panel == nil { createPanel(config: config) }
         guard let panel, let contentView, let textLabel else { return }
@@ -725,16 +823,7 @@ final class FloatingIndicatorController: NSObject {
         let y = min(max(center.y - loadingSize.height / 2, screen.minY), screen.maxY - loadingSize.height)
         let targetFrame = NSRect(x: x, y: y, width: loadingSize.width, height: loadingSize.height)
 
-        // Create spinner if needed
-        if loadingSpinner == nil {
-            let spinner = NSProgressIndicator()
-            spinner.style = .spinning
-            spinner.controlSize = .small
-            spinner.isIndeterminate = true
-            spinner.appearance = NSAppearance(named: .darkAqua)
-            contentView.addSubview(spinner)
-            loadingSpinner = spinner
-        }
+        ensureLoadingSpinner(in: contentView)
 
         let spinnerSize: CGFloat = 16
         let gap: CGFloat = 8
@@ -748,6 +837,7 @@ final class FloatingIndicatorController: NSObject {
 
         micIconView?.isHidden = true
         wandIconView?.isHidden = true
+        quillIconView?.isHidden = true
         iconLabel?.isHidden = true
         glassView?.isHidden = false
         tintLayer?.isHidden = false
@@ -805,6 +895,24 @@ final class FloatingIndicatorController: NSObject {
         return NSSize(width: min(max(preferredWidth, minWidth), maxWidth), height: 36)
     }
 
+    private func ensureLoadingSpinner(in contentView: NSView) {
+        guard loadingSpinner == nil else { return }
+        let spinner = NSProgressIndicator()
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isIndeterminate = true
+        spinner.appearance = NSAppearance(named: .darkAqua)
+        spinner.isHidden = true
+        contentView.addSubview(spinner)
+        loadingSpinner = spinner
+    }
+
+    private func hideInstructionProgress() {
+        guard !isShowingLoading else { return }
+        loadingSpinner?.stopAnimation(nil)
+        loadingSpinner?.isHidden = true
+    }
+
     func hideLoading() {
         guard isShowingLoading else { return }
         isShowingLoading = false
@@ -835,6 +943,11 @@ final class FloatingIndicatorController: NSObject {
         isHovered = hovered
         let config = configStore.load()
         setState(.idle, config: config)
+        contentView?.updateTrackingAreas()
+        if hovered, config.indicatorHoverStyle == .shortcutPill {
+            animateIdleHoverPop()
+        }
+
     }
 
     func scheduleHoverExit() {
@@ -872,6 +985,10 @@ final class FloatingIndicatorController: NSObject {
         tintLayer = nil
         micIconView = nil
         wandIconView = nil
+        quillIconView = nil
+        loadingSpinner = nil
+        instructionTranscriptShowsProgress = false
+        isShowingLoading = false
         meetingTranscriptPanel.close()
     }
 
@@ -1066,6 +1183,139 @@ final class FloatingIndicatorController: NSObject {
         CATransaction.commit()
     }
 
+
+    /// The rect that should respond to pointer input right now. Classic style
+    /// uses the full panel; shortcut-pill limits interaction to the visible
+    /// resting grip, expanding to the label pill + mic capsule only while hovered.
+    func pointerInteractiveRect(in bounds: NSRect) -> NSRect {
+        // Cache: hit-testing runs on the pointer hot path; reading + decoding
+        // config from disk per event would add avoidable main-thread latency.
+        let config = lastLoadedConfig ?? configStore.load()
+        guard state == .idle, config.indicatorHoverStyle == .shortcutPill else { return bounds }
+        let placement = idleHoverPlacement(for: config.indicatorAnchor)
+        if isHovered {
+            let (pill, _, _, _) = shortcutPillHoverFrame(
+                placement: placement,
+                frameSize: bounds.size,
+                config: config
+            )
+            return pill.insetBy(dx: -6, dy: -6).intersection(bounds)
+        }
+        return idleRestingHandleFrame(placement: placement, frameSize: bounds.size)
+            .insetBy(dx: -6, dy: -6)
+            .intersection(bounds)
+    }
+
+    /// Unified hover pill for `IndicatorHoverStyle.shortcutPill`: the classic
+    /// stadium shape (icon + text in one rounded rectangle), popping
+    /// bottom-to-top from the resting grip instead of left-to-right.
+    private func shortcutPillHoverFrame(
+        placement: IdleHoverPlacement,
+        frameSize: NSSize,
+        config: AppConfig
+    ) -> (pill: CGRect, title: String, font: NSFont, textWidth: CGFloat) {
+        let title = "Hold \(config.dictationHotkey.label) to dictate"
+        let font = NSFont.systemFont(ofSize: 13, weight: .regular)
+        let textWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width) + 4
+        let pad: CGFloat = 14
+        let gap: CGFloat = 6
+        let iconW: CGFloat = 15
+        let pillW = pad + iconW + gap + textWidth + pad
+        let pillH: CGFloat = 30
+        let handle = idleRestingHandleFrame(placement: placement, frameSize: frameSize)
+        let pill: CGRect
+        switch placement {
+        case .above:
+            // Grip at the canvas bottom; the pill grows upward from its baseline.
+            pill = CGRect(x: handle.midX - pillW / 2, y: handle.minY, width: pillW, height: pillH)
+        case .below:
+            pill = CGRect(x: handle.midX - pillW / 2, y: handle.maxY - pillH, width: pillW, height: pillH)
+        case .leading:
+            // Grip sits at the canvas's trailing edge; pop leftward from it.
+            pill = CGRect(x: handle.maxX - pillW, y: handle.midY - pillH / 2, width: pillW, height: pillH)
+        case .trailing:
+            // Grip sits at the leading edge; pop rightward from it.
+            pill = CGRect(x: handle.minX, y: handle.midY - pillH / 2, width: pillW, height: pillH)
+        }
+        return (pill, title, font, textWidth)
+    }
+
+    /// Shortcut-pill chrome belongs to the idle presentation only. Every
+    /// non-idle path (transcribing, loading, warning, automation cursor) must
+    /// clear it or the grip/label lingers on top of those overlays.
+    private func hideShortcutPillChrome() {
+        idleShortcutPillView?.isHidden = true
+        idleIconBackgroundLayer?.isHidden = true
+    }
+
+    /// Idle layout for `IndicatorHoverStyle.shortcutPill`: the resting state is a
+    /// thin grip handle; on hover the mic capsule and an adjacent rounded label
+    /// pill appear without resizing the window.
+    private func layoutShortcutPillIdle(frameSize: NSSize, config: AppConfig) {
+        // Transparent host: only the resting grip or the unified hover pill
+        // draws. The classic canvas chrome would paint the whole area as a blob.
+        tintLayer?.isHidden = true
+        glassView?.isHidden = true
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        contentView?.layer?.borderWidth = 0
+        contentView?.layer?.backgroundColor = NSColor.clear.cgColor
+        CATransaction.commit()
+        wandIconView?.isHidden = true
+        quillIconView?.isHidden = true
+        iconLabel?.isHidden = true
+        idleShortcutPillView?.isHidden = true
+
+        let placement = idleHoverPlacement(for: config.indicatorAnchor)
+        let (pillFrame, title, font, textWidth) = shortcutPillHoverFrame(
+            placement: placement,
+            frameSize: frameSize,
+            config: config
+        )
+        let restingHandle = idleRestingHandleFrame(
+            placement: placement,
+            frameSize: frameSize
+        )
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        idleIconBackgroundLayer?.isHidden = false
+        idleIconBackgroundLayer?.backgroundColor = isHovered
+            ? NSColor.colorWith(hex: 0x111111, alpha: 1).cgColor
+            : NSColor.colorWith(hex: 0x696969, alpha: 0.82).cgColor
+        idleIconBackgroundLayer?.borderWidth = isHovered ? 1 : 0
+        idleIconBackgroundLayer?.frame = isHovered ? pillFrame : restingHandle
+        idleIconBackgroundLayer?.cornerRadius = isHovered ? pillFrame.height / 2 : 5
+        CATransaction.commit()
+
+        let iconSize = NSSize(width: 15, height: 15)
+        micIconView?.isHidden = !isHovered
+        if let mic = micIconView {
+            mic.alphaValue = 1
+            mic.frame = NSRect(
+                x: pillFrame.minX + 14,
+                y: pillFrame.midY - iconSize.height / 2,
+                width: iconSize.width,
+                height: iconSize.height
+            )
+        }
+
+        if let textLabel {
+            textLabel.stringValue = title
+            textLabel.font = font
+            textLabel.textColor = .white.withAlphaComponent(0.88)
+            textLabel.alignment = .left
+            textLabel.isHidden = !isHovered
+            textLabel.alphaValue = isHovered ? 1 : 0
+            textLabel.frame = NSRect(
+                x: pillFrame.minX + 14 + 15 + 6,
+                y: pillFrame.midY - 8,
+                width: textWidth,
+                height: 16
+            )
+        }
+    }
+
     private func applyGlassState(_ state: DictationState, frameSize: NSSize) {
         let config = configStore.load()
         let radius = frameSize.height / 2
@@ -1102,8 +1352,15 @@ final class FloatingIndicatorController: NSObject {
 
         switch state {
         case .idle:
+            if config.indicatorHoverStyle == .shortcutPill {
+                layoutShortcutPillIdle(frameSize: frameSize, config: config)
+                return
+            }
+            idleShortcutPillView?.isHidden = true
+            idleIconBackgroundLayer?.isHidden = true
             // Mic symbol centred (or left-aligned when hovered beside text).
             wandIconView?.isHidden = true
+            quillIconView?.isHidden = true
             iconLabel?.isHidden = true
             micIconView?.isHidden = false
             if let mic = micIconView {
@@ -1155,20 +1412,26 @@ final class FloatingIndicatorController: NSObject {
             }
 
         case .recording:
+            hideShortcutPillChrome()
             // Waveform bars replace mic icon during recording.
             wandIconView?.isHidden = true
+            quillIconView?.isHidden = true
             iconLabel?.isHidden = false   // keeps the ✕ cancel label
             micIconView?.isHidden = true
 
         case .transcribing:
-            // Animated wand beside "Transcribing" label, the pair centred in the pill.
+            // Quill uses its feather mark plus a compact spinner while keeping the
+            // dictated instruction visible. Other transcribing states keep the wand.
             micIconView?.isHidden = true
             iconLabel?.isHidden = true
-            wandIconView?.isHidden = false
-            if computerUseTranscriptText != nil {
-                layoutComputerUseTranscript(in: frameSize, animated: false)
+            if instructionTranscriptText != nil {
+                wandIconView?.isHidden = instructionTranscriptShowsProgress
+                quillIconView?.isHidden = !instructionTranscriptShowsProgress
+                layoutInstructionTranscript(in: frameSize, animated: false)
                 return
             }
+            quillIconView?.isHidden = true
+            wandIconView?.isHidden = false
             if let wand = wandIconView {
                 let gap: CGFloat = 6
                 let horizontalPadding: CGFloat = 14
@@ -1196,6 +1459,7 @@ final class FloatingIndicatorController: NSObject {
 
         case .preparing:
             wandIconView?.isHidden = true
+            quillIconView?.isHidden = true
             iconLabel?.isHidden = true
             micIconView?.isHidden = true
         }
@@ -1225,14 +1489,21 @@ final class FloatingIndicatorController: NSObject {
         }
     }
 
-    private func layoutComputerUseTranscript(in size: NSSize, animated: Bool) {
-        guard let wand = wandIconView, let textLabel else { return }
+    private func layoutInstructionTranscript(in size: NSSize, animated: Bool) {
+        guard let textLabel else { return }
+        let leadingIcon = instructionTranscriptShowsProgress ? quillIconView : wandIconView
+        guard let leadingIcon else { return }
         let iconSize = NSSize(width: 18, height: 18)
         let gap: CGFloat = 8
         let horizontalPadding: CGFloat = 16
         let verticalPadding: CGFloat = 12
         let textX = horizontalPadding + iconSize.width + gap
-        let textWidth = max(40, size.width - textX - horizontalPadding)
+        let spinnerSize: CGFloat = instructionTranscriptShowsProgress ? 14 : 0
+        let spinnerGap: CGFloat = instructionTranscriptShowsProgress ? 8 : 0
+        let textWidth = max(
+            40,
+            size.width - textX - horizontalPadding - spinnerGap - spinnerSize
+        )
         let textHeight = max(16, size.height - (verticalPadding * 2))
         let textFrame = NSRect(
             x: textX,
@@ -1247,16 +1518,31 @@ final class FloatingIndicatorController: NSObject {
             height: iconSize.height
         )
 
-        wand.isHidden = false
+        wandIconView?.isHidden = instructionTranscriptShowsProgress
+        quillIconView?.isHidden = !instructionTranscriptShowsProgress
+        leadingIcon.isHidden = false
         textLabel.isHidden = false
+        if instructionTranscriptShowsProgress, let contentView {
+            ensureLoadingSpinner(in: contentView)
+            loadingSpinner?.frame = NSRect(
+                x: size.width - horizontalPadding - spinnerSize,
+                y: floor((size.height - spinnerSize) / 2),
+                width: spinnerSize,
+                height: spinnerSize
+            )
+            loadingSpinner?.isHidden = false
+            loadingSpinner?.startAnimation(nil)
+        } else {
+            hideInstructionProgress()
+        }
         if animated {
-            wand.animator().alphaValue = 1
-            wand.animator().frame = iconFrame
+            leadingIcon.animator().alphaValue = 1
+            leadingIcon.animator().frame = iconFrame
             textLabel.animator().alphaValue = 1
             textLabel.animator().frame = textFrame
         } else {
-            wand.alphaValue = 1
-            wand.frame = iconFrame
+            leadingIcon.alphaValue = 1
+            leadingIcon.frame = iconFrame
             textLabel.alphaValue = 1
             textLabel.frame = textFrame
         }
@@ -1411,6 +1697,22 @@ final class FloatingIndicatorController: NSObject {
         contentView.layer?.insertSublayer(tint, at: 0)
         tintLayer = tint
 
+        // Shortcut-pill hover style: adjacent label pill + mic capsule/handle.
+        let shortcutPill = IdleShortcutPillView(frame: .zero)
+        shortcutPill.wantsLayer = true
+        shortcutPill.isHidden = true
+        contentView.addSubview(shortcutPill)
+        idleShortcutPillView = shortcutPill
+
+        let iconBackground = CALayer()
+        iconBackground.backgroundColor = NSColor.colorWith(hex: 0x111111, alpha: 1).cgColor
+        iconBackground.borderColor = NSColor.white.withAlphaComponent(0.10).cgColor
+        iconBackground.borderWidth = 1
+        iconBackground.cornerCurve = .circular
+        iconBackground.isHidden = true
+        contentView.layer?.insertSublayer(iconBackground, above: tint)
+        idleIconBackgroundLayer = iconBackground
+
         // Idle icon — uses the user's selected menu bar icon from config.
         // Falls back to waveform.badge.microphone if the configured icon can't be loaded.
         let config = configStore.load()
@@ -1435,6 +1737,13 @@ final class FloatingIndicatorController: NSObject {
         wandView.isHidden = true
         contentView.addSubview(wandView)
         wandIconView = wandView
+
+        let quillView = NSImageView(image: QuillIcon.image())
+        quillView.contentTintColor = .white
+        quillView.imageScaling = .scaleProportionallyDown
+        quillView.isHidden = true
+        contentView.addSubview(quillView)
+        quillIconView = quillView
 
     }
 
@@ -1578,14 +1887,30 @@ final class FloatingIndicatorController: NSObject {
         let size: NSSize
         switch state {
         case .idle:
-            size = isHovered
-                ? Self.idleHoverPillSize(hotkeyLabel: config.dictationHotkey.label, screenWidth: screen.width)
-                : NSSize(width: 44, height: 28)
+            if config.indicatorHoverStyle == .shortcutPill {
+                // Fixed canvas sized to the unified hover pill: the window never
+                // resizes on hover, only child visibility changes.
+                let (pill, _, _, _) = shortcutPillHoverFrame(
+                    placement: idleHoverPlacement(for: config.indicatorAnchor),
+                    frameSize: .zero,
+                    config: config
+                )
+                size = NSSize(width: pill.width + 4, height: 40)
+            } else {
+                size = isHovered
+                    ? Self.idleHoverPillSize(hotkeyLabel: config.dictationHotkey.label, screenWidth: screen.width)
+                    : NSSize(width: 44, height: 28)
+            }
         case .preparing: size = NSSize(width: 76, height: 22)
         case .recording: size = NSSize(width: 76, height: 22)
         case .transcribing:
-            if let transcript = computerUseTranscriptText {
-                size = Self.computerUseTranscriptPillSize(transcript: transcript, screen: screen)
+            hideShortcutPillChrome()
+            if let transcript = instructionTranscriptText {
+                size = Self.instructionTranscriptPillSize(
+                    transcript: transcript,
+                    screen: screen,
+                    showsProgress: instructionTranscriptShowsProgress
+                )
             } else {
                 size = Self.transcribingPillSize(title: transcribingTitle, screenWidth: screen.width)
             }
@@ -1635,6 +1960,49 @@ final class FloatingIndicatorController: NSObject {
         let x = min(max(center.x - size.width / 2, screen.minX), screen.maxX - size.width)
         let y = min(max(center.y - size.height / 2, screen.minY), screen.maxY - size.height)
         return NSRect(x: x, y: y, width: size.width, height: size.height)
+    }
+
+
+    // MARK: - Shortcut-pill hover (IndicatorHoverStyle.shortcutPill)
+
+    private enum IdleHoverPlacement {
+        case above, below, leading, trailing
+    }
+
+    private func idleHoverPlacement(for anchor: IndicatorAnchor) -> IdleHoverPlacement {
+        switch anchor {
+        case .topLeading, .topCenter, .topTrailing: return .below
+        case .midLeading: return .trailing
+        case .midTrailing: return .leading
+        case .bottomLeading, .bottomCenter, .bottomTrailing, .custom: return .above
+        }
+    }
+
+    private func idleRestingHandleFrame(
+        placement: IdleHoverPlacement,
+        frameSize: NSSize
+    ) -> CGRect {
+        let inset: CGFloat = 2
+        switch placement {
+        case .above: return CGRect(x: (frameSize.width - 30) / 2, y: inset, width: 30, height: 8)
+        case .below: return CGRect(x: (frameSize.width - 30) / 2, y: frameSize.height - inset - 8, width: 30, height: 8)
+        case .leading: return CGRect(x: frameSize.width - inset - 8, y: (frameSize.height - 30) / 2, width: 8, height: 30)
+        case .trailing: return CGRect(x: inset, y: (frameSize.height - 30) / 2, width: 8, height: 30)
+        }
+    }
+
+    private func animateIdleHoverPop() {
+        let bounce = CAKeyframeAnimation(keyPath: "transform.translation.y")
+        bounce.values = [0, 2, -0.5, 0]
+        bounce.keyTimes = [0, 0.45, 0.75, 1]
+        bounce.duration = 0.16
+        bounce.timingFunctions = [
+            CAMediaTimingFunction(name: .easeOut),
+            CAMediaTimingFunction(name: .easeInEaseOut),
+            CAMediaTimingFunction(name: .easeInEaseOut)
+        ]
+        idleIconBackgroundLayer?.add(bounce, forKey: "idle-hover-bounce")
+        micIconView?.layer?.add(bounce, forKey: "idle-hover-bounce")
     }
 
     private func styleForState(_ state: DictationState, config: AppConfig) -> (background: NSColor, border: NSColor, icon: String, title: String, iconColor: NSColor, textColor: NSColor, alpha: CGFloat) {
@@ -1764,9 +2132,41 @@ final class FloatingIndicatorController: NSObject {
         screenWidth: CGFloat,
         screenHeight: CGFloat = 900
     ) -> NSSize {
-        computerUseTranscriptPillSize(
+        instructionTranscriptPillSize(
             transcript: transcript,
-            screen: NSRect(x: 0, y: 0, width: screenWidth, height: screenHeight)
+            screen: NSRect(x: 0, y: 0, width: screenWidth, height: screenHeight),
+            showsProgress: false
+        )
+    }
+
+    static func quillInstructionPillSizeForTesting(
+        transcript: String,
+        screenWidth: CGFloat,
+        screenHeight: CGFloat = 900
+    ) -> NSSize {
+        instructionTranscriptPillSize(
+            transcript: transcript,
+            screen: NSRect(x: 0, y: 0, width: screenWidth, height: screenHeight),
+            showsProgress: true
+        )
+    }
+
+    static func quillInstructionTextHeightsForTesting(
+        transcript: String,
+        screenWidth: CGFloat,
+        screenHeight: CGFloat = 900
+    ) -> (allocated: CGFloat, required: CGFloat) {
+        let normalized = normalizedInstructionTranscript(transcript)
+        let size = quillInstructionPillSizeForTesting(
+            transcript: normalized,
+            screenWidth: screenWidth,
+            screenHeight: screenHeight
+        )
+        let textWidth = max(40, size.width - 80)
+        let font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        return (
+            allocated: max(16, size.height - 24),
+            required: transcriptTextFieldHeight(normalized, font: font, width: textWidth)
         )
     }
 
@@ -1782,20 +2182,40 @@ final class FloatingIndicatorController: NSObject {
         return NSSize(width: min(max(preferredWidth, minWidth), maxWidth), height: 32)
     }
 
-    private static func computerUseTranscriptPillSize(transcript: String, screen: NSRect) -> NSSize {
-        let normalized = normalizedComputerUseTranscript(transcript)
+    private static func instructionTranscriptPillSize(
+        transcript: String,
+        screen: NSRect,
+        showsProgress: Bool
+    ) -> NSSize {
+        let normalized = normalizedInstructionTranscript(transcript)
         let font = NSFont.systemFont(ofSize: 12, weight: .medium)
         let iconWidth: CGFloat = 18
         let gap: CGFloat = 8
         let horizontalPadding: CGFloat = 16
         let verticalPadding: CGFloat = 12
-        let chromeWidth = horizontalPadding + iconWidth + gap + horizontalPadding
+        let progressWidth: CGFloat = showsProgress ? 22 : 0
+        let chromeWidth = horizontalPadding + iconWidth + gap + progressWidth + horizontalPadding
         let minWidth = min(CGFloat(280), max(160, screen.width - 48))
         let maxWidth = max(minWidth, min(720, screen.width - 48))
-        let singleLineTextWidth = ceil((normalized as NSString).size(withAttributes: [.font: font]).width) + 2
+        // NSTextFieldCell reserves a little more horizontal drawing room than
+        // NSString reports. Account for it in Quill before deciding that a
+        // prompt fits on one line; otherwise the cell wraps the final word even
+        // when the pill still has room available.
+        let textFieldInsetAllowance: CGFloat = showsProgress ? 6 : 2
+        let singleLineTextWidth = ceil(
+            (normalized as NSString).size(withAttributes: [.font: font]).width
+        ) + textFieldInsetAllowance
         let preferredWidth = min(maxWidth, max(minWidth, chromeWidth + singleLineTextWidth))
         let textWidth = max(40, preferredWidth - chromeWidth)
-        let textHeight = transcriptTextHeight(normalized, font: font, width: textWidth)
+        // Quill keeps the spoken instruction on screen while the model works.
+        // Measure that text through the same AppKit cell used to render it: the
+        // NSString bounding box can disagree with NSTextField at word-wrap
+        // boundaries and leave the final rendered line outside the label frame.
+        // Keep CUA on its existing sizing path until its rendering is addressed
+        // independently.
+        let textHeight = showsProgress
+            ? transcriptTextFieldHeight(normalized, font: font, width: textWidth)
+            : transcriptTextHeight(normalized, font: font, width: textWidth)
         let maxHeight = max(CGFloat(56), screen.height - 48)
         let preferredHeight = max(CGFloat(44), ceil(textHeight) + (verticalPadding * 2))
         return NSSize(width: preferredWidth, height: min(preferredHeight, maxHeight))
@@ -1810,7 +2230,24 @@ final class FloatingIndicatorController: NSObject {
         return max(16, ceil(bounding.height))
     }
 
-    private static func normalizedComputerUseTranscript(_ transcript: String) -> String {
+    private static func transcriptTextFieldHeight(
+        _ text: String,
+        font: NSFont,
+        width: CGFloat
+    ) -> CGFloat {
+        let cell = NSTextFieldCell(textCell: text)
+        cell.font = font
+        cell.lineBreakMode = .byWordWrapping
+        cell.usesSingleLineMode = false
+        cell.wraps = true
+        cell.isScrollable = false
+        let size = cell.cellSize(
+            forBounds: NSRect(x: 0, y: 0, width: width, height: 100_000)
+        )
+        return max(16, ceil(size.height))
+    }
+
+    private static func normalizedInstructionTranscript(_ transcript: String) -> String {
         transcript
             .components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }

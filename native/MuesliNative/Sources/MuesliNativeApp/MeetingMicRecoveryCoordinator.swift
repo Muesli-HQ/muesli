@@ -17,6 +17,11 @@ enum MeetingMicHandoffOutcome: String, Equatable {
     case failed = "failed"
 }
 
+struct MeetingMicRecoveryTrigger: Equatable {
+    let reason: String
+    let requiresNonZeroSamples: Bool
+}
+
 /// Privacy-safe coarse context attached to episode telemetry: no audio, device
 /// names, or user content — only enum/classification-level fields.
 struct MeetingMicEpisodeContext: Equatable {
@@ -112,22 +117,29 @@ final class MeetingMicRecoveryCoordinator {
         var healthySince: Date?
     }
 
+    /// Recovery policy captured from the live degradation state at the moment
+    /// an attempt is reserved. An episode may flap between missing callbacks
+    /// and all-zero samples, so its initial state is not authoritative for a
+    /// later retry.
+    private struct RecoveryReservation {
+        let token: UUID
+        let reason: String
+        let requiresNonZeroSamples: Bool
+    }
+
     /// Called after the coordinator's lock is released when a recovery attempt
     /// should start. `.busy` (a handoff is already pending) is back-pressure:
     /// the attempt is refunded but the cooldown timestamp is retained so
     /// refusal cannot churn per-snapshot. `.unavailable` keeps the attempt
     /// counted so the episode cap bounds total requests.
-    var recoveryRequest: (String) -> MeetingMicRecoveryRequestResult = { _ in .unavailable }
+    var recoveryRequest: (MeetingMicRecoveryTrigger) -> MeetingMicRecoveryRequestResult = { _ in .unavailable }
     /// Called after the coordinator's lock is released.
     var onEpisodeEvent: ((MeetingMicHealthEpisodeEvent) -> Void)?
     /// Coarse, privacy-safe context for telemetry; evaluated at event time.
     var contextProvider: () -> MeetingMicEpisodeContext = { MeetingMicEpisodeContext() }
-    /// Evaluated at episode confirmation and at most once per second while
-    /// suppressed — never per sample batch. When the capture device is
-    /// muted/zero-gain at the source, no recovery episode opens: the all-zero
-    /// signature is user intent, not a broken route. Called outside the
-    /// coordinator lock (may read device state via HAL).
-    var isInputMuted: () -> Bool = { false }
+    /// Cached OS-event observation. Unknown mute state defers classification;
+    /// this callback must never query HAL on the audio-processing queue.
+    var isInputMuted: () -> Bool? = { false }
     /// Fired at most once per meeting when confirmed degradation is classified
     /// as user-muted input. Runs after the coordinator lock is released.
     var onUserMuted: (() -> Void)?
@@ -154,7 +166,6 @@ final class MeetingMicRecoveryCoordinator {
     private var mutedSignalEmitted = false
     /// Throttles HAL mute reads to 1Hz while degradation is open but
     /// suppressed; nil while an episode is open (no reads at all then).
-    private var lastMuteCheckAt: Date?
 
     init(policy: Policy = .default, now: @escaping () -> Date = Date.init) {
         self.policy = policy
@@ -171,27 +182,13 @@ final class MeetingMicRecoveryCoordinator {
             let duration: TimeInterval
         }
         var pendingEvent: PendingEvent?
-        var recoveryToDispatch: (token: UUID, reason: String)?
+        var recoveryToDispatch: RecoveryReservation?
 
-        // The mute read (HAL, can block) runs outside the lock, and only when
-        // it can change behavior: an open episode never consults it, and
-        // suppressed degradation re-reads at most once per second to notice
-        // un-muting without polling the HAL per sample batch.
         let degradedNow = Self.isDegraded(snapshot.state)
         var inputMuted = false
-        if degradedNow {
-            let shouldCheck: Bool = lock.withLock {
-                guard episode == nil else { return false }
-                if let lastMuteCheckAt,
-                   now().timeIntervalSince(lastMuteCheckAt) < 1 { return false }
-                lastMuteCheckAt = now()
-                return true
-            }
-            if shouldCheck {
-                inputMuted = isInputMuted()
-            } else {
-                inputMuted = lock.withLock { mutedSuppressed }
-            }
+        if degradedNow, lock.withLock({ episode == nil }) {
+            guard let observed = isInputMuted() else { return }
+            inputMuted = observed
         }
         var emitUserMuted = false
 
@@ -215,7 +212,11 @@ final class MeetingMicRecoveryCoordinator {
                     active.flapCount += 1
                 }
                 active.healthySince = nil
-                if let reservation = reserveRecoveryIfDueLocked(&active, at: timestamp) {
+                if let reservation = reserveRecoveryIfDueLocked(
+                    &active,
+                    at: timestamp,
+                    requiresNonZeroSamples: currentState == .micAllZeroWhileSystemActive
+                ) {
                     recoveryToDispatch = reservation
                 }
                 episode = active
@@ -257,7 +258,11 @@ final class MeetingMicRecoveryCoordinator {
                     pendingEvent = PendingEvent(kind: .degraded, episode: newEpisode, duration: 0)
                     // The tracker already confirmed degradation for ~3s;
                     // attempt recovery immediately at episode start.
-                    recoveryToDispatch = reserveRecoveryLocked(&newEpisode, at: timestamp)
+                    recoveryToDispatch = reserveRecoveryLocked(
+                        &newEpisode,
+                        at: timestamp,
+                        requiresNonZeroSamples: currentState == .micAllZeroWhileSystemActive
+                    )
                     episode = newEpisode
                 }
             case (false, true):
@@ -308,7 +313,7 @@ final class MeetingMicRecoveryCoordinator {
     /// meeting has finished.
     func noteExternalDegradation(reason: String) {
         var pendingEpisode: Episode?
-        var recoveryToDispatch: (token: UUID, reason: String)?
+        var recoveryToDispatch: RecoveryReservation?
 
         lock.lock()
         if !finished, episode == nil {
@@ -327,7 +332,11 @@ final class MeetingMicRecoveryCoordinator {
                 healthySince: nil
             )
             pendingEpisode = newEpisode
-            recoveryToDispatch = reserveRecoveryLocked(&newEpisode, at: timestamp)
+            recoveryToDispatch = reserveRecoveryLocked(
+                &newEpisode,
+                at: timestamp,
+                requiresNonZeroSamples: false
+            )
             episode = newEpisode
         }
         let dispatch = recoveryToDispatch
@@ -410,33 +419,43 @@ final class MeetingMicRecoveryCoordinator {
     /// token stored on the episode; the token is revalidated at dispatch.
     private func reserveRecoveryIfDueLocked(
         _ active: inout Episode,
-        at timestamp: Date
-    ) -> (token: UUID, reason: String)? {
+        at timestamp: Date,
+        requiresNonZeroSamples: Bool
+    ) -> RecoveryReservation? {
         if let lastAttemptAt = active.lastAttemptAt,
            timestamp.timeIntervalSince(lastAttemptAt) < policy.attemptCooldown {
             return nil
         }
-        return reserveRecoveryLocked(&active, at: timestamp)
+        return reserveRecoveryLocked(
+            &active,
+            at: timestamp,
+            requiresNonZeroSamples: requiresNonZeroSamples
+        )
     }
 
     private func reserveRecoveryLocked(
         _ active: inout Episode,
-        at timestamp: Date
-    ) -> (token: UUID, reason: String)? {
+        at timestamp: Date,
+        requiresNonZeroSamples: Bool
+    ) -> RecoveryReservation? {
         guard active.recoveryAttempts < policy.maxAttemptsPerEpisode,
               active.pendingRecoveryToken == nil else { return nil }
         let token = UUID()
         active.recoveryAttempts += 1
         active.lastAttemptAt = timestamp
         active.pendingRecoveryToken = token
-        return (token, active.initialReason)
+        return RecoveryReservation(
+            token: token,
+            reason: active.initialReason,
+            requiresNonZeroSamples: requiresNonZeroSamples
+        )
     }
 
     /// Runs outside the lock. Revalidates the reservation token immediately
     /// before dispatch: an episode that closed or moved on invalidates it.
     /// Defers while a route transition is settling — a handoff mid-churn
     /// reliably fails its first-buffer window.
-    private func dispatchRecovery(_ reservation: (token: UUID, reason: String)) {
+    private func dispatchRecovery(_ reservation: RecoveryReservation) {
         if isRouteSettling() {
             scheduleAfter(1) { [weak self] in
                 self?.dispatchRecovery(reservation)
@@ -452,7 +471,10 @@ final class MeetingMicRecoveryCoordinator {
         }
         lock.unlock()
 
-        let result = recoveryRequest(reservation.reason)
+        let result = recoveryRequest(MeetingMicRecoveryTrigger(
+            reason: reservation.reason,
+            requiresNonZeroSamples: reservation.requiresNonZeroSamples
+        ))
 
         lock.lock()
         if var active = episode, active.pendingRecoveryToken == reservation.token {

@@ -147,11 +147,27 @@ struct FloatingIndicatorVisibilityTests {
     func postProcessorRoundTrip() throws {
         var config = AppConfig()
         config.enablePostProcessor = true
-        config.activePostProcessorId = PostProcessorOption.finetunedV2.id
+        config.activePostProcessorId = PostProcessorOption.qwen35_0_8b.id
         let data = try JSONEncoder().encode(config)
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
         #expect(decoded.enablePostProcessor == true)
-        #expect(decoded.activePostProcessorId == PostProcessorOption.finetunedV2.id)
+        #expect(decoded.activePostProcessorId == PostProcessorOption.qwen35_0_8b.id)
+    }
+
+    @Test("cached legacy post processor persists through JSON round-trip")
+    func cachedLegacyPostProcessorRoundTrip() throws {
+        let json = #"{"active_post_processor_id":"qwen3-postproc-v2"}"#
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: json.data(using: .utf8)!)
+        #expect(decoded.activePostProcessorId == PostProcessorOption.legacyV2.id)
+
+        let data = try JSONEncoder().encode(decoded)
+        let reloaded = try JSONDecoder().decode(AppConfig.self, from: data)
+        #expect(reloaded.activePostProcessorId == PostProcessorOption.legacyV2.id)
+        #expect(PostProcessorOption.runtimeOption(
+            id: reloaded.activePostProcessorId,
+            downloadedIDs: [PostProcessorOption.legacyV2.id],
+            hasDevOverride: false
+        ) == .legacyV2)
     }
 
     @Test("post processor decodes from snake_case JSON")
@@ -366,6 +382,37 @@ struct IndicatorFrameSizeTests {
         #expect(short.height >= 44)
         #expect(long.width <= 372)
         #expect(long.height > short.height)
+    }
+
+    @Test("Quill instruction pill reserves room for its progress spinner")
+    @MainActor
+    func quillInstructionPillIncludesProgressChrome() {
+        let transcript = "Rewrite this as a concise professional email"
+        let computerUseSize = FloatingIndicatorController.computerUseTranscriptPillSizeForTesting(
+            transcript: transcript,
+            screenWidth: 1200
+        )
+        let quillSize = FloatingIndicatorController.quillInstructionPillSizeForTesting(
+            transcript: transcript,
+            screenWidth: 1200
+        )
+
+        #expect(quillSize.width > computerUseSize.width)
+        #expect(quillSize.height == computerUseSize.height)
+    }
+
+    @Test("Quill instruction pill keeps its final wrapped words visible")
+    @MainActor
+    func quillInstructionPillFitsRenderedTextField() {
+        // This ends at an AppKit word-wrap boundary where NSString boundingRect
+        // reports seven lines but NSTextField renders eight.
+        let transcript = "Rewrite this as a concise professional email while preserving every detail and ensuring the final words remain visible in the floating pill please make the tone warm but direct and retain all"
+        let heights = FloatingIndicatorController.quillInstructionTextHeightsForTesting(
+            transcript: transcript,
+            screenWidth: 300
+        )
+
+        #expect(heights.allocated >= heights.required)
     }
 }
 

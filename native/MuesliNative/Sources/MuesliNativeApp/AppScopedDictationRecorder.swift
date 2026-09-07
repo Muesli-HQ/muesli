@@ -21,6 +21,10 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
     var onNoAudioTimeout: ((Date) -> Void)?
     var onRecordingFailed: ((Error, UUID) -> Void)?
     var onLatencyEvent: ((String, Date) -> Void)?
+    var onAudioBuffer: (([Float]) -> Void)? {
+        get { lock.withLock { onAudioBufferStorage } }
+        set { lock.withLock { onAudioBufferStorage = newValue } }
+    }
 
     private static let speechThresholdDB: Float = -58
     private static let noAudioTimeout: TimeInterval = 1.5
@@ -37,6 +41,7 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
     private var hasReceivedFirstAudioBuffer = false
     private var hasDetectedSpeech = false
     private var hasReportedNoAudioTimeout = false
+    private var onAudioBufferStorage: (([Float]) -> Void)?
 
     private final class ExplicitPreparation {
         let inputDeviceID: AudioObjectID?
@@ -247,8 +252,8 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
         }
 
         resetCaptureStateLocked()
-        configureRecorderCallbacksLocked()
         let recordingID = UUID()
+        configureRecorderCallbacksLocked(recordingID: recordingID)
         activeRecordingID = recordingID
         let startGeneration = lifecycleGeneration
         let preparation = explicitPreparation
@@ -304,12 +309,12 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
         recorder.currentPower()
     }
 
-    private func configureRecorderCallbacksLocked() {
+    private func configureRecorderCallbacksLocked(recordingID: UUID) {
         recorder.onAudioBuffer = { [weak self] samples in
-            self?.handleAudioBuffer(samples)
+            self?.handleAudioBuffer(samples, recordingID: recordingID)
         }
         recorder.onRecordingFailed = { [weak self] error in
-            self?.handleRecordingFailed(error)
+            self?.handleRecordingFailed(error, recordingID: recordingID)
         }
     }
 
@@ -398,8 +403,12 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
         }
     }
 
-    private func handleAudioBuffer(_ samples: [Float]) {
+    private func handleAudioBuffer(_ samples: [Float], recordingID: UUID) {
         lock.lock()
+        guard activeRecordingID == recordingID else { lock.unlock(); return }
+        let audioCallback = onAudioBuffer
+        let firstBufferCallback = onFirstCapturedAudioBuffer
+        let speechCallback = onFirstSpeechDetected
         let firstBuffer = !hasReceivedFirstAudioBuffer && !samples.isEmpty
         if firstBuffer {
             hasReceivedFirstAudioBuffer = true
@@ -412,21 +421,23 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
         lock.unlock()
 
         if firstBuffer {
-            onFirstCapturedAudioBuffer?(Date())
+            firstBufferCallback?(Date())
         }
         if firstSpeech {
-            onFirstSpeechDetected?(Date())
+            speechCallback?(Date())
         }
+        audioCallback?(samples)
     }
 
-    private func handleRecordingFailed(_ error: Error) {
+    private func handleRecordingFailed(_ error: Error, recordingID: UUID) {
         lock.lock()
-        guard let activeRecordingID else {
+        guard activeRecordingID == recordingID else {
             lock.unlock()
             return
         }
+        let callback = onRecordingFailed
         lock.unlock()
-        onRecordingFailed?(error, activeRecordingID)
+        callback?(error, recordingID)
     }
 
     private static func cancelledPreparationError() -> NSError {

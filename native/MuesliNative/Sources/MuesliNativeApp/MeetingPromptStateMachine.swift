@@ -157,6 +157,10 @@ final class MeetingPromptStateMachine {
         return inserted
     }
 
+    func isRecordingStartedSuppressed(_ candidate: MeetingCandidate) -> Bool {
+        recordingStartedSuppressionIDs.contains(candidate.suppressionID)
+    }
+
     func markClosed(_ candidate: MeetingCandidate) {
         if visiblePromptID == candidate.id { visiblePromptID = nil }
     }

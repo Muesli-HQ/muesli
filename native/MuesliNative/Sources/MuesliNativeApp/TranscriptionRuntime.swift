@@ -114,10 +114,11 @@ actor TranscriptionCoordinator {
     private static let defaultDiarizerLoadOperationTimeout: Duration = .seconds(300)
 
     static let explicitlyRoutedBackendIdentifiers: Set<String> = [
-        "whisper", "nemotron35", "qwen", "cohere", "indicasr", "sensevoice", "gemma4-litert", "apple-speech",
+        "whisper", "nemotron35", "parakeet-unified", "qwen", "cohere", "indicasr", "sensevoice", "gemma4-litert", "apple-speech",
     ]
 
     private let fluidTranscriber = FluidAudioTranscriber()
+    private let parakeetUnifiedTranscriber = ParakeetUnifiedTranscriber()
     private let whisperTranscriber = WhisperKitTranscriber()
     private var _qwen3Transcriber: Any?
     private var _qwen3PostProcessor: Any?
@@ -208,6 +209,10 @@ actor TranscriptionCoordinator {
         await fluidTranscriber.shutdown(ifLoadedVersion: version)
     }
 
+    func unloadParakeetUnifiedTranscriber() async {
+        await parakeetUnifiedTranscriber.shutdown()
+    }
+
     func unloadQwen3Transcriber() async {
         if #available(macOS 15, *), let transcriber = _qwen3Transcriber as? Qwen3AsrTranscriber {
             await transcriber.shutdown()
@@ -242,14 +247,17 @@ actor TranscriptionCoordinator {
 
     private var postProcessorModelURL: URL = PostProcessorOption.defaultOption.modelURL
     private var postProcessorSystemPrompt: String = PostProcessorOption.defaultSystemPrompt
+    private var postProcessorInputFormat: PostProcessorOption.InputFormat = PostProcessorOption.defaultOption.inputFormat
     private var postProcessorModelId: String = PostProcessorOption.defaultOption.id
     private var postProcessorBackend: TranscriptCleanupBackendOption = .local
     private var postProcessorConfig: AppConfig = AppConfig()
 
     private struct PostProcessorSnapshot {
         let backend: TranscriptCleanupBackendOption
+        let modelURL: URL
         let systemPrompt: String
         let modelId: String
+        let inputFormat: PostProcessorOption.InputFormat
         let config: AppConfig
     }
 
@@ -258,7 +266,8 @@ actor TranscriptionCoordinator {
         if _qwen3PostProcessor == nil {
             _qwen3PostProcessor = Qwen3PostProcessor(
                 modelURL: postProcessorModelURL,
-                systemPrompt: postProcessorSystemPrompt
+                systemPrompt: postProcessorSystemPrompt,
+                inputFormat: postProcessorInputFormat
             )
         }
         return _qwen3PostProcessor as! Qwen3PostProcessor
@@ -285,15 +294,112 @@ actor TranscriptionCoordinator {
         postProcessorConfig = config
 
         if backend == .gemma4LiteRT {
-            postProcessorModelId = Gemma4LiteRTModelStore.repoID
+            postProcessorModelId = Gemma4LiteRTModel.resolved(config.postProcessorGemmaModel).repoID
         } else if let option {
             postProcessorModelURL = option.modelURL
             postProcessorModelId = option.id
+            postProcessorInputFormat = option.inputFormat
+            let effectiveSystemPrompt = option.effectiveSystemPrompt(configuredSystemPrompt: systemPrompt)
+            postProcessorSystemPrompt = effectiveSystemPrompt
             if #available(macOS 15, *), let existing = _qwen3PostProcessor as? Qwen3PostProcessor {
-                await existing.reconfigure(modelURL: option.modelURL, systemPrompt: systemPrompt)
+                await existing.reconfigure(
+                    modelURL: option.modelURL,
+                    systemPrompt: effectiveSystemPrompt,
+                    inputFormat: option.inputFormat
+                )
             }
         } else if backend.llmBackend != nil {
             postProcessorModelId = TranscriptCleanupClient.configuredModel(for: backend, config: config)
+        }
+    }
+
+    func transformSelectedTextForQuil(
+        selectedText: String,
+        instruction: String,
+        appContext: String?,
+        backend: TranscriptCleanupBackendOption,
+        model: String,
+        config: AppConfig
+    ) async throws -> String {
+        let trimmedInstruction = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedInstruction.isEmpty else { throw QuilTransformationError.emptyInstruction }
+        let resolvedModel = model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? (backend == .local
+                ? PostProcessorOption.defaultQuilOption.id
+                : TranscriptCleanupClient.defaultModel(for: backend))
+            : model
+        try QuilModelPolicy.validate(selectedText: selectedText, backend: backend, model: resolvedModel)
+        let userPrompt = QuilTransformationPrompt.userPrompt(
+            selectedText: selectedText,
+            instruction: trimmedInstruction,
+            appContext: appContext,
+            maxAppContextCharacters: QuilModelPolicy.appContextCharacterLimit(for: backend)
+        )
+        let raw = try await generateQuilReplacement(
+            userPrompt: userPrompt,
+            backend: backend,
+            resolvedModel: resolvedModel,
+            config: config
+        )
+        do {
+            return try QuilTransformationOutput.validated(raw)
+        } catch QuilTransformationError.nonReplacementResponse {
+            let correctivePrompt = QuilTransformationPrompt.correctiveUserPrompt(userPrompt)
+            let correctedRaw = try await generateQuilReplacement(
+                userPrompt: correctivePrompt,
+                backend: backend,
+                resolvedModel: resolvedModel,
+                config: config
+            )
+            return try QuilTransformationOutput.validated(correctedRaw)
+        }
+    }
+
+    private func generateQuilReplacement(
+        userPrompt: String,
+        backend: TranscriptCleanupBackendOption,
+        resolvedModel: String,
+        config: AppConfig
+    ) async throws -> String {
+        switch backend {
+        case .local:
+            guard #available(macOS 15, *) else {
+                throw QuilTransformationError.unsupportedModel
+            }
+            let option = PostProcessorOption.resolve(id: resolvedModel)
+            guard option.supportsQuil else { throw QuilTransformationError.unsupportedModel }
+            guard option.isDownloaded || Qwen3PostProcessorConfig.devOverrideURL() != nil else {
+                throw QuilTransformationError.modelUnavailable
+            }
+            let configuration = Qwen3PostProcessor.Configuration(
+                modelURL: option.modelURL,
+                systemPrompt: QuilTransformationPrompt.system,
+                inputFormat: .configurable,
+                maxTokenCount: Qwen3PostProcessorConfig.quilMaxContextTokens
+            )
+            return try await qwen3PostProcessor.generate(userPrompt, configuration: configuration)
+        case .gemma4LiteRT:
+            guard #available(macOS 15, *) else { throw QuilTransformationError.unsupportedModel }
+            let gemmaModel = Gemma4LiteRTModel.resolved(resolvedModel)
+            guard Gemma4LiteRTModelStore.isAvailableLocally(model: gemmaModel) else {
+                throw QuilTransformationError.modelUnavailable
+            }
+            return try await gemma4LiteRTTranscriber.generateText(
+                systemPrompt: QuilTransformationPrompt.system,
+                userPrompt: userPrompt,
+                model: gemmaModel,
+                maxOutputTokens: QuilModelPolicy.gemmaMaximumOutputTokens
+            )
+        default:
+            return try await TranscriptCleanupClient.generate(
+                systemPrompt: QuilTransformationPrompt.system,
+                userPrompt: userPrompt,
+                backend: backend,
+                model: resolvedModel,
+                config: config,
+                maxOutputTokens: QuilModelPolicy.remoteMaximumOutputTokens,
+                logCategory: "quil"
+            )
         }
     }
 
@@ -458,6 +564,11 @@ actor TranscriptionCoordinator {
                 progress: progress,
                 progressSnapshot: progressSnapshot
             )
+        case "parakeet-unified":
+            try await parakeetUnifiedTranscriber.loadModels(
+                progress: progress,
+                progressSnapshot: progressSnapshot
+            )
         case "whisper":
             try await whisperTranscriber.loadModel(
                 modelName: backend.model,
@@ -524,10 +635,14 @@ actor TranscriptionCoordinator {
             )
         case "gemma4-litert":
             if #available(macOS 15, *) {
-                try await gemma4LiteRTTranscriber.prepare(progress: progress, progressSnapshot: progressSnapshot)
+                try await gemma4LiteRTTranscriber.prepare(
+                    model: Gemma4LiteRTModel.resolved(backend.model),
+                    progress: progress,
+                    progressSnapshot: progressSnapshot
+                )
             } else {
                 throw NSError(domain: "MuesliTranscriptionRuntime", code: 7, userInfo: [
-                    NSLocalizedDescriptionKey: "Gemma 4 E2B requires macOS 15 or later.",
+                    NSLocalizedDescriptionKey: "\(backend.label) requires macOS 15 or later.",
                 ])
             }
         case "apple-speech":
@@ -761,7 +876,9 @@ actor TranscriptionCoordinator {
             case .local:
                 try await qwen3PostProcessor.prepare()
             case .gemma4LiteRT:
-                try await gemma4LiteRTTranscriber.prepare()
+                try await gemma4LiteRTTranscriber.prepare(
+                    model: Gemma4LiteRTModel.resolved(postProcessorModelId)
+                )
             default:
                 return
             }
@@ -777,8 +894,10 @@ actor TranscriptionCoordinator {
     private func currentPostProcessorSnapshot() -> PostProcessorSnapshot {
         PostProcessorSnapshot(
             backend: postProcessorBackend,
+            modelURL: postProcessorModelURL,
             systemPrompt: postProcessorSystemPrompt,
             modelId: postProcessorModelId,
+            inputFormat: postProcessorInputFormat,
             config: postProcessorConfig
         )
     }
@@ -789,12 +908,13 @@ actor TranscriptionCoordinator {
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
         indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage,
         whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
+        qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
+        parakeetLanguage: ParakeetLanguage = ParakeetLanguage.defaultLanguage,
         appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier,
         enablePostProcessor: Bool = false,
         customWords: [[String: Any]] = [],
         appContext: String? = nil
     ) async throws -> SpeechTranscriptionResult {
-        let postProcessorSnapshot = currentPostProcessorSnapshot()
         // Qwen3 post-processing is intentionally dictation-only. Meeting transcription should keep raw backend/Parakeet output.
         // Cohere decodes hallucinated text from silence — skip if VAD detects no speech
         if backend.backend == "cohere", let vadManager {
@@ -815,12 +935,18 @@ actor TranscriptionCoordinator {
             cohereLanguage: cohereLanguage,
             indicASRLanguage: indicASRLanguage,
             whisperLanguage: whisperLanguage,
+            qwen3AsrLanguage: qwen3AsrLanguage,
+            parakeetLanguage: parakeetLanguage,
             appleSpeechLanguage: appleSpeechLanguage
         )
         result = removeArtifacts(result)
         if !result.text.isEmpty {
             Qwen3PostProcessorLogging.logVerbose("Dictation raw transcript after artifact cleanup: \(result.text)")
         }
+        // Capture this after ASR awaits. The snapshot is then passed through the
+        // complete cleanup path, so a model switch cannot change the model or
+        // empty-output policy for this dictation.
+        let postProcessorSnapshot = currentPostProcessorSnapshot()
         result = await postProcessDictationIfNeeded(
             result,
             backend: backend,
@@ -841,6 +967,8 @@ actor TranscriptionCoordinator {
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
         indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage,
         whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
+        qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
+        parakeetLanguage: ParakeetLanguage = ParakeetLanguage.defaultLanguage,
         appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier
     ) async throws -> SpeechTranscriptionResult {
         // Meetings intentionally skip Qwen/custom-word post-processing. Keep deterministic artifact/filler cleanup only.
@@ -850,6 +978,8 @@ actor TranscriptionCoordinator {
             cohereLanguage: cohereLanguage,
             indicASRLanguage: indicASRLanguage,
             whisperLanguage: whisperLanguage,
+            qwen3AsrLanguage: qwen3AsrLanguage,
+            parakeetLanguage: parakeetLanguage,
             appleSpeechLanguage: appleSpeechLanguage
         ))
     }
@@ -860,6 +990,8 @@ actor TranscriptionCoordinator {
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
         indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage,
         whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
+        qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
+        parakeetLanguage: ParakeetLanguage = ParakeetLanguage.defaultLanguage,
         appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier
     ) async throws -> SpeechTranscriptionResult {
         // Meeting chunks intentionally skip Qwen/custom-word post-processing for reconciliation.
@@ -882,6 +1014,8 @@ actor TranscriptionCoordinator {
             cohereLanguage: cohereLanguage,
             indicASRLanguage: indicASRLanguage,
             whisperLanguage: whisperLanguage,
+            qwen3AsrLanguage: qwen3AsrLanguage,
+            parakeetLanguage: parakeetLanguage,
             appleSpeechLanguage: appleSpeechLanguage
         ))
     }
@@ -910,6 +1044,7 @@ actor TranscriptionCoordinator {
 
     func shutdown() async {
         await fluidTranscriber.shutdown()
+        await parakeetUnifiedTranscriber.shutdown()
         await whisperTranscriber.shutdown()
         await senseVoiceTranscriber.shutdown()
         if #available(macOS 15, *) {
@@ -1003,10 +1138,20 @@ actor TranscriptionCoordinator {
             // Trigger heuristics were removed; the only remaining heuristic here preserves deletion-cue empty output.
             Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor forced by toggle")
             let start = CFAbsoluteTimeGetCurrent()
-            let processed = try await qwen3PostProcessor.process(result.text, appContext: appContext)
+            let processed = try await qwen3PostProcessor.process(
+                result.text,
+                appContext: appContext,
+                configuration: Qwen3PostProcessor.Configuration(
+                    modelURL: postProcessorSnapshot.modelURL,
+                    systemPrompt: postProcessorSnapshot.systemPrompt,
+                    inputFormat: postProcessorSnapshot.inputFormat
+                )
+            )
             let elapsedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
             let trimmed = processed.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty, !Qwen3DeletionCueDetector.containsDeletionCue(result.text) {
+            if trimmed.isEmpty,
+               postProcessorSnapshot.inputFormat != .s1Mini,
+               !Qwen3DeletionCueDetector.containsDeletionCue(result.text) {
                 Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor returned empty output in \(String(format: "%.1f", elapsedMs))ms; falling back")
                 TranscriptCleanupDebugLogger.append(
                     status: "fallback_empty_output",
@@ -1066,12 +1211,11 @@ actor TranscriptionCoordinator {
             return nil
         }
         do {
-            let transcriber = gemma4LiteRTTranscriber
-            try await transcriber.prepare()
-            let cleanup = try await transcriber.cleanTranscript(
+            let cleanup = try await gemma4LiteRTTranscriber.cleanTranscript(
                 result.text,
                 systemPrompt: postProcessorSnapshot.systemPrompt,
-                appContext: appContext
+                appContext: appContext,
+                model: Gemma4LiteRTModel.resolved(postProcessorSnapshot.modelId)
             )
             let elapsedMs = cleanup.processingTime * 1000
             let trimmed = cleanup.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1209,6 +1353,8 @@ actor TranscriptionCoordinator {
         cohereLanguage: CohereTranscribeLanguage,
         indicASRLanguage: IndicASRLanguage,
         whisperLanguage: WhisperKitLanguage,
+        qwen3AsrLanguage: Qwen3AsrLanguage,
+        parakeetLanguage: ParakeetLanguage,
         appleSpeechLanguage: String
     ) async throws -> SpeechTranscriptionResult {
         switch backend.backend {
@@ -1219,8 +1365,10 @@ actor TranscriptionCoordinator {
             return try await transcribeWithWhisperKit(url: url, language: language)
         case "nemotron35":
             return try await transcribeWithNemotron35(url: url)
+        case "parakeet-unified":
+            return try await transcribeWithParakeetUnified(url: url)
         case "qwen":
-            return try await transcribeWithQwen3(url: url)
+            return try await transcribeWithQwen3(url: url, language: qwen3AsrLanguage)
         case "cohere":
             return try await transcribeWithCohere(url: url, language: cohereLanguage)
         case "indicasr":
@@ -1228,7 +1376,7 @@ actor TranscriptionCoordinator {
         case "sensevoice":
             return try await transcribeWithSenseVoice(url: url)
         case "gemma4-litert":
-            return try await transcribeWithGemma4LiteRT(url: url)
+            return try await transcribeWithGemma4LiteRT(url: url, model: Gemma4LiteRTModel.resolved(backend.model))
         case "apple-speech":
             if #available(macOS 26.0, *) {
                 return try await transcribeWithAppleSpeech(
@@ -1238,15 +1386,15 @@ actor TranscriptionCoordinator {
             }
             throw AppleSpeechAnalyzerError.unavailable
         default:
-            return try await transcribeWithFluidAudio(url: url)
+            return try await transcribeWithFluidAudio(url: url, language: parakeetLanguage)
         }
     }
 
     // MARK: - FluidAudio (Parakeet on ANE)
 
-    private func transcribeWithFluidAudio(url: URL) async throws -> SpeechTranscriptionResult {
+    private func transcribeWithFluidAudio(url: URL, language: ParakeetLanguage) async throws -> SpeechTranscriptionResult {
         fputs("[muesli-native] transcribing with FluidAudio: \(url.lastPathComponent)\n", stderr)
-        let result = try await fluidTranscriber.transcribe(wavURL: url)
+        let result = try await fluidTranscriber.transcribe(wavURL: url, language: language.isoCode)
         fputs("[muesli-native] FluidAudio result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let segments = (result.tokenTimings ?? []).map { timing in
@@ -1255,6 +1403,19 @@ actor TranscriptionCoordinator {
         return SpeechTranscriptionResult(
             text: text,
             segments: segments.isEmpty && !text.isEmpty ? [SpeechSegment(start: 0, end: result.duration, text: text)] : segments
+        )
+    }
+
+    // MARK: - Parakeet Unified (FastConformer-RNNT offline batch)
+
+    private func transcribeWithParakeetUnified(url: URL) async throws -> SpeechTranscriptionResult {
+        fputs("[muesli-native] transcribing with Parakeet Unified: \(url.lastPathComponent)\n", stderr)
+        let result = try await parakeetUnifiedTranscriber.transcribe(wavURL: url)
+        fputs("[muesli-native] Parakeet Unified result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
+        let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return SpeechTranscriptionResult(
+            text: text,
+            segments: text.isEmpty ? [] : [SpeechSegment(start: 0, end: 0, text: text)]
         )
     }
 
@@ -1276,10 +1437,10 @@ actor TranscriptionCoordinator {
 
     // MARK: - Qwen3 ASR (Autoregressive CoreML on ANE)
 
-    private func transcribeWithQwen3(url: URL) async throws -> SpeechTranscriptionResult {
+    private func transcribeWithQwen3(url: URL, language: Qwen3AsrLanguage) async throws -> SpeechTranscriptionResult {
         if #available(macOS 15, *) {
             fputs("[muesli-native] transcribing with Qwen3 ASR: \(url.lastPathComponent)\n", stderr)
-            let result = try await qwen3Transcriber.transcribe(wavURL: url)
+            let result = try await qwen3Transcriber.transcribe(wavURL: url, language: language.pinnedCode)
             fputs("[muesli-native] Qwen3 ASR result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             return SpeechTranscriptionResult(
@@ -1307,14 +1468,15 @@ actor TranscriptionCoordinator {
         )
     }
 
-    // MARK: - Gemma 4 E2B (LiteRT-LM multimodal)
+    // MARK: - Gemma 4 (LiteRT-LM multimodal)
 
-    private func transcribeWithGemma4LiteRT(url: URL) async throws -> SpeechTranscriptionResult {
+    private func transcribeWithGemma4LiteRT(
+        url: URL,
+        model: Gemma4LiteRTModel
+    ) async throws -> SpeechTranscriptionResult {
         if #available(macOS 15, *) {
             Gemma4LiteRTLogging.log("transcribing \(url.lastPathComponent)")
-            let transcriber = gemma4LiteRTTranscriber
-            try await transcriber.prepare()
-            let result = try await transcriber.transcribe(wavURL: url)
+            let result = try await gemma4LiteRTTranscriber.transcribe(wavURL: url, model: model)
             Gemma4LiteRTLogging.log("result chars=\(result.text.count), processingTime=\(String(format: "%.3f", result.processingTime))s")
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             return SpeechTranscriptionResult(
@@ -1323,7 +1485,7 @@ actor TranscriptionCoordinator {
             )
         } else {
             throw NSError(domain: "MuesliTranscriptionRuntime", code: 7, userInfo: [
-                NSLocalizedDescriptionKey: "Gemma 4 E2B requires macOS 15 or later.",
+                NSLocalizedDescriptionKey: "\(model.label) requires macOS 15 or later.",
             ])
         }
     }

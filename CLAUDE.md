@@ -2,7 +2,7 @@
 
 # Muesli
 
-Local-first macOS app for **dictation** and **meeting transcription** on Apple Silicon. All speech-to-text runs on-device via CoreML/Neural Engine. Native Swift/AppKit — no Electron, no Python runtime, no cloud STT costs.
+Local-first macOS app for **dictation** and **meeting transcription** on Apple Silicon. Speech-to-text runs on-device via CoreML/Neural Engine by default; users can explicitly opt into BYOK OpenAI Realtime dictation. Native Swift/AppKit — no Electron or Python runtime.
 
 **Status:** Live and public. Available at [GitHub Releases](https://github.com/Muesli-HQ/muesli/releases). Signed, notarized, stapled.
 
@@ -15,7 +15,7 @@ Local-first macOS app for **dictation** and **meeting transcription** on Apple S
 - **11 ASR models:** Parakeet v3/v2, Whisper Tiny/Small/Medium/Large Turbo, Cohere Transcribe, Nemotron 3.5 Multilingual, SenseVoice Small, Qwen3 ASR, Indic ASR
 - **3 summarization backends:** OpenAI API key, OpenRouter API key, ChatGPT OAuth (subscription-based)
 - **Camera-based meeting detection:** Requires mic + camera + recognized meeting app (camera alone won't trigger)
-- **Join & Record:** Extract meeting URLs from calendar events (Zoom, Meet, Teams, Webex, Chime, FaceTime), split button with "Join & Record" / "Join Only" / "Record Only", platform icons in notifications
+- **Join & Transcribe:** Extract meeting URLs from calendar events (Zoom, Meet, Teams, Webex, Chime, FaceTime), split button with "Join & Transcribe" / "Join Only" / "Transcribe Only", platform icons in notifications
 - **Google Calendar integration:** Coming Up section, status bar, pre-meeting countdowns, event-driven notifications via `EKEventStoreChangedNotification`
 - **Meeting templates:** Built-in and custom templates for structured meeting notes
 
@@ -152,7 +152,7 @@ native/MuesliNative/Sources/
 │   ├── ChatGPTAuthManager.swift  # OAuth PKCE + WHAM API
 │   ├── HotkeyMonitor.swift       # Global hotkey detection (modifier keys)
 │   ├── MeetingDetector.swift     # Camera + mic + app detection for meetings
-│   ├── MeetingNotificationController.swift # Join & Record notification panel with platform icons
+│   ├── MeetingNotificationController.swift # Join & Transcribe notification panel with platform icons
 │   └── PasteController.swift     # Clipboard-preserving Cmd+V paste
 ├── MuesliCore/                   # Shared library (SQLite, paths, models)
 │   ├── DictationStore.swift      # SQLite3 C API — dictations + meetings CRUD
@@ -196,7 +196,7 @@ Key implementation details:
 - Hotkey, calendar, and mic monitors are **deferred until after onboarding completes** to prevent premature permission prompts
 - App restart via detached shell: `/bin/sh -c "sleep 1; open -- \"$1\"" -- <bundlePath>` then `NSApp.terminate(nil)`
 - Progress saved on every step transition to `onboarding-progress.json` (schema-versioned, atomic writes)
-- Dictation test step uses real hold-to-talk hotkey flow with `dictationTestCallback` routing (no paste, no floating indicator)
+- Dictation test step uses the real hold-to-talk hotkey flow with `dictationTestCallback` routing. It never pastes, but intentionally keeps the floating waveform visible so onboarding exercises the same recording feedback as normal dictation; releasing the hotkey leaves the active state immediately.
 - `OnboardingView.dictationTestStep` (static Int = 4) — hotkey monitor only starts when resuming at this step or later
 
 ## Screen Context (opt-in, `enableScreenContext` in config)

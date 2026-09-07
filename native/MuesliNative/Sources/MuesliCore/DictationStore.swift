@@ -26,6 +26,7 @@ public struct MeetingThreadNavigation: Equatable, Sendable {
 
 public final class DictationStore {
     private static let targetApplicationBackfillMigration = "dictation_target_application_from_app_context_v1"
+    private static let quillStatisticsBackfillMigration = "quill_statistics_spoken_instruction_v1"
     public static let defaultTombstoneRetentionInterval: TimeInterval = 30 * 24 * 60 * 60
 
     private static let iso8601Formatter = ISO8601DateFormatter()
@@ -38,7 +39,7 @@ public final class DictationStore {
     t.id, t.final_status, t.final_message, t.trace_json, t.created_at
     """
     private static let meetingColumns = """
-    id, title, start_time, duration_seconds, raw_transcript, formatted_notes, word_count, folder_id, calendar_event_id, mic_audio_path, system_audio_path, saved_recording_path, meeting_status, manual_notes, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, follow_up_to_id, follow_up_to_record_name, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start
+    id, title, start_time, duration_seconds, raw_transcript, formatted_notes, word_count, folder_id, calendar_event_id, mic_audio_path, system_audio_path, saved_recording_path, meeting_status, manual_notes, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, follow_up_to_id, follow_up_to_record_name, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start, visual_context
     """
 
     public init() {
@@ -130,6 +131,7 @@ public final class DictationStore {
             sync_dirty INTEGER NOT NULL DEFAULT 1,
             follow_up_to_id INTEGER REFERENCES meetings(id) ON DELETE SET NULL,
             follow_up_to_record_name TEXT,
+            visual_context TEXT,
             created_at TEXT DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_meetings_start_time ON meetings(start_time DESC);
@@ -253,9 +255,17 @@ public final class DictationStore {
             "ALTER TABLE meetings ADD COLUMN calendar_series_id TEXT",
             "ALTER TABLE meetings ADD COLUMN calendar_occurrence_start REAL",
             "ALTER TABLE meeting_participants ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'",
-            "ALTER TABLE meeting_participants ADD COLUMN is_suppressed INTEGER NOT NULL DEFAULT 0"
+            "ALTER TABLE meeting_participants ADD COLUMN is_suppressed INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE meetings ADD COLUMN visual_context TEXT"
         ] {
-            _ = sqlite3_exec(db, sql, nil, nil, nil)
+            guard sqlite3_exec(db, sql, nil, nil, nil) != SQLITE_OK else { continue }
+            // ADD COLUMN has no IF NOT EXISTS, so a duplicate column is the
+            // normal result on an up-to-date database. Anything else means the
+            // column is genuinely missing, and callers need to hear about it
+            // rather than fail later on a "no such column" query.
+            guard String(cString: sqlite3_errmsg(db)).contains("duplicate column name") else {
+                throw lastError(db)
+            }
         }
         // Migrate local development databases created by the superseded PR.
         _ = sqlite3_exec(
@@ -327,6 +337,7 @@ public final class DictationStore {
         let _ = sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_dictations_sync_dirty ON dictations(updated_at DESC) WHERE sync_dirty = 1", nil, nil, nil)
         let _ = sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_meetings_sync_dirty ON meetings(updated_at DESC) WHERE sync_dirty = 1", nil, nil, nil)
         try migrateInsightsCache(db: db)
+        try backfillQuillStatisticsIfNeeded(db: db)
         try repairLegacyMacOriginSources(db: db)
         _ = try purgeSoftDeletedTextRecords(olderThan: Self.defaultTombstoneRetentionInterval, db: db)
     }
@@ -394,6 +405,99 @@ public final class DictationStore {
     ) throws -> Int64 {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
+        return try insertDictation(
+            text: text,
+            durationSeconds: durationSeconds,
+            appContext: appContext,
+            source: source,
+            targetAppName: targetAppName,
+            targetAppBundleID: targetAppBundleID,
+            startedAt: startedAt,
+            endedAt: endedAt,
+            db: db
+        )
+    }
+
+    @discardableResult
+    public func insertQuilDictation(
+        outputText: String,
+        originalText: String,
+        instruction: String,
+        backend: String,
+        model: String,
+        durationSeconds: Double,
+        targetAppName: String? = nil,
+        targetAppBundleID: String? = nil,
+        finalStatus: String = "done",
+        finalMessage: String? = nil,
+        additionalTraceEvents: [ComputerUseTraceEvent] = [],
+        startedAt: Date,
+        endedAt: Date
+    ) throws -> Int64 {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db)
+        do {
+            let dictationID = try insertDictation(
+                text: outputText,
+                statisticsText: instruction,
+                durationSeconds: durationSeconds,
+                source: "quil",
+                targetAppName: targetAppName,
+                targetAppBundleID: targetAppBundleID,
+                startedAt: startedAt,
+                endedAt: endedAt,
+                db: db
+            )
+            try insertComputerUseTrace(
+                dictationID: dictationID,
+                finalStatus: finalStatus,
+                finalMessage: finalMessage ?? "\(backend) · \(model)",
+                events: [
+                    originalText.isEmpty
+                        ? ComputerUseTraceEvent(
+                            kind: "quil_mode",
+                            title: "Input",
+                            body: "No highlighted text — generated at cursor"
+                        )
+                        : ComputerUseTraceEvent(
+                            kind: "quil_original",
+                            title: "Original highlighted text",
+                            body: originalText
+                        ),
+                    ComputerUseTraceEvent(
+                        kind: "quil_instruction",
+                        title: "Spoken instruction",
+                        body: instruction
+                    ),
+                    ComputerUseTraceEvent(
+                        kind: "quil_model",
+                        title: "Model",
+                        body: "\(backend) · \(model)"
+                    ),
+                ] + additionalTraceEvents,
+                db: db
+            )
+            try exec("COMMIT", db: db)
+            return dictationID
+        } catch {
+            sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
+    }
+
+    private func insertDictation(
+        text: String,
+        statisticsText: String? = nil,
+        durationSeconds: Double,
+        appContext: String = "",
+        source: String,
+        targetAppName: String?,
+        targetAppBundleID: String?,
+        startedAt: Date,
+        endedAt: Date,
+        db: OpaquePointer?
+    ) throws -> Int64 {
 
         let sql = """
         INSERT INTO dictations
@@ -414,7 +518,7 @@ public final class DictationStore {
         sqlite3_bind_double(statement, 2, durationSeconds)
         sqlite3_bind_text(statement, 3, (text as NSString).utf8String, -1, nil)
         sqlite3_bind_text(statement, 4, (appContext as NSString).utf8String, -1, nil)
-        sqlite3_bind_int(statement, 5, Int32(Self.countWords(in: text)))
+        sqlite3_bind_int(statement, 5, Int32(Self.countWords(in: statisticsText ?? text)))
         sqlite3_bind_text(statement, 6, (source as NSString).utf8String, -1, nil)
         bindOptionalText(targetAppName, at: 7, statement: statement)
         bindOptionalText(targetAppBundleID, at: 8, statement: statement)
@@ -839,7 +943,12 @@ public final class DictationStore {
         SELECT \(Self.dictationColumns)
         FROM dictations d
         LEFT JOIN computer_use_traces t ON t.dictation_id = d.id
-        WHERE d.deleted_at IS NULL AND (d.raw_text LIKE ? ESCAPE '\\' OR d.app_context LIKE ? ESCAPE '\\' OR t.final_message LIKE ? ESCAPE '\\' OR t.trace_json LIKE ? ESCAPE '\\')
+        WHERE d.deleted_at IS NULL AND (
+            d.raw_text LIKE ? ESCAPE '\\'
+            OR d.app_context LIKE ? ESCAPE '\\'
+            OR t.final_message LIKE ? ESCAPE '\\'
+            OR t.trace_json LIKE ? ESCAPE '\\'
+        )
         ORDER BY d.id DESC
         LIMIT ?
         """
@@ -987,15 +1096,16 @@ public final class DictationStore {
         selectedTemplateKind: MeetingTemplateKind? = nil,
         selectedTemplatePrompt: String? = nil,
         source: MeetingSource = .meeting,
-        calendarOccurrence: CalendarOccurrenceReference? = nil
+        calendarOccurrence: CalendarOccurrenceReference? = nil,
+        visualContext: String? = nil
     ) throws -> Int64 {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
 
         let sql = """
         INSERT INTO meetings
-        (title, calendar_event_id, start_time, end_time, duration_seconds, raw_transcript, formatted_notes, mic_audio_path, system_audio_path, saved_recording_path, word_count, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, updated_at, sync_dirty, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+        (title, calendar_event_id, start_time, end_time, duration_seconds, raw_transcript, formatted_notes, mic_audio_path, system_audio_path, saved_recording_path, word_count, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, updated_at, sync_dirty, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start, visual_context)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -1034,6 +1144,7 @@ public final class DictationStore {
         } else {
             sqlite3_bind_null(statement, 22)
         }
+        bindOptionalText(visualContext, at: 23, statement: statement)
 
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
@@ -1800,7 +1911,7 @@ public final class DictationStore {
     private static let insightsCacheBatchSize = 64
 
     private func reconcileInsightsCache(db: OpaquePointer?, calendar: Calendar) throws {
-        let signature = "2|\(calendar.timeZone.identifier)"
+        let signature = "3|\(calendar.timeZone.identifier)"
         if try insightsCacheMeta("signature", db: db) != signature {
             try resetInsightsCache(signature: signature, db: db)
         }
@@ -1908,22 +2019,45 @@ public final class DictationStore {
     }
 
     private func insightsSourceText(_ source: InsightsCacheSource, db: OpaquePointer?) throws -> String? {
-        let sql: String
         if source.kind == "meeting" {
-            sql = """
+            let sql = """
             SELECT CASE WHEN meeting_status = 'note_only' THEN COALESCE(manual_notes, '') ELSE COALESCE(raw_transcript, '') END
             FROM meetings WHERE id = ? AND updated_at = ?
             """
-        } else {
-            sql = "SELECT COALESCE(raw_text, '') FROM dictations WHERE id = ? AND updated_at = ?"
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+            defer { sqlite3_finalize(statement) }
+            sqlite3_bind_int64(statement, 1, source.id)
+            sqlite3_bind_double(statement, 2, source.updatedAt)
+            guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+            return stringColumn(statement, index: 0)
         }
+
+        let sql = """
+        SELECT COALESCE(d.source, ''), COALESCE(d.raw_text, ''), t.trace_json
+        FROM dictations d
+        LEFT JOIN computer_use_traces t ON t.dictation_id = d.id
+        WHERE d.id = ? AND d.updated_at = ?
+        """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, source.id)
         sqlite3_bind_double(statement, 2, source.updatedAt)
         guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
-        return stringColumn(statement, index: 0)
+
+        let dictationSource = stringColumn(statement, index: 0)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard dictationSource == "quil" else {
+            return stringColumn(statement, index: 1)
+        }
+        guard let traceJSON = optionalStringColumn(statement, index: 2),
+              let data = traceJSON.data(using: .utf8),
+              let events = try? JSONDecoder().decode([ComputerUseTraceEvent].self, from: data) else {
+            return ""
+        }
+        return events.first(where: { $0.kind == "quil_instruction" })?.body ?? ""
     }
 
     @discardableResult
@@ -2239,6 +2373,7 @@ public final class DictationStore {
                 saved_recording_path = NULL,
                 follow_up_to_id = NULL,
                 follow_up_to_record_name = NULL,
+                visual_context = NULL,
                 word_count = 0,
                 duration_seconds = 0,
                 deleted_at = ?,
@@ -2297,7 +2432,22 @@ public final class DictationStore {
     ) throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
+        try insertComputerUseTrace(
+            dictationID: dictationID,
+            finalStatus: finalStatus,
+            finalMessage: finalMessage,
+            events: events,
+            db: db
+        )
+    }
 
+    private func insertComputerUseTrace(
+        dictationID: Int64,
+        finalStatus: String,
+        finalMessage: String,
+        events: [ComputerUseTraceEvent],
+        db: OpaquePointer?
+    ) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(events)
@@ -2354,6 +2504,7 @@ public final class DictationStore {
                 mic_audio_path = NULL,
                 system_audio_path = NULL,
                 saved_recording_path = NULL,
+                visual_context = NULL,
                 word_count = 0,
                 duration_seconds = 0,
                 deleted_at = strftime('%s','now'),
@@ -2659,13 +2810,14 @@ public final class DictationStore {
         selectedTemplateID: String? = nil,
         selectedTemplateName: String? = nil,
         selectedTemplateKind: MeetingTemplateKind? = nil,
-        selectedTemplatePrompt: String? = nil
+        selectedTemplatePrompt: String? = nil,
+        visualContext: String? = nil
     ) throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         let sql = """
         UPDATE meetings
-        SET title = ?, calendar_event_id = ?, start_time = ?, end_time = ?, duration_seconds = ?, raw_transcript = ?, formatted_notes = ?, mic_audio_path = ?, system_audio_path = ?, saved_recording_path = ?, meeting_status = ?, word_count = ?, selected_template_id = ?, selected_template_name = ?, selected_template_kind = ?, selected_template_prompt = ?, updated_at = ?, sync_dirty = 1
+        SET title = ?, calendar_event_id = ?, start_time = ?, end_time = ?, duration_seconds = ?, raw_transcript = ?, formatted_notes = ?, mic_audio_path = ?, system_audio_path = ?, saved_recording_path = ?, meeting_status = ?, word_count = ?, selected_template_id = ?, selected_template_name = ?, selected_template_kind = ?, selected_template_prompt = ?, visual_context = ?, updated_at = ?, sync_dirty = 1
         WHERE id = ?
         """
         var statement: OpaquePointer?
@@ -2697,8 +2849,9 @@ public final class DictationStore {
         bindOptionalText(selectedTemplateName, at: 14, statement: statement)
         bindOptionalText(selectedTemplateKind?.rawValue, at: 15, statement: statement)
         bindOptionalText(selectedTemplatePrompt, at: 16, statement: statement)
-        sqlite3_bind_double(statement, 17, Date().timeIntervalSince1970)
-        sqlite3_bind_int64(statement, 18, id)
+        bindOptionalText(visualContext, at: 17, statement: statement)
+        sqlite3_bind_double(statement, 18, Date().timeIntervalSince1970)
+        sqlite3_bind_int64(statement, 19, id)
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
@@ -3620,6 +3773,192 @@ public final class DictationStore {
             }
             sqlite3_bind_text(deleteStatement, 1, (legacyAccountScopeKey as NSString).utf8String, -1, nil)
             sqlite3_bind_text(deleteStatement, 2, (legacyStateKey as NSString).utf8String, -1, nil)
+            guard sqlite3_step(deleteStatement) == SQLITE_DONE else {
+                sqlite3_finalize(deleteStatement)
+                throw lastError(db)
+            }
+            sqlite3_finalize(deleteStatement)
+
+            try exec(
+                """
+                UPDATE dictations
+                SET cloud_change_tag = NULL,
+                    cloud_system_fields = NULL,
+                    last_synced_at = NULL,
+                    sync_dirty = 1
+                WHERE cloud_record_name IS NOT NULL
+                """,
+                db: db
+            )
+            try exec(
+                """
+                UPDATE meetings
+                SET cloud_change_tag = NULL,
+                    cloud_system_fields = NULL,
+                    last_synced_at = NULL,
+                    sync_dirty = CASE
+                        WHEN meeting_status NOT IN ('recording', 'processing') THEN 1
+                        ELSE sync_dirty
+                    END
+                WHERE cloud_record_name IS NOT NULL
+                """,
+                db: db
+            )
+            try exec("COMMIT", db: db)
+            return true
+        } catch {
+            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
+    }
+
+    /// Explicitly reconnects an environment-ambiguous legacy library to the
+    /// current account. A previously-bound current-environment or legacy owner
+    /// can only confirm the same scope; a mismatch is never overwritten. On
+    /// first adoption, obsolete engine/version metadata is cleared and eligible
+    /// text is requeued without changing authored content, timestamps, or audio
+    /// paths.
+    public func reconnectCloudSyncAccountScope(
+        expectedScope: String,
+        accountScopeKey: String,
+        stateKey: String,
+        legacyAccountScopeKey: String,
+        legacyStateKey: String
+    ) throws -> Bool {
+        guard accountScopeKey != stateKey,
+              accountScopeKey != legacyAccountScopeKey,
+              accountScopeKey != legacyStateKey else { return false }
+
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE TRANSACTION", db: db)
+        do {
+            func stateValue(for key: String) throws -> Data? {
+                let sql = "SELECT value FROM cloud_sync_state WHERE key = ? LIMIT 1"
+                var statement: OpaquePointer?
+                guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+                    throw lastError(db)
+                }
+                defer { sqlite3_finalize(statement) }
+                sqlite3_bind_text(statement, 1, (key as NSString).utf8String, -1, nil)
+                switch sqlite3_step(statement) {
+                case SQLITE_ROW:
+                    guard let bytes = sqlite3_column_blob(statement, 0) else { return Data() }
+                    return Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, 0)))
+                case SQLITE_DONE:
+                    return nil
+                default:
+                    throw lastError(db)
+                }
+            }
+
+            let expectedData = Data(expectedScope.utf8)
+            if let currentOwner = try stateValue(for: accountScopeKey) {
+                try exec("COMMIT", db: db)
+                return currentOwner == expectedData
+            }
+
+            if let legacyOwner = try stateValue(for: legacyAccountScopeKey),
+               legacyOwner != expectedData {
+                try exec("COMMIT", db: db)
+                return false
+            }
+
+            let deleteSQL = "DELETE FROM cloud_sync_state WHERE key IN (?, ?, ?)"
+            var deleteStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, deleteSQL, -1, &deleteStatement, nil) == SQLITE_OK else {
+                throw lastError(db)
+            }
+            sqlite3_bind_text(deleteStatement, 1, (stateKey as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(deleteStatement, 2, (legacyAccountScopeKey as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(deleteStatement, 3, (legacyStateKey as NSString).utf8String, -1, nil)
+            guard sqlite3_step(deleteStatement) == SQLITE_DONE else {
+                sqlite3_finalize(deleteStatement)
+                throw lastError(db)
+            }
+            sqlite3_finalize(deleteStatement)
+
+            let insertSQL = "INSERT INTO cloud_sync_state (key, value, updated_at) VALUES (?, ?, ?)"
+            var insertStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, insertSQL, -1, &insertStatement, nil) == SQLITE_OK else {
+                throw lastError(db)
+            }
+            sqlite3_bind_text(insertStatement, 1, (accountScopeKey as NSString).utf8String, -1, nil)
+            bindOptionalBlob(expectedData, at: 2, statement: insertStatement)
+            sqlite3_bind_double(insertStatement, 3, Date().timeIntervalSince1970)
+            guard sqlite3_step(insertStatement) == SQLITE_DONE else {
+                sqlite3_finalize(insertStatement)
+                throw lastError(db)
+            }
+            sqlite3_finalize(insertStatement)
+
+            try exec(
+                """
+                UPDATE dictations
+                SET cloud_change_tag = NULL,
+                    cloud_system_fields = NULL,
+                    last_synced_at = NULL,
+                    sync_dirty = 1
+                WHERE cloud_record_name IS NOT NULL
+                """,
+                db: db
+            )
+            try exec(
+                """
+                UPDATE meetings
+                SET cloud_change_tag = NULL,
+                    cloud_system_fields = NULL,
+                    last_synced_at = NULL,
+                    sync_dirty = CASE
+                        WHEN meeting_status NOT IN ('recording', 'processing') THEN 1
+                        ELSE sync_dirty
+                    END
+                WHERE cloud_record_name IS NOT NULL
+                """,
+                db: db
+            )
+            try exec("COMMIT", db: db)
+            return true
+        } catch {
+            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
+    }
+
+    /// Resets local CloudKit account state after explicit user confirmation.
+    /// Authored content and audio paths remain untouched. Current and optional
+    /// legacy engine metadata is cleared and eligible text is requeued so the
+    /// next setup can claim the currently signed-in account without inheriting
+    /// stale CloudKit cursors or change tags.
+    public func resetCloudSyncAccountLink(
+        accountScopeKey: String,
+        stateKey: String,
+        legacyAccountScopeKey: String? = nil,
+        legacyStateKey: String? = nil
+    ) throws -> Bool {
+        let orderedKeys = [accountScopeKey, stateKey, legacyAccountScopeKey, legacyStateKey]
+            .compactMap { $0 }
+        guard Set(orderedKeys).count == orderedKeys.count else { return false }
+
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE TRANSACTION", db: db)
+        do {
+            let placeholders = Array(repeating: "?", count: orderedKeys.count).joined(separator: ", ")
+            let deleteSQL = "DELETE FROM cloud_sync_state WHERE key IN (\(placeholders))"
+            var deleteStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, deleteSQL, -1, &deleteStatement, nil) == SQLITE_OK else {
+                throw lastError(db)
+            }
+            for (index, key) in orderedKeys.enumerated() {
+                sqlite3_bind_text(
+                    deleteStatement,
+                    Int32(index + 1),
+                    (key as NSString).utf8String,
+                    -1,
+                    nil
+                )
+            }
             guard sqlite3_step(deleteStatement) == SQLITE_DONE else {
                 sqlite3_finalize(deleteStatement)
                 throw lastError(db)
@@ -4772,7 +5111,8 @@ public final class DictationStore {
             selectedTemplatePrompt: selectedTemplatePrompt,
             source: source,
             followUpToID: followUpToID,
-            followUpToRecordName: followUpToRecordName
+            followUpToRecordName: followUpToRecordName,
+            visualContext: optionalStringColumn(statement, index: 26)
         )
     }
 
@@ -4961,6 +5301,100 @@ public final class DictationStore {
             }
         }
         return (conditions, boundValues)
+    }
+
+    /// Quill originally stored the generated output's word count. Analytics should
+    /// instead describe what the user spoke, while the full output remains history.
+    private func backfillQuillStatisticsIfNeeded(db: OpaquePointer?) throws {
+        guard !(try localMigrationCompleted(Self.quillStatisticsBackfillMigration, db: db)) else {
+            return
+        }
+
+        try exec("BEGIN IMMEDIATE TRANSACTION", db: db)
+        do {
+            if !(try localMigrationCompleted(Self.quillStatisticsBackfillMigration, db: db)) {
+                let selectSQL = """
+                SELECT d.id, t.trace_json
+                FROM dictations d
+                LEFT JOIN computer_use_traces t ON t.dictation_id = d.id
+                WHERE LOWER(TRIM(COALESCE(d.source, ''))) = 'quil'
+                """
+                var select: OpaquePointer?
+                guard sqlite3_prepare_v2(db, selectSQL, -1, &select, nil) == SQLITE_OK else {
+                    throw lastError(db)
+                }
+                defer { sqlite3_finalize(select) }
+
+                let updateSQL = """
+                UPDATE dictations
+                SET word_count = ?,
+                    updated_at = MAX(updated_at, ?),
+                    sync_dirty = 1
+                WHERE id = ?
+                """
+                var update: OpaquePointer?
+                guard sqlite3_prepare_v2(db, updateSQL, -1, &update, nil) == SQLITE_OK else {
+                    throw lastError(db)
+                }
+                defer { sqlite3_finalize(update) }
+
+                let migrationTime = Date().timeIntervalSince1970
+                while sqlite3_step(select) == SQLITE_ROW {
+                    let dictationID = sqlite3_column_int64(select, 0)
+                    guard let traceJSON = optionalStringColumn(select, index: 1),
+                          let data = traceJSON.data(using: .utf8),
+                          let events = try? JSONDecoder().decode([ComputerUseTraceEvent].self, from: data),
+                          let instruction = events.first(where: { $0.kind == "quil_instruction" })?.body,
+                          !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    else {
+                        // Computer-use traces are device-local. A synced Quill row can
+                        // legitimately have only the already-correct prompt word count.
+                        continue
+                    }
+
+                    sqlite3_reset(update)
+                    sqlite3_clear_bindings(update)
+                    sqlite3_bind_int(update, 1, Int32(Self.countWords(in: instruction)))
+                    sqlite3_bind_double(update, 2, migrationTime)
+                    sqlite3_bind_int64(update, 3, dictationID)
+                    guard sqlite3_step(update) == SQLITE_DONE else { throw lastError(db) }
+                }
+
+                let markSQL = """
+                INSERT INTO local_migrations (identifier, completed_at)
+                VALUES (?, CAST(strftime('%s', 'now') AS REAL))
+                """
+                var mark: OpaquePointer?
+                guard sqlite3_prepare_v2(db, markSQL, -1, &mark, nil) == SQLITE_OK else {
+                    throw lastError(db)
+                }
+                defer { sqlite3_finalize(mark) }
+                sqlite3_bind_text(
+                    mark,
+                    1,
+                    (Self.quillStatisticsBackfillMigration as NSString).utf8String,
+                    -1,
+                    nil
+                )
+                guard sqlite3_step(mark) == SQLITE_DONE else { throw lastError(db) }
+            }
+            try exec("COMMIT", db: db)
+        } catch {
+            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
+    }
+
+    private func localMigrationCompleted(_ identifier: String, db: OpaquePointer?) throws -> Bool {
+        let sql = "SELECT EXISTS(SELECT 1 FROM local_migrations WHERE identifier = ?)"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, (identifier as NSString).utf8String, -1, nil)
+        guard sqlite3_step(statement) == SQLITE_ROW else { throw lastError(db) }
+        return sqlite3_column_int(statement, 0) != 0
     }
 
     private func backfillLegacyTargetApplicationsIfNeeded(db: OpaquePointer?) throws {

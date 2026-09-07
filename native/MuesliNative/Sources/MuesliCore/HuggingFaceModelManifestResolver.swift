@@ -183,6 +183,10 @@ public final class HuggingFaceModelManifestResolver: @unchecked Sendable {
                     request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
                 }
                 let result = try await session.data(for: request)
+                // URLSession can complete successfully in the narrow window
+                // after its parent task is cancelled. Do not turn that late
+                // discovery response into a new file transfer.
+                try Task.checkCancellation()
                 if let http = result.1 as? HTTPURLResponse,
                    (http.statusCode == 429 || (500..<600).contains(http.statusCode)),
                    attempt < 2 {

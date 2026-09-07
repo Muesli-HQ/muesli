@@ -63,9 +63,18 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
     var onPCMSamples: (([Int16]) -> Void)?
     var preferredInputDeviceID: AudioObjectID?
 
-    private let engine = AVAudioEngine()
+    // Construct native graphs only on the driver path, never while a route
+    // decision creates a recorder. graphLock owns this storage.
+    private var engineStorage: AVAudioEngine?
+    private var engine: AVAudioEngine {
+        if let engineStorage { return engineStorage }
+        let created = AVAudioEngine()
+        engineStorage = created
+        return created
+    }
     private let directoryName: String
     private let recoversFromInputConfigurationChanges: Bool
+    private let observesInputConfigurationChanges: Bool
     private let graphLock = NSRecursiveLock()
     /// Published independently of graphLock: invalidateForTeardown() must land
     /// even while a worker is blocked in engine startup holding graphLock, so
@@ -99,10 +108,13 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
 
     init(
         directoryName: String = "muesli-meeting-mic",
-        recoversFromInputConfigurationChanges: Bool = false
+        recoversFromInputConfigurationChanges: Bool = false,
+        observesInputConfigurationChanges: Bool? = nil
     ) {
         self.directoryName = directoryName
         self.recoversFromInputConfigurationChanges = recoversFromInputConfigurationChanges
+        self.observesInputConfigurationChanges = observesInputConfigurationChanges
+            ?? recoversFromInputConfigurationChanges
     }
 
     deinit {
@@ -191,8 +203,8 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
             // teardown may have landed during that window. Synchronously stop
             // what just started rather than letting capture outlive teardown.
             if isPermanentlyInvalidated {
-                removeTapIfNeeded()
                 stopEngineSafely()
+                removeTapIfNeeded()
                 removeConfigurationChangeObserverIfNeeded()
                 clearFailureState()
                 let state = lock.withLock { state -> FileState in
@@ -209,8 +221,8 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
             }
             runState.markStarted()
         } catch {
-            removeTapIfNeeded()
             stopEngineSafely()
+            removeTapIfNeeded()
             removeConfigurationChangeObserverIfNeeded()
             clearFailureState()
             let state = lock.withLock { state -> FileState in
@@ -381,7 +393,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
     /// silently while system audio keeps flowing. Rebuild the tap and restart
     /// the engine so capture continues into the same file.
     private func installConfigurationChangeObserverIfNeeded(recordingID: UUID) {
-        guard recoversFromInputConfigurationChanges else { return }
+        guard observesInputConfigurationChanges else { return }
         guard configurationChangeObserver == nil else { return }
         let callbackQueue = configurationChangeQueue
         configurationChangeObserver = NotificationCenter.default.addObserver(
@@ -426,8 +438,8 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
 
         fputs("[streaming-mic] engine configuration changed; restarting input capture\n", stderr)
         emitLatency("engine_config_change_restart_begin")
-        removeTapIfNeeded()
         stopEngineSafely()
+        removeTapIfNeeded()
         isGraphPrepared = false
         graphPreparedInputDeviceID = nil
 
@@ -442,8 +454,8 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
             // tapInstalled stays consistent with the stopped engine. Remove the observer
             // too: once the failure is reported this recording must not silently resume
             // on a later configuration change.
-            removeTapIfNeeded()
             stopEngineSafely()
+            removeTapIfNeeded()
             removeConfigurationChangeObserverIfNeeded()
             runState.markConfigurationChangeRestartFailed()
             reportRecordingFailure(error, recordingID: recordingID)
@@ -481,8 +493,8 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         clearFailureState()
         removeConfigurationChangeObserverIfNeeded()
 
-        removeTapIfNeeded()
         stopEngineSafely()
+        removeTapIfNeeded()
 
         let finalState = lock.withLock { state -> FileState in
             let old = state
@@ -525,10 +537,11 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         runState.markStopped()
         clearFailureState()
         removeConfigurationChangeObserverIfNeeded()
-        removeTapIfNeeded()
         stopEngineSafely()
+        removeTapIfNeeded()
         isGraphPrepared = false
         graphPreparedInputDeviceID = nil
+        engineStorage = nil
         onAudioBuffer = nil
         onPCMSamples = nil
         onRecordingFailed = nil
@@ -548,6 +561,9 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         lock.withLock { $0.latestPowerDB }
     }
 
+    // Call only after stopping the engine: removing a tap from a running
+    // engine reinitializes its input chain and can deadlock behind a route
+    // rebind (captured during the AirPods Stop Transcribing failure).
     private func removeTapIfNeeded() {
         guard tapInstalled else { return }
         if recoversFromInputConfigurationChanges {
@@ -559,6 +575,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
     }
 
     private func stopEngineSafely() {
+        guard let engine = engineStorage else { return }
         if recoversFromInputConfigurationChanges {
             _ = MuesliAudioGraphStopEngine(engine)
         } else {

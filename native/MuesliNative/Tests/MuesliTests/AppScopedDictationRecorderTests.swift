@@ -5,6 +5,71 @@ import Testing
 
 @Suite("AppScopedDictationRecorder")
 struct AppScopedDictationRecorderTests {
+    @Test("accepted audio keeps its original sink when a callback replaces the recording")
+    func replacementDuringDelivery() throws {
+        let child = FakeStreamingRecorder()
+        let recorder = AppScopedDictationRecorder(recorder: child)
+        var oldBuffers = 0
+        var newBuffers = 0
+        recorder.onAudioBuffer = { _ in oldBuffers += 1 }
+        recorder.onFirstCapturedAudioBuffer = { [weak recorder] _ in
+            guard let recorder else { return }
+            recorder.cancel()
+            recorder.onFirstCapturedAudioBuffer = nil
+            recorder.onAudioBuffer = { _ in newBuffers += 1 }
+            _ = try? recorder.start()
+        }
+        _ = try recorder.start()
+        child.onAudioBuffer?([0.25])
+        #expect(oldBuffers == 1 && newBuffers == 0)
+        child.onAudioBuffer?([0.5])
+        #expect(newBuffers == 1)
+        recorder.cancel()
+    }
+
+    @Test("previous recording callbacks cannot populate or fail a replacement recording")
+    func retiredCallbacksAfterReuse() throws {
+        let child = FakeStreamingRecorder()
+        let recorder = AppScopedDictationRecorder(recorder: child)
+        _ = try recorder.start()
+        let oldAudio = child.onAudioBuffer
+        let oldFailure = child.onRecordingFailed
+        recorder.cancel()
+        var buffers = 0
+        var failures = 0
+        var firstBuffers = 0
+        recorder.onAudioBuffer = { _ in buffers += 1 }
+        recorder.onRecordingFailed = { _, _ in failures += 1 }
+        recorder.onFirstCapturedAudioBuffer = { _ in firstBuffers += 1 }
+        _ = try recorder.start()
+        oldAudio?([0.25])
+        oldFailure?(NSError(domain: "old recording", code: 1))
+        #expect(buffers == 0 && failures == 0 && firstBuffers == 0)
+        child.onAudioBuffer?([0.5])
+        #expect(buffers == 1 && firstBuffers == 1)
+        recorder.cancel()
+    }
+
+    @Test("audio buffers are forwarded without changing capture callbacks")
+    func audioBuffersAreForwarded() throws {
+        let streamingRecorder = FakeStreamingRecorder()
+        let recorder = AppScopedDictationRecorder(
+            recorder: streamingRecorder,
+            prepareQueue: DispatchQueue(label: "test.app-scoped-dictation.audio-forwarding")
+        )
+        var received: [[Float]] = []
+        var firstBufferCount = 0
+        recorder.onAudioBuffer = { received.append($0) }
+        recorder.onFirstCapturedAudioBuffer = { _ in firstBufferCount += 1 }
+
+        _ = try recorder.start()
+        streamingRecorder.onAudioBuffer?([0.25, -0.5])
+        streamingRecorder.onAudioBuffer?([0.75])
+
+        #expect(received == [[0.25, -0.5], [0.75]])
+        #expect(firstBufferCount == 1)
+    }
+
     @Test("cancelled queued explicit warmup does not prepare microphone")
     func cancelledQueuedExplicitWarmupDoesNotPrepareMicrophone() {
         let streamingRecorder = FakeStreamingRecorder()

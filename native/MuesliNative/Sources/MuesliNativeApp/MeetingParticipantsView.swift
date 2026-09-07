@@ -9,12 +9,23 @@ extension Notification.Name {
 struct MeetingParticipantsView: View {
     let meetingID: Int64
     let controller: MuesliController
+    let compactDiscardAction: (() -> Void)?
 
     @State private var participants: [MeetingParticipant] = []
     @State private var isContactPickerPresented = false
     @State private var isNewContactPresented = false
     @State private var isPeoplePopoverPresented = false
     @State private var errorMessage: String?
+
+    init(
+        meetingID: Int64,
+        controller: MuesliController,
+        compactDiscardAction: (() -> Void)? = nil
+    ) {
+        self.meetingID = meetingID
+        self.controller = controller
+        self.compactDiscardAction = compactDiscardAction
+    }
 
     private var peopleDescription: String {
         participants.count == 1 ? "1 person" : "\(participants.count) people"
@@ -30,44 +41,8 @@ struct MeetingParticipantsView: View {
     }
 
     var body: some View {
-        Button {
-            isPeoplePopoverPresented.toggle()
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: participants.isEmpty ? "person.2" : "person.2.fill")
-
-                if let firstParticipantName {
-                    Text(firstParticipantName)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-
-                    if participants.count > 1 {
-                        Text("+\(participants.count - 1)")
-                            .foregroundStyle(MuesliTheme.textTertiary)
-                    }
-                } else {
-                    Text("Add people")
-                }
-            }
-            .font(MuesliTheme.caption())
-            .foregroundStyle(MuesliTheme.textSecondary)
-            .padding(.horizontal, 10)
-            .frame(height: MeetingHeaderLayout.contextControlHeight)
-            .frame(maxWidth: 220)
-            .background(MuesliTheme.backgroundRaised)
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-            .overlay {
-                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-            }
-        }
-        .buttonStyle(.plain)
-        .fixedSize(horizontal: false, vertical: true)
+        participantControl
         .featureTourTarget(.meetingPeople)
-        .help(participants.isEmpty ? "Add people to this meeting" : "Show \(peopleDescription)")
-        .accessibilityLabel(
-            participants.isEmpty ? "Add people to this meeting" : "\(peopleDescription) in this meeting"
-        )
         .popover(isPresented: $isPeoplePopoverPresented, arrowEdge: .bottom) {
             peoplePopover
         }
@@ -94,6 +69,75 @@ struct MeetingParticipantsView: View {
             }
         } message: {
             Text(errorMessage ?? "The meeting's people could not be updated.")
+        }
+    }
+
+    @ViewBuilder
+    private var participantControl: some View {
+        if let compactDiscardAction {
+            Menu {
+                Button {
+                    presentPeoplePopoverAfterMenuDismisses()
+                } label: {
+                    Label("Add people…", systemImage: "person.2")
+                }
+
+                Divider()
+
+                Button("Discard meeting", role: .destructive) {
+                    compactDiscardAction()
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                    .frame(width: 28, height: 28)
+                    .background(MuesliTheme.backgroundRaised)
+                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("More recording actions")
+            .accessibilityLabel("More recording actions")
+        } else {
+            Button {
+                isPeoplePopoverPresented.toggle()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: participants.isEmpty ? "person.2" : "person.2.fill")
+
+                    if let firstParticipantName {
+                        Text(firstParticipantName)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+
+                        if participants.count > 1 {
+                            Text("+\(participants.count - 1)")
+                                .foregroundStyle(MuesliTheme.textTertiary)
+                        }
+                    } else {
+                        Text("Add people")
+                    }
+                }
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textSecondary)
+                .padding(.horizontal, 10)
+                .frame(height: MeetingHeaderLayout.contextControlHeight)
+                .frame(maxWidth: 220)
+                .background(MuesliTheme.backgroundRaised)
+                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                .overlay {
+                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                        .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                }
+            }
+            .buttonStyle(.plain)
+            .fixedSize(horizontal: false, vertical: true)
+            .help(participants.isEmpty ? "Add people to this meeting" : "Show \(peopleDescription)")
+            .accessibilityLabel(
+                participants.isEmpty ? "Add people to this meeting" : "\(peopleDescription) in this meeting"
+            )
         }
     }
 
@@ -223,6 +267,13 @@ struct MeetingParticipantsView: View {
         Task { @MainActor in
             await Task.yield()
             isContactPickerPresented = true
+        }
+    }
+
+    private func presentPeoplePopoverAfterMenuDismisses() {
+        Task { @MainActor in
+            await Task.yield()
+            isPeoplePopoverPresented = true
         }
     }
 

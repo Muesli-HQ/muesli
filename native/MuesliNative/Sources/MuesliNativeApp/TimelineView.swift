@@ -37,6 +37,14 @@ struct TimelineView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            DashboardPageHeader(
+                title: "Timeline",
+                appState: appState,
+                controller: controller
+            )
+                .padding(.horizontal, MuesliTheme.spacing24)
+                .padding(.top, MuesliTheme.pageTop)
+
             StatsHeaderView(
                 dictationStats: appState.dictationStats,
                 meetingStats: appState.meetingStats,

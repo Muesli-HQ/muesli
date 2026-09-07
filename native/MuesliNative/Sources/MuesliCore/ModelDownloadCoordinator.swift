@@ -369,13 +369,23 @@ public actor ModelDownloadCoordinator {
             try validatedURL(for: file.relativePath, in: directory)
         }
         let destinationPath = canonicalDirectoryPath(directory)
-        guard !inFlight.keys.contains(where: { $0.destinationPath == destinationPath }) else { return }
+        guard !inFlight.keys.contains(where: { $0.destinationPath == destinationPath }) else {
+            throw ModelDownloadError.conflictingInFlightDownload(manifest.id)
+        }
         let fm = FileManager.default
         for path in paths {
-            try? fm.removeItem(at: path.appendingPathExtension("part"))
-            try? fm.removeItem(at: path)
+            let partialPath = path.appendingPathExtension("part")
+            if fm.fileExists(atPath: partialPath.path) {
+                try fm.removeItem(at: partialPath)
+            }
+            if fm.fileExists(atPath: path.path) {
+                try fm.removeItem(at: path)
+            }
         }
-        try? fm.removeItem(at: stateURL(for: directory))
+        let persistedStateURL = stateURL(for: directory)
+        if fm.fileExists(atPath: persistedStateURL.path) {
+            try fm.removeItem(at: persistedStateURL)
+        }
     }
 
     private func performDownload(

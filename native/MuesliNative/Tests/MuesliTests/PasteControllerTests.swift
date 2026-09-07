@@ -38,6 +38,46 @@ struct PasteControllerTests {
         #expect(!PasteController.canTypeUsingPhysicalKeys("नमस्ते"))
     }
 
+    @Test("browser selection copy returns exact text and restores every clipboard item")
+    func browserSelectionCopyRestoresClipboard() {
+        let pasteboard = makePasteboard()
+        let item1 = NSPasteboardItem()
+        item1.setString("item-one", forType: .string)
+        let item2 = NSPasteboardItem()
+        item2.setString("item-two", forType: .string)
+        pasteboard.writeObjects([item1, item2])
+
+        let selected = PasteController.copySelectedText(
+            pasteboard: pasteboard,
+            timeout: 0,
+            simulateCopyAction: {
+                pasteboard.clearContents()
+                pasteboard.setString("  selected Google Docs text\n", forType: .string)
+                return true
+            }
+        )
+
+        #expect(selected == "  selected Google Docs text\n")
+        let restored = pasteboard.pasteboardItems?.compactMap { $0.string(forType: .string) }
+        #expect(restored == ["item-one", "item-two"])
+    }
+
+    @Test("browser selection copy leaves clipboard unchanged when copy produces nothing")
+    func browserSelectionCopyWithoutSelectionPreservesClipboard() {
+        let pasteboard = makePasteboard()
+        pasteboard.clearContents()
+        pasteboard.setString("original", forType: .string)
+
+        let selected = PasteController.copySelectedText(
+            pasteboard: pasteboard,
+            timeout: 0,
+            simulateCopyAction: { true }
+        )
+
+        #expect(selected == nil)
+        #expect(pasteboard.string(forType: .string) == "original")
+    }
+
     @Test("UTF-16 encoding of SentencePiece leading-space deltas is correct")
     func sentencePieceLeadingSpaceUTF16() {
         // Nemotron streaming produces " word" (SentencePiece ▁ → " ").
@@ -91,6 +131,59 @@ struct PasteControllerTests {
         _ = await waitForClipboardString(in: pasteboard, expected: "original")
     }
 
+    @Test("paste cancellation rechecks target and restores clipboard without Cmd+V")
+    func pasteCancellationRestoresClipboard() async {
+        let pasteboard = makePasteboard()
+        pasteboard.clearContents()
+        pasteboard.setString("original", forType: .string)
+        var didSimulatePaste = false
+        let result = await withCheckedContinuation { continuation in
+            PasteController.paste(
+                text: "replacement",
+                pasteboard: pasteboard,
+                requireStagedClipboardOwnership: true,
+                shouldDispatchPaste: { false },
+                simulatePasteAction: {
+                    didSimulatePaste = true
+                    return true
+                },
+                onPasteFinished: { application in
+                    continuation.resume(returning: application)
+                }
+            )
+        }
+        #expect(result == nil)
+        #expect(!didSimulatePaste)
+        #expect(pasteboard.string(forType: .string) == "original")
+    }
+
+    @Test("Quill cancellation retains generated text for manual paste")
+    func pasteCancellationRetainsClipboardFallback() async {
+        let pasteboard = makePasteboard()
+        pasteboard.clearContents()
+        pasteboard.setString("original", forType: .string)
+        var lifecycleEvents: [PasteController.LifecycleEvent] = []
+
+        let result = await withCheckedContinuation { continuation in
+            PasteController.paste(
+                text: "Quill output",
+                pasteboard: pasteboard,
+                requireStagedClipboardOwnership: true,
+                shouldDispatchPaste: { false },
+                retainStagedTextOnFailure: true,
+                onPasteFinished: { application in
+                    continuation.resume(returning: application)
+                },
+                onLifecycleEvent: { lifecycleEvents.append($0) }
+            )
+        }
+
+        #expect(result == nil)
+        #expect(lifecycleEvents.contains(.pasteDispatchCancelled))
+        #expect(lifecycleEvents.contains(.clipboardRetainedForManualPaste))
+        #expect(pasteboard.string(forType: .string) == "Quill output")
+    }
+
     @Test("paste reports the application snapshotted at Cmd+V dispatch")
     func pasteReportsApplicationAtCommandDispatch() async {
         let pasteboard = makePasteboard()
@@ -119,6 +212,155 @@ struct PasteControllerTests {
         #expect(result.0 == ["snapshot", "command", "callback"])
         #expect(result.1 == expectedApplication.processIdentifier)
         _ = await waitForClipboardString(in: pasteboard, expected: nil)
+    }
+
+    @Test("paste dispatch callback runs only after a successful command")
+    func pasteDispatchCallbackRequiresSuccessfulCommand() async {
+        let successfulPasteboard = makePasteboard()
+        let successfulEvents = await withCheckedContinuation { continuation in
+            var events: [String] = []
+            PasteController.paste(
+                text: "Quill replacement",
+                pasteboard: successfulPasteboard,
+                simulatePasteAction: {
+                    events.append("command")
+                    return true
+                },
+                onPasteDispatched: {
+                    events.append("dispatched")
+                },
+                onPasteFinished: { _ in
+                    events.append("finished")
+                    continuation.resume(returning: events)
+                }
+            )
+        }
+        #expect(successfulEvents == ["command", "dispatched", "finished"])
+
+        let failedPasteboard = makePasteboard()
+        let failedEvents = await withCheckedContinuation { continuation in
+            var events: [String] = []
+            PasteController.paste(
+                text: "Quill replacement",
+                pasteboard: failedPasteboard,
+                simulatePasteAction: {
+                    events.append("command")
+                    return false
+                },
+                onPasteDispatched: {
+                    events.append("dispatched")
+                },
+                onPasteFinished: { _ in
+                    events.append("finished")
+                    continuation.resume(returning: events)
+                }
+            )
+        }
+        #expect(failedEvents == ["command", "finished"])
+
+        _ = await waitForClipboardString(in: successfulPasteboard, expected: nil)
+        _ = await waitForClipboardString(in: failedPasteboard, expected: nil)
+    }
+
+    @Test("target application Paste command bypasses the global keyboard shortcut")
+    func targetApplicationPasteCommandDispatchesDirectly() async {
+        let pasteboard = makePasteboard()
+        pasteboard.clearContents()
+        pasteboard.setString("original", forType: .string)
+        let expectedApplication = NSRunningApplication.current
+        var didPostKeyboardShortcut = false
+
+        let result = await withCheckedContinuation { continuation in
+            var lifecycleEvents: [PasteController.LifecycleEvent] = []
+            PasteController.paste(
+                text: "Quill output",
+                pasteboard: pasteboard,
+                targetApplicationProvider: { expectedApplication },
+                dispatchStrategy: .targetApplicationPasteCommand,
+                targetPasteAction: { application in
+                    #expect(application.processIdentifier == expectedApplication.processIdentifier)
+                    return true
+                },
+                simulatePasteAction: {
+                    didPostKeyboardShortcut = true
+                    return true
+                },
+                onPasteFinished: { application in
+                    continuation.resume(returning: (
+                        application?.processIdentifier,
+                        lifecycleEvents
+                    ))
+                },
+                onLifecycleEvent: { lifecycleEvents.append($0) }
+            )
+        }
+
+        #expect(result.0 == expectedApplication.processIdentifier)
+        #expect(!didPostKeyboardShortcut)
+        #expect(result.1.contains(.targetPasteCommandDispatched))
+        #expect(result.1.contains(.pasteDispatched))
+        _ = await waitForClipboardString(in: pasteboard, expected: "original")
+    }
+
+    @Test("target Paste Accessibility requests use only the remaining traversal budget")
+    func targetPasteAXTimeoutUsesRemainingBudget() {
+        let now = Date(timeIntervalSince1970: 1_777_000_000)
+
+        #expect(PasteController.targetPasteAXTimeout(
+            until: now.addingTimeInterval(1),
+            now: now
+        ) == 0.1)
+        let nearlyExpired = PasteController.targetPasteAXTimeout(
+            until: now.addingTimeInterval(0.025),
+            now: now
+        )
+        #expect(nearlyExpired != nil)
+        #expect(abs((nearlyExpired ?? 0) - 0.025) < 0.000_001)
+        #expect(PasteController.targetPasteAXTimeout(until: now, now: now) == nil)
+        #expect(PasteController.targetPasteAXTimeout(
+            until: now.addingTimeInterval(-1),
+            now: now
+        ) == nil)
+    }
+
+    @Test("rejected target Paste command retains Quill output for manual paste")
+    func rejectedTargetPasteCommandRetainsClipboardFallback() async throws {
+        let pasteboard = makePasteboard()
+        pasteboard.clearContents()
+        pasteboard.setString("original", forType: .string)
+        var didPostKeyboardShortcut = false
+
+        let result = await withCheckedContinuation { continuation in
+            var lifecycleEvents: [PasteController.LifecycleEvent] = []
+            PasteController.paste(
+                text: "Quill output",
+                pasteboard: pasteboard,
+                targetApplicationProvider: { NSRunningApplication.current },
+                dispatchStrategy: .targetApplicationPasteCommand,
+                retainStagedTextOnFailure: true,
+                targetPasteAction: { _ in false },
+                simulatePasteAction: {
+                    didPostKeyboardShortcut = true
+                    return true
+                },
+                onPasteFinished: { application in
+                    continuation.resume(returning: (application, lifecycleEvents))
+                },
+                onLifecycleEvent: { lifecycleEvents.append($0) }
+            )
+        }
+
+        #expect(result.0 == nil)
+        #expect(!didPostKeyboardShortcut)
+        #expect(result.1 == [
+            .clipboardStaged,
+            .targetSnapshotted,
+            .targetPasteCommandRejected,
+            .pasteDispatchFailed,
+            .clipboardRetainedForManualPaste,
+        ])
+        try await Task.sleep(nanoseconds: 700_000_000)
+        #expect(pasteboard.string(forType: .string) == "Quill output")
     }
 
     @Test("paste arms restoration before completion bookkeeping and settles afterward")
@@ -165,12 +407,17 @@ struct PasteControllerTests {
             "clipboard_staged",
             "clipboard_stage_failed",
             "target_snapshotted",
+            "target_paste_command_dispatched",
+            "target_paste_command_unavailable",
+            "target_paste_command_rejected",
             "paste_dispatched",
             "paste_dispatch_failed",
+            "paste_dispatch_cancelled",
             "clipboard_ownership_lost",
             "clipboard_restore_scheduled",
             "clipboard_restored",
             "clipboard_restore_skipped",
+            "clipboard_retained_for_manual_paste",
         ])
     }
 

@@ -1,6 +1,17 @@
 import Foundation
 
 enum OnboardingFlow {
+    struct UseCaseSelectionState: Equatable {
+        let selectedUseCase: OnboardingUseCase
+        let selectionBeforeEverything: OnboardingUseCase?
+    }
+
+    enum PermissionAdvanceAction: Equatable {
+        case restartForDictationTest
+        case finish
+        case next
+    }
+
     enum DictationTestMonitorAction: Equatable {
         case start
         case stop(cancelTestDictation: Bool)
@@ -18,6 +29,68 @@ enum OnboardingFlow {
     }
 
     static let dictationTestStep = Step.dictationTest.rawValue
+
+    static func hasCompletedPermissionsStep(resumingAt step: Int) -> Bool {
+        step > Step.permissions.rawValue
+    }
+
+    static func shouldSchedulePermissionAdvance(
+        currentStep: Int,
+        requiredPermissionsGranted: Bool,
+        hasCompletedPermissionsStep: Bool,
+        hasScheduledTask: Bool
+    ) -> Bool {
+        currentStep == Step.permissions.rawValue
+            && requiredPermissionsGranted
+            && !hasCompletedPermissionsStep
+            && !hasScheduledTask
+    }
+
+    static func toggling(
+        _ capability: OnboardingCapability,
+        in state: UseCaseSelectionState
+    ) -> UseCaseSelectionState {
+        UseCaseSelectionState(
+            selectedUseCase: state.selectedUseCase.toggling(capability),
+            selectionBeforeEverything: nil
+        )
+    }
+
+    static func togglingEverything(in state: UseCaseSelectionState) -> UseCaseSelectionState {
+        if state.selectedUseCase == .everything {
+            guard let previousSelection = state.selectionBeforeEverything else { return state }
+            return UseCaseSelectionState(
+                selectedUseCase: previousSelection,
+                selectionBeforeEverything: nil
+            )
+        }
+        return UseCaseSelectionState(
+            selectedUseCase: .everything,
+            selectionBeforeEverything: state.selectedUseCase
+        )
+    }
+
+    static func permissionAdvanceAction(
+        for useCase: OnboardingUseCase,
+        currentStepIndex: Int,
+        orderedStepCount: Int,
+        hasCompletedPermissionsStep: Bool = false
+    ) -> PermissionAdvanceAction {
+        if hasCompletedPermissionsStep {
+            return currentStepIndex == orderedStepCount - 1 ? .finish : .next
+        }
+        if useCase.includesPushToTalk { return .restartForDictationTest }
+        if currentStepIndex == orderedStepCount - 1 { return .finish }
+        return .next
+    }
+
+    static func shouldReclassifyVoiceNotesAsDictation(
+        previousUseCase: OnboardingUseCase,
+        permissions: OnboardingPermissionSnapshot
+    ) -> Bool {
+        previousUseCase == .voiceNotes
+            && OnboardingPermissionGate.hasRequiredDictationPermissions(permissions)
+    }
 
     static func shouldStartDictationTestMonitor(
         currentStep: Int,
@@ -73,6 +146,6 @@ enum OnboardingFlow {
     }
 
     static func completionTab(for useCase: OnboardingUseCase) -> DashboardTab {
-        useCase == .meetings ? .meetings : .dictations
+        useCase.includesMeetings && !useCase.includesPushToTalk ? .meetings : .dictations
     }
 }

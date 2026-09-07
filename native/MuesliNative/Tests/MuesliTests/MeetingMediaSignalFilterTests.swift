@@ -160,6 +160,36 @@ struct MeetingMediaSignalFilterTests {
         #expect(media.audioInputProcesses.isEmpty)
     }
 
+    @Test("authoritative Muesli audio ownership filters a missing sensor attribution")
+    func selfAudioOwnershipFiltersUnattributedDeviceMic() {
+        let media = MeetingMediaSignalFilter.apply(
+            deviceMicActive: true,
+            cameraActive: false,
+            audioInputProcesses: [],
+            sensorAttributions: sensorAttributions(),
+            selfAudioActivityActive: true,
+            selfBundleID: selfBundleID
+        )
+
+        #expect(media.micActive == false)
+        #expect(media.hasMicOrCameraSignal == false)
+    }
+
+    @Test("external attribution survives simultaneous Muesli audio ownership")
+    func externalAttributionSurvivesSelfAudioOwnership() {
+        let media = MeetingMediaSignalFilter.apply(
+            deviceMicActive: true,
+            cameraActive: false,
+            audioInputProcesses: [],
+            sensorAttributions: sensorAttributions(micBundleIDs: [selfBundleID, "us.zoom.xos"]),
+            selfAudioActivityActive: true,
+            selfBundleID: selfBundleID
+        )
+
+        #expect(media.micActive == true)
+        #expect(media.hasMicOrCameraSignal == true)
+    }
+
     @Test("self helper audio input is treated as Muesli")
     func selfHelperAudioInputIsTreatedAsMuesli() {
         let media = MeetingMediaSignalFilter.apply(

@@ -27,6 +27,37 @@ enum MeetingHeaderLayout {
     static let contextControlHeight: CGFloat = 28
 }
 
+enum CompactMeetingFormattingPolicy {
+    static func showsFormattingControls(for status: MeetingStatus, isPreparing: Bool) -> Bool {
+        switch status {
+        case .recording:
+            return !isPreparing
+        case .noteOnly:
+            return true
+        case .processing, .completed, .failed:
+            return false
+        }
+    }
+}
+
+struct ResponsiveHorizontalLayout<Wide: View, Compact: View>: View {
+    let wideIdentifier: String
+    let compactIdentifier: String
+    @ViewBuilder let wide: () -> Wide
+    @ViewBuilder let compact: () -> Compact
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            wide()
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier(wideIdentifier)
+            compact()
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier(compactIdentifier)
+        }
+    }
+}
+
 // Wrapper views that isolate observation of liveMeetingTranscript.
 // Without these, MeetingDetailView.body would observe the property and
 // re-evaluate on every chunk (every ~5s), re-rendering the entire detail view.
@@ -54,6 +85,7 @@ struct MeetingDetailView: View {
     let appState: AppState
     let onBack: (() -> Void)?
     let backLabel: String
+    @Environment(\.usesCompactQuickNotes) private var usesCompactQuickNotes
     @State private var isSummarizing = false
     @State private var isRetranscribing = false
     @State private var isEditingNotes = false
@@ -119,6 +151,9 @@ struct MeetingDetailView: View {
                 .background(MuesliTheme.backgroundBase)
                 .onAppear {
                     threadContext = controller.meetingThreadContext(for: meeting.id)
+                    if controller.canUseSummaryProvider(.openRouter) {
+                        controller.loadOpenRouterModels(.text)
+                    }
                 }
                 .onChange(of: meeting.id) { _, _ in
                     syncLocalState(with: meeting)
@@ -186,8 +221,16 @@ struct MeetingDetailView: View {
 
     @ViewBuilder
     private func header(_ meeting: MeetingRecord) -> some View {
+        if usesCompactQuickNotes {
+            compactQuickNotesHeader(meeting)
+        } else {
+            standardHeader(meeting)
+        }
+    }
+
+    private func standardHeader(_ meeting: MeetingRecord) -> some View {
         let appliedTemplate = controller.meetingTemplateSnapshot(for: meeting)
-        VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
+        return VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
             if let onBack {
                 Button(action: onBack) {
                     HStack(spacing: 6) {
@@ -201,48 +244,9 @@ struct MeetingDetailView: View {
                 .buttonStyle(.plain)
             }
 
-            HStack(alignment: .top, spacing: MuesliTheme.spacing24) {
-                VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
-                    MarqueeTitleTextField(
-                        text: $editableTitle,
-                        onSubmit: {
-                            controller.updateMeetingTitle(id: meeting.id, title: editableTitle)
-                        },
-                        onTextChange: {
-                            debounceSaveTitle(meetingID: meeting.id)
-                        }
-                    )
+            responsiveTitleAndActions(for: meeting, appliedTemplate: appliedTemplate)
 
-                    HStack(spacing: MuesliTheme.spacing8) {
-                        metadataItem(systemImage: "calendar", text: MeetingBrowserLogic.formatStartTime(meeting.startTime))
-                        metadataDivider
-                        metadataItem(systemImage: "clock", text: formatDuration(meeting.durationSeconds))
-                        metadataDivider
-                        metadataItem(systemImage: "doc.text", text: "\(meeting.wordCount) words")
-                        if let label = SyncOriginDisplay.badgeLabel(forMeetingSource: meeting.source) {
-                            SyncOriginBadge(label: label)
-                        }
-                    }
-                }
-
-                Spacer(minLength: MuesliTheme.spacing16)
-
-                VStack(alignment: .trailing, spacing: 10) {
-                    if showsManualNotesEditor(for: meeting) {
-                        recordingControlGroup(for: meeting)
-                    } else {
-                        compactHeaderActions(for: meeting, appliedTemplate: appliedTemplate)
-                    }
-                }
-            }
-
-            HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
-                meetingContextStrip(for: meeting)
-                    .layoutPriority(1)
-                Spacer(minLength: MuesliTheme.spacing12)
-                detailModePicker(for: meeting)
-                    .fixedSize(horizontal: true, vertical: false)
-            }
+            responsiveContextControls(for: meeting)
             .padding(MuesliTheme.spacing8)
             .background(MuesliTheme.surfacePrimary)
             .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
@@ -268,6 +272,223 @@ struct MeetingDetailView: View {
         .padding(.horizontal, 40)
         .padding(.vertical, 24)
         .frame(maxWidth: .infinity, alignment: .center)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("meeting.header.standard")
+    }
+
+    private func compactQuickNotesHeader(_ meeting: MeetingRecord) -> some View {
+        let appliedTemplate = controller.meetingTemplateSnapshot(for: meeting)
+        return VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+            HStack(alignment: .center, spacing: MuesliTheme.spacing8) {
+                if let onBack {
+                    Button(action: onBack) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(MuesliTheme.textSecondary)
+                            .frame(width: 30, height: 30)
+                            .background(MuesliTheme.backgroundRaised)
+                            .clipShape(Circle())
+                            .overlay {
+                                Circle().strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .help(backLabel)
+                    .accessibilityLabel(backLabel)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    MarqueeTitleTextField(
+                        text: $editableTitle,
+                        titleSize: 24,
+                        onSubmit: {
+                            controller.updateMeetingTitle(id: meeting.id, title: editableTitle)
+                        },
+                        onTextChange: {
+                            debounceSaveTitle(meetingID: meeting.id)
+                        }
+                    )
+
+                    HStack(spacing: 6) {
+                        metadataItem(
+                            systemImage: "calendar",
+                            text: MeetingBrowserLogic.formatStartTime(meeting.startTime)
+                        )
+                        metadataDivider
+                        metadataItem(systemImage: "clock", text: formatDuration(meeting.durationSeconds))
+                    }
+                    .lineLimit(1)
+                }
+                .layoutPriority(1)
+
+                if showsManualNotesEditor(for: meeting) {
+                    compactRecordingControls(for: meeting)
+                } else {
+                    compactHeaderActions(for: meeting, appliedTemplate: appliedTemplate)
+                }
+            }
+
+            HStack(alignment: .center, spacing: MuesliTheme.spacing8) {
+                folderPill(for: meeting)
+                    .frame(maxWidth: 150)
+                if CompactMeetingFormattingPolicy.showsFormattingControls(
+                    for: meeting.status,
+                    isPreparing: isPreparingThisMeeting(meeting)
+                ) {
+                    compactFormattingToolbar
+                        .disabled(!canEditManualNotes(for: meeting))
+                } else {
+                    MeetingParticipantsView(meetingID: meeting.id, controller: controller)
+                        .frame(maxWidth: 150)
+                }
+                Spacer(minLength: 0)
+                detailModePicker(for: meeting)
+            }
+
+            threadBreadcrumb
+
+            activeMeetingAudioWarningBanner(for: meeting)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("meeting.header.compact")
+    }
+
+    @ViewBuilder
+    private func compactRecordingControls(for meeting: MeetingRecord) -> some View {
+        if meeting.status == .recording, !isPreparingThisMeeting(meeting) {
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(appState.isMeetingRecordingPaused ? MuesliTheme.transcribing : MuesliTheme.recording)
+                    .frame(width: 7, height: 7)
+                    .help(appState.isMeetingRecordingPaused ? "Recording paused" : "Recording")
+                pauseResumeRecordingButton
+                    .fixedSize()
+                stopRecordingButton
+                    .fixedSize()
+                MeetingParticipantsView(
+                    meetingID: meeting.id,
+                    controller: controller,
+                    compactDiscardAction: {
+                        controller.discardMeetingWithConfirmation()
+                    }
+                )
+            }
+        } else {
+            recordingControlGroup(for: meeting)
+        }
+    }
+
+    private var compactFormattingToolbar: some View {
+        HStack(spacing: 4) {
+            markdownToolbarButton(systemImage: "textformat.size", label: "Heading") {
+                manualEditorCommand = MarkdownEditorCommand(kind: .heading)
+            }
+            markdownToolbarButton(systemImage: "bold", label: "Bold") {
+                manualEditorCommand = MarkdownEditorCommand(kind: .bold)
+            }
+            markdownToolbarButton(systemImage: "list.bullet", label: "Bullet") {
+                manualEditorCommand = MarkdownEditorCommand(kind: .bullet)
+            }
+            markdownToolbarButton(systemImage: "checklist", label: "Checkbox") {
+                manualEditorCommand = MarkdownEditorCommand(kind: .checkbox)
+            }
+        }
+        .fixedSize()
+    }
+
+    private func meetingIdentity(for meeting: MeetingRecord) -> some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+            MarqueeTitleTextField(
+                text: $editableTitle,
+                onSubmit: {
+                    controller.updateMeetingTitle(id: meeting.id, title: editableTitle)
+                },
+                onTextChange: {
+                    debounceSaveTitle(meetingID: meeting.id)
+                }
+            )
+
+            HStack(spacing: MuesliTheme.spacing8) {
+                metadataItem(systemImage: "calendar", text: MeetingBrowserLogic.formatStartTime(meeting.startTime))
+                metadataDivider
+                metadataItem(systemImage: "clock", text: formatDuration(meeting.durationSeconds))
+                metadataDivider
+                metadataItem(systemImage: "doc.text", text: "\(meeting.wordCount) words")
+                if let label = SyncOriginDisplay.badgeLabel(forMeetingSource: meeting.source) {
+                    SyncOriginBadge(label: label)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func meetingHeaderActions(
+        for meeting: MeetingRecord,
+        appliedTemplate: MeetingTemplateSnapshot
+    ) -> some View {
+        if showsManualNotesEditor(for: meeting) {
+            recordingControlGroup(for: meeting)
+        } else {
+            compactHeaderActions(for: meeting, appliedTemplate: appliedTemplate)
+        }
+    }
+
+    /// The wide dashboard keeps identity and recording actions on one row. In
+    /// a side-by-side call layout, stack the actions below the title instead of
+    /// forcing the window back to its old 900pt minimum.
+    private func responsiveTitleAndActions(
+        for meeting: MeetingRecord,
+        appliedTemplate: MeetingTemplateSnapshot
+    ) -> some View {
+        ResponsiveHorizontalLayout(
+            wideIdentifier: "meeting.header.wide",
+            compactIdentifier: "meeting.header.compact"
+        ) {
+            HStack(alignment: .top, spacing: MuesliTheme.spacing24) {
+                meetingIdentity(for: meeting)
+                    .frame(minWidth: 260)
+
+                Spacer(minLength: MuesliTheme.spacing16)
+
+                VStack(alignment: .trailing, spacing: 10) {
+                    meetingHeaderActions(for: meeting, appliedTemplate: appliedTemplate)
+                }
+            }
+        } compact: {
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+                meetingIdentity(for: meeting)
+                meetingHeaderActions(for: meeting, appliedTemplate: appliedTemplate)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    /// Folder/people controls and the Notes/Live picker share a row when space
+    /// permits, then split into two rows for the compact meeting-notes window.
+    private func responsiveContextControls(for meeting: MeetingRecord) -> some View {
+        ResponsiveHorizontalLayout(
+            wideIdentifier: "meeting.context.wide",
+            compactIdentifier: "meeting.context.compact"
+        ) {
+            HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
+                meetingContextStrip(for: meeting)
+                    .frame(minWidth: 280, alignment: .leading)
+                    .layoutPriority(1)
+                Spacer(minLength: MuesliTheme.spacing12)
+                detailModePicker(for: meeting)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+        } compact: {
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                meetingContextStrip(for: meeting)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                detailModePicker(for: meeting)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+        }
     }
 
     private func meetingContextStrip(for meeting: MeetingRecord) -> some View {
@@ -329,8 +550,10 @@ struct MeetingDetailView: View {
                         }
 
                         VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
-                            manualNotesToolbar(for: meeting)
-                                .disabled(!isManualNotesEditable)
+                            if !usesCompactQuickNotes {
+                                manualNotesToolbar(for: meeting)
+                                    .disabled(!isManualNotesEditable)
+                            }
                             MarkdownRichTextEditor(
                                 text: $editableManualNotes,
                                 command: $manualEditorCommand,
@@ -342,17 +565,13 @@ struct MeetingDetailView: View {
                                 }
                             )
                             .background(MuesliTheme.backgroundBase)
-                            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-                            )
+                            .manualNotesEditorChrome(compact: usesCompactQuickNotes)
                             .frame(maxHeight: hasPersistedNotes ? 260 : .infinity)
                         }
                         .frame(maxWidth: 980, maxHeight: hasPersistedNotes ? nil : .infinity, alignment: .topLeading)
                     }
-                    .padding(.horizontal, 40)
-                    .padding(.top, 12)
+                    .padding(.horizontal, usesCompactQuickNotes ? 24 : 40)
+                    .padding(.top, usesCompactQuickNotes ? 0 : 12)
                     .padding(.bottom, 24)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     .opacity(recordingMode == .notes ? 1 : 0)
@@ -369,8 +588,10 @@ struct MeetingDetailView: View {
             } else {
                 let isManualNotesEditable = canEditManualNotes(for: meeting)
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
-                    manualNotesToolbar(for: meeting)
-                        .disabled(!isManualNotesEditable)
+                    if !usesCompactQuickNotes {
+                        manualNotesToolbar(for: meeting)
+                            .disabled(!isManualNotesEditable)
+                    }
 
                     MarkdownRichTextEditor(
                         text: $editableManualNotes,
@@ -384,14 +605,10 @@ struct MeetingDetailView: View {
                     )
                     .frame(maxWidth: 980, maxHeight: .infinity, alignment: .topLeading)
                     .background(MuesliTheme.backgroundBase)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                            .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-                    )
+                    .manualNotesEditorChrome(compact: usesCompactQuickNotes)
                 }
-                .padding(.horizontal, 40)
-                .padding(.top, 12)
+                .padding(.horizontal, usesCompactQuickNotes ? 24 : 40)
+                .padding(.top, usesCompactQuickNotes ? 0 : 12)
                 .padding(.bottom, 24)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
@@ -476,7 +693,7 @@ struct MeetingDetailView: View {
         }
         .pickerStyle(.segmented)
         .tint(MuesliTheme.accent)
-        .frame(width: 180)
+        .frame(width: usesCompactQuickNotes ? 124 : 180)
     }
 
     private func showsManualNotesEditor(for meeting: MeetingRecord) -> Bool {
@@ -518,7 +735,7 @@ struct MeetingDetailView: View {
         }
     }
 
-    private func beginSummary(for meeting: MeetingRecord) {
+    private func beginSummary(for meeting: MeetingRecord, summaryConfig: AppConfig? = nil) {
         guard !isSummarizing else { return }
         isSummarizing = true
         let completion: (Result<Void, Error>) -> Void = { [meeting] result in
@@ -536,9 +753,9 @@ struct MeetingDetailView: View {
             }
         }
         if hasPendingTemplateChange(for: meeting) {
-            controller.applyMeetingTemplate(id: pendingTemplateID, to: meeting, completion: completion)
+            controller.applyMeetingTemplate(id: pendingTemplateID, to: meeting, summaryConfig: summaryConfig, completion: completion)
         } else {
-            controller.resummarize(meeting: meeting, completion: completion)
+            controller.resummarize(meeting: meeting, summaryConfig: summaryConfig, completion: completion)
         }
     }
 
@@ -845,6 +1062,7 @@ struct MeetingDetailView: View {
         }
         .buttonStyle(.plain)
         .help(label)
+        .accessibilityLabel(label)
     }
 
     @ViewBuilder
@@ -900,8 +1118,34 @@ struct MeetingDetailView: View {
                 )
             }
 
-            Button {
-                beginSummary(for: meeting)
+            Menu {
+                Button("Use Settings (\(appState.selectedMeetingSummaryBackend.label))") {
+                    beginSummary(for: meeting)
+                }
+                Divider()
+                ForEach(MeetingSummaryBackendOption.all, id: \.backend) { provider in
+                    if controller.canUseSummaryProvider(provider) {
+                        Menu(provider.label) {
+                            ForEach(provider.summaryModels(config: appState.config,
+                                openRouterModels: appState.openRouterSummaryModels
+                            ), id: \.id) { model in
+                                Button(model.label) {
+                                    beginSummary(for: meeting, summaryConfig: provider.summaryConfiguration(from: appState.config, model: model.id))
+                                }
+                            }
+                            if provider == .openRouter {
+                                if case .failed = appState.openRouterSummaryCatalogState {
+                                    Divider()
+                                    Button("Retry Loading Models") {
+                                        controller.loadOpenRouterModels(.text, force: true)
+                                    }
+                                } else if appState.openRouterSummaryCatalogState == .loading {
+                                    Text("Loading models…")
+                                }
+                            }
+                        }
+                    }
+                }
             } label: {
                 Label(primarySummaryActionLabel(for: meeting), systemImage: "sparkles")
             }
@@ -1211,6 +1455,8 @@ struct MeetingDetailView: View {
                     .font(.system(size: 10))
                 Text(currentFolder?.name ?? "Add to folder")
                     .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
             .foregroundStyle(hasFolder ? MuesliTheme.accent : MuesliTheme.textSecondary)
             .padding(.horizontal, MuesliTheme.spacing8)
@@ -1346,7 +1592,9 @@ struct MeetingDetailView: View {
         } else if appState.selectedMeetingSummaryBackend == .customLLM {
             return MeetingSummaryClient.customLLMHasRequiredSettings(config: config)
         } else {
-            return !config.openRouterAPIKey.isEmpty || ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"] != nil
+            return !OpenRouterCredentialResolver.resolvedAPIKey(
+                legacyAPIKey: config.openRouterAPIKey
+            ).isEmpty
         }
     }
 
@@ -1634,10 +1882,24 @@ private extension View {
                     .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
             )
     }
+
+    @ViewBuilder
+    func manualNotesEditorChrome(compact: Bool) -> some View {
+        if compact {
+            self
+        } else {
+            clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                .overlay(
+                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                        .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                )
+        }
+    }
 }
 
 private struct MarqueeTitleTextField: View {
     @Binding var text: String
+    var titleSize: CGFloat = 30
     let onSubmit: () -> Void
     let onTextChange: () -> Void
 
@@ -1648,7 +1910,7 @@ private struct MarqueeTitleTextField: View {
     @State private var marqueeRunID = UUID()
     @FocusState private var isTitleFocused: Bool
 
-    private let titleFont = Font.system(size: 30, weight: .bold)
+    private var titleFont: Font { .system(size: titleSize, weight: .bold) }
 
     var body: some View {
         ZStack(alignment: .leading) {

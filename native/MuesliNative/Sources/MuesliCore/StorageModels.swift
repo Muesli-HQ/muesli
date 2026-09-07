@@ -339,6 +339,9 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
     /// Stable sync identity for the predecessor. Local row ids differ across
     /// devices, so sync uses the predecessor's cloud record name.
     public let followUpToRecordName: String?
+    /// Aggregated on-screen context (app text + OCR) captured during the
+    /// meeting; nil when screen context was disabled or nothing was captured.
+    public let visualContext: String?
 
     public init(
         id: Int64,
@@ -362,7 +365,8 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
         selectedTemplatePrompt: String? = nil,
         source: MeetingSource = .meeting,
         followUpToID: Int64? = nil,
-        followUpToRecordName: String? = nil
+        followUpToRecordName: String? = nil,
+        visualContext: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -386,6 +390,7 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
         self.source = source
         self.followUpToID = followUpToID
         self.followUpToRecordName = followUpToRecordName
+        self.visualContext = visualContext
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -411,6 +416,7 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
         case source
         case followUpToID
         case followUpToRecordName
+        case visualContext
     }
 
     public init(from decoder: Decoder) throws {
@@ -437,7 +443,8 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
             selectedTemplatePrompt: try c.decodeIfPresent(String.self, forKey: .selectedTemplatePrompt),
             source: (try? c.decode(MeetingSource.self, forKey: .source)) ?? .meeting,
             followUpToID: try c.decodeIfPresent(Int64.self, forKey: .followUpToID),
-            followUpToRecordName: try c.decodeIfPresent(String.self, forKey: .followUpToRecordName)
+            followUpToRecordName: try c.decodeIfPresent(String.self, forKey: .followUpToRecordName),
+            visualContext: try c.decodeIfPresent(String.self, forKey: .visualContext)
         )
     }
 

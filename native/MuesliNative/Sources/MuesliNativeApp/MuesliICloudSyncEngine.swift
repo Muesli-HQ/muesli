@@ -168,28 +168,35 @@ enum MuesliBridgeDeviceIdentity {
         defaults.set(date, forKey: lastRefreshFailureKey)
     }
 
+    static func clearRemoteDevice(defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: remoteDeviceIDKey)
+        defaults.removeObject(forKey: remoteDeviceNameKey)
+        defaults.removeObject(forKey: remoteDevicePlatformKey)
+        defaults.removeObject(forKey: remoteDeviceLastSeenAtKey)
+        defaults.removeObject(forKey: lastRefreshKey)
+        defaults.removeObject(forKey: lastRefreshFailureKey)
+    }
+
     static func updateRemoteDevices(from records: [CKRecord], defaults: UserDefaults = .standard) {
         let localID = defaults.string(forKey: localDeviceIDKey) ?? ""
         let remoteDevices = records
             .compactMap(Self.snapshot(from:))
             .filter { $0.deviceID != localID }
 
-        let latestRemote = remoteDevices
-            .filter { isCompanionPlatform($0.platform) }
-            .max { $0.lastSeenAt < $1.lastSeenAt }
+        let companionDevices = remoteDevices.filter { isCompanionPlatform($0.platform) }
+        let persistedRemoteID = defaults.string(forKey: remoteDeviceIDKey)
+        let linkedRemote = companionDevices.first { $0.deviceID == persistedRemoteID }
+            ?? companionDevices.max { $0.lastSeenAt < $1.lastSeenAt }
 
-        guard let latestRemote else {
-            defaults.removeObject(forKey: remoteDeviceIDKey)
-            defaults.removeObject(forKey: remoteDeviceNameKey)
-            defaults.removeObject(forKey: remoteDevicePlatformKey)
-            defaults.removeObject(forKey: remoteDeviceLastSeenAtKey)
+        guard let linkedRemote else {
+            clearRemoteDevice(defaults: defaults)
             return
         }
 
-        defaults.set(latestRemote.deviceID, forKey: remoteDeviceIDKey)
-        defaults.set(latestRemote.deviceName, forKey: remoteDeviceNameKey)
-        defaults.set(latestRemote.platform, forKey: remoteDevicePlatformKey)
-        defaults.set(latestRemote.lastSeenAt, forKey: remoteDeviceLastSeenAtKey)
+        defaults.set(linkedRemote.deviceID, forKey: remoteDeviceIDKey)
+        defaults.set(linkedRemote.deviceName, forKey: remoteDeviceNameKey)
+        defaults.set(linkedRemote.platform, forKey: remoteDevicePlatformKey)
+        defaults.set(linkedRemote.lastSeenAt, forKey: remoteDeviceLastSeenAtKey)
     }
 
     static func hasCompanionRemoteDevice(defaults: UserDefaults = .standard) -> Bool {
@@ -1474,6 +1481,67 @@ final class MuesliICloudSyncEngine {
             return true
         }
         return false
+    }
+
+    /// CKSyncEngine reports record conflicts as a top-level partial failure even
+    /// after `sentRecordZoneChanges` has delivered the individual failures to the
+    /// delegate. A reset-and-reconnect commonly produces this shape because the
+    /// local rows keep stable record IDs while their CloudKit system fields are
+    /// intentionally cleared. Only swallow batches made entirely of resolved
+    /// conflicts and dependent batch failures; any unrelated error remains fatal.
+    static func isResolvedRecordConflictBatch(_ error: Error) -> Bool {
+        let classification = recordConflictBatchClassification(error)
+        return classification.containsConflict && classification.containsOnlyHandledCodes
+    }
+
+    private static func recordConflictBatchClassification(
+        _ error: Error,
+        depth: Int = 0
+    ) -> (containsConflict: Bool, containsOnlyHandledCodes: Bool) {
+        guard depth < 8 else { return (false, false) }
+
+        if let ckError = error as? CKError {
+            switch ckError.code {
+            case .serverRecordChanged:
+                return (true, true)
+            case .batchRequestFailed:
+                return (false, true)
+            case .partialFailure:
+                guard let partialErrors = ckError.partialErrorsByItemID?.values,
+                      !partialErrors.isEmpty else {
+                    return (false, false)
+                }
+                var containsConflict = false
+                for partialError in partialErrors {
+                    let nested = recordConflictBatchClassification(
+                        partialError,
+                        depth: depth + 1
+                    )
+                    guard nested.containsOnlyHandledCodes else { return (false, false) }
+                    containsConflict = containsConflict || nested.containsConflict
+                }
+                return (containsConflict, true)
+            default:
+                return (false, false)
+            }
+        }
+
+        let nsError = error as NSError
+        if nsError.domain == CKError.errorDomain,
+           let code = CKError.Code(rawValue: nsError.code) {
+            switch code {
+            case .serverRecordChanged:
+                return (true, true)
+            case .batchRequestFailed:
+                return (false, true)
+            default:
+                break
+            }
+        }
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? Error {
+            return recordConflictBatchClassification(underlying, depth: depth + 1)
+        }
+        return (false, false)
     }
 
     static func isChangeTokenExpired(_ error: Error) -> Bool {
