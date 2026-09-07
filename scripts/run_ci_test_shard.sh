@@ -26,6 +26,7 @@ case "${shard}" in
       ChatGPTTokenStorageTests
       OpenRouterAuthTests
       SettingsPermissionRefreshReasonTests
+      InteractionPermissionMonitorTests
       AccessibilityPermissionGuideTests
       DictationTestLifecycleTests
       OnboardingFlowTests
@@ -78,6 +79,8 @@ case "${shard}" in
       OpenRouterTranscriptionClientTests
       SummaryModelPresetTests
       HotkeyMonitorTests
+      PushToTalkEnablementPolicyTests
+      ShortcutFeatureEnablementPolicyTests
       InteractiveAudioSessionOwnershipTests
       DictationStateTests
       HotkeyConfigTests

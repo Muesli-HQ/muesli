@@ -191,6 +191,7 @@ final class AppState {
     var activePostProcessor: PostProcessorOption = PostProcessorOption.defaultOption
     var config: AppConfig = AppConfig()
     var launchAtLoginRegistrationState: LaunchAtLoginRegistrationState = .disabled
+    var interactionPermissionSnapshot: InteractionPermissionSnapshot?
 
     // Live status
     var isMeetingRecording: Bool = false
