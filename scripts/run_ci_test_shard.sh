@@ -73,6 +73,8 @@ case "${shard}" in
       DiarizerPreloadDiagnosticsTests
       DiarizerPreloadCoordinationTests
       PasteControllerTests
+      DictationPasteSpacingPolicyTests
+      DictationPasteSpacingTests
       QuilTransformationTests
       BackendOptionTests
       OpenAIDictationProviderTests
