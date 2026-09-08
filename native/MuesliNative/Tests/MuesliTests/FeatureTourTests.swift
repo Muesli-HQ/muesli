@@ -168,17 +168,20 @@ struct FeatureTourTests {
         ))
     }
 
-    @Test("0.8.4 catalog highlights four major product additions")
+    @Test("0.8.4 catalog retains existing highlights and adds Bodhan and re-summary")
     func catalogShape() {
         #expect(tour.version == "0.8.4")
-        #expect(tour.steps.count == 4)
+        #expect(tour.steps.count == 6)
         #expect(Set(tour.steps.map(\.id)).count == tour.steps.count)
-        #expect(Set(tour.steps.map(\.target)).count == tour.steps.count)
+        let targets = tour.steps.compactMap(\.target)
+        #expect(Set(targets).count == targets.count)
         #expect(tour.steps.map(\.target) == [
             .quillSettings,
             nil,
             .dictationProviderSetting,
             .parakeetFamilyCard,
+            .bodhanFlexCard,
+            nil,
         ])
 
         let quill = tour.steps[0]
@@ -210,6 +213,7 @@ struct FeatureTourTests {
     @Test("model feature-tour targets resolve routes without UI state")
     func modelNavigationRoutes() {
         #expect(FeatureTourTarget.parakeetFamilyCard.navigationRoute == .models(.dictation))
+        #expect(FeatureTourTarget.bodhanFlexCard.navigationRoute == .models(.dictation))
         #expect(FeatureTourTarget.streamingModels.navigationRoute == .models(.streaming))
         #expect(FeatureTourTarget.experimentalModels.navigationRoute == .models(.dictation))
     }

@@ -38,6 +38,7 @@ enum FeatureTourTarget: String, Hashable {
     case quillSettings
     case dictationProviderSetting
     case parakeetFamilyCard
+    case bodhanFlexCard
     case timelineSidebar
     case timelineApplications
     case appleSpeechCard
@@ -68,7 +69,7 @@ enum FeatureTourTarget: String, Hashable {
             return .meetingsBrowser
         case .meetingPeople:
             return .meetingPeople
-        case .modelLibrary, .appleSpeechCard, .parakeetFamilyCard, .experimentalModels:
+        case .modelLibrary, .appleSpeechCard, .parakeetFamilyCard, .bodhanFlexCard, .experimentalModels:
             return .models(.dictation)
         case .streamingModels:
             return .models(.streaming)
@@ -155,6 +156,22 @@ enum FeatureTourCatalog {
                 message: "Parakeet Unified balances speed and accuracy for fast, reliable English transcription on your Mac. For other languages, choose multilingual Parakeet v3.",
                 systemImage: "waveform",
                 target: .parakeetFamilyCard
+            ),
+            FeatureTourStep(
+                id: "bodhan",
+                eyebrow: "BODHAN CORE & FLEX",
+                title: "Dictate across Indian languages and English",
+                message: "Use Bodhan Flex for Indian-accented English and code-switched speech that mixes Indic languages with English. Core favors native-script output. Download either model for private, on-device transcription. Requires macOS 15 or later.",
+                systemImage: "globe",
+                target: .bodhanFlexCard
+            ),
+            FeatureTourStep(
+                id: "resummarize",
+                eyebrow: "MEETING SUMMARIES",
+                title: "Choose a different model for your meeting summary",
+                message: "Open a saved meeting and pick a provider and model from Re-summarize or Apply Template to generate a fresh summary, without changing your default settings.",
+                systemImage: "arrow.clockwise",
+                target: nil
             ),
         ])
     }
