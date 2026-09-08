@@ -408,8 +408,8 @@ struct SettingsView: View {
         UpcomingMeetingsWindow.resolve(dayCount: appState.config.upcomingMeetingsDayCount)
     }
 
-    private var selectedIndicASRLanguage: IndicASRLanguage {
-        appState.config.resolvedIndicASRLanguage
+    private var selectedBodhanLanguage: BodhanLanguage {
+        appState.config.resolvedBodhanLanguage
     }
 
     private var selectedNemotron35Language: Nemotron35Language {
@@ -1075,10 +1075,10 @@ struct SettingsView: View {
                     cohereLanguageMenu
                 }
             }
-            if displayedDictationBackend?.backend == BackendOption.indicASR.backend {
+            if displayedDictationBackend?.backend == BackendOption.bodhanFlex.backend {
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Indic language", controlWidth: meetingControlWidth) {
-                    indicLanguageMenu
+                settingsRow("Bodhan language", controlWidth: meetingControlWidth) {
+                    indicLanguageMenu(model: displayedDictationBackend?.model ?? "")
                 }
             }
             if displayedDictationBackend?.supportsWhisperLanguageSelection == true {
@@ -1302,10 +1302,10 @@ struct SettingsView: View {
                 settingsRow("Cohere language", controlWidth: meetingControlWidth) {
                     cohereLanguageMenu
                 }
-            } else if appState.selectedMeetingTranscriptionBackend.backend == BackendOption.indicASR.backend {
+            } else if appState.selectedMeetingTranscriptionBackend.backend == BackendOption.bodhanFlex.backend {
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Indic language", controlWidth: meetingControlWidth) {
-                    indicLanguageMenu
+                settingsRow("Bodhan language", controlWidth: meetingControlWidth) {
+                    indicLanguageMenu(model: appState.selectedMeetingTranscriptionBackend.model)
                 }
             } else if appState.selectedMeetingTranscriptionBackend.supportsWhisperLanguageSelection {
                 Divider().background(MuesliTheme.surfaceBorder)
@@ -1556,13 +1556,14 @@ struct SettingsView: View {
         }
     }
 
-    private var indicLanguageMenu: some View {
-        FixedWidthPopUp(
-            selection: selectedIndicASRLanguage.label,
-            options: IndicASRLanguage.allCases.map(\.label),
+    private func indicLanguageMenu(model: String) -> some View {
+        let languages = BodhanLanguage.choices(for: model)
+        return FixedWidthPopUp(
+            selection: selectedBodhanLanguage.supported(for: model).label,
+            options: languages.map(\.label),
             onSelectIndex: { index in
-                guard index >= 0, index < IndicASRLanguage.allCases.count else { return }
-                controller.selectIndicASRLanguage(IndicASRLanguage.allCases[index])
+                guard index >= 0, index < languages.count else { return }
+                controller.selectBodhanLanguage(languages[index])
             }
         )
         .frame(height: 24)

@@ -26,7 +26,7 @@ struct BackendOptionTests {
 
     @Test("backend field is one of the known backends")
     func knownBackends() {
-        let known: Set<String> = ["fluidaudio", "parakeet-unified", "whisper", "qwen", "nemotron35", "cohere", "indicasr", "sensevoice", "gemma4-litert", "apple-speech"]
+        let known: Set<String> = ["fluidaudio", "parakeet-unified", "whisper", "qwen", "nemotron35", "cohere", "bodhan", "sensevoice", "gemma4-litert", "apple-speech"]
         for option in BackendOption.all {
             #expect(known.contains(option.backend), "Unknown backend: \(option.backend)")
         }
@@ -76,7 +76,7 @@ struct BackendOptionTests {
         #expect(BackendOption.all.contains(.whisperLargeTurbo))
         #expect(BackendOption.all.contains(.qwen3Asr))
         #expect(BackendOption.all.contains(.cohereTranscribe))
-        #expect(BackendOption.all.contains(.indicASR))
+        #expect(BackendOption.all.contains(.bodhanFlex))
         #expect(BackendOption.all.contains(.senseVoiceSmall))
         #expect(BackendOption.all.contains(.nemotron35Multilingual))
         #expect(BackendOption.all.contains(.gemma4E2BLiteRT))
@@ -102,7 +102,7 @@ struct BackendOptionTests {
             BackendOption.nemotron35Multilingual,
             BackendOption.qwen3Asr,
             BackendOption.cohereTranscribe,
-            BackendOption.indicASR,
+            BackendOption.bodhanFlex,
             BackendOption.gemma4E2BLiteRT,
             BackendOption.gemma4E4BLiteRT,
         ]
@@ -294,15 +294,21 @@ struct BackendOptionTests {
         #expect(BackendOption.cohereTranscribe.model.contains("cohere"))
     }
 
-    @Test("Indic ASR uses indicasr backend")
-    func indicASRBackend() {
-        #expect(BackendOption.indicASR.backend == "indicasr")
-        #expect(BackendOption.indicASR.model.contains("indic-conformer"))
+    @Test("Bodhan checkpoints have distinct production catalog entries and output modes")
+    func bodhanCheckpoints() {
+        #expect(BackendOption.bodhanFamily.contains(.bodhanCore))
+        #expect(BackendOption.bodhanFamily.contains(.bodhanFlex))
+        #expect(BackendOption.bodhanCore.model != BackendOption.bodhanFlex.model)
+        #expect(BodhanModel(rawValue: BackendOption.bodhanCore.model) == .core)
+        #expect(BodhanModel(rawValue: BackendOption.bodhanFlex.model) == .flex)
+        #expect(!BodhanModel.core.mixedScript)
+        #expect(BodhanModel.flex.mixedScript)
+        #expect(BodhanModel.core.cacheDirectory != BodhanModel.flex.cacheDirectory)
     }
 
-    @Test("Indic ASR chunk merge deduplicates Indic overlap")
-    func indicASRChunkMergeDeduplicatesIndicOverlap() {
-        let result = IndicASRTranscriptMerger.mergeOverlappingTranscripts([
+    @Test("Bodhan chunk merge deduplicates Indic overlap")
+    func bodhanChunkMergeDeduplicatesIndicOverlap() {
+        let result = BodhanTranscriptMerger.mergeOverlappingTranscripts([
             "मैं हिंदी में बोल सकता हूँ",
             "बोल सकता हूँ और तमिल भी",
             "தமிழ் கூட பேச முடியும்",
@@ -312,47 +318,14 @@ struct BackendOptionTests {
         #expect(result == "मैं हिंदी में बोल सकता हूँ और तमिल भी தமிழ் கூட பேச முடியும் இப்போ")
     }
 
-    @Test("Indic ASR chunk merge preserves non-overlapping text")
-    func indicASRChunkMergePreservesNonOverlappingText() {
-        let result = IndicASRTranscriptMerger.mergeOverlappingTranscripts([
+    @Test("Bodhan chunk merge preserves non-overlapping text")
+    func bodhanChunkMergePreservesNonOverlappingText() {
+        let result = BodhanTranscriptMerger.mergeOverlappingTranscripts([
             "நான் தமிழ் பேசுகிறேன்",
             "यह नया वाक्य है",
         ])
 
         #expect(result == "நான் தமிழ் பேசுகிறேன் यह नया वाक्य है")
-    }
-
-    @Test("Indic ASR mel transpose uses row-major vDSP parameter order")
-    func indicASRMelTransposeParameterOrder() {
-        let rows = 2
-        let columns = 3
-        let frameMajor: [Float] = [
-            1, 2, 3,
-            4, 5, 6,
-        ]
-        let expectedColumnMajorTranspose: [Float] = [
-            1, 4,
-            2, 5,
-            3, 6,
-        ]
-
-        var actual = [Float](repeating: 0, count: frameMajor.count)
-        vDSP_mtrans(
-            frameMajor, 1,
-            &actual, 1,
-            vDSP_Length(columns),
-            vDSP_Length(rows)
-        )
-        #expect(actual == expectedColumnMajorTranspose)
-
-        var swapped = [Float](repeating: 0, count: frameMajor.count)
-        vDSP_mtrans(
-            frameMajor, 1,
-            &swapped, 1,
-            vDSP_Length(rows),
-            vDSP_Length(columns)
-        )
-        #expect(swapped != expectedColumnMajorTranspose)
     }
 
     @Test("SenseVoice uses the native speech model")
@@ -578,11 +551,12 @@ struct PostProcessorOptionTests {
         #expect(option.logoResourceName == "superwhisper-logo")
     }
 
-    @Test("S1-mini is unavailable for Indic ASR only")
-    func s1MiniIndicASRCompatibility() {
-        #expect(!PostProcessorOption.s1Mini.isCompatible(with: .indicASR))
+    @Test("S1-mini is unavailable for Bodhan only")
+    func s1MiniBodhanCompatibility() {
+        #expect(!PostProcessorOption.s1Mini.isCompatible(with: .bodhanFlex))
+        #expect(!PostProcessorOption.s1Mini.isCompatible(with: .bodhanCore))
         #expect(PostProcessorOption.s1Mini.isCompatible(with: .parakeetMultilingual))
-        #expect(PostProcessorOption.finetunedV3.isCompatible(with: .indicASR))
+        #expect(PostProcessorOption.finetunedV3.isCompatible(with: .bodhanFlex))
     }
 
     @Test("default option is first and matches config default")
@@ -967,7 +941,7 @@ struct AppConfigTests {
         #expect(config.sttModel == BackendOption.parakeetUnified.model)
         #expect(config.meetingInputDeviceUID == nil)
         #expect(config.cohereLanguage == CohereTranscribeLanguage.defaultLanguage.rawValue)
-        #expect(config.indicASRLanguage == IndicASRLanguage.defaultLanguage.rawValue)
+        #expect(config.bodhanLanguage == BodhanLanguage.defaultLanguage.rawValue)
         #expect(config.whisperLanguage == WhisperKitLanguage.defaultLanguage.rawValue)
         #expect(config.appleSpeechLanguage == AppleSpeechLanguageOption.systemIdentifier)
         #expect(config.meetingTranscriptionBackend == BackendOption.whisper.backend)
@@ -1178,7 +1152,7 @@ struct AppConfigTests {
         config.onboardingUseCase = OnboardingUseCase.dictationAndMeetings.rawValue
         config.enablePushToTalk = false
         config.cohereLanguage = CohereTranscribeLanguage.german.rawValue
-        config.indicASRLanguage = IndicASRLanguage.tamil.rawValue
+        config.bodhanLanguage = BodhanLanguage.tamil.rawValue
         config.appleSpeechLanguage = "en-GB"
         config.defaultMeetingTemplateID = "weekly-team-meeting"
         config.meetingRecordingSavePolicy = .always
@@ -1261,7 +1235,7 @@ struct AppConfigTests {
         #expect(decoded.resolvedOnboardingUseCase == .dictationAndMeetings)
         #expect(decoded.enablePushToTalk == false)
         #expect(decoded.cohereLanguage == CohereTranscribeLanguage.german.rawValue)
-        #expect(decoded.indicASRLanguage == IndicASRLanguage.tamil.rawValue)
+        #expect(decoded.bodhanLanguage == BodhanLanguage.tamil.rawValue)
         #expect(decoded.appleSpeechLanguage == "en-GB")
         #expect(decoded.defaultMeetingTemplateID == "weekly-team-meeting")
         #expect(decoded.meetingRecordingSavePolicy == .always)
@@ -1430,7 +1404,7 @@ struct AppConfigTests {
         #expect(config.openAIAPIKey.isEmpty)
         #expect(config.showFloatingIndicator == true)
         #expect(config.resolvedCohereLanguage == .english)
-        #expect(config.resolvedIndicASRLanguage == .defaultLanguage)
+        #expect(config.resolvedBodhanLanguage == .defaultLanguage)
         #expect(config.resolvedWhisperLanguage == .auto)
         #expect(config.resolvedAppleSpeechLanguage == AppleSpeechLanguageOption.systemIdentifier)
         #expect(config.hasCompletedOnboarding == false)

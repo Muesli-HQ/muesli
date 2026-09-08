@@ -38,6 +38,8 @@ struct ModelsView: View {
     @State private var modelToDelete: BackendOption?
     @State private var selectedParakeetModel: String
     @State private var selectedWhisperModel: String
+    @State private var selectedBodhanCoreModel: String
+    @State private var selectedBodhanFlexModel: String
     @State private var showExperimental: Bool
     @State private var appleSpeechLanguageOptions: [AppleSpeechLanguageOption] = [.system]
     @State private var isLiveCaptionModelDownloaded = false
@@ -62,6 +64,9 @@ struct ModelsView: View {
         let active = appState.selectedBackend
         _selectedParakeetModel = State(initialValue: BackendOption.parakeetFamily.contains(active) ? active.model : BackendOption.parakeetUnified.model)
         _selectedWhisperModel = State(initialValue: BackendOption.whisperFamily.contains(active) ? active.model : BackendOption.whisperSmall.model)
+        let bodhan = BodhanModel(rawValue: active.model)
+        _selectedBodhanCoreModel = State(initialValue: bodhan?.isCore == true ? active.model : BodhanModel.coreInt8.rawValue)
+        _selectedBodhanFlexModel = State(initialValue: bodhan?.isCore == false ? active.model : BodhanModel.flexInt8.rawValue)
         _showExperimental = State(initialValue: appState.activeFeatureTourTarget == .experimentalModels)
     }
 
@@ -218,6 +223,8 @@ struct ModelsView: View {
             )
 
             modelCard(option: .cohereTranscribe, logo: "cohere-logo")
+            bodhanCard(selection: $selectedBodhanCoreModel, isCore: true)
+            bodhanCard(selection: $selectedBodhanFlexModel, isCore: false)
             experimentalSection
             comingSoonSection
         case .streaming:
@@ -600,10 +607,20 @@ struct ModelsView: View {
         )
     }
 
-    private var indicASRLanguageSelection: Binding<IndicASRLanguage> {
+    @ViewBuilder
+    private func bodhanCard(selection: Binding<String>, isCore: Bool) -> some View {
+        let variants = BackendOption.bodhanFamily.filter { BodhanModel(rawValue: $0.model)?.isCore == isCore }
+        if let selected = variants.first(where: { $0.model == selection.wrappedValue }) ?? variants.first {
+            modelCard(option: selected, logo: "bodhan-logo",
+                         title: isCore ? "Bodhan Core" : "Bodhan Flex",
+                         precisionSelection: selection)
+        }
+    }
+
+    private func bodhanLanguageSelection(for model: String) -> Binding<BodhanLanguage> {
         Binding(
-            get: { appState.config.resolvedIndicASRLanguage },
-            set: { controller.selectIndicASRLanguage($0) }
+            get: { appState.config.resolvedBodhanLanguage.supported(for: model) },
+            set: { controller.selectBodhanLanguage($0) }
         )
     }
 
@@ -1113,7 +1130,7 @@ struct ModelsView: View {
         case "cohere": return "cohere-logo"
         case "qwen": return "qwen-logo"
         case "nemotron35": return "nvidia-logo"
-        case "indicasr": return "ai4bharat-logo"
+        case "bodhan": return "bodhan-logo"
         case "sensevoice": return "qwen-logo"
         case "gemma4-litert": return "google-logo"
         case "apple-speech": return "apple-system-logo"
@@ -1196,6 +1213,8 @@ struct ModelsView: View {
     private func modelCard(
         option: BackendOption,
         logo: String? = nil,
+        title: String? = nil,
+        precisionSelection: Binding<String>? = nil,
         isActive activeOverride: Bool? = nil,
         onSetActive: (() -> Void)? = nil,
         description: String? = nil,
@@ -1216,7 +1235,7 @@ struct ModelsView: View {
                 brandLogo(logo)
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
                     HStack(spacing: MuesliTheme.spacing8) {
-                        Text(option.label)
+                        Text(title ?? option.label)
                             .font(MuesliTheme.headline())
                             .foregroundStyle(incompatibilityReason == nil ? MuesliTheme.textPrimary : MuesliTheme.textTertiary)
 
@@ -1290,15 +1309,15 @@ struct ModelsView: View {
                 }
             }
 
-            if option.backend == BackendOption.indicASR.backend {
+            if option.backend == BackendOption.bodhanFlex.backend {
                 HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
                     Text("Language")
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .frame(width: 64, alignment: .leading)
 
-                    Picker("", selection: indicASRLanguageSelection) {
-                        ForEach(IndicASRLanguage.allCases, id: \.self) { language in
+                    Picker("", selection: bodhanLanguageSelection(for: option.model)) {
+                        ForEach(BodhanLanguage.choices(for: option.model), id: \.self) { language in
                             Text(language.label).tag(language)
                         }
                     }
@@ -1306,6 +1325,24 @@ struct ModelsView: View {
                     .pickerStyle(.menu)
                     .frame(maxWidth: 220, alignment: .leading)
                     .disabled(incompatibilityReason != nil)
+
+                    if let precisionSelection {
+                        Text("Precision")
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                        Picker("Precision", selection: precisionSelection) {
+                            ForEach(BackendOption.bodhanFamily.filter {
+                                BodhanModel(rawValue: $0.model)?.isCore == BodhanModel(rawValue: option.model)?.isCore
+                            }, id: \.model) { variant in
+                                Text(BodhanModel(rawValue: variant.model)?.isInt8 == true ? "INT8" : "FP16")
+                                    .tag(variant.model)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(width: 100)
+                        .disabled(isDownloading || incompatibilityReason != nil)
+                    }
                 }
             }
 
@@ -1916,9 +1953,12 @@ struct ModelsView: View {
             try removeItemIfPresent(at: Nemotron35ModelStore.cacheDirectory(fileManager: fm), fileManager: fm)
         case "cohere":
             try removeItemIfPresent(at: CohereTranscribeModelStore.cacheDirectory(), fileManager: fm)
-        case "indicasr":
-            if IndicASRModelStore.localOverrideDirectory() == nil {
-                try removeItemIfPresent(at: IndicASRModelStore.cacheDirectory(), fileManager: fm)
+        case "bodhan":
+            if let model = BodhanModel(rawValue: option.model) {
+                if model.localOverride == nil {
+                    await controller.transcriptionCoordinator.unloadBodhanTranscriber(ifLoadedModelID: model.rawValue)
+                    try removeItemIfPresent(at: model.cacheDirectory, fileManager: fm)
+                }
             }
         case "sensevoice":
             SenseVoiceTranscriber.deleteModelFiles(fileManager: fm)
@@ -1983,6 +2023,10 @@ struct ModelsView: View {
         if BackendOption.whisperFamily.contains(active) {
             selectedWhisperModel = active.model
         }
+        if let model = BodhanModel(rawValue: active.model) {
+            if model.isCore { selectedBodhanCoreModel = active.model }
+            else { selectedBodhanFlexModel = active.model }
+        }
         if BackendOption.experimental.contains(active) {
             showExperimental = true
         }
@@ -2005,8 +2049,8 @@ struct ModelsView: View {
             return Qwen3AsrModelStore.isModelDownloaded(fileManager: fm)
         case "cohere":
             return CohereTranscribeModelStore.isAvailableLocally()
-        case "indicasr":
-            return IndicASRModelStore.isAvailableLocally()
+        case "bodhan":
+            return BodhanModel(rawValue: option.model)?.isDownloaded ?? false
         case "sensevoice":
             return SenseVoiceTranscriber.isModelDownloaded(fileManager: fm)
         case "gemma4-litert":

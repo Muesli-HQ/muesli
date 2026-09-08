@@ -82,19 +82,25 @@ jobs:
       - name: Test LocalVQE runtime validation
         run: ./scripts/test_localvqe_runtime_validation.sh
 
+  # MLX Swift 0.31.6 requires Swift 6.3; Xcode 26.6 is available on macos-26.
   # Release build — validate the app product compiles in release mode
   build_release:
     needs: changes
     if: needs.changes.outputs.full_ci == 'true'
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 30
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - name: Report native toolchain
+        run: |
+          xcodebuild -version
+          swift --version
 
       - name: Build (release)
         run: swift build --package-path native/MuesliNative -c release --product MuesliNativeApp
@@ -103,10 +109,10 @@ jobs:
   test_shards:
     needs: changes
     if: needs.changes.outputs.full_ci == 'true'
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 30
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     strategy:
       fail-fast: false
       matrix:
@@ -117,6 +123,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - name: Report native toolchain
+        run: |
+          xcodebuild -version
+          swift --version
 
       - name: Run test shard
         run: bash ./scripts/run_ci_test_shard.sh "${{ matrix.shard }}"
@@ -130,12 +141,17 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 30
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - name: Report native toolchain
+        run: |
+          xcodebuild -version
+          swift --version
 
       - name: Test Apple Speech on macOS 26
         run: |
@@ -148,15 +164,20 @@ jobs:
   cli-smoke:
     needs: changes
     if: needs.changes.outputs.full_ci == 'true'
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 30
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - name: Report native toolchain
+        run: |
+          xcodebuild -version
+          swift --version
 
       - name: Cache LocalVQE runtime build
         uses: actions/cache@v4

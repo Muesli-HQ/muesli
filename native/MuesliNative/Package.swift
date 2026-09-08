@@ -13,6 +13,7 @@ let package = Package(
         .executable(name: "muesli-cli", targets: ["MuesliCLI"]),
     ],
     dependencies: [
+        .package(url: "https://github.com/ml-explore/mlx-swift.git", exact: "0.31.6"),
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
         .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.15.5"),
         .package(url: "https://github.com/argmaxinc/WhisperKit.git", branch: "main"), // TODO: pin to tagged release once one ships post-PR #455 (swift-transformers removal)
@@ -37,6 +38,7 @@ let package = Package(
             name: "MuesliNativeApp",
             dependencies: [
                 "MuesliCore",
+                .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "FluidAudio", package: "FluidAudio"),
                 .product(name: "LLM", package: "LLM.swift"),
                 .target(name: "CLiteRTLM_mac", condition: .when(platforms: [.macOS])),

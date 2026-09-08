@@ -43,7 +43,10 @@ case "${shard}" in
       WordCountTests
       CustomWordDictionaryTests
       ModelDownloadCoordinatorTests
-      IndicASRBackendTests
+      BodhanBackendTests
+      BodhanArtifactValidationTests
+      BodhanLifecycleTests
+      DictationBackendPreparationTests
       ContributionMilestoneTests
     )
     ;;

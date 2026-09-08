@@ -744,7 +744,7 @@ final class MeetingSession {
                         at: lastSystemChunkURL,
                         backend: currentBackend(),
                         cohereLanguage: config.resolvedCohereLanguage,
-                        indicASRLanguage: config.resolvedIndicASRLanguage,
+                        bodhanLanguage: config.resolvedBodhanLanguage,
                         whisperLanguage: config.resolvedWhisperLanguage,
                         parakeetLanguage: config.resolvedParakeetLanguage,
                         appleSpeechLanguage: config.resolvedAppleSpeechLanguage
@@ -1051,7 +1051,7 @@ final class MeetingSession {
                         at: chunkURL,
                         backend: backend,
                         cohereLanguage: config.resolvedCohereLanguage,
-                        indicASRLanguage: config.resolvedIndicASRLanguage,
+                        bodhanLanguage: config.resolvedBodhanLanguage,
                         whisperLanguage: config.resolvedWhisperLanguage,
                         parakeetLanguage: config.resolvedParakeetLanguage,
                         appleSpeechLanguage: config.resolvedAppleSpeechLanguage
@@ -1262,7 +1262,7 @@ final class MeetingSession {
                 at: url,
                 backend: currentBackend(),
                 cohereLanguage: config.resolvedCohereLanguage,
-                indicASRLanguage: config.resolvedIndicASRLanguage,
+                bodhanLanguage: config.resolvedBodhanLanguage,
                 whisperLanguage: config.resolvedWhisperLanguage,
                 parakeetLanguage: config.resolvedParakeetLanguage,
                 appleSpeechLanguage: config.resolvedAppleSpeechLanguage
@@ -1373,7 +1373,7 @@ final class MeetingSession {
                         at: segmentURL,
                         backend: currentBackend(),
                         cohereLanguage: config.resolvedCohereLanguage,
-                        indicASRLanguage: config.resolvedIndicASRLanguage,
+                        bodhanLanguage: config.resolvedBodhanLanguage,
                         whisperLanguage: config.resolvedWhisperLanguage,
                         parakeetLanguage: config.resolvedParakeetLanguage,
                         appleSpeechLanguage: config.resolvedAppleSpeechLanguage
@@ -1408,7 +1408,7 @@ final class MeetingSession {
                 at: systemAudioURL,
                 backend: currentBackend(),
                 cohereLanguage: config.resolvedCohereLanguage,
-                indicASRLanguage: config.resolvedIndicASRLanguage,
+                bodhanLanguage: config.resolvedBodhanLanguage,
                 whisperLanguage: config.resolvedWhisperLanguage,
                 parakeetLanguage: config.resolvedParakeetLanguage,
                 appleSpeechLanguage: config.resolvedAppleSpeechLanguage

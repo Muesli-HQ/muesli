@@ -1329,8 +1329,8 @@ struct MeetingsNavigationTests {
         #expect(controller.appState.config.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
     }
 
-    @Test("switching to Indic ASR disables S1-mini cleanup")
-    func switchingToIndicASRDisablesS1MiniCleanup() {
+    @Test("switching to Bodhan disables S1-mini cleanup")
+    func switchingToBodhanDisablesS1MiniCleanup() {
         let controller = makeController()
         controller.updateConfig {
             $0.sttBackend = BackendOption.parakeetMultilingual.backend
@@ -1339,7 +1339,7 @@ struct MeetingsNavigationTests {
             $0.enablePostProcessor = true
         }
 
-        controller.selectBackend(.indicASR)
+        controller.selectBackend(.bodhanFlex)
 
         #expect(controller.appState.config.activePostProcessorId == PostProcessorOption.s1Mini.id)
         #expect(!controller.appState.config.enablePostProcessor)
@@ -1349,8 +1349,8 @@ struct MeetingsNavigationTests {
     func switchingFromHostedCleanupToLocalDisablesIncompatibleS1MiniCleanup() {
         let controller = makeController()
         controller.updateConfig {
-            $0.sttBackend = BackendOption.indicASR.backend
-            $0.sttModel = BackendOption.indicASR.model
+            $0.sttBackend = BackendOption.bodhanFlex.backend
+            $0.sttModel = BackendOption.bodhanFlex.model
             $0.postProcessorBackend = LLMBackendOption.chatGPT.backend
             $0.activePostProcessorId = PostProcessorOption.s1Mini.id
             $0.enablePostProcessor = true
