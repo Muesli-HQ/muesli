@@ -615,9 +615,9 @@ struct ModelsView: View {
                          precisionSelection: selection)
     }
 
-    private var bodhanLanguageSelection: Binding<BodhanLanguage> {
+    private func bodhanLanguageSelection(for model: String) -> Binding<BodhanLanguage> {
         Binding(
-            get: { appState.config.resolvedBodhanLanguage },
+            get: { appState.config.resolvedBodhanLanguage.supported(for: model) },
             set: { controller.selectBodhanLanguage($0) }
         )
     }
@@ -1314,7 +1314,7 @@ struct ModelsView: View {
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .frame(width: 64, alignment: .leading)
 
-                    Picker("", selection: bodhanLanguageSelection) {
+                    Picker("", selection: bodhanLanguageSelection(for: option.model)) {
                         ForEach(BodhanLanguage.choices(for: option.model), id: \.self) { language in
                             Text(language.label).tag(language)
                         }

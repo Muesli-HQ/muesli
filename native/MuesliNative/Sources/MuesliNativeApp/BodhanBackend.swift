@@ -82,6 +82,11 @@ enum BodhanLanguage: String, CaseIterable, Codable, Sendable {
         return language
     }
 
+    /// Preserve the shared preference while resolving it for each model independently.
+    func supported(for model: String) -> Self {
+        Self.choices(for: model).contains(self) ? self : .automatic
+    }
+
     static func resolvedCode(_ rawValue: String?) -> String {
         resolved(rawValue).rawValue
     }
@@ -218,6 +223,7 @@ actor BodhanTranscriber {
                     language: BodhanLanguage = .defaultLanguage) async throws -> (text: String, processingTime: Double) {
         try await prepare(modelID: modelID)
         guard let runtime, let model else { throw CancellationError() }
+        let language = language.supported(for: modelID)
         let start = CFAbsoluteTimeGetCurrent()
         let samples = try AudioConverter().resampleAudioFile(wavURL)
         guard !samples.isEmpty else { return ("", CFAbsoluteTimeGetCurrent() - start) }

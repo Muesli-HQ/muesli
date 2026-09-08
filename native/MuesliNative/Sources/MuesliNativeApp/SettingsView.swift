@@ -1559,7 +1559,7 @@ struct SettingsView: View {
     private func indicLanguageMenu(model: String) -> some View {
         let languages = BodhanLanguage.choices(for: model)
         return FixedWidthPopUp(
-            selection: selectedBodhanLanguage.label,
+            selection: selectedBodhanLanguage.supported(for: model).label,
             options: languages.map(\.label),
             onSelectIndex: { index in
                 guard index >= 0, index < languages.count else { return }

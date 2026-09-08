@@ -65,4 +65,19 @@ struct BodhanBackendTests {
         }
     }
 
+    @Test("Flex-only languages fall back per model without losing the saved preference",
+          arguments: [BodhanLanguage.chhattisgarhi, .haryanvi])
+    func languageFallback(language: BodhanLanguage) {
+        var config = AppConfig()
+        config.bodhanLanguage = language.rawValue
+        for model in BodhanModel.allCases {
+            let effective = config.resolvedBodhanLanguage.supported(for: model.rawValue)
+            #expect(effective == (model.isCore ? .automatic : language))
+            #expect(BodhanLanguage.choices(for: model.rawValue).contains(effective))
+        }
+        #expect(config.resolvedBodhanLanguage == language)
+        #expect(BodhanLanguage.english.supported(for: BodhanModel.core.rawValue) == .english)
+        #expect(BodhanLanguage.automatic.supported(for: BodhanModel.flex.rawValue) == .automatic)
+    }
+
 }
