@@ -6,8 +6,8 @@ builds and CI shards.
 
 ## Requirements
 
-- macOS 14.2 or newer
-- Xcode 16 or newer
+- macOS 26 build host (the app deployment target remains macOS 14.2)
+- Xcode 26.6 (Swift 6.3), matching CI; MLX Swift requires Swift 6.3
 - Apple Silicon Mac for the main app workflows
 
 ## Local Development Build

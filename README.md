@@ -97,7 +97,7 @@ Current Homebrew also resolves `brew install muesli` to the official cask; the
 
 ### Build from source
 
-**Requirements:** macOS 14.2+, Xcode 16+
+**Build requirements:** Xcode 26.6 (Swift 6.3) on a compatible macOS 26 build host. The app deployment target remains macOS 14.2.
 
 ```bash
 # Clone

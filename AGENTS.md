@@ -12,7 +12,7 @@ Use the Linux CI checks that mirror `.github/workflows/ci.yml` on `ubuntu-latest
 ./scripts/verify_update_flow.sh --skip-dmg
 ```
 
-Native builds and the full test suite require macOS 14.2+ with Xcode 16+:
+Native builds and the full test suite use Xcode 26.6 (Swift 6.3) on macOS 26, matching CI. MLX Swift requires Swift 6.3; the app deployment target remains macOS 14.2:
 
 ```bash
 ./scripts/dev-test.sh
