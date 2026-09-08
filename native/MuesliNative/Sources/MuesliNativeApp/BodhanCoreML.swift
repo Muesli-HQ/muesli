@@ -68,7 +68,7 @@ final class BodhanCoreML {
 
     init(root: URL, model: BodhanModel? = nil, computeUnits: MLComputeUnits = .cpuAndGPU) throws {
         let precision = model.map { $0.isInt8 ? "int8" : "fp16" } ?? Self.weightPrecision
-        let runtime = model.map { $0.isInt8 ? "mlx" : "coreml" } ?? Self.decoderRuntime
+        let runtime = model == nil ? Self.decoderRuntime : "mlx"
         selectedDecoderRuntime = runtime
         guard ["fp16", "int8"].contains(precision), precision != "int8" || runtime == "mlx" else {
             throw NSError(domain: "BodhanASR", code: 13, userInfo: [NSLocalizedDescriptionKey: "INT8 requires the MLX decoder runtime."])

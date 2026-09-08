@@ -58,8 +58,9 @@ struct BodhanBackendTests {
             #expect(model.repository == (model.isCore ? BodhanModel.core.rawValue : BodhanModel.flex.rawValue))
             #expect(model.requiredFiles.contains("native-assets/tokenizer.json"))
             #expect(model.requiredFiles.contains("variants/mlx-decoder-int8/config.json") == model.isInt8)
-            #expect(model.requiredFiles.contains("coreml/decoder.mlpackage/Manifest.json") == !model.isInt8)
-            #expect(model.requiredFiles.count == (model.isInt8 ? 7 : 11))
+            #expect(!model.requiredFiles.contains("coreml/decoder.mlpackage/Manifest.json"))
+            #expect(model.requiredFiles.contains("variants/mlx-decoder/decoder.safetensors") == !model.isInt8)
+            #expect(model.requiredFiles.count == (model.isInt8 ? 7 : 6))
             #expect(BodhanLanguage.choices(for: model.rawValue).count == (model.isCore ? 26 : 28))
         }
     }

@@ -23,16 +23,17 @@ enum BodhanModel: String, CaseIterable, Sendable {
         return URL(fileURLWithPath: path)
     }
     var directory: URL { localOverride ?? cacheDirectory }
-    static let packageFiles = ["encoder", "cross", "decoder"].flatMap { name in
-        ["Manifest.json", "Data/com.apple.CoreML/model.mlmodel", "Data/com.apple.CoreML/weights/weight.bin"].map { "coreml/\(name).mlpackage/\($0)" }
-    }
-    static let requiredFiles = packageFiles + ["native-assets/frontend.bin", "native-assets/tokenizer.json"]
     var requiredFiles: [String] {
-        if !isInt8 { return Self.requiredFiles }
+        let encoder = isInt8 ? "variants/int8/encoder" : "coreml/encoder"
+        let decoder = isInt8 ? "variants/mlx-decoder-int8" : "variants/mlx-decoder"
         return ["Manifest.json", "Data/com.apple.CoreML/model.mlmodel", "Data/com.apple.CoreML/weights/weight.bin"].map {
-            "variants/int8/encoder.mlpackage/" + $0
-        } + ["variants/mlx-decoder-int8/decoder.safetensors", "variants/mlx-decoder-int8/config.json",
-             "native-assets/frontend.bin", "native-assets/tokenizer.json"]
+            encoder + ".mlpackage/" + $0
+        } + [decoder + "/decoder.safetensors", "native-assets/frontend.bin", "native-assets/tokenizer.json"]
+          + (isInt8 ? [decoder + "/config.json"] : [])
+    }
+    struct DecoderManifest: Decodable {
+        let bytes: Int64
+        let sha256: String
     }
     struct Artifact: Codable {
         let path: String
@@ -61,17 +62,21 @@ enum BodhanModel: String, CaseIterable, Sendable {
         if localOverride != nil {
             throw NSError(domain: "BodhanASR", code: 10, userInfo: [NSLocalizedDescriptionKey: "The local \(name) model folder is incomplete."])
         }
-        func fetchManifest(_ path: String) async throws -> Artifacts {
+        func fetchManifest<T: Decodable>(_ path: String, as type: T.Type) async throws -> T {
             let url = URL(string: "https://huggingface.co/\(repository)/resolve/\(revision)/\(path)")!
             let (data, response) = try await URLSession.shared.data(from: url)
             guard (response as? HTTPURLResponse)?.statusCode == 200 else {
                 throw NSError(domain: "BodhanASR", code: 11, userInfo: [NSLocalizedDescriptionKey: "Could not load the model download manifest."])
             }
-            return try JSONDecoder().decode(Artifacts.self, from: data)
+            return try JSONDecoder().decode(type, from: data)
         }
-        var artifacts = try await fetchManifest("artifacts.json").files
+        var artifacts = try await fetchManifest("artifacts.json", as: Artifacts.self).files
         artifacts += nativeAssetSupplement
-        if isInt8 { artifacts += try await fetchManifest("variants/int8/full-int8-backup-manifest.json").files }
+        if isInt8 { artifacts += try await fetchManifest("variants/int8/full-int8-backup-manifest.json", as: Artifacts.self).files }
+        if !isInt8 {
+            let decoder = try await fetchManifest("variants/mlx-decoder/manifest.json", as: DecoderManifest.self)
+            artifacts.append(Artifact(path: "variants/mlx-decoder/decoder.safetensors", bytes: decoder.bytes, sha256: decoder.sha256))
+        }
         let entries = Dictionary(artifacts.map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first })
         guard requiredFiles.allSatisfy({ entries[$0]?.bytes ?? 0 > 0 && entries[$0]?.sha256.count == 64 }) else {
             throw NSError(domain: "BodhanASR", code: 12, userInfo: [NSLocalizedDescriptionKey: "The model download manifest is incomplete."])
