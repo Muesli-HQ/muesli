@@ -77,19 +77,23 @@ enum MeetingLiveCaptionModelStore {
             guard #available(macOS 26.0, *) else {
                 throw AppleSpeechAnalyzerError.unavailable
             }
-            let preparation = AppleSpeechAnalyzerTranscriber()
-            let locale = try await preparation.prepare(
-                requestedLocale: AppleSpeechLanguageOption.requestedLocale(for: appleSpeechLanguage)
-            )
-            let mic = AppleSpeechMeetingPartialEngine(locale: locale, label: "You")
-            let system = AppleSpeechMeetingPartialEngine(locale: locale, label: "Others")
+            let preparation = AppleSpeechAnalyzerTranscriber.shared
+            let requestedLocale = AppleSpeechLanguageOption.requestedLocale(for: appleSpeechLanguage)
+            let micUse = try await preparation.prepareAndRetain(requestedLocale: requestedLocale)
+            let mic = AppleSpeechMeetingPartialEngine(locale: micUse.locale, lease: micUse.id, label: "You")
             do {
-                try await mic.prepare()
-                try await system.prepare()
-                return (mic, system)
+                let systemUse = try await preparation.prepareAndRetain(requestedLocale: requestedLocale)
+                let system = AppleSpeechMeetingPartialEngine(locale: systemUse.locale, lease: systemUse.id, label: "Others")
+                do {
+                    try await mic.prepare()
+                    try await system.prepare()
+                    return (mic, system)
+                } catch {
+                    await system.shutdown()
+                    throw error
+                }
             } catch {
                 await mic.shutdown()
-                await system.shutdown()
                 throw error
             }
         case .nemotron35:
@@ -158,6 +162,7 @@ private actor AppleSpeechMeetingPartialEngine: MeetingStreamingPartialEngine {
     private static let maxBufferedInputs = MeetingStreamingPartialSession.maxNativeQueuedChunks
 
     private let locale: Locale
+    private var lease: UUID?
     private let inputFormat: AVAudioFormat
     private let label: String
     private var transcriber: SpeechTranscriber?
@@ -173,8 +178,9 @@ private actor AppleSpeechMeetingPartialEngine: MeetingStreamingPartialEngine {
     private var didReportFailure = false
     private var sessionGeneration: UInt64 = 0
 
-    init(locale: Locale, label: String) {
+    init(locale: Locale, lease: UUID, label: String) {
         self.locale = locale
+        self.lease = lease
         inputFormat = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
             sampleRate: 16_000,
@@ -327,7 +333,12 @@ private actor AppleSpeechMeetingPartialEngine: MeetingStreamingPartialEngine {
     }
 
     func shutdown() async {
+        let retiringLease = lease
+        lease = nil
         await cancelCurrentSession()
+        if let retiringLease {
+            await AppleSpeechAnalyzerTranscriber.shared.releaseUse(retiringLease)
+        }
         partialHandler = nil
         failureHandler = nil
         fputs("[meeting-partials] \(label) Apple Speech session stopped\n", stderr)

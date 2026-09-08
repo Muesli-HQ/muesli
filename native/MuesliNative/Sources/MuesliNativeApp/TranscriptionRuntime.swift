@@ -231,7 +231,8 @@ actor TranscriptionCoordinator {
     @available(macOS 26.0, *)
     private func releaseAppleSpeechTranscriber() async {
         guard let transcriber = _appleSpeechTranscriber as? AppleSpeechAnalyzerTranscriber else { return }
-        await transcriber.releaseReservations()
+        // Runtime unloading must not unsubscribe the app's selected language
+        // or a live meeting's assets. The shared owner retires only unused locales.
         guard let current = _appleSpeechTranscriber as? AppleSpeechAnalyzerTranscriber,
               current === transcriber else { return }
         _appleSpeechTranscriber = nil
@@ -468,7 +469,7 @@ actor TranscriptionCoordinator {
     @available(macOS 26.0, *)
     private var appleSpeechTranscriber: AppleSpeechAnalyzerTranscriber {
         if _appleSpeechTranscriber == nil {
-            _appleSpeechTranscriber = AppleSpeechAnalyzerTranscriber()
+            _appleSpeechTranscriber = AppleSpeechAnalyzerTranscriber.shared
         }
         return _appleSpeechTranscriber as! AppleSpeechAnalyzerTranscriber
     }

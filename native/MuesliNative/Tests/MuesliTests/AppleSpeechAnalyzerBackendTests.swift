@@ -4,6 +4,113 @@ import Testing
 
 @Suite("Apple SpeechAnalyzer backend")
 struct AppleSpeechAnalyzerBackendTests {
+    @Test("releasing one source keeps the shared language leased by other consumers")
+    func sharedReservationLeases() {
+        var leases = AppleSpeechReservationLeases()
+        let mic = leases.retain(Locale(identifier: "en-IN"))
+        let system = leases.retain(Locale(identifier: "en-IN"))
+        let dictation = leases.retain(Locale(identifier: "fr-FR"))
+        leases.release(mic)
+        leases.release(mic) // Duplicate shutdown must not retire another source.
+        #expect(leases.identifiers == ["en-IN", "fr-FR"])
+        leases.release(system)
+        #expect(leases.identifiers == ["fr-FR"])
+        leases.release(dictation)
+        #expect(leases.identifiers.isEmpty)
+    }
+
+    @Test("transient asset readiness failures retry and can recover")
+    func transientPreparationRetries() async throws {
+        let attempts = AppleSpeechTestCounter()
+        try await AppleSpeechPreparationRetry.run(sleep: { _ in }) {
+            await attempts.increment()
+            if await attempts.value < 3 { throw AppleSpeechAnalyzerError.assetUnavailable("en-IN") }
+        }
+        #expect(await attempts.value == 3)
+    }
+
+    @Test("readiness retries are bounded when Apple assets remain unavailable")
+    func readinessRetryBudget() async {
+        let attempts = AppleSpeechTestCounter()
+        do {
+            try await AppleSpeechPreparationRetry.run(sleep: { _ in }) {
+                await attempts.increment()
+                throw AppleSpeechAnalyzerError.assetUnavailable("en-IN")
+            }
+            Issue.record("Expected the final readiness error")
+        } catch {
+            #expect(AppleSpeechPreparationRetry.isTransient(error))
+        }
+        #expect(await attempts.value == 3)
+    }
+
+    @Test("permanent errors and cancellation do not trigger download retries")
+    func permanentPreparationDoesNotRetry() async {
+        let errors: [Error] = [CancellationError(), AppleSpeechAnalyzerError.unavailable,
+            AppleSpeechAnalyzerError.unsupportedLocale("zz"),
+            AppleSpeechAnalyzerError.reservationUnavailable(2), AppleSpeechTestError.preparationFailed]
+        for error in errors {
+            let attempts = AppleSpeechTestCounter()
+            do {
+                try await AppleSpeechPreparationRetry.run(sleep: { _ in }) {
+                    await attempts.increment()
+                    throw error
+                }
+                Issue.record("Expected preparation to fail")
+            } catch {}
+            #expect(await attempts.value == 1)
+        }
+    }
+
+    @Test("cancellation during backoff prevents another preparation attempt")
+    func cancelledBackoffDoesNotRetry() async {
+        let attempts = AppleSpeechTestCounter()
+        do {
+            try await AppleSpeechPreparationRetry.run(sleep: { _ in throw CancellationError() }) {
+                await attempts.increment()
+                throw AppleSpeechAnalyzerError.assetUnavailable("en-IN")
+            }
+            Issue.record("Expected cancellation")
+        } catch { #expect(error is CancellationError) }
+        #expect(await attempts.value == 1)
+    }
+
+    @Test("only known transient Apple and network errors retry")
+    func preparationRetryClassification() {
+        #expect(AppleSpeechPreparationRetry.isTransient(NSError(domain: "SFSpeechErrorDomain", code: 1)))
+        #expect(AppleSpeechPreparationRetry.isTransient(NSError(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet)))
+        #expect(!AppleSpeechPreparationRetry.isTransient(NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled)))
+        #expect(!AppleSpeechPreparationRetry.isTransient(NSError(domain: "SFSpeechErrorDomain", code: 99)))
+    }
+
+    @Test("preparation of different languages serializes reservation changes")
+    func differentLanguagesPrepareSerially() async throws {
+        let cache = AppleSpeechPreparationTaskCache()
+        let order = AppleSpeechPreparationOrder()
+        async let first = cache.value(for: "en-IN") {
+            await order.begin()
+            try await Task.sleep(for: .milliseconds(30))
+            await order.end()
+            return Locale(identifier: "en-IN")
+        }
+        async let second = cache.value(for: "fr-FR") {
+            await order.begin()
+            try await Task.sleep(for: .milliseconds(30))
+            await order.end()
+            return Locale(identifier: "fr-FR")
+        }
+        _ = try await (first, second)
+        #expect(await order.peak == 1)
+    }
+
+    @Test("reservation reclamation protects live and dictation users plus the selected language")
+    func reservationCleanupProtectsActiveUsers() {
+        let releases = AppleSpeechInitialReservationPolicy.localesToRelease(
+            ["en-IN", "en-US", "fr-FR", "de-DE"].map { Locale(identifier: $0) },
+            keeping: Locale(identifier: "de-DE"), activeIdentifiers: ["en-IN", "fr-FR"])
+        #expect(releases.map { $0.identifier(.bcp47) } == ["en-US"])
+    }
+
     @Test("volatile results do not duplicate finalized text")
     func accumulatorIgnoresVolatileResults() {
         var accumulator = AppleSpeechTranscriptAccumulator()
@@ -250,6 +357,13 @@ private actor AppleSpeechTestCounter {
     func increment() {
         value += 1
     }
+}
+
+private actor AppleSpeechPreparationOrder {
+    private var active = 0
+    private(set) var peak = 0
+    func begin() { active += 1; peak = max(peak, active) }
+    func end() { active -= 1 }
 }
 
 private enum AppleSpeechTestError: Error {
