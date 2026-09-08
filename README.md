@@ -350,7 +350,7 @@ Important meeting fields:
 
 **Bodhan Core and Flex** replace the former seven-language AI4Bharat IndicASR integration. Core uses native-script output, including many English terms spoken within Indic utterances. Flex supports mixed-script output—Indic text in its native script and English terms in Latin letters—and spoken-number formatting. Output quality varies, so try both from the Experimental catalog. Both require macOS 15 or later and warm up before the app reports readiness. Longer recordings are processed in overlapping chunks.
 
-The normal model download installs the FP16 CoreML pipeline. The optional native MLX decoder and INT8 hybrid variants are available in the linked Hugging Face repositories for development testing; they need explicit runtime configuration and are not arbitrary-MLX-model support. INT8 is **weight-only quantization**: activations and KV cache remain floating point. The 1.27 GB figure covers encoder and MLX decoder weights, excluding compilation caches. CoreML device placement is runtime-dependent; Neural Engine execution is not guaranteed.
+The normal model download installs the FP16 CoreML pipeline. The optional native MLX decoder and INT8 hybrid variants are available in the linked Hugging Face repositories for development testing; they need explicit runtime configuration and are not arbitrary-MLX-model support. INT8 is **weight-only quantization**: activations and KV cache remain floating point. The 1.27 GB figure covers encoder and MLX decoder weights, excluding compilation caches. These are storage sizes, not RAM requirements: runtime memory also includes activations, decoder KV cache, and CoreML/MLX allocations. CoreML device placement is runtime-dependent; Neural Engine execution is not guaranteed.
 
 Existing saved IndicASR selections migrate to Bodhan Flex, preserving their language preference. Previously downloaded legacy model files are not automatically deleted.
 
@@ -475,6 +475,8 @@ Muesli has been possible because of the generosity of companies such as:
   <a href="https://telemetrydeck.com"><img src="assets/sponsors/telemetrydeck.svg" alt="TelemetryDeck" height="44" /></a>
   &nbsp;&nbsp;&nbsp;
   <a href="https://www.coderabbit.ai"><img src="assets/sponsors/coderabbit.svg" alt="CodeRabbit" height="44" /></a>
+  &nbsp;&nbsp;&nbsp;
+  <a href="https://jarvislabs.ai"><img src="assets/sponsors/jarvislabs.png" alt="JarvisLabs.ai" height="44" /></a>
 </p>
 
 - [FluidAudio](https://github.com/FluidInference/FluidAudio) — CoreML speech models for Apple devices (Parakeet TDT, Qwen3 ASR, Silero VAD, speaker diarization)

@@ -118,13 +118,13 @@ struct BackendOption: Equatable {
 
     static let bodhanCore = BackendOption(
         backend: "bodhan", model: BodhanModel.core.rawValue,
-        label: "Bodhan Core", sizeLabel: "~2.45 GB",
-        description: "Indian-language speech in its native script. English words within Hindi or Tamil are written in that script too. Detects the language automatically, or use the language picker.", recommended: false
+        label: "Bodhan Core", sizeLabel: "~2.45 GB FP16",
+        description: "Indian-language speech in its native script. English words within Hindi or Tamil are written in that script too. Detects the language automatically, or use the language picker. INT8 hybrid weights use ~1.27 GB; memory usage varies.", recommended: false
     )
     static let bodhanFlex = BackendOption(
         backend: "bodhan", model: BodhanModel.flex.rawValue,
-        label: "Bodhan Flex", sizeLabel: "~2.45 GB",
-        description: "For mixed-language dictation: keeps Hindi or Tamil in its own script and English words in Latin letters. Also formats spoken numbers. Try both models to compare accuracy.", recommended: false
+        label: "Bodhan Flex", sizeLabel: "~2.45 GB FP16",
+        description: "For mixed-language dictation: keeps Hindi or Tamil in its own script and English words in Latin letters. Also formats spoken numbers. Try both models to compare accuracy. INT8 hybrid weights use ~1.27 GB; memory usage varies.", recommended: false
     )
 
     static let senseVoiceSmall = BackendOption(
