@@ -118,14 +118,26 @@ struct BackendOption: Equatable {
 
     static let bodhanCore = BackendOption(
         backend: "bodhan", model: BodhanModel.core.rawValue,
-        label: "Bodhan Core", sizeLabel: "~2.45 GB FP16",
-        description: "Indian-language speech in its native script. English words within Hindi or Tamil are written in that script too. Detects the language automatically, or use the language picker. INT8 hybrid weights use ~1.27 GB; memory usage varies.", recommended: false
+        label: "Bodhan Core FP16", sizeLabel: "~2.45 GB FP16",
+        description: "Indian-language speech in its native script. English words within Hindi or Tamil are written in that script too. Detects the language automatically, or use the language picker.", recommended: false
     )
     static let bodhanFlex = BackendOption(
         backend: "bodhan", model: BodhanModel.flex.rawValue,
-        label: "Bodhan Flex", sizeLabel: "~2.45 GB FP16",
-        description: "For mixed-language dictation: keeps Hindi or Tamil in its own script and English words in Latin letters. Also formats spoken numbers. Try both models to compare accuracy. INT8 hybrid weights use ~1.27 GB; memory usage varies.", recommended: false
+        label: "Bodhan Flex FP16", sizeLabel: "~2.45 GB FP16",
+        description: "For mixed-language dictation: keeps Hindi or Tamil in its own script and English words in Latin letters. Also formats spoken numbers. Try both models to compare accuracy.", recommended: false
     )
+
+    static let bodhanCoreInt8 = BackendOption(
+        backend: "bodhan", model: BodhanModel.coreInt8.rawValue,
+        label: "Bodhan Core INT8", sizeLabel: "~1.27 GB",
+        description: "A smaller download of Core for Indian-language speech in its native script. Detects language automatically. Uses less space; transcription can differ slightly from FP16.", recommended: false
+    )
+    static let bodhanFlexInt8 = BackendOption(
+        backend: "bodhan", model: BodhanModel.flexInt8.rawValue,
+        label: "Bodhan Flex INT8", sizeLabel: "~1.27 GB",
+        description: "A smaller download of Flex for mixed-language dictation and spoken numbers. Keeps English words in Latin letters. Uses less space; transcription can differ slightly from FP16.", recommended: false
+    )
+    static let bodhanFamily: [BackendOption] = [.bodhanCore, .bodhanCoreInt8, .bodhanFlex, .bodhanFlexInt8]
 
     static let senseVoiceSmall = BackendOption(
         backend: "sensevoice",
@@ -193,7 +205,7 @@ struct BackendOption: Equatable {
     )
 
     static let experimental: [BackendOption] = [
-        .senseVoiceSmall, .bodhanCore, .bodhanFlex, .gemma4E2BLiteRT, .gemma4E4BLiteRT, .qwen3Asr,
+        .senseVoiceSmall, .gemma4E2BLiteRT, .gemma4E4BLiteRT, .qwen3Asr,
     ]
 
     /// Native streaming backends used by low-latency product surfaces.
@@ -210,6 +222,7 @@ struct BackendOption: Equatable {
             + whisperFamily
             + [.cohereTranscribe]
             + streaming
+            + bodhanFamily
             + experimental
         // Parakeet Unified (English) and v3 (multilingual) are the preferred
         // onboarding models; Apple Speech remains available in the catalog.

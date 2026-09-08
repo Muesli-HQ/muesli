@@ -49,4 +49,19 @@ struct BodhanBackendTests {
         #expect(!core.contains(.haryanvi) && flex.contains(.haryanvi))
         #expect(BodhanLanguage.choices(for: "missing").isEmpty)
     }
+    @Test("Precision variants have independent downloads and exact artifact sets")
+    func variantDownloads() {
+        #expect(Set(BodhanModel.allCases.map(\.cacheDirectory)).count == 4)
+        #expect(BackendOption.bodhanFamily.count == 4)
+        #expect(BackendOption.bodhanFamily.allSatisfy { !BackendOption.experimental.contains($0) })
+        for model in BodhanModel.allCases {
+            #expect(model.repository == (model.isCore ? BodhanModel.core.rawValue : BodhanModel.flex.rawValue))
+            #expect(model.requiredFiles.contains("native-assets/tokenizer.json"))
+            #expect(model.requiredFiles.contains("variants/mlx-decoder-int8/config.json") == model.isInt8)
+            #expect(model.requiredFiles.contains("coreml/decoder.mlpackage/Manifest.json") == !model.isInt8)
+            #expect(model.requiredFiles.count == (model.isInt8 ? 7 : 11))
+            #expect(BodhanLanguage.choices(for: model.rawValue).count == (model.isCore ? 26 : 28))
+        }
+    }
+
 }

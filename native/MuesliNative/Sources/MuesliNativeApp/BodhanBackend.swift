@@ -34,8 +34,8 @@ enum BodhanLanguage: String, CaseIterable, Codable, Sendable {
     static let defaultLanguage: Self = .hindi
     static func choices(for model: String) -> [Self] {
         switch BodhanModel(rawValue: model) {
-        case .core: return allCases.filter { $0 != .chhattisgarhi && $0 != .haryanvi }
-        case .flex: return allCases
+        case .core, .coreInt8: return allCases.filter { $0 != .chhattisgarhi && $0 != .haryanvi }
+        case .flex, .flexInt8: return allCases
         case nil: return []
         }
     }
@@ -160,7 +160,7 @@ actor BodhanTranscriber {
                 try await selected.download(progress: progress, progressSnapshot: progressSnapshot)
                 try Task.checkCancellation()
                 progress?(0.9, "Preparing " + selected.name + "...")
-                return try BodhanCoreML(root: selected.directory)
+                return try BodhanCoreML(root: selected.directory, model: selected)
             }
         }
         let expectedGeneration = generation
@@ -248,9 +248,9 @@ actor BodhanTranscriber {
         let row: [String: Any] = [
             "timestamp": ISO8601DateFormatter().string(from: Date()), "model": modelID,
             "audioSeconds": audioSeconds, "tokens": result.tokens, "language": result.language,
-            "decoderRuntime": BodhanCoreML.decoderRuntime,
+            "decoderRuntime": result.decoderRuntime,
             "encoderAsset": result.encoderAsset, "decoderWeightPrecision": result.decoderWeightPrecision,
-            "encoderPolicy": result.encoderPolicy, "decoderAsset": BodhanCoreML.decoderRuntime == "mlx" ? "decoder.safetensors" : (ProcessInfo.processInfo.environment["MUESLI_BODHAN_DECODER_ASSET"] ?? "decoder"),
+            "encoderPolicy": result.encoderPolicy, "decoderAsset": result.decoderRuntime == "mlx" ? "decoder.safetensors" : (ProcessInfo.processInfo.environment["MUESLI_BODHAN_DECODER_ASSET"] ?? "decoder"),
             "threadQoS": result.threadQoS, "thermalState": result.thermalState,
             "lowPowerMode": result.lowPowerMode, "onMainThread": result.onMainThread,
             "encoderSpecialized": result.encoderSpecialized,

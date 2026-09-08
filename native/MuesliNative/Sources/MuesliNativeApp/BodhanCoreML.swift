@@ -29,6 +29,7 @@ final class BodhanCoreML {
         let mixed_prompts: [String: [Int]]?
     }
     struct Result: Codable {
+        var decoderRuntime: String = "coreml"
         var encoderAsset: String = "coreml/encoder"
         var decoderWeightPrecision: String = "fp16"
         var encoderSpecialized: Bool = false
@@ -52,6 +53,7 @@ final class BodhanCoreML {
         let selectionSeconds: Double
         let encoderPolicy: String
     }
+    let selectedDecoderRuntime: String
     let encoderPolicy: String
     let encoderAsset: String
     let shapePolicy: String
@@ -64,18 +66,20 @@ final class BodhanCoreML {
     let tokenizer: Tokenizer
     private var logitsScratch: [Float] = []
 
-    init(root: URL, computeUnits: MLComputeUnits = .cpuAndGPU) throws {
-        let precision = Self.weightPrecision
-        guard ["fp16", "int8"].contains(precision), precision != "int8" || Self.decoderRuntime == "mlx" else {
-            throw NSError(domain: "BodhanASR", code: 13, userInfo: [NSLocalizedDescriptionKey: "The full INT8 experiment requires the MLX decoder runtime."])
+    init(root: URL, model: BodhanModel? = nil, computeUnits: MLComputeUnits = .cpuAndGPU) throws {
+        let precision = model.map { $0.isInt8 ? "int8" : "fp16" } ?? Self.weightPrecision
+        let runtime = model.map { $0.isInt8 ? "mlx" : "coreml" } ?? Self.decoderRuntime
+        selectedDecoderRuntime = runtime
+        guard ["fp16", "int8"].contains(precision), precision != "int8" || runtime == "mlx" else {
+            throw NSError(domain: "BodhanASR", code: 13, userInfo: [NSLocalizedDescriptionKey: "INT8 requires the MLX decoder runtime."])
         }
-        let selectedEncoderAsset = ProcessInfo.processInfo.environment["MUESLI_BODHAN_ENCODER_ASSET"].map { "coreml/" + $0 }
+        let selectedEncoderAsset = model.map { $0.isInt8 ? "variants/int8/encoder" : "coreml/encoder" } ?? ProcessInfo.processInfo.environment["MUESLI_BODHAN_ENCODER_ASSET"].map { "coreml/" + $0 }
             ?? (precision == "int8" ? "experiments/coreml-int8/encoder" : "coreml/encoder")
         encoderAsset = selectedEncoderAsset
         let policy = ProcessInfo.processInfo.environment["MUESLI_BODHAN_ENCODER_COMPUTE"] ?? "gpu"
         encoderPolicy = policy
-        shapePolicy = Self.encoderShapePolicy
-        let specialize = Self.encoderShapePolicy == "buckets" && Self.specializeEncoder
+        shapePolicy = model == nil ? Self.encoderShapePolicy : "buckets"
+        let specialize = model == nil ? (Self.encoderShapePolicy == "buckets" && Self.specializeEncoder) : true
         encoderSpecialized = specialize
         func load(_ name: String) throws -> MLModel {
             let selectedConfig = MLModelConfiguration()
@@ -94,7 +98,7 @@ final class BodhanCoreML {
             return try MLModel(contentsOf: compiled, configuration: selectedConfig)
         }
         encoder = try load("encoder")
-        if Self.decoderRuntime == "mlx" {
+        if runtime == "mlx" {
             mlx = try BodhanMLXDecoder(root: root, weightPrecision: precision)
             cross = nil; decoder = nil
         } else {
@@ -226,6 +230,7 @@ final class BodhanCoreML {
             var result = try mlx.generate(acoustic: acoustic, length: length, tokenizer: tokenizer, language: language,
                                     mixed: mixedScript, frontendSeconds: frontendSeconds,
                                     encoderSeconds: encoderSeconds, encoderPolicy: encoderPolicy)
+            result.decoderRuntime = selectedDecoderRuntime
             result.encoderAsset = encoderAsset
             result.encoderSpecialized = encoderSpecialized
             result.threadQoS = entryQoS
@@ -293,6 +298,7 @@ final class BodhanCoreML {
                       frontendSeconds:frontendSeconds,encoderSeconds:encoderSeconds,crossSeconds:crossSeconds,
                       decodeSeconds:Date().timeIntervalSince(decodeStart), predictionSeconds:predictionSeconds,
                       selectionSeconds:selectionSeconds, encoderPolicy:encoderPolicy)
+        result.decoderRuntime = selectedDecoderRuntime
         result.encoderAsset = encoderAsset
         result.encoderSpecialized = encoderSpecialized
         result.threadQoS = entryQoS

@@ -218,6 +218,9 @@ struct ModelsView: View {
             )
 
             modelCard(option: .cohereTranscribe, logo: "cohere-logo")
+            ForEach(BackendOption.bodhanFamily, id: \.model) { option in
+                modelCard(option: option, logo: "bodhan-logo")
+            }
             experimentalSection
             comingSoonSection
         case .streaming:

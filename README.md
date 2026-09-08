@@ -338,8 +338,8 @@ Important meeting fields:
 | Nemotron 3.5 Multilingual | FluidInference | CoreML / Neural Engine | ~665 MB | 100+ locales | Live + final |
 | SenseVoice Small | FluidAudio | INT8 CoreML / Neural Engine | ~240 MB | 50+ languages | ~1s |
 | Qwen3 ASR | FluidAudio | CoreML / Neural Engine | ~1.3 GB | 52 languages | ~2-3s |
-| Bodhan Core | CoreML; optional MLX decoder | CoreML encoder + autoregressive decoder | ~2.45 GB default; ~1.27 GB INT8 hybrid weights | 25 languages, including English; auto-detect | Experimental |
-| Bodhan Flex | CoreML; optional MLX decoder | CoreML encoder + autoregressive decoder | ~2.45 GB default; ~1.27 GB INT8 hybrid weights | 27 languages, including English; auto-detect | Experimental |
+| Bodhan Core | CoreML FP16 / CoreML + MLX INT8 | CoreML encoder + autoregressive decoder | ~2.45 GB FP16 / ~1.27 GB INT8 weights | 25 languages, including English; auto-detect | Final transcription |
+| Bodhan Flex | CoreML FP16 / CoreML + MLX INT8 | CoreML encoder + autoregressive decoder | ~2.45 GB FP16 / ~1.27 GB INT8 weights | 27 languages, including English; auto-detect | Final transcription |
 | Gemma 4 E2B | LiteRT-LM | Metal GPU decoder + CPU audio encoder | ~2.6 GB | Multilingual | Experimental |
 | Whisper Tiny Multilingual | WhisperKit | CoreML / Neural Engine | ~153 MB | Multilingual | Fastest Whisper option |
 | Whisper Tiny English | WhisperKit | CoreML / Neural Engine | ~153 MB | English only | Fastest English Whisper option |
@@ -348,9 +348,9 @@ Important meeting fields:
 | Whisper Medium English | WhisperKit | CoreML / Neural Engine | ~1.5 GB | English only | Slower, more accurate English option |
 | Whisper Large Turbo Multilingual | WhisperKit | CoreML / Neural Engine | ~626 MB | Multilingual | ~2-4s |
 
-**Bodhan Core and Flex** replace the former seven-language AI4Bharat IndicASR integration. Core uses native-script output, including many English terms spoken within Indic utterances. Flex supports mixed-script output—Indic text in its native script and English terms in Latin letters—and spoken-number formatting. Output quality varies, so try both from the Experimental catalog. Both require macOS 15 or later and warm up before the app reports readiness. Longer recordings are processed in overlapping chunks.
+**Bodhan Core and Flex** replace the former seven-language AI4Bharat IndicASR integration. Core uses native-script output, including many English terms spoken within Indic utterances. Flex supports mixed-script output—Indic text in its native script and English terms in Latin letters—and spoken-number formatting. Output quality varies, so try both from the production model catalog. Each has independently downloadable FP16 and INT8 choices. Both require macOS 15 or later and warm up before the app reports readiness. Longer recordings are processed in overlapping chunks.
 
-The normal model download installs the FP16 CoreML pipeline. The optional native MLX decoder and INT8 hybrid variants are available in the linked Hugging Face repositories for development testing; they need explicit runtime configuration and are not arbitrary-MLX-model support. INT8 is **weight-only quantization**: activations and KV cache remain floating point. The 1.27 GB figure covers encoder and MLX decoder weights, excluding compilation caches. These are storage sizes, not RAM requirements: runtime memory also includes activations, decoder KV cache, and CoreML/MLX allocations. CoreML device placement is runtime-dependent; Neural Engine execution is not guaranteed.
+FP16 uses a CoreML encoder and decoder; INT8 uses a CoreML encoder and a native MLX decoder. The selected catalog entry controls the runtime automatically, with no development settings required. The variants have separate downloads and can be removed independently. INT8 is **weight-only quantization**: activations and KV cache remain floating point. The 1.27 GB figure covers encoder and MLX decoder weights, excluding compilation caches. These are storage sizes, not RAM requirements: runtime memory also includes activations, decoder KV cache, and CoreML/MLX allocations. CoreML device placement is runtime-dependent; Neural Engine execution is not guaranteed.
 
 Existing saved IndicASR selections migrate to Bodhan Flex, preserving their language preference. Previously downloaded legacy model files are not automatically deleted.
 
@@ -488,7 +488,7 @@ Muesli has been possible because of the generosity of companies such as:
 - [Cohere Transcribe](https://huggingface.co/CohereLabs/cohere-transcribe-03-2026) — 2B parameter autoregressive ASR (#1 Open ASR Leaderboard)
 - [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-0.6B) — Multilingual speech recognition (52 languages)
 - [Bodhan AI Core](https://huggingface.co/bodhan-ai/indic-transcribe-core) and [Flex](https://huggingface.co/bodhan-ai/indic-transcribe-flex) — multilingual Indic/English ASR; community [Core](https://huggingface.co/phequals/indic-transcribe-core-coreml) and [Flex](https://huggingface.co/phequals/indic-transcribe-flex-coreml) CoreML/MLX conversions
-- [MLX Swift](https://github.com/ml-explore/mlx-swift) — native Apple-silicon decoding for the experimental Bodhan hybrid runtime
+- [MLX Swift](https://github.com/ml-explore/mlx-swift) — native Apple-silicon decoding for the Bodhan INT8 hybrid runtime
 - [Google LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) — Native on-device Gemma runtime with Swift APIs and Metal acceleration
 - [Gemma 4 E2B LiteRT-LM](https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm) — Experimental multimodal transcription and cleanup model
 - [pyannote](https://github.com/pyannote/pyannote-audio) — Speaker diarization (via FluidAudio CoreML conversion)

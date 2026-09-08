@@ -294,10 +294,10 @@ struct BackendOptionTests {
         #expect(BackendOption.cohereTranscribe.model.contains("cohere"))
     }
 
-    @Test("Bodhan checkpoints have distinct experimental catalog entries and output modes")
+    @Test("Bodhan checkpoints have distinct production catalog entries and output modes")
     func bodhanCheckpoints() {
-        #expect(BackendOption.experimental.contains(.bodhanCore))
-        #expect(BackendOption.experimental.contains(.bodhanFlex))
+        #expect(BackendOption.bodhanFamily.contains(.bodhanCore))
+        #expect(BackendOption.bodhanFamily.contains(.bodhanFlex))
         #expect(BackendOption.bodhanCore.model != BackendOption.bodhanFlex.model)
         #expect(BodhanModel(rawValue: BackendOption.bodhanCore.model) == .core)
         #expect(BodhanModel(rawValue: BackendOption.bodhanFlex.model) == .flex)

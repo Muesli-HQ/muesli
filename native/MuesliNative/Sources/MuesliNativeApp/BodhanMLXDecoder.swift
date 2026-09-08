@@ -3,7 +3,7 @@ import Foundation
 import CoreML
 import MLX
 
-/// Decoder-only hybrid prototype. Owned and called serially by BodhanTranscriber.
+/// Native hybrid decoder. Owned and called serially by BodhanTranscriber.
 @available(macOS 15, *)
 final class BodhanMLXDecoder {
     let weightPrecision: String
@@ -17,7 +17,7 @@ final class BodhanMLXDecoder {
         guard let directory = candidates.map({ root.appendingPathComponent($0) }).first(where: {
             FileManager.default.fileExists(atPath: $0.appendingPathComponent("decoder.safetensors").path)
         }) else {
-            throw NSError(domain: "BodhanASR", code: 8, userInfo: [NSLocalizedDescriptionKey: "The experimental MLX decoder weights are missing."])
+            throw NSError(domain: "BodhanASR", code: 8, userInfo: [NSLocalizedDescriptionKey: "The MLX decoder weights are missing."])
         }
         w = try loadArrays(url: directory.appendingPathComponent("decoder.safetensors"))
         guard w.count == (quantized ? 1114 : 632), w["embedding.token_embedding.weight"]?.shape == [7152,1024] else {
