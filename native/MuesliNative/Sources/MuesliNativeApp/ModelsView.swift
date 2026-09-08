@@ -102,11 +102,9 @@ struct ModelsView: View {
             .onAppear {
                 revealFeatureTourTargetIfNeeded(using: proxy)
             }
-            .onChange(of: activeFeatureTourTarget) { _, target in
-                guard target == .modelLibrary
-                        || target == .appleSpeechCard
-                        || target == .streamingModels
-                        || target == .experimentalModels else { return }
+            .onChange(of: activeFeatureTourTarget) { _, _ in
+                // The reveal helper owns target filtering. A second allowlist here
+                // can miss model-to-model transitions while this view stays mounted.
                 revealFeatureTourTargetIfNeeded(using: proxy)
             }
         }
@@ -225,6 +223,8 @@ struct ModelsView: View {
             modelCard(option: .cohereTranscribe, logo: "cohere-logo")
             bodhanCard(selection: $selectedBodhanCoreModel, isCore: true)
             bodhanCard(selection: $selectedBodhanFlexModel, isCore: false)
+                .id(FeatureTourTarget.bodhanFlexCard.rawValue)
+                .featureTourTarget(.bodhanFlexCard)
             experimentalSection
             comingSoonSection
         case .streaming:
@@ -269,6 +269,9 @@ struct ModelsView: View {
             appState.selectedModelsCategory = .dictation
         case .parakeetFamilyCard:
             target = .parakeetFamilyCard
+            appState.selectedModelsCategory = .dictation
+        case .bodhanFlexCard:
+            target = .bodhanFlexCard
             appState.selectedModelsCategory = .dictation
         case .streamingModels:
             target = .streamingModels
