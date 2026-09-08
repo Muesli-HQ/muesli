@@ -623,7 +623,7 @@ actor TranscriptionCoordinator {
             }
         case "indicasr":
             if #available(macOS 15, *) {
-                try await indicASRTranscriber.prepare(progress: progress, progressSnapshot: progressSnapshot)
+                try await indicASRTranscriber.prepare(modelID: backend.model, progress: progress, progressSnapshot: progressSnapshot)
             } else {
                 throw NSError(domain: "MuesliTranscriptionRuntime", code: 6, userInfo: [
                     NSLocalizedDescriptionKey: "Indic ASR requires macOS 15 or later.",
@@ -1373,7 +1373,7 @@ actor TranscriptionCoordinator {
         case "cohere":
             return try await transcribeWithCohere(url: url, language: cohereLanguage)
         case "indicasr":
-            return try await transcribeWithIndicASR(url: url, language: indicASRLanguage)
+            return try await transcribeWithIndicASR(url: url, modelID: backend.model, language: indicASRLanguage)
         case "sensevoice":
             return try await transcribeWithSenseVoice(url: url)
         case "gemma4-litert":
@@ -1517,11 +1517,12 @@ actor TranscriptionCoordinator {
 
     private func transcribeWithIndicASR(
         url: URL,
+        modelID: String,
         language: IndicASRLanguage
     ) async throws -> SpeechTranscriptionResult {
         if #available(macOS 15, *) {
             IndicASRLogging.logVerbose("transcribing with Indic ASR (\(language.rawValue)): \(url.lastPathComponent)")
-            let result = try await indicASRTranscriber.transcribe(wavURL: url, language: language)
+            let result = try await indicASRTranscriber.transcribe(wavURL: url, modelID: modelID, language: language)
             IndicASRLogging.logVerbose("Indic ASR result chars=\(result.text.count), processingTime=\(String(format: "%.3f", result.processingTime))s")
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             return SpeechTranscriptionResult(

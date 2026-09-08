@@ -1078,7 +1078,7 @@ struct SettingsView: View {
             if displayedDictationBackend?.backend == BackendOption.indicASR.backend {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Indic language", controlWidth: meetingControlWidth) {
-                    indicLanguageMenu
+                    indicLanguageMenu(model: displayedDictationBackend?.model ?? "")
                 }
             }
             if displayedDictationBackend?.supportsWhisperLanguageSelection == true {
@@ -1305,7 +1305,7 @@ struct SettingsView: View {
             } else if appState.selectedMeetingTranscriptionBackend.backend == BackendOption.indicASR.backend {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Indic language", controlWidth: meetingControlWidth) {
-                    indicLanguageMenu
+                    indicLanguageMenu(model: appState.selectedMeetingTranscriptionBackend.model)
                 }
             } else if appState.selectedMeetingTranscriptionBackend.supportsWhisperLanguageSelection {
                 Divider().background(MuesliTheme.surfaceBorder)
@@ -1556,13 +1556,14 @@ struct SettingsView: View {
         }
     }
 
-    private var indicLanguageMenu: some View {
-        FixedWidthPopUp(
+    private func indicLanguageMenu(model: String) -> some View {
+        let languages = IndicASRLanguage.choices(for: model)
+        return FixedWidthPopUp(
             selection: selectedIndicASRLanguage.label,
-            options: IndicASRLanguage.allCases.map(\.label),
+            options: languages.map(\.label),
             onSelectIndex: { index in
-                guard index >= 0, index < IndicASRLanguage.allCases.count else { return }
-                controller.selectIndicASRLanguage(IndicASRLanguage.allCases[index])
+                guard index >= 0, index < languages.count else { return }
+                controller.selectIndicASRLanguage(languages[index])
             }
         )
         .frame(height: 24)

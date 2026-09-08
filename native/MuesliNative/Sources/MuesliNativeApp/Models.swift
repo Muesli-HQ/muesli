@@ -125,6 +125,17 @@ struct BackendOption: Equatable {
         recommended: false
     )
 
+    static let bodhanCore = BackendOption(
+        backend: "indicasr", model: BodhanModel.core.rawValue,
+        label: "Bodhan Core", sizeLabel: "~2.45 GB",
+        description: "Indian-language speech in its native script. English words within Hindi or Tamil are written in that script too. Detects the language automatically, or use the language picker.", recommended: false
+    )
+    static let bodhanFlex = BackendOption(
+        backend: "indicasr", model: BodhanModel.flex.rawValue,
+        label: "Bodhan Flex", sizeLabel: "~2.45 GB",
+        description: "For mixed-language dictation: keeps Hindi or Tamil in its own script and English words in Latin letters. Also formats spoken numbers. Try both models to compare accuracy.", recommended: false
+    )
+
     static let senseVoiceSmall = BackendOption(
         backend: "sensevoice",
         model: "FluidInference/sensevoice-small-coreml",
@@ -191,7 +202,7 @@ struct BackendOption: Equatable {
     )
 
     static let experimental: [BackendOption] = [
-        .senseVoiceSmall, .indicASR, .gemma4E2BLiteRT, .gemma4E4BLiteRT, .qwen3Asr,
+        .senseVoiceSmall, .bodhanCore, .bodhanFlex, .indicASR, .gemma4E2BLiteRT, .gemma4E4BLiteRT, .qwen3Asr,
     ]
 
     /// Native streaming backends used by low-latency product surfaces.
@@ -392,7 +403,7 @@ struct BackendOption: Equatable {
         case "cohere":
             return CohereTranscribeModelStore.isAvailableLocally()
         case "indicasr":
-            return IndicASRModelStore.isAvailableLocally()
+            return BodhanModel(rawValue: model)?.isDownloaded ?? IndicASRModelStore.isAvailableLocally()
         case "sensevoice":
             return SenseVoiceTranscriber.isModelDownloaded(fileManager: fm)
         case "gemma4-litert":

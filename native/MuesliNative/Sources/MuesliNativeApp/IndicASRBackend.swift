@@ -5,25 +5,73 @@ import Foundation
 import MuesliCore
 
 enum IndicASRLanguage: String, CaseIterable, Codable, Sendable {
+    case automatic = "auto"
+    case english = "en"
     case hindi = "hi"
+    case tamil = "ta"
+    case telugu = "te"
     case bengali = "bn"
     case marathi = "mr"
-    case telugu = "te"
-    case tamil = "ta"
     case malayalam = "ml"
     case kannada = "kn"
-
+    case assamese = "as"
+    case bodo = "brx"
+    case dogri = "doi"
+    case gujarati = "gu"
+    case kashmiri = "ks"
+    case konkani = "kok"
+    case maithili = "mai"
+    case manipuri = "mni"
+    case nepali = "ne"
+    case odia = "or"
+    case punjabi = "pa"
+    case sanskrit = "sa"
+    case santali = "sat"
+    case sindhi = "sd"
+    case urdu = "ur"
+    case bhojpuri = "bho"
+    case bhili = "bhb"
+    case chhattisgarhi = "hne"
+    case haryanvi = "bgc"
     static let defaultLanguage: Self = .hindi
-
+    static let legacyCases: [Self] = [.hindi, .bengali, .marathi, .telugu, .tamil, .malayalam, .kannada]
+    static func choices(for model: String) -> [Self] {
+        switch BodhanModel(rawValue: model) {
+        case .core: return allCases.filter { $0 != .chhattisgarhi && $0 != .haryanvi }
+        case .flex: return allCases
+        case nil: return legacyCases
+        }
+    }
     var label: String {
         switch self {
+        case .automatic: return "Auto-detect"
+        case .english: return "English"
         case .hindi: return "Hindi"
+        case .tamil: return "Tamil"
+        case .telugu: return "Telugu"
         case .bengali: return "Bengali"
         case .marathi: return "Marathi"
-        case .telugu: return "Telugu"
-        case .tamil: return "Tamil"
         case .malayalam: return "Malayalam"
         case .kannada: return "Kannada"
+        case .assamese: return "Assamese"
+        case .bodo: return "Bodo"
+        case .dogri: return "Dogri"
+        case .gujarati: return "Gujarati"
+        case .kashmiri: return "Kashmiri"
+        case .konkani: return "Konkani"
+        case .maithili: return "Maithili"
+        case .manipuri: return "Manipuri"
+        case .nepali: return "Nepali"
+        case .odia: return "Odia"
+        case .punjabi: return "Punjabi"
+        case .sanskrit: return "Sanskrit"
+        case .santali: return "Santali"
+        case .sindhi: return "Sindhi"
+        case .urdu: return "Urdu"
+        case .bhojpuri: return "Bhojpuri"
+        case .bhili: return "Bhili"
+        case .chhattisgarhi: return "Chhattisgarhi"
+        case .haryanvi: return "Haryanvi"
         }
     }
 
@@ -82,7 +130,7 @@ private enum IndicASRConfig {
         jointPreNetPackage,
     ]
 
-    static let requiredLanguagePackages = IndicASRLanguage.allCases.map(\.jointPostNetPackage)
+    static let requiredLanguagePackages = IndicASRLanguage.legacyCases.map(\.jointPostNetPackage)
     static let packagesWithExternalWeights = Set(requiredSharedPackages + requiredLanguagePackages).subtracting([jointPreNetPackage])
     static let packagesWithEmptyWeightsDirectory = Set([jointPreNetPackage])
     // Only require metadata consumed by the runtime. Optional export metadata
@@ -391,7 +439,7 @@ private final class IndicASRTokenizer {
         let data = try Data(contentsOf: vocabURL)
         let raw = try JSONDecoder().decode([String: [String]].self, from: data)
         var parsed: [IndicASRLanguage: [String]] = [:]
-        for language in IndicASRLanguage.allCases {
+        for language in IndicASRLanguage.legacyCases {
             guard let tokens = raw[language.rawValue], tokens.count > IndicASRConfig.blankId else {
                 throw NSError(domain: "IndicASR", code: 20, userInfo: [
                     NSLocalizedDescriptionKey: "Indic ASR vocab is missing \(language.rawValue) tokens.",
@@ -687,7 +735,7 @@ private struct IndicASRModels {
         config.computeUnits = computeUnits
 
         var postNets: [IndicASRLanguage: MLModel] = [:]
-        for language in IndicASRLanguage.allCases {
+        for language in IndicASRLanguage.legacyCases {
             postNets[language] = try await loadModel(packageName: language.jointPostNetPackage, from: layout, configuration: config)
         }
 
@@ -730,6 +778,9 @@ private struct IndicASRModels {
 
 @available(macOS 15, *)
 actor IndicASRTranscriber {
+    // Experimental Bodhan checkpoints share the Indic transcription route.
+    private var bodhan: BodhanCoreML?
+    private var bodhanModel: BodhanModel?
     private var models: IndicASRModels?
     private var loadTask: Task<IndicASRModels, Error>?
     private var loadGeneration: Int = 0
@@ -737,9 +788,30 @@ actor IndicASRTranscriber {
     private var hasCompletedWarmup = false
 
     func loadModels(
+        modelID: String = IndicASRConfig.repoId,
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
+        if let selected = BodhanModel(rawValue: modelID) {
+            if bodhanModel != selected || bodhan == nil {
+                warmupTask?.cancel()
+                warmupTask = nil
+                loadTask?.cancel()
+                loadTask = nil
+                loadGeneration += 1
+                bodhan = nil
+                models = nil
+                hasCompletedWarmup = false
+                try await selected.download(progress: progress, progressSnapshot: progressSnapshot)
+                try Task.checkCancellation()
+                progress?(0.9, "Preparing " + selected.name + "...")
+                bodhan = try BodhanCoreML(root: selected.directory)
+                bodhanModel = selected
+            }
+            return
+        }
+        bodhan = nil
+        bodhanModel = nil
         if models != nil { return }
         if let loadTask {
             let expectedGeneration = loadGeneration
@@ -780,18 +852,63 @@ actor IndicASRTranscriber {
     }
 
     func prepare(
+        modelID: String = IndicASRConfig.repoId,
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
-        try await loadModels(progress: progress, progressSnapshot: progressSnapshot)
-        scheduleWarmupIfNeeded()
+        try await loadModels(modelID: modelID, progress: progress, progressSnapshot: progressSnapshot)
+        let generation = loadGeneration
+        if let selected = BodhanModel(rawValue: modelID) {
+            let warming = ModelDownloadProgress.preparing(modelID: modelID, message: "Warming up " + selected.name + "...")
+            if !hasCompletedWarmup {
+                progress?(0.95, warming.message)
+                progressSnapshot?(warming)
+            }
+            scheduleWarmupIfNeeded()
+            if let warmupTask { await warmupTask.value }
+            try Task.checkCancellation()
+            guard loadGeneration == generation, bodhanModel == selected else { throw CancellationError() }
+            guard hasCompletedWarmup else {
+                throw NSError(domain: "BodhanASR", code: 14, userInfo: [NSLocalizedDescriptionKey: "Bodhan warm-up did not complete. Please reload the model."])
+            }
+            progress?(1.0, selected.name + " ready")
+            progressSnapshot?(warming.replacing(phase: .ready, message: selected.name + " ready"))
+        } else {
+            scheduleWarmupIfNeeded()
+        }
     }
 
     func transcribe(
         wavURL: URL,
+        modelID: String = IndicASRConfig.repoId,
         language: IndicASRLanguage = IndicASRLanguage.defaultLanguage
     ) async throws -> (text: String, processingTime: Double) {
-        try await loadModels()
+        try await loadModels(modelID: modelID)
+        if let warmupTask { await warmupTask.value }
+        if let bodhan {
+            let start = CFAbsoluteTimeGetCurrent()
+            let samples = try AudioConverter().resampleAudioFile(wavURL)
+            guard !samples.isEmpty else { return ("", CFAbsoluteTimeGetCurrent() - start) }
+            let automatic = language == .automatic
+            var transcripts: [String] = []
+            let chunkSize = 28 * 16000
+            let stride = 27 * 16000
+            var offset = 0
+            while offset < samples.count {
+                try Task.checkCancellation()
+                let end = min(offset + chunkSize, samples.count)
+                let result = try bodhan.transcribe(samples: Array(samples[offset..<end]), language: automatic ? nil : language.rawValue, mixedScript: bodhanModel?.mixedScript == true)
+                transcripts.append(result.text)
+                recordBodhanTiming(result, modelID: modelID, audioSeconds: Double(end - offset) / 16000)
+                IndicASRLogging.logVerbose("Bodhan language=\(result.language), tokens=\(result.tokens), encoder=\(result.encoderSeconds)s, decode=\(result.decodeSeconds)s")
+                if end == samples.count { break }
+                offset += stride
+            }
+            return (IndicASRTranscriptMerger.mergeOverlappingTranscripts(transcripts), CFAbsoluteTimeGetCurrent() - start)
+        }
+        guard IndicASRLanguage.legacyCases.contains(language) else {
+            throw NSError(domain: "IndicASR", code: 51, userInfo: [NSLocalizedDescriptionKey: "Choose one of the seven supported languages for the original Indic ASR model."])
+        }
         if let warmupTask {
             await warmupTask.value
         }
@@ -807,7 +924,45 @@ actor IndicASRTranscriber {
         return (text, CFAbsoluteTimeGetCurrent() - start)
     }
 
+    private func recordBodhanTiming(_ result: BodhanCoreML.Result, modelID: String, audioSeconds: Double) {
+        // Local performance telemetry only: no audio, transcript, or vocabulary scores.
+        let row: [String: Any] = [
+            "timestamp": ISO8601DateFormatter().string(from: Date()), "model": modelID,
+            "audioSeconds": audioSeconds, "tokens": result.tokens, "language": result.language,
+            "decoderRuntime": BodhanCoreML.decoderRuntime,
+            "encoderAsset": result.encoderAsset, "decoderWeightPrecision": result.decoderWeightPrecision,
+            "encoderPolicy": result.encoderPolicy, "decoderAsset": BodhanCoreML.decoderRuntime == "mlx" ? "decoder.safetensors" : (ProcessInfo.processInfo.environment["MUESLI_BODHAN_DECODER_ASSET"] ?? "decoder"),
+            "threadQoS": result.threadQoS, "thermalState": result.thermalState,
+            "lowPowerMode": result.lowPowerMode, "onMainThread": result.onMainThread,
+            "encoderSpecialized": result.encoderSpecialized,
+            "encoderShapePolicy": result.encoderShapePolicy,
+            "encoderInputFrames": result.encoderInputFrames, "encoderValidFrames": result.encoderValidFrames,
+            "transferSeconds": result.transferSeconds,
+            "frontendSeconds": result.frontendSeconds,
+            "encoderSeconds": result.encoderSeconds, "crossSeconds": result.crossSeconds,
+            "decodeSeconds": result.decodeSeconds, "predictionSeconds": result.predictionSeconds,
+            "selectionSeconds": result.selectionSeconds
+        ]
+        let url = AppIdentity.supportDirectoryURL.appendingPathComponent("bodhan-performance.jsonl")
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            var data = try JSONSerialization.data(withJSONObject: row, options: [.sortedKeys])
+            data.append(10)
+            let size = ((try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? NSNumber)?.intValue ?? 0
+            if size == 0 || size > 2 * 1024 * 1024 {
+                try data.write(to: url, options: .atomic)
+            } else {
+                let handle = try FileHandle(forWritingTo: url)
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                try handle.write(contentsOf: data)
+            }
+        } catch { IndicASRLogging.logVerbose("Could not write Bodhan timing: \(error)") }
+    }
+
     func shutdown() {
+        bodhan = nil
+        bodhanModel = nil
         loadGeneration += 1
         loadTask?.cancel()
         loadTask = nil
@@ -818,12 +973,12 @@ actor IndicASRTranscriber {
     }
 
     private func scheduleWarmupIfNeeded() {
-        guard !hasCompletedWarmup, warmupTask == nil, models != nil else { return }
+        guard !hasCompletedWarmup, warmupTask == nil, models != nil || bodhan != nil else { return }
         warmupTask = Task { await self.runWarmup() }
     }
 
     private func runWarmup() async {
-        guard let models else {
+        guard models != nil || bodhan != nil else {
             warmupTask = nil
             return
         }
@@ -831,7 +986,12 @@ actor IndicASRTranscriber {
         IndicASRLogging.logVerbose("background warmup started")
         do {
             let warmupSamples = [Float](repeating: 0, count: IndicASRConfig.sampleRate / 2)
-            _ = try await IndicASRRNNTGreedyDecoder(models: models).transcribe(audioSamples: warmupSamples, language: .defaultLanguage)
+            if let bodhan {
+                try bodhan.warmupEncoderShapes()
+                _ = try bodhan.transcribe(samples: warmupSamples, language: "hi", mixedScript: bodhanModel?.mixedScript == true)
+            } else if let models {
+                _ = try await IndicASRRNNTGreedyDecoder(models: models).transcribe(audioSamples: warmupSamples, language: .defaultLanguage)
+            }
             guard !Task.isCancelled else {
                 warmupTask = nil
                 return

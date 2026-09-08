@@ -2972,6 +2972,9 @@ public final class MuesliController: NSObject {
     }
 
     private func prepareDictationBackend(_ backend: BackendOption) async -> Bool {
+        if BodhanModel(rawValue: backend.model) != nil {
+            indicator.showLoading("Warming up \(backend.label)...")
+        }
         do {
             try await transcriptionCoordinator.preloadRequired(
                 backend: backend,

@@ -300,6 +300,27 @@ struct BackendOptionTests {
         #expect(BackendOption.indicASR.model.contains("indic-conformer"))
     }
 
+    @Test("Bodhan checkpoints have distinct experimental catalog entries and output modes")
+    func bodhanCheckpoints() {
+        #expect(BackendOption.experimental.contains(.bodhanCore))
+        #expect(BackendOption.experimental.contains(.bodhanFlex))
+        #expect(BackendOption.bodhanCore.model != BackendOption.bodhanFlex.model)
+        #expect(BodhanModel(rawValue: BackendOption.bodhanCore.model) == .core)
+        #expect(BodhanModel(rawValue: BackendOption.bodhanFlex.model) == .flex)
+        #expect(!BodhanModel.core.mixedScript)
+        #expect(BodhanModel.flex.mixedScript)
+        #expect(BodhanModel.core.cacheDirectory != BodhanModel.flex.cacheDirectory)
+    }
+
+    @Test("Bodhan language detection does not add unsupported legacy RNNT heads")
+    func bodhanLanguagesDoNotChangeLegacyHeads() {
+        #expect(IndicASRLanguage.choices(for: BackendOption.bodhanCore.model).contains(.automatic))
+        #expect(IndicASRLanguage.choices(for: BackendOption.bodhanFlex.model).contains(.english))
+        #expect(IndicASRLanguage.choices(for: BackendOption.indicASR.model).count == 7)
+        #expect(!IndicASRLanguage.choices(for: BackendOption.indicASR.model).contains(.automatic))
+        #expect(IndicASRLanguage.legacyCases.map(\.jointPostNetPackage).count == 7)
+    }
+
     @Test("Indic ASR chunk merge deduplicates Indic overlap")
     func indicASRChunkMergeDeduplicatesIndicOverlap() {
         let result = IndicASRTranscriptMerger.mergeOverlappingTranscripts([

@@ -1113,7 +1113,7 @@ struct ModelsView: View {
         case "cohere": return "cohere-logo"
         case "qwen": return "qwen-logo"
         case "nemotron35": return "nvidia-logo"
-        case "indicasr": return "ai4bharat-logo"
+        case "indicasr": return BodhanModel(rawValue: option.model) == nil ? "ai4bharat-logo" : "bodhan-logo"
         case "sensevoice": return "qwen-logo"
         case "gemma4-litert": return "google-logo"
         case "apple-speech": return "apple-system-logo"
@@ -1298,7 +1298,7 @@ struct ModelsView: View {
                         .frame(width: 64, alignment: .leading)
 
                     Picker("", selection: indicASRLanguageSelection) {
-                        ForEach(IndicASRLanguage.allCases, id: \.self) { language in
+                        ForEach(IndicASRLanguage.choices(for: option.model), id: \.self) { language in
                             Text(language.label).tag(language)
                         }
                     }
@@ -1917,7 +1917,9 @@ struct ModelsView: View {
         case "cohere":
             try removeItemIfPresent(at: CohereTranscribeModelStore.cacheDirectory(), fileManager: fm)
         case "indicasr":
-            if IndicASRModelStore.localOverrideDirectory() == nil {
+            if let model = BodhanModel(rawValue: option.model) {
+                if model.localOverride == nil { try removeItemIfPresent(at: model.cacheDirectory, fileManager: fm) }
+            } else if IndicASRModelStore.localOverrideDirectory() == nil {
                 try removeItemIfPresent(at: IndicASRModelStore.cacheDirectory(), fileManager: fm)
             }
         case "sensevoice":
@@ -2006,7 +2008,7 @@ struct ModelsView: View {
         case "cohere":
             return CohereTranscribeModelStore.isAvailableLocally()
         case "indicasr":
-            return IndicASRModelStore.isAvailableLocally()
+            return BodhanModel(rawValue: option.model)?.isDownloaded ?? IndicASRModelStore.isAvailableLocally()
         case "sensevoice":
             return SenseVoiceTranscriber.isModelDownloaded(fileManager: fm)
         case "gemma4-litert":
