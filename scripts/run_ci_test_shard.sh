@@ -44,6 +44,9 @@ case "${shard}" in
       CustomWordDictionaryTests
       ModelDownloadCoordinatorTests
       BodhanBackendTests
+      BodhanArtifactValidationTests
+      BodhanLifecycleTests
+      DictationBackendPreparationTests
       ContributionMilestoneTests
     )
     ;;

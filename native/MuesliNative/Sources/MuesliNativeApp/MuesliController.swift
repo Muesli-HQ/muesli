@@ -48,6 +48,27 @@ enum DictationBackendReadiness: Equatable {
     }
 }
 
+/// A selection owns preparation until another selection (including hosted) replaces it.
+/// Model equality alone cannot distinguish an A → B → A switch.
+struct DictationBackendPreparationState {
+    private(set) var generation = UUID()
+    private(set) var readiness: DictationBackendReadiness = .preparing
+
+    mutating func begin(isHosted: Bool) -> UUID {
+        generation = UUID()
+        readiness = isHosted ? .ready : .preparing
+        return generation
+    }
+
+    func owns(_ token: UUID) -> Bool { generation == token }
+
+    mutating func finish(_ token: UUID, succeeded: Bool) -> Bool {
+        guard owns(token) else { return false }
+        readiness = succeeded ? .ready : .failed
+        return true
+    }
+}
+
 enum DictionaryCorrectionPromptsToggleResult {
     case updated
     case needsAccessibilityPermission
@@ -484,7 +505,8 @@ public final class MuesliController: NSObject {
     private let liveManualNotesPersistInterval: TimeInterval = 0.75
     private var staleLiveMeetingRecoveryFailures = Set<Int64>()
     private var dictationState: DictationState = .idle
-    private(set) var dictationBackendReadiness: DictationBackendReadiness = .preparing
+    private var dictationBackendPreparation = DictationBackendPreparationState()
+    var dictationBackendReadiness: DictationBackendReadiness { dictationBackendPreparation.readiness }
     private var dictationStartedAt: Date?
     private var hostedDictationSession: (any HostedDictationSession)?
     private var finalizingHostedDictationSession: (
@@ -929,8 +951,9 @@ public final class MuesliController: NSObject {
         }
 
         if canRunMainApp {
+            let preparation = beginDictationBackendPreparation()
             Task { [weak self] in
-                guard let self else { return }
+                guard let self, self.dictationBackendPreparation.owns(preparation) else { return }
                 let includesMeetings = self.config.resolvedOnboardingUseCase.includesMeetings
                 let ppOption = self.runtimePostProcessorOption()
                 if #available(macOS 15, *) {
@@ -939,11 +962,10 @@ public final class MuesliController: NSObject {
                         self.config.resolvedNemotron35Language.promptId
                     )
                 }
+                guard self.dictationBackendPreparation.owns(preparation) else { return }
                 let dictationBackend = self.selectedBackend
-                if self.selectedDictationProvider.isHosted {
-                    self.dictationBackendReadiness = .ready
-                } else {
-                    guard await self.prepareDictationBackend(dictationBackend) else { return }
+                if !self.selectedDictationProvider.isHosted {
+                    guard await self.prepareDictationBackend(dictationBackend, preparation: preparation) else { return }
                     await self.preloadOptionalTranscriptionResources(
                         for: dictationBackend,
                         enablePostProcessor: self.canRunTranscriptCleanup(option: ppOption),
@@ -2849,21 +2871,21 @@ public final class MuesliController: NSObject {
                 }
             }
         }
-        dictationBackendReadiness = .preparing
+        let preparation = beginDictationBackendPreparation()
+        guard !selectedDictationProvider.isHosted else {
+            statusBarController?.refresh()
+            historyWindowController?.updateBackendLabel()
+            return
+        }
         Task { [weak self] in
-            guard let self else { return }
+            guard let self, self.dictationBackendPreparation.owns(preparation) else { return }
             // Push the selected Nemotron 3.5 language before preload so the loaded
             // transcriber is conditioned on the right prompt_id.
             await self.transcriptionCoordinator.setNemotron35PromptId(self.config.resolvedNemotron35Language.promptId)
-            let needsWarmup = option.backend == "whisper"
-            if needsWarmup {
-                await MainActor.run {
-                    self.indicator.showLoading("Warming up...")
-                }
-            }
+            guard self.dictationBackendPreparation.owns(preparation) else { return }
             let ppOption = self.runtimePostProcessorOption()
             await self.configureTranscriptCleanupForRuntime(option: ppOption)
-            let prepared = await self.prepareDictationBackend(option)
+            let prepared = await self.prepareDictationBackend(option, preparation: preparation)
             if prepared {
                 await self.preloadOptionalTranscriptionResources(
                     for: option,
@@ -2873,9 +2895,7 @@ public final class MuesliController: NSObject {
                 )
             }
             await MainActor.run {
-                if needsWarmup {
-                    self.indicator.hideLoading()
-                }
+                guard self.dictationBackendPreparation.owns(preparation) else { return }
                 self.statusBarController?.refresh()
                 self.historyWindowController?.updateBackendLabel()
             }
@@ -2897,7 +2917,7 @@ public final class MuesliController: NSObject {
         guard canChangePrimaryDictationModel() else { return }
         updateConfig { $0.dictationProvider = provider.rawValue }
         if provider.isHosted {
-            dictationBackendReadiness = .ready
+            _ = beginDictationBackendPreparation()
             if provider == .openRouter,
                hostedDictationModelVisibility.shows(.openRouter) {
                 loadOpenRouterModels(.transcription)
@@ -2910,12 +2930,12 @@ public final class MuesliController: NSObject {
     }
 
     private func prepareSelectedLocalDictationBackend() {
-        dictationBackendReadiness = .preparing
+        let preparation = beginDictationBackendPreparation()
         let option = selectedBackend
         Task { [weak self] in
-            guard let self else { return }
+            guard let self, self.dictationBackendPreparation.owns(preparation) else { return }
             await self.transcriptionCoordinator.setNemotron35PromptId(self.config.resolvedNemotron35Language.promptId)
-            let prepared = await self.prepareDictationBackend(option)
+            let prepared = await self.prepareDictationBackend(option, preparation: preparation)
             if prepared {
                 await self.preloadOptionalTranscriptionResources(
                     for: option,
@@ -2925,6 +2945,7 @@ public final class MuesliController: NSObject {
                 )
             }
             await MainActor.run {
+                guard self.dictationBackendPreparation.owns(preparation) else { return }
                 self.statusBarController?.refresh()
                 self.historyWindowController?.updateBackendLabel()
             }
@@ -2971,8 +2992,19 @@ public final class MuesliController: NSObject {
         )
     }
 
-    private func prepareDictationBackend(_ backend: BackendOption) async -> Bool {
-        if BodhanModel(rawValue: backend.model) != nil {
+    @discardableResult
+    private func beginDictationBackendPreparation() -> UUID {
+        // Clear the previous selection's spinner synchronously, even when the new
+        // provider needs no local warmup. Its suspended task no longer owns the UI.
+        let token = dictationBackendPreparation.begin(isHosted: selectedDictationProvider.isHosted)
+        indicator.hideLoading()
+        return token
+    }
+
+    private func prepareDictationBackend(_ backend: BackendOption, preparation: UUID) async -> Bool {
+        guard dictationBackendPreparation.owns(preparation),
+              !selectedDictationProvider.isHosted else { return false }
+        if BodhanModel(rawValue: backend.model) != nil || backend.backend == "whisper" {
             indicator.showLoading("Warming up \(backend.label)...")
         }
         do {
@@ -2982,15 +3014,13 @@ public final class MuesliController: NSObject {
                 includeMeetingHelpers: false,
                 appleSpeechLanguage: config.resolvedAppleSpeechLanguage
             )
-            guard selectedBackend == backend else { return false }
-            dictationBackendReadiness = .ready
+            guard dictationBackendPreparation.finish(preparation, succeeded: true) else { return false }
             indicator.hideLoading()
             return true
         } catch {
             fputs("[muesli-native] dictation backend preparation failed for \(backend.backend)/\(backend.model): \(error)\n", stderr)
-            guard selectedBackend == backend else { return false }
+            guard dictationBackendPreparation.finish(preparation, succeeded: false) else { return false }
             indicator.hideLoading()
-            dictationBackendReadiness = .failed
             return false
         }
     }
@@ -5510,7 +5540,7 @@ public final class MuesliController: NSObject {
             $0.dictationProvider = DictationProvider.openAI.rawValue
             $0.openaiDictationModel = normalizedModel
         }
-        dictationBackendReadiness = .ready
+        _ = beginDictationBackendPreparation()
         statusBarController?.refresh()
     }
 
@@ -5524,7 +5554,7 @@ public final class MuesliController: NSObject {
         updateConfig {
             OpenRouterDictationModelSelection.applyStatusMenuSelection(normalizedModel, to: &$0)
         }
-        dictationBackendReadiness = .ready
+        _ = beginDictationBackendPreparation()
         statusBarController?.refresh()
     }
 

@@ -27,6 +27,26 @@ final class BodhanCoreML {
         let eos_id: Int
         let prompts: [String: [Int]]
         let mixed_prompts: [String: [Int]]?
+
+        /// The exported decoder has a fixed vocabulary and at most 512 cached positions.
+        func validate(vocabularySize: Int = 7152) throws {
+            func valid(_ prompt: [Int]) -> Bool {
+                (4...256).contains(prompt.count) && prompt.allSatisfy { (0..<vocabularySize).contains($0) }
+            }
+            guard pieces.count == vocabularySize, (0..<vocabularySize).contains(eos_id),
+                  (0...vocabularySize).contains(special_count), prompts["hi"] != nil,
+                  prompts.values.allSatisfy(valid),
+                  mixed_prompts.map({ Set($0.keys) == Set(prompts.keys) && $0.values.allSatisfy(valid) }) ?? true else {
+                throw NSError(domain: "BodhanASR", code: 30, userInfo: [NSLocalizedDescriptionKey: "Invalid Bodhan tokenizer vocabulary or language prompts. Download the model again."])
+            }
+        }
+
+        func automaticPrefix() throws -> [Int] {
+            guard let prompt = prompts["hi"], prompt.count >= 4 else {
+                throw NSError(domain: "BodhanASR", code: 30, userInfo: [NSLocalizedDescriptionKey: "Missing automatic language detection prompt."])
+            }
+            return Array(prompt.prefix(3))
+        }
     }
     struct Result: Codable {
         var decoderRuntime: String = "coreml"
@@ -67,6 +87,8 @@ final class BodhanCoreML {
     private var logitsScratch: [Float] = []
 
     init(root: URL, model: BodhanModel? = nil, computeUnits: MLComputeUnits = .cpuAndGPU) throws {
+        tokenizer = try JSONDecoder().decode(Tokenizer.self, from: Data(contentsOf: root.appendingPathComponent("native-assets/tokenizer.json")))
+        try tokenizer.validate()
         let precision = model.map { $0.isInt8 ? "int8" : "fp16" } ?? Self.weightPrecision
         let runtime = model == nil ? Self.decoderRuntime : "mlx"
         selectedDecoderRuntime = runtime
@@ -107,7 +129,12 @@ final class BodhanCoreML {
             decoder = try load("decoder")
         }
         frontend = try BodhanFrontend(constants: root.appendingPathComponent("native-assets/frontend.bin"))
-        tokenizer = try JSONDecoder().decode(Tokenizer.self, from: Data(contentsOf: root.appendingPathComponent("native-assets/tokenizer.json")))
+    }
+
+    static func validateDecoderWindow(tokenCount: Int, position: Int) throws {
+        guard tokenCount > 0, tokenCount <= 512, position >= 0, position <= 512 - tokenCount else {
+            throw NSError(domain: "BodhanASR", code: 31, userInfo: [NSLocalizedDescriptionKey: "Bodhan decoder context exceeds its 512-token capacity."])
+        }
     }
 
     private func floats(_ values: [Float], _ shape: [Int]) throws -> MLMultiArray {
@@ -250,6 +277,7 @@ final class BodhanCoreML {
         var predictionSeconds = 0.0
         var selectionSeconds = 0.0
         func decode(_ ids: [Int], position: Int, state: MLState) throws -> MLMultiArray {
+            try Self.validateDecoderWindow(tokenCount: ids.count, position: position)
             var mask = [Float](repeating: -10000, count: ids.count*512)
             for q in ids.indices { for k in 0...position+q { mask[q*512+k] = 0 } }
             let predictionStart = Date()
@@ -261,7 +289,7 @@ final class BodhanCoreML {
         let decodeStart = Date()
         var selected = language
         if selected == nil {
-            let prefix = Array(tokenizer.prompts["hi"]!.prefix(3))
+            let prefix = try tokenizer.automaticPrefix()
             let logits = try decode(prefix,position:0,state:decoder.makeState())
             var best = -Float.infinity
             for code in tokenizer.prompts.keys.sorted() {
@@ -270,11 +298,13 @@ final class BodhanCoreML {
                 if score > best { selected = code; best = score }
             }
         }
-        let chosen = selected!
+        guard let chosen = selected, let prompt = tokenizer.prompts[chosen] else {
+            throw NSError(domain: "BodhanASR", code: 7, userInfo: [NSLocalizedDescriptionKey: "Missing language prompt."])
+        }
         if mixedScript && tokenizer.mixed_prompts?[chosen] == nil {
             throw NSError(domain: "BodhanASR", code: 7, userInfo: [NSLocalizedDescriptionKey: "The Flex mixed-script tokenizer is missing. Download the model again."])
         }
-        var ids = (mixedScript ? tokenizer.mixed_prompts?[chosen] : nil) ?? tokenizer.prompts[chosen]!
+        var ids = (mixedScript ? tokenizer.mixed_prompts?[chosen] : nil) ?? prompt
         let state = decoder.makeState()
         var position = 0
         var tokens: [Int] = []

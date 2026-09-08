@@ -198,6 +198,12 @@ actor TranscriptionCoordinator {
         }
     }
 
+    func unloadBodhanTranscriber(ifLoadedModelID modelID: String) async {
+        if #available(macOS 15, *), let transcriber = _bodhanTranscriber as? BodhanTranscriber {
+            await transcriber.shutdown(ifLoadedModelID: modelID)
+        }
+    }
+
     func unloadGemma4LiteRTTranscriber() async {
         if #available(macOS 15, *), let transcriber = _gemma4LiteRTTranscriber as? Gemma4LiteRTTranscriber {
             await transcriber.shutdown()
@@ -1101,16 +1107,12 @@ actor TranscriptionCoordinator {
             Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor disabled for dictation")
             return nil
         }
-        guard backend.backend != "bodhan" else {
-            Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor skipped: Bodhan output is not English post-processor safe")
-            return nil
-        }
         guard !result.text.isEmpty else {
             Qwen3PostProcessorLogging.logVerbose("Post-processor skipped: empty transcript")
             return nil
         }
-        guard postProcessorSnapshot.backend.isCompatible(with: backend) else {
-            Gemma4LiteRTLogging.log("Gemma cleanup skipped because Gemma is the transcription backend")
+        guard postProcessorSnapshot.backend.isCompatible(with: backend, inputFormat: postProcessorSnapshot.inputFormat) else {
+            Qwen3PostProcessorLogging.logVerbose("Cleanup skipped: incompatible transcription and cleanup models")
             return nil
         }
         if postProcessorSnapshot.backend.isGemma4LiteRT {

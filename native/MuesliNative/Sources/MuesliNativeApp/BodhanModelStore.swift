@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import MuesliCore
 
 enum BodhanModel: String, CaseIterable, Sendable {
@@ -35,7 +36,7 @@ enum BodhanModel: String, CaseIterable, Sendable {
         let bytes: Int64
         let sha256: String
     }
-    struct Artifact: Codable {
+    struct Artifact: Codable, Sendable {
         let path: String
         let bytes: Int64
         let sha256: String
@@ -57,16 +58,84 @@ enum BodhanModel: String, CaseIterable, Sendable {
         }
     }
 
+    static func isSHA256(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }
+    }
+
+    /// Runs only when preparing an unloaded runtime, never from the UI status getter.
+    /// The coordinator remains responsible for repairing invalid files and validating downloads.
+    static func invalidCachedArtifacts(_ artifacts: [Artifact], at directory: URL) async throws -> [String] {
+        let verification = Task.detached(priority: .utility) {
+            var invalid: [String] = []
+            for artifact in artifacts {
+                try Task.checkCancellation()
+                let url = directory.appendingPathComponent(artifact.path)
+                do {
+                    let size = (try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value
+                    guard size == artifact.bytes, artifact.bytes > 0, Self.isSHA256(artifact.sha256) else {
+                        invalid.append(artifact.path)
+                        continue
+                    }
+                    let handle = try FileHandle(forReadingFrom: url)
+                    defer { try? handle.close() }
+                    var hasher = SHA256()
+                    while let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty {
+                        try Task.checkCancellation()
+                        hasher.update(data: chunk)
+                    }
+                    let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+                    if digest.caseInsensitiveCompare(artifact.sha256) != .orderedSame { invalid.append(artifact.path) }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    invalid.append(artifact.path)
+                }
+            }
+            return invalid
+        }
+        return try await withTaskCancellationHandler {
+            let invalid = try await verification.value
+            try Task.checkCancellation()
+            return invalid
+        } onCancel: {
+            verification.cancel()
+        }
+    }
+
     func download(progress: ((Double, String?) -> Void)?, progressSnapshot: ModelDownloadProgressHandler?) async throws {
-        if isDownloaded { return }
+        func invalidateCompiledEncoder() throws {
+            guard localOverride == nil else { return }
+            let encoder = isInt8 ? "variants/int8/encoder" : "coreml/encoder"
+            let compiled = directory.appendingPathComponent(encoder + ".mlmodelc")
+            if FileManager.default.fileExists(atPath: compiled.path) {
+                try FileManager.default.removeItem(at: compiled)
+            }
+        }
+        if let data = try? Data(contentsOf: directory.appendingPathComponent("artifacts.json")),
+           let manifest = try? JSONDecoder().decode(Artifacts.self, from: data) {
+            let entries = Dictionary((manifest.files + nativeAssetSupplement).map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first })
+            let missing = requiredFiles.filter { entries[$0] == nil }
+            let invalid = try await Self.invalidCachedArtifacts(requiredFiles.compactMap { entries[$0] }, at: directory) + missing
+            if invalid.isEmpty { return }
+            // Compiled Core ML models are derived from the package. A repaired package
+            // must not silently keep using a compiled copy of the corrupt weights.
+            if invalid.contains(where: { $0.contains("encoder.mlpackage/") }) {
+                try invalidateCompiledEncoder()
+            }
+        } else {
+            // Without integrity metadata, any existing compiled copy cannot be
+            // trusted to match the package that the coordinator will repair.
+            try invalidateCompiledEncoder()
+        }
+        try Task.checkCancellation()
         if localOverride != nil {
-            throw NSError(domain: "BodhanASR", code: 10, userInfo: [NSLocalizedDescriptionKey: "The local \(name) model folder is incomplete."])
+            throw NSError(domain: "BodhanASR", code: 100, userInfo: [NSLocalizedDescriptionKey: "The local \(name) model folder is incomplete or failed its integrity check."])
         }
         func fetchManifest<T: Decodable>(_ path: String, as type: T.Type) async throws -> T {
             let url = URL(string: "https://huggingface.co/\(repository)/resolve/\(revision)/\(path)")!
             let (data, response) = try await URLSession.shared.data(from: url)
             guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-                throw NSError(domain: "BodhanASR", code: 11, userInfo: [NSLocalizedDescriptionKey: "Could not load the model download manifest."])
+                throw NSError(domain: "BodhanASR", code: 101, userInfo: [NSLocalizedDescriptionKey: "Could not load the model download manifest."])
             }
             return try JSONDecoder().decode(type, from: data)
         }
@@ -78,8 +147,8 @@ enum BodhanModel: String, CaseIterable, Sendable {
             artifacts.append(Artifact(path: "variants/mlx-decoder/decoder.safetensors", bytes: decoder.bytes, sha256: decoder.sha256))
         }
         let entries = Dictionary(artifacts.map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first })
-        guard requiredFiles.allSatisfy({ entries[$0]?.bytes ?? 0 > 0 && entries[$0]?.sha256.count == 64 }) else {
-            throw NSError(domain: "BodhanASR", code: 12, userInfo: [NSLocalizedDescriptionKey: "The model download manifest is incomplete."])
+        guard requiredFiles.allSatisfy({ entries[$0]?.bytes ?? 0 > 0 && entries[$0].map { Self.isSHA256($0.sha256) } == true }) else {
+            throw NSError(domain: "BodhanASR", code: 102, userInfo: [NSLocalizedDescriptionKey: "The model download manifest is incomplete."])
         }
         let selectedArtifacts = requiredFiles.compactMap { entries[$0] }
         let data = try JSONEncoder().encode(Artifacts(files: selectedArtifacts))

@@ -1528,6 +1528,33 @@ struct ModelDownloadCoordinatorTests {
         #expect(!FileManager.default.fileExists(atPath: plan.cacheDirectory.path))
     }
 
+    @Test("repairs same-size cached corruption and reuses verified files without a request")
+    func repairsSameSizeCachedCorruption() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = Data("good weights".utf8)
+        let corrupt = Data("evil weights".utf8)
+        #expect(original.count == corrupt.count)
+        let destination = directory.appendingPathComponent("model.bin")
+        try corrupt.write(to: destination)
+        let tracker = DownloadTestTracker()
+        ModelDownloadTestURLProtocol.install { _ in
+            ModelDownloadTestURLProtocol.Response(data: original, tracker: tracker)
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+        let manifest = ModelDownloadManifest(id: "cached-integrity", version: "1", files: [
+            ModelDownloadFile(relativePath: "model.bin", remoteURL: try #require(URL(string: "https://example.com/model")),
+                              expectedByteCount: Int64(original.count), sha256: sha256(original))
+        ])
+        let coordinator = makeCoordinator()
+        try await coordinator.download(manifest, to: directory)
+        #expect(try Data(contentsOf: destination) == original)
+        #expect(tracker.requestCount == 1)
+        try await coordinator.download(manifest, to: directory)
+        #expect(try Data(contentsOf: destination) == original)
+        #expect(tracker.requestCount == 1)
+    }
+
     @Test("downloads multiple files with bounded concurrency")
     func downloadsMultipleFilesWithBoundedConcurrency() async throws {
         let tracker = DownloadTestTracker()

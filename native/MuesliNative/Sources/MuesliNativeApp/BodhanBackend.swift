@@ -144,14 +144,54 @@ enum BodhanTranscriptMerger {
 }
 
 @available(macOS 15, *)
+protocol BodhanRuntime: AnyObject {
+    func warmup(mixedScript: Bool) async throws
+    func transcribe(samples: [Float], language: String?, mixedScript: Bool) throws -> BodhanCoreML.Result
+}
+
+@available(macOS 15, *)
+extension BodhanCoreML: BodhanRuntime {
+    func warmup(mixedScript: Bool) async throws {
+        try Task.checkCancellation()
+        try warmupEncoderShapes()
+        try Task.checkCancellation()
+        _ = try transcribe(samples: [Float](repeating: 0, count: 8000), language: "hi", mixedScript: mixedScript)
+    }
+}
+
+@available(macOS 15, *)
 actor BodhanTranscriber {
-    private var runtime: BodhanCoreML?
+    private var runtime: (any BodhanRuntime)?
     private var model: BodhanModel?
     private var loadingModel: BodhanModel?
-    private var loadTask: Task<BodhanCoreML, Error>?
+    private var loadTask: Task<any BodhanRuntime, Error>?
     private var generation = 0
     private var warmupTask: Task<Void, Error>?
     private var hasCompletedWarmup = false
+
+    typealias RuntimeLoader = (BodhanModel, ((Double, String?) -> Void)?, ModelDownloadProgressHandler?) async throws -> any BodhanRuntime
+    private let runtimeLoader: RuntimeLoader
+
+    init(runtimeLoader: @escaping RuntimeLoader = { selected, progress, progressSnapshot in
+        try await selected.download(progress: progress, progressSnapshot: progressSnapshot)
+        try Task.checkCancellation()
+        progress?(0.9, "Preparing " + selected.name + "...")
+        return try BodhanCoreML(root: selected.directory, model: selected)
+    }) {
+        self.runtimeLoader = runtimeLoader
+    }
+
+    struct LifecycleState: Equatable {
+        let loadedModel: BodhanModel?
+        let loadingModel: BodhanModel?
+        let hasRuntime: Bool
+        let hasCompletedWarmup: Bool
+    }
+
+    var lifecycleState: LifecycleState {
+        LifecycleState(loadedModel: model, loadingModel: loadingModel,
+                       hasRuntime: runtime != nil, hasCompletedWarmup: hasCompletedWarmup)
+    }
 
     private func load(modelID: String, progress: ((Double, String?) -> Void)?, progressSnapshot: ModelDownloadProgressHandler?) async throws {
         guard let selected = BodhanModel(rawValue: modelID) else {
@@ -162,10 +202,7 @@ actor BodhanTranscriber {
             shutdown()
             loadingModel = selected
             loadTask = Task {
-                try await selected.download(progress: progress, progressSnapshot: progressSnapshot)
-                try Task.checkCancellation()
-                progress?(0.9, "Preparing " + selected.name + "...")
-                return try BodhanCoreML(root: selected.directory, model: selected)
+                try await runtimeLoader(selected, progress, progressSnapshot)
             }
         }
         let expectedGeneration = generation
@@ -198,8 +235,7 @@ actor BodhanTranscriber {
                 let mixed = model.mixedScript
                 warmupTask = Task {
                     BodhanLogging.logVerbose("background warmup started")
-                    try runtime.warmupEncoderShapes()
-                    _ = try runtime.transcribe(samples: [Float](repeating: 0, count: 8000), language: "hi", mixedScript: mixed)
+                    try await runtime.warmup(mixedScript: mixed)
                     try Task.checkCancellation()
                     BodhanLogging.logVerbose("background warmup complete")
                 }
@@ -241,6 +277,12 @@ actor BodhanTranscriber {
             offset += 27 * 16000
         }
         return (BodhanTranscriptMerger.mergeOverlappingTranscripts(transcripts), CFAbsoluteTimeGetCurrent() - start)
+    }
+
+    /// Deleting one precision/family must not unload a different active selection.
+    func shutdown(ifLoadedModelID modelID: String) {
+        guard model?.rawValue == modelID || loadingModel?.rawValue == modelID else { return }
+        shutdown()
     }
 
     func shutdown() {

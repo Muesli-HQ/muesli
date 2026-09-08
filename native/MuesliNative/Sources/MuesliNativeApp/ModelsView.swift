@@ -607,12 +607,14 @@ struct ModelsView: View {
         )
     }
 
+    @ViewBuilder
     private func bodhanCard(selection: Binding<String>, isCore: Bool) -> some View {
         let variants = BackendOption.bodhanFamily.filter { BodhanModel(rawValue: $0.model)?.isCore == isCore }
-        let selected = variants.first { $0.model == selection.wrappedValue } ?? variants[0]
-        return modelCard(option: selected, logo: "bodhan-logo",
+        if let selected = variants.first(where: { $0.model == selection.wrappedValue }) ?? variants.first {
+            modelCard(option: selected, logo: "bodhan-logo",
                          title: isCore ? "Bodhan Core" : "Bodhan Flex",
                          precisionSelection: selection)
+        }
     }
 
     private func bodhanLanguageSelection(for model: String) -> Binding<BodhanLanguage> {
@@ -1953,7 +1955,10 @@ struct ModelsView: View {
             try removeItemIfPresent(at: CohereTranscribeModelStore.cacheDirectory(), fileManager: fm)
         case "bodhan":
             if let model = BodhanModel(rawValue: option.model) {
-                if model.localOverride == nil { try removeItemIfPresent(at: model.cacheDirectory, fileManager: fm) }
+                if model.localOverride == nil {
+                    await controller.transcriptionCoordinator.unloadBodhanTranscriber(ifLoadedModelID: model.rawValue)
+                    try removeItemIfPresent(at: model.cacheDirectory, fileManager: fm)
+                }
             }
         case "sensevoice":
             SenseVoiceTranscriber.deleteModelFiles(fileManager: fm)

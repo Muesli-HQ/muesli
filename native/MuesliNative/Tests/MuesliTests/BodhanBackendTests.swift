@@ -80,4 +80,25 @@ struct BodhanBackendTests {
         #expect(BodhanLanguage.automatic.supported(for: BodhanModel.flex.rawValue) == .automatic)
     }
 
+    @Test("Missing configuration preserves transcription defaults")
+    func missingConfiguration() throws {
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+        let defaults = AppConfig()
+        #expect(config.sttBackend == defaults.sttBackend)
+        #expect(config.sttModel == defaults.sttModel)
+        #expect(config.meetingTranscriptionBackend == config.sttBackend)
+        #expect(config.meetingTranscriptionModel == config.sttModel)
+        #expect(config.resolvedBodhanLanguage == .hindi)
+    }
+
+    @Test("Bodhan cleanup allows every compatible backend except local S1-mini",
+          arguments: BackendOption.bodhanFamily)
+    func cleanupRouting(model: BackendOption) {
+        for cleanup in TranscriptCleanupBackendOption.all {
+            #expect(cleanup.isCompatible(with: model, inputFormat: .configurable))
+            #expect(cleanup.isCompatible(with: model, inputFormat: .s1Mini) == (cleanup != .local))
+        }
+        #expect(!TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: .gemma4E2BLiteRT, inputFormat: .configurable))
+    }
+
 }

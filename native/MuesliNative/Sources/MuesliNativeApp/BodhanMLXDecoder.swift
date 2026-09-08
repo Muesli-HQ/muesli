@@ -96,6 +96,7 @@ final class BodhanMLXDecoder {
     func generate(acoustic: MLMultiArray, length: Int, tokenizer: BodhanCoreML.Tokenizer,
                   language: String?, mixed: Bool, frontendSeconds: Double, encoderSeconds: Double,
                   encoderPolicy: String) throws -> BodhanCoreML.Result {
+        try tokenizer.validate()
         let crossStart = Date()
         // Respect Core ML strides and trim padding before attention.
         guard length > 0, acoustic.shape.count == 3, acoustic.shape[2].intValue == 1024,
@@ -132,7 +133,7 @@ final class BodhanMLXDecoder {
         defer { BodhanProfiling.end("MLXDecode", decodeTrace) }
         var chosen = language
         if chosen == nil {
-            let (logits,_) = step(Array(tokenizer.prompts["hi"]!.prefix(3)),0,cross,nil)
+            let (logits,_) = step(try tokenizer.automaticPrefix(),0,cross,nil)
             let scores = logits[0,2]; eval(scores)
             chosen = tokenizer.prompts.keys.sorted().max { scores[tokenizer.prompts[$0]![3]].item(Float.self) < scores[tokenizer.prompts[$1]![3]].item(Float.self) }
         }

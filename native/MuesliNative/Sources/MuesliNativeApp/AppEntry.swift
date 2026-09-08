@@ -8,6 +8,7 @@ import MuesliCore
 @MainActor
 public enum MuesliAppEntry {
     public static func run() {
+        #if DEBUG
         // Exercise the actual actor preparation path, including scheduled warmup.
         if #available(macOS 15, *), ProcessInfo.processInfo.environment["MUESLI_BODHAN_PREPARE_BENCH"] == "1",
            let audio = ProcessInfo.processInfo.environment["MUESLI_BODHAN_BENCH_AUDIO"],
@@ -63,6 +64,7 @@ public enum MuesliAppEntry {
             }
             return
         }
+        #endif
         let application = NSApplication.shared
         let appDelegate = AppDelegate()
         application.delegate = appDelegate
