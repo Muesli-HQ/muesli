@@ -38,6 +38,8 @@ struct ModelsView: View {
     @State private var modelToDelete: BackendOption?
     @State private var selectedParakeetModel: String
     @State private var selectedWhisperModel: String
+    @State private var selectedBodhanCoreModel: String
+    @State private var selectedBodhanFlexModel: String
     @State private var showExperimental: Bool
     @State private var appleSpeechLanguageOptions: [AppleSpeechLanguageOption] = [.system]
     @State private var isLiveCaptionModelDownloaded = false
@@ -62,6 +64,9 @@ struct ModelsView: View {
         let active = appState.selectedBackend
         _selectedParakeetModel = State(initialValue: BackendOption.parakeetFamily.contains(active) ? active.model : BackendOption.parakeetUnified.model)
         _selectedWhisperModel = State(initialValue: BackendOption.whisperFamily.contains(active) ? active.model : BackendOption.whisperSmall.model)
+        let bodhan = BodhanModel(rawValue: active.model)
+        _selectedBodhanCoreModel = State(initialValue: bodhan?.isCore == true ? active.model : BodhanModel.coreInt8.rawValue)
+        _selectedBodhanFlexModel = State(initialValue: bodhan?.isCore == false ? active.model : BodhanModel.flexInt8.rawValue)
         _showExperimental = State(initialValue: appState.activeFeatureTourTarget == .experimentalModels)
     }
 
@@ -218,9 +223,8 @@ struct ModelsView: View {
             )
 
             modelCard(option: .cohereTranscribe, logo: "cohere-logo")
-            ForEach(BackendOption.bodhanFamily, id: \.model) { option in
-                modelCard(option: option, logo: "bodhan-logo")
-            }
+            bodhanCard(selection: $selectedBodhanCoreModel, isCore: true)
+            bodhanCard(selection: $selectedBodhanFlexModel, isCore: false)
             experimentalSection
             comingSoonSection
         case .streaming:
@@ -601,6 +605,14 @@ struct ModelsView: View {
             get: { appState.config.resolvedCohereLanguage },
             set: { controller.selectCohereLanguage($0) }
         )
+    }
+
+    private func bodhanCard(selection: Binding<String>, isCore: Bool) -> some View {
+        let variants = BackendOption.bodhanFamily.filter { BodhanModel(rawValue: $0.model)?.isCore == isCore }
+        let selected = variants.first { $0.model == selection.wrappedValue } ?? variants[0]
+        return modelCard(option: selected, logo: "bodhan-logo",
+                         title: isCore ? "Bodhan Core" : "Bodhan Flex",
+                         precisionSelection: selection)
     }
 
     private var bodhanLanguageSelection: Binding<BodhanLanguage> {
@@ -1199,6 +1211,8 @@ struct ModelsView: View {
     private func modelCard(
         option: BackendOption,
         logo: String? = nil,
+        title: String? = nil,
+        precisionSelection: Binding<String>? = nil,
         isActive activeOverride: Bool? = nil,
         onSetActive: (() -> Void)? = nil,
         description: String? = nil,
@@ -1219,7 +1233,7 @@ struct ModelsView: View {
                 brandLogo(logo)
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
                     HStack(spacing: MuesliTheme.spacing8) {
-                        Text(option.label)
+                        Text(title ?? option.label)
                             .font(MuesliTheme.headline())
                             .foregroundStyle(incompatibilityReason == nil ? MuesliTheme.textPrimary : MuesliTheme.textTertiary)
 
@@ -1309,6 +1323,24 @@ struct ModelsView: View {
                     .pickerStyle(.menu)
                     .frame(maxWidth: 220, alignment: .leading)
                     .disabled(incompatibilityReason != nil)
+
+                    if let precisionSelection {
+                        Text("Precision")
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                        Picker("Precision", selection: precisionSelection) {
+                            ForEach(BackendOption.bodhanFamily.filter {
+                                BodhanModel(rawValue: $0.model)?.isCore == BodhanModel(rawValue: option.model)?.isCore
+                            }, id: \.model) { variant in
+                                Text(BodhanModel(rawValue: variant.model)?.isInt8 == true ? "INT8" : "FP16")
+                                    .tag(variant.model)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(width: 100)
+                        .disabled(isDownloading || incompatibilityReason != nil)
+                    }
                 }
             }
 
@@ -1985,6 +2017,10 @@ struct ModelsView: View {
         }
         if BackendOption.whisperFamily.contains(active) {
             selectedWhisperModel = active.model
+        }
+        if let model = BodhanModel(rawValue: active.model) {
+            if model.isCore { selectedBodhanCoreModel = active.model }
+            else { selectedBodhanFlexModel = active.model }
         }
         if BackendOption.experimental.contains(active) {
             showExperimental = true
