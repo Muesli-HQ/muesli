@@ -116,22 +116,13 @@ struct BackendOption: Equatable {
         recommended: false
     )
 
-    static let indicASR = BackendOption(
-        backend: "indicasr",
-        model: "phequals/indic-conformer-600m-multilingual-coreml-rnnt",
-        label: "Indic ASR",
-        sizeLabel: "~618 MB",
-        description: "Built specifically for seven Indian languages. Choose your language before recording; it can help where general multilingual models struggle, but results still vary enough to keep it experimental.",
-        recommended: false
-    )
-
     static let bodhanCore = BackendOption(
-        backend: "indicasr", model: BodhanModel.core.rawValue,
+        backend: "bodhan", model: BodhanModel.core.rawValue,
         label: "Bodhan Core", sizeLabel: "~2.45 GB",
         description: "Indian-language speech in its native script. English words within Hindi or Tamil are written in that script too. Detects the language automatically, or use the language picker.", recommended: false
     )
     static let bodhanFlex = BackendOption(
-        backend: "indicasr", model: BodhanModel.flex.rawValue,
+        backend: "bodhan", model: BodhanModel.flex.rawValue,
         label: "Bodhan Flex", sizeLabel: "~2.45 GB",
         description: "For mixed-language dictation: keeps Hindi or Tamil in its own script and English words in Latin letters. Also formats spoken numbers. Try both models to compare accuracy.", recommended: false
     )
@@ -202,7 +193,7 @@ struct BackendOption: Equatable {
     )
 
     static let experimental: [BackendOption] = [
-        .senseVoiceSmall, .bodhanCore, .bodhanFlex, .indicASR, .gemma4E2BLiteRT, .gemma4E4BLiteRT, .qwen3Asr,
+        .senseVoiceSmall, .bodhanCore, .bodhanFlex, .gemma4E2BLiteRT, .gemma4E4BLiteRT, .qwen3Asr,
     ]
 
     /// Native streaming backends used by low-latency product surfaces.
@@ -280,9 +271,11 @@ struct BackendOption: Equatable {
     }
 
     static func resolve(backend: String, model: String) -> BackendOption? {
-        all.first {
-            $0.backend == backend && $0.model == model
+        // Compatibility for saved selections from the retired Indic backend.
+        if backend == "indicasr" {
+            return all.first { $0.backend == "bodhan" && $0.model == model } ?? .bodhanFlex
         }
+        return all.first { $0.backend == backend && $0.model == model }
     }
 
     var isStreamingDictationBackend: Bool {
@@ -313,7 +306,7 @@ struct BackendOption: Equatable {
     /// Native `#available` checks still protect calls into newer system APIs.
     var minimumOSVersion: OperatingSystemVersion {
         switch backend {
-        case "nemotron35", "qwen", "cohere", "indicasr", "gemma4-litert":
+        case "nemotron35", "qwen", "cohere", "bodhan", "gemma4-litert":
             return OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0)
         case "apple-speech":
             return OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0)
@@ -402,8 +395,8 @@ struct BackendOption: Equatable {
             return Nemotron35ModelStore.isModelDownloaded(fileManager: fm)
         case "cohere":
             return CohereTranscribeModelStore.isAvailableLocally()
-        case "indicasr":
-            return BodhanModel(rawValue: model)?.isDownloaded ?? IndicASRModelStore.isAvailableLocally()
+        case "bodhan":
+            return BodhanModel(rawValue: model)?.isDownloaded ?? false
         case "sensevoice":
             return SenseVoiceTranscriber.isModelDownloaded(fileManager: fm)
         case "gemma4-litert":
@@ -1112,10 +1105,10 @@ struct PostProcessorOption: Identifiable, Equatable {
         self == .qwen35_0_8b ? "Qwen 3.5 0.8B (General)" : label
     }
 
-    /// S1-mini normalizes English transcripts only. Indic ASR always emits an
+    /// S1-mini normalizes English transcripts only. Bodhan can emit an
     /// Indic-language transcript, so do not offer or run S1-mini for it.
     func isCompatible(with transcriptionBackend: BackendOption) -> Bool {
-        inputFormat != .s1Mini || transcriptionBackend != .indicASR
+        inputFormat != .s1Mini || transcriptionBackend.backend != "bodhan"
     }
 
     /// Retained only so existing installs keep working. This option is not in
@@ -1627,7 +1620,7 @@ struct AppConfig: Codable {
     var dictationInputDeviceUID: String? = nil
     var meetingInputDeviceUID: String? = nil
     var cohereLanguage: String = CohereTranscribeLanguage.defaultLanguage.rawValue
-    var indicASRLanguage: String = IndicASRLanguage.defaultLanguage.rawValue
+    var bodhanLanguage: String = BodhanLanguage.defaultLanguage.rawValue
     var nemotron35Language: String = Nemotron35Language.defaultLanguage.rawValue
     var whisperLanguage: String = WhisperKitLanguage.defaultLanguage.rawValue
     var qwen3AsrLanguage: String = Qwen3AsrLanguage.defaultLanguage.rawValue
@@ -1766,7 +1759,8 @@ struct AppConfig: Codable {
         case dictationInputDeviceUID = "dictation_input_device_uid"
         case meetingInputDeviceUID = "meeting_input_device_uid"
         case cohereLanguage = "cohere_language"
-        case indicASRLanguage = "indic_asr_language"
+        // Retained wire key for existing language preferences and synced configs.
+        case bodhanLanguage = "indic_asr_language"
         case nemotron35Language = "nemotron35_language"
         case whisperLanguage = "whisper_language"
         case qwen3AsrLanguage = "qwen3_asr_language"
@@ -1912,7 +1906,7 @@ struct AppConfig: Codable {
         dictationInputDeviceUID = try? c.decode(String.self, forKey: .dictationInputDeviceUID)
         meetingInputDeviceUID = try? c.decode(String.self, forKey: .meetingInputDeviceUID)
         cohereLanguage = CohereTranscribeLanguage.resolvedCode(try? c.decode(String.self, forKey: .cohereLanguage))
-        indicASRLanguage = IndicASRLanguage.resolvedCode(try? c.decode(String.self, forKey: .indicASRLanguage))
+        bodhanLanguage = BodhanLanguage.resolvedCode(try? c.decode(String.self, forKey: .bodhanLanguage))
         nemotron35Language = Nemotron35Language.resolvedCode(try? c.decode(String.self, forKey: .nemotron35Language))
         whisperLanguage = WhisperKitLanguage.resolvedCode(try? c.decode(String.self, forKey: .whisperLanguage))
         qwen3AsrLanguage = Qwen3AsrLanguage.resolvedCode(try? c.decode(String.self, forKey: .qwen3AsrLanguage))
@@ -1920,6 +1914,12 @@ struct AppConfig: Codable {
         appleSpeechLanguage = AppleSpeechLanguageOption.normalize(try? c.decode(String.self, forKey: .appleSpeechLanguage))
         meetingTranscriptionBackend = (try? c.decode(String.self, forKey: .meetingTranscriptionBackend)) ?? sttBackend
         meetingTranscriptionModel = (try? c.decode(String.self, forKey: .meetingTranscriptionModel)) ?? sttModel
+        if sttBackend == "indicasr", let migrated = BackendOption.resolve(backend: sttBackend, model: sttModel) {
+            sttBackend = migrated.backend; sttModel = migrated.model
+        }
+        if meetingTranscriptionBackend == "indicasr", let migrated = BackendOption.resolve(backend: meetingTranscriptionBackend, model: meetingTranscriptionModel) {
+            meetingTranscriptionBackend = migrated.backend; meetingTranscriptionModel = migrated.model
+        }
         meetingSummaryBackend = (try? c.decode(String.self, forKey: .meetingSummaryBackend)) ?? defaults.meetingSummaryBackend
         defaultMeetingTemplateID = (try? c.decode(String.self, forKey: .defaultMeetingTemplateID)) ?? defaults.defaultMeetingTemplateID
         whisperModel = (try? c.decode(String.self, forKey: .whisperModel)) ?? defaults.whisperModel
@@ -2117,8 +2117,8 @@ struct AppConfig: Codable {
         DictationProvider.resolved(dictationProvider)
     }
 
-    var resolvedIndicASRLanguage: IndicASRLanguage {
-        IndicASRLanguage.resolved(indicASRLanguage)
+    var resolvedBodhanLanguage: BodhanLanguage {
+        BodhanLanguage.resolved(bodhanLanguage)
     }
 
     var resolvedNemotron35Language: Nemotron35Language {

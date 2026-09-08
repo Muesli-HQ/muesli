@@ -3,7 +3,7 @@ import Foundation
 import CoreML
 import MLX
 
-/// Decoder-only hybrid prototype. Owned and called serially by IndicASRTranscriber.
+/// Decoder-only hybrid prototype. Owned and called serially by BodhanTranscriber.
 @available(macOS 15, *)
 final class BodhanMLXDecoder {
     let weightPrecision: String

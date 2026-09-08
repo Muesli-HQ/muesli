@@ -14,7 +14,7 @@ public enum MuesliAppEntry {
            let output = ProcessInfo.processInfo.environment["MUESLI_BODHAN_BENCH_OUTPUT"] {
             Task.detached {
                 do {
-                    let transcriber = IndicASRTranscriber()
+                    let transcriber = BodhanTranscriber()
                     let model = ProcessInfo.processInfo.environment["MUESLI_BODHAN_BENCH_MODEL"] ?? BodhanModel.flex.rawValue
                     let start = Date()
                     try await transcriber.prepare(modelID: model, progress: { _, status in

@@ -114,7 +114,7 @@ actor TranscriptionCoordinator {
     private static let defaultDiarizerLoadOperationTimeout: Duration = .seconds(300)
 
     static let explicitlyRoutedBackendIdentifiers: Set<String> = [
-        "whisper", "nemotron35", "parakeet-unified", "qwen", "cohere", "indicasr", "sensevoice", "gemma4-litert", "apple-speech",
+        "whisper", "nemotron35", "parakeet-unified", "qwen", "cohere", "bodhan", "sensevoice", "gemma4-litert", "apple-speech",
     ]
 
     private let fluidTranscriber = FluidAudioTranscriber()
@@ -123,7 +123,7 @@ actor TranscriptionCoordinator {
     private var _qwen3Transcriber: Any?
     private var _qwen3PostProcessor: Any?
     private var _cohereTranscriber: Any?
-    private var _indicASRTranscriber: Any?
+    private var _bodhanTranscriber: Any?
     private var _gemma4LiteRTTranscriber: Any?
     private var _appleSpeechTranscriber: Any?
     private let appleSpeechLifecycle = AppleSpeechUseLifecycle()
@@ -451,11 +451,11 @@ actor TranscriptionCoordinator {
     }
 
     @available(macOS 15, *)
-    private var indicASRTranscriber: IndicASRTranscriber {
-        if _indicASRTranscriber == nil {
-            _indicASRTranscriber = IndicASRTranscriber()
+    private var bodhanTranscriber: BodhanTranscriber {
+        if _bodhanTranscriber == nil {
+            _bodhanTranscriber = BodhanTranscriber()
         }
-        return _indicASRTranscriber as! IndicASRTranscriber
+        return _bodhanTranscriber as! BodhanTranscriber
     }
 
     @available(macOS 15, *)
@@ -621,12 +621,12 @@ actor TranscriptionCoordinator {
                     NSLocalizedDescriptionKey: "Cohere Transcribe requires macOS 15 or later.",
                 ])
             }
-        case "indicasr":
+        case "bodhan":
             if #available(macOS 15, *) {
-                try await indicASRTranscriber.prepare(modelID: backend.model, progress: progress, progressSnapshot: progressSnapshot)
+                try await bodhanTranscriber.prepare(modelID: backend.model, progress: progress, progressSnapshot: progressSnapshot)
             } else {
                 throw NSError(domain: "MuesliTranscriptionRuntime", code: 6, userInfo: [
-                    NSLocalizedDescriptionKey: "Indic ASR requires macOS 15 or later.",
+                    NSLocalizedDescriptionKey: "Bodhan requires macOS 15 or later.",
                 ])
             }
         case "sensevoice":
@@ -907,7 +907,7 @@ actor TranscriptionCoordinator {
         at url: URL,
         backend: BackendOption,
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
-        indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage,
+        bodhanLanguage: BodhanLanguage = BodhanLanguage.defaultLanguage,
         whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
         qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
         parakeetLanguage: ParakeetLanguage = ParakeetLanguage.defaultLanguage,
@@ -934,7 +934,7 @@ actor TranscriptionCoordinator {
             url: url,
             backend: backend,
             cohereLanguage: cohereLanguage,
-            indicASRLanguage: indicASRLanguage,
+            bodhanLanguage: bodhanLanguage,
             whisperLanguage: whisperLanguage,
             qwen3AsrLanguage: qwen3AsrLanguage,
             parakeetLanguage: parakeetLanguage,
@@ -966,7 +966,7 @@ actor TranscriptionCoordinator {
         at url: URL,
         backend: BackendOption,
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
-        indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage,
+        bodhanLanguage: BodhanLanguage = BodhanLanguage.defaultLanguage,
         whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
         qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
         parakeetLanguage: ParakeetLanguage = ParakeetLanguage.defaultLanguage,
@@ -977,7 +977,7 @@ actor TranscriptionCoordinator {
             url: url,
             backend: backend,
             cohereLanguage: cohereLanguage,
-            indicASRLanguage: indicASRLanguage,
+            bodhanLanguage: bodhanLanguage,
             whisperLanguage: whisperLanguage,
             qwen3AsrLanguage: qwen3AsrLanguage,
             parakeetLanguage: parakeetLanguage,
@@ -989,7 +989,7 @@ actor TranscriptionCoordinator {
         at url: URL,
         backend: BackendOption,
         cohereLanguage: CohereTranscribeLanguage = CohereTranscribeLanguage.defaultLanguage,
-        indicASRLanguage: IndicASRLanguage = IndicASRLanguage.defaultLanguage,
+        bodhanLanguage: BodhanLanguage = BodhanLanguage.defaultLanguage,
         whisperLanguage: WhisperKitLanguage = WhisperKitLanguage.defaultLanguage,
         qwen3AsrLanguage: Qwen3AsrLanguage = Qwen3AsrLanguage.defaultLanguage,
         parakeetLanguage: ParakeetLanguage = ParakeetLanguage.defaultLanguage,
@@ -1013,7 +1013,7 @@ actor TranscriptionCoordinator {
             url: url,
             backend: backend,
             cohereLanguage: cohereLanguage,
-            indicASRLanguage: indicASRLanguage,
+            bodhanLanguage: bodhanLanguage,
             whisperLanguage: whisperLanguage,
             qwen3AsrLanguage: qwen3AsrLanguage,
             parakeetLanguage: parakeetLanguage,
@@ -1057,7 +1057,7 @@ actor TranscriptionCoordinator {
                 await postProcessor.shutdown()
             }
             await cohereTranscriber.shutdown()
-            await indicASRTranscriber.shutdown()
+            await bodhanTranscriber.shutdown()
             if let gemma4 = _gemma4LiteRTTranscriber as? Gemma4LiteRTTranscriber {
                 await gemma4.shutdown()
             }
@@ -1101,8 +1101,8 @@ actor TranscriptionCoordinator {
             Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor disabled for dictation")
             return nil
         }
-        guard backend.backend != "indicasr" else {
-            Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor skipped: Indic ASR output is not English post-processor safe")
+        guard backend.backend != "bodhan" else {
+            Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor skipped: Bodhan output is not English post-processor safe")
             return nil
         }
         guard !result.text.isEmpty else {
@@ -1352,7 +1352,7 @@ actor TranscriptionCoordinator {
         url: URL,
         backend: BackendOption,
         cohereLanguage: CohereTranscribeLanguage,
-        indicASRLanguage: IndicASRLanguage,
+        bodhanLanguage: BodhanLanguage,
         whisperLanguage: WhisperKitLanguage,
         qwen3AsrLanguage: Qwen3AsrLanguage,
         parakeetLanguage: ParakeetLanguage,
@@ -1372,8 +1372,8 @@ actor TranscriptionCoordinator {
             return try await transcribeWithQwen3(url: url, language: qwen3AsrLanguage)
         case "cohere":
             return try await transcribeWithCohere(url: url, language: cohereLanguage)
-        case "indicasr":
-            return try await transcribeWithIndicASR(url: url, modelID: backend.model, language: indicASRLanguage)
+        case "bodhan":
+            return try await transcribeWithBodhan(url: url, modelID: backend.model, language: bodhanLanguage)
         case "sensevoice":
             return try await transcribeWithSenseVoice(url: url)
         case "gemma4-litert":
@@ -1513,17 +1513,17 @@ actor TranscriptionCoordinator {
         }
     }
 
-    // MARK: - Indic ASR (AI4Bharat IndicConformer RNNT CoreML)
+    // MARK: - Bodhan Core/Flex (CoreML encoder, CoreML or MLX decoder)
 
-    private func transcribeWithIndicASR(
+    private func transcribeWithBodhan(
         url: URL,
         modelID: String,
-        language: IndicASRLanguage
+        language: BodhanLanguage
     ) async throws -> SpeechTranscriptionResult {
         if #available(macOS 15, *) {
-            IndicASRLogging.logVerbose("transcribing with Indic ASR (\(language.rawValue)): \(url.lastPathComponent)")
-            let result = try await indicASRTranscriber.transcribe(wavURL: url, modelID: modelID, language: language)
-            IndicASRLogging.logVerbose("Indic ASR result chars=\(result.text.count), processingTime=\(String(format: "%.3f", result.processingTime))s")
+            BodhanLogging.logVerbose("transcribing with Bodhan (\(language.rawValue)): \(url.lastPathComponent)")
+            let result = try await bodhanTranscriber.transcribe(wavURL: url, modelID: modelID, language: language)
+            BodhanLogging.logVerbose("Bodhan result chars=\(result.text.count), processingTime=\(String(format: "%.3f", result.processingTime))s")
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             return SpeechTranscriptionResult(
                 text: text,
@@ -1531,7 +1531,7 @@ actor TranscriptionCoordinator {
             )
         } else {
             throw NSError(domain: "Muesli", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "Indic ASR requires macOS 15 or later.",
+                NSLocalizedDescriptionKey: "Bodhan requires macOS 15 or later.",
             ])
         }
     }

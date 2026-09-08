@@ -1590,7 +1590,7 @@ public final class MuesliController: NSObject {
         if configuredPostProcessorBackend == .local,
            !activePostProcessor.isCompatible(with: selectedBackend) {
             // Keep the selected model for a later compatible ASR choice, but
-            // require an explicit re-enable after switching to Indic ASR.
+            // require an explicit re-enable after switching to Bodhan.
             config.enablePostProcessor = false
         }
         if !configuredPostProcessorBackend.isCompatible(with: selectedBackend) {
@@ -3085,9 +3085,9 @@ public final class MuesliController: NSObject {
         }
     }
 
-    func selectIndicASRLanguage(_ language: IndicASRLanguage) {
+    func selectBodhanLanguage(_ language: BodhanLanguage) {
         updateConfig {
-            $0.indicASRLanguage = language.rawValue
+            $0.bodhanLanguage = language.rawValue
         }
     }
 
@@ -3192,7 +3192,7 @@ public final class MuesliController: NSObject {
         guard option.isCompatible(with: selectedBackend) else {
             presentErrorAlert(
                 title: "Cleanup model unavailable",
-                message: "S1-mini cleans English transcripts and cannot be used with Indic ASR."
+                message: "S1-mini cleans English transcripts and cannot be used with Bodhan."
             )
             return
         }
@@ -5652,7 +5652,7 @@ public final class MuesliController: NSObject {
                     at: recordingURL,
                     backend: backend,
                     cohereLanguage: self.config.resolvedCohereLanguage,
-                    indicASRLanguage: self.config.resolvedIndicASRLanguage,
+                    bodhanLanguage: self.config.resolvedBodhanLanguage,
                     whisperLanguage: self.config.resolvedWhisperLanguage,
                     qwen3AsrLanguage: self.config.resolvedQwen3AsrLanguage,
                     parakeetLanguage: self.config.resolvedParakeetLanguage,
@@ -9156,7 +9156,7 @@ public final class MuesliController: NSObject {
                     at: wavURL,
                     backend: self.selectedBackend,
                     cohereLanguage: configSnapshot.resolvedCohereLanguage,
-                    indicASRLanguage: configSnapshot.resolvedIndicASRLanguage,
+                    bodhanLanguage: configSnapshot.resolvedBodhanLanguage,
                     whisperLanguage: configSnapshot.resolvedWhisperLanguage,
                     qwen3AsrLanguage: configSnapshot.resolvedQwen3AsrLanguage,
                     parakeetLanguage: configSnapshot.resolvedParakeetLanguage,
@@ -9548,7 +9548,7 @@ public final class MuesliController: NSObject {
                     at: wavURL,
                     backend: self.selectedBackend,
                     cohereLanguage: self.config.resolvedCohereLanguage,
-                    indicASRLanguage: self.config.resolvedIndicASRLanguage,
+                    bodhanLanguage: self.config.resolvedBodhanLanguage,
                     whisperLanguage: self.config.resolvedWhisperLanguage,
                     qwen3AsrLanguage: self.config.resolvedQwen3AsrLanguage,
                     parakeetLanguage: self.config.resolvedParakeetLanguage,
@@ -11078,7 +11078,7 @@ public final class MuesliController: NSObject {
                 available: BackendOption.downloaded
             )
         let transcriptionLanguage = isTestMode ? (dictationTestCohereLanguage ?? config.resolvedCohereLanguage) : config.resolvedCohereLanguage
-        let indicTranscriptionLanguage = config.resolvedIndicASRLanguage
+        let bodhanTranscriptionLanguage = config.resolvedBodhanLanguage
         let whisperTranscriptionLanguage = config.resolvedWhisperLanguage
         let capturedContext = capturedDictationContext
         let promptContext = capturedContext.map { DictationContextCapture.formatForPrompt($0) }
@@ -11130,7 +11130,7 @@ public final class MuesliController: NSObject {
                             at: wavURL,
                             backend: fallbackBackend,
                             cohereLanguage: transcriptionLanguage,
-                            indicASRLanguage: indicTranscriptionLanguage,
+                            bodhanLanguage: bodhanTranscriptionLanguage,
                             whisperLanguage: whisperTranscriptionLanguage,
                             qwen3AsrLanguage: self.config.resolvedQwen3AsrLanguage,
                             parakeetLanguage: self.config.resolvedParakeetLanguage,
@@ -11149,7 +11149,7 @@ public final class MuesliController: NSObject {
                         at: wavURL,
                         backend: transcriptionBackend,
                         cohereLanguage: transcriptionLanguage,
-                        indicASRLanguage: indicTranscriptionLanguage,
+                        bodhanLanguage: bodhanTranscriptionLanguage,
                         whisperLanguage: whisperTranscriptionLanguage,
                         qwen3AsrLanguage: self.config.resolvedQwen3AsrLanguage,
                         parakeetLanguage: self.config.resolvedParakeetLanguage,

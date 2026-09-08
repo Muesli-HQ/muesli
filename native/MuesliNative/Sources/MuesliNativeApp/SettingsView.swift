@@ -408,8 +408,8 @@ struct SettingsView: View {
         UpcomingMeetingsWindow.resolve(dayCount: appState.config.upcomingMeetingsDayCount)
     }
 
-    private var selectedIndicASRLanguage: IndicASRLanguage {
-        appState.config.resolvedIndicASRLanguage
+    private var selectedBodhanLanguage: BodhanLanguage {
+        appState.config.resolvedBodhanLanguage
     }
 
     private var selectedNemotron35Language: Nemotron35Language {
@@ -1075,9 +1075,9 @@ struct SettingsView: View {
                     cohereLanguageMenu
                 }
             }
-            if displayedDictationBackend?.backend == BackendOption.indicASR.backend {
+            if displayedDictationBackend?.backend == BackendOption.bodhanFlex.backend {
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Indic language", controlWidth: meetingControlWidth) {
+                settingsRow("Bodhan language", controlWidth: meetingControlWidth) {
                     indicLanguageMenu(model: displayedDictationBackend?.model ?? "")
                 }
             }
@@ -1302,9 +1302,9 @@ struct SettingsView: View {
                 settingsRow("Cohere language", controlWidth: meetingControlWidth) {
                     cohereLanguageMenu
                 }
-            } else if appState.selectedMeetingTranscriptionBackend.backend == BackendOption.indicASR.backend {
+            } else if appState.selectedMeetingTranscriptionBackend.backend == BackendOption.bodhanFlex.backend {
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Indic language", controlWidth: meetingControlWidth) {
+                settingsRow("Bodhan language", controlWidth: meetingControlWidth) {
                     indicLanguageMenu(model: appState.selectedMeetingTranscriptionBackend.model)
                 }
             } else if appState.selectedMeetingTranscriptionBackend.supportsWhisperLanguageSelection {
@@ -1557,13 +1557,13 @@ struct SettingsView: View {
     }
 
     private func indicLanguageMenu(model: String) -> some View {
-        let languages = IndicASRLanguage.choices(for: model)
+        let languages = BodhanLanguage.choices(for: model)
         return FixedWidthPopUp(
-            selection: selectedIndicASRLanguage.label,
+            selection: selectedBodhanLanguage.label,
             options: languages.map(\.label),
             onSelectIndex: { index in
                 guard index >= 0, index < languages.count else { return }
-                controller.selectIndicASRLanguage(languages[index])
+                controller.selectBodhanLanguage(languages[index])
             }
         )
         .frame(height: 24)

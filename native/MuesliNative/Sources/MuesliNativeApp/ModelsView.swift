@@ -600,10 +600,10 @@ struct ModelsView: View {
         )
     }
 
-    private var indicASRLanguageSelection: Binding<IndicASRLanguage> {
+    private var bodhanLanguageSelection: Binding<BodhanLanguage> {
         Binding(
-            get: { appState.config.resolvedIndicASRLanguage },
-            set: { controller.selectIndicASRLanguage($0) }
+            get: { appState.config.resolvedBodhanLanguage },
+            set: { controller.selectBodhanLanguage($0) }
         )
     }
 
@@ -1113,7 +1113,7 @@ struct ModelsView: View {
         case "cohere": return "cohere-logo"
         case "qwen": return "qwen-logo"
         case "nemotron35": return "nvidia-logo"
-        case "indicasr": return BodhanModel(rawValue: option.model) == nil ? "ai4bharat-logo" : "bodhan-logo"
+        case "bodhan": return "bodhan-logo"
         case "sensevoice": return "qwen-logo"
         case "gemma4-litert": return "google-logo"
         case "apple-speech": return "apple-system-logo"
@@ -1290,15 +1290,15 @@ struct ModelsView: View {
                 }
             }
 
-            if option.backend == BackendOption.indicASR.backend {
+            if option.backend == BackendOption.bodhanFlex.backend {
                 HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
                     Text("Language")
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .frame(width: 64, alignment: .leading)
 
-                    Picker("", selection: indicASRLanguageSelection) {
-                        ForEach(IndicASRLanguage.choices(for: option.model), id: \.self) { language in
+                    Picker("", selection: bodhanLanguageSelection) {
+                        ForEach(BodhanLanguage.choices(for: option.model), id: \.self) { language in
                             Text(language.label).tag(language)
                         }
                     }
@@ -1916,11 +1916,9 @@ struct ModelsView: View {
             try removeItemIfPresent(at: Nemotron35ModelStore.cacheDirectory(fileManager: fm), fileManager: fm)
         case "cohere":
             try removeItemIfPresent(at: CohereTranscribeModelStore.cacheDirectory(), fileManager: fm)
-        case "indicasr":
+        case "bodhan":
             if let model = BodhanModel(rawValue: option.model) {
                 if model.localOverride == nil { try removeItemIfPresent(at: model.cacheDirectory, fileManager: fm) }
-            } else if IndicASRModelStore.localOverrideDirectory() == nil {
-                try removeItemIfPresent(at: IndicASRModelStore.cacheDirectory(), fileManager: fm)
             }
         case "sensevoice":
             SenseVoiceTranscriber.deleteModelFiles(fileManager: fm)
@@ -2007,8 +2005,8 @@ struct ModelsView: View {
             return Qwen3AsrModelStore.isModelDownloaded(fileManager: fm)
         case "cohere":
             return CohereTranscribeModelStore.isAvailableLocally()
-        case "indicasr":
-            return BodhanModel(rawValue: option.model)?.isDownloaded ?? IndicASRModelStore.isAvailableLocally()
+        case "bodhan":
+            return BodhanModel(rawValue: option.model)?.isDownloaded ?? false
         case "sensevoice":
             return SenseVoiceTranscriber.isModelDownloaded(fileManager: fm)
         case "gemma4-litert":
