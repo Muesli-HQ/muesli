@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Testing
 @testable import MuesliNativeApp
 
@@ -85,7 +86,7 @@ struct AppleSpeechAnalyzerBackendTests {
 
     @Test("preparation of different languages serializes reservation changes")
     func differentLanguagesPrepareSerially() async throws {
-        let cache = AppleSpeechPreparationTaskCache()
+        let cache = AppleSpeechPreparationTaskCache(serializesOperations: true)
         let order = AppleSpeechPreparationOrder()
         async let first = cache.value(for: "en-IN") {
             await order.begin()
@@ -101,6 +102,31 @@ struct AppleSpeechAnalyzerBackendTests {
         }
         _ = try await (first, second)
         #expect(await order.peak == 1)
+    }
+
+    @Test("a stalled language preparation does not block another language")
+    func differentLanguagesPrepareIndependently() async throws {
+        let cache = AppleSpeechPreparationTaskCache()
+        let started = OSAllocatedUnfairLock(initialState: false)
+        let released = OSAllocatedUnfairLock(initialState: false)
+        let signal = MeetingStreamingSignal()
+        let first = Task {
+            try await cache.value(for: "en-IN") {
+                started.withLock { $0 = true }
+                signal.notify()
+                #expect(await signal.wait(timeoutNanoseconds: 2_000_000_000) { released.withLock { $0 } })
+                return Locale(identifier: "en-IN")
+            }
+        }
+        #expect(await signal.wait(timeoutNanoseconds: 1_000_000_000) { started.withLock { $0 } })
+        let second = try await cache.value(for: "fr-FR") {
+            #expect(!released.withLock { $0 })
+            released.withLock { $0 = true }
+            signal.notify()
+            return Locale(identifier: "fr-FR")
+        }
+        #expect(second.identifier == "fr-FR")
+        _ = try await first.value
     }
 
     @Test("reservation reclamation protects live and dictation users plus the selected language")

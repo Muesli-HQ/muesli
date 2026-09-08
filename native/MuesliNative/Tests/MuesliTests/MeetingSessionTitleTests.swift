@@ -145,6 +145,15 @@ struct MeetingSessionRecoveryPolicyTests {
         ))
     }
 
+    @Test("verified streaming silence does not retranscribe the entire system recording")
+    func finalizedSilenceSkipsSystemRecovery() {
+        #expect(!MeetingSession.shouldAttemptSystemRecovery(
+            usesStreamingFinalTranscript: true,
+            hasSystemSegments: false,
+            hasCompleteStreamingCoverage: true
+        ))
+    }
+
     @Test("batch meeting paths retain their existing system recovery behavior")
     func batchPathStillAttemptsSystemRecovery() {
         #expect(MeetingSession.shouldAttemptSystemRecovery(

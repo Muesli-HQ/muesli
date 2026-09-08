@@ -183,6 +183,11 @@ struct AppleSpeechLocaleResolver: Sendable {
 actor AppleSpeechPreparationTaskCache {
     private var tasks: [String: Task<Locale, Error>] = [:]
     private var tail: Task<Void, Never>?
+    private let serializesOperations: Bool
+
+    init(serializesOperations: Bool = false) {
+        self.serializesOperations = serializesOperations
+    }
 
     func value(
         for localeIdentifier: String,
@@ -192,13 +197,13 @@ actor AppleSpeechPreparationTaskCache {
             return try await task.value
         }
 
-        // Different locale requests also share one reservation mutation lane.
+        // Only inventory mutations need a serial lane, not downloads or probes.
         let predecessor = tail
         let task = Task {
             await predecessor?.value
             return try await operation()
         }
-        tail = Task { _ = try? await task.value }
+        if serializesOperations { tail = Task { _ = try? await task.value } }
         tasks[localeIdentifier] = task
         do {
             let locale = try await task.value
@@ -270,6 +275,7 @@ actor AppleSpeechAnalyzerTranscriber {
 
     private let localeResolver: AppleSpeechLocaleResolver
     private let preparationTasks = AppleSpeechPreparationTaskCache()
+    private let reservationTasks = AppleSpeechPreparationTaskCache(serializesOperations: true)
     private var preparedLocale: Locale?
     private var selectedLocale: Locale?
     private var activeUses = AppleSpeechReservationLeases()
@@ -352,28 +358,9 @@ actor AppleSpeechAnalyzerTranscriber {
             message: "Preparing Apple Speech..."
         ))
 
-        let reservations = await AssetInventory.reservedLocales
-        // Normal preparation/unloading never evicts assets. Reclaim stale
-        // reservations only when a new language needs a slot, preserving the
-        // explicit selection and every currently leased language.
-        if reservations.count >= AssetInventory.maximumReservedLocales,
-           !reservations.contains(where: { $0.identifier(.bcp47) == locale.identifier(.bcp47) }) {
-            let protected = activeUses.identifiers.union([selectedLocale?.identifier(.bcp47)].compactMap { $0 })
-            for stale in AppleSpeechInitialReservationPolicy.localesToRelease(
-                reservations, keeping: locale,
-                activeIdentifiers: protected
-            ) {
-                _ = await AssetInventory.release(reservedLocale: stale)
-            }
-        }
-        do {
-            _ = try await AssetInventory.reserve(locale: locale)
-        } catch {
-            let reservedCount = (await AssetInventory.reservedLocales).count
-            if reservedCount >= AssetInventory.maximumReservedLocales {
-                throw AppleSpeechAnalyzerError.reservationUnavailable(AssetInventory.maximumReservedLocales)
-            }
-            throw error
+        _ = try await reservationTasks.value(for: locale.identifier(.bcp47)) { [self] in
+            try await reserve(locale)
+            return locale
         }
         try Task.checkCancellation()
         // Reassert our subscription even if another app keeps the assets installed.
@@ -420,6 +407,32 @@ actor AppleSpeechAnalyzerTranscriber {
         await analyzer.cancelAndFinishNow()
         preparedLocale = locale
         fputs("[muesli-native] Apple Speech ready for \(locale.identifier(.bcp47))\n", stderr)
+    }
+
+    private func reserve(_ locale: Locale) async throws {
+        let reservations = await AssetInventory.reservedLocales
+        // Normal preparation/unloading never evicts assets. Reclaim stale
+        // reservations only when a new language needs a slot, preserving the
+        // explicit selection and every currently leased language.
+        if reservations.count >= AssetInventory.maximumReservedLocales,
+           !reservations.contains(where: { $0.identifier(.bcp47) == locale.identifier(.bcp47) }) {
+            let protected = activeUses.identifiers.union([selectedLocale?.identifier(.bcp47)].compactMap { $0 })
+            for stale in AppleSpeechInitialReservationPolicy.localesToRelease(
+                reservations, keeping: locale,
+                activeIdentifiers: protected
+            ) {
+                _ = await AssetInventory.release(reservedLocale: stale)
+            }
+        }
+        do {
+            _ = try await AssetInventory.reserve(locale: locale)
+        } catch {
+            let reservedCount = (await AssetInventory.reservedLocales).count
+            if reservedCount >= AssetInventory.maximumReservedLocales {
+                throw AppleSpeechAnalyzerError.reservationUnavailable(AssetInventory.maximumReservedLocales)
+            }
+            throw error
+        }
     }
 
     func transcribe(wavURL: URL, requestedLocale: Locale = .current) async throws -> SpeechTranscriptionResult {

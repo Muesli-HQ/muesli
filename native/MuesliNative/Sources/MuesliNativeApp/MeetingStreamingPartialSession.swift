@@ -329,7 +329,7 @@ private actor AppleSpeechMeetingPartialEngine: MeetingStreamingPartialEngine {
     func finalizedText() async -> String? {
         guard isFinished, !didReportFailure else { return nil }
         let text = accumulator.finalizedText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.isEmpty ? nil : text
+        return text
     }
 
     func shutdown() async {
@@ -551,13 +551,41 @@ private actor Nemotron35MeetingPartialEngine: MeetingStreamingPartialEngine {
     }
 }
 
-/// Streaming captions for one meeting audio source ("You" or "Others").
-///
-/// The session receives the same 16 kHz samples as the existing meeting VAD and
-/// chunk recorders. Parakeet EOU supplies a low-latency cumulative transcript,
-/// while native asynchronous engines finalize at the existing VAD boundaries.
-/// Final-capable engines supply saved text through the existing chunk pipeline;
-/// missing or incomplete results fall back to recorded audio transcription.
+/// Broadcasts state transitions to bounded, cancellation-aware waiters without polling.
+final class MeetingStreamingSignal: Sendable {
+    private let listeners = OSAllocatedUnfairLock(initialState: [UUID: AsyncStream<Void>.Continuation]())
+
+    func notify() {
+        let current = listeners.withLock { Array($0.values) }
+        for listener in current { listener.yield(()) }
+    }
+
+    func wait(timeoutNanoseconds: UInt64, until predicate: @Sendable () -> Bool) async -> Bool {
+        let id = UUID()
+        let (stream, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        listeners.withLock { $0[id] = continuation }
+        // Subscribe before checking the predicate, so a concurrent completion cannot be lost.
+        continuation.yield(())
+        let timeout = Task {
+            do { try await Task.sleep(nanoseconds: timeoutNanoseconds) }
+            catch { return }
+            continuation.finish()
+        }
+        defer {
+            timeout.cancel()
+            listeners.withLock { _ = $0.removeValue(forKey: id) }
+            continuation.finish()
+        }
+        for await _ in stream {
+            if Task.isCancelled { return false }
+            if predicate() { return true }
+        }
+        return !Task.isCancelled && predicate()
+    }
+}
+
+/// Streaming captions for one audio source. Native asynchronous engines finalize
+/// at VAD boundaries; missing or incomplete results fall back to recorded audio.
 final class MeetingStreamingPartialSession: @unchecked Sendable {
     /// Called with the current provisional tail text on a background thread.
     /// An empty string clears the tail.
@@ -576,6 +604,7 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
     private let engine: MeetingStreamingPartialEngine
     private let label: String
     private let finalizationTimeoutNanoseconds: UInt64
+    private let changes = MeetingStreamingSignal()
 
     private struct PendingSegment {
         let id: UUID
@@ -708,18 +737,16 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
     /// preview. Timeout, source discontinuity, or dropped audio selects fallback.
     func finalizedSegmentText(id: UUID) async -> String? {
         guard engine.partialDeliveryMode == .asynchronous else { return pendingSegmentText(id: id) }
-        let deadline = DispatchTime.now().uptimeNanoseconds &+ finalizationTimeoutNanoseconds
-        while !Task.isCancelled {
-            let result = state.withLock { s -> (done: Bool, text: String?) in
-                guard !s.isStopped, !s.didFail,
-                      let segment = s.pendingSegments.first(where: { $0.id == id }) else { return (true, nil) }
-                return (segment.isFinalized, segment.finalizedText)
+        let completed = await changes.wait(timeoutNanoseconds: finalizationTimeoutNanoseconds) {
+            self.state.withLock { s in
+                s.isStopped || s.didFail || s.pendingSegments.first(where: { $0.id == id })?.isFinalized != false
             }
-            if result.done { return result.text }
-            guard DispatchTime.now().uptimeNanoseconds < deadline else { return nil }
-            try? await Task.sleep(nanoseconds: 10_000_000)
         }
-        return nil
+        guard completed else { return nil }
+        return state.withLock { s in
+            guard !s.isStopped, !s.didFail else { return nil }
+            return s.pendingSegments.first(where: { $0.id == id })?.finalizedText
+        }
     }
 
     func pendingSegmentText(id: UUID) -> String? {
@@ -776,6 +803,7 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
     /// Resume restarts engines that deliver results asynchronously before new
     /// audio is accepted, while cache-aware inline engines remain warm.
     func suspend() {
+        defer { changes.notify() }
         state.withLock { s in
             s.isSuspended = true
             s.isRestarting = false
@@ -837,17 +865,16 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
                 await self?.drain()
             }
         }
-        let drainDeadline = DispatchTime.now().uptimeNanoseconds &+ drainTimeoutNanoseconds
-        while state.withLock({ $0.isDraining || !$0.chunkQueue.isEmpty }) {
-            guard DispatchTime.now().uptimeNanoseconds < drainDeadline else {
-                goDormant(error: NSError(
-                    domain: "MeetingStreamingPartialSession",
-                    code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "Timed out finalizing live transcript audio."]
-                ))
-                return nil
-            }
-            try? await Task.sleep(nanoseconds: 10_000_000)
+        let drained = await changes.wait(timeoutNanoseconds: drainTimeoutNanoseconds) {
+            self.state.withLock { $0.isStopped || $0.didFail || (!$0.isDraining && $0.chunkQueue.isEmpty) }
+        }
+        guard drained else {
+            goDormant(error: NSError(
+                domain: "MeetingStreamingPartialSession",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Timed out finalizing live transcript audio."]
+            ))
+            return nil
         }
         guard !state.withLock({ $0.didFail || $0.isStopped || $0.isSuspended }) else { return nil }
         let finishRevision = state.withLock { s -> UInt64 in
@@ -871,6 +898,7 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
     }
 
     func stop() {
+        defer { changes.notify() }
         state.withLock { s in
             s.isStopped = true
             s.lifecycleRevision &+= 1
@@ -889,6 +917,7 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
     }
 
     private func drain() async {
+        defer { changes.notify() }
         while true {
             let work: (item: Work, revision: UInt64)? = state.withLock { s in
                 guard !s.isStopped, (!s.isSuspended || s.isRestarting), !s.didFail, !s.chunkQueue.isEmpty else {
@@ -947,6 +976,7 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
             s.resumeRevision = s.lifecycleRevision
             return s.lifecycleRevision
         }
+        changes.notify()
         guard let restartRevision else { return }
         publishImmediately(state.withLock { visibleTail(for: $0) }, expectedRevision: restartRevision)
         await restartEngine(expectedRevision: restartRevision)
@@ -959,7 +989,8 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
         timeout: UInt64? = nil
     ) async -> String? {
         let result = OSAllocatedUnfairLock<Result<String?, Error>?>(initialState: nil)
-        let task = Task { [engine] in
+        let task = Task { [engine, changes] in
+            defer { changes.notify() }
             do {
                 try await engine.finish()
                 let text = await engine.finalizedText()
@@ -969,17 +1000,17 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
             }
         }
         defer { task.cancel() }
-        let deadline = DispatchTime.now().uptimeNanoseconds &+ (timeout ?? finalizationTimeoutNanoseconds)
-        while !Task.isCancelled {
-            guard state.withLock({ !$0.isStopped && !$0.didFail && $0.lifecycleRevision == revision }) else { return nil }
-            if let completed = result.withLock({ $0 }) {
-                switch completed {
-                case .success(let text): return text
-                case .failure(let error): goDormant(error: error); return nil
-                }
+        _ = await changes.wait(timeoutNanoseconds: timeout ?? finalizationTimeoutNanoseconds) {
+            self.state.withLock { $0.isStopped || $0.didFail || $0.lifecycleRevision != revision }
+                || result.withLock { $0 != nil }
+        }
+        guard !Task.isCancelled,
+              state.withLock({ !$0.isStopped && !$0.didFail && $0.lifecycleRevision == revision }) else { return nil }
+        if let completed = result.withLock({ $0 }) {
+            switch completed {
+            case .success(let text): return text
+            case .failure(let error): goDormant(error: error); return nil
             }
-            guard DispatchTime.now().uptimeNanoseconds < deadline else { break }
-            try? await Task.sleep(nanoseconds: 10_000_000)
         }
         goDormant(error: NSError(domain: "MeetingStreamingPartialSession", code: 1,
             userInfo: [NSLocalizedDescriptionKey: "Timed out finalizing live transcript; using recorded audio."]))
@@ -1059,6 +1090,7 @@ final class MeetingStreamingPartialSession: @unchecked Sendable {
     }
 
     private func goDormant(error: Error) {
+        defer { changes.notify() }
         state.withLock { s in
             s.didFail = true
             s.lifecycleRevision &+= 1

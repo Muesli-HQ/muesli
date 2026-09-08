@@ -7,6 +7,74 @@ import Testing
 
 @Suite("Meeting streaming partial session")
 struct MeetingStreamingPartialSessionTests {
+    @Test("successful streaming text and silence never invoke recorded-audio transcription")
+    func streamingSuccessSkipsBatch() async {
+        let timing = MeetingChunkTimingSnapshot(startSampleIndex: 0, sampleCount: 16_000)
+        for text in ["Final words.", ""] {
+            let result = await MeetingSession.resolveChunkTranscript(timing: timing, finalizedText: { text }) {
+                Issue.record("Recorded audio must not be transcribed after successful streaming")
+                return []
+            }
+            #expect(result.map(\.text) == (text.isEmpty ? [] : [text]))
+        }
+    }
+
+    @Test("unavailable streaming invokes recorded-audio transcription exactly once")
+    func missingStreamingUsesBatchOnce() async {
+        let timing = MeetingChunkTimingSnapshot(startSampleIndex: 0, sampleCount: 16_000)
+        var calls = 0
+        let result = await MeetingSession.resolveChunkTranscript(timing: timing, finalizedText: { nil }) {
+            calls += 1
+            return [SpeechSegment(start: 0, end: 1, text: "Recovered.")]
+        }
+        #expect(calls == 1)
+        #expect(result.map(\.text) == ["Recovered."])
+    }
+
+    @Test("cancellation while finalizing does not launch recorded-audio transcription")
+    func cancelledStreamingDoesNotStartBatch() async {
+        let timing = MeetingChunkTimingSnapshot(startSampleIndex: 0, sampleCount: 16_000)
+        let task = Task {
+            await MeetingSession.resolveChunkTranscript(timing: timing, finalizedText: {
+                withUnsafeCurrentTask { $0?.cancel() }
+                return nil
+            }) {
+                Issue.record("Cancellation must not start batch transcription")
+                return []
+            }
+        }
+        #expect(await task.value.isEmpty)
+    }
+
+    @Test("finalized silence is successful at both chunk and stop boundaries")
+    func nativeFinalizedSilence() async {
+        let engine = ManualAsynchronousPartialEngine(finalText: "")
+        let session = MeetingStreamingPartialSession(engine: engine, label: "You")
+        defer { session.stop() }
+        await session.connect()
+        let id = UUID()
+        session.markSegmentBoundary(id: id)
+        #expect(await session.finalizedSegmentText(id: id) == "")
+        #expect(await session.finish() == "")
+        let timing = MeetingChunkTimingSnapshot(startSampleIndex: 16_000, sampleCount: 32_000)
+        #expect(MeetingSession.segmentsFromFinalizedText("", timing: timing).isEmpty)
+        let segments = MeetingSession.segmentsFromFinalizedText("Final correction.", timing: timing)
+        #expect(segments.count == 1)
+        #expect(segments.first?.text == "Final correction.")
+        #expect(segments.first?.start == 1)
+        #expect(segments.first?.end == 3)
+    }
+
+    @Test("event wait handles completion, timeout, and cancellation")
+    func signalWaitLifecycle() async {
+        let signal = MeetingStreamingSignal()
+        #expect(await signal.wait(timeoutNanoseconds: 1_000_000) { true })
+        #expect(!(await signal.wait(timeoutNanoseconds: 1_000_000) { false }))
+        let waiter = Task { await signal.wait(timeoutNanoseconds: 30_000_000_000) { false } }
+        waiter.cancel()
+        #expect(!(await waiter.value))
+    }
+
     @Test("stale live caption downloads cannot finish after an immediate restart")
     func liveCaptionDownloadGenerationRejectsStaleCompletion() {
         var state = ModelDownloadGenerationState()
@@ -915,7 +983,7 @@ private final class ManualAsynchronousPartialEngine: MeetingStreamingPartialEngi
     }
 
     func finalizedText() async -> String? {
-        state.withLock { $0.text.isEmpty ? nil : $0.text }
+        state.withLock { $0.text }
     }
 
     func finish() async throws {
