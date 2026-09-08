@@ -689,6 +689,7 @@ enum WhisperKitLanguage: String, CaseIterable, Codable, Sendable {
 
 enum MeetingLiveCaptionBackend: String, CaseIterable, Codable, Sendable {
     case parakeetRealtimeEOU = "parakeet_realtime_eou"
+    case appleSpeech = "apple-speech"
     case nemotron35 = "nemotron35"
 
     static let defaultBackend: Self = .parakeetRealtimeEOU
@@ -696,6 +697,7 @@ enum MeetingLiveCaptionBackend: String, CaseIterable, Codable, Sendable {
     var label: String {
         switch self {
         case .parakeetRealtimeEOU: return MeetingLiveCaptionModelStore.label
+        case .appleSpeech: return BackendOption.appleSpeechAnalyzer.label
         case .nemotron35: return BackendOption.nemotron35Multilingual.label
         }
     }
@@ -703,13 +705,21 @@ enum MeetingLiveCaptionBackend: String, CaseIterable, Codable, Sendable {
     var settingsLabel: String {
         switch self {
         case .parakeetRealtimeEOU: return "\(label) (live preview only)"
+        case .appleSpeech: return "\(label) (live + final)"
         case .nemotron35: return "\(label) (live + final)"
         }
     }
 
+    var producesFinalTranscript: Bool { self == .nemotron35 || self == .appleSpeech }
+
     var isDownloaded: Bool {
         switch self {
         case .parakeetRealtimeEOU: return MeetingLiveCaptionModelStore.isDownloaded()
+        case .appleSpeech:
+            if #available(macOS 26.0, *) {
+                return AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem
+            }
+            return false
         case .nemotron35:
             guard #available(macOS 15, *) else { return false }
             return BackendOption.nemotron35Multilingual.isDownloaded

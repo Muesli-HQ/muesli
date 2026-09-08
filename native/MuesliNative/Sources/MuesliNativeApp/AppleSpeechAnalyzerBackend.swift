@@ -5,23 +5,71 @@ import MuesliCore
 import Speech
 
 struct AppleSpeechTranscriptAccumulator: Sendable {
-    private var accumulatedText = ""
-    private(set) var segments: [SpeechSegment] = []
+    private struct Result: Sendable {
+        let rawText: String
+        let text: String
+        let isFinal: Bool
+        let start: Double
+        let end: Double
+    }
+
+    private var results: [Result] = []
 
     var text: String {
-        accumulatedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        results
+            .sorted(by: Self.sortResults)
+            .map(\.rawText)
+            .joined()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var segments: [SpeechSegment] {
+        results
+            .filter(\.isFinal)
+            .sorted(by: Self.sortResults)
+            .map { SpeechSegment(start: $0.start, end: $0.end, text: $0.text) }
     }
 
     mutating func receive(text rawText: String, isFinal: Bool, start: Double, end: Double) {
-        guard isFinal else { return }
-        let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-
-        accumulatedText.append(rawText)
-
         let safeStart = start.isFinite ? max(0, start) : 0
         let safeEnd = end.isFinite ? max(safeStart, end) : safeStart
-        segments.append(SpeechSegment(start: safeStart, end: safeEnd, text: trimmed))
+        results.removeAll { existing in
+            guard !existing.isFinal else { return false }
+            return Self.overlaps(
+                start: existing.start,
+                end: existing.end,
+                otherStart: safeStart,
+                otherEnd: safeEnd
+            )
+        }
+
+        let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        results.append(Result(
+            rawText: rawText,
+            text: trimmed,
+            isFinal: isFinal,
+            start: safeStart,
+            end: safeEnd
+        ))
+    }
+
+    private static func overlaps(
+        start: Double,
+        end: Double,
+        otherStart: Double,
+        otherEnd: Double
+    ) -> Bool {
+        if start == end || otherStart == otherEnd {
+            return start == otherStart
+        }
+        return start < otherEnd && otherStart < end
+    }
+
+    private static func sortResults(_ lhs: Result, _ rhs: Result) -> Bool {
+        if lhs.start != rhs.start { return lhs.start < rhs.start }
+        if lhs.end != rhs.end { return lhs.end < rhs.end }
+        return lhs.isFinal && !rhs.isFinal
     }
 }
 
@@ -60,9 +108,58 @@ struct AppleSpeechLanguageOption: Identifiable, Hashable, Sendable {
 }
 
 enum AppleSpeechInitialReservationPolicy {
-    static func localesToRelease(_ reservations: [Locale], keeping locale: Locale) -> [Locale] {
-        let keptIdentifier = locale.identifier(.bcp47)
-        return reservations.filter { $0.identifier(.bcp47) != keptIdentifier }
+    static func localesToRelease(_ reservations: [Locale], keeping locale: Locale,
+                                activeIdentifiers: Set<String> = []) -> [Locale] {
+        let protected = activeIdentifiers.union([locale.identifier(.bcp47)])
+        return reservations.filter { !protected.contains($0.identifier(.bcp47)) }
+    }
+}
+
+struct AppleSpeechReservationLeases {
+    private var locales: [UUID: Locale] = [:]
+    var identifiers: Set<String> { Set(locales.values.map { $0.identifier(.bcp47) }) }
+    mutating func retain(_ locale: Locale) -> UUID {
+        let id = UUID()
+        locales[id] = locale
+        return id
+    }
+    mutating func release(_ id: UUID) { locales.removeValue(forKey: id) }
+}
+
+/// Asset installation can return after an unsuccessful initial attempt. Retry
+/// only readiness/download failures, never unsupported hardware or languages.
+enum AppleSpeechPreparationRetry {
+    static func isTransient(_ error: Error) -> Bool {
+        if error is CancellationError { return false }
+        if let error = error as? AppleSpeechAnalyzerError {
+            if case .assetUnavailable = error { return true }
+            return false
+        }
+        let error = error as NSError
+        if error.domain == NSURLErrorDomain {
+            return [NSURLErrorTimedOut, NSURLErrorCannotFindHost, NSURLErrorCannotConnectToHost,
+                    NSURLErrorNetworkConnectionLost, NSURLErrorDNSLookupFailed,
+                    NSURLErrorNotConnectedToInternet].contains(error.code)
+        }
+        return error.domain == "SFSpeechErrorDomain" && error.code == 1
+    }
+
+    static func run(
+        delays: [Duration] = [.milliseconds(500), .seconds(1)],
+        sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        operation: () async throws -> Void
+    ) async throws {
+        for attempt in 0...delays.count {
+            try Task.checkCancellation()
+            do {
+                try await operation()
+                try Task.checkCancellation()
+                return
+            } catch {
+                guard attempt < delays.count, isTransient(error), !Task.isCancelled else { throw error }
+                try await sleep(delays[attempt])
+            }
+        }
     }
 }
 
@@ -85,6 +182,12 @@ struct AppleSpeechLocaleResolver: Sendable {
 
 actor AppleSpeechPreparationTaskCache {
     private var tasks: [String: Task<Locale, Error>] = [:]
+    private var tail: Task<Void, Never>?
+    private let serializesOperations: Bool
+
+    init(serializesOperations: Bool = false) {
+        self.serializesOperations = serializesOperations
+    }
 
     func value(
         for localeIdentifier: String,
@@ -94,7 +197,13 @@ actor AppleSpeechPreparationTaskCache {
             return try await task.value
         }
 
-        let task = Task { try await operation() }
+        // Only inventory mutations need a serial lane, not downloads or probes.
+        let predecessor = tail
+        let task = Task {
+            await predecessor?.value
+            return try await operation()
+        }
+        if serializesOperations { tail = Task { _ = try? await task.value } }
         tasks[localeIdentifier] = task
         do {
             let locale = try await task.value
@@ -154,6 +263,7 @@ extension AppleSpeechLanguageOption {
 @available(macOS 26.0, *)
 actor AppleSpeechAnalyzerTranscriber {
     static let modelID = "apple-speech-transcriber"
+    static let shared = AppleSpeechAnalyzerTranscriber()
 
     static var isSupportedOnCurrentSystem: Bool {
         // Keep system-model discovery consistent with the shared OS guard and UI preview.
@@ -165,9 +275,10 @@ actor AppleSpeechAnalyzerTranscriber {
 
     private let localeResolver: AppleSpeechLocaleResolver
     private let preparationTasks = AppleSpeechPreparationTaskCache()
+    private let reservationTasks = AppleSpeechPreparationTaskCache(serializesOperations: true)
     private var preparedLocale: Locale?
-    private var initialReservationReconciliationTask: Task<Void, Never>?
-    private var didReconcileInitialReservations = false
+    private var selectedLocale: Locale?
+    private var activeUses = AppleSpeechReservationLeases()
 
     init(localeResolver: AppleSpeechLocaleResolver = .live) {
         self.localeResolver = localeResolver
@@ -178,35 +289,68 @@ actor AppleSpeechAnalyzerTranscriber {
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws -> Locale {
+        let use = try await prepareAndRetain(requestedLocale: requestedLocale,
+            progress: progress, progressSnapshot: progressSnapshot)
+        releaseUse(use.id)
+        return use.locale
+    }
+
+    func prepareSelectedLanguage(_ requestedLocale: Locale) async throws {
+        let locale = try await localeResolver.resolve(requestedLocale)
+        selectedLocale = locale
+        _ = try await prepare(requestedLocale: locale)
+    }
+
+    /// A lease protects a locale across dictation, both live meeting sources,
+    /// and concurrent preparation. Releasing it does not evict downloaded assets.
+    func prepareAndRetain(
+        requestedLocale: Locale,
+        progress: ((Double, String?) -> Void)? = nil,
+        progressSnapshot: ModelDownloadProgressHandler? = nil
+    ) async throws -> (locale: Locale, id: UUID) {
         guard SpeechTranscriber.isAvailable else {
             throw AppleSpeechAnalyzerError.unavailable
         }
 
         let locale = try await localeResolver.resolve(requestedLocale)
+        let id = activeUses.retain(locale)
         let callbacks = AppleSpeechPreparationCallbacks(
             progress: progress,
             progressSnapshot: progressSnapshot
         )
-        let prepared = try await preparationTasks.value(
-            for: locale.identifier(.bcp47)
-        ) { [self, callbacks] in
-            try await performPrepare(locale: locale, callbacks: callbacks)
+        do {
+            let prepared = try await preparationTasks.value(
+                for: locale.identifier(.bcp47)
+            ) { [self, callbacks] in
+                try await performPrepare(locale: locale, callbacks: callbacks)
+            }
+            try Task.checkCancellation()
+            callbacks.progress?(1, "Apple Speech ready")
+            callbacks.progressSnapshot?(readySnapshot())
+            return (prepared, id)
+        } catch {
+            releaseUse(id)
+            throw error
         }
-        callbacks.progress?(1, "Apple Speech ready")
-        callbacks.progressSnapshot?(readySnapshot())
-        return prepared
     }
+
+    func releaseUse(_ id: UUID) { activeUses.release(id) }
 
     private func performPrepare(
         locale: Locale,
         callbacks: AppleSpeechPreparationCallbacks
     ) async throws -> Locale {
-        let transcriber = makeTranscriber(locale: locale)
+        try await AppleSpeechPreparationRetry.run {
+            try await self.prepareAttempt(locale: locale, callbacks: callbacks)
+        }
+        return locale
+    }
+
+    private func prepareAttempt(locale: Locale, callbacks: AppleSpeechPreparationCallbacks) async throws {
+        let transcriber = SpeechTranscriber(locale: locale, preset: .timeIndexedProgressiveTranscription)
         let status = await AssetInventory.status(forModules: [transcriber])
 
-        if preparedLocale == locale, status == .installed {
-            return locale
-        }
+        let wasVerified = preparedLocale == locale && status == .installed
 
         callbacks.progress?(0.05, "Preparing Apple Speech for \(locale.localizedString(forIdentifier: locale.identifier) ?? locale.identifier)...")
         callbacks.progressSnapshot?(ModelDownloadProgress.preparing(
@@ -214,17 +358,13 @@ actor AppleSpeechAnalyzerTranscriber {
             message: "Preparing Apple Speech..."
         ))
 
-        await reconcileInitialReservations(keeping: locale)
-        do {
-            _ = try await AssetInventory.reserve(locale: locale)
-        } catch {
-            let reservedCount = (await AssetInventory.reservedLocales).count
-            if reservedCount >= AssetInventory.maximumReservedLocales {
-                throw AppleSpeechAnalyzerError.reservationUnavailable(AssetInventory.maximumReservedLocales)
-            }
-            throw error
+        _ = try await reservationTasks.value(for: locale.identifier(.bcp47)) { [self] in
+            try await reserve(locale)
+            return locale
         }
         try Task.checkCancellation()
+        // Reassert our subscription even if another app keeps the assets installed.
+        if wasVerified { return }
 
         if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
             let progressBox = AppleSpeechProgressBox(request.progress)
@@ -251,43 +391,55 @@ actor AppleSpeechAnalyzerTranscriber {
             throw AppleSpeechAnalyzerError.assetUnavailable(locale.identifier(.bcp47))
         }
 
+        // Verify the actual live configuration, not merely framework support
+        // or completion of the download request. Release the probe afterwards.
+        let analyzer = SpeechAnalyzer(modules: [transcriber],
+            options: SpeechAnalyzer.Options(priority: .userInitiated, modelRetention: .lingering))
+        do {
+            let format = AVAudioFormat(commonFormat: .pcmFormatInt16,
+                sampleRate: 16_000, channels: 1, interleaved: true)!
+            try await analyzer.prepareToAnalyze(in: format)
+            try Task.checkCancellation()
+        } catch {
+            await analyzer.cancelAndFinishNow()
+            throw error
+        }
+        await analyzer.cancelAndFinishNow()
         preparedLocale = locale
         fputs("[muesli-native] Apple Speech ready for \(locale.identifier(.bcp47))\n", stderr)
-        return locale
     }
 
-    private func reconcileInitialReservations(keeping locale: Locale) async {
-        if didReconcileInitialReservations { return }
-        if let task = initialReservationReconciliationTask {
-            await task.value
-            return
-        }
-
-        let task = Task {
-            let reservations = await AssetInventory.reservedLocales
-            for reservedLocale in AppleSpeechInitialReservationPolicy.localesToRelease(
-                reservations,
-                keeping: locale
+    private func reserve(_ locale: Locale) async throws {
+        let reservations = await AssetInventory.reservedLocales
+        // Normal preparation/unloading never evicts assets. Reclaim stale
+        // reservations only when a new language needs a slot, preserving the
+        // explicit selection and every currently leased language.
+        if reservations.count >= AssetInventory.maximumReservedLocales,
+           !reservations.contains(where: { $0.identifier(.bcp47) == locale.identifier(.bcp47) }) {
+            let protected = activeUses.identifiers.union([selectedLocale?.identifier(.bcp47)].compactMap { $0 })
+            for stale in AppleSpeechInitialReservationPolicy.localesToRelease(
+                reservations, keeping: locale,
+                activeIdentifiers: protected
             ) {
-                _ = await AssetInventory.release(reservedLocale: reservedLocale)
+                _ = await AssetInventory.release(reservedLocale: stale)
             }
         }
-        initialReservationReconciliationTask = task
-        await task.value
-        didReconcileInitialReservations = true
-        initialReservationReconciliationTask = nil
-    }
-
-    func releaseReservations() async {
-        for locale in await AssetInventory.reservedLocales {
-            _ = await AssetInventory.release(reservedLocale: locale)
+        do {
+            _ = try await AssetInventory.reserve(locale: locale)
+        } catch {
+            let reservedCount = (await AssetInventory.reservedLocales).count
+            if reservedCount >= AssetInventory.maximumReservedLocales {
+                throw AppleSpeechAnalyzerError.reservationUnavailable(AssetInventory.maximumReservedLocales)
+            }
+            throw error
         }
-        preparedLocale = nil
     }
 
     func transcribe(wavURL: URL, requestedLocale: Locale = .current) async throws -> SpeechTranscriptionResult {
         let startedAt = CFAbsoluteTimeGetCurrent()
-        let locale = try await prepare(requestedLocale: requestedLocale)
+        let use = try await prepareAndRetain(requestedLocale: requestedLocale)
+        defer { releaseUse(use.id) }
+        let locale = use.locale
         let transcriber = makeTranscriber(locale: locale)
         let analyzer = SpeechAnalyzer(
             modules: [transcriber],

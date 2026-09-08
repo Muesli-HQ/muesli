@@ -1548,6 +1548,10 @@ public final class MuesliController: NSObject {
         let wasICloudSyncEnabled = config.iCloudSyncEnabled
         let wasUsingAppleSpeech = selectedBackend.backend == "apple-speech"
             || selectedMeetingTranscriptionBackend.backend == "apple-speech"
+            || (config.enableLiveStreamingPartials && config.resolvedMeetingLiveCaptionBackend == .appleSpeech)
+        let previousAppleSpeechLanguage = config.resolvedAppleSpeechLanguage
+        let wasUsingAppleSpeechLive = config.enableLiveStreamingPartials
+            && config.resolvedMeetingLiveCaptionBackend == .appleSpeech
         let previousMeetingInputDeviceUID = config.meetingInputDeviceUID
         let previousHotkeyTriggerThresholdMS = config.hotkeyTriggerThresholdMS
         let previousQuilHotkeyTriggerThresholdMS = config.quilHotkeyTriggerThresholdMS
@@ -1610,9 +1614,26 @@ public final class MuesliController: NSObject {
         }
         let isUsingAppleSpeech = selectedBackend.backend == "apple-speech"
             || selectedMeetingTranscriptionBackend.backend == "apple-speech"
+            || (config.enableLiveStreamingPartials && config.resolvedMeetingLiveCaptionBackend == .appleSpeech)
         if wasUsingAppleSpeech && !isUsingAppleSpeech {
             Task { [weak self] in
                 await self?.transcriptionCoordinator.unloadAppleSpeechTranscriber()
+            }
+        }
+        if previousAppleSpeechLanguage != config.resolvedAppleSpeechLanguage
+            || (isUsingAppleSpeech && (!wasUsingAppleSpeech
+            || (!wasUsingAppleSpeechLive && config.enableLiveStreamingPartials
+                && config.resolvedMeetingLiveCaptionBackend == .appleSpeech))) {
+            let language = config.resolvedAppleSpeechLanguage
+            Task { [weak self] in
+                guard let self, self.config.resolvedAppleSpeechLanguage == language,
+                      #available(macOS 26.0, *) else { return }
+                do {
+                    try await AppleSpeechAnalyzerTranscriber.shared.prepareSelectedLanguage(
+                        AppleSpeechLanguageOption.requestedLocale(for: language))
+                } catch {
+                    fputs("[muesli-native] Apple Speech selection preparation failed: \(error)\n", stderr)
+                }
             }
         }
         configStore.save(config)
@@ -3077,20 +3098,6 @@ public final class MuesliController: NSObject {
         let normalized = AppleSpeechLanguageOption.normalize(identifier)
         guard normalized != config.resolvedAppleSpeechLanguage else { return }
         updateConfig { $0.appleSpeechLanguage = normalized }
-
-        Task { [weak self] in
-            guard let self else { return }
-            await self.transcriptionCoordinator.unloadAppleSpeechTranscriber()
-            let usesAppleSpeech = self.selectedBackend.backend == "apple-speech"
-                || self.selectedMeetingTranscriptionBackend.backend == "apple-speech"
-            guard usesAppleSpeech else { return }
-            await self.transcriptionCoordinator.preload(
-                backend: .appleSpeechAnalyzer,
-                enablePostProcessor: false,
-                includeMeetingHelpers: false,
-                appleSpeechLanguage: normalized
-            )
-        }
     }
 
     var isPostProcessorReady: Bool {
