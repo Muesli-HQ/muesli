@@ -315,35 +315,10 @@ struct QuilDirectAudioTests {
         #expect(content.count == 2)
         #expect(content[0]["text"] == prompt)
         #expect(content[1] == ["type": "audio", "path": url.path])
-        #expect(QuilTransformationPrompt.audioSystem.contains("Follow only the spoken instruction"))
-        #expect(QuilTransformationPrompt.audioSystem.contains("faithfully transcribe the spoken command"))
+        #expect(QuilTransformationPrompt.audioSystem.contains(QuilTransformationPrompt.system))
+        #expect(QuilTransformationPrompt.audioSystem.contains("Do not return a transcript"))
         let textOnly = try Gemma4LiteRTTranscriber.generationMessageJSONString(userPrompt: "Text request", audioURL: nil)
         let textJSON = try #require(JSONSerialization.jsonObject(with: Data(textOnly.utf8)) as? [String: Any])
         #expect((textJSON["content"] as? [[String: String]])?.count == 1)
-    }
-}
-
-@Suite("Quill audio response")
-struct QuilAudioResponseTests {
-    @Test("preserves the spoken question separately from the paste payload")
-    func separatesInstructionAndReplacement() throws {
-        let result = try QuilAudioResult.validated(#"{"instruction":"  Can you make this shorter?  ","replacement":"Short version."}"#)
-        #expect(result.instruction == "Can you make this shorter?")
-        #expect(result.replacement == "Short version.")
-    }
-
-    @Test("malformed responses cannot paste an envelope or lose the question")
-    func rejectsMalformedResponses() {
-        for raw in ["Plain text", #"{"replacement":"Text"}"#, #"{"instruction":"","replacement":"Text"}"#, #"{"instruction":"Rewrite","replacement":""}"#] {
-            #expect(throws: (any Error).self) { try QuilAudioResult.validated(raw) }
-        }
-    }
-
-    @Test("audio prompt requests structured output without conflicting paste-only instructions")
-    func audioPromptContract() {
-        let prompt = QuilTransformationPrompt.audioUserPrompt(selectedText: "Text", appContext: nil)
-        #expect(prompt.contains("instruction and replacement JSON object"))
-        #expect(!prompt.contains("Return exactly one final paste-ready output"))
-        #expect(!QuilTransformationPrompt.audioSystem.contains("Every character in your response must belong"))
     }
 }

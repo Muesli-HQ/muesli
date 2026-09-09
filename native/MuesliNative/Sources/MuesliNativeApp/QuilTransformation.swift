@@ -40,16 +40,7 @@ enum QuilTransformationError: LocalizedError, Equatable {
 
 enum QuilTransformationPrompt {
     static var audioSystem: String {
-        let rules = system.components(separatedBy: "Your entire response is pasted")[0]
-        return rules + """
-        The attached audio contains the spoken instruction. Return exactly one JSON object with two string fields, in this order: "instruction" and "replacement". The instruction field must faithfully transcribe the spoken command, not the highlighted text. The replacement field must contain only the final paste-ready text produced by following that command. Never put explanations, alternatives, or labels in replacement. Do not wrap the JSON in Markdown fences or add commentary.
-        """
-    }
-
-    static func audioUserPrompt(selectedText: String, appContext: String?) -> String {
-        let prompt = userPrompt(selectedText: selectedText, instruction: "Use the command spoken in the attached audio.", appContext: appContext)
-        return prompt.components(separatedBy: "\nReturn exactly one final paste-ready output")[0]
-            + "\nReturn the instruction and replacement JSON object specified in the system prompt."
+        system + "\nThe attached audio contains the spoken instruction. Understand that instruction and carry it out directly. Do not return a transcript of the audio or describe the instruction. Return only the requested final text."
     }
 
     static let system = """
@@ -188,24 +179,5 @@ enum QuilAvailabilityGate {
             return false
         }
         return true
-    }
-}
-
-/// One audio generation returns the command for display separately from the text to paste.
-struct QuilAudioResult: Decodable, Equatable {
-    let instruction: String
-    let replacement: String
-
-    static func validated(_ raw: String) throws -> QuilAudioResult {
-        guard let data = raw.data(using: .utf8),
-              let decoded = try? JSONDecoder().decode(QuilAudioResult.self, from: data) else {
-            throw QuilTransformationError.nonReplacementResponse
-        }
-        let instruction = decoded.instruction.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !instruction.isEmpty else { throw QuilTransformationError.emptyInstruction }
-        guard instruction.count <= QuilModelPolicy.remoteMaximumInputCharacters else {
-            throw QuilTransformationError.nonReplacementResponse
-        }
-        return QuilAudioResult(instruction: instruction, replacement: try QuilTransformationOutput.validated(decoded.replacement))
     }
 }

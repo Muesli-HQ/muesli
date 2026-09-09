@@ -213,7 +213,6 @@ final class FloatingIndicatorController: NSObject {
     var isToggleDictation = false
     private var stopLayer: CALayer?
     private var transcribingTitle = "Transcribing"
-    private var completedQuilDisplayID: UUID?
     private var instructionTranscriptText: String?
     private var instructionTranscriptShowsProgress = false
     private var loadingSpinner: NSProgressIndicator?
@@ -465,17 +464,6 @@ final class FloatingIndicatorController: NSObject {
         )
     }
 
-    func showCompletedQuilInstruction(_ instruction: String, config: AppConfig) {
-        guard state == .idle else { return }
-        showInstructionTranscript(instruction, fallbackTitle: "Quill complete", showsProgress: false, config: config)
-        let displayID = UUID()
-        completedQuilDisplayID = displayID
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-            guard let self, self.completedQuilDisplayID == displayID else { return }
-            self.setState(.idle, config: self.configStore.load())
-        }
-    }
-
     private func showInstructionTranscript(
         _ transcript: String,
         fallbackTitle: String,
@@ -490,7 +478,6 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func setState(_ state: DictationState, config: AppConfig) {
-        completedQuilDisplayID = nil
         lastLoadedConfig = config
         let previousState = self.state
         let previousHover = isHovered

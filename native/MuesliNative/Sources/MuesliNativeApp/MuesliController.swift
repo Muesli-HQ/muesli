@@ -9275,9 +9275,9 @@ public final class MuesliController: NSObject {
             guard let self else { return }
             defer { try? FileManager.default.removeItem(at: wavURL) }
             do {
-                var instruction: String
+                let instruction: String
                 if directAudio {
-                    instruction = ""
+                    instruction = "Audio instruction"
                     await MainActor.run {
                         guard self.quilTaskID == taskID else { return }
                         self.indicator.setTranscribingTitle("Applying audio instruction", config: self.config)
@@ -9297,13 +9297,12 @@ public final class MuesliController: NSObject {
                         appContext: nil
                     )
                     try Task.checkCancellation()
-                    let recognizedInstruction = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !recognizedInstruction.isEmpty else { throw QuilTransformationError.emptyInstruction }
-                    instruction = recognizedInstruction
+                    instruction = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !instruction.isEmpty else { throw QuilTransformationError.emptyInstruction }
                     await MainActor.run {
                         guard self.quilTaskID == taskID else { return }
                         self.statusBarController?.setStatus("Rewriting selection")
-                        self.indicator.showQuilInstruction(recognizedInstruction, config: self.config)
+                        self.indicator.showQuilInstruction(instruction, config: self.config)
                     }
                 }
                 let capturedContext: DictationContext?
@@ -9322,15 +9321,9 @@ public final class MuesliController: NSObject {
                 let promptContext = capturedContext.map { DictationContextCapture.formatForPrompt($0) }
                 let replacement: String
                 if directAudio {
-                    let result = try await self.transcriptionCoordinator.transformAudioForQuil(
+                    replacement = try await self.transcriptionCoordinator.transformAudioForQuil(
                         wavURL: wavURL, selectedText: snapshot.text, appContext: promptContext, model: model
                     )
-                    instruction = result.instruction
-                    replacement = result.replacement
-                    await MainActor.run {
-                        guard self.quilTaskID == taskID else { return }
-                        self.indicator.showQuilInstruction(result.instruction, config: self.config)
-                    }
                 } else {
                     replacement = try await self.transcriptionCoordinator.transformSelectedTextForQuil(
                         selectedText: snapshot.text,
@@ -9348,14 +9341,13 @@ public final class MuesliController: NSObject {
                 guard selectionStillCurrent else {
                     throw QuilTransformationError.selectionChanged
                 }
-                let completedInstruction = instruction
                 await MainActor.run {
                     guard self.quilTaskID == taskID else { return }
                     guard replacement != snapshot.text else {
                         let saved = self.persistQuilTransformation(
                             outputText: replacement,
                             originalText: snapshot.text,
-                            instruction: completedInstruction,
+                            instruction: instruction,
                             backend: backend,
                             model: model,
                             duration: duration,
@@ -9364,8 +9356,7 @@ public final class MuesliController: NSObject {
                         )
                         self.finishQuilTask(
                             taskID: taskID,
-                            message: saved ? "No changes needed" : "No changes needed; Quill history was not saved",
-                            completedInstruction: directAudio && saved ? completedInstruction : nil
+                            message: saved ? "No changes needed" : "No changes needed; Quill history was not saved"
                         )
                         return
                     }
@@ -9419,7 +9410,7 @@ public final class MuesliController: NSObject {
                             let saved = self.persistQuilTransformation(
                                 outputText: replacement,
                                 originalText: snapshot.text,
-                                instruction: completedInstruction,
+                                instruction: instruction,
                                 backend: backend,
                                 model: model,
                                 duration: duration,
@@ -9437,8 +9428,7 @@ public final class MuesliController: NSObject {
                                 ])
                                 self.finishQuilTask(
                                     taskID: taskID,
-                                    message: saved ? nil : "Reformatted, but could not save Quill history",
-                                    completedInstruction: directAudio && saved ? completedInstruction : nil
+                                    message: saved ? nil : "Reformatted, but could not save Quill history"
                                 )
                             } else {
                                 TelemetryDeck.signal("quil.paste_fallback", parameters: [
@@ -9547,15 +9537,11 @@ public final class MuesliController: NSObject {
     }
 
     @MainActor
-    private func finishQuilTask(taskID: UUID, message: String?, completedInstruction: String? = nil) {
+    private func finishQuilTask(taskID: UUID, message: String?) {
         guard quilTaskID == taskID else { return }
         clearQuilSession()
+        if let message { indicator.showWarning(message, icon: "", duration: 2.0) }
         resumeAfterQuil()
-        if let completedInstruction {
-            indicator.showCompletedQuilInstruction(completedInstruction, config: config)
-        } else if let message {
-            indicator.showWarning(message, icon: "", duration: 2.0)
-        }
     }
 
     @MainActor
