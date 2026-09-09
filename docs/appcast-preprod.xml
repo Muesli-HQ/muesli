@@ -34,6 +34,23 @@
         <item>
             <title>0.8.2-preprod.3</title>
             <pubDate>Tue, 18 Aug 2026 09:23:48 +0530</pubDate>
+            <description><![CDATA[
+<h2>MuesliPreprod 0.8.2-preprod.3</h2>
+<p>Pre-production build for validating the Sparkle update flow before a stable release.</p>
+<h3>Install</h3>
+<ul>
+<li>Download <code>MuesliPreprod-0.8.2-preprod.3.dmg</code></li>
+<li>Open the DMG and drag MuesliPreprod to Applications</li>
+<li>Launch MuesliPreprod from Applications</li>
+</ul>
+<h3>Notes</h3>
+<ul>
+<li>Installs alongside production Muesli.</li>
+<li>Stores data separately in <code>~/Library/Application Support/MuesliPreprod/</code>.</li>
+<li>Uses the pre-production Sparkle feed: <code>https://muesli-hq.github.io/muesli/appcast-preprod.xml</code>.</li>
+<li>Does not update the production appcast, public download page, or Homebrew tap.</li>
+</ul>
+]]></description>
             <sparkle:version>8002003</sparkle:version>
             <sparkle:shortVersionString>0.8.2-preprod.3</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
@@ -48,6 +65,32 @@
             <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
             <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.8.2-preprod.2/MuesliPreprod-0.8.2-preprod.2.dmg" length="98655352" type="application/octet-stream" sparkle:edSignature="DGy7uLrYvep5w3wsg5w3Z5Al/nAH2DE4TWiEFrXe/9s/PR2HQrgTesLOcupgDzdF3AXZm64E9tThd1IoMLxxBw=="/>
+        </item>
+        <item>
+            <title>0.8.2-preprod.1</title>
+            <pubDate>Sat, 15 Aug 2026 23:15:37 +0530</pubDate>
+            <description><![CDATA[
+<h2>MuesliPreprod 0.8.2-preprod.1</h2>
+<p>Pre-production build for validating the Sparkle update flow before a stable release.</p>
+<h3>Install</h3>
+<ul>
+<li>Download <code>MuesliPreprod-0.8.2-preprod.1.dmg</code></li>
+<li>Open the DMG and drag MuesliPreprod to Applications</li>
+<li>Launch MuesliPreprod from Applications</li>
+</ul>
+<h3>Notes</h3>
+<ul>
+<li>Installs alongside production Muesli.</li>
+<li>Stores data separately in <code>~/Library/Application Support/MuesliPreprod/</code>.</li>
+<li>Uses the pre-production Sparkle feed: <code>https://muesli-hq.github.io/muesli/appcast-preprod.xml</code>.</li>
+<li>Does not update the production appcast, public download page, or Homebrew tap.</li>
+</ul>
+]]></description>
+            <sparkle:version>8002001</sparkle:version>
+            <sparkle:shortVersionString>0.8.2-preprod.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.8.2-preprod.1/MuesliPreprod-0.8.2-preprod.1.dmg" length="98286984" type="application/octet-stream" sparkle:edSignature="4ztiG5qcNscEGfVyg3HUUfHXyx6ZM7GS5z3gHbxxy126C+hRVwEer9pNHkXGoOhQg0NXoMgNSuw1qgvPk5L7Cw=="/>
         </item>
         <item>
             <title>0.7.0-preprod.1</title>
