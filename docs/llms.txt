@@ -2,7 +2,7 @@
 
 > Local-first AI dictation and meeting transcriber for macOS.
 
-Muesli is a free, open-source macOS application that provides hold-to-talk dictation and meeting transcription powered by on-device AI inference. All speech-to-text runs locally on Apple Silicon — no cloud required for core functionality.
+Muesli is a free, open-source macOS application that provides hold-to-talk dictation and meeting transcription powered by on-device AI inference. Speech-to-text runs locally on Apple Silicon by default, with optional hosted dictation providers. No cloud is required for core functionality.
 
 ## Features
 
@@ -10,7 +10,7 @@ Muesli is a free, open-source macOS application that provides hold-to-talk dicta
 - **Meeting Transcription**: Records mic + system audio, merges into a timestamped transcript
 - **Meeting Notes**: Optional AI-generated structured summaries (BYOK OpenAI/OpenRouter)
 - **Local-First**: Core transcription runs entirely on-device via Fluid Audio / CoreML
-- **Privacy**: Audio never leaves your Mac unless you opt into cloud summarization
+- **Privacy**: Audio stays local by default. Optional hosted dictation sends audio to the selected provider; hosted cleanup, Quill, and summaries send the input needed for those features when selected. iCloud sync transfers text and sync metadata, not audio
 - **Free & Open Source**: MIT licensed, no subscriptions, no usage limits
 
 ## Technical Details
@@ -33,11 +33,11 @@ Muesli is a free, open-source macOS application that provides hold-to-talk dicta
 
 Muesli is a menu bar app with two modes:
 
-1. **Dictation Mode**: User holds Left Cmd key → mic records → on release, audio is transcribed locally → text is pasted at the active cursor position via accessibility APIs.
+1. **Dictation Mode**: User holds Left Cmd key → mic records → on release, audio is transcribed locally by default or by the selected hosted provider → text is pasted at the active cursor position via accessibility APIs.
 
 2. **Meeting Mode**: User starts recording from menu bar → mic captures "You" audio, system audio captures "Others" → both are transcribed → segments are merged by timestamp → optional LLM summarization produces structured notes → everything stored in local SQLite.
 
-The app uses Fluid Audio's CoreML models running on the Apple Neural Engine for speech-to-text, minimizing CPU/GPU usage. Optional cloud integration (OpenAI, OpenRouter) is available for meeting note summarization only, using bring-your-own-key configuration.
+The app uses Fluid Audio's CoreML models running on the Apple Neural Engine for speech-to-text, minimizing CPU/GPU usage. Optional hosted providers are available for dictation, cleanup, Quill, and meeting summaries when configured by the user.
 
 ## Author
 

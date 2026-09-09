@@ -9,49 +9,16 @@
             <title>0.8.4</title>
             <pubDate>Thu, 10 Sep 2026 04:14:59 +0530</pubDate>
             <description><![CDATA[
-<h2>Muesli 0.8.4</h2>
-<p>Muesli 0.8.4 adds voice-driven writing with Quill, more transcription choices, improved meeting workflows, and clearer macOS calendar setup. It also repairs private iCloud text sync for legacy libraries created by 0.8.2 or left unmatched after upgrading to 0.8.3.</p>
-<h2>Quill voice rewriting</h2>
+<h2>New in Muesli 0.8.4</h2>
 <ul>
-<li>Rewrite selected text with a spoken instruction, or generate text at the cursor without a selection.</li>
-<li>Choose a local or hosted model in the dedicated Models → Quill section, with prompts to download missing local models or sign in when needed.</li>
-<li>Improves ChatGPT compatibility and pasting into Google Docs.</li>
-<li>When dictation and Quill use the same compatible Gemma model, process the audio instruction in one model pass.</li>
+<li>Use Quill to rewrite selected text or generate text with spoken instructions.</li>
+<li>Adds Bodhan for Indic languages, improved Parakeet and Qwen3 options, English S1-mini cleanup, and optional OpenAI/OpenRouter dictation.</li>
+<li>Use Apple Speech live meeting transcription on macOS 26+, and re-summarize saved meetings with another model.</li>
+<li>Manage connected macOS calendars with clearer account links and optional onboarding access.</li>
+<li>Recover legacy iCloud sync connections with clearer setup and recovery controls.</li>
+<li>Enjoy more reliable audio capture, downloads, permissions, pasting, and refreshed interface layouts.</li>
 </ul>
-<h2>More transcription and cleanup choices</h2>
-<ul>
-<li>Adds Bodhan Core and Flex for Indic and English speech, with FP16 and INT8 downloads on macOS 15 or later.</li>
-<li>Adds Qwen3 ASR and optional hosted dictation through OpenAI or OpenRouter.</li>
-<li>Adds S1-mini as a local cleanup option and clearer setup for missing cleanup models.</li>
-<li>Improves model compatibility guidance and multilingual sentence spacing.</li>
-</ul>
-<h2>Meetings and everyday workflows</h2>
-<ul>
-<li>Adds Apple Speech live meeting transcription on macOS 26 or later. Live transcription remains off by default.</li>
-<li>Re-summarize a saved meeting using a different summary model.</li>
-<li>Improves microphone and system-audio capture reliability, recording attribution, and push-to-talk behavior around meetings.</li>
-<li>Adds Apple Shortcuts and Siri actions for dictation, meeting recording, and retrieving the latest text.</li>
-<li>Makes Check for Updates available from the application menu and adds a guided What’s New tour.</li>
-</ul>
-<h2>Calendar setup through macOS</h2>
-<ul>
-<li>Uses calendars connected to macOS, including iCloud, Google, and Exchange accounts. Direct Google Calendar sign-in in Muesli is unavailable for now.</li>
-<li>Adds Manage accounts and Open Calendar actions, grouped calendar cards, and per-calendar visibility controls.</li>
-<li>Offers optional Calendar access during onboarding. Choosing Not now does not trigger a background permission prompt.</li>
-<li>Refreshes account changes when returning to Muesli, with background event queries that keep the interface responsive.</li>
-</ul>
-<h2>Reliable iPhone sync recovery</h2>
-<ul>
-<li>Replaces the internal CloudKit error shown by 0.8.3 with a clear, actionable reconnection state.</li>
-<li>Reconnects detected legacy libraries to the current iCloud account while reserving the explicit “Reset iCloud sync” flow for manual recovery on the same iCloud account.</li>
-<li>Makes the sync switch respond on the first click and prevents repeated clicks from restarting iCloud setup.</li>
-<li>Waits for QR device confirmation before the first text transfer and keeps setup in a clear “finishing sync” state.</li>
-<li>Adds a one-click iCloud sync control to the Timeline, Dictations, and Meetings dashboards, with an animated in-progress state.</li>
-<li>Preserves local dictations, meeting transcripts, notes, timestamps, and audio while replacing only obsolete CloudKit state and requeueing eligible text.</li>
-<li>Keeps confirmed Production-account boundaries fail-closed. Reset rebuilds local sync state for the same iCloud account; it is not an account-migration or content-transfer flow. Local history and audio remain intact and CloudKit data is not deleted.</li>
-<li>Makes reconnection safe to retry if setup is interrupted.</li>
-</ul>
-<p>iCloud sync transfers only text records and their sync metadata; audio remains local to each device. Dictation and meeting transcription are local by default. Optional hosted dictation sends audio to the selected provider; hosted cleanup, Quill, and summaries send the input needed for those features when selected.</p>
+<p>Dictation and meeting transcription remain local by default. Live meeting transcription is off by default. Optional hosted dictation sends audio to the selected provider; hosted cleanup, Quill, and summaries send the input needed for those features when selected. iCloud sync transfers text and sync metadata, not audio.</p>
 ]]></description>
             <sparkle:version>0.8.4</sparkle:version>
             <sparkle:shortVersionString>0.8.4</sparkle:shortVersionString>
