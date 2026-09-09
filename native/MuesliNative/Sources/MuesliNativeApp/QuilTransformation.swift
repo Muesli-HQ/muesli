@@ -39,6 +39,10 @@ enum QuilTransformationError: LocalizedError, Equatable {
 }
 
 enum QuilTransformationPrompt {
+    static var audioSystem: String {
+        system + "\nThe attached audio contains the spoken instruction. Understand that instruction and carry it out directly. Do not return a transcript of the audio or describe the instruction. Return only the requested final text."
+    }
+
     static let system = """
     You primarily rewrite highlighted text according to spoken instructions. When highlighted text is supplied, transform it according to the spoken instruction. When no highlighted text is supplied, create the content requested by the spoken instruction for insertion at the cursor.
 
@@ -133,6 +137,13 @@ enum QuilTransformationOutput {
 }
 
 enum QuilModelPolicy {
+    static func usesDirectAudio(dictation: BackendOption, backend: TranscriptCleanupBackendOption, model: String) -> Bool {
+        backend == .gemma4LiteRT
+            && dictation.backend == BackendOption.gemma4E2BLiteRT.backend
+            && dictation.model == model
+            && Gemma4LiteRTModel.allCases.contains { $0.repoID == model }
+    }
+
     static let localMaximumInputCharacters = 2_500
     static let remoteMaximumInputCharacters = 20_000
     static let localAppContextCharacterLimit = 1_200

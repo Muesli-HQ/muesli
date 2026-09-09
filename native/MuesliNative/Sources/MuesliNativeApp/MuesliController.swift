@@ -9267,32 +9267,43 @@ public final class MuesliController: NSObject {
                 ? PostProcessorOption.defaultQuilOption.id
                 : TranscriptCleanupClient.defaultModel(for: backend))
             : configuredModel
+        let dictationBackend = selectedBackend
+        let directAudio = QuilModelPolicy.usesDirectAudio(dictation: dictationBackend, backend: backend, model: model)
         let configSnapshot = config
         let contextCaptureTask = quilContextCaptureTask
         quilTask = Task { [weak self] in
             guard let self else { return }
             defer { try? FileManager.default.removeItem(at: wavURL) }
             do {
-                let result = try await self.transcriptionCoordinator.transcribeDictation(
-                    at: wavURL,
-                    backend: self.selectedBackend,
-                    cohereLanguage: configSnapshot.resolvedCohereLanguage,
-                    bodhanLanguage: configSnapshot.resolvedBodhanLanguage,
-                    whisperLanguage: configSnapshot.resolvedWhisperLanguage,
-                    qwen3AsrLanguage: configSnapshot.resolvedQwen3AsrLanguage,
-                    parakeetLanguage: configSnapshot.resolvedParakeetLanguage,
-                    appleSpeechLanguage: configSnapshot.resolvedAppleSpeechLanguage,
-                    enablePostProcessor: false,
-                    customWords: self.serializedCustomWords(),
-                    appContext: nil
-                )
-                try Task.checkCancellation()
-                let instruction = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !instruction.isEmpty else { throw QuilTransformationError.emptyInstruction }
-                await MainActor.run {
-                    guard self.quilTaskID == taskID else { return }
-                    self.statusBarController?.setStatus("Rewriting selection")
-                    self.indicator.showQuilInstruction(instruction, config: self.config)
+                let instruction: String
+                if directAudio {
+                    instruction = "Audio instruction"
+                    await MainActor.run {
+                        guard self.quilTaskID == taskID else { return }
+                        self.indicator.setTranscribingTitle("Applying audio instruction", config: self.config)
+                    }
+                } else {
+                    let result = try await self.transcriptionCoordinator.transcribeDictation(
+                        at: wavURL,
+                        backend: dictationBackend,
+                        cohereLanguage: configSnapshot.resolvedCohereLanguage,
+                        bodhanLanguage: configSnapshot.resolvedBodhanLanguage,
+                        whisperLanguage: configSnapshot.resolvedWhisperLanguage,
+                        qwen3AsrLanguage: configSnapshot.resolvedQwen3AsrLanguage,
+                        parakeetLanguage: configSnapshot.resolvedParakeetLanguage,
+                        appleSpeechLanguage: configSnapshot.resolvedAppleSpeechLanguage,
+                        enablePostProcessor: false,
+                        customWords: self.serializedCustomWords(),
+                        appContext: nil
+                    )
+                    try Task.checkCancellation()
+                    instruction = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !instruction.isEmpty else { throw QuilTransformationError.emptyInstruction }
+                    await MainActor.run {
+                        guard self.quilTaskID == taskID else { return }
+                        self.statusBarController?.setStatus("Rewriting selection")
+                        self.indicator.showQuilInstruction(instruction, config: self.config)
+                    }
                 }
                 let capturedContext: DictationContext?
                 if let contextCaptureTask {
@@ -9308,14 +9319,21 @@ public final class MuesliController: NSObject {
                     throw QuilTransformationError.selectionChanged
                 }
                 let promptContext = capturedContext.map { DictationContextCapture.formatForPrompt($0) }
-                let replacement = try await self.transcriptionCoordinator.transformSelectedTextForQuil(
-                    selectedText: snapshot.text,
-                    instruction: instruction,
-                    appContext: promptContext,
-                    backend: backend,
-                    model: model,
-                    config: configSnapshot
-                )
+                let replacement: String
+                if directAudio {
+                    replacement = try await self.transcriptionCoordinator.transformAudioForQuil(
+                        wavURL: wavURL, selectedText: snapshot.text, appContext: promptContext, model: model
+                    )
+                } else {
+                    replacement = try await self.transcriptionCoordinator.transformSelectedTextForQuil(
+                        selectedText: snapshot.text,
+                        instruction: instruction,
+                        appContext: promptContext,
+                        backend: backend,
+                        model: model,
+                        config: configSnapshot
+                    )
+                }
                 try Task.checkCancellation()
                 let selectionStillCurrent = await MainActor.run {
                     snapshot.isStillCurrentForReplacement()

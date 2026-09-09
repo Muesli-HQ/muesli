@@ -320,6 +320,30 @@ actor TranscriptionCoordinator {
         }
     }
 
+    func transformAudioForQuil(
+        wavURL: URL, selectedText: String, appContext: String?, model: String
+    ) async throws -> String {
+        guard #available(macOS 15, *) else { throw QuilTransformationError.unsupportedModel }
+        let gemmaModel = Gemma4LiteRTModel.resolved(model)
+        guard Gemma4LiteRTModelStore.isAvailableLocally(model: gemmaModel) else {
+            throw QuilTransformationError.modelUnavailable
+        }
+        try QuilModelPolicy.validate(selectedText: selectedText, backend: .gemma4LiteRT, model: model)
+        let prompt = QuilTransformationPrompt.userPrompt(
+            selectedText: selectedText,
+            instruction: "Carry out the spoken instruction in the attached audio.",
+            appContext: appContext
+        )
+        let raw = try await gemma4LiteRTTranscriber.generateFromAudio(
+            wavURL: wavURL, systemPrompt: QuilTransformationPrompt.audioSystem,
+            userPrompt: prompt, model: gemmaModel,
+            maxOutputTokens: QuilModelPolicy.gemmaMaximumOutputTokens
+        )
+        try Task.checkCancellation()
+        // Do not run an ASR fallback or corrective second generation on this path.
+        return try QuilTransformationOutput.validated(raw)
+    }
+
     func transformSelectedTextForQuil(
         selectedText: String,
         instruction: String,

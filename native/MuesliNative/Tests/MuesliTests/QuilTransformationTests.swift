@@ -290,3 +290,35 @@ struct QuilAvailabilityGateTests {
         ))
     }
 }
+
+@Suite("Quill direct audio")
+struct QuilDirectAudioTests {
+    @Test("direct audio requires the exact same Gemma model for both features")
+    func exactModelMatch() {
+        for model in Gemma4LiteRTModel.allCases {
+            #expect(QuilModelPolicy.usesDirectAudio(dictation: .gemma4LiteRT(model), backend: .gemma4LiteRT, model: model.repoID))
+        }
+        #expect(!QuilModelPolicy.usesDirectAudio(dictation: .gemma4E2BLiteRT, backend: .gemma4LiteRT, model: Gemma4LiteRTModel.e4b.repoID))
+        #expect(!QuilModelPolicy.usesDirectAudio(dictation: .parakeetUnified, backend: .gemma4LiteRT, model: Gemma4LiteRTModel.e2b.repoID))
+        #expect(!QuilModelPolicy.usesDirectAudio(dictation: .gemma4E2BLiteRT, backend: .hosted(.chatGPT), model: Gemma4LiteRTModel.e2b.repoID))
+        #expect(!QuilModelPolicy.usesDirectAudio(dictation: .gemma4E2BLiteRT, backend: .gemma4LiteRT, model: "unknown"))
+    }
+
+    @Test("one generation message contains context and the instruction audio")
+    func audioMessage() throws {
+        guard #available(macOS 15, *) else { return }
+        let url = URL(fileURLWithPath: "/tmp/quill-command.wav")
+        let prompt = QuilTransformationPrompt.userPrompt(selectedText: "Original text", instruction: "Use attached audio", appContext: "Document context")
+        let raw = try Gemma4LiteRTTranscriber.generationMessageJSONString(userPrompt: prompt, audioURL: url)
+        let json = try #require(JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any])
+        let content = try #require(json["content"] as? [[String: String]])
+        #expect(content.count == 2)
+        #expect(content[0]["text"] == prompt)
+        #expect(content[1] == ["type": "audio", "path": url.path])
+        #expect(QuilTransformationPrompt.audioSystem.contains(QuilTransformationPrompt.system))
+        #expect(QuilTransformationPrompt.audioSystem.contains("Do not return a transcript"))
+        let textOnly = try Gemma4LiteRTTranscriber.generationMessageJSONString(userPrompt: "Text request", audioURL: nil)
+        let textJSON = try #require(JSONSerialization.jsonObject(with: Data(textOnly.utf8)) as? [String: Any])
+        #expect((textJSON["content"] as? [[String: String]])?.count == 1)
+    }
+}
