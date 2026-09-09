@@ -79,6 +79,8 @@ case "${shard}" in
       DictationPasteSpacingPolicyTests
       DictationPasteSpacingTests
       QuilTransformationTests
+      QuilAvailabilityGateTests
+      QuilDirectAudioTests
       BackendOptionTests
       OpenAIDictationProviderTests
       OpenRouterTranscriptionClientTests
