@@ -3211,13 +3211,13 @@ public final class MuesliController: NSObject {
         let alert = NSAlert()
         alert.messageText = "\(feature) needs a model"
         alert.informativeText = forQuill
-            ? "Choose a Quill-compatible model in Models and download it if needed. Then select it in Quill settings and enable Quill again. Download sizes and progress are shown in Models."
+            ? "Choose a Quill-compatible model in Models and download it if needed. Then choose Use for Quill and enable Quill in Settings. Download sizes and progress are shown in Models."
             : "Choose a compatible cleanup model in Models and download it if needed. Then return to Settings and enable AI transcript cleanup. Download sizes and progress are shown in Models."
         alert.addButton(withTitle: "Choose Model…")
         alert.addButton(withTitle: "Cancel")
         presentAlert(alert, fallbackLogContext: "local model setup") { [weak self] response in
             guard response == .alertFirstButtonReturn else { return }
-            self?.showModels(category: .postProcessing)
+            self?.showModels(category: forQuill ? .quill : .postProcessing)
         }
     }
 

@@ -47,6 +47,7 @@ enum ModelsCategory: String, CaseIterable, Identifiable {
     case dictation
     case streaming
     case postProcessing
+    case quill
 
     var id: String { rawValue }
 
@@ -55,6 +56,7 @@ enum ModelsCategory: String, CaseIterable, Identifiable {
         case .dictation: return "Dictation"
         case .streaming: return "Live Meetings"
         case .postProcessing: return "Cleanup"
+        case .quill: return "Quill"
         }
     }
 }

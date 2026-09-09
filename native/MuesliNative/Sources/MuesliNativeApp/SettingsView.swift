@@ -1439,7 +1439,7 @@ struct SettingsView: View {
                     settingsRow("Quill model", controlWidth: meetingControlWidth) {
                         if quilLocalModels.isEmpty {
                             compactActionButton("View local models", systemImage: "arrow.right") {
-                                controller.showModels(category: .postProcessing)
+                                controller.showModels(category: .quill)
                             }
                             .frame(width: meetingControlWidth, alignment: .trailing)
                         } else {

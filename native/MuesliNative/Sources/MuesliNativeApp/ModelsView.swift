@@ -78,7 +78,7 @@ struct ModelsView: View {
                         .font(MuesliTheme.title1())
                         .foregroundStyle(MuesliTheme.textPrimary)
 
-                    Text("Choose the transcription and cleanup models that fit how you speak and work.")
+                    Text("Choose the dictation, live meeting, cleanup, and Quill models that fit how you speak and work.")
                         .font(MuesliTheme.body())
                         .foregroundStyle(MuesliTheme.textSecondary)
 
@@ -88,7 +88,9 @@ struct ModelsView: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                    .frame(maxWidth: 520)
+                    .labelsHidden()
+                    .frame(maxWidth: 600)
+                    .frame(maxWidth: .infinity, alignment: .center)
                     .id(FeatureTourTarget.modelLibrary.rawValue)
                     .featureTourTarget(.modelLibrary)
 
@@ -231,6 +233,8 @@ struct ModelsView: View {
             streamingSection
         case .postProcessing:
             postProcessorSection
+        case .quill:
+            quillSection
         }
     }
 
@@ -692,34 +696,71 @@ struct ModelsView: View {
         }
     }
 
-    private func gemmaCleanupModelCard(_ model: Gemma4LiteRTModel) -> some View {
+    private var quillSection: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+            Text("QUILL")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(MuesliTheme.textTertiary)
+            Text("Rewrite selected text or generate text at the cursor with a local model. Download a model, choose Use for Quill, then enable Quill in Settings. These downloads are shared with cleanup.")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(MuesliTheme.textSecondary)
+            ForEach(Gemma4LiteRTModel.allCases) { model in
+                gemmaCleanupModelCard(model, forQuill: true)
+            }
+            ForEach(displayedPostProcessorOptions.filter(\.supportsQuil)) { option in
+                postProcModelCard(option, forQuill: true)
+            }
+        }
+        .padding(.top, MuesliTheme.spacing8)
+    }
+
+    private func selectQuillModel(backend: TranscriptCleanupBackendOption, model: String) {
+        controller.updateConfig {
+            $0.quilBackend = backend.backend
+            $0.quilModel = model
+        }
+        if appState.config.enableQuilMode {
+            _ = controller.ensureQuilModelIsAvailable()
+        }
+    }
+
+    private func gemmaCleanupModelCard(_ model: Gemma4LiteRTModel, forQuill: Bool = false) -> some View {
         let option = BackendOption.gemma4LiteRT(model)
         let isDownloaded = downloadedModels.contains(option.model)
-        let isCompatible = TranscriptCleanupBackendOption.gemma4LiteRT
+        let isCompatible = forQuill || TranscriptCleanupBackendOption.gemma4LiteRT
             .isCompatible(with: appState.selectedBackend)
 
         return modelCard(
             option: option,
             logo: "google-logo",
             isActive: isDownloaded
-                && appState.selectedPostProcessorBackend == .gemma4LiteRT
-                && appState.config.postProcessorGemmaModel == model.repoID,
+                && (forQuill
+                    ? appState.config.quilBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend && appState.config.quilModel == model.repoID
+                    : appState.selectedPostProcessorBackend == .gemma4LiteRT && appState.config.postProcessorGemmaModel == model.repoID),
             onSetActive: {
-                controller.selectGemma4PostProcessor(model)
+                if forQuill {
+                    selectQuillModel(backend: .gemma4LiteRT, model: model.repoID)
+                } else {
+                    controller.selectGemma4PostProcessor(model)
+                }
             },
-            description: "An experimental local option for filler removal, formatting, and obvious transcript errors. It shares the \(model.label) download with dictation and Quill.",
-            activeLabel: "Cleanup Active",
+            description: forQuill
+                ? "An experimental local model for rewriting and generating text with Quill. Shares its download with dictation and cleanup."
+                : "An experimental local option for filler removal, formatting, and obvious transcript errors. It shares the \(model.label) download with dictation and Quill.",
+            activeLabel: forQuill ? "Quill Selected" : "Cleanup Active",
             downloadedLabel: isCompatible ? "Downloaded" : "Used for Dictation",
-            actionTitle: "Use for Cleanup",
+            actionTitle: forQuill ? "Use for Quill" : "Use for Cleanup",
             activationDisabledReason: isCompatible
                 ? nil
                 : "Unavailable while Gemma 4 is selected for dictation. Choose another dictation model first."
         )
     }
 
-    private func postProcModelCard(_ option: PostProcessorOption) -> some View {
+    private func postProcModelCard(_ option: PostProcessorOption, forQuill: Bool = false) -> some View {
         let isDownloaded = downloadedPostProcModels.contains(option.id)
-        let isActive = appState.activePostProcessor.id == option.id && isDownloaded
+        let isActive = isDownloaded && (forQuill
+            ? appState.config.quilBackend == TranscriptCleanupBackendOption.local.backend && appState.config.quilModel == option.id
+            : appState.activePostProcessor.id == option.id)
         let isDownloading = downloadingPostProcModels.contains(option.id)
         let progress = downloadProgressPostProc[option.id] ?? 0
         let showsDownloadStatus = shouldShowDownloadStatus(for: option.id, isDownloading: isDownloading)
@@ -738,7 +779,7 @@ struct ModelsView: View {
                             .foregroundStyle(MuesliTheme.textTertiary)
                     }
 
-                    Text(option.description)
+                    Text(forQuill ? "A local model for rewriting selected text and generating text at the cursor. Shares its download with cleanup." : option.description)
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
@@ -746,7 +787,7 @@ struct ModelsView: View {
                 Spacer()
 
                 if isActive {
-                    Text("Active")
+                    Text(forQuill ? "Quill Selected" : "Active")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(MuesliTheme.success)
                         .padding(.horizontal, 8)
@@ -787,8 +828,12 @@ struct ModelsView: View {
                     .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                 } else if isDownloaded {
                     if !isActive {
-                        Button("Set Active") {
-                            controller.selectPostProcessor(option)
+                        Button(forQuill ? "Use for Quill" : "Set Active") {
+                            if forQuill {
+                                selectQuillModel(backend: .local, model: option.id)
+                            } else {
+                                controller.selectPostProcessor(option)
+                            }
                         }
                         .buttonStyle(.plain)
                         .font(.system(size: 12, weight: .medium))
@@ -810,7 +855,7 @@ struct ModelsView: View {
                     .buttonStyle(.plain)
                 } else if option.isDownloadable {
                     Button("Download") {
-                        startPostProcDownload(option)
+                        startPostProcDownload(option, forQuill: forQuill)
                     }
                     .buttonStyle(.plain)
                     .font(.system(size: 12, weight: .medium))
@@ -1522,7 +1567,7 @@ struct ModelsView: View {
 
     // MARK: - Post-Processor Actions
 
-    private func startPostProcDownload(_ option: PostProcessorOption) {
+    private func startPostProcDownload(_ option: PostProcessorOption, forQuill: Bool = false) {
         guard option.isDownloadable else { return }
         withAnimation { _ = downloadingPostProcModels.insert(option.id) }
         downloadProgressPostProc[option.id] = 0.02
@@ -1552,7 +1597,7 @@ struct ModelsView: View {
                         }
                         downloadTasksPostProc.removeValue(forKey: option.id)
                     }
-                    if appState.config.enablePostProcessor && !appState.activePostProcessor.isDownloaded {
+                    if !forQuill && appState.config.enablePostProcessor && !appState.activePostProcessor.isDownloaded {
                         controller.selectPostProcessor(option)
                         controller.preloadExperimentalTranscriptionFeatures()
                     }
