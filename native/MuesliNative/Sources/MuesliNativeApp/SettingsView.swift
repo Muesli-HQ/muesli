@@ -509,6 +509,12 @@ struct SettingsView: View {
                 guard appState.selectedTab == .settings else { return }
                 refreshAudioInputDevices()
                 refreshPermissionStatuses(for: .appActivated)
+                if selectedPane == .meetings {
+                    Task {
+                        await controller.refreshAvailableEventKitCalendars()
+                        await controller.refreshUpcomingCalendarEvents()
+                    }
+                }
             }
             .onChange(of: appState.selectedBackend) { _, _ in
                 refreshDownloadedModelOptions()
@@ -2117,6 +2123,19 @@ struct SettingsView: View {
             }
 
             settingsSection("Calendars") {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Use calendars already connected to your Mac.")
+                            .font(MuesliTheme.body())
+                        Text("Add or remove accounts in macOS System Settings.")
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textSecondary)
+                    }
+                    Spacer()
+                    Button("Manage accounts…", action: CalendarIntegration.openAccounts)
+                        .buttonStyle(.borderedProminent)
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Upcoming meetings", controlWidth: meetingControlWidth) {
                     settingsMenu(
                         selection: selectedUpcomingMeetingsWindow.label,
@@ -3163,7 +3182,6 @@ struct SettingsView: View {
         let id: String
         let title: String
         let subtitle: String
-        let iconName: String
         let items: [CalendarToggleItem]
     }
 
@@ -3187,7 +3205,6 @@ struct SettingsView: View {
                 id: "ek::\(sourceTitle)",
                 title: sourceTitle,
                 subtitle: calendarSourceSubtitle(for: sourceTitle),
-                iconName: calendarSourceIconName(for: sourceTitle),
                 items: items
             ))
         }
@@ -3198,13 +3215,12 @@ struct SettingsView: View {
     private var calendarSourcesControl: some View {
         let sourceGroups = calendarSourceGroups
         return VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
-            Text("Calendar sources are listed first, with their calendars underneath. Disabled calendars are hidden from Muesli — no notifications, no Coming Up, no meeting detection.")
-                .font(MuesliTheme.caption())
-                .foregroundStyle(MuesliTheme.textTertiary)
-                .fixedSize(horizontal: false, vertical: true)
-
             if sourceGroups.isEmpty {
-                Text("No calendars detected. Make sure Calendar permission is granted in System Settings > Privacy & Security > Calendars.")
+                CalendarAccessControl {
+                    await controller.refreshAvailableEventKitCalendars()
+                    await controller.refreshUpcomingCalendarEvents()
+                }
+                Text("No calendars found. Add an account in macOS Internet Accounts and turn on Calendars, or open Calendar to manage local calendars and subscriptions.")
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -3213,7 +3229,18 @@ struct SettingsView: View {
                     calendarSourceGroupView(group)
                 }
             }
-
+            Divider().background(MuesliTheme.surfaceBorder)
+            HStack(alignment: .top) {
+                Text("Uncheck a calendar to hide its meetings and notifications in Muesli.")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                Spacer()
+                Button("Open Calendar…", action: CalendarIntegration.openCalendar)
+                    .buttonStyle(.link)
+            }
+            Text("Manage accounts opens Internet Accounts. Changes there also affect other apps on this Mac.")
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textTertiary)
         }
     }
 
@@ -3221,10 +3248,10 @@ struct SettingsView: View {
     private func calendarSourceGroupView(_ group: CalendarSourceGroup) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
-                Image(systemName: group.iconName)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(MuesliTheme.textSecondary)
-                    .frame(width: 18, height: 18)
+                Image(nsImage: CalendarIntegration.calendarIcon)
+                    .resizable()
+                    .frame(width: 32, height: 32)
+                    .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(group.title)
@@ -3249,9 +3276,12 @@ struct SettingsView: View {
                     calendarToggleButton(item)
                 }
             }
-            .padding(.leading, 28)
         }
-        .padding(.vertical, 2)
+        .padding(MuesliTheme.spacing16)
+        .background(MuesliTheme.surfacePrimary)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        .overlay(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+            .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1))
     }
 
     private func calendarSourceSubtitle(for sourceTitle: String) -> String {
@@ -3266,20 +3296,6 @@ struct SettingsView: View {
             return "System calendars from macOS"
         }
         return "Calendar account in macOS"
-    }
-
-    private func calendarSourceIconName(for sourceTitle: String) -> String {
-        let normalized = sourceTitle.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if normalized == "icloud" {
-            return "icloud"
-        }
-        if normalized == "subscribed calendars" {
-            return "calendar.badge.clock"
-        }
-        if normalized == "other" {
-            return "person.crop.circle.badge.clock"
-        }
-        return "calendar"
     }
 
     private func calendarToggleButton(_ item: CalendarToggleItem) -> some View {
@@ -3310,6 +3326,8 @@ struct SettingsView: View {
             )
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(item.title)
+        .accessibilityValue(item.isEnabled ? "Included" : "Hidden")
     }
 
     private func refreshMeetingCalendarSourcesIfNeeded() {

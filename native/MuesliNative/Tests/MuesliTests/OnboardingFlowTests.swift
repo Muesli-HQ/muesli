@@ -86,26 +86,26 @@ struct OnboardingFlowTests {
 
     @Test("meetings orders meetings-only steps")
     func meetingsOrderedSteps() {
-        #expect(OnboardingFlow.orderedSteps(for: .meetings) == [0, 1, 3, 5])
+        #expect(OnboardingFlow.orderedSteps(for: .meetings) == [0, 1, 3, 5, 6])
     }
 
     @Test("dictation and meetings orders combined steps")
     func dictationAndMeetingsOrderedSteps() {
-        #expect(OnboardingFlow.orderedSteps(for: .dictationAndMeetings) == [0, 1, 2, 3, 4, 5])
+        #expect(OnboardingFlow.orderedSteps(for: .dictationAndMeetings) == [0, 1, 2, 3, 4, 5, 6])
     }
 
     @Test("multi-select unions include every required workflow step")
     func multiSelectUnionOrderedSteps() {
-        #expect(OnboardingFlow.orderedSteps(for: .voiceNotesAndMeetings) == [0, 1, 2, 3, 4, 5])
+        #expect(OnboardingFlow.orderedSteps(for: .voiceNotesAndMeetings) == [0, 1, 2, 3, 4, 5, 6])
         #expect(OnboardingFlow.orderedSteps(for: .voiceNotesAndDictation) == [0, 1, 2, 3, 4])
-        #expect(OnboardingFlow.orderedSteps(for: .everything) == [0, 1, 2, 3, 4, 5])
+        #expect(OnboardingFlow.orderedSteps(for: .everything) == [0, 1, 2, 3, 4, 5, 6])
     }
 
-    @Test("restored Google calendar step returns to the final meeting setup step")
+    @Test("restored calendar step uses macOS calendar access")
     func restoredRemovedCalendarStep() {
         for useCase: OnboardingUseCase in [.meetings, .dictationAndMeetings, .voiceNotesAndMeetings, .everything] {
-            #expect(OnboardingFlow.normalizedStep(6, for: useCase) == OnboardingFlow.Step.meetingSummary.rawValue)
-            #expect(OnboardingFlow.orderedSteps(for: useCase).last == OnboardingFlow.Step.meetingSummary.rawValue)
+            #expect(OnboardingFlow.normalizedStep(6, for: useCase) == OnboardingFlow.Step.calendarAccess.rawValue)
+            #expect(OnboardingFlow.orderedSteps(for: useCase).last == OnboardingFlow.Step.calendarAccess.rawValue)
         }
     }
 

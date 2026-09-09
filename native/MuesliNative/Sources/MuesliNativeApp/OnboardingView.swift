@@ -176,6 +176,7 @@ struct OnboardingView: View {
                 case 3: permissionsStep
                 case 4: dictationTestStep
                 case 5: meetingSummaryStep
+                case 6: calendarAccessStep
                 default: EmptyView()
                 }
             }
@@ -312,7 +313,13 @@ struct OnboardingView: View {
             }
         case 5:
             HStack(spacing: MuesliTheme.spacing12) {
-                skipButton { finishOnboarding(withKey: true) }
+                skipButton { goToNextStep() }
+                onboardingButton("Continue", enabled: true) { goToNextStep() }
+            }
+        case 6:
+            HStack(spacing: MuesliTheme.spacing12) {
+                Button("Not now") { finishOnboarding(withKey: true) }
+                    .buttonStyle(.plain)
                 onboardingButton("Finish", enabled: true) {
                     finishOnboarding(withKey: true)
                 }
@@ -2232,6 +2239,35 @@ struct OnboardingView: View {
             }
             modelReadyIndicatorTask = nil
         }
+    }
+
+    private var calendarAccessStep: some View {
+        VStack(spacing: MuesliTheme.spacing24) {
+            Spacer()
+            Image(nsImage: CalendarIntegration.calendarIcon)
+                .resizable()
+                .frame(width: 80, height: 80)
+                .accessibilityHidden(true)
+            Text("Bring your meetings into Muesli")
+                .font(MuesliTheme.title1())
+                .foregroundStyle(MuesliTheme.textPrimary)
+            Text("Allow access to macOS Calendar to see upcoming meetings and get reminders.")
+                .font(MuesliTheme.body())
+                .foregroundStyle(MuesliTheme.textSecondary)
+            CalendarAccessControl {
+                await controller.refreshAvailableEventKitCalendars()
+                await controller.refreshUpcomingCalendarEvents()
+            }
+            Button("Set up calendar accounts…", action: CalendarIntegration.openAccounts)
+                .buttonStyle(.link)
+            Divider().background(MuesliTheme.surfaceBorder)
+            Text("Already use Google or Exchange? Add the account in macOS Internet Accounts and turn on Calendars.")
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textSecondary)
+            Spacer()
+        }
+        .multilineTextAlignment(.center)
+        .padding(.horizontal, MuesliTheme.spacing32)
     }
 
     private func finishOnboarding(withKey: Bool) {

@@ -84,6 +84,9 @@ final class CalendarMonitor {
     var onCalendarChanged: (() -> Void)?
 
     func start() {
+        // Permission is requested explicitly by onboarding or Settings. In particular,
+        // choosing “Not now” must not trigger a prompt from the background monitor.
+        guard canConfirmMissingEvents else { return }
         guard case .stopped = state else { return }
 
         generation += 1
