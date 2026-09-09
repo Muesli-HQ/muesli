@@ -189,8 +189,6 @@ struct SettingsView: View {
     @State private var isSigningInOpenRouter = false
     @State private var isEnteringOpenRouterAPIKey = false
     @State private var manualOpenRouterAPIKey = ""
-    @State private var googleCalSignInError: String?
-    @State private var isSigningInGoogleCal = false
     @State private var pendingDataDestruction: PendingDataDestruction?
     @State private var isShowingDictionaryAccessibilityPrompt = false
     @State private var isPreviewingClip = false
@@ -2134,14 +2132,6 @@ struct SettingsView: View {
                     .padding(.bottom, MuesliTheme.spacing8)
             }
 
-            if appState.isGoogleCalendarAvailable {
-                settingsSection("Calendar") {
-                    settingsRow("Google Calendar") {
-                        googleCalendarControl
-                    }
-                }
-            }
-
             settingsSection("Advanced") {
                 settingsRow("Enable post-meeting hook", controlWidth: meetingControlWidth) {
                     settingsSwitch(isOn: appState.config.meetingHookEnabled) { newValue in
@@ -2560,94 +2550,6 @@ struct SettingsView: View {
         }
     }
 
-    @ViewBuilder
-    private var googleCalendarControl: some View {
-        if appState.isGoogleCalendarAuthenticated {
-            Button {
-                controller.signOutGoogleCalendar()
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "calendar")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.white)
-                    Text("Connected · Disconnect")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(MuesliTheme.success)
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-            }
-            .buttonStyle(.plain)
-        } else if isSigningInGoogleCal {
-            HStack(spacing: 6) {
-                ProgressView()
-                    .controlSize(.small)
-                Text("Connecting...")
-                    .font(.system(size: 11))
-                    .foregroundStyle(MuesliTheme.textSecondary)
-            }
-        } else if !appState.isGoogleCalendarVerified {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 5) {
-                    Image(systemName: "calendar.badge.plus")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.white.opacity(0.4))
-                    Text("Connect Google Calendar")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.4))
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(MuesliTheme.textTertiary.opacity(0.3))
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-
-                Text("Google OAuth verification pending")
-                    .font(.system(size: 10))
-                    .foregroundStyle(MuesliTheme.textTertiary)
-            }
-        } else {
-            VStack(alignment: .leading, spacing: 4) {
-                Button {
-                    isSigningInGoogleCal = true
-                    googleCalSignInError = nil
-                    Task {
-                        let error = await controller.signInWithGoogleCalendar()
-                        isSigningInGoogleCal = false
-                        googleCalSignInError = error
-                    }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "calendar.badge.plus")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.white)
-                        Text("Connect Google Calendar")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.white)
-                            .lineLimit(1)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(MuesliTheme.accent)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                }
-                .buttonStyle(.plain)
-
-                if let googleCalSignInError {
-                    Text(googleCalSignInError)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.red)
-                        .lineLimit(2)
-                }
-            }
-        }
-    }
 
     private var maraudersMapControl: some View {
         HStack(spacing: MuesliTheme.spacing8) {
@@ -3290,24 +3192,6 @@ struct SettingsView: View {
             ))
         }
 
-        if appState.isGoogleCalendarAuthenticated && !appState.availableGoogleCalendars.isEmpty {
-            let items = appState.availableGoogleCalendars.map { cal in
-                CalendarToggleItem(
-                    id: cal.id,
-                    title: cal.summary + (cal.isPrimary ? " (Primary)" : ""),
-                    colorHex: cal.colorHex,
-                    isEnabled: !disabled.contains(cal.id)
-                )
-            }
-            groups.append(CalendarSourceGroup(
-                id: "google_oauth",
-                title: "Google Calendar",
-                subtitle: "Connected directly to Muesli",
-                iconName: "calendar.badge.plus",
-                items: items
-            ))
-        }
-
         return groups
     }
 
@@ -3330,16 +3214,6 @@ struct SettingsView: View {
                 }
             }
 
-            if appState.isGoogleCalendarAuthenticated && !appState.availableEventKitCalendars.isEmpty {
-                Text("Google calendars may appear once from macOS Calendar and once from Muesli's Google connection. Turn off both copies to hide that calendar completely.")
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if appState.isGoogleCalendarAuthenticated {
-                googleCalendarListLoadStateView
-            }
         }
     }
 
@@ -3438,36 +3312,11 @@ struct SettingsView: View {
         .buttonStyle(.plain)
     }
 
-    @ViewBuilder
-    private var googleCalendarListLoadStateView: some View {
-        switch appState.googleCalendarListLoadState {
-        case .loading:
-            Text("Loading Google calendars…")
-                .font(MuesliTheme.caption())
-                .foregroundStyle(MuesliTheme.textTertiary)
-        case .failed(let message):
-            HStack(spacing: 8) {
-                Text("Failed to load Google calendars: \(message)")
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textTertiary)
-                Button("Retry") {
-                    Task { await controller.refreshGoogleCalendarList() }
-                }
-                .buttonStyle(.link)
-                .font(MuesliTheme.caption())
-            }
-        case .idle, .loaded:
-            EmptyView()
-        }
-    }
-
     private func refreshMeetingCalendarSourcesIfNeeded() {
         guard !hasRefreshedMeetingCalendarSources else { return }
         hasRefreshedMeetingCalendarSources = true
         Task {
-            async let eventKitRefresh: Void = controller.refreshAvailableEventKitCalendars()
-            async let googleRefresh: Void = controller.refreshGoogleCalendarList()
-            _ = await (eventKitRefresh, googleRefresh)
+            await controller.refreshAvailableEventKitCalendars()
         }
     }
 

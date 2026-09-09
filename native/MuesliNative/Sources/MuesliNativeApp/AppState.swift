@@ -120,13 +120,6 @@ enum SparkleUpdateStatus: Equatable {
     case failed(message: String)
 }
 
-enum GoogleCalendarListLoadState: Equatable {
-    case idle
-    case loading
-    case loaded
-    case failed(String)
-}
-
 enum ICloudBridgeState: Equatable {
     case notConfigured
     case checkingICloud
@@ -217,14 +210,9 @@ final class AppState {
     var openRouterSummaryCatalogState: OpenRouterModelCatalogLoadState = .idle
     var openRouterTranscriptionModels: [SummaryModelPreset] = []
     var openRouterTranscriptionCatalogState: OpenRouterModelCatalogLoadState = .idle
-    var isGoogleCalendarAvailable: Bool = false
-    var isGoogleCalendarVerified: Bool = false
-    var isGoogleCalendarAuthenticated: Bool = false
     var upcomingCalendarEvents: [UnifiedCalendarEvent] = []
     var hiddenCalendarEventIDs: Set<String> = []
     var availableEventKitCalendars: [AvailableCalendar] = []
-    var availableGoogleCalendars: [GoogleCalendarSummary] = []
-    var googleCalendarListLoadState: GoogleCalendarListLoadState = .idle
     var sparkleUpdateStatus: SparkleUpdateStatus = .idle
     var sparkleLastCheckedAt: Date?
     var iCloudSyncStatus: String?

@@ -431,8 +431,6 @@ public final class MuesliController: NSObject {
     private let chatGPTAuth = ChatGPTAuthManager.shared
     private let openRouterAuth: OpenRouterAuthManager
     private let openRouterModelCatalogClient: OpenRouterModelCatalogClient
-    private let googleCalAuth = GoogleCalendarAuthManager.shared
-    private let googleCalClient = GoogleCalendarClient()
     private var calendarCheckTimer: Timer?
     private var calendarMonitoringStarted = false
     private var meetingStartingNowTimers = [String: Timer]()
@@ -1417,9 +1415,6 @@ public final class MuesliController: NSObject {
         appState.isOpenRouterAuthenticated = openRouterAuth.isAuthenticated
         appState.isOpenRouterEnvironmentManaged = openRouterAuth.hasEnvironmentCredential
         appState.hasStoredOpenRouterCredential = openRouterAuth.hasStoredCredential
-        appState.isGoogleCalendarAvailable = googleCalAuth.isAvailable
-        appState.isGoogleCalendarVerified = googleCalAuth.isVerified
-        appState.isGoogleCalendarAuthenticated = googleCalAuth.isAuthenticated
         refreshICloudBridgeDeviceState()
         refreshICloudBridgeStateForConfig()
         // Keep appState in sync with persisted hidden event IDs
@@ -3704,36 +3699,6 @@ public final class MuesliController: NSObject {
         appState.openRouterTranscriptionCatalogState = .idle
     }
 
-    // MARK: - Google Calendar
-
-    func signInWithGoogleCalendar() async -> String? {
-        do {
-            try await googleCalAuth.signIn()
-            syncAppState()
-            Task {
-                await refreshUpcomingCalendarEvents()
-                await refreshGoogleCalendarList()
-            }
-            return nil
-        } catch {
-            fputs("[muesli-native] Google Calendar sign-in failed: \(error)\n", stderr)
-            return error.localizedDescription
-        }
-    }
-
-    func signOutGoogleCalendar() {
-        invalidateGoogleCalendarAuth()
-        Task { await refreshUpcomingCalendarEvents() }
-    }
-
-    private func invalidateGoogleCalendarAuth() {
-        googleCalAuth.signOut()
-        googleCalClient.resetSync()
-        appState.availableGoogleCalendars = []
-        appState.googleCalendarListLoadState = .idle
-        syncAppState()
-    }
-
     /// Refresh the EventKit-available calendars list without making the main
     /// actor wait for EventKit's synchronous calendar-store enumeration.
     func refreshAvailableEventKitCalendars() async {
@@ -3744,67 +3709,18 @@ public final class MuesliController: NSObject {
         appState.availableEventKitCalendars = calendars
     }
 
-    /// Refresh the Google calendar list via the Calendar API. No-op when OAuth
-    /// is not available or the user is not authenticated.
-    func refreshGoogleCalendarList() async {
-        guard googleCalAuth.isAuthenticated else {
-            appState.availableGoogleCalendars = []
-            appState.googleCalendarListLoadState = .idle
-            return
-        }
-        appState.googleCalendarListLoadState = .loading
-        do {
-            let list = try await googleCalClient.fetchCalendarList()
-            appState.availableGoogleCalendars = list
-            appState.googleCalendarListLoadState = .loaded
-        } catch GoogleCalendarAuthError.notAuthenticated {
-            invalidateGoogleCalendarAuth()
-            fputs("[muesli-native] Google Calendar token invalid while loading calendar list, signed out\n", stderr)
-        } catch GoogleCalendarAuthError.refreshFailed(let message) {
-            fputs("[muesli-native] Google Calendar token refresh failed while loading calendar list: \(message)\n", stderr)
-            appState.googleCalendarListLoadState = .failed("Token refresh failed: \(message)")
-        } catch {
-            fputs("[muesli-native] Google calendarList fetch failed: \(error)\n", stderr)
-            appState.googleCalendarListLoadState = .failed(error.localizedDescription)
-        }
-    }
-
     @discardableResult
     func refreshUpcomingCalendarEvents() async -> Bool {
         let refreshNow = Date()
         let refreshStartOfDay = Calendar.current.startOfDay(for: refreshNow)
         let disabledIDs = Set(config.disabledCalendarIDs)
         let dayCount = UpcomingMeetingsWindow.resolve(dayCount: config.upcomingMeetingsDayCount).dayCount
-        var ekEvents = calendarMonitor.upcomingEvents(
+        let ekEvents = calendarMonitor.upcomingEvents(
             daysAhead: dayCount,
             disabledCalendarIDs: disabledIDs,
             now: refreshNow
         )
-        var observedEventIDs = Set(ekEvents.map(\.id))
-        var canConfirmMissingGoogleEvents = false
-
-        if googleCalAuth.isAuthenticated {
-            do {
-                let googleResult = try await googleCalClient.fetchUpcomingEvents(
-                    daysAhead: dayCount,
-                    disabledCalendarIDs: disabledIDs,
-                    now: refreshNow
-                )
-                canConfirmMissingGoogleEvents = googleResult.wasComplete
-                observedEventIDs.formUnion(googleResult.events.map(\.id))
-                ekEvents = GoogleCalendarClient.mergeEvents(eventKit: ekEvents, google: googleResult.events)
-            } catch GoogleCalendarAuthError.notAuthenticated {
-                invalidateGoogleCalendarAuth()
-                fputs("[muesli-native] Google Calendar token invalid, signed out\n", stderr)
-            } catch GoogleCalendarAuthError.refreshFailed(let message) {
-                fputs("[muesli-native] Google Calendar token refresh failed: \(message)\n", stderr)
-            } catch GoogleCalendarClientError.staleRequest {
-                return false
-            } catch {
-                fputs("[muesli-native] Google Calendar fetch failed: \(error)\n", stderr)
-            }
-        }
-
+        let observedEventIDs = Set(ekEvents.map(\.id))
         let currentDisabledIDs = Set(config.disabledCalendarIDs)
         let currentDayCount = UpcomingMeetingsWindow.resolve(dayCount: config.upcomingMeetingsDayCount).dayCount
         let currentStartOfDay = Calendar.current.startOfDay(for: Date())
@@ -3817,7 +3733,6 @@ public final class MuesliController: NSObject {
         appState.upcomingCalendarEvents = ekEvents
 
         // Prune hidden IDs only when the widest supported window still cannot see the event.
-        observedEventIDs.formUnion(ekEvents.map(\.id))
         let sourceHints = config.hiddenCalendarEventSourceHints
         let canConfirmMissingEventKitEvents = calendarMonitor.canConfirmMissingEvents
         let canPruneHiddenEvents = disabledIDs.isEmpty
@@ -3832,7 +3747,8 @@ public final class MuesliController: NSObject {
                 case .some(.eventKit):
                     return canConfirmMissingEventKitEvents
                 case .some(.googleCalendar):
-                    return canConfirmMissingGoogleEvents
+                    // Preserve historical Google-only hidden IDs while direct integration is unavailable.
+                    return false
                 case .none:
                     return false
                 }
@@ -3853,8 +3769,7 @@ public final class MuesliController: NSObject {
     }
 
     /// Reconciles only EventKit-backed meetings that have not started. This is
-    /// called from EKEventStoreChangedNotification, never from the Google
-    /// Calendar fallback timer, so participant freshness remains event-driven.
+    /// called from EKEventStoreChangedNotification so participant freshness remains event-driven.
     func reconcilePendingEventKitCalendarAttendees(
         events: [UnifiedCalendarEvent],
         now: Date = Date()
@@ -3907,13 +3822,8 @@ public final class MuesliController: NSObject {
             }
         }
 
-        // 60s fallback timer: polls Google Calendar API (sync token makes this
-        // efficient) and checks the notification window for time-based triggers.
-        // EKEventStoreChangedNotification handles EventKit reactively, but Google
-        // Calendar OAuth has no push mechanism — this timer is the only way to
-        // pick up new/moved events from the API. May be suspended by App Nap on
-        // macOS 26, but combined with the EventKit push path, most cases are covered.
         calendarCheckTimer?.invalidate()
+        // Refresh the date window and time-based notifications between EventKit changes.
         calendarCheckTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             guard let self else { return }
             Task { @MainActor in

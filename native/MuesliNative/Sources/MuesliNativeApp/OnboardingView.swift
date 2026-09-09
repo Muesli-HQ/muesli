@@ -63,10 +63,6 @@ struct OnboardingView: View {
     @State private var modelReadyIndicatorBackend: BackendOption?
     @State private var modelReadyIndicatorTask: Task<Void, Never>?
 
-    // Google Calendar
-    @State private var isSigningInGoogleCal = false
-    @State private var googleCalSignInDone = false
-    @State private var googleCalSignInError: String?
     @State private var hasFinishedOnboarding = false
 
     static let permissionsStep = OnboardingFlow.Step.permissions.rawValue
@@ -180,7 +176,6 @@ struct OnboardingView: View {
                 case 3: permissionsStep
                 case 4: dictationTestStep
                 case 5: meetingSummaryStep
-                case 6: googleCalendarStep
                 default: EmptyView()
                 }
             }
@@ -316,13 +311,6 @@ struct OnboardingView: View {
                 }
             }
         case 5:
-            HStack(spacing: MuesliTheme.spacing12) {
-                skipButton { goToNextStep() }
-                onboardingButton("Continue", enabled: true) {
-                    goToNextStep()
-                }
-            }
-        case 6:
             HStack(spacing: MuesliTheme.spacing12) {
                 skipButton { finishOnboarding(withKey: true) }
                 onboardingButton("Finish", enabled: true) {
@@ -2244,102 +2232,6 @@ struct OnboardingView: View {
             }
             modelReadyIndicatorTask = nil
         }
-    }
-
-    private var googleCalendarStep: some View {
-        VStack(spacing: MuesliTheme.spacing24) {
-            Spacer()
-
-            VStack(spacing: MuesliTheme.spacing8) {
-                Text("Google Calendar")
-                    .font(MuesliTheme.title1())
-                    .foregroundStyle(MuesliTheme.textPrimary)
-
-                Text("Connect Google Calendar to see upcoming meetings.\nYou can set this up later in Settings.")
-                    .font(MuesliTheme.body())
-                    .foregroundStyle(MuesliTheme.textSecondary)
-                    .multilineTextAlignment(.center)
-            }
-
-            VStack(spacing: MuesliTheme.spacing12) {
-                if googleCalSignInDone {
-                    HStack(spacing: 6) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(MuesliTheme.success)
-                        Text("Google Calendar connected")
-                            .font(MuesliTheme.body())
-                            .foregroundStyle(MuesliTheme.textPrimary)
-                    }
-                } else if isSigningInGoogleCal {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Connecting...")
-                            .font(MuesliTheme.body())
-                            .foregroundStyle(MuesliTheme.textSecondary)
-                    }
-                } else if appState.isGoogleCalendarAvailable && !appState.isGoogleCalendarVerified {
-                    VStack(spacing: 6) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "calendar.badge.plus")
-                                .font(.system(size: 14))
-                            Text("Connect Google Calendar")
-                                .font(.system(size: 14, weight: .medium))
-                        }
-                        .foregroundStyle(.white.opacity(0.4))
-                        .padding(.horizontal, MuesliTheme.spacing16)
-                        .padding(.vertical, MuesliTheme.spacing8)
-                        .background(MuesliTheme.textTertiary.opacity(0.3))
-                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-
-                        Text("Google OAuth verification pending")
-                            .font(MuesliTheme.caption())
-                            .foregroundStyle(MuesliTheme.textTertiary)
-                    }
-                } else if appState.isGoogleCalendarAvailable {
-                    Button {
-                        isSigningInGoogleCal = true
-                        googleCalSignInError = nil
-                        Task {
-                            let error = await controller.signInWithGoogleCalendar()
-                            isSigningInGoogleCal = false
-                            if let error {
-                                googleCalSignInError = error
-                            } else {
-                                googleCalSignInDone = true
-                            }
-                        }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "calendar.badge.plus")
-                                .font(.system(size: 14))
-                            Text("Connect Google Calendar")
-                                .font(.system(size: 14, weight: .medium))
-                        }
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, MuesliTheme.spacing16)
-                        .padding(.vertical, MuesliTheme.spacing8)
-                        .background(MuesliTheme.accent)
-                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                    }
-                    .buttonStyle(.plain)
-
-                    if let googleCalSignInError {
-                        Text(googleCalSignInError)
-                            .font(.system(size: 11))
-                            .foregroundStyle(.red)
-                            .multilineTextAlignment(.center)
-                    }
-                } else {
-                    Text("Google Calendar credentials not configured.")
-                        .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.textTertiary)
-                }
-            }
-
-            Spacer()
-        }
-        .padding(.horizontal, MuesliTheme.spacing32)
     }
 
     private func finishOnboarding(withKey: Bool) {
