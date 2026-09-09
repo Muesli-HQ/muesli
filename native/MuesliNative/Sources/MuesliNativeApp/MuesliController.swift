@@ -3221,7 +3221,8 @@ public final class MuesliController: NSObject {
         }
     }
 
-    func ensureQuilModelIsAvailable() -> Bool {
+    func ensureQuilModelIsAvailable(forEnablement: Bool = false) -> Bool {
+        guard forEnablement || config.enableQuilMode else { return false }
         let backend = TranscriptCleanupBackendOption.resolved(config.quilBackend)
         let available: Bool
         switch backend {
@@ -3234,15 +3235,57 @@ public final class MuesliController: NSObject {
                 model: Gemma4LiteRTModel.resolved(config.quilModel)
             )
         default:
-            return true
+            available = !config.quilModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && TranscriptCleanupClient.hasRequiredSettings(
+                    for: backend, config: config,
+                    isChatGPTAuthenticated: chatGPTAuth.isAuthenticated,
+                    modelOverride: config.quilModel
+                )
         }
-        guard available else {
-            updateConfig { $0.enableQuilMode = false }
-            configureQuilHotkeyMonitor()
-            presentLocalModelSetupPrompt(forQuill: true)
-            return false
+        return QuilAvailabilityGate.allow(
+            isEnabled: forEnablement || config.enableQuilMode,
+            isAvailable: { available },
+            onUnavailable: {
+                updateConfig { $0.enableQuilMode = false }
+                configureQuilHotkeyMonitor()
+                if backend.isOnDevice {
+                    presentLocalModelSetupPrompt(forQuill: true)
+                } else {
+                    presentQuilAccountSetupPrompt(backend: backend)
+                }
+            }
+        )
+    }
+
+    private func presentQuilAccountSetupPrompt(backend: TranscriptCleanupBackendOption) {
+        let needsChatGPTSignIn = backend == .hosted(.chatGPT) && !chatGPTAuth.isAuthenticated
+        let needsOpenRouterSignIn = backend == .hosted(.openRouter)
+            && TranscriptCleanupClient.resolvedOpenRouterAPIKey(config: config).isEmpty
+        let action = needsChatGPTSignIn ? "Sign in with ChatGPT"
+            : needsOpenRouterSignIn ? "Connect OpenRouter" : "Open Quill Settings"
+        let alert = NSAlert()
+        alert.messageText = "Set up \(backend.label) for Quill"
+        alert.informativeText = needsChatGPTSignIn
+            ? "Sign in with ChatGPT before enabling Quill. After signing in, enable Quill again."
+            : needsOpenRouterSignIn
+                ? "Connect OpenRouter before enabling Quill. After connecting, enable Quill again."
+                : "Complete the model and connection settings for \(backend.label) before enabling Quill."
+        alert.addButton(withTitle: action)
+        alert.addButton(withTitle: "Cancel")
+        presentAlert(alert, fallbackLogContext: "Quill account setup") { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self else { return }
+            self.appState.selectedSettingsPane = .dictation
+            self.openSettingsTab()
+            guard needsChatGPTSignIn || needsOpenRouterSignIn else { return }
+            Task { @MainActor in
+                let error = needsChatGPTSignIn
+                    ? await self.signInWithChatGPT(selectMeetingSummaryBackend: false)
+                    : await self.signInWithOpenRouter(selectMeetingSummaryBackend: false)
+                if let error {
+                    self.presentErrorAlert(title: "Quill connection failed", message: error)
+                }
+            }
         }
-        return true
     }
 
     func preloadExperimentalTranscriptionFeatures() {
@@ -4604,8 +4647,8 @@ public final class MuesliController: NSObject {
             guard result.didUpdate else { return result }
             validationResult = result
         }
-        if enabled, !ensureQuilModelIsAvailable() {
-            return .unavailable(message: "Choose and download a local model before enabling Quill.")
+        if enabled, !ensureQuilModelIsAvailable(forEnablement: true) {
+            return .unavailable(message: "Complete Quill setup before enabling it.")
         }
         updateConfig { $0.enableQuilMode = enabled }
         configureQuilHotkeyMonitor()

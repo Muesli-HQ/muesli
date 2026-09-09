@@ -154,3 +154,19 @@ enum QuilModelPolicy {
         guard selectedText.count <= limit else { throw QuilTransformationError.selectionTooLong(limit) }
     }
 }
+
+/// Checks readiness before enablement or recording, ignoring callbacks after Quill is disabled.
+enum QuilAvailabilityGate {
+    static func allow(
+        isEnabled: Bool,
+        isAvailable: () -> Bool,
+        onUnavailable: () -> Void
+    ) -> Bool {
+        guard isEnabled else { return false }
+        guard isAvailable() else {
+            onUnavailable()
+            return false
+        }
+        return true
+    }
+}

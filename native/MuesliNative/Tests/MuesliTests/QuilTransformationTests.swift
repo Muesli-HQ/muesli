@@ -227,3 +227,66 @@ struct QuilTransformationTests {
         ))
     }
 }
+
+@Suite("Quill availability gate")
+struct QuilAvailabilityGateTests {
+    @Test("missing setup disables Quill and prompts once across later callbacks")
+    func missingSetupStopsSubsequentCallbacks() {
+        var enabled = true
+        var prompts = 0
+        var hotkeyReconfigurations = 0
+        func attempt() -> Bool {
+            QuilAvailabilityGate.allow(isEnabled: enabled, isAvailable: { false }) {
+                enabled = false
+                prompts += 1
+                hotkeyReconfigurations += 1
+            }
+        }
+        #expect(!attempt())
+        #expect(!enabled)
+        #expect(!attempt()) // A queued prepare or toggle callback after disablement.
+        #expect(prompts == 1)
+        #expect(hotkeyReconfigurations == 1)
+    }
+
+    @Test("ready models allow recording and removed models block the next start")
+    func readinessIsRechecked() {
+        var available = true
+        var prompts = 0
+        #expect(QuilAvailabilityGate.allow(isEnabled: true, isAvailable: { available }) { prompts += 1 })
+        available = false
+        #expect(!QuilAvailabilityGate.allow(isEnabled: true, isAvailable: { available }) { prompts += 1 })
+        #expect(prompts == 1)
+        #expect(!QuilAvailabilityGate.allow(isEnabled: false, isAvailable: { true }) { prompts += 1 })
+        #expect(prompts == 1)
+    }
+
+    @Test("Quill readiness uses its own model rather than the cleanup model")
+    func quillModelOverride() {
+        var config = AppConfig()
+        config.lmStudioURL = "http://localhost:1234"
+        config.postProcessorLMStudioModel = ""
+        #expect(TranscriptCleanupClient.hasRequiredSettings(
+            for: .hosted(.lmStudio), config: config, isChatGPTAuthenticated: false,
+            modelOverride: "quill-model"
+        ))
+        config.postProcessorLMStudioModel = "cleanup-model"
+        #expect(!TranscriptCleanupClient.hasRequiredSettings(
+            for: .hosted(.lmStudio), config: config, isChatGPTAuthenticated: false,
+            modelOverride: ""
+        ))
+    }
+
+    @Test("ChatGPT requires sign-in for Quill readiness")
+    func chatGPTRequiresSignIn() {
+        let config = AppConfig()
+        #expect(!TranscriptCleanupClient.hasRequiredSettings(
+            for: .hosted(.chatGPT), config: config, isChatGPTAuthenticated: false,
+            modelOverride: "gpt-5.6-terra"
+        ))
+        #expect(TranscriptCleanupClient.hasRequiredSettings(
+            for: .hosted(.chatGPT), config: config, isChatGPTAuthenticated: true,
+            modelOverride: "gpt-5.6-terra"
+        ))
+    }
+}

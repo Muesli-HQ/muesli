@@ -83,7 +83,7 @@ enum TranscriptCleanupClient {
         return trimmed.isEmpty ? defaultModel(for: backend) : trimmed
     }
 
-    static func hasRequiredSettings(for backend: TranscriptCleanupBackendOption, config: AppConfig, isChatGPTAuthenticated: Bool) -> Bool {
+    static func hasRequiredSettings(for backend: TranscriptCleanupBackendOption, config: AppConfig, isChatGPTAuthenticated: Bool, modelOverride: String? = nil) -> Bool {
         if backend == .gemma4LiteRT {
             let model = Gemma4LiteRTModel.resolved(config.postProcessorGemmaModel)
             return Gemma4LiteRTModelStore.isAvailableLocally(model: model)
@@ -99,11 +99,11 @@ enum TranscriptCleanupClient {
         case .some(.ollama):
             return resolveConfiguredOllamaURL(config: config) != nil
         case .some(.lmStudio):
-            let model = configuredModel(for: backend, config: config)
+            let model = modelOverride ?? configuredModel(for: backend, config: config)
             return !model.isEmpty
                 && MeetingSummaryClient.resolveLMStudioURL(config: cleanupConfig(config, model: model)) != nil
         case .some(.customLLM):
-            let model = configuredModel(for: backend, config: config)
+            let model = modelOverride ?? configuredModel(for: backend, config: config)
             let format = CustomLLMFormat(rawValue: config.customLLMFormat) ?? .openAI
             let key = config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
             return !model.isEmpty
