@@ -227,3 +227,98 @@ struct QuilTransformationTests {
         ))
     }
 }
+
+@Suite("Quill availability gate")
+struct QuilAvailabilityGateTests {
+    @Test("missing setup disables Quill and prompts once across later callbacks")
+    func missingSetupStopsSubsequentCallbacks() {
+        var enabled = true
+        var prompts = 0
+        var hotkeyReconfigurations = 0
+        func attempt() -> Bool {
+            QuilAvailabilityGate.allow(isEnabled: enabled, isAvailable: { false }) {
+                enabled = false
+                prompts += 1
+                hotkeyReconfigurations += 1
+            }
+        }
+        #expect(!attempt())
+        #expect(!enabled)
+        #expect(!attempt()) // A queued prepare or toggle callback after disablement.
+        #expect(prompts == 1)
+        #expect(hotkeyReconfigurations == 1)
+    }
+
+    @Test("ready models allow recording and removed models block the next start")
+    func readinessIsRechecked() {
+        var available = true
+        var prompts = 0
+        #expect(QuilAvailabilityGate.allow(isEnabled: true, isAvailable: { available }) { prompts += 1 })
+        available = false
+        #expect(!QuilAvailabilityGate.allow(isEnabled: true, isAvailable: { available }) { prompts += 1 })
+        #expect(prompts == 1)
+        #expect(!QuilAvailabilityGate.allow(isEnabled: false, isAvailable: { true }) { prompts += 1 })
+        #expect(prompts == 1)
+    }
+
+    @Test("Quill readiness uses its own model rather than the cleanup model")
+    func quillModelOverride() {
+        var config = AppConfig()
+        config.lmStudioURL = "http://localhost:1234"
+        config.postProcessorLMStudioModel = ""
+        #expect(TranscriptCleanupClient.hasRequiredSettings(
+            for: .hosted(.lmStudio), config: config, isChatGPTAuthenticated: false,
+            modelOverride: "quill-model"
+        ))
+        config.postProcessorLMStudioModel = "cleanup-model"
+        #expect(!TranscriptCleanupClient.hasRequiredSettings(
+            for: .hosted(.lmStudio), config: config, isChatGPTAuthenticated: false,
+            modelOverride: ""
+        ))
+    }
+
+    @Test("ChatGPT requires sign-in for Quill readiness")
+    func chatGPTRequiresSignIn() {
+        let config = AppConfig()
+        #expect(!TranscriptCleanupClient.hasRequiredSettings(
+            for: .hosted(.chatGPT), config: config, isChatGPTAuthenticated: false,
+            modelOverride: "gpt-5.6-terra"
+        ))
+        #expect(TranscriptCleanupClient.hasRequiredSettings(
+            for: .hosted(.chatGPT), config: config, isChatGPTAuthenticated: true,
+            modelOverride: "gpt-5.6-terra"
+        ))
+    }
+}
+
+@Suite("Quill direct audio")
+struct QuilDirectAudioTests {
+    @Test("direct audio requires the exact same Gemma model for both features")
+    func exactModelMatch() {
+        for model in Gemma4LiteRTModel.allCases {
+            #expect(QuilModelPolicy.usesDirectAudio(dictation: .gemma4LiteRT(model), backend: .gemma4LiteRT, model: model.repoID))
+        }
+        #expect(!QuilModelPolicy.usesDirectAudio(dictation: .gemma4E2BLiteRT, backend: .gemma4LiteRT, model: Gemma4LiteRTModel.e4b.repoID))
+        #expect(!QuilModelPolicy.usesDirectAudio(dictation: .parakeetUnified, backend: .gemma4LiteRT, model: Gemma4LiteRTModel.e2b.repoID))
+        #expect(!QuilModelPolicy.usesDirectAudio(dictation: .gemma4E2BLiteRT, backend: .hosted(.chatGPT), model: Gemma4LiteRTModel.e2b.repoID))
+        #expect(!QuilModelPolicy.usesDirectAudio(dictation: .gemma4E2BLiteRT, backend: .gemma4LiteRT, model: "unknown"))
+    }
+
+    @Test("one generation message contains context and the instruction audio")
+    func audioMessage() throws {
+        guard #available(macOS 15, *) else { return }
+        let url = URL(fileURLWithPath: "/tmp/quill-command.wav")
+        let prompt = QuilTransformationPrompt.userPrompt(selectedText: "Original text", instruction: "Use attached audio", appContext: "Document context")
+        let raw = try Gemma4LiteRTTranscriber.generationMessageJSONString(userPrompt: prompt, audioURL: url)
+        let json = try #require(JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any])
+        let content = try #require(json["content"] as? [[String: String]])
+        #expect(content.count == 2)
+        #expect(content[0]["text"] == prompt)
+        #expect(content[1] == ["type": "audio", "path": url.path])
+        #expect(QuilTransformationPrompt.audioSystem.contains(QuilTransformationPrompt.system))
+        #expect(QuilTransformationPrompt.audioSystem.contains("Do not return a transcript"))
+        let textOnly = try Gemma4LiteRTTranscriber.generationMessageJSONString(userPrompt: "Text request", audioURL: nil)
+        let textJSON = try #require(JSONSerialization.jsonObject(with: Data(textOnly.utf8)) as? [String: Any])
+        #expect((textJSON["content"] as? [[String: String]])?.count == 1)
+    }
+}

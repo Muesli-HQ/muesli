@@ -1403,7 +1403,7 @@ struct SettingsView: View {
                     .foregroundStyle(MuesliTheme.transcribing)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            if appState.config.enableQuilMode {
+            Group {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow(
                     "Play Quill sounds",
@@ -1439,7 +1439,7 @@ struct SettingsView: View {
                     settingsRow("Quill model", controlWidth: meetingControlWidth) {
                         if quilLocalModels.isEmpty {
                             compactActionButton("View local models", systemImage: "arrow.right") {
-                                controller.showModels(category: .postProcessing)
+                                controller.showModels(category: .quill)
                             }
                             .frame(width: meetingControlWidth, alignment: .trailing)
                         } else {
@@ -1468,6 +1468,9 @@ struct SettingsView: View {
             let resolved = model ?? .gguf(PostProcessorOption.defaultQuilOption)
             $0.quilBackend = resolved.quilBackend.backend
             $0.quilModel = resolved.quilModelID
+        }
+        if appState.config.enableQuilMode {
+            _ = controller.ensureQuilModelIsAvailable()
         }
     }
 

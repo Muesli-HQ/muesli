@@ -3190,6 +3190,7 @@ public final class MuesliController: NSObject {
             guard let option = normalizePostProcessorSelectionForAvailability(),
                   option.isCompatible(with: selectedBackend) else {
                 updateConfig { $0.enablePostProcessor = false }
+                presentLocalModelSetupPrompt(forQuill: false)
                 return
             }
         }
@@ -3198,11 +3199,93 @@ public final class MuesliController: NSObject {
                model: Gemma4LiteRTModel.resolved(config.postProcessorGemmaModel)
            ) {
             updateConfig { $0.enablePostProcessor = false }
-            showModels(category: .postProcessing)
+            presentLocalModelSetupPrompt(forQuill: false)
             return
         }
         updateConfig { $0.enablePostProcessor = enabled }
         preloadExperimentalTranscriptionFeatures()
+    }
+
+    private func presentLocalModelSetupPrompt(forQuill: Bool) {
+        let feature = forQuill ? "Quill" : "Local cleanup"
+        let alert = NSAlert()
+        alert.messageText = "\(feature) needs a model"
+        alert.informativeText = forQuill
+            ? "Choose a Quill-compatible model in Models and download it if needed. Then choose Use for Quill and enable Quill in Settings. Download sizes and progress are shown in Models."
+            : "Choose a compatible cleanup model in Models and download it if needed. Then return to Settings and enable AI transcript cleanup. Download sizes and progress are shown in Models."
+        alert.addButton(withTitle: "Choose Model…")
+        alert.addButton(withTitle: "Cancel")
+        presentAlert(alert, fallbackLogContext: "local model setup") { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            self?.showModels(category: forQuill ? .quill : .postProcessing)
+        }
+    }
+
+    func ensureQuilModelIsAvailable(forEnablement: Bool = false) -> Bool {
+        guard forEnablement || config.enableQuilMode else { return false }
+        let backend = TranscriptCleanupBackendOption.resolved(config.quilBackend)
+        let available: Bool
+        switch backend {
+        case .local:
+            let model = PostProcessorOption.resolve(id: config.quilModel)
+            available = model.supportsQuil
+                && (model.isDownloaded || Qwen3PostProcessorConfig.devOverrideURL() != nil)
+        case .gemma4LiteRT:
+            available = Gemma4LiteRTModelStore.isAvailableLocally(
+                model: Gemma4LiteRTModel.resolved(config.quilModel)
+            )
+        default:
+            available = !config.quilModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && TranscriptCleanupClient.hasRequiredSettings(
+                    for: backend, config: config,
+                    isChatGPTAuthenticated: chatGPTAuth.isAuthenticated,
+                    modelOverride: config.quilModel
+                )
+        }
+        return QuilAvailabilityGate.allow(
+            isEnabled: forEnablement || config.enableQuilMode,
+            isAvailable: { available },
+            onUnavailable: {
+                updateConfig { $0.enableQuilMode = false }
+                configureQuilHotkeyMonitor()
+                if backend.isOnDevice {
+                    presentLocalModelSetupPrompt(forQuill: true)
+                } else {
+                    presentQuilAccountSetupPrompt(backend: backend)
+                }
+            }
+        )
+    }
+
+    private func presentQuilAccountSetupPrompt(backend: TranscriptCleanupBackendOption) {
+        let needsChatGPTSignIn = backend == .hosted(.chatGPT) && !chatGPTAuth.isAuthenticated
+        let needsOpenRouterSignIn = backend == .hosted(.openRouter)
+            && TranscriptCleanupClient.resolvedOpenRouterAPIKey(config: config).isEmpty
+        let action = needsChatGPTSignIn ? "Sign in with ChatGPT"
+            : needsOpenRouterSignIn ? "Connect OpenRouter" : "Open Quill Settings"
+        let alert = NSAlert()
+        alert.messageText = "Set up \(backend.label) for Quill"
+        alert.informativeText = needsChatGPTSignIn
+            ? "Sign in with ChatGPT before enabling Quill. After signing in, enable Quill again."
+            : needsOpenRouterSignIn
+                ? "Connect OpenRouter before enabling Quill. After connecting, enable Quill again."
+                : "Complete the model and connection settings for \(backend.label) before enabling Quill."
+        alert.addButton(withTitle: action)
+        alert.addButton(withTitle: "Cancel")
+        presentAlert(alert, fallbackLogContext: "Quill account setup") { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self else { return }
+            self.appState.selectedSettingsPane = .dictation
+            self.openSettingsTab()
+            guard needsChatGPTSignIn || needsOpenRouterSignIn else { return }
+            Task { @MainActor in
+                let error = needsChatGPTSignIn
+                    ? await self.signInWithChatGPT(selectMeetingSummaryBackend: false)
+                    : await self.signInWithOpenRouter(selectMeetingSummaryBackend: false)
+                if let error {
+                    self.presentErrorAlert(title: "Quill connection failed", message: error)
+                }
+            }
+        }
     }
 
     func preloadExperimentalTranscriptionFeatures() {
@@ -3254,7 +3337,7 @@ public final class MuesliController: NSObject {
         if option == .local, config.enablePostProcessor {
             guard normalizePostProcessorSelectionForAvailability() != nil else {
                 updateConfig { $0.enablePostProcessor = false }
-                showModels(category: .postProcessing)
+                presentLocalModelSetupPrompt(forQuill: false)
                 return
             }
         }
@@ -3263,7 +3346,7 @@ public final class MuesliController: NSObject {
                model: Gemma4LiteRTModel.resolved(config.postProcessorGemmaModel)
            ) {
             updateConfig { $0.enablePostProcessor = false }
-            showModels(category: .postProcessing)
+            presentLocalModelSetupPrompt(forQuill: false)
             return
         }
         preloadExperimentalTranscriptionFeatures()
@@ -3286,7 +3369,7 @@ public final class MuesliController: NSObject {
         if config.enablePostProcessor,
            !Gemma4LiteRTModelStore.isAvailableLocally(model: model) {
             updateConfig { $0.enablePostProcessor = false }
-            showModels(category: .postProcessing)
+            presentLocalModelSetupPrompt(forQuill: false)
             return
         }
         preloadExperimentalTranscriptionFeatures()
@@ -4563,6 +4646,9 @@ public final class MuesliController: NSObject {
             )
             guard result.didUpdate else { return result }
             validationResult = result
+        }
+        if enabled, !ensureQuilModelIsAvailable(forEnablement: true) {
+            return .unavailable(message: "Complete Quill setup before enabling it.")
         }
         updateConfig { $0.enableQuilMode = enabled }
         configureQuilHotkeyMonitor()
@@ -9071,6 +9157,7 @@ public final class MuesliController: NSObject {
 
     private func handleQuilPrepare() {
         guard canPrepareQuil else { return }
+        guard ensureQuilModelIsAvailable() else { return }
         quilSelectionSnapshot = nil
         quilTargetCaptureError = nil
         meetingMonitor.suppressWhileActive()
@@ -9111,6 +9198,10 @@ public final class MuesliController: NSObject {
 
     private func handleQuilToggleStart() {
         guard canStartQuil else {
+            quilHotkeyMonitor.cancelToggleMode()
+            return
+        }
+        guard ensureQuilModelIsAvailable() else {
             quilHotkeyMonitor.cancelToggleMode()
             return
         }
@@ -9176,32 +9267,43 @@ public final class MuesliController: NSObject {
                 ? PostProcessorOption.defaultQuilOption.id
                 : TranscriptCleanupClient.defaultModel(for: backend))
             : configuredModel
+        let dictationBackend = selectedBackend
+        let directAudio = QuilModelPolicy.usesDirectAudio(dictation: dictationBackend, backend: backend, model: model)
         let configSnapshot = config
         let contextCaptureTask = quilContextCaptureTask
         quilTask = Task { [weak self] in
             guard let self else { return }
             defer { try? FileManager.default.removeItem(at: wavURL) }
             do {
-                let result = try await self.transcriptionCoordinator.transcribeDictation(
-                    at: wavURL,
-                    backend: self.selectedBackend,
-                    cohereLanguage: configSnapshot.resolvedCohereLanguage,
-                    bodhanLanguage: configSnapshot.resolvedBodhanLanguage,
-                    whisperLanguage: configSnapshot.resolvedWhisperLanguage,
-                    qwen3AsrLanguage: configSnapshot.resolvedQwen3AsrLanguage,
-                    parakeetLanguage: configSnapshot.resolvedParakeetLanguage,
-                    appleSpeechLanguage: configSnapshot.resolvedAppleSpeechLanguage,
-                    enablePostProcessor: false,
-                    customWords: self.serializedCustomWords(),
-                    appContext: nil
-                )
-                try Task.checkCancellation()
-                let instruction = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !instruction.isEmpty else { throw QuilTransformationError.emptyInstruction }
-                await MainActor.run {
-                    guard self.quilTaskID == taskID else { return }
-                    self.statusBarController?.setStatus("Rewriting selection")
-                    self.indicator.showQuilInstruction(instruction, config: self.config)
+                let instruction: String
+                if directAudio {
+                    instruction = "Audio instruction"
+                    await MainActor.run {
+                        guard self.quilTaskID == taskID else { return }
+                        self.indicator.setTranscribingTitle("Applying audio instruction", config: self.config)
+                    }
+                } else {
+                    let result = try await self.transcriptionCoordinator.transcribeDictation(
+                        at: wavURL,
+                        backend: dictationBackend,
+                        cohereLanguage: configSnapshot.resolvedCohereLanguage,
+                        bodhanLanguage: configSnapshot.resolvedBodhanLanguage,
+                        whisperLanguage: configSnapshot.resolvedWhisperLanguage,
+                        qwen3AsrLanguage: configSnapshot.resolvedQwen3AsrLanguage,
+                        parakeetLanguage: configSnapshot.resolvedParakeetLanguage,
+                        appleSpeechLanguage: configSnapshot.resolvedAppleSpeechLanguage,
+                        enablePostProcessor: false,
+                        customWords: self.serializedCustomWords(),
+                        appContext: nil
+                    )
+                    try Task.checkCancellation()
+                    instruction = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !instruction.isEmpty else { throw QuilTransformationError.emptyInstruction }
+                    await MainActor.run {
+                        guard self.quilTaskID == taskID else { return }
+                        self.statusBarController?.setStatus("Rewriting selection")
+                        self.indicator.showQuilInstruction(instruction, config: self.config)
+                    }
                 }
                 let capturedContext: DictationContext?
                 if let contextCaptureTask {
@@ -9217,14 +9319,21 @@ public final class MuesliController: NSObject {
                     throw QuilTransformationError.selectionChanged
                 }
                 let promptContext = capturedContext.map { DictationContextCapture.formatForPrompt($0) }
-                let replacement = try await self.transcriptionCoordinator.transformSelectedTextForQuil(
-                    selectedText: snapshot.text,
-                    instruction: instruction,
-                    appContext: promptContext,
-                    backend: backend,
-                    model: model,
-                    config: configSnapshot
-                )
+                let replacement: String
+                if directAudio {
+                    replacement = try await self.transcriptionCoordinator.transformAudioForQuil(
+                        wavURL: wavURL, selectedText: snapshot.text, appContext: promptContext, model: model
+                    )
+                } else {
+                    replacement = try await self.transcriptionCoordinator.transformSelectedTextForQuil(
+                        selectedText: snapshot.text,
+                        instruction: instruction,
+                        appContext: promptContext,
+                        backend: backend,
+                        model: model,
+                        config: configSnapshot
+                    )
+                }
                 try Task.checkCancellation()
                 let selectionStillCurrent = await MainActor.run {
                     snapshot.isStillCurrentForReplacement()

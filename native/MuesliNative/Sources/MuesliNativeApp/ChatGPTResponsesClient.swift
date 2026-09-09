@@ -69,7 +69,12 @@ enum ChatGPTResponsesTransport {
             request.setValue("Muesli/\(appVersion)", forHTTPHeaderField: "User-Agent")
             request.setValue(sessionID.uuidString.lowercased(), forHTTPHeaderField: "session_id")
         }
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        var supportedBody = body
+        if backend == .codex {
+            // ChatGPT's Codex endpoint rejects this public Responses API field.
+            supportedBody.removeValue(forKey: "max_output_tokens")
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: supportedBody)
         return request
     }
 }

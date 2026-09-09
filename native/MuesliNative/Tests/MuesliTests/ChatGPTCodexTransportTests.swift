@@ -4,6 +4,33 @@ import Testing
 
 @Suite("ChatGPT Responses transport")
 struct ChatGPTResponsesTransportTests {
+    @Test("Quill token limits are omitted from Codex requests but retained for WHAM")
+    func quillTokenLimitRespectsTransport() throws {
+        let body = ChatGPTResponsesClient.requestBody(
+            systemPrompt: "Rewrite the selected text",
+            userPrompt: "Make this concise",
+            model: "gpt-5.6-sol",
+            maxOutputTokens: QuilModelPolicy.remoteMaximumOutputTokens
+        )
+        for backend in ["codex", "wham"] {
+            let request = try ChatGPTResponsesTransport.makeRequest(
+                body: body,
+                token: "test-token",
+                accountId: "test-account",
+                environment: [ChatGPTResponsesTransport.environmentKey: backend]
+            )
+            let data = try #require(request.httpBody)
+            let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            if backend == "codex" {
+                #expect(json["max_output_tokens"] == nil)
+            } else {
+                #expect(json["max_output_tokens"] as? Int == QuilModelPolicy.remoteMaximumOutputTokens)
+            }
+            #expect(json["instructions"] as? String == "Rewrite the selected text")
+            #expect(json["stream"] as? Bool == true)
+        }
+    }
+
     @Test("builds Codex Responses requests with honest Muesli identity")
     func buildsCodexRequest() throws {
         let sessionID = UUID(uuidString: "8AF070D8-956D-4706-9FF8-8140CE7F6B2D")!
