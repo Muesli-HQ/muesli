@@ -229,7 +229,7 @@ final class CalendarMonitor {
     /// Returns upcoming timed events from the local macOS calendar (EventKit) for the selected calendar-day window.
     /// All-day events are excluded — they're not useful for meeting recording.
     /// Events from calendars listed in `disabledCalendarIDs` are filtered out.
-    func upcomingEvents(
+    static func upcomingEvents(
         daysAhead: Int = UpcomingMeetingsWindow.defaultDayCount,
         disabledCalendarIDs: Set<String> = [],
         now: Date = Date()

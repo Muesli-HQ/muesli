@@ -424,6 +424,7 @@ public final class MuesliController: NSObject {
     private let dictationLatencyTimestampFormatter = ISO8601DateFormatter()
     private let indicator: FloatingIndicatorController
     private let calendarMonitor = CalendarMonitor()
+    private let calendarEventQuery = CalendarEventQuery()
     private let meetingMonitor = MeetingMonitor()
     private let meetingNotification = MeetingNotificationController()
     private let meetingSourceWindowLocator = MeetingSourceWindowLocator()
@@ -1052,6 +1053,7 @@ public final class MuesliController: NSObject {
         for task in attendeePersistenceTasks {
             _ = await task.value
         }
+        calendarEventQuery.invalidate()
         calendarMonitor.stop()
         calendarCheckTimer?.invalidate()
         calendarCheckTimer = nil
@@ -3715,11 +3717,14 @@ public final class MuesliController: NSObject {
         let refreshStartOfDay = Calendar.current.startOfDay(for: refreshNow)
         let disabledIDs = Set(config.disabledCalendarIDs)
         let dayCount = UpcomingMeetingsWindow.resolve(dayCount: config.upcomingMeetingsDayCount).dayCount
-        let ekEvents = calendarMonitor.upcomingEvents(
-            daysAhead: dayCount,
-            disabledCalendarIDs: disabledIDs,
-            now: refreshNow
-        )
+        guard let result = await calendarEventQuery.load({
+            CalendarMonitor.upcomingEvents(
+                daysAhead: dayCount,
+                disabledCalendarIDs: disabledIDs,
+                now: refreshNow
+            )
+        }), !Task.isCancelled, calendarEventQuery.isCurrent(result) else { return false }
+        let ekEvents = result.events
         let observedEventIDs = Set(ekEvents.map(\.id))
         let currentDisabledIDs = Set(config.disabledCalendarIDs)
         let currentDayCount = UpcomingMeetingsWindow.resolve(dayCount: config.upcomingMeetingsDayCount).dayCount
@@ -3868,6 +3873,7 @@ public final class MuesliController: NSObject {
                 calendarMonitoringStarted = true
             }
         } else if !shouldRun && calendarMonitoringStarted {
+            calendarEventQuery.invalidate()
             calendarMonitor.stop()
             calendarCheckTimer?.invalidate()
             calendarCheckTimer = nil
