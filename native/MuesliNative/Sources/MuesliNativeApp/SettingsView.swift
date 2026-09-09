@@ -189,8 +189,6 @@ struct SettingsView: View {
     @State private var isSigningInOpenRouter = false
     @State private var isEnteringOpenRouterAPIKey = false
     @State private var manualOpenRouterAPIKey = ""
-    @State private var googleCalSignInError: String?
-    @State private var isSigningInGoogleCal = false
     @State private var pendingDataDestruction: PendingDataDestruction?
     @State private var isShowingDictionaryAccessibilityPrompt = false
     @State private var isPreviewingClip = false
@@ -511,6 +509,11 @@ struct SettingsView: View {
                 guard appState.selectedTab == .settings else { return }
                 refreshAudioInputDevices()
                 refreshPermissionStatuses(for: .appActivated)
+                if selectedPane == .meetings {
+                    Task {
+                        await controller.calendarAccessDidChange()
+                    }
+                }
             }
             .onChange(of: appState.selectedBackend) { _, _ in
                 refreshDownloadedModelOptions()
@@ -2119,6 +2122,19 @@ struct SettingsView: View {
             }
 
             settingsSection("Calendars") {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Use calendars already connected to your Mac.")
+                            .font(MuesliTheme.body())
+                        Text("Add or remove accounts in macOS System Settings.")
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textSecondary)
+                    }
+                    Spacer()
+                    Button("Manage accounts…", action: CalendarIntegration.openAccounts)
+                        .buttonStyle(.borderedProminent)
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Upcoming meetings", controlWidth: meetingControlWidth) {
                     settingsMenu(
                         selection: selectedUpcomingMeetingsWindow.label,
@@ -2132,14 +2148,6 @@ struct SettingsView: View {
                 Divider().background(MuesliTheme.surfaceBorder)
                 calendarSourcesControl
                     .padding(.bottom, MuesliTheme.spacing8)
-            }
-
-            if appState.isGoogleCalendarAvailable {
-                settingsSection("Calendar") {
-                    settingsRow("Google Calendar") {
-                        googleCalendarControl
-                    }
-                }
             }
 
             settingsSection("Advanced") {
@@ -2560,94 +2568,6 @@ struct SettingsView: View {
         }
     }
 
-    @ViewBuilder
-    private var googleCalendarControl: some View {
-        if appState.isGoogleCalendarAuthenticated {
-            Button {
-                controller.signOutGoogleCalendar()
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "calendar")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.white)
-                    Text("Connected · Disconnect")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(MuesliTheme.success)
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-            }
-            .buttonStyle(.plain)
-        } else if isSigningInGoogleCal {
-            HStack(spacing: 6) {
-                ProgressView()
-                    .controlSize(.small)
-                Text("Connecting...")
-                    .font(.system(size: 11))
-                    .foregroundStyle(MuesliTheme.textSecondary)
-            }
-        } else if !appState.isGoogleCalendarVerified {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 5) {
-                    Image(systemName: "calendar.badge.plus")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.white.opacity(0.4))
-                    Text("Connect Google Calendar")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.4))
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(MuesliTheme.textTertiary.opacity(0.3))
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-
-                Text("Google OAuth verification pending")
-                    .font(.system(size: 10))
-                    .foregroundStyle(MuesliTheme.textTertiary)
-            }
-        } else {
-            VStack(alignment: .leading, spacing: 4) {
-                Button {
-                    isSigningInGoogleCal = true
-                    googleCalSignInError = nil
-                    Task {
-                        let error = await controller.signInWithGoogleCalendar()
-                        isSigningInGoogleCal = false
-                        googleCalSignInError = error
-                    }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "calendar.badge.plus")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.white)
-                        Text("Connect Google Calendar")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.white)
-                            .lineLimit(1)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(MuesliTheme.accent)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                }
-                .buttonStyle(.plain)
-
-                if let googleCalSignInError {
-                    Text(googleCalSignInError)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.red)
-                        .lineLimit(2)
-                }
-            }
-        }
-    }
 
     private var maraudersMapControl: some View {
         HStack(spacing: MuesliTheme.spacing8) {
@@ -3261,7 +3181,6 @@ struct SettingsView: View {
         let id: String
         let title: String
         let subtitle: String
-        let iconName: String
         let items: [CalendarToggleItem]
     }
 
@@ -3285,25 +3204,6 @@ struct SettingsView: View {
                 id: "ek::\(sourceTitle)",
                 title: sourceTitle,
                 subtitle: calendarSourceSubtitle(for: sourceTitle),
-                iconName: calendarSourceIconName(for: sourceTitle),
-                items: items
-            ))
-        }
-
-        if appState.isGoogleCalendarAuthenticated && !appState.availableGoogleCalendars.isEmpty {
-            let items = appState.availableGoogleCalendars.map { cal in
-                CalendarToggleItem(
-                    id: cal.id,
-                    title: cal.summary + (cal.isPrimary ? " (Primary)" : ""),
-                    colorHex: cal.colorHex,
-                    isEnabled: !disabled.contains(cal.id)
-                )
-            }
-            groups.append(CalendarSourceGroup(
-                id: "google_oauth",
-                title: "Google Calendar",
-                subtitle: "Connected directly to Muesli",
-                iconName: "calendar.badge.plus",
                 items: items
             ))
         }
@@ -3314,13 +3214,11 @@ struct SettingsView: View {
     private var calendarSourcesControl: some View {
         let sourceGroups = calendarSourceGroups
         return VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
-            Text("Calendar sources are listed first, with their calendars underneath. Disabled calendars are hidden from Muesli — no notifications, no Coming Up, no meeting detection.")
-                .font(MuesliTheme.caption())
-                .foregroundStyle(MuesliTheme.textTertiary)
-                .fixedSize(horizontal: false, vertical: true)
-
             if sourceGroups.isEmpty {
-                Text("No calendars detected. Make sure Calendar permission is granted in System Settings > Privacy & Security > Calendars.")
+                CalendarAccessControl(refreshOnActivation: false) {
+                    await controller.calendarAccessDidChange()
+                }
+                Text("No calendars found. Add an account in macOS Internet Accounts and turn on Calendars, or open Calendar to manage local calendars and subscriptions.")
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -3329,17 +3227,18 @@ struct SettingsView: View {
                     calendarSourceGroupView(group)
                 }
             }
-
-            if appState.isGoogleCalendarAuthenticated && !appState.availableEventKitCalendars.isEmpty {
-                Text("Google calendars may appear once from macOS Calendar and once from Muesli's Google connection. Turn off both copies to hide that calendar completely.")
+            Divider().background(MuesliTheme.surfaceBorder)
+            HStack(alignment: .top) {
+                Text("Uncheck a calendar to hide its meetings and notifications in Muesli.")
                     .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                Spacer()
+                Button("Open Calendar…", action: CalendarIntegration.openCalendar)
+                    .buttonStyle(.link)
             }
-
-            if appState.isGoogleCalendarAuthenticated {
-                googleCalendarListLoadStateView
-            }
+            Text("Manage accounts opens Internet Accounts. Changes there also affect other apps on this Mac.")
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textTertiary)
         }
     }
 
@@ -3347,10 +3246,10 @@ struct SettingsView: View {
     private func calendarSourceGroupView(_ group: CalendarSourceGroup) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
-                Image(systemName: group.iconName)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(MuesliTheme.textSecondary)
-                    .frame(width: 18, height: 18)
+                Image(nsImage: CalendarIntegration.calendarIcon)
+                    .resizable()
+                    .frame(width: 32, height: 32)
+                    .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(group.title)
@@ -3375,9 +3274,12 @@ struct SettingsView: View {
                     calendarToggleButton(item)
                 }
             }
-            .padding(.leading, 28)
         }
-        .padding(.vertical, 2)
+        .padding(MuesliTheme.spacing16)
+        .background(MuesliTheme.surfacePrimary)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        .overlay(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+            .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1))
     }
 
     private func calendarSourceSubtitle(for sourceTitle: String) -> String {
@@ -3392,20 +3294,6 @@ struct SettingsView: View {
             return "System calendars from macOS"
         }
         return "Calendar account in macOS"
-    }
-
-    private func calendarSourceIconName(for sourceTitle: String) -> String {
-        let normalized = sourceTitle.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if normalized == "icloud" {
-            return "icloud"
-        }
-        if normalized == "subscribed calendars" {
-            return "calendar.badge.clock"
-        }
-        if normalized == "other" {
-            return "person.crop.circle.badge.clock"
-        }
-        return "calendar"
     }
 
     private func calendarToggleButton(_ item: CalendarToggleItem) -> some View {
@@ -3436,38 +3324,15 @@ struct SettingsView: View {
             )
         }
         .buttonStyle(.plain)
-    }
-
-    @ViewBuilder
-    private var googleCalendarListLoadStateView: some View {
-        switch appState.googleCalendarListLoadState {
-        case .loading:
-            Text("Loading Google calendars…")
-                .font(MuesliTheme.caption())
-                .foregroundStyle(MuesliTheme.textTertiary)
-        case .failed(let message):
-            HStack(spacing: 8) {
-                Text("Failed to load Google calendars: \(message)")
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textTertiary)
-                Button("Retry") {
-                    Task { await controller.refreshGoogleCalendarList() }
-                }
-                .buttonStyle(.link)
-                .font(MuesliTheme.caption())
-            }
-        case .idle, .loaded:
-            EmptyView()
-        }
+        .accessibilityLabel(item.title)
+        .accessibilityValue(item.isEnabled ? "Included" : "Hidden")
     }
 
     private func refreshMeetingCalendarSourcesIfNeeded() {
         guard !hasRefreshedMeetingCalendarSources else { return }
         hasRefreshedMeetingCalendarSources = true
         Task {
-            async let eventKitRefresh: Void = controller.refreshAvailableEventKitCalendars()
-            async let googleRefresh: Void = controller.refreshGoogleCalendarList()
-            _ = await (eventKitRefresh, googleRefresh)
+            await controller.refreshAvailableEventKitCalendars()
         }
     }
 
