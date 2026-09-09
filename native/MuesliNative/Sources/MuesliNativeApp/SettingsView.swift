@@ -511,8 +511,7 @@ struct SettingsView: View {
                 refreshPermissionStatuses(for: .appActivated)
                 if selectedPane == .meetings {
                     Task {
-                        await controller.refreshAvailableEventKitCalendars()
-                        await controller.refreshUpcomingCalendarEvents()
+                        await controller.calendarAccessDidChange()
                     }
                 }
             }
@@ -3217,8 +3216,7 @@ struct SettingsView: View {
         return VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
             if sourceGroups.isEmpty {
                 CalendarAccessControl {
-                    await controller.refreshAvailableEventKitCalendars()
-                    await controller.refreshUpcomingCalendarEvents()
+                    await controller.calendarAccessDidChange()
                 }
                 Text("No calendars found. Add an account in macOS Internet Accounts and turn on Calendars, or open Calendar to manage local calendars and subscriptions.")
                     .font(MuesliTheme.caption())

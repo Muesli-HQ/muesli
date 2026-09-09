@@ -74,7 +74,22 @@ final class CalendarMonitor {
         case running(Int)
     }
 
-    private let store = EKEventStore()
+    private let store: EKEventStore
+    private let authorizationStatus: () -> EKAuthorizationStatus
+    private let requestAccess: (@escaping @Sendable (Bool, Error?) -> Void) -> Void
+    private let notificationCenter: NotificationCenter
+
+    init(
+        store: EKEventStore = EKEventStore(),
+        authorizationStatus: @escaping () -> EKAuthorizationStatus = { EKEventStore.authorizationStatus(for: .event) },
+        requestAccess: ((@escaping @Sendable (Bool, Error?) -> Void) -> Void)? = nil,
+        notificationCenter: NotificationCenter = .default
+    ) {
+        self.store = store
+        self.authorizationStatus = authorizationStatus
+        self.requestAccess = requestAccess ?? { completion in store.requestFullAccessToEvents(completion: completion) }
+        self.notificationCenter = notificationCenter
+    }
     private var changeObserver: NSObjectProtocol?
     private var generation = 0
     private var state: State = .stopped
@@ -93,12 +108,12 @@ final class CalendarMonitor {
         let token = generation
         state = .requesting(token)
 
-        store.requestFullAccessToEvents { [weak self] granted, error in
+        requestAccess { [weak self] granted, error in
             DispatchQueue.main.async {
                 guard let self else { return }
                 guard case .requesting(let activeToken) = self.state, activeToken == token else { return }
 
-                if !granted {
+                if !granted || !self.canConfirmMissingEvents {
                     self.state = .stopped
                     fputs("[calendar] calendar access denied: \(error?.localizedDescription ?? "none")\n", stderr)
                     return
@@ -117,7 +132,7 @@ final class CalendarMonitor {
     }
 
     var canConfirmMissingEvents: Bool {
-        switch EKEventStore.authorizationStatus(for: .event) {
+        switch authorizationStatus() {
         case .fullAccess, .authorized:
             return true
         case .notDetermined, .restricted, .denied, .writeOnly:
@@ -135,7 +150,7 @@ final class CalendarMonitor {
         // is added, modified, or deleted — including synced changes from
         // Google Calendar, iCloud, Exchange, etc. This is push-based and
         // works regardless of App Nap or LSUIElement status.
-        changeObserver = NotificationCenter.default.addObserver(
+        changeObserver = notificationCenter.addObserver(
             forName: .EKEventStoreChanged,
             object: store,
             queue: .main
@@ -146,7 +161,7 @@ final class CalendarMonitor {
 
     private func removeObserver() {
         if let changeObserver {
-            NotificationCenter.default.removeObserver(changeObserver)
+            notificationCenter.removeObserver(changeObserver)
             self.changeObserver = nil
         }
     }

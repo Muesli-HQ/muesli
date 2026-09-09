@@ -3850,12 +3850,23 @@ public final class MuesliController: NSObject {
         }
     }
 
+    /// Reconcile authorization immediately after an explicit grant or return from Settings.
+    func calendarAccessDidChange() async {
+        syncCalendarMonitor()
+        await refreshAvailableEventKitCalendars()
+        await refreshUpcomingCalendarEvents()
+    }
+
     private func syncCalendarMonitor() {
         let shouldRun = meetingFeatureMonitorsAllowed && shouldRunCalendarMonitor
-        if shouldRun && !calendarMonitoringStarted {
+        if shouldRun {
+            // start() is idempotent, including while an access callback is pending.
+            // A timer may already exist from before the user granted permission.
             calendarMonitor.start()
-            startCalendarMonitoring()
-            calendarMonitoringStarted = true
+            if !calendarMonitoringStarted {
+                startCalendarMonitoring()
+                calendarMonitoringStarted = true
+            }
         } else if !shouldRun && calendarMonitoringStarted {
             calendarMonitor.stop()
             calendarCheckTimer?.invalidate()

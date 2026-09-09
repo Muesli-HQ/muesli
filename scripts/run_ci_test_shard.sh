@@ -134,6 +134,7 @@ case "${shard}" in
       MeetingTemplateResolutionTests
       MeetingTemplatesDefaultFallbackTests
       RouteAwareMeetingMicRecorderTests
+      CalendarMonitorLifecycleTests
       DisabledCalendarFilterTests
       GoogleCalendarTests
     )

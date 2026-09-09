@@ -2255,8 +2255,7 @@ struct OnboardingView: View {
                 .font(MuesliTheme.body())
                 .foregroundStyle(MuesliTheme.textSecondary)
             CalendarAccessControl {
-                await controller.refreshAvailableEventKitCalendars()
-                await controller.refreshUpcomingCalendarEvents()
+                await controller.calendarAccessDidChange()
             }
             Button("Set up calendar accounts…", action: CalendarIntegration.openAccounts)
                 .buttonStyle(.link)
