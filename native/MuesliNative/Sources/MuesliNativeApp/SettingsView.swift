@@ -1403,7 +1403,7 @@ struct SettingsView: View {
                     .foregroundStyle(MuesliTheme.transcribing)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            if appState.config.enableQuilMode {
+            Group {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow(
                     "Play Quill sounds",
@@ -1468,6 +1468,9 @@ struct SettingsView: View {
             let resolved = model ?? .gguf(PostProcessorOption.defaultQuilOption)
             $0.quilBackend = resolved.quilBackend.backend
             $0.quilModel = resolved.quilModelID
+        }
+        if appState.config.enableQuilMode {
+            _ = controller.ensureQuilModelIsAvailable()
         }
     }
 

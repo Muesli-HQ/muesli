@@ -3190,6 +3190,7 @@ public final class MuesliController: NSObject {
             guard let option = normalizePostProcessorSelectionForAvailability(),
                   option.isCompatible(with: selectedBackend) else {
                 updateConfig { $0.enablePostProcessor = false }
+                presentLocalModelSetupPrompt(forQuill: false)
                 return
             }
         }
@@ -3198,11 +3199,50 @@ public final class MuesliController: NSObject {
                model: Gemma4LiteRTModel.resolved(config.postProcessorGemmaModel)
            ) {
             updateConfig { $0.enablePostProcessor = false }
-            showModels(category: .postProcessing)
+            presentLocalModelSetupPrompt(forQuill: false)
             return
         }
         updateConfig { $0.enablePostProcessor = enabled }
         preloadExperimentalTranscriptionFeatures()
+    }
+
+    private func presentLocalModelSetupPrompt(forQuill: Bool) {
+        let feature = forQuill ? "Quill" : "Local cleanup"
+        let alert = NSAlert()
+        alert.messageText = "\(feature) needs a model"
+        alert.informativeText = forQuill
+            ? "Choose a Quill-compatible model in Models and download it if needed. Then select it in Quill settings and enable Quill again. Download sizes and progress are shown in Models."
+            : "Choose a compatible cleanup model in Models and download it if needed. Then return to Settings and enable AI transcript cleanup. Download sizes and progress are shown in Models."
+        alert.addButton(withTitle: "Choose Model…")
+        alert.addButton(withTitle: "Cancel")
+        presentAlert(alert, fallbackLogContext: "local model setup") { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            self?.showModels(category: .postProcessing)
+        }
+    }
+
+    func ensureQuilModelIsAvailable() -> Bool {
+        let backend = TranscriptCleanupBackendOption.resolved(config.quilBackend)
+        let available: Bool
+        switch backend {
+        case .local:
+            let model = PostProcessorOption.resolve(id: config.quilModel)
+            available = model.supportsQuil
+                && (model.isDownloaded || Qwen3PostProcessorConfig.devOverrideURL() != nil)
+        case .gemma4LiteRT:
+            available = Gemma4LiteRTModelStore.isAvailableLocally(
+                model: Gemma4LiteRTModel.resolved(config.quilModel)
+            )
+        default:
+            return true
+        }
+        guard available else {
+            updateConfig { $0.enableQuilMode = false }
+            configureQuilHotkeyMonitor()
+            presentLocalModelSetupPrompt(forQuill: true)
+            return false
+        }
+        return true
     }
 
     func preloadExperimentalTranscriptionFeatures() {
@@ -3254,7 +3294,7 @@ public final class MuesliController: NSObject {
         if option == .local, config.enablePostProcessor {
             guard normalizePostProcessorSelectionForAvailability() != nil else {
                 updateConfig { $0.enablePostProcessor = false }
-                showModels(category: .postProcessing)
+                presentLocalModelSetupPrompt(forQuill: false)
                 return
             }
         }
@@ -3263,7 +3303,7 @@ public final class MuesliController: NSObject {
                model: Gemma4LiteRTModel.resolved(config.postProcessorGemmaModel)
            ) {
             updateConfig { $0.enablePostProcessor = false }
-            showModels(category: .postProcessing)
+            presentLocalModelSetupPrompt(forQuill: false)
             return
         }
         preloadExperimentalTranscriptionFeatures()
@@ -3286,7 +3326,7 @@ public final class MuesliController: NSObject {
         if config.enablePostProcessor,
            !Gemma4LiteRTModelStore.isAvailableLocally(model: model) {
             updateConfig { $0.enablePostProcessor = false }
-            showModels(category: .postProcessing)
+            presentLocalModelSetupPrompt(forQuill: false)
             return
         }
         preloadExperimentalTranscriptionFeatures()
@@ -4563,6 +4603,9 @@ public final class MuesliController: NSObject {
             )
             guard result.didUpdate else { return result }
             validationResult = result
+        }
+        if enabled, !ensureQuilModelIsAvailable() {
+            return .unavailable(message: "Choose and download a local model before enabling Quill.")
         }
         updateConfig { $0.enableQuilMode = enabled }
         configureQuilHotkeyMonitor()
@@ -9071,6 +9114,7 @@ public final class MuesliController: NSObject {
 
     private func handleQuilPrepare() {
         guard canPrepareQuil else { return }
+        guard ensureQuilModelIsAvailable() else { return }
         quilSelectionSnapshot = nil
         quilTargetCaptureError = nil
         meetingMonitor.suppressWhileActive()
@@ -9111,6 +9155,10 @@ public final class MuesliController: NSObject {
 
     private func handleQuilToggleStart() {
         guard canStartQuil else {
+            quilHotkeyMonitor.cancelToggleMode()
+            return
+        }
+        guard ensureQuilModelIsAvailable() else {
             quilHotkeyMonitor.cancelToggleMode()
             return
         }
