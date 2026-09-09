@@ -33,6 +33,9 @@ enum CalendarIntegration {
 }
 
 struct CalendarAccessControl: View {
+    // Settings owns activation refreshes for the whole pane, including existing calendars.
+    // Onboarding uses this control's handler because it has no equivalent parent refresh.
+    var refreshOnActivation = true
     var onGranted: () async -> Void
     @State private var status = EKEventStore.authorizationStatus(for: .event)
     @State private var requesting = false
@@ -79,7 +82,7 @@ struct CalendarAccessControl: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             status = EKEventStore.authorizationStatus(for: .event)
-            if granted { Task { await onGranted() } }
+            if granted && refreshOnActivation && !requesting { Task { await onGranted() } }
         }
     }
 }

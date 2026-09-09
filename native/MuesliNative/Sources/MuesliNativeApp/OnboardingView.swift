@@ -318,8 +318,7 @@ struct OnboardingView: View {
             }
         case 6:
             HStack(spacing: MuesliTheme.spacing12) {
-                Button("Not now") { finishOnboarding(withKey: true) }
-                    .buttonStyle(.plain)
+                skipButton("Not now") { finishOnboarding(withKey: true) }
                 onboardingButton("Finish", enabled: true) {
                     finishOnboarding(withKey: true)
                 }
@@ -359,8 +358,8 @@ struct OnboardingView: View {
     }
 
     @ViewBuilder
-    private func skipButton(action: @escaping () -> Void) -> some View {
-        Button("Skip", action: action)
+    private func skipButton(_ title: String = "Skip", action: @escaping () -> Void) -> some View {
+        Button(title, action: action)
             .buttonStyle(.plain)
             .font(MuesliTheme.body())
             .foregroundStyle(MuesliTheme.textSecondary)

@@ -3215,7 +3215,7 @@ struct SettingsView: View {
         let sourceGroups = calendarSourceGroups
         return VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
             if sourceGroups.isEmpty {
-                CalendarAccessControl {
+                CalendarAccessControl(refreshOnActivation: false) {
                     await controller.calendarAccessDidChange()
                 }
                 Text("No calendars found. Add an account in macOS Internet Accounts and turn on Calendars, or open Calendar to manage local calendars and subscriptions.")
