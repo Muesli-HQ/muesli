@@ -57,7 +57,7 @@ Live transcription is off by default. Choose Apple Speech, or download Parakeet 
 - **Speaker diarization** — Identifies individual speakers in system audio (Speaker 1, Speaker 2, etc.) using FluidAudio's pyannote-based CoreML diarization model.
 - **Camera-based meeting detection** — Detects when your webcam + mic activate in a recognized meeting app (Zoom, Chrome, Teams, FaceTime, Slack, WhatsApp). Camera alone (e.g. Photo Booth) won't trigger false positives.
 - **Join & Transcribe** — Extracts meeting URLs from calendar events (Zoom, Google Meet, Teams, Webex, Chime, FaceTime). Split-button notification: "Join & Transcribe" opens the meeting + starts transcription, "Join Only" opens without transcribing, "Transcribe Only" starts transcription without joining. Platform icons (Zoom, Meet) in the notification panel.
-- **Google Calendar integration** — Connect your Google Calendar to see upcoming meetings in the Coming Up section and status bar. Choose whether Muesli watches today, two days, or three days of upcoming events. Event-driven notifications via `EKEventStoreChangedNotification` for instant calendar change detection. Pre-meeting countdowns via Marauder's Map easter egg.
+- **macOS Calendar integration** — See upcoming meetings from calendars connected to your Mac, including iCloud, Google, and Exchange, in the Coming Up section and status bar. Choose whether Muesli watches today, two days, or three days of upcoming events. Event-driven notifications via `EKEventStoreChangedNotification` for instant calendar change detection. Pre-meeting countdowns via Marauder's Map easter egg.
 - **Import Audio** — Import m4a, mp4, wav, or mp3 files for offline transcription, speaker diarization, title generation, summaries, and saved meeting history.
 - **Meeting export** — Export meeting notes or transcripts as PDF (paginated US Letter) or Markdown. Format picker in the save panel, auto-opens the exported file.
 - **Meeting templates** — Built-in and custom templates for meeting notes. Choose a template before or after recording — re-summarize any meeting with a different template.
@@ -402,7 +402,19 @@ Muesli needs these macOS permissions (guided during onboarding):
 | **Accessibility** | Simulate Cmd+V to paste transcribed text |
 | **Input Monitoring** | Detect hotkey presses globally |
 | **Camera** *(implicit)* | Detect webcam activation for meeting detection |
-| **Calendar** *(optional)* | Show upcoming meetings from Google Calendar |
+| **Calendar** *(optional)* | Read calendars connected to macOS to show upcoming meetings and reminders |
+
+---
+
+## Calendar setup and management
+
+Muesli uses macOS Calendar through EventKit. A direct Google Calendar sign-in is not currently available in Muesli.
+
+1. In **System Settings → Internet Accounts**, add your Google, Exchange, or other calendar account and enable **Calendars**. Accounts already available in Apple Calendar can be used by Muesli.
+2. Allow Muesli full Calendar access during onboarding or from **Settings → Meetings → Calendars**. If access was denied, use **Open Calendar Privacy Settings…** to enable it in macOS. Calendar access is optional; you can choose **Not now** during onboarding.
+3. In Muesli's **Settings → Meetings → Calendars**, select which calendars to include. Unchecking a calendar hides its meetings and notifications in Muesli without deleting calendar data.
+
+**Manage accounts…** opens macOS Internet Accounts, where you can add or remove accounts. Account changes there also affect other apps on your Mac. **Open Calendar…** opens Apple Calendar, where you can create or delete individual calendars and manage subscriptions. Muesli refreshes its calendar list when you return from macOS settings.
 
 ---
 
@@ -421,7 +433,7 @@ Muesli needs these macOS permissions (guided during onboarding):
 | Camera detection | CoreMediaIO property listeners (event-driven) |
 | System audio | CoreAudio process tap by default; ScreenCaptureKit (`SCStream`) fallback |
 | Meeting notes | OpenAI / OpenRouter (BYOK), ChatGPT subscription (OAuth), or Ollama |
-| Calendar | Google Calendar API (OAuth 2.0) |
+| Calendar | Apple EventKit (macOS Calendar accounts) |
 | Sync | CloudKit private database for text-only iCloud sync |
 | Automation | Computer Use planner and post-meeting executable hooks |
 | Export | PDF (NSPrintOperation, paginated US Letter) + Markdown |
@@ -443,7 +455,7 @@ swift test --package-path native/MuesliNative
 ./scripts/test_packaged_cli.sh
 ```
 
-1,148 tests covering model configuration, custom word and phrase matching, filler removal, transcription routing, data persistence, CLI contract/path-resolution logic, speaker diarization alignment, token consolidation, camera-based meeting detection, CoreAudio system capture, ChatGPT OAuth logic, Ollama summaries, update-flow policy, launch at login, paste/clipboard safety, meeting export, meeting navigation, upcoming-meeting window behavior, and Google Calendar URL extraction.
+1,148 tests covering model configuration, custom word and phrase matching, filler removal, transcription routing, data persistence, CLI contract/path-resolution logic, speaker diarization alignment, token consolidation, camera-based meeting detection, CoreAudio system capture, ChatGPT OAuth logic, Ollama summaries, update-flow policy, launch at login, paste/clipboard safety, meeting export, meeting navigation, upcoming-meeting window behavior, and calendar meeting URL extraction.
 
 Current test scope:
 
