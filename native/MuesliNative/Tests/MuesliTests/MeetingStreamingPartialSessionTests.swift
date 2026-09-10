@@ -412,6 +412,9 @@ struct MeetingStreamingPartialSessionTests {
         await session.connect()
 
         for index in 0..<(MeetingStreamingPartialSession.maxFrozenSegments + 2) {
+            // Queued audio is processed only after the preceding restart finishes.
+            session.enqueue(samples(chunkCount: 1))
+            #expect(await waitUntil { engine.processCalls == index + 1 })
             engine.emit("[segment\(index)]")
             #expect(await waitUntil { collector.latest?.contains("[segment\(index)]") == true })
             session.markSegmentBoundary(id: UUID())
