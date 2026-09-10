@@ -6,6 +6,27 @@
         <language>en</language>
         <!-- Items are added by generate_appcast or the release script -->
         <item>
+            <title>0.8.4</title>
+            <pubDate>Thu, 10 Sep 2026 04:14:59 +0530</pubDate>
+            <description><![CDATA[
+<h2>New in Muesli 0.8.4</h2>
+<ul>
+<li>Use Quill to rewrite selected text or generate text with spoken instructions.</li>
+<li>Adds Bodhan for Indic languages, improved Parakeet and Qwen3 options, English S1-mini cleanup, and optional OpenAI/OpenRouter dictation.</li>
+<li>Use Apple Speech live meeting transcription on macOS 26+, and re-summarize saved meetings with another model.</li>
+<li>Manage connected macOS calendars with clearer account links and optional onboarding access.</li>
+<li>Recover legacy iCloud sync connections with clearer setup and recovery controls.</li>
+<li>Enjoy more reliable audio capture, downloads, permissions, pasting, and refreshed interface layouts.</li>
+</ul>
+<p>Dictation and meeting transcription remain local by default. Live meeting transcription is off by default. Optional hosted dictation sends audio to the selected provider; hosted cleanup, Quill, and summaries send the input needed for those features when selected. iCloud sync transfers text and sync metadata, not audio.</p>
+]]></description>
+            <sparkle:version>0.8.4</sparkle:version>
+            <sparkle:shortVersionString>0.8.4</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.8.4/Muesli-0.8.4.dmg" length="102857825" type="application/octet-stream" sparkle:edSignature="qfyNtlV+JjouZRn7IlBrWd4MVt/6ZzVe/2WHiuf9gJDbTAh89+1TACbBs2eYt6j6YZYi2CESt0iTeNVBpERXDQ=="/>
+        </item>
+        <item>
             <title>0.8.3</title>
             <pubDate>Tue, 18 Aug 2026 18:44:18 +0530</pubDate>
             <description><![CDATA[
