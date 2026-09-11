@@ -660,8 +660,8 @@ struct MeetingsNavigationTests {
         #expect(try store.meeting(id: meetingID) != nil)
     }
 
-    @Test("retranscribe missing recording preserves completed meeting status")
-    func retranscribeMissingRecordingPreservesCompletedStatus() async throws {
+    @Test("retranscribe missing recording preserves the original meeting", arguments: [MeetingStatus.completed, .failed])
+    func retranscribeMissingRecordingPreservesMeeting(status: MeetingStatus) async throws {
         let store = try makeStore()
         let missingRecordingURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("missing-meeting-recording-\(UUID().uuidString).wav")
@@ -677,6 +677,8 @@ struct MeetingsNavigationTests {
             systemAudioPath: nil,
             savedRecordingPath: missingRecordingURL.path
         )
+        try store.updateMeetingStatus(id: meetingID, status: status)
+        try store.updateMeetingManualNotes(id: meetingID, manualNotes: "Original manual notes")
         let controller = MuesliController(
             runtime: RuntimePaths(
                 repoRoot: FileManager.default.temporaryDirectory,
@@ -698,13 +700,21 @@ struct MeetingsNavigationTests {
         case .success:
             Issue.record("Expected re-transcription to fail when the retained recording is missing")
         case .failure(let error):
-            #expect(error is MeetingRetranscriptionError)
+            guard case MeetingRetranscriptionError.recordingUnavailable = error else {
+                Issue.record("Expected recordingUnavailable, got \(error)")
+                return
+            }
         }
 
         let updated = try #require(try store.meeting(id: meetingID))
-        #expect(updated.status == .completed)
+        #expect(updated.status == status)
+        #expect(updated.id == meeting.id)
+        #expect(updated.title == meeting.title)
         #expect(updated.rawTranscript == "Existing transcript")
         #expect(updated.formattedNotes == "## Existing notes")
+        #expect(updated.manualNotes == "Original manual notes")
+        #expect(updated.savedRecordingPath == missingRecordingURL.path)
+        #expect(try store.meetingCounts().total == 1)
     }
 
     @Test("retranscribe empty transcript restores original meeting status")

@@ -172,6 +172,76 @@ struct WindowAppearanceTests {
         return lifecycle.appearanceCount > 0
     }
 
+    @Test("failed meetings retain an enabled recovery action and editable manual notes", arguments: [520.0, 900.0])
+    func failedMeetingRecoveryControls(width: Double) async throws {
+        let detail = try MeetingRecoveryDetailHost(width: width)
+        await detail.settle()
+
+        let buttons = detail.elements(identifier: "meeting.retranscribe")
+        #expect(buttons.count == 1)
+        let button = try #require(buttons.first)
+        #expect(button.accessibilityRole() == .button)
+        #expect(button.accessibilityLabel() == "Re-transcribe")
+        #expect(button.isAccessibilityEnabled())
+        #expect(detail.textViews.contains { $0.isEditable && $0.string == "Original manual notes" })
+    }
+
+    @Test("failed meetings without a saved audio path have no recovery action",
+          arguments: [520.0, 900.0], [nil, "", " \n\t "] as [String?])
+    func failedMeetingWithoutAudioHasNoRecovery(width: Double, path: String?) async throws {
+        let detail = try MeetingRecoveryDetailHost(width: width, savedRecordingPath: path)
+        await detail.settle()
+
+        #expect(detail.elements(identifier: "meeting.retranscribe").isEmpty)
+        #expect(detail.elements(identifier: "meeting.retranscription.progress").isEmpty)
+    }
+
+    @Test("completed meetings have one retry and other active or note-only meetings have none",
+          arguments: [520.0, 900.0], [MeetingStatus.completed, .recording, .processing, .noteOnly])
+    func meetingRecoveryDoesNotDuplicateExistingActions(width: Double, status: MeetingStatus) async throws {
+        let detail = try MeetingRecoveryDetailHost(width: width, status: status)
+        await detail.settle()
+
+        let buttons = detail.elements(identifier: "meeting.retranscribe")
+        #expect(buttons.count == (status == .completed ? 1 : 0))
+        #expect(detail.elements(identifier: "meeting.retranscription.progress").isEmpty)
+        if status == .completed {
+            #expect(try #require(buttons.first).isAccessibilityEnabled())
+            let edit = try #require(detail.accessibilityElements.first {
+                $0.accessibilityRole() == .button && $0.accessibilityLabel() == "Edit Notes"
+            })
+            #expect(edit.accessibilityPerformPress())
+            await detail.settle()
+            #expect(try #require(detail.elements(identifier: "meeting.retranscribe").first).isAccessibilityEnabled() == false)
+        }
+    }
+
+    @Test("retry keeps progress visible through processing and restores recovery after failure", arguments: [520.0, 900.0])
+    func meetingRecoveryBusyAndFailureStates(width: Double) async throws {
+        let detail = try MeetingRecoveryDetailHost(width: width)
+        await detail.settle()
+        let button = try #require(detail.elements(identifier: "meeting.retranscribe").first)
+        #expect(button.accessibilityPerformPress())
+
+        // Inspect the synchronous local busy state before the controller's MainActor task runs.
+        detail.hostingView.layoutSubtreeIfNeeded()
+        #expect(detail.elements(identifier: "meeting.retranscribe").isEmpty)
+        #expect(detail.elements(identifier: "meeting.retranscription.progress").count == 1)
+
+        // Publish the same status transition used by the controller without needing a downloaded model.
+        try detail.setStatus(.processing)
+        #expect(detail.elements(identifier: "meeting.retranscribe").isEmpty)
+        #expect(detail.elements(identifier: "meeting.retranscription.progress").count == 1)
+        #expect(detail.textViews.allSatisfy { !$0.isEditable })
+
+        try detail.setStatus(.failed)
+        await detail.settle()
+        #expect(detail.elements(identifier: "meeting.retranscription.progress").isEmpty)
+        #expect(detail.elements(identifier: "meeting.retranscribe").count == 1)
+        #expect(try #require(detail.elements(identifier: "meeting.retranscribe").first).isAccessibilityEnabled())
+        #expect(try detail.store.meeting(id: detail.meetingID)?.status == .failed)
+    }
+
     @Test("dashboard wires the production sidebar toggle and compact meeting header")
     func dashboardWiresProductionSidebarAndCompactMeetingComposition() {
         let supportDirectory = FileManager.default.temporaryDirectory
@@ -236,6 +306,97 @@ struct WindowAppearanceTests {
         #expect(image?.size.height == DashboardWindowLayout.minimumContentHeight)
     }
 
+}
+
+@MainActor
+private final class MeetingRecoveryDetailHost {
+    let store: DictationStore
+    let controller: MuesliController
+    let meetingID: Int64
+    let hostingView: NSHostingView<AnyView>
+    let window: NSWindow
+    private let width: Double
+
+    init(
+        width: Double,
+        status: MeetingStatus = .failed,
+        savedRecordingPath: String? = "/missing/retained-meeting.wav"
+    ) throws {
+        self.width = width
+        let supportDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-recovery-view-test-\(UUID().uuidString)", isDirectory: true)
+        store = DictationStore(databaseURL: supportDirectory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        meetingID = try store.insertMeeting(
+            title: "Retry meeting",
+            calendarEventID: nil,
+            startTime: Date(),
+            endTime: Date(),
+            rawTranscript: "Original transcript",
+            formattedNotes: "## Original notes",
+            micAudioPath: nil,
+            systemAudioPath: nil,
+            savedRecordingPath: savedRecordingPath
+        )
+        try store.updateMeetingStatus(id: meetingID, status: status)
+        try store.updateMeetingManualNotes(id: meetingID, manualNotes: "Original manual notes")
+        controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            dictationStore: store,
+            configStore: ConfigStore(supportDirectory: supportDirectory)
+        )
+        hostingView = NSHostingView(rootView: AnyView(EmptyView()))
+        hostingView.frame = NSRect(x: 0, y: 0, width: width, height: 790)
+        window = NSWindow(contentRect: hostingView.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = hostingView
+        try setStatus(status)
+    }
+
+    func setStatus(_ status: MeetingStatus) throws {
+        try store.updateMeetingStatus(id: meetingID, status: status)
+        let meeting = try #require(try store.meeting(id: meetingID))
+        hostingView.rootView = AnyView(
+            MeetingDetailView(meeting: meeting, controller: controller, appState: controller.appState)
+                .environment(\.usesCompactQuickNotes, width == 520)
+        )
+        hostingView.layoutSubtreeIfNeeded()
+    }
+
+    func settle() async {
+        for _ in 0..<5 {
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(10))
+            hostingView.layoutSubtreeIfNeeded()
+        }
+    }
+
+    var accessibilityElements: [any NSAccessibilityProtocol] {
+        var visited = Set<ObjectIdentifier>()
+        func descendants(_ element: any NSAccessibilityProtocol) -> [any NSAccessibilityProtocol] {
+            guard visited.insert(ObjectIdentifier(element)).inserted else { return [] }
+            return [element] + (element.accessibilityChildren() ?? []).flatMap { child in
+                guard let child = child as? any NSAccessibilityProtocol else { return [any NSAccessibilityProtocol]() }
+                return descendants(child)
+            }
+        }
+        return descendants(hostingView)
+    }
+
+    func elements(identifier: String) -> [any NSAccessibilityProtocol] {
+        accessibilityElements.filter { $0.accessibilityIdentifier() == identifier }
+    }
+
+    var textViews: [NSTextView] {
+        func descendants(_ view: NSView) -> [NSTextView] {
+            (view as? NSTextView).map { [$0] } ?? view.subviews.flatMap(descendants)
+        }
+        return descendants(hostingView)
+    }
 }
 
 @MainActor
