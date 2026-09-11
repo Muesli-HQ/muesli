@@ -228,6 +228,10 @@ struct DictationRowView: View {
 
     private static func displayFinalStatus(_ status: String) -> String {
         switch status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "running":
+            return "Running"
+        case "interrupted":
+            return "Interrupted"
         case "done":
             return "Done"
         case "timed_out", "timedout":

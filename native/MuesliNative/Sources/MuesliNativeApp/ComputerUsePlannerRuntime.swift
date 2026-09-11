@@ -28,6 +28,8 @@ final class ComputerUsePlannerRuntime {
     typealias PlanHandler = (ComputerUsePlannerRequest) async throws -> ComputerUsePlannerResponse
     typealias ExecuteHandler = @MainActor (ComputerUseToolCall, ComputerUseElementRegistry) async -> ComputerUseExecutionResult
 
+    var onEvent: (@MainActor (ComputerUseTraceEvent) -> Void)?
+
     private let config: AppConfig
     private let maxSteps: Int?
     private let timeoutSeconds: TimeInterval
@@ -68,20 +70,17 @@ final class ComputerUsePlannerRuntime {
     }
 
     func run(command: String) async -> ComputerUsePlannerRuntimeResult {
-        var traceEvents = [
-            traceEvent(
-                kind: "transcript",
-                title: "Command",
-                body: command.isEmpty ? "(empty)" : command,
-                status: nil,
-                step: nil
-            ),
-        ]
+        let traceLog = ComputerUseTraceEventLog(onEvent: onEvent)
+        traceLog.append(traceEvent(
+            kind: "transcript", title: "Command",
+            body: command.isEmpty ? "(empty)" : command,
+            status: nil, step: nil
+        ))
 
         guard config.enableComputerUsePlanner else {
             let message = "CUA planner is disabled."
-            traceEvents.append(traceEvent(kind: "failed", title: "Failed", body: message, status: "failed", step: nil))
-            return .init(status: .failed, message: message, traceEvents: traceEvents)
+            traceLog.append(traceEvent(kind: "failed", title: "Failed", body: message, status: "failed", step: nil))
+            return .init(status: .failed, message: message, traceEvents: traceLog.events)
         }
 
         let deadline = Date().addingTimeInterval(timeoutSeconds)
@@ -97,20 +96,20 @@ final class ComputerUsePlannerRuntime {
 
         onStatus("Observing screen")
         var observation = observe(registry, true, currentTarget)
-        traceEvents.append(observationEvent(observation, step: nil))
+        traceLog.append(observationEvent(observation, step: nil))
 
         var step = 1
         while true {
             if Task.isCancelled {
-                return cancelledResult(traceEvents: traceEvents, step: step)
+                return cancelledResult(traceEvents: traceLog.events, step: step)
             }
             if Date() >= deadline {
-                traceEvents.append(traceEvent(kind: "timed_out", title: "Timed out", body: "CUA timed out", status: "timed_out", step: step))
-                return .init(status: .timedOut, message: "CUA timed out", traceEvents: traceEvents)
+                traceLog.append(traceEvent(kind: "timed_out", title: "Timed out", body: "CUA timed out", status: "timed_out", step: step))
+                return .init(status: .timedOut, message: "CUA timed out", traceEvents: traceLog.events)
             }
             if let maxSteps, step > maxSteps {
-                traceEvents.append(traceEvent(kind: "failed", title: "Failed", body: "CUA reached its step limit", status: "failed", step: maxSteps))
-                return .init(status: .failed, message: "CUA reached its step limit", traceEvents: traceEvents)
+                traceLog.append(traceEvent(kind: "failed", title: "Failed", body: "CUA reached its step limit", status: "failed", step: maxSteps))
+                return .init(status: .failed, message: "CUA reached its step limit", traceEvents: traceLog.events)
             }
             defer { step += 1 }
 
@@ -124,12 +123,12 @@ final class ComputerUsePlannerRuntime {
 
             let response: ComputerUsePlannerResponse
             do {
-                response = try await planWithRetry(request, traceEvents: &traceEvents)
+                response = try await planWithRetry(request, traceLog: traceLog)
             } catch is CancellationError {
-                return cancelledResult(traceEvents: traceEvents, step: step)
+                return cancelledResult(traceEvents: traceLog.events, step: step)
             } catch ComputerUsePlannerError.invalidToolCall(let name, let arguments, let message) {
                 let repairMessage = "Invalid tool call \(name): \(message). Raw arguments: \(String(arguments.prefix(800))). Choose exactly one valid tool from the current catalog and follow that tool's schema."
-                traceEvents.append(traceEvent(
+                traceLog.append(traceEvent(
                     kind: "planner_repair",
                     title: "Planner schema repair",
                     body: repairMessage,
@@ -150,25 +149,28 @@ final class ComputerUsePlannerRuntime {
                 if invalidToolCallRepairCount <= maxInvalidToolCallRepairs {
                     continue
                 }
-                traceEvents.append(traceEvent(kind: "failed", title: "Planner failed", body: repairMessage, status: "failed", step: step))
-                return .init(status: .failed, message: repairMessage, traceEvents: traceEvents)
+                traceLog.append(traceEvent(kind: "failed", title: "Planner failed", body: repairMessage, status: "failed", step: step))
+                return .init(status: .failed, message: repairMessage, traceEvents: traceLog.events)
             } catch {
-                traceEvents.append(traceEvent(
+                traceLog.append(traceEvent(
                     kind: "failed",
                     title: "Planner failed",
                     body: error.localizedDescription,
                     status: "failed",
                     step: step
                 ))
-                return .init(status: .failed, message: error.localizedDescription, traceEvents: traceEvents)
+                return .init(status: .failed, message: error.localizedDescription, traceEvents: traceLog.events)
             }
 
+            if Task.isCancelled {
+                return cancelledResult(traceEvents: traceLog.events, step: step)
+            }
             let toolCall = response.toolCall
             invalidToolCallRepairCount = 0
             if let target = target(from: toolCall, fallback: currentTarget) {
                 currentTarget = target
             }
-            traceEvents.append(traceEvent(
+            traceLog.append(traceEvent(
                 kind: "model_output",
                 title: "Model output",
                 body: response.rawModelOutput ?? formatToolCall(toolCall),
@@ -176,14 +178,14 @@ final class ComputerUsePlannerRuntime {
                 step: step
             ))
             if let validationFailure = toolCall.validationFailure() {
-                traceEvents.append(traceEvent(kind: "failed", title: "Schema rejected", body: validationFailure, status: "failed", step: step))
-                return .init(status: .failed, message: validationFailure, traceEvents: traceEvents)
+                traceLog.append(traceEvent(kind: "failed", title: "Schema rejected", body: validationFailure, status: "failed", step: step))
+                return .init(status: .failed, message: validationFailure, traceEvents: traceLog.events)
             }
             if toolCall.requiresConfirmation {
                 onStatus("Confirm")
                 let message = "Confirm: \(toolCall.summary)"
-                traceEvents.append(traceEvent(kind: "confirm", title: "Confirmation required", body: message, status: "confirm", step: step))
-                return .init(status: .needsConfirmation, message: message, traceEvents: traceEvents)
+                traceLog.append(traceEvent(kind: "confirm", title: "Confirmation required", body: message, status: "confirm", step: step))
+                return .init(status: .needsConfirmation, message: message, traceEvents: traceLog.events)
             }
 
             switch toolCall.tool {
@@ -192,22 +194,22 @@ final class ComputerUsePlannerRuntime {
                 let message = toolCall.reason?.isEmpty == false ? toolCall.reason! : "Done"
                 if finishIndicatesFailure(message) {
                     let blockedMessage = "Planner attempted to finish with an incomplete or blocked result: \(message)"
-                    traceEvents.append(traceEvent(kind: "failed", title: "Final output blocked", body: blockedMessage, status: "failed", step: step))
-                    return .init(status: .failed, message: blockedMessage, traceEvents: traceEvents)
+                    traceLog.append(traceEvent(kind: "failed", title: "Final output blocked", body: blockedMessage, status: "failed", step: step))
+                    return .init(status: .failed, message: blockedMessage, traceEvents: traceLog.events)
                 }
-                traceEvents.append(traceEvent(kind: "finish", title: "Final output", body: message, status: "done", step: step))
-                return .init(status: .done, message: message, traceEvents: traceEvents)
+                traceLog.append(traceEvent(kind: "finish", title: "Final output", body: message, status: "done", step: step))
+                return .init(status: .done, message: message, traceEvents: traceLog.events)
             case .fail:
                 onStatus("Failed")
                 let message = toolCall.reason?.isEmpty == false ? toolCall.reason! : "Failed"
-                traceEvents.append(traceEvent(kind: "failed", title: "Final output", body: message, status: "failed", step: step))
-                return .init(status: .failed, message: message, traceEvents: traceEvents)
+                traceLog.append(traceEvent(kind: "failed", title: "Final output", body: message, status: "failed", step: step))
+                return .init(status: .failed, message: message, traceEvents: traceLog.events)
             case .getAppState, .getWindowState:
                 onStatus("Observing screen")
                 let beforeObservation = observation
                 let result = await execute(toolCall, registry)
                 if Task.isCancelled || result.status == .cancelled {
-                    return cancelledResult(traceEvents: traceEvents, step: step)
+                    return cancelledResult(traceEvents: traceLog.events, step: step)
                 }
                 if result.status == .failed || result.status == .unsupported {
                     let outcomeMessage = recoverableFallbackMessage(for: toolCall, result: result) ?? result.message
@@ -219,12 +221,12 @@ final class ComputerUsePlannerRuntime {
                         observation: beforeObservation,
                         delta: nil
                     ))
-                    traceEvents.append(traceEvent(kind: "failed", title: "Failed", body: result.message, status: "failed", step: step))
-                    return .init(status: .failed, message: result.message, traceEvents: traceEvents)
+                    traceLog.append(traceEvent(kind: "failed", title: "Failed", body: result.message, status: "failed", step: step))
+                    return .init(status: .failed, message: result.message, traceEvents: traceLog.events)
                 }
                 onStatus("Observing screen")
                 observation = observe(registry, true, currentTarget)
-                traceEvents.append(observationEvent(observation, step: step))
+                traceLog.append(observationEvent(observation, step: step))
                 let feedback = observationToolFeedback(
                     before: beforeObservation,
                     after: observation,
@@ -241,14 +243,14 @@ final class ComputerUsePlannerRuntime {
                     delta: nil
                 ))
                 if let blocked = feedback.blocked {
-                    traceEvents.append(traceEvent(kind: "failed", title: "Repeated action stopped", body: blocked, status: "failed", step: step))
-                    return .init(status: .failed, message: blocked, traceEvents: traceEvents)
+                    traceLog.append(traceEvent(kind: "failed", title: "Repeated action stopped", body: blocked, status: "failed", step: step))
+                    return .init(status: .failed, message: blocked, traceEvents: traceLog.events)
                 }
                 continue
             default:
                 unchangedObservationCounts.removeAll()
                 onStatus(statusTitle(for: toolCall))
-                traceEvents.append(traceEvent(
+                traceLog.append(traceEvent(
                     kind: "tool_call",
                     title: "Executing",
                     body: executionTraceBody(toolCall: toolCall, observation: observation),
@@ -257,7 +259,7 @@ final class ComputerUsePlannerRuntime {
                 ))
                 let beforeObservation = observation
                 let result = await execute(toolCall, registry)
-                traceEvents.append(traceEvent(
+                traceLog.append(traceEvent(
                     kind: "tool_result",
                     title: "Tool result",
                     body: result.message,
@@ -266,7 +268,7 @@ final class ComputerUsePlannerRuntime {
                 ))
 
                 if Task.isCancelled || result.status == .cancelled {
-                    return cancelledResult(traceEvents: traceEvents, step: step)
+                    return cancelledResult(traceEvents: traceLog.events, step: step)
                 }
 
                 switch result.status {
@@ -278,7 +280,7 @@ final class ComputerUsePlannerRuntime {
                     if toolCall.isMutating {
                         onStatus("Observing screen")
                         observation = observe(registry, true, currentTarget)
-                        traceEvents.append(observationEvent(observation, step: step))
+                        traceLog.append(observationEvent(observation, step: step))
                         delta = stateDelta(
                             before: beforeObservation,
                             after: observation,
@@ -303,8 +305,8 @@ final class ComputerUsePlannerRuntime {
                         delta: delta,
                         counts: &unchangedActionCounts
                     ) {
-                        traceEvents.append(traceEvent(kind: "failed", title: "Repeated action stopped", body: blocked, status: "failed", step: step))
-                        return .init(status: .failed, message: blocked, traceEvents: traceEvents)
+                        traceLog.append(traceEvent(kind: "failed", title: "Repeated action stopped", body: blocked, status: "failed", step: step))
+                        return .init(status: .failed, message: blocked, traceEvents: traceLog.events)
                     }
                 case .needsConfirmation:
                     priorResults.append(outcome(
@@ -315,8 +317,8 @@ final class ComputerUsePlannerRuntime {
                         observation: beforeObservation,
                         delta: nil
                     ))
-                    traceEvents.append(traceEvent(kind: "confirm", title: "Confirmation required", body: result.message, status: "confirm", step: step))
-                    return .init(status: .needsConfirmation, message: result.message, traceEvents: traceEvents)
+                    traceLog.append(traceEvent(kind: "confirm", title: "Confirmation required", body: result.message, status: "confirm", step: step))
+                    return .init(status: .needsConfirmation, message: result.message, traceEvents: traceLog.events)
                 case .unsupported, .failed:
                     if let fallbackMessage = recoverableFallbackMessage(for: toolCall, result: result) {
                         priorResults.append(outcome(
@@ -328,7 +330,7 @@ final class ComputerUsePlannerRuntime {
                             delta: nil
                         ))
                         onStatus("Screen fallback")
-                        traceEvents.append(traceEvent(
+                        traceLog.append(traceEvent(
                             kind: "fallback",
                             title: "Screen fallback",
                             body: fallbackMessage,
@@ -337,7 +339,7 @@ final class ComputerUsePlannerRuntime {
                         ))
                         onStatus("Observing screen")
                         observation = observe(registry, true, currentTarget)
-                        traceEvents.append(observationEvent(observation, step: step))
+                        traceLog.append(observationEvent(observation, step: step))
                         continue
                     }
                     priorResults.append(outcome(
@@ -348,10 +350,10 @@ final class ComputerUsePlannerRuntime {
                         observation: beforeObservation,
                         delta: nil
                     ))
-                    traceEvents.append(traceEvent(kind: "failed", title: "Failed", body: result.message, status: "failed", step: step))
-                    return .init(status: .failed, message: result.message, traceEvents: traceEvents)
+                    traceLog.append(traceEvent(kind: "failed", title: "Failed", body: result.message, status: "failed", step: step))
+                    return .init(status: .failed, message: result.message, traceEvents: traceLog.events)
                 case .cancelled:
-                    return cancelledResult(traceEvents: traceEvents, step: step)
+                    return cancelledResult(traceEvents: traceLog.events, step: step)
                 }
             }
         }
@@ -704,12 +706,12 @@ final class ComputerUsePlannerRuntime {
 
     private func planWithRetry(
         _ request: ComputerUsePlannerRequest,
-        traceEvents: inout [ComputerUseTraceEvent]
+        traceLog: ComputerUseTraceEventLog
     ) async throws -> ComputerUsePlannerResponse {
         var attempt = 0
         while true {
             onStatus("Planning step \(request.step)")
-            traceEvents.append(traceEvent(
+            traceLog.append(traceEvent(
                 kind: "planning",
                 title: "Planning",
                 body: "Step \(request.step)\(stepLimitSuffix(request.maxSteps)). Prior tool results: \(request.priorOutcomes.count).",
@@ -717,6 +719,7 @@ final class ComputerUsePlannerRuntime {
                 step: request.step
             ))
             do {
+                try Task.checkCancellation()
                 return try await plan(request)
             } catch is CancellationError {
                 throw CancellationError()
@@ -727,7 +730,7 @@ final class ComputerUsePlannerRuntime {
                 attempt += 1
                 let message = "Planner request failed transiently: \(error.localizedDescription). Retrying once."
                 onStatus("Retrying planner")
-                traceEvents.append(traceEvent(
+                traceLog.append(traceEvent(
                     kind: "planner_retry",
                     title: "Planner retry",
                     body: message,
@@ -814,5 +817,51 @@ final class ComputerUsePlannerRuntime {
         step: Int?
     ) -> ComputerUseTraceEvent {
         ComputerUseTraceEvent(kind: kind, title: title, body: body, status: status, step: step)
+    }
+}
+
+/// A per-run log emits progress before an awaited planner request returns.
+@MainActor
+private final class ComputerUseTraceEventLog {
+    private(set) var events: [ComputerUseTraceEvent] = []
+    let onEvent: (@MainActor (ComputerUseTraceEvent) -> Void)?
+
+    init(onEvent: (@MainActor (ComputerUseTraceEvent) -> Void)?) {
+        self.onEvent = onEvent
+    }
+
+    func append(_ event: ComputerUseTraceEvent) {
+        events.append(event)
+        onEvent?(event)
+    }
+}
+
+/// Owns one run's persisted progress. Finalization closes it to late callbacks.
+@MainActor
+final class ComputerUseRunTrace {
+    private(set) var events: [ComputerUseTraceEvent] = []
+    private(set) var isFinalized = false
+    private let persist: ([ComputerUseTraceEvent], String, String) -> Void
+
+    init(persist: @escaping ([ComputerUseTraceEvent], String, String) -> Void) {
+        self.persist = persist
+    }
+
+    func record(_ event: ComputerUseTraceEvent) {
+        guard !isFinalized else { return }
+        events.append(event)
+        persist(events, "running", event.title)
+    }
+
+    func finish(status: String, message: String, finalEvents: [ComputerUseTraceEvent]? = nil) {
+        guard !isFinalized else { return }
+        isFinalized = true
+        if let finalEvents { events = finalEvents }
+        if status == "cancelled" || status == "interrupted" {
+            if events.last?.kind != status {
+                events.append(ComputerUseTraceEvent(kind: status, title: status == "cancelled" ? "Cancelled" : "Interrupted", body: message, status: status))
+            }
+        }
+        persist(events, status, message)
     }
 }

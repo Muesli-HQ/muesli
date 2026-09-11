@@ -18,6 +18,26 @@ struct DictationStoreTests {
         return store
     }
 
+    @Test("startup interrupts only running CUA traces and preserves their events")
+    func reconcileRunningComputerUseTraces() throws {
+        let store = try makeStore()
+        let event = ComputerUseTraceEvent(kind: "tool_result", title: "Listed apps", body: "OK")
+        var ids: [Int64] = []
+        for status in ["running", "done", "cancelled"] {
+            let id = try store.insertDictation(text: status, durationSeconds: 1, source: "cua", startedAt: Date(), endedAt: Date())
+            try store.insertComputerUseTrace(dictationID: id, finalStatus: status, finalMessage: status, events: [event])
+            ids.append(id)
+        }
+        #expect(try store.markRunningComputerUseTracesInterrupted() == 1)
+        #expect(try store.markRunningComputerUseTracesInterrupted() == 0)
+        let rows = try store.recentDictations(limit: 10)
+        for (index, status) in ["interrupted", "done", "cancelled"].enumerated() {
+            let row = try #require(rows.first { $0.id == ids[index] })
+            #expect(row.computerUseTrace?.finalStatus == status)
+            #expect(row.computerUseTrace?.events == [event])
+        }
+    }
+
     private func makeLegacyStore() throws -> DictationStore {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("muesli-legacy-test-\(UUID().uuidString).db")

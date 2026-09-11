@@ -2424,6 +2424,33 @@ public final class DictationStore {
         )
     }
 
+    /// Marks computer use traces left in "running" state as interrupted. This
+    /// app is the only writer of trace rows, so a row still marked running
+    /// after the owning process died is stale by definition: the task that
+    /// was writing it can no longer finish. Returns how many rows changed.
+    @discardableResult
+    public func markRunningComputerUseTracesInterrupted(
+        message: String = "The run was interrupted when the app stopped."
+    ) throws -> Int {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = """
+        UPDATE computer_use_traces
+        SET final_status = 'interrupted', final_message = ?
+        WHERE final_status = 'running'
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, (message as NSString).utf8String, -1, nil)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
+        return Int(sqlite3_changes(db))
+    }
+
     public func insertComputerUseTrace(
         dictationID: Int64,
         finalStatus: String,

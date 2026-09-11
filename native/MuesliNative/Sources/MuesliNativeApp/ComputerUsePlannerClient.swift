@@ -134,6 +134,10 @@ enum ComputerUsePlannerClient {
             guard let data = jsonString.data(using: .utf8),
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
 
+            if let failure = streamedFailure(in: json) {
+                throw ComputerUsePlannerError.backendFailed(statusCode: httpStatus, message: failure)
+            }
+
             if let outputText = json["output_text"] as? String, !outputText.isEmpty {
                 fullText = outputText
             }
@@ -156,7 +160,7 @@ enum ComputerUsePlannerClient {
                 throw ComputerUsePlannerError.invalidToolCall(
                     name: nativeToolCall.name,
                     arguments: nativeToolCall.arguments,
-                    message: error.localizedDescription
+                    message: ComputerUsePlannerResponse.decodingFailureDetail(error)
                 )
             }
         }
@@ -167,6 +171,22 @@ enum ComputerUsePlannerClient {
                 ? "The model did not return a native tool call."
                 : "The model returned text instead of a native tool call: \(String(trimmedText.prefix(800)))"
         )
+    }
+
+    static func streamedFailure(in json: [String: Any]) -> String? {
+        guard let type = json["type"] as? String,
+              type == "error" || type == "response.failed" else { return nil }
+        return String((streamErrorMessage(in: json) ?? "The provider reported a failed response.").prefix(800))
+    }
+
+    private static func streamErrorMessage(in json: [String: Any]) -> String? {
+        if let message = json["message"] as? String, !message.isEmpty { return message }
+        for key in ["error", "response"] {
+            if let nested = json[key] as? [String: Any],
+               let message = streamErrorMessage(in: nested) { return message }
+        }
+        if let code = json["code"] as? String, !code.isEmpty { return code }
+        return nil
     }
 
     static func requestBody(

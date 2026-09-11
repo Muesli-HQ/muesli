@@ -19,6 +19,16 @@ case "${shard}" in
     filters=(
       ConfigStoreTests
       DictationStoreTests
+      ComputerUseExecutorTests
+      ComputerUseObservationCaptureTests
+      ComputerUseObservationTests
+      ComputerUsePlannerModelTests
+      ComputerUsePlannerRequestTests
+      ComputerUsePlannerResponseTests
+      ComputerUsePlannerRuntimeTests
+      ComputerUseRunDiagnosticsTests
+      ComputerUseToolRegistryTests
+      ComputerUseTraceFormatterTests
       MuesliCKSyncEngineTests
       MuesliCLITests
       ChatGPTAuthTests
