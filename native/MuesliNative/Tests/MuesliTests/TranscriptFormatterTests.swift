@@ -382,6 +382,101 @@ struct TranscriptFormatterTests {
         #expect(lines[0].contains("Speaker 1: Hello world"))
     }
 
+    @Test("diarization assigns a fragmented word to one speaker")
+    func diarizationKeepsFragmentedWordIntact() {
+        let system = [
+            SpeechSegment(start: 0.7, end: 1.0, text: "H"),
+            SpeechSegment(start: 1.0, end: 1.2, text: "ow"),
+            SpeechSegment(start: 1.2, end: 1.5, text: " are"),
+        ]
+        let diarization = [
+            makeDiarSeg(speakerId: "spk_0", start: 0.0, end: 1.0),
+            makeDiarSeg(speakerId: "spk_1", start: 1.0, end: 2.0),
+        ]
+
+        let result = TranscriptFormatter.merge(
+            micSegments: [],
+            systemSegments: system,
+            diarizationSegments: diarization,
+            meetingStart: Date(timeIntervalSince1970: 0)
+        )
+
+        #expect(result.contains("Speaker 1: How"))
+        #expect(!result.contains("Speaker 1: H\n"))
+        #expect(!result.contains("Speaker 2: ow"))
+    }
+
+    @Test("diarization concatenates long subword fragments")
+    func diarizationConcatenatesLongSubwords() {
+        let system = [
+            SpeechSegment(start: 0.0, end: 0.2, text: "account"),
+            SpeechSegment(start: 0.2, end: 0.4, text: "ing"),
+            SpeechSegment(start: 0.4, end: 0.6, text: " complete"),
+            SpeechSegment(start: 0.6, end: 0.8, text: "ly"),
+            SpeechSegment(start: 0.8, end: 1.0, text: " healthi"),
+            SpeechSegment(start: 1.0, end: 1.2, text: "est"),
+        ]
+        let diarization = [
+            makeDiarSeg(speakerId: "spk_0", start: 0.0, end: 2.0),
+        ]
+
+        let result = TranscriptFormatter.merge(
+            micSegments: [],
+            systemSegments: system,
+            diarizationSegments: diarization,
+            meetingStart: Date(timeIntervalSince1970: 0)
+        )
+
+        #expect(result.contains("Speaker 1: accounting completely healthiest"))
+    }
+
+    @Test("diarization keeps punctuation with the preceding word")
+    func diarizationAttachesPunctuationBeforeSpeakerAttribution() {
+        let system = [
+            SpeechSegment(start: 0.7, end: 0.9, text: "Hello"),
+            SpeechSegment(start: 0.95, end: 1.15, text: "."),
+            SpeechSegment(start: 1.15, end: 1.4, text: " Next"),
+        ]
+        let diarization = [
+            makeDiarSeg(speakerId: "spk_0", start: 0.0, end: 1.0),
+            makeDiarSeg(speakerId: "spk_1", start: 1.0, end: 2.0),
+        ]
+
+        let result = TranscriptFormatter.merge(
+            micSegments: [],
+            systemSegments: system,
+            diarizationSegments: diarization,
+            meetingStart: Date(timeIntervalSince1970: 0)
+        )
+
+        #expect(result.contains("Speaker 1: Hello."))
+        #expect(result.contains("Speaker 2: Next"))
+        #expect(!result.contains("Speaker 2: ."))
+    }
+
+    @Test("diarization preserves explicit whitespace word boundaries")
+    func diarizationPreservesExplicitWhitespaceBoundaries() {
+        let system = [
+            SpeechSegment(start: 0.7, end: 0.9, text: "Hello"),
+            SpeechSegment(start: 0.99, end: 1.2, text: " world"),
+        ]
+        let diarization = [
+            makeDiarSeg(speakerId: "spk_0", start: 0.0, end: 1.0),
+            makeDiarSeg(speakerId: "spk_1", start: 1.0, end: 2.0),
+        ]
+
+        let result = TranscriptFormatter.merge(
+            micSegments: [],
+            systemSegments: system,
+            diarizationSegments: diarization,
+            meetingStart: Date(timeIntervalSince1970: 0)
+        )
+
+        #expect(result.contains("Speaker 1: Hello"))
+        #expect(result.contains("Speaker 2: world"))
+        #expect(!result.contains("Helloworld"))
+    }
+
     @Test("three speakers identified correctly")
     func threeSpeakers() {
         let meetingStart = Date(timeIntervalSince1970: 0)
