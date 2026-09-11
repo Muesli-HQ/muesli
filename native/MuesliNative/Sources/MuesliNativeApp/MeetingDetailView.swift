@@ -588,6 +588,13 @@ struct MeetingDetailView: View {
             } else {
                 let isManualNotesEditable = canEditManualNotes(for: meeting)
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+                    if meeting.status == .failed || isRetranscribing {
+                        HStack {
+                            Spacer()
+                            retranscribeAction(for: meeting)
+                        }
+                    }
+
                     if !usesCompactQuickNotes {
                         manualNotesToolbar(for: meeting)
                             .disabled(!isManualNotesEditable)
@@ -806,7 +813,8 @@ struct MeetingDetailView: View {
 
     @ViewBuilder
     private func retranscribeAction(for meeting: MeetingRecord) -> some View {
-        if meeting.savedRecordingPath != nil {
+        if let savedRecordingPath = meeting.savedRecordingPath,
+           !savedRecordingPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             if isRetranscribing {
                 HStack(spacing: 6) {
                     ProgressView()
@@ -816,10 +824,15 @@ struct MeetingDetailView: View {
                         .foregroundStyle(MuesliTheme.textTertiary)
                 }
                 .padding(.horizontal, MuesliTheme.spacing8)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Re-transcribing...")
+                .accessibilityIdentifier("meeting.retranscription.progress")
             } else {
                 iconButton("arrow.clockwise", label: "Re-transcribe") {
                     startRetranscription(for: meeting)
                 }
+                .accessibilityLabel("Re-transcribe")
+                .accessibilityIdentifier("meeting.retranscribe")
                 .disabled(meeting.status == .recording || meeting.status == .processing || isEditingNotes || isEditingTranscript)
             }
         }
