@@ -76,8 +76,14 @@ struct MeetingAutoStopPolicyTests {
         let explicit = MeetingAutoStopSource(candidate: candidate())
         let recent = MeetingAutoStopSource(candidate: candidate(id: "recent", url: nil))
         let enabled = origin != .manual
+        // A detected meeting is a guess, so losing its signal only warns; the
+        // origins the user actually asked for still auto-stop (#303).
+        let expectedSignalLoss: MeetingSignalLossResponse =
+            origin == .manual
+                ? .none
+                : (origin == .detectedPrompt ? .warnOnly : .autoStopAfterWarning)
         #expect(origin.enablesMeetingAutoStop == enabled)
-        #expect(origin.signalLossResponse == (enabled ? .autoStopAfterWarning : .none))
+        #expect(origin.signalLossResponse == expectedSignalLoss)
         #expect(origin.signalLossSource(explicitSource: explicit, recentSource: recent) == (enabled ? explicit : nil))
         #expect(origin.signalLossSource(explicitSource: nil, recentSource: recent) == (enabled ? recent : nil))
     }
