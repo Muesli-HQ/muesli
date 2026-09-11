@@ -48,6 +48,7 @@ case "${shard}" in
       BodhanLifecycleTests
       DictationBackendPreparationTests
       ContributionMilestoneTests
+      ComputerUseBackgroundInputTests
     )
     ;;
   dictation-transcription)
