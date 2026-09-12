@@ -842,20 +842,50 @@ final class ComputerUseRunTrace {
     private(set) var events: [ComputerUseTraceEvent] = []
     private(set) var isFinalized = false
     private let persist: ([ComputerUseTraceEvent], String, String) -> Void
+    private let persistenceInterval: Duration
+    private var lastPersistence: ContinuousClock.Instant?
+    private var pendingPersistence: Task<Void, Never>?
 
-    init(persist: @escaping ([ComputerUseTraceEvent], String, String) -> Void) {
+    init(
+        persistenceInterval: Duration = .milliseconds(250),
+        persist: @escaping ([ComputerUseTraceEvent], String, String) -> Void
+    ) {
+        self.persistenceInterval = persistenceInterval
         self.persist = persist
     }
 
     func record(_ event: ComputerUseTraceEvent) {
         guard !isFinalized else { return }
         events.append(event)
-        persist(events, "running", event.title)
+        guard let lastPersistence else {
+            persistRunning()
+            return
+        }
+        guard pendingPersistence == nil else { return }
+        let remaining = persistenceInterval - lastPersistence.duration(to: .now)
+        if remaining <= .zero {
+            persistRunning()
+        } else {
+            // A trailing flush persists the latest event even if the planner then stalls.
+            pendingPersistence = Task { [weak self] in
+                do { try await Task.sleep(for: remaining) } catch { return }
+                self?.persistRunning()
+            }
+        }
+    }
+
+    private func persistRunning() {
+        pendingPersistence = nil
+        guard !isFinalized, let latest = events.last else { return }
+        lastPersistence = .now
+        persist(events, "running", latest.title)
     }
 
     func finish(status: String, message: String, finalEvents: [ComputerUseTraceEvent]? = nil) {
         guard !isFinalized else { return }
         isFinalized = true
+        pendingPersistence?.cancel()
+        pendingPersistence = nil
         if let finalEvents { events = finalEvents }
         if status == "cancelled" || status == "interrupted" {
             if events.last?.kind != status {

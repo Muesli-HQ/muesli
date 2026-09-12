@@ -1357,10 +1357,14 @@ struct ComputerUseRunDiagnosticsTests {
     @Test @MainActor
     func cancellationBetweenActionsPreventsAnotherStep() async {
         var executions = 0
+        var planCalls = 0
         let runtime = ComputerUsePlannerRuntime(
             config: AppConfig(),
             observe: { _, _, _ in ComputerUsePlannerRuntimeTests.observation() },
-            plan: { _ in ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .listApps)) },
+            plan: { _ in
+                planCalls += 1
+                return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .listApps))
+            },
             execute: { _, _ in
                 executions += 1
                 withUnsafeCurrentTask { $0?.cancel() }
@@ -1370,6 +1374,7 @@ struct ComputerUseRunDiagnosticsTests {
         let result = await Task { await runtime.run(command: "test") }.value
         #expect(result.status == .cancelled)
         #expect(executions == 1)
+        #expect(planCalls == 1)
     }
 
     @Test @MainActor
@@ -1407,6 +1412,44 @@ struct ComputerUseRunDiagnosticsTests {
         indicator.setComputerUseCancellationAvailable(false)
         indicator.handleClick(atX: 12)
         #expect(stops == 1)
+    }
+
+    @Test @MainActor
+    func traceBurstsFlushTheirLatestEventWithoutAnotherEvent() async throws {
+        var writes: [[ComputerUseTraceEvent]] = []
+        let trace = ComputerUseRunTrace(persistenceInterval: .milliseconds(20)) { events, _, _ in writes.append(events) }
+        let event = ComputerUseTraceEvent(kind: "planning", title: "Planning", body: "Step")
+        trace.record(event)
+        trace.record(event)
+        trace.record(event)
+        #expect(writes.count == 1)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(writes.count == 2)
+        #expect(writes.last?.count == 3)
+    }
+
+    @Test @MainActor
+    func terminalFlushCancelsPendingRunningWrite() async throws {
+        var statuses: [String] = []
+        var latestCount = 0
+        let trace = ComputerUseRunTrace(persistenceInterval: .milliseconds(20)) { events, status, _ in
+            statuses.append(status)
+            latestCount = events.count
+        }
+        let event = ComputerUseTraceEvent(kind: "planning", title: "Planning", body: "Step")
+        trace.record(event)
+        trace.record(event)
+        trace.finish(status: "cancelled", message: "Stopped")
+        #expect(latestCount == 3)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(statuses == ["running", "cancelled"])
+    }
+
+    @Test
+    func deeplyNestedProviderErrorsHaveBoundedTraversal() {
+        var error: [String: Any] = ["message": "Too deep"]
+        for _ in 0..<100 { error = ["error": error] }
+        #expect(ComputerUsePlannerClient.streamedFailure(in: ["type": "error", "error": error]) == "The provider reported a failed response.")
     }
 
     @Test

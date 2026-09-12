@@ -179,11 +179,12 @@ enum ComputerUsePlannerClient {
         return String((streamErrorMessage(in: json) ?? "The provider reported a failed response.").prefix(800))
     }
 
-    private static func streamErrorMessage(in json: [String: Any]) -> String? {
+    private static func streamErrorMessage(in json: [String: Any], depth: Int = 0) -> String? {
+        guard depth <= 16 else { return nil }
         if let message = json["message"] as? String, !message.isEmpty { return message }
         for key in ["error", "response"] {
             if let nested = json[key] as? [String: Any],
-               let message = streamErrorMessage(in: nested) { return message }
+               let message = streamErrorMessage(in: nested, depth: depth + 1) { return message }
         }
         if let code = json["code"] as? String, !code.isEmpty { return code }
         return nil

@@ -38,6 +38,20 @@ struct DictationStoreTests {
         }
     }
 
+    @Test("malformed CUA trace JSON keeps the trace status with an empty event list")
+    func malformedComputerUseTraceIsReadable() throws {
+        let store = try makeStore()
+        let id = try store.insertDictation(text: "test", durationSeconds: 1, source: "cua", startedAt: Date(), endedAt: Date())
+        try store.insertComputerUseTrace(dictationID: id, finalStatus: "interrupted", finalMessage: "Stopped", events: [])
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.databasePath().path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        #expect(sqlite3_exec(db, "UPDATE computer_use_traces SET trace_json = 'invalid json'", nil, nil, nil) == SQLITE_OK)
+        let trace = try #require(store.dictation(id: id)?.computerUseTrace)
+        #expect(trace.finalStatus == "interrupted")
+        #expect(trace.events.isEmpty)
+    }
+
     private func makeLegacyStore() throws -> DictationStore {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("muesli-legacy-test-\(UUID().uuidString).db")

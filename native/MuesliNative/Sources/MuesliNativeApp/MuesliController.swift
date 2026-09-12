@@ -527,7 +527,6 @@ public final class MuesliController: NSObject {
     private var computerUseCommandTask: Task<Void, Never>?
     private var computerUseCommandTaskID: UUID?
     private var activeComputerUseTrace: ComputerUseRunTrace?
-    private var computerUseTraceRefreshAt = Date.distantPast
     private var activeQuilAudioSessionID: UUID?
     private var quilStartedAt: Date?
     private var pendingQuilStopStartedAt: Date?
@@ -9806,12 +9805,8 @@ public final class MuesliController: NSObject {
             } catch {
                 fputs("[cua] trace persistence failed: \(error)\n", stderr)
             }
-            // Persist every event, but avoid rebuilding history for every event in a burst.
-            if status != "running" || Date().timeIntervalSince(self.computerUseTraceRefreshAt) >= 0.25 {
-                self.computerUseTraceRefreshAt = Date()
-                self.historyWindowController?.reload()
-                self.syncAppState()
-            }
+            self.historyWindowController?.reload()
+            self.syncAppState()
         }
         activeComputerUseTrace = runTrace
         let runtime = ComputerUsePlannerRuntime(config: config) { [weak self] status in
