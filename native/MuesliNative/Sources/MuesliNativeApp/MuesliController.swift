@@ -526,6 +526,7 @@ public final class MuesliController: NSObject {
     private var pendingComputerUseStopSessionID: UUID?
     private var computerUseCommandTask: Task<Void, Never>?
     private var computerUseCommandTaskID: UUID?
+    private var activeComputerUseTrace: ComputerUseRunTrace?
     private var activeQuilAudioSessionID: UUID?
     private var quilStartedAt: Date?
     private var pendingQuilStopStartedAt: Date?
@@ -710,6 +711,7 @@ public final class MuesliController: NSObject {
         MuesliController.current = self
         do {
             try dictationStore.migrateIfNeeded()
+            try dictationStore.markRunningComputerUseTracesInterrupted()
         } catch {
             fputs("[muesli-native] startup error: \(error)\n", stderr)
         }
@@ -806,6 +808,7 @@ public final class MuesliController: NSObject {
         indicator.onDiscardMeeting = { [weak self] in self?.discardMeetingWithConfirmation() }
         indicator.onToggleMeetingPause = { [weak self] in self?.toggleMeetingRecordingPause() }
         indicator.onOpenMeetingNotes = { [weak self] in self?.openActiveMeetingNotes() }
+        indicator.onCancelComputerUse = { [weak self] in self?.handleComputerUseCancel() }
         indicator.onStopToggleDictation = { [weak self] in
             guard let self else { return }
             if self.hotkeyMonitor.isToggleRecording {
@@ -1040,6 +1043,9 @@ public final class MuesliController: NSObject {
         quilHotkeyMonitor.stop()
         meetingRecordingHotkeyMonitor.stop()
         computerUseCommandTask?.cancel()
+        activeComputerUseTrace?.finish(status: "interrupted", message: "The app stopped.")
+        activeComputerUseTrace = nil
+        indicator.setComputerUseCancellationAvailable(false)
         computerUseCommandTask = nil
         computerUseCommandTaskID = nil
         cancelHostedDictation()
@@ -9544,6 +9550,9 @@ public final class MuesliController: NSObject {
             return
         }
         computerUseCommandTask?.cancel()
+        activeComputerUseTrace?.finish(status: "cancelled", message: "Stopped by the user.")
+        activeComputerUseTrace = nil
+        indicator.setComputerUseCancellationAvailable(false)
         computerUseCommandTask = nil
         computerUseCommandTaskID = nil
         computerUseAudioSessionManager.cancel(reason: "computer_use_cancel")
@@ -9782,29 +9791,40 @@ public final class MuesliController: NSObject {
         taskID: UUID
     ) async {
         guard computerUseCommandTaskID == taskID else { return }
+        indicator.setComputerUseCancellationAvailable(true)
         resetComputerUseFloatingStatus()
         presentComputerUseTranscript(transcript)
         setState(.transcribing)
+        let runTrace = ComputerUseRunTrace { [weak self] events, status, message in
+            guard let self, let dictationID else { return }
+            do {
+                try self.dictationStore.insertComputerUseTrace(
+                    dictationID: dictationID, finalStatus: status,
+                    finalMessage: message, events: events
+                )
+            } catch {
+                fputs("[cua] trace persistence failed: \(error)\n", stderr)
+            }
+            self.statusBarController?.refresh()
+            self.historyWindowController?.reload()
+            self.syncAppState()
+        }
+        activeComputerUseTrace = runTrace
         let runtime = ComputerUsePlannerRuntime(config: config) { [weak self] status in
             guard let self, self.computerUseCommandTaskID == taskID else { return }
             self.presentComputerUseFloatingStatus(status)
         }
+        runtime.onEvent = { [weak self] event in
+            guard let self, self.computerUseCommandTaskID == taskID else { return }
+            runTrace.record(event)
+        }
 
         let result = await runtime.run(command: transcript)
         guard computerUseCommandTaskID == taskID else { return }
+        runTrace.finish(status: computerUseTraceStatus(result.status), message: result.message, finalEvents: result.traceEvents)
+        activeComputerUseTrace = nil
+        indicator.setComputerUseCancellationAvailable(false)
         indicator.hideComputerUseCursor()
-        if result.status == .cancelled {
-            computerUseCommandTask = nil
-            computerUseCommandTaskID = nil
-            setState(.idle)
-            meetingMonitor.resumeAfterCooldown()
-            meetingMonitor.refreshState()
-            TelemetryDeck.signal("computer_use.command_finished", parameters: [
-                "status": "\(result.status)",
-            ])
-            return
-        }
-        persistComputerUseTrace(result, dictationID: dictationID)
         await waitForComputerUseFloatingStatusDwell()
         guard computerUseCommandTaskID == taskID else { return }
         computerUseCommandTask = nil
@@ -9945,19 +9965,6 @@ public final class MuesliController: NSObject {
         if remaining > 0 {
             try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
         }
-    }
-
-    private func persistComputerUseTrace(_ result: ComputerUsePlannerRuntimeResult, dictationID: Int64?) {
-        guard let dictationID else { return }
-        try? dictationStore.insertComputerUseTrace(
-            dictationID: dictationID,
-            finalStatus: computerUseTraceStatus(result.status),
-            finalMessage: result.message,
-            events: result.traceEvents
-        )
-        statusBarController?.refresh()
-        historyWindowController?.reload()
-        syncAppState()
     }
 
     private func computerUseTraceStatus(_ status: ComputerUsePlannerRuntimeResult.Status) -> String {

@@ -725,6 +725,22 @@ struct ComputerUsePlannerResponse: Codable, Equatable {
         try container.encode(toolCall, forKey: .toolCall)
     }
 
+    static func decodingFailureDetail(_ error: Error) -> String {
+        guard let decodingError = error as? DecodingError else {
+            return error.localizedDescription
+        }
+        let context: DecodingError.Context
+        switch decodingError {
+        case .dataCorrupted(let ctx): context = ctx
+        case .keyNotFound(_, let ctx): context = ctx
+        case .typeMismatch(_, let ctx): context = ctx
+        case .valueNotFound(_, let ctx): context = ctx
+        @unknown default: return error.localizedDescription
+        }
+        let detail = context.debugDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        return detail.isEmpty ? error.localizedDescription : detail
+    }
+
     static func decodeJSON(from text: String) throws -> ComputerUsePlannerResponse {
         let json = try extractJSONObject(from: text)
         try rejectUnknownKeys(in: json)

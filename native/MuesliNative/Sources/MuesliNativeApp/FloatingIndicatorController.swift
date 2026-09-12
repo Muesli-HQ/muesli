@@ -212,6 +212,7 @@ final class FloatingIndicatorController: NSObject {
     var onPositionSaved: ((CGPoint) -> Void)?
     var isToggleDictation = false
     private var stopLayer: CALayer?
+    private var computerUseStopButton: NSButton?
     private var transcribingTitle = "Transcribing"
     private var instructionTranscriptText: String?
     private var instructionTranscriptShowsProgress = false
@@ -231,6 +232,33 @@ final class FloatingIndicatorController: NSObject {
     }
 
     var onStopToggleDictation: (() -> Void)?
+
+    var onCancelComputerUse: (() -> Void)?
+    private(set) var isComputerUseCancellationAvailable = false
+
+    func setComputerUseCancellationAvailable(_ available: Bool) {
+        isComputerUseCancellationAvailable = available
+        if !available {
+            computerUseStopButton?.removeFromSuperview()
+            computerUseStopButton = nil
+        }
+    }
+
+    @objc private func stopComputerUse() { onCancelComputerUse?() }
+
+    private func layoutComputerUseStopButton(in size: NSSize) {
+        guard isComputerUseCancellationAvailable, let contentView else { return }
+        let button = computerUseStopButton ?? NSButton(title: "✕", target: self, action: #selector(stopComputerUse))
+        button.isBordered = false
+        button.contentTintColor = .white
+        button.toolTip = "Stop computer use"
+        button.setAccessibilityLabel("Stop computer use")
+        button.frame = NSRect(x: 5, y: (size.height - 28) / 2, width: 28, height: 28)
+        if button.superview == nil { contentView.addSubview(button) }
+        computerUseStopButton = button
+        iconLabel?.isHidden = true
+        wandIconView?.isHidden = true
+    }
 
     var currentFrame: NSRect? {
         indicatorScreenFrame
@@ -253,6 +281,10 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func handleClick(atX x: CGFloat? = nil) {
+        if isComputerUseCancellationAvailable {
+            if (x ?? 0) < 34 { onCancelComputerUse?() }
+            return
+        }
         if state == .recording, let x {
             if x < 30 {
                 if isMeetingRecording {
@@ -636,6 +668,7 @@ final class FloatingIndicatorController: NSObject {
             break
         }
 
+        layoutComputerUseStopButton(in: targetFrame.size)
         panel.orderFrontRegardless()
         if state == .preparing {
             contentView.displayIfNeeded()
@@ -644,6 +677,11 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func showComputerUseCursor(at quartzPoint: CGPoint, label rawLabel: String?) {
+        // The cursor bubble reuses this panel and disables its mouse events.
+        // While a run is stoppable, deliberately keep the stationary transcript
+        // and Stop control for the entire run. A simultaneous cursor bubble
+        // requires a separate panel; switching this one would hide Stop.
+        guard !isComputerUseCancellationAvailable else { return }
         hideShortcutPillChrome()
         let config = configStore.load()
         if panel == nil {
