@@ -9805,6 +9805,7 @@ public final class MuesliController: NSObject {
             } catch {
                 fputs("[cua] trace persistence failed: \(error)\n", stderr)
             }
+            self.statusBarController?.refresh()
             self.historyWindowController?.reload()
             self.syncAppState()
         }

@@ -677,7 +677,10 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func showComputerUseCursor(at quartzPoint: CGPoint, label rawLabel: String?) {
-        // Keep the Stop control stationary and clickable while the executor moves.
+        // The cursor bubble reuses this panel and disables its mouse events.
+        // While a run is stoppable, deliberately keep the stationary transcript
+        // and Stop control for the entire run. A simultaneous cursor bubble
+        // requires a separate panel; switching this one would hide Stop.
         guard !isComputerUseCancellationAvailable else { return }
         hideShortcutPillChrome()
         let config = configStore.load()

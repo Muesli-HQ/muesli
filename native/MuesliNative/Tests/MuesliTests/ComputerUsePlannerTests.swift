@@ -1405,6 +1405,13 @@ struct ComputerUseRunDiagnosticsTests {
         indicator.onCancelComputerUse = { stops += 1 }
         indicator.onStopToggleDictation = { dictationStops += 1 }
         indicator.setComputerUseCancellationAvailable(true)
+        let config = AppConfig()
+        indicator.showComputerUseTranscript("Find the search field", config: config)
+        defer { indicator.setState(.idle, config: config) }
+        let stationaryFrame = indicator.currentFrame
+        #expect(stationaryFrame != nil)
+        indicator.showComputerUseCursor(at: CGPoint(x: 100, y: 100), label: "Search")
+        #expect(indicator.currentFrame == stationaryFrame)
         indicator.handleClick(atX: 12)
         indicator.handleClick(atX: 80)
         #expect(stops == 1)
@@ -1423,7 +1430,12 @@ struct ComputerUseRunDiagnosticsTests {
         trace.record(event)
         trace.record(event)
         #expect(writes.count == 1)
-        try await Task.sleep(for: .milliseconds(100))
+        // Wait for the write, not a fixed sleep: AppKit work in another test
+        // can delay the pending main-actor flush beyond the sleep interval.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while writes.count < 2 && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         #expect(writes.count == 2)
         #expect(writes.last?.count == 3)
     }

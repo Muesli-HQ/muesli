@@ -162,6 +162,12 @@ if [[ "${list_filters}" == true ]]; then
 fi
 
 args=(--package-path native/MuesliNative)
+if [[ "${shard}" == meetings ]]; then
+  # Concurrent suites can starve the utility-priority caption tasks on small
+  # runners. Serialize test cases, preserving concurrency exercised inside each
+  # test, rather than weakening their deadlines or changing production QoS.
+  args+=(--no-parallel)
+fi
 if [[ -n "${MUESLI_SWIFTPM_SCRATCH_PATH:-}" ]]; then
   args+=(--scratch-path "${MUESLI_SWIFTPM_SCRATCH_PATH}")
 fi
