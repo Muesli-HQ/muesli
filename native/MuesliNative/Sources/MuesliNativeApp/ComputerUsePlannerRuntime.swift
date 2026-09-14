@@ -31,6 +31,7 @@ final class ComputerUsePlannerRuntime {
     var onEvent: (@MainActor (ComputerUseTraceEvent) -> Void)?
     var onObservedApplication: (@MainActor (String, String) -> Void)?
 
+    private let backgroundSession: ComputerUseBackgroundSession?
     private let config: AppConfig
     private let maxSteps: Int?
     private let timeoutSeconds: TimeInterval
@@ -53,13 +54,7 @@ final class ComputerUsePlannerRuntime {
         writingCoordinator: TranscriptionCoordinator? = nil,
         prepareEdit: PrepareEditHandler? = nil,
         onStatus: @escaping StatusHandler = { _ in },
-        observe: @escaping ObserveHandler = { registry, includeScreenshot, target in
-            ComputerUseObservationCapture.capture(
-                registry: registry,
-                includeScreenshot: includeScreenshot,
-                target: target
-            )
-        },
+        observe: ObserveHandler? = nil,
         plan: PlanHandler? = nil,
         execute: ExecuteHandler? = nil
     ) {
@@ -72,16 +67,26 @@ final class ComputerUsePlannerRuntime {
         self.maxSteps = maxSteps
         self.timeoutSeconds = timeoutSeconds ?? TimeInterval(max(config.computerUseTimeoutSeconds, 1))
         self.onStatus = onStatus
-        self.observe = observe
+        // A mode is pinned for the lifetime of this runtime. Custom handlers own
+        // their execution environment (tests); production always uses this pair.
+        let background = config.computerUseBackgroundMode && observe == nil && execute == nil
+            ? ComputerUseBackgroundSession() : nil
+        self.backgroundSession = background
+        self.observe = observe ?? { registry, screenshot, target in
+            if let background { return background.observe(registry: registry, screenshot: screenshot) }
+            return ComputerUseObservationCapture.capture(registry: registry, includeScreenshot: screenshot, target: target)
+        }
         self.plan = plan ?? { request in
             try await ComputerUsePlannerClient.planNextTool(request: request, config: config)
         }
-        self.execute = execute ?? { toolCall, registry in
-            await ComputerUseToolExecutor.execute(toolCall, registry: registry, pasteShortcut: config.pasteShortcut)
+        self.execute = execute ?? { call, registry in
+            if let background { return await background.execute(call, registry: registry) }
+            return await ComputerUseToolExecutor.execute(call, registry: registry, pasteShortcut: config.pasteShortcut)
         }
     }
 
     func run(command: String) async -> ComputerUsePlannerRuntimeResult {
+        defer { backgroundSession?.end() }
         let traceLog = ComputerUseTraceEventLog(onEvent: onEvent)
         traceLog.append(traceEvent(
             kind: "transcript", title: "Command",
@@ -101,9 +106,7 @@ final class ComputerUsePlannerRuntime {
         var unchangedObservationCounts: [String: Int] = [:]
         var invalidToolCallRepairCount = 0
         let maxInvalidToolCallRepairs = 2
-        // V1 keeps foreground activation, but state is scoped to a target app.
-        // Later Codex-style work should replace this with background key-window tracking,
-        // synthetic focus enforcement, and user-frontmost-app preservation.
+        // Foreground target hints are separate from the background session's exact window identity.
         var currentTarget: ComputerUseObservationTarget?
 
         onStatus("Observing screen")

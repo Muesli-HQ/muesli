@@ -36,6 +36,7 @@ case "${shard}" in
       ComputerUseSettingsTests
       ComputerUseLocalPlannerTests
       ComputerUseLocalPlannerBenchmarkTests
+      ComputerUseBackgroundTests
       ComputerUseExecutorTests
       ComputerUseObservationCaptureTests
       ComputerUseObservationTests
