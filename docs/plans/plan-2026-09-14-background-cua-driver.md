@@ -1,6 +1,6 @@
 # Native background CUA driver: next PR contract
 
-Status: reference audit and implementation scope; no parity claim or runtime change yet.
+Status: experimental native runtime implemented; boundary tests added. Live background parity remains unverified.
 
 Branch: `codex/cua-background-driver`, in worktree `b617/muesli`, based on
 `05eb305db67d4b39beabf70388dc790d4d6c5a12` (merged PR #515).
@@ -162,6 +162,17 @@ an initial acceptance gate, not statistical proof of general reliability.
 Publishing benchmark replies requires explicit authorization for the live send;
 use drafts/local fixtures for earlier driver testing.
 
-No scenario has been newly validated on this branch as of this audit. Historical
-success, source similarity, and unit-test passes must not be presented as live
-background-driver parity.
+The native branch now has a separate run-owned background executor, strict
+window observation, nonce-based Chrome-window acquisition, AX text/actions,
+scoped pointer dispatch, guarded plain native keys, and focus-transition
+reporting. Existing configs retain foreground mode; the experimental setting
+pins background mode for each new run.
+
+Unit tests cover isolation/refusal, pointer bounds, focus-restoration policy,
+balanced cancellation, configuration migration and runtime wiring. These are not
+live window-delivery tests. Real-app focus, same-process sibling windows, browser
+text event semantics, hidden/off-Space delivery and the X benchmarks still need
+functional validation. Chromium raw keys, shortcut modifiers, drag, and DOM tools
+are explicitly unavailable in this increment. Running applications are required
+before acquisition; non-Chrome apps require an explicit window ID. Historical
+success and source similarity must not be presented as current parity.
