@@ -32,6 +32,7 @@ final class ComputerUsePlannerRuntime {
     var onObservedApplication: (@MainActor (String, String) -> Void)?
 
     private let backgroundSession: ComputerUseBackgroundSession?
+    private let isScreenLocked: @MainActor () -> Bool
     private let config: AppConfig
     private let maxSteps: Int?
     private let timeoutSeconds: TimeInterval
@@ -56,13 +57,15 @@ final class ComputerUsePlannerRuntime {
         onStatus: @escaping StatusHandler = { _ in },
         observe: ObserveHandler? = nil,
         plan: PlanHandler? = nil,
-        execute: ExecuteHandler? = nil
+        execute: ExecuteHandler? = nil,
+        isScreenLocked: @escaping @MainActor () -> Bool = { ComputerUseWindowIdentity.isScreenLocked }
     ) {
         let writer = writingCoordinator ?? TranscriptionCoordinator()
         self.prepareEdit = prepareEdit ?? { call, registry in
             try await ComputerUseTextEditing.prepare(call, registry: registry, config: config, coordinator: writer)
         }
         self.now = now
+        self.isScreenLocked = isScreenLocked
         self.config = config
         self.maxSteps = maxSteps
         self.timeoutSeconds = timeoutSeconds ?? TimeInterval(max(config.computerUseTimeoutSeconds, 1))
@@ -101,6 +104,11 @@ final class ComputerUsePlannerRuntime {
         }
 
         var deadline = now() + timeoutSeconds
+        if backgroundSession != nil, isScreenLocked() {
+            let message = "Background CUA requires an unlocked Mac. Unlock it and retry; Chrome does not need to be foreground."
+            traceLog.append(traceEvent(kind: "failed", title: "Mac locked", body: message, status: "failed", step: nil))
+            return .init(status: .failed, message: message, traceEvents: traceLog.events)
+        }
         var priorResults: [ComputerUseToolOutcome] = []
         var unchangedActionCounts: [String: Int] = [:]
         var unchangedObservationCounts: [String: Int] = [:]
