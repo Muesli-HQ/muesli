@@ -487,6 +487,150 @@ struct TranscriptFormatterTests {
         #expect(lines.allSatisfy { $0.contains("Others:") })
     }
 
+    // MARK: - Mic Channel Diarization (in-person meetings)
+
+    @Test("mic diarization with multiple speakers replaces You with Speaker labels")
+    func micDiarizationAssignsSpeakerLabels() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let mic = [
+            SpeechSegment(start: 0.0, end: 5.0, text: "First room speaker"),
+            SpeechSegment(start: 6.0, end: 10.0, text: "Second room speaker"),
+        ]
+        let micDiarization = [
+            makeDiarSeg(speakerId: "spk_0", start: 0.0, end: 5.5),
+            makeDiarSeg(speakerId: "spk_1", start: 5.5, end: 11.0),
+        ]
+        let result = TranscriptFormatter.merge(
+            micSegments: mic,
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: micDiarization,
+            meetingStart: meetingStart
+        )
+        let lines = result.components(separatedBy: "\n").filter { !$0.isEmpty }
+        #expect(lines.count == 2)
+        #expect(lines[0].contains("Speaker 1: First room speaker"))
+        #expect(lines[1].contains("Speaker 2: Second room speaker"))
+        #expect(!result.contains("You:"))
+    }
+
+    @Test("mic diarization with a single detected speaker keeps the You label")
+    func micDiarizationSingleSpeakerKeepsYou() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let mic = [
+            SpeechSegment(start: 0.0, end: 1.0, text: "First chunk"),
+            SpeechSegment(start: 3.0, end: 4.0, text: "Second chunk"),
+        ]
+        // Only one distinct speaker id detected on the mic channel.
+        let micDiarization = [
+            makeDiarSeg(speakerId: "spk_0", start: 0.0, end: 4.5),
+        ]
+        let result = TranscriptFormatter.merge(
+            micSegments: mic,
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: micDiarization,
+            meetingStart: meetingStart
+        )
+        #expect(result.contains("You: First chunk Second chunk"))
+        #expect(!result.contains("Speaker"))
+    }
+
+    @Test("nil mic diarization segments keeps the You label")
+    func nilMicDiarizationKeepsYou() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let mic = [SpeechSegment(start: 0.0, end: 1.0, text: "Test")]
+        let result = TranscriptFormatter.merge(
+            micSegments: mic,
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: nil,
+            meetingStart: meetingStart
+        )
+        #expect(result.contains("You: Test"))
+    }
+
+    @Test("empty mic diarization segments keeps the You label")
+    func emptyMicDiarizationKeepsYou() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let mic = [SpeechSegment(start: 0.0, end: 1.0, text: "Test")]
+        let result = TranscriptFormatter.merge(
+            micSegments: mic,
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: [],
+            meetingStart: meetingStart
+        )
+        #expect(result.contains("You: Test"))
+    }
+
+    @Test("mic diarization backward-compatible default omits the parameter")
+    func micDiarizationDefaultParameterOmitted() {
+        // Existing call sites that don't pass micDiarizationSegments must keep compiling
+        // and keep the pre-feature "You" behavior.
+        let mic = [SpeechSegment(start: 0.0, end: 1.0, text: "Test")]
+        let result = TranscriptFormatter.merge(
+            micSegments: mic,
+            systemSegments: [],
+            diarizationSegments: nil,
+            meetingStart: Date(timeIntervalSince1970: 0)
+        )
+        #expect(result.contains("You: Test"))
+    }
+
+    @Test("mic and system speaker numbers never collide when both are diarized")
+    func micAndSystemSpeakerNumbersDoNotCollide() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let mic = [
+            SpeechSegment(start: 0.0, end: 2.0, text: "Room speaker one"),
+            SpeechSegment(start: 3.0, end: 5.0, text: "Room speaker two"),
+        ]
+        let system = [
+            SpeechSegment(start: 10.0, end: 12.0, text: "Remote speaker one"),
+        ]
+        let micDiarization = [
+            makeDiarSeg(speakerId: "mic_spk_0", start: 0.0, end: 2.5),
+            makeDiarSeg(speakerId: "mic_spk_1", start: 2.5, end: 5.5),
+        ]
+        let systemDiarization = [
+            makeDiarSeg(speakerId: "sys_spk_0", start: 9.5, end: 12.5),
+        ]
+        let result = TranscriptFormatter.merge(
+            micSegments: mic,
+            systemSegments: system,
+            diarizationSegments: systemDiarization,
+            micDiarizationSegments: micDiarization,
+            meetingStart: meetingStart
+        )
+        // System is processed first and claims "Speaker 1"; mic speakers continue
+        // the shared numbering rather than restarting at 1 and colliding.
+        #expect(result.contains("Speaker 1: Remote speaker one"))
+        #expect(result.contains("Speaker 2: Room speaker one"))
+        #expect(result.contains("Speaker 3: Room speaker two"))
+    }
+
+    @Test("mic diarization best overlap selects the correct room speaker")
+    func micDiarizationBestOverlap() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let mic = [
+            SpeechSegment(start: 2.0, end: 8.0, text: "Who said this in the room?"),
+        ]
+        let micDiarization = [
+            makeDiarSeg(speakerId: "spk_A", start: 0.0, end: 4.0),
+            makeDiarSeg(speakerId: "spk_B", start: 3.0, end: 10.0),
+        ]
+        let result = TranscriptFormatter.merge(
+            micSegments: mic,
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: micDiarization,
+            meetingStart: meetingStart
+        )
+        // spk_B has more overlap (5s vs 2s), so it should win and be Speaker 2
+        // (Speaker 1 is claimed by spk_A in first-appearance order).
+        #expect(result.contains("Speaker 2: Who said this in the room?"))
+    }
+
     // MARK: - Helpers
 
     private func makeDiarSeg(speakerId: String, start: Float, end: Float) -> TimedSpeakerSegment {

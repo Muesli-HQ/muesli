@@ -175,6 +175,8 @@ final class MeetingSessionDiagnostics {
         let systemChunks: ChunkStats
         let diarizationSegments: Int
         let diarizationSpeakers: Int
+        let micDiarizationSegments: Int
+        let micDiarizationSpeakers: Int
         let protectedSystemSegments: Int
         let rawMic: AudioSampleStatsSnapshot?
         let cleanedMicAec: AudioSampleStatsSnapshot?
@@ -276,6 +278,7 @@ final class MeetingSessionDiagnostics {
         micChunks: MeetingTranscriptChunkHealthSnapshot,
         systemChunks: MeetingTranscriptChunkHealthSnapshot,
         diarizationSegments: [TimedSpeakerSegment]?,
+        micDiarizationSegments: [TimedSpeakerSegment]? = nil,
         protectedSystemSegmentCount: Int
     ) {
         guard enabled, let outputDirectory else { return }
@@ -293,6 +296,7 @@ final class MeetingSessionDiagnostics {
         writeText(rawTranscript, to: outputDirectory.appendingPathComponent("raw-transcript.txt"))
 
         let speakerCount = Set((diarizationSegments ?? []).map(\.speakerId)).count
+        let micSpeakerCount = Set((micDiarizationSegments ?? []).map(\.speakerId)).count
         let summary = Summary(
             meetingTitle: title,
             startedAt: Self.iso8601.string(from: startedAt),
@@ -314,6 +318,8 @@ final class MeetingSessionDiagnostics {
             ),
             diarizationSegments: diarizationSegments?.count ?? 0,
             diarizationSpeakers: speakerCount,
+            micDiarizationSegments: micDiarizationSegments?.count ?? 0,
+            micDiarizationSpeakers: micSpeakerCount,
             protectedSystemSegments: protectedSystemSegmentCount,
             rawMic: rawMicStats,
             cleanedMicAec: cleanedMicStats,

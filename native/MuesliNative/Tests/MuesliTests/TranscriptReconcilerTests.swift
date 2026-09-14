@@ -106,6 +106,103 @@ struct TranscriptReconcilerTests {
         #expect(reconciled.systemSegments.map(\.text) == ["कि", "क"])
     }
 
+    @Test("does not merge adjacent mic turns across a diarized speaker change")
+    func doesNotMergeAcrossDiarizedSpeakerChange() {
+        // Two room speakers hand off quickly (0.1s gap, well under the 0.35s
+        // merge threshold). Without speaker-aware merging these would combine
+        // into one SpeechSegment and get attributed entirely to one speaker.
+        let mic = [
+            SpeechSegment(start: 0.0, end: 1.0, text: "yes exactly"),
+            SpeechSegment(start: 1.1, end: 2.0, text: "wait no"),
+        ]
+        let micDiarization = [
+            makeDiarSeg(speakerId: "spk_0", start: 0.0, end: 1.05),
+            makeDiarSeg(speakerId: "spk_1", start: 1.05, end: 2.0),
+        ]
+
+        let reconciled = TranscriptReconciler.reconcile(
+            micTurns: mic,
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: micDiarization
+        )
+
+        #expect(reconciled.micSegments.count == 2)
+        #expect(reconciled.micSegments.map(\.text) == ["yes exactly", "wait no"])
+    }
+
+    @Test("still merges adjacent mic turns from the same diarized speaker")
+    func stillMergesSameDiarizedSpeaker() {
+        let mic = [
+            SpeechSegment(start: 0.0, end: 1.0, text: "one"),
+            SpeechSegment(start: 1.1, end: 2.0, text: "two"),
+        ]
+        let micDiarization = [
+            makeDiarSeg(speakerId: "spk_0", start: 0.0, end: 2.5),
+        ]
+
+        let reconciled = TranscriptReconciler.reconcile(
+            micTurns: mic,
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: micDiarization
+        )
+
+        #expect(reconciled.micSegments.count == 1)
+        #expect(reconciled.micSegments[0].text == "one two")
+    }
+
+    @Test("still merges adjacent mic turns when there is no mic diarization")
+    func stillMergesWithoutMicDiarization() {
+        let mic = [
+            SpeechSegment(start: 0.0, end: 1.0, text: "one"),
+            SpeechSegment(start: 1.1, end: 2.0, text: "two"),
+        ]
+
+        let reconciled = TranscriptReconciler.reconcile(
+            micTurns: mic,
+            systemSegments: [],
+            diarizationSegments: nil
+        )
+
+        #expect(reconciled.micSegments.count == 1)
+        #expect(reconciled.micSegments[0].text == "one two")
+    }
+
+    @Test("passes mic diarization segments through untouched")
+    func passesThroughMicDiarizationSegments() {
+        let mic = [
+            SpeechSegment(start: 0.0, end: 1.0, text: "First room speaker"),
+            SpeechSegment(start: 2.0, end: 3.0, text: "Second room speaker")
+        ]
+        let micDiarization = [
+            makeDiarSeg(speakerId: "spk_0", start: 0.0, end: 1.5),
+            makeDiarSeg(speakerId: "spk_1", start: 1.5, end: 3.5)
+        ]
+
+        let reconciled = TranscriptReconciler.reconcile(
+            micTurns: mic,
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: micDiarization
+        )
+
+        #expect(reconciled.micSegments.count == 2)
+        #expect(reconciled.micDiarizationSegments?.count == 2)
+        #expect(reconciled.micDiarizationSegments?.map(\.speakerId) == ["spk_0", "spk_1"])
+    }
+
+    @Test("defaults mic diarization segments to nil when not provided")
+    func micDiarizationSegmentsDefaultsToNil() {
+        let reconciled = TranscriptReconciler.reconcile(
+            micTurns: [SpeechSegment(start: 0.0, end: 1.0, text: "Solo speaker")],
+            systemSegments: [],
+            diarizationSegments: nil
+        )
+
+        #expect(reconciled.micDiarizationSegments == nil)
+    }
+
     private func makeDiarSeg(speakerId: String, start: Float, end: Float) -> TimedSpeakerSegment {
         TimedSpeakerSegment(
             speakerId: speakerId,

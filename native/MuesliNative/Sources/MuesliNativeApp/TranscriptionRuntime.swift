@@ -1052,16 +1052,29 @@ actor TranscriptionCoordinator {
     }
 
     func diarizeSystemAudio(at url: URL) async throws -> DiarizationResult? {
+        try await diarize(url: url, channelLabel: "system audio")
+    }
+
+    /// Runs the same diarization pipeline against the microphone channel, for
+    /// in-person meetings where multiple people are picked up by one Mac mic.
+    /// Mic-channel diarization is acoustically harder than system audio (no
+    /// clean per-participant source, crosstalk, distance), so callers should
+    /// gate this behind an explicit opt-in rather than always running it.
+    func diarizeMicAudio(at url: URL) async throws -> DiarizationResult? {
+        try await diarize(url: url, channelLabel: "microphone audio")
+    }
+
+    private func diarize(url: URL, channelLabel: String) async throws -> DiarizationResult? {
         guard let diarizerManager, diarizerManager.isAvailable else {
             fputs("[muesli-native] diarization not available, skipping\n", stderr)
             return nil
         }
-        fputs("[muesli-native] running speaker diarization on system audio...\n", stderr)
+        fputs("[muesli-native] running speaker diarization on \(channelLabel)...\n", stderr)
         let converter = AudioConverter()
         let samples = try converter.resampleAudioFile(url)
         let result = try diarizerManager.performCompleteDiarization(samples, sampleRate: 16000)
         let speakerCount = Set(result.segments.map(\.speakerId)).count
-        fputs("[muesli-native] diarization complete: \(result.segments.count) segments, \(speakerCount) speakers\n", stderr)
+        fputs("[muesli-native] diarization complete (\(channelLabel)): \(result.segments.count) segments, \(speakerCount) speakers\n", stderr)
         return result
     }
 
