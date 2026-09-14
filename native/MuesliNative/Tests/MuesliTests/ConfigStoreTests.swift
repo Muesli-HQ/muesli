@@ -48,6 +48,25 @@ struct ConfigStoreTests {
         #expect(loaded.meetingSummaryBackend == "openrouter")
     }
 
+    @Test("diarizeMicrophoneAudio defaults to false")
+    func diarizeMicrophoneAudioDefaultsOff() {
+        #expect(AppConfig().diarizeMicrophoneAudio == false)
+    }
+
+    @Test("diarizeMicrophoneAudio round-trips through save and load")
+    func diarizeMicrophoneAudioRoundTrip() {
+        let supportDirectory = makeSupportDirectory(label: "mic-diarization-roundtrip")
+        defer { try? FileManager.default.removeItem(at: supportDirectory) }
+        let store = ConfigStore(supportDirectory: supportDirectory)
+
+        var config = AppConfig()
+        config.diarizeMicrophoneAudio = true
+        store.save(config)
+
+        let loaded = store.load()
+        #expect(loaded.diarizeMicrophoneAudio == true)
+    }
+
     @Test("config path honors the isolated support directory")
     func configPath() {
         let supportDirectory = makeSupportDirectory(label: "path")

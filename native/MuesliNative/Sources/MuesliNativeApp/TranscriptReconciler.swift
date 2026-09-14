@@ -6,6 +6,7 @@ struct ReconciledTranscriptInputs {
     let micSegments: [SpeechSegment]
     let systemSegments: [SpeechSegment]
     let diarizationSegments: [TimedSpeakerSegment]?
+    let micDiarizationSegments: [TimedSpeakerSegment]?
 }
 
 enum TranscriptReconciler {
@@ -34,7 +35,8 @@ enum TranscriptReconciler {
     static func reconcile(
         micTurns: [SpeechSegment],
         systemSegments: [SpeechSegment],
-        diarizationSegments: [TimedSpeakerSegment]?
+        diarizationSegments: [TimedSpeakerSegment]?,
+        micDiarizationSegments: [TimedSpeakerSegment]? = nil
     ) -> ReconciledTranscriptInputs {
         let normalizedMicTurns = mergeReadableSegments(sortedSegments(micTurns))
         let normalizedSystemTurns = sortedSegments(dedupeSystemSegments(systemSegments))
@@ -55,7 +57,8 @@ enum TranscriptReconciler {
         return ReconciledTranscriptInputs(
             micSegments: sortedSegments(keptMicTurns),
             systemSegments: sortedSegments(keptSystemTurns),
-            diarizationSegments: diarizationSegments
+            diarizationSegments: diarizationSegments,
+            micDiarizationSegments: micDiarizationSegments
         )
     }
 

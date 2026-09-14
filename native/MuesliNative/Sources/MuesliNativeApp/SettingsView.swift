@@ -1235,6 +1235,16 @@ struct SettingsView: View {
             }
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow(
+                "Diarize microphone audio",
+                description: "Identify separate speakers for in-person meetings. Relatively less accurate than call diarization, adds processing time.",
+                controlWidth: meetingControlWidth
+            ) {
+                settingsSwitch(isOn: appState.config.diarizeMicrophoneAudio) { newValue in
+                    controller.updateConfig { $0.diarizeMicrophoneAudio = newValue }
+                }
+            }
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow(
                 "Live transcript model",
                 description: meetingLiveTranscriptDescription,
                 controlWidth: meetingControlWidth

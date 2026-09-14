@@ -106,6 +106,40 @@ struct TranscriptReconcilerTests {
         #expect(reconciled.systemSegments.map(\.text) == ["कि", "क"])
     }
 
+    @Test("passes mic diarization segments through untouched")
+    func passesThroughMicDiarizationSegments() {
+        let mic = [
+            SpeechSegment(start: 0.0, end: 1.0, text: "First room speaker"),
+            SpeechSegment(start: 2.0, end: 3.0, text: "Second room speaker")
+        ]
+        let micDiarization = [
+            makeDiarSeg(speakerId: "spk_0", start: 0.0, end: 1.5),
+            makeDiarSeg(speakerId: "spk_1", start: 1.5, end: 3.5)
+        ]
+
+        let reconciled = TranscriptReconciler.reconcile(
+            micTurns: mic,
+            systemSegments: [],
+            diarizationSegments: nil,
+            micDiarizationSegments: micDiarization
+        )
+
+        #expect(reconciled.micSegments.count == 2)
+        #expect(reconciled.micDiarizationSegments?.count == 2)
+        #expect(reconciled.micDiarizationSegments?.map(\.speakerId) == ["spk_0", "spk_1"])
+    }
+
+    @Test("defaults mic diarization segments to nil when not provided")
+    func micDiarizationSegmentsDefaultsToNil() {
+        let reconciled = TranscriptReconciler.reconcile(
+            micTurns: [SpeechSegment(start: 0.0, end: 1.0, text: "Solo speaker")],
+            systemSegments: [],
+            diarizationSegments: nil
+        )
+
+        #expect(reconciled.micDiarizationSegments == nil)
+    }
+
     private func makeDiarSeg(speakerId: String, start: Float, end: Float) -> TimedSpeakerSegment {
         TimedSpeakerSegment(
             speakerId: speakerId,

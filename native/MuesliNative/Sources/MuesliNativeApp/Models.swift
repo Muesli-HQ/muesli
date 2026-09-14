@@ -1729,6 +1729,12 @@ struct AppConfig: Codable {
     var enableScreenContext: Bool = false
     var enableDictationOCRContext: Bool = false
     var useCoreAudioTap: Bool = true
+    /// Runs speaker diarization on the microphone channel too, so in-person
+    /// meetings recorded through a single Mac mic get per-speaker attribution
+    /// instead of one undifferentiated "You" block. Off by default: it adds
+    /// post-processing cost and mic-channel diarization is less reliable than
+    /// system-audio diarization (crosstalk, distance, overlapping speech).
+    var diarizeMicrophoneAudio: Bool = false
     /// Enables the explicitly selected live meeting transcription mode.
     var enableLiveStreamingPartials: Bool = false
     var meetingLiveCaptionBackend: String = MeetingLiveCaptionBackend.defaultBackend.rawValue
@@ -1867,6 +1873,7 @@ struct AppConfig: Codable {
         case enableScreenContext = "enable_screen_context"
         case enableDictationOCRContext = "enable_dictation_ocr_context"
         case useCoreAudioTap = "use_core_audio_tap"
+        case diarizeMicrophoneAudio = "diarize_microphone_audio"
         case enableLiveStreamingPartials = "enable_live_streaming_partials"
         case meetingLiveCaptionBackend = "meeting_live_caption_backend"
         case showMeetingTranscriptOnIndicatorHover = "show_meeting_transcript_on_indicator_hover"
@@ -2100,6 +2107,7 @@ struct AppConfig: Codable {
         enableScreenContext = (try? c.decode(Bool.self, forKey: .enableScreenContext)) ?? defaults.enableScreenContext
         enableDictationOCRContext = (try? c.decode(Bool.self, forKey: .enableDictationOCRContext)) ?? defaults.enableDictationOCRContext
         useCoreAudioTap = (try? c.decode(Bool.self, forKey: .useCoreAudioTap)) ?? defaults.useCoreAudioTap
+        diarizeMicrophoneAudio = (try? c.decode(Bool.self, forKey: .diarizeMicrophoneAudio)) ?? defaults.diarizeMicrophoneAudio
         enableLiveStreamingPartials = (try? c.decode(Bool.self, forKey: .enableLiveStreamingPartials)) ?? defaults.enableLiveStreamingPartials
         meetingLiveCaptionBackend = MeetingLiveCaptionBackend
             .resolved(try? c.decode(String.self, forKey: .meetingLiveCaptionBackend))
