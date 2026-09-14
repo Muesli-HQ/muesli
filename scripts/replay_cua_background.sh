@@ -10,7 +10,14 @@ app="MuesliDev$lane"
 support="$HOME/Library/Application Support/$app"
 [[ -d "/Applications/$app.app" ]] || { echo "Install $app first" >&2; exit 2; }
 previous_id="$(python3 - "$support" <<'PY'
-import json,pathlib,sqlite3,sys
+import json,pathlib,sqlite3,sys,plistlib,subprocess
+def locked(value):
+ if isinstance(value,dict):
+  return value.get('IOConsoleLocked') is True or any(locked(v) for v in value.values())
+ if isinstance(value,list): return any(locked(v) for v in value)
+ return False
+if locked(plistlib.loads(subprocess.check_output(['/usr/sbin/ioreg','-a','-n','Root','-d','1']))):
+ raise SystemExit('Unlock the Mac before replay; Chrome can stay in the background')
 p=pathlib.Path(sys.argv[1])
 if not json.loads((p/'config.json').read_text()).get('computer_use_background_mode',False):
  raise SystemExit('Enable Background execution in this dev lane before replay')
