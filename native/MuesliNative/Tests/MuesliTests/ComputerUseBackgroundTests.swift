@@ -5,6 +5,41 @@ import Testing
 @Suite("Computer Use background boundaries", .serialized)
 @MainActor
 struct ComputerUseBackgroundTests {
+    @Test("Chrome setter error does not discard successful enablement readback")
+    func enablementReadback() {
+        var flag = false
+        let applied = ComputerUseWindowIdentity.ensureEnablement(read: { flag }, write: {
+            flag = true
+            return .notImplemented
+        })
+        #expect(applied.enabled)
+        #expect(applied.status == .notImplemented)
+        let rejected = ComputerUseWindowIdentity.ensureEnablement(read: { false }, write: { .cannotComplete })
+        #expect(!rejected.enabled)
+        let already = ComputerUseWindowIdentity.ensureEnablement(read: { true }, write: {
+            Issue.record("Do not rewrite an enabled attribute")
+            return .success
+        })
+        #expect(already.enabled && !already.requested)
+    }
+
+    @Test("Off-Space windows remain candidates when AXWindows is empty")
+    func offSpaceCandidates() {
+        #expect(ComputerUseWindowIdentity.windowCandidates(listed: [Int](), focused: 30365, main: 30365) == [30365])
+        #expect(ComputerUseWindowIdentity.windowCandidates(listed: [1, 2], focused: 2, main: 3) == [1, 2, 3])
+        #expect(ComputerUseWindowIdentity.windowCandidates(listed: [Int](), focused: nil, main: nil).isEmpty)
+        let owned = ComputerUseBackgroundTarget(processID: 42, windowID: 30365, bundleID: "fixture")
+        #expect(!owned.accepts(processID: 42, windowID: 1, bundleID: "fixture"))
+    }
+
+    @Test("User working in another app cannot be classified as a target-window focus steal")
+    func unrelatedWindowChanges() {
+        #expect(!ComputerUseBackgroundFocusGuard.isUnexpectedWindowChange(prior: 1, current: 2, targetWasFrontmost: false, userActed: false))
+        #expect(!ComputerUseBackgroundFocusGuard.isUnexpectedWindowChange(prior: 1, current: 2, targetWasFrontmost: true, userActed: true))
+        #expect(ComputerUseBackgroundFocusGuard.isUnexpectedWindowChange(prior: 1, current: 2, targetWasFrontmost: true, userActed: false))
+        #expect(!ComputerUseBackgroundFocusGuard.isUnexpectedWindowChange(prior: 1, current: nil, targetWasFrontmost: true, userActed: false))
+    }
+
     @Test("Missing background target never captures the user's window")
     func noTargetObservation() {
         let registry = ComputerUseElementRegistry()
