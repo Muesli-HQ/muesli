@@ -120,6 +120,19 @@ final class ComputerUseBackgroundFocusGuard {
     private var restorationInvalidated = false
     private var priorPID: pid_t?
     private var priorKeyWindow: CGWindowID?
+    private var actionStarted: TimeInterval = 0
+    private(set) var diagnostics: [String] = []
+
+    private var userActed: Bool {
+        let elapsed = ProcessInfo.processInfo.systemUptime - actionStarted
+        return [CGEventType.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown, .flagsChanged, .mouseMoved].contains {
+            CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: $0) <= elapsed
+        }
+    }
+
+    static func isUnexpectedWindowChange(prior: CGWindowID?, current: CGWindowID?, targetWasFrontmost: Bool, userActed: Bool) -> Bool {
+        targetWasFrontmost && !userActed && prior != nil && current != nil && prior != current
+    }
 
     static func shouldRestore(activatedBundle: String?, targetBundle: String, priorPID: pid_t?, activatedPID: pid_t,
                               userActed: Bool) -> Bool {
@@ -129,13 +142,14 @@ final class ComputerUseBackgroundFocusGuard {
     func begin(bundleID: String) {
         end()
         focusChanged = false
+        diagnostics = []
         restorationInvalidated = false
         let prior = NSWorkspace.shared.frontmostApplication
         priorPID = prior?.processIdentifier
-        priorKeyWindow = prior.flatMap {
+        priorKeyWindow = (prior?.bundleIdentifier == bundleID ? prior : nil).flatMap {
             ComputerUseWindowIdentity.attribute(AXUIElementCreateApplication($0.processIdentifier), kAXFocusedWindowAttribute)
         }.flatMap { ComputerUseWindowIdentity.windowID(of: $0) }
-        let started = ProcessInfo.processInfo.systemUptime
+        actionStarted = ProcessInfo.processInfo.systemUptime
         observer = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
         ) { [weak self] notification in
@@ -146,14 +160,13 @@ final class ComputerUseBackgroundFocusGuard {
                     self.restorationInvalidated = true
                     return
                 }
-                self.focusChanged = true
-                let elapsed = ProcessInfo.processInfo.systemUptime - started
-                let userActed = [CGEventType.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown, .flagsChanged, .mouseMoved].contains {
-                    CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: $0) <= elapsed
-                }
+                let userActed = self.userActed || self.restorationInvalidated
+                self.diagnostics.append("target activation pid=\(activated.processIdentifier), prior=\(prior?.processIdentifier ?? 0), userActivity=\(userActed)")
+                if !userActed { self.focusChanged = true }
                 if Self.shouldRestore(activatedBundle: activated.bundleIdentifier, targetBundle: bundleID,
-                                      priorPID: prior?.processIdentifier, activatedPID: activated.processIdentifier, userActed: userActed || self.restorationInvalidated) {
-                    prior?.activate(options: [])
+                                      priorPID: prior?.processIdentifier, activatedPID: activated.processIdentifier, userActed: userActed) {
+                    let accepted = prior?.activate(options: []) ?? false
+                    self.diagnostics.append("restoreRequested=\(accepted)")
                 }
             }
         }
@@ -161,11 +174,19 @@ final class ComputerUseBackgroundFocusGuard {
 
     /// App activation notifications alone miss key-window changes within Chrome.
     func checkWindowFocus() {
+        if focusChanged, NSWorkspace.shared.frontmostApplication?.processIdentifier == priorPID {
+            diagnostics.append("appFocusRestored=true; transient activation recorded")
+            focusChanged = false
+        }
         guard let priorPID, let priorKeyWindow,
               NSWorkspace.shared.frontmostApplication?.processIdentifier == priorPID,
               let window = ComputerUseWindowIdentity.attribute(AXUIElementCreateApplication(priorPID), kAXFocusedWindowAttribute),
               let current = ComputerUseWindowIdentity.windowID(of: window) else { return }
-        if current != priorKeyWindow { focusChanged = true }
+        if Self.isUnexpectedWindowChange(prior: priorKeyWindow, current: current, targetWasFrontmost: true,
+                                         userActed: userActed || restorationInvalidated) {
+            diagnostics.append("target key window changed \(priorKeyWindow)->\(current)")
+            focusChanged = true
+        }
     }
 
     func end() {

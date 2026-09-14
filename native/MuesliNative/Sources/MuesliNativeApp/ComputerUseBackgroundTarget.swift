@@ -7,6 +7,18 @@ struct ComputerUseBackgroundTarget: Equatable {
     let processID: pid_t
     let windowID: CGWindowID
     let bundleID: String
+    let retainedWindow: AXUIElement?
+
+    init(processID: pid_t, windowID: CGWindowID, bundleID: String, retainedWindow: AXUIElement? = nil) {
+        self.processID = processID
+        self.windowID = windowID
+        self.bundleID = bundleID
+        self.retainedWindow = retainedWindow
+    }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.processID == rhs.processID && lhs.windowID == rhs.windowID && lhs.bundleID == rhs.bundleID
+    }
 
     func accepts(processID: Int?, windowID: Int?, bundleID: String) -> Bool {
         (processID == nil || processID == Int(self.processID)) &&
@@ -40,12 +52,54 @@ enum ComputerUseWindowIdentity {
         return (value as! AXUIElement)
     }
 
+    struct Enablement {
+        let requested: Bool
+        let status: AXError?
+        let enabled: Bool
+        var diagnostic: String {
+            "AXEnhancedUserInterface requested=\(requested), status=\(status?.rawValue ?? 0), readback=\(enabled)"
+        }
+    }
+
+    static func ensureEnablement(read: () -> Bool?, write: () -> AXError) -> Enablement {
+        if read() == true { return Enablement(requested: false, status: nil, enabled: true) }
+        let status = write()
+        // Chrome can apply this attribute and return .notImplemented. Readback,
+        // then a live window identity, are the evidence; the return code is not.
+        return Enablement(requested: true, status: status, enabled: read() == true)
+    }
+
+    static func enableChromeAccessibility(pid: pid_t) -> Enablement {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.5)
+        return ensureEnablement(read: {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(app, "AXEnhancedUserInterface" as CFString, &value) == .success else { return nil }
+            return value as? Bool
+        }, write: {
+            AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+        })
+    }
+
     static func windows(pid: pid_t) -> [AXUIElement] {
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.5)
         var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value) == .success else { return [] }
-        return value as? [AXUIElement] ?? []
+        _ = AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value)
+        // AXWindows omits off-Space Chrome windows even while these exact
+        // handles remain live. They are candidates only, never an implicit target.
+        let listed = value as? [AXUIElement] ?? []
+        let focused = attribute(app, kAXFocusedWindowAttribute)
+        let main = attribute(app, kAXMainWindowAttribute)
+        return windowCandidates(listed: listed, focused: focused, main: main).filter { windowID(of: $0) != nil }
+    }
+
+    static func windowCandidates<T: Equatable>(listed: [T], focused: T?, main: T?) -> [T] {
+        var result = listed
+        for candidate in [focused, main].compactMap({ $0 }) where !result.contains(candidate) {
+            result.append(candidate)
+        }
+        return result
     }
 
     static func frame(_ target: ComputerUseBackgroundTarget) -> CGRect? {
@@ -66,6 +120,11 @@ enum ComputerUseWindowIdentity {
     static func resolve(_ target: ComputerUseBackgroundTarget) -> AXUIElement? {
         guard frame(target) != nil,
               NSRunningApplication(processIdentifier: target.processID)?.bundleIdentifier == target.bundleID else { return nil }
+        if let window = target.retainedWindow,
+           windowID(of: window) == target.windowID,
+           !ComputerUseObservationCapture.axString(window, kAXRoleAttribute).isEmpty {
+            return window
+        }
         return windows(pid: target.processID).first { windowID(of: $0) == target.windowID }
     }
 
