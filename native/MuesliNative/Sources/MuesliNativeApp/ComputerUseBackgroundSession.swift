@@ -47,6 +47,7 @@ final class ComputerUseBackgroundSession {
         } else if !acquiring {
             return .unsupported("No acquired background window. Call launch_app or get_app_state first")
         }
+        guard !ComputerUseWindowIdentity.isScreenLocked else { return .failed("Background CUA stopped because the Mac is locked. Unlock it and start a new run") }
         guard AXIsProcessTrusted() else { return .unsupported("Accessibility permission is required for background CUA") }
         let bundle = target?.bundleID ?? requestedBundle
         guard !bundle.isEmpty else { return .unsupported("Specify the target app to acquire a background window") }
@@ -117,9 +118,14 @@ final class ComputerUseBackgroundSession {
         guard bundle == "com.google.Chrome" else { return .unsupported("Use list_windows and get_app_state with an explicit window_id for this app") }
         guard !attemptedBrowserAcquisition else { return .failed("Browser acquisition already failed in this run; inspect the created window before retrying in a new run") }
         attemptedBrowserAcquisition = true
-        guard !windows.isEmpty else {
-            return .failed("Chrome exposes no AX window handles (list, focused, or main). No window was created. Check Chrome accessibility before retrying. \(readiness?.diagnostic ?? ""). \(ComputerUseWindowIdentity.lastWindowDiagnostics)")
+        let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(axApp, 0.5)
+        guard ComputerUseObservationCapture.axString(axApp, kAXRoleAttribute) == kAXApplicationRole,
+              readiness?.enabled == true else {
+            return .failed("Chrome AX is not ready. No window was created. \(readiness?.diagnostic ?? ""). \(ComputerUseWindowIdentity.lastWindowDiagnostics)")
         }
+        // A responsive app may have no existing AX window (closed/off-Space
+        // windows). Create one marked window, then require its exact live identity.
         let before = Set(windows.compactMap { ComputerUseWindowIdentity.windowID(of: $0) })
         let nonce = "Muesli-CUA-" + UUID().uuidString
         do {

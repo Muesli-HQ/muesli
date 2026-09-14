@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Darwin
+import IOKit
 
 /// Identity survives snapshots, but never permits adoption of a sibling window.
 struct ComputerUseBackgroundTarget: Equatable {
@@ -29,6 +30,13 @@ struct ComputerUseBackgroundTarget: Equatable {
 
 @MainActor
 enum ComputerUseWindowIdentity {
+    static var isScreenLocked: Bool {
+        let root = IORegistryGetRootEntry(kIOMainPortDefault)
+        guard root != 0 else { return false }
+        defer { IOObjectRelease(root) }
+        return IORegistryEntryCreateCFProperty(root, "IOConsoleLocked" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Bool ?? false
+    }
+
     private(set) static var lastWindowDiagnostics = ""
     private typealias GetWindow = @convention(c) (AXUIElement, UnsafeMutablePointer<CGWindowID>) -> AXError
     private static let axHandle = dlopen("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices", RTLD_LAZY)
