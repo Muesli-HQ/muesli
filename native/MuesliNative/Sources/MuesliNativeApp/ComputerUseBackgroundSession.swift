@@ -71,7 +71,10 @@ final class ComputerUseBackgroundSession {
         focus.checkWindowFocus()
         if focus.focusChanged {
             stoppedForFocus = true
-            return .failed("Focus changed during background action; further actions stopped. App restoration is attempted only without intervening user input; inspect the active window before retrying. Action result: \(result.message)")
+            return .failed("Focus changed during background action; further actions stopped. App restoration is attempted only without intervening user input; inspect the active window before retrying. Action result: \(result.message). Focus evidence: \(focus.diagnostics.joined(separator: "; "))")
+        }
+        if !focus.diagnostics.isEmpty {
+            return ComputerUseExecutionResult(status: result.status, message: result.message + "\nFocus: " + focus.diagnostics.joined(separator: "; "))
         }
         return result
     }
@@ -94,19 +97,29 @@ final class ComputerUseBackgroundSession {
             return .unsupported("\(bundle) must be running before background acquisition; open it and retry")
         }
         if let pid = call.processID, pid != Int(app.processIdentifier) { return .unsupported("Requested process does not match the app") }
-        let windows = ComputerUseWindowIdentity.windows(pid: app.processIdentifier)
+        let readiness = bundle == "com.google.Chrome" ? ComputerUseWindowIdentity.enableChromeAccessibility(pid: app.processIdentifier) : nil
+        var windows = ComputerUseWindowIdentity.windows(pid: app.processIdentifier)
+        if bundle == "com.google.Chrome" {
+            for _ in 0..<4 where windows.isEmpty {
+                do { try await Task.sleep(for: .milliseconds(250)) } catch { return .cancelled() }
+                windows = ComputerUseWindowIdentity.windows(pid: app.processIdentifier)
+            }
+        }
         if let id = call.windowID {
             guard let windowID = CGWindowID(exactly: id), windowID != 0 else { return .unsupported("Invalid window_id") }
             let candidate = ComputerUseBackgroundTarget(processID: app.processIdentifier, windowID: windowID, bundleID: bundle)
-            guard ComputerUseWindowIdentity.resolve(candidate) != nil else { return .failed("Explicit window is unavailable or belongs to another process") }
+            guard let window = ComputerUseWindowIdentity.resolve(candidate) else { return .failed("Explicit window is unavailable or belongs to another process") }
             // Browser scripts need a independently mapped browser window identity;
             // AX-only operation is still available on an explicit native window.
-            target = candidate
+            target = ComputerUseBackgroundTarget(processID: candidate.processID, windowID: candidate.windowID, bundleID: bundle, retainedWindow: window)
             return .executed("Acquired explicit window \(windowID); browser-script navigation is unavailable for an unmapped window")
         }
         guard bundle == "com.google.Chrome" else { return .unsupported("Use list_windows and get_app_state with an explicit window_id for this app") }
         guard !attemptedBrowserAcquisition else { return .failed("Browser acquisition already failed in this run; inspect the created window before retrying in a new run") }
         attemptedBrowserAcquisition = true
+        guard !windows.isEmpty else {
+            return .failed("Chrome exposes no AX window handles (list, focused, or main). No window was created. Check Chrome accessibility before retrying. \(readiness?.diagnostic ?? "")")
+        }
         let before = Set(windows.compactMap { ComputerUseWindowIdentity.windowID(of: $0) })
         let nonce = "Muesli-CUA-" + UUID().uuidString
         do {
@@ -130,10 +143,10 @@ final class ComputerUseBackgroundSession {
                 if added.count > 1 { return .failed("Multiple windows appeared during acquisition; refusing ambiguous ownership") }
                 if let id = added.first {
                     let candidate = ComputerUseBackgroundTarget(processID: app.processIdentifier, windowID: id, bundleID: bundle)
-                    if ComputerUseWindowIdentity.resolve(candidate) != nil {
-                        target = candidate
+                    if let window = ComputerUseWindowIdentity.resolve(candidate) {
+                        target = ComputerUseBackgroundTarget(processID: candidate.processID, windowID: id, bundleID: bundle, retainedWindow: window)
                         browserWindowID = scriptID
-                        return .executed("Acquired separate Chrome window \(id), process \(app.processIdentifier)")
+                        return .executed("Acquired separate Chrome window \(id), process \(app.processIdentifier). \(readiness?.diagnostic ?? "")")
                     }
                 }
                 try await Task.sleep(for: .milliseconds(250))

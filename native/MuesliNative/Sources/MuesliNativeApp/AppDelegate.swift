@@ -47,6 +47,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             }
             self.controller = controller
             controller.start()
+            if Bundle.main.bundleIdentifier?.hasPrefix("com.muesli.dev") == true,
+               let index = CommandLine.arguments.firstIndex(of: "--computer-use-command-file"),
+               CommandLine.arguments.indices.contains(index + 1),
+               let data = try? Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[index + 1])),
+               data.count <= 16_384, let command = String(data: data, encoding: .utf8) {
+                Task { @MainActor [weak controller] in
+                    try? await Task.sleep(for: .seconds(2))
+                    controller?.replayComputerUseCommandForDevelopment(command.trimmingCharacters(in: .whitespacesAndNewlines))
+                }
+            }
             NSApplication.shared.registerForRemoteNotifications()
         } catch {
             let alert = NSAlert()
