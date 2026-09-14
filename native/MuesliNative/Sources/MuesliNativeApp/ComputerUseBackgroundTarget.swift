@@ -29,6 +29,7 @@ struct ComputerUseBackgroundTarget: Equatable {
 
 @MainActor
 enum ComputerUseWindowIdentity {
+    private(set) static var lastWindowDiagnostics = ""
     private typealias GetWindow = @convention(c) (AXUIElement, UnsafeMutablePointer<CGWindowID>) -> AXError
     private static let axHandle = dlopen("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices", RTLD_LAZY)
     private static let getWindow: GetWindow? = {
@@ -36,12 +37,44 @@ enum ComputerUseWindowIdentity {
         return unsafeBitCast(symbol, to: GetWindow.self)
     }()
 
+    struct WindowFact {
+        let id: CGWindowID
+        let frame: CGRect
+        let title: String
+    }
+
+    static func corroboratedID(frame: CGRect, title: String, windows: [WindowFact]) -> CGWindowID? {
+        guard !title.isEmpty else { return nil }
+        let matches = windows.filter {
+            !$0.title.isEmpty && $0.title == title &&
+            abs($0.frame.minX - frame.minX) <= 2 && abs($0.frame.minY - frame.minY) <= 2 &&
+            abs($0.frame.width - frame.width) <= 2 && abs($0.frame.height - frame.height) <= 2
+        }
+        return matches.count == 1 ? matches[0].id : nil
+    }
+
     static func windowID(of element: AXUIElement) -> CGWindowID? {
         AXUIElementSetMessagingTimeout(element, 0.1)
-        guard let getWindow else { return nil }
         var id: CGWindowID = 0
-        guard getWindow(element, &id) == .success, id != 0 else { return nil }
-        return id
+        if let getWindow, getWindow(element, &id) == .success, id != 0 { return id }
+        // The private getter can decline in a signed app even when the AX window
+        // is readable. Restore the earlier driver's corroboration, but reject
+        // blank titles and duplicate matches (geometry alone is not identity).
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success,
+              ComputerUseObservationCapture.axString(element, kAXRoleAttribute) == kAXWindowRole,
+              let frame = ComputerUseObservationCapture.rect(element),
+              let infos = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[CFString: Any]] else { return nil }
+        let facts = infos.compactMap { info -> WindowFact? in
+            guard (info[kCGWindowOwnerPID] as? NSNumber)?.int32Value == pid,
+                  (info[kCGWindowLayer] as? Int) == 0,
+                  let number = info[kCGWindowNumber] as? NSNumber,
+                  let bounds = info[kCGWindowBounds] as? [String: Any],
+                  let cgFrame = CGRect(dictionaryRepresentation: bounds as CFDictionary),
+                  let title = info[kCGWindowName] as? String else { return nil }
+            return WindowFact(id: number.uint32Value, frame: cgFrame, title: title)
+        }
+        return corroboratedID(frame: frame, title: ComputerUseObservationCapture.axString(element, kAXTitleAttribute), windows: facts)
     }
 
     static func attribute(_ element: AXUIElement, _ name: String) -> AXUIElement? {
@@ -85,13 +118,23 @@ enum ComputerUseWindowIdentity {
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.5)
         var value: CFTypeRef?
-        _ = AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value)
+        let listStatus = AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value)
         // AXWindows omits off-Space Chrome windows even while these exact
         // handles remain live. They are candidates only, never an implicit target.
         let listed = value as? [AXUIElement] ?? []
         let focused = attribute(app, kAXFocusedWindowAttribute)
         let main = attribute(app, kAXMainWindowAttribute)
-        return windowCandidates(listed: listed, focused: focused, main: main).filter { windowID(of: $0) != nil }
+        let candidates = windowCandidates(listed: listed, focused: focused, main: main)
+        var details: [String] = []
+        let resolved = candidates.filter { window in
+            var rawID: CGWindowID = 0
+            let status = getWindow?(window, &rawID)
+            let id = windowID(of: window)
+            details.append("native=\(rawID)/\(status?.rawValue ?? -1), resolved=\(id ?? 0), role=\(ComputerUseObservationCapture.axString(window, kAXRoleAttribute))")
+            return id != nil
+        }
+        lastWindowDiagnostics = "AXWindows=\(listStatus.rawValue)/\(listed.count), focused=\(focused != nil), main=\(main != nil), getter=\(getWindow != nil), candidates=[\(details.joined(separator: "; "))]"
+        return resolved
     }
 
     static func windowCandidates<T: Equatable>(listed: [T], focused: T?, main: T?) -> [T] {
