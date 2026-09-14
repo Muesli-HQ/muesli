@@ -2310,6 +2310,12 @@ struct SettingsView: View {
     private var computerUseSettingsPane: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
             settingsSection("Computer Use") {
+                settingsCompactRow("Background execution (experimental)") {
+                    settingsSwitch(isOn: appState.config.computerUseBackgroundMode) { newValue in
+                        controller.updateConfig { $0.computerUseBackgroundMode = newValue }
+                    }
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
                 settingsCompactRow("Enable planner") {
                     settingsControl("cua_planner")
                 }
