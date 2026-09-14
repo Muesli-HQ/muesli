@@ -118,7 +118,7 @@ final class ComputerUseBackgroundSession {
         guard !attemptedBrowserAcquisition else { return .failed("Browser acquisition already failed in this run; inspect the created window before retrying in a new run") }
         attemptedBrowserAcquisition = true
         guard !windows.isEmpty else {
-            return .failed("Chrome exposes no AX window handles (list, focused, or main). No window was created. Check Chrome accessibility before retrying. \(readiness?.diagnostic ?? "")")
+            return .failed("Chrome exposes no AX window handles (list, focused, or main). No window was created. Check Chrome accessibility before retrying. \(readiness?.diagnostic ?? ""). \(ComputerUseWindowIdentity.lastWindowDiagnostics)")
         }
         let before = Set(windows.compactMap { ComputerUseWindowIdentity.windowID(of: $0) })
         let nonce = "Muesli-CUA-" + UUID().uuidString
@@ -146,7 +146,7 @@ final class ComputerUseBackgroundSession {
                     if let window = ComputerUseWindowIdentity.resolve(candidate) {
                         target = ComputerUseBackgroundTarget(processID: candidate.processID, windowID: id, bundleID: bundle, retainedWindow: window)
                         browserWindowID = scriptID
-                        return .executed("Acquired separate Chrome window \(id), process \(app.processIdentifier). \(readiness?.diagnostic ?? "")")
+                        return .executed("Acquired separate Chrome window \(id), process \(app.processIdentifier). \(readiness?.diagnostic ?? ""). \(ComputerUseWindowIdentity.lastWindowDiagnostics)")
                     }
                 }
                 try await Task.sleep(for: .milliseconds(250))

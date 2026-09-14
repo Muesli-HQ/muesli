@@ -5,6 +5,17 @@ import Testing
 @Suite("Computer Use background boundaries", .serialized)
 @MainActor
 struct ComputerUseBackgroundTests {
+    @Test("Corroboration refuses blank titles and same-frame sibling ambiguity")
+    func exactCorroboration() {
+        let frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+        let facts = [ComputerUseWindowIdentity.WindowFact(id: 1, frame: frame, title: "owned"),
+                     ComputerUseWindowIdentity.WindowFact(id: 2, frame: frame, title: "user")]
+        #expect(ComputerUseWindowIdentity.corroboratedID(frame: frame, title: "owned", windows: facts) == 1)
+        #expect(ComputerUseWindowIdentity.corroboratedID(frame: frame, title: "", windows: facts) == nil)
+        #expect(ComputerUseWindowIdentity.corroboratedID(frame: frame, title: "missing", windows: facts) == nil)
+        #expect(ComputerUseWindowIdentity.corroboratedID(frame: frame, title: "owned", windows: facts + [.init(id: 3, frame: frame, title: "owned")]) == nil)
+    }
+
     @Test("Chrome setter error does not discard successful enablement readback")
     func enablementReadback() {
         var flag = false
