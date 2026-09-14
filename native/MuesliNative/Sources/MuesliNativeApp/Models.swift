@@ -2029,6 +2029,7 @@ struct AppConfig: Codable {
     var computerUsePlannerModel: String = ""
     var computerUseReasoningEffort: ReasoningEffort?
     var computerUseTimeoutSeconds: Int = 120
+    var computerUseBackgroundMode: Bool = false
     var sttBackend: String = BackendOption.parakeetUnified.backend
     var sttModel: String = BackendOption.parakeetUnified.model
     var dictationProvider: String = DictationProvider.defaultProvider.rawValue
@@ -2196,6 +2197,7 @@ struct AppConfig: Codable {
         case computerUsePlannerModel = "computer_use_planner_model"
         case computerUseReasoningEffort = "computer_use_reasoning_effort"
         case computerUseTimeoutSeconds = "computer_use_timeout_seconds"
+        case computerUseBackgroundMode = "computer_use_background_mode"
         case sttBackend = "stt_backend"
         case sttModel = "stt_model"
         case dictationProvider = "dictation_provider"
@@ -2362,6 +2364,7 @@ struct AppConfig: Codable {
             forKey: .computerUseReasoningEffort
         )
         computerUseTimeoutSeconds = (try? c.decode(Int.self, forKey: .computerUseTimeoutSeconds)) ?? defaults.computerUseTimeoutSeconds
+        computerUseBackgroundMode = (try? c.decode(Bool.self, forKey: .computerUseBackgroundMode)) ?? defaults.computerUseBackgroundMode
         sttBackend = (try? c.decode(String.self, forKey: .sttBackend)) ?? defaults.sttBackend
         sttModel = (try? c.decode(String.self, forKey: .sttModel)) ?? defaults.sttModel
         dictationProvider = DictationProvider.resolved(try? c.decode(String.self, forKey: .dictationProvider)).rawValue

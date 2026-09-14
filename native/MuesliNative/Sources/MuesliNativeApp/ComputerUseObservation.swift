@@ -242,6 +242,7 @@ final class ComputerUseElementRegistry {
         let processID: Int?
     }
 
+    var backgroundTarget: ComputerUseBackgroundTarget?
     private var elements: [String: AXUIElement] = [:]
     private var indexedElements: [Int: AXUIElement] = [:]
     private var elementFingerprintsByID: [String: Fingerprint] = [:]
@@ -249,6 +250,7 @@ final class ComputerUseElementRegistry {
     private var screenshot: ComputerUseScreenshotObservation?
 
     func clear() {
+        backgroundTarget = nil
         elements.removeAll()
         indexedElements.removeAll()
         elementFingerprintsByID.removeAll()
@@ -288,6 +290,7 @@ final class ComputerUseElementRegistry {
 
     private func resolve(_ element: AXUIElement?, fingerprint: Fingerprint?) -> AXUIElement? {
         guard let element else { return nil }
+        if let backgroundTarget, !ComputerUseWindowIdentity.contains(element, target: backgroundTarget) { return nil }
         guard let fingerprint else { return element }
         if Self.isValid(element) {
             return element
@@ -404,6 +407,44 @@ enum ComputerUseObservationCapture {
         )
     }
 
+    /// No app activation, focused-window substitution, or whole-display capture.
+    static func captureBackground(
+        registry: ComputerUseElementRegistry,
+        includeScreenshot: Bool,
+        target: ComputerUseBackgroundTarget?
+    ) -> ComputerUseObservation {
+        registry.clear()
+        let instructions = ComputerUseBackgroundSession.plannerInstructions
+        guard AXIsProcessTrusted(), let target, let window = ComputerUseWindowIdentity.resolve(target) else {
+            return ComputerUseObservation(
+                appName: target?.bundleID ?? "No background window acquired", bundleID: target?.bundleID ?? "",
+                windowTitle: "", windowFrame: nil, screenshot: nil, cursorPosition: nil,
+                appInstructions: instructions + " No live acquired window. Use launch_app or get_app_state to acquire one.",
+                elements: [], capturedAt: Date()
+            )
+        }
+        registry.backgroundTarget = target
+        let frame = rect(window)
+        var screenshot: ComputerUseScreenshotObservation?
+        if includeScreenshot, let frame,
+           let image = CGWindowListCreateImage(.null, .optionIncludingWindow, target.windowID, [.bestResolution, .boundsIgnoreFraming]) {
+            screenshot = screenshotObservation(image: image, frame: frame)
+        }
+        registry.registerScreenshot(screenshot)
+        var candidates: [ComputerUseElementCandidate] = []
+        var visited = Set<AXUIElement>()
+        walk(window, registry: registry, candidates: &candidates, visited: &visited,
+             path: "0", depth: 0, maxDepth: 12, maxCandidates: 160,
+             deadline: ProcessInfo.processInfo.systemUptime + 1.0)
+        return ComputerUseObservation(
+            appName: NSRunningApplication(processIdentifier: target.processID)?.localizedName ?? target.bundleID,
+            bundleID: target.bundleID, windowTitle: axString(window, kAXTitleAttribute),
+            windowFrame: frame.map(ComputerUseRect.init), screenshot: screenshot, cursorPosition: nil,
+            appInstructions: instructions + " Acquired process_id=\(target.processID), window_id=\(target.windowID).",
+            elements: candidates, capturedAt: Date()
+        )
+    }
+
     nonisolated static func candidateForTests(
         elementID: String,
         elementIndex: Int? = nil,
@@ -438,8 +479,13 @@ enum ComputerUseObservationCapture {
         path: String,
         depth: Int,
         maxDepth: Int,
-        maxCandidates: Int
+        maxCandidates: Int,
+        deadline: TimeInterval? = nil
     ) {
+        if let deadline {
+            guard ProcessInfo.processInfo.systemUptime < deadline else { return }
+            AXUIElementSetMessagingTimeout(element, 0.05)
+        }
         guard depth <= maxDepth, candidates.count < maxCandidates, !visited.contains(element) else { return }
         visited.insert(element)
 
@@ -459,7 +505,8 @@ enum ComputerUseObservationCapture {
                 path: "\(path).\(index)",
                 depth: depth + 1,
                 maxDepth: maxDepth,
-                maxCandidates: maxCandidates
+                maxCandidates: maxCandidates,
+                deadline: deadline
             )
         }
     }
