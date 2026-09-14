@@ -5,6 +5,19 @@ import Testing
 @Suite("Computer Use background boundaries", .serialized)
 @MainActor
 struct ComputerUseBackgroundTests {
+    @Test("Locked sessions stop before calling the model or acquiring a window")
+    func lockedSessionPreflight() async {
+        var config = AppConfig()
+        config.computerUseBackgroundMode = true
+        let runtime = ComputerUsePlannerRuntime(config: config, plan: { _ in
+            Issue.record("Planner must not be called while locked")
+            return ComputerUsePlannerResponse(toolCall: .init(tool: .finish, reason: "unexpected"))
+        }, isScreenLocked: { true })
+        let result = await runtime.run(command: "Draft without posting")
+        #expect(result.status == .failed)
+        #expect(result.message.contains("unlocked Mac"))
+    }
+
     @Test("Corroboration refuses blank titles and same-frame sibling ambiguity")
     func exactCorroboration() {
         let frame = CGRect(x: 0, y: 0, width: 800, height: 600)
@@ -155,7 +168,7 @@ struct ComputerUseBackgroundTests {
             #expect(request.observation.elements.isEmpty)
             #expect(request.observation.appInstructions?.contains("BACKGROUND MODE") == true)
             return ComputerUsePlannerResponse(toolCall: ComputerUseToolCall(tool: .finish, reason: "Fixture observation complete"))
-        })
+        }, isScreenLocked: { false })
         let result = await runtime.run(command: "Observe the empty background fixture")
         #expect(result.status == .done)
     }
