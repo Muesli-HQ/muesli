@@ -67,6 +67,22 @@ struct ConfigStoreTests {
         #expect(loaded.diarizeMicrophoneAudio == true)
     }
 
+    @Test("legacy config JSON without diarize_microphone_audio decodes to the default and keeps other fields")
+    func diarizeMicrophoneAudioLegacyDecode() throws {
+        // Simulates a config.json written before this setting existed.
+        let legacyJSON = """
+        {
+            "user_name": "Legacy User",
+            "sound_enabled": false
+        }
+        """
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: Data(legacyJSON.utf8))
+
+        #expect(decoded.diarizeMicrophoneAudio == false)
+        #expect(decoded.userName == "Legacy User")
+        #expect(decoded.soundEnabled == false)
+    }
+
     @Test("config path honors the isolated support directory")
     func configPath() {
         let supportDirectory = makeSupportDirectory(label: "path")
