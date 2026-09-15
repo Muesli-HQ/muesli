@@ -125,6 +125,7 @@ case "${shard}" in
       DiagnosticIncidentTests
       DictationAudioRouteControllerTests
       MeetingContactIdentityTests
+      MeetingContactResolverTests
       MeetingDetectorTests
       MeetingParticipantStoreTests
       MeetingProcessingStageTests
