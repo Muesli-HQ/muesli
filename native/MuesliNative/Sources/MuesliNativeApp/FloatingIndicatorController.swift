@@ -1261,7 +1261,9 @@ final class FloatingIndicatorController: NSObject {
         frameSize: NSSize,
         config: AppConfig
     ) -> (pill: CGRect, title: String, font: NSFont, textWidth: CGFloat) {
-        let title = "Hold \(config.dictationHotkey.label) to dictate"
+        let title = config.dictationTriggerMode.idleHoverPrompt(
+            hotkeyLabel: config.dictationHotkey.label
+        )
         let font = NSFont.systemFont(ofSize: 13, weight: .regular)
         let textWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width) + 4
         let pad: CGFloat = 14
@@ -1945,7 +1947,11 @@ final class FloatingIndicatorController: NSObject {
                 size = NSSize(width: pill.width + 4, height: 40)
             } else {
                 size = isHovered
-                    ? Self.idleHoverPillSize(hotkeyLabel: config.dictationHotkey.label, screenWidth: screen.width)
+                    ? Self.idleHoverPillSize(
+                        hotkeyLabel: config.dictationHotkey.label,
+                        screenWidth: screen.width,
+                        triggerMode: config.dictationTriggerMode
+                    )
                     : NSSize(width: 44, height: 28)
             }
         case .preparing: size = NSSize(width: 76, height: 22)
@@ -2059,7 +2065,11 @@ final class FloatingIndicatorController: NSObject {
                 .clear,
                 .colorWith(hex: 0xFFFFFF, alpha: isHovered ? 0.14 : 0.22),
                 "",
-                isHovered ? "Hold \(config.dictationHotkey.label) to dictate" : "",
+                isHovered
+                    ? config.dictationTriggerMode.idleHoverPrompt(
+                        hotkeyLabel: config.dictationHotkey.label
+                    )
+                    : "",
                 .colorWith(hex: 0xFFFFFF, alpha: 0.75),
                 .colorWith(hex: 0xFFFFFF, alpha: 0.75),
                 isHovered ? 1.0 : 0.90
@@ -2168,8 +2178,12 @@ final class FloatingIndicatorController: NSObject {
         transcribingPillSize(title: title, screenWidth: screenWidth)
     }
 
-    static func idleHoverPillSize(hotkeyLabel: String, screenWidth: CGFloat) -> NSSize {
-        let title = "Hold \(hotkeyLabel) to dictate"
+    static func idleHoverPillSize(
+        hotkeyLabel: String,
+        screenWidth: CGFloat,
+        triggerMode: DictationTriggerMode
+    ) -> NSSize {
+        let title = triggerMode.idleHoverPrompt(hotkeyLabel: hotkeyLabel)
         let font = NSFont.systemFont(ofSize: 11, weight: .regular)
         let textWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width)
         let preferredWidth = 42 + textWidth + 22
