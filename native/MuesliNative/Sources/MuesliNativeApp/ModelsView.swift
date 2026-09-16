@@ -531,6 +531,8 @@ struct ModelsView: View {
     }
 
     private func deleteLiveCaptionModel() {
+        guard let mutation = controller.beginModelFileMutation() else { return }
+        defer { controller.endModelFileMutation(mutation) }
         do {
             try MeetingLiveCaptionModelStore.delete()
             isLiveCaptionModelDownloaded = false
@@ -1240,6 +1242,7 @@ struct ModelsView: View {
                             .frame(width: 20, height: 20)
                     }
                     .buttonStyle(.plain)
+                    .disabled(!controller.canModifyModelFiles)
                 }
             } else {
                 Button("Download") {
@@ -1480,7 +1483,7 @@ struct ModelsView: View {
                             .buttonStyle(.plain)
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(incompatibilityReason == nil ? MuesliTheme.accent : MuesliTheme.textTertiary)
-                            .disabled(incompatibilityReason != nil)
+                            .disabled(incompatibilityReason != nil || !controller.canModifyModelFiles)
                             .help(incompatibilityReason ?? "Update")
                     }
                 }
@@ -1700,6 +1703,8 @@ struct ModelsView: View {
     }
 
     private func deletePostProcModel(_ option: PostProcessorOption) {
+        guard let mutation = controller.beginModelFileMutation() else { return }
+        defer { controller.endModelFileMutation(mutation) }
         if appState.activePostProcessor.id == option.id {
             let remainingDownloadedIDs = downloadedPostProcModels.subtracting([option.id])
             if let fallback = PostProcessorOption.firstDownloaded(excluding: option.id, downloadedIDs: remainingDownloadedIDs) {
@@ -1924,7 +1929,9 @@ struct ModelsView: View {
         // Check before unloading or deleting the installed model: startDownload also
         // rejects incompatible backends, so otherwise no replacement would be started.
         guard option.isCompatible() else { return }
+        guard let mutation = controller.beginModelFileMutation() else { return }
         Task {
+            defer { controller.endModelFileMutation(mutation) }
             do {
                 await controller.transcriptionCoordinator.unloadNemotron35Transcriber()
                 try await deleteModelFiles(option)
@@ -1940,6 +1947,7 @@ struct ModelsView: View {
     }
 
     private func deleteModel(_ option: BackendOption) {
+        guard let mutation = controller.beginModelFileMutation() else { return }
         if option == .nemotron35Multilingual,
            appState.config.resolvedMeetingLiveCaptionBackend == .nemotron35 {
             controller.updateConfig { $0.enableLiveStreamingPartials = false }
@@ -1963,6 +1971,7 @@ struct ModelsView: View {
         // Stop any transfer before removing files so a late write cannot recreate
         // part of the model after the deletion has completed.
         Task {
+            defer { controller.endModelFileMutation(mutation) }
             let deletionToken = await ManagedASRModelDownloader.beginDeletion(
                 modelID: option.model
             )

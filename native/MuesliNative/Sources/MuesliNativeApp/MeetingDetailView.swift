@@ -829,7 +829,7 @@ struct MeetingDetailView: View {
     }
 
     @ViewBuilder
-    private func retranscribeAction(for meeting: MeetingRecord) -> some View {
+    private func retranscribeAction(for meeting: MeetingRecord, accessibilityIdentifier: String) -> some View {
         if meeting.savedRecordingPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
            meeting.status != .recording, meeting.status != .noteOnly {
             Menu {
@@ -844,7 +844,7 @@ struct MeetingDetailView: View {
                 Label("Re-transcribe", systemImage: "waveform")
             }
             .disabled(!controller.canRetranscribeMeeting(meeting) || isSummarizing || isEditingNotes || isEditingTranscript)
-            .accessibilityIdentifier("meeting.retranscription.models")
+            .accessibilityIdentifier(accessibilityIdentifier)
         }
     }
 
@@ -853,7 +853,7 @@ struct MeetingDetailView: View {
         if meeting.savedRecordingPath?.isEmpty == false || appState.meetingRetranscriptions[meeting.id] != nil {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    retranscribeAction(for: meeting)
+                    retranscribeAction(for: meeting, accessibilityIdentifier: "meeting.retranscription.status.models")
                     if let job = appState.meetingRetranscriptions[meeting.id] {
                         if job.isRunning { ProgressView().controlSize(.small) }
                         Text(job.message).font(.callout)
@@ -1187,7 +1187,7 @@ struct MeetingDetailView: View {
             }
             .disabled(isSummarizing || isRetranscribing)
 
-            retranscribeAction(for: meeting)
+            retranscribeAction(for: meeting, accessibilityIdentifier: "meeting.retranscription.menu.models")
 
             Button {
                 toggleEditing(for: meeting)
